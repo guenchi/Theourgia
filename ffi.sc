@@ -660,10 +660,14 @@
   ;; makes what it made before. mkdir(2) is not variadic and its mode is a
   ;; named argument, which this declaration passes; the process umask still
   ;; applies. A caller making a directory only it may enter passes #o700.
-  (define (mkdir-exclusive! path . options)
+  (define mkdir-exclusive!
+    (case-lambda
+      ((path) (mkdir-exclusive-mode! path #o777))
+      ((path mode) (mkdir-exclusive-mode! path mode))))
+
+  (define (mkdir-exclusive-mode! path mode)
     (unless (and (string? path) (> (string-length path) 0))
       (assertion-violation 'mkdir-exclusive! "path must be a non-empty string" path))
-    (let ((mode (if (pair? options) (car options) #o777)))
     (unless (and (fixnum? mode) (<= 0 mode #o7777))
       (assertion-violation 'mkdir-exclusive! "mode must be an integer in 0..#o7777" mode))
     (let-values (((rc code)
@@ -678,7 +682,7 @@
          (trace-event! 'create path #f)
          'created)
         ((eqv? code EEXIST) 'exists)
-        (else (raise (fs-err 'mkdir path code)))))))
+        (else (raise (fs-err 'mkdir path code))))))
 
   ;; unlink(2), NOT delete-file: Chez's delete-file answered #f and raised
   ;; nothing when it could not delete (F99), so a failed unlink read as a
@@ -1238,53 +1242,60 @@
       (assertion-violation 'spawn-captured! "no posix_spawnp in libc" (machine-kind)))
     (unless (foreign-entry? "environ")
       (assertion-violation 'spawn-captured! "no environ in libc" (machine-kind)))
-    (let* ((c-spawn (foreign-procedure "posix_spawnp" (u8* string void* void* void* void*) int))
-           (c-fa-init (foreign-procedure "posix_spawn_file_actions_init" (void*) int))
-           (c-fa-open (foreign-procedure "posix_spawn_file_actions_addopen"
-                                         (void* int string int unsigned-int) int))
-           (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
-           (width (foreign-sizeof 'void*))
-           (names (map (lambda (b) (string->utf8 (string-append (car b) "="))) bindings))
-           (environ-at (foreign-ref 'void* (foreign-entry "environ") 0))
-           (kept (let loop ((i 0) (out '()))
-                   (let ((entry (foreign-ref 'void* environ-at (* i width))))
-                     (if (= entry 0)
-                         (reverse out)
-                         (loop (+ i 1)
-                               (if (exists (lambda (n) (c-bytes-prefix? entry n)) names)
-                                   out
-                                   (cons entry out)))))))
-           (added (map (lambda (b) (c-string (string-append (car b) "=" (cdr b)))) bindings))
-           (envp-list (append kept added))
-           (envp (foreign-alloc (* width (+ 1 (length envp-list)))))
-           (cells (foreign-alloc (* width (+ 1 (length argv)))))
-           (strings (map c-string argv))
-           (actions (foreign-alloc (max width 16)))
-           (pid-out (make-bytevector 4 0)))
-      (do ((ps envp-list (cdr ps)) (i 0 (+ i 1))) ((null? ps))
-        (foreign-set! 'void* envp (* i width) (car ps)))
-      (foreign-set! 'void* envp (* (length envp-list) width) 0)
-      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
-        (foreign-set! 'void* cells (* i width) (car ps)))
-      (foreign-set! 'void* cells (* (length argv) width) 0)
-      (let ((rc (let ((init (c-fa-init actions)))
-                  (if (not (zero? init))
-                      init
-                      (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
-                             (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
-                             (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
-                             (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b))
-                             (r (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))
-                        (c-fa-destroy actions)
-                        r)))))
-        (for-each foreign-free strings)
-        (for-each foreign-free added)
-        (foreign-free cells)
-        (foreign-free envp)
-        (foreign-free actions)
-        (if (zero? rc)
-            (values (bytevector-u32-native-ref pid-out 0) #f)
-            (values #f rc)))))
+    ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, a raise part-way through
+    ;; included: each one is recorded as it is made and freed on the way
+    ;; out. The kept environ entries are the caller's and are never freed.
+    (let ((owned '()))
+      (define (own! p) (set! owned (cons p owned)) p)
+      (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (let* ((c-spawn (foreign-procedure "posix_spawnp" (u8* string void* void* void* void*) int))
+                 (c-fa-init (foreign-procedure "posix_spawn_file_actions_init" (void*) int))
+                 (c-fa-open (foreign-procedure "posix_spawn_file_actions_addopen"
+                                               (void* int string int unsigned-int) int))
+                 (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
+                 (width (foreign-sizeof 'void*))
+                 (names (map (lambda (b) (string->utf8 (string-append (car b) "="))) bindings))
+                 ;; A NULL environ is an empty environment, not an array to read.
+                 (environ-at (foreign-ref 'void* (foreign-entry "environ") 0))
+                 (kept (if (= environ-at 0)
+                           '()
+                           (let loop ((i 0) (out '()))
+                             (let ((entry (foreign-ref 'void* environ-at (* i width))))
+                               (if (= entry 0)
+                                   (reverse out)
+                                   (loop (+ i 1)
+                                         (if (exists (lambda (n) (c-bytes-prefix? entry n)) names)
+                                             out
+                                             (cons entry out))))))))
+                 (added (map (lambda (b) (own! (c-string (string-append (car b) "=" (cdr b))))) bindings))
+                 (envp-list (append kept added))
+                 (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
+                 (strings (map (lambda (a) (own! (c-string a))) argv))
+                 (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
+                 (actions (own! (foreign-alloc (max width 16))))
+                 (pid-out (make-bytevector 4 0)))
+            (do ((ps envp-list (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* envp (* i width) (car ps)))
+            (foreign-set! 'void* envp (* (length envp-list) width) 0)
+            (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* cells (* i width) (car ps)))
+            (foreign-set! 'void* cells (* (length argv) width) 0)
+            (let ((rc (let ((init (c-fa-init actions)))
+                        (if (not (zero? init))
+                            init
+                            (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
+                                   (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
+                                   (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
+                                   (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b))
+                                   (r (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))
+                              (c-fa-destroy actions)
+                              r)))))
+              (if (zero? rc)
+                  (values (bytevector-u32-native-ref pid-out 0) #f)
+                  (values #f rc)))))
+        (lambda () (for-each foreign-free owned) (set! owned '())))))
 
   ;; Whether the NUL-terminated C string at `address` starts with the bytes
   ;; of `prefix`.
@@ -2326,10 +2337,26 @@
                             waitpid-fail kill-fail))
      (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
 
+     ;; THE PATHLESS FAULTS TAKE NO PATH, so their whole argument is the
+     ;; qualifier: `waitpid-fail@mcp-wait:errno=ECHILD`. Read with the colon
+     ;; the others carry before it, it was missed and EIO was injected
+     ;; instead of the errno named; anything else after the stage is refused
+     ;; at load, as an unknown qualifier is.
+     (define pathless-faults '(waitpid-fail kill-fail))
+
      (define-values (fault-arg-head fault-errno-text)
-       (if (memq fault-name errno-faults)
-           (split-errno fault-arg)
-           (values fault-arg #f)))
+       (cond
+         ((and (memq fault-name pathless-faults) fault-arg)
+          (split-errno (string-append ":" fault-arg)))
+         ((memq fault-name errno-faults) (split-errno fault-arg))
+         (else (values fault-arg #f))))
+
+     (define pathless-fault-checked
+       (when (and (memq fault-name pathless-faults) fault-arg
+                  (not (and (string? fault-arg-head) (string=? fault-arg-head ""))))
+         (assertion-violation 'theourgia-ffi
+           "this fault takes no path: <fault>@<stage> or <fault>@<stage>:errno=<name>"
+           fault-spec)))
 
      ;; A NAME OR A NUMBER. The three names are the classes a case
      ;; usually wants; the number is there because the property under

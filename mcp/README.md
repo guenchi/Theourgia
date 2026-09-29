@@ -179,8 +179,11 @@ fails is written to the shell's own stderr -- not a channel to the host --
 and the directory is left.
 
 Calls are served one at a time, eval included: the next frame is read after
-the child has finished, so EOF is seen after it. A host that closes the shell
-abruptly leaves the child to its own bounds.
+the call has ended -- when the child's status was collected, or when the
+shell stopped owning it (a failed wait or signal, or a deadline it could not
+see through) -- so EOF is seen after that. A child the shell stopped owning
+may still be running; a host that closes the shell abruptly likewise leaves
+the child to its own bounds.
 
 ## One route to a daemon, and what happens when it is not there
 

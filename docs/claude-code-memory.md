@@ -266,7 +266,8 @@ MCP the shell sets the writer, and the instructions say which.
 
 `eval` is a tool too, `theourgia_eval`: the shell runs it on the store's
 machine as its own child, with the same argv the command line would take, and
-the session's writer is the writer of `eval --working`. A language other than
+the writer of `eval --working` is the session's writer unless the call gives
+`--writer`. A language other than
 Scheme runs only if the host started the shell with `THEOURGIA_RUNNERS=on`.
 An evaluation that could not be seen through -- killed at its deadline, or
 ending without an answer -- is a protocol error that says execution may be

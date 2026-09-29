@@ -56,7 +56,7 @@
         (only (theourgia ffi) reap-children! spawn-captured! waitpid-status signal-pid!
               mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
-              fs-error? fs-error-errno)
+              fs-error? fs-error-errno fd-open write-all! fd-close)
         (only (theourgia client) run-root store-key)
         ;; F100b item 8: a refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
@@ -718,10 +718,17 @@
   (let ((stdin-path (and (string? stdin) (string-append dir "/stdin")))
         (answer-path (string-append dir "/answer"))
         (diag-path (string-append dir "/diag")))
+    ;; THE STDIN FILE IS WRITTEN THROUGH THE DOOR, whose failures are the
+    ;; conditions the request's table classifies; a native port's I/O
+    ;; condition is not one, and was answered as an unknown transport
+    ;; failure. And whatever this step raises, the call's directory is
+    ;; removed first: it was claimed, and nothing else would remove it.
     (when stdin-path
-      (call-with-port (open-file-output-port stdin-path (file-options no-fail) (buffer-mode block)
-                                             (make-transcoder (utf-8-codec)))
-        (lambda (p) (put-string p stdin))))
+      (guard (e (#t (remove-call-files! dir (list stdin-path answer-path diag-path))
+                    (raise e)))
+        (let ((fd (fd-open stdin-path '(write create))))
+          (write-all! fd (string->utf8 stdin) stdin-path)
+          (fd-close fd))))
     (let-values (((pid spawn-errno)
                   (spawn-captured! (append (list (scheme-binary) "--script" core "eval") argv)
                                    (list (cons "THEOURGIA_STORE" serving-store)
@@ -755,7 +762,10 @@
 ;; -> (status <(exit n)|(signal s)>), (wait-failed <errno>),
 ;;    (deadline <ms>), (deadline-unreaped <ms>) or (signal-failed <errno>).
 (define (await-child pid budget)
-  (hold-point! 'mcp-child-wait)
+  ;; THE HOLD SEAM EXISTS ONLY IN AN INJECTION BUILD, and a marker it cannot
+  ;; make must not end the wait: the child has started, and leaving here
+  ;; would report a filesystem result for a request that ran.
+  (guard (e (#t (void))) (hold-point! 'mcp-child-wait))
   (let ((deadline (+ (now-ms) budget)))
     (let poll ()
       (let ((status (poll-child pid)))
@@ -815,19 +825,20 @@
 (define (lost reason diag-path)
   (list 'child-lost reason (diag-tail diag-path)))
 
-;; THE LAST 4096 BYTES OF THE DIAGNOSTICS, READ AS ONE SEEK AND ONE READ: a
-;; child may write any amount there, and reading all of it to keep the end
-;; would cost its whole size. -> a string, or #f when the file is not a
-;; regular file, cannot be read, or its tail is not UTF-8 -- a tail cut
-;; inside a multibyte character included.
+;; THE LAST 4096 BYTES OF THE DIAGNOSTICS, AND NO EARLIER BYTE: a child may
+;; write any amount there, and reading all of it to keep the end would cost
+;; its whole size. The range from max(0, size-4096) to the end is read, in
+;; one or more reads bounded to it, and the trace records that range as
+;; (offset length). -> a string, or #f when the file is not a regular file,
+;; cannot be read, or its tail is not UTF-8 -- a tail cut inside a multibyte
+;; character included.
 (define (diag-tail path)
   (guard (e (#t #f))
     (and (eq? 'regular (entry-type path))
     (let* ((size (file-size path))
            (offset (max 0 (- size 4096))))
-      (trace-event! 'diag-seek path offset)
+      (trace-event! 'diag-read path (list offset (- size offset)))
       (let ((bytes (read-entry-range path offset (- size offset))))
-        (trace-event! 'diag-read path (bytevector-length bytes))
         (and (valid-utf8? bytes) (utf8-text bytes)))))))
 
 ;; THE CALL'S FILES ARE REMOVED ON EVERY OUTCOME, each whether it is a file or
@@ -872,16 +883,26 @@
               ((= c #xF4) (and (in? (+ i 1) #x80 #x8F) (cont? (+ i 2)) (cont? (+ i 3)) (loop (+ i 4))))
               (else #f)))))))
 
-;; THE TEXT OF VALID UTF-8 BYTES, EVERY CHARACTER KEPT. utf8->string drops a
-;; leading byte-order mark, so one is put back: the answer is byte for byte
-;; what the child wrote.
+;; THE TEXT OF BYTES ALREADY VALIDATED AS STRICT UTF-8, EVERY CHARACTER KEPT.
+;; NEVER: NO BYTE-ORDER-MARK HANDLING. utf8->string drops a leading U+FEFF,
+;; and putting one back handles only the first of several; the answer is the
+;; bytes as read, so they are decoded here code point by code point and a
+;; U+FEFF is a character like any other, wherever it is.
 (define (utf8-text b)
-  (if (and (>= (bytevector-length b) 3)
-           (= #xEF (bytevector-u8-ref b 0)) (= #xBB (bytevector-u8-ref b 1)) (= #xBF (bytevector-u8-ref b 2)))
-      (let ((rest (make-bytevector (- (bytevector-length b) 3))))
-        (bytevector-copy! b 3 rest 0 (bytevector-length rest))
-        (string-append (string (integer->char #xFEFF)) (utf8->string rest)))
-      (utf8->string b)))
+  (let ((n (bytevector-length b)))
+    (define (byte i) (bytevector-u8-ref b i))
+    (define (tail i) (fxand (byte i) #x3F))
+    (let loop ((i 0) (out '()))
+      (if (= i n)
+          (list->string (reverse out))
+          (let ((c (byte i)))
+            (cond
+              ((< c #x80) (loop (+ i 1) (cons (integer->char c) out)))
+              ((< c #xE0) (loop (+ i 2) (cons (integer->char (fxior (fxsll (fxand c #x1F) 6) (tail (+ i 1)))) out)))
+              ((< c #xF0) (loop (+ i 3) (cons (integer->char (fxior (fxsll (fxand c #x0F) 12) (fxsll (tail (+ i 1)) 6)
+                                                                    (tail (+ i 2)))) out)))
+              (else (loop (+ i 4) (cons (integer->char (fxior (fxsll (fxand c #x07) 18) (fxsll (tail (+ i 1)) 12)
+                                                              (fxsll (tail (+ i 2)) 6) (tail (+ i 3)))) out)))))))))
 
 ;; THE TRANSPORT ERROR A LOST CHILD IS ANSWERED WITH: the one this shell uses
 ;; when a request's fate is unknown, with what is known in its data. Never

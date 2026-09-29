@@ -1535,7 +1535,10 @@ it now reads that writer's drafts.
 
 **Through the MCP shell** `eval` is the tool `theourgia_eval`: the shell runs
 `core.sc eval` with the caller's argv as its own child and returns the answer
-byte for byte, so everything in this section holds there too
+byte for byte, so this section holds there too, with two differences: the
+transport options, `--wire` among them, are refused
+(`transport-option-in-rpc`), since the shell sets the store and the mode;
+and without `--writer` the writer is the shell's session writer
 (`mcp/README.md`, "Eval").
 
 **The answer's mode.** `--wire` on the command line, else
@@ -1724,7 +1727,8 @@ dispatch events as `(trace <op> <path> <detail>)` lines on stderr.
 ## The MCP shell
 
 `theourgia-mcp` speaks MCP `2025-11-25` over stdio in front of the same
-dispatcher, one tool per verb in `rpc-verbs`. See
+dispatcher, one tool per catalogue verb it can carry out -- those routed to
+the daemon, and `eval`, run as its own child. See
 [`mcp/README.md`](mcp/README.md) -- what a tool returns, why a core
 refusal comes back as a successful result, and how the shell branches on
 the transport's tag rather than on the answer's text.
