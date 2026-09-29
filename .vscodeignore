@@ -1,4 +1,5 @@
 .vscode-test/**
+.github/**
 node_modules/**
 !node_modules/goeteia/package.json
 !node_modules/goeteia/rt/sexpr.mjs

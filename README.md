@@ -26,8 +26,11 @@ what the suites run on, and the extension claims nothing older.
 **Platforms.** 0.1.0 is packaged for macOS on Apple Silicon only: the
 extension's save queue takes a file lock through a small native module,
 built for the machine that packages the extension, and this first package
-was built here. Packages for Linux, Windows and Intel macOS follow when
-they are built on those platforms.
+was built here. Packages for Intel macOS and for Linux (x86-64 and arm64)
+are built by the repository's workflow, `.github/workflows/package.yml`,
+each on its own platform, and one is published only when the unit suite has
+passed on every target, against a real core. There is no Windows package:
+the lock uses `flock`, and a Windows lock is a piece of work of its own.
 
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
 

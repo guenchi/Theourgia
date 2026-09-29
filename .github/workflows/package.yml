@@ -1,0 +1,248 @@
+# THE EXTENSION'S PACKAGES FOR EVERY PLATFORM ITS FILE LOCK BUILDS ON.
+#
+# The save queue takes its file lock through a small native module,
+# native/lease.c, which scripts/build-native.js compiles for the machine
+# running it. A package therefore has to be built on its own platform, and
+# each target below is built on a runner of that platform.
+#
+# THE TARGETS ARE THE ONES THE LOCK CAN BUILD TODAY. lease.c uses flock(2),
+# and build-native.js refuses any platform other than macOS and Linux. There
+# is no Windows target: a Windows lock is its own piece of work, not a
+# missing line here.
+#
+# THREE JOBS:
+#
+#   package  per target: compile, check that the lock was built for the
+#            target and that the package carries what activate() loads,
+#            package, upload the .vsix.
+#   unit     per target: the unit suite against a real core, on that
+#            platform. The core is theourgia and igropyr at the revisions
+#            the suite is pinned to, checked out from GitHub, on Chez Scheme
+#            10 with libuv and OpenSSL 3. The suite's full log is uploaded
+#            whatever the suite's result, so a red is read and not only
+#            counted. A setup step that fails before the suite leaves no
+#            log, and the upload step then fails too, saying so.
+#   publish  manual only: a workflow_dispatch run whose `publish` input is
+#            "publish". It needs every package job AND every unit job green,
+#            so nothing is published while a platform's suite is red. It
+#            never runs on a push.
+#
+# NOTE: THE UNIT JOB IS ALSO THE CORE'S FIRST RUN ON LINUX. The core's Linux
+# struct layouts are read from the glibc x86-64 field list and have not been
+# measured there; a red on a Linux target may be the core's, and is read
+# from the log before it is called the extension's.
+#
+# NOTE: THE PIN IS WRITTEN HERE AND IN THE LOCAL RUNS. When the suite is
+# re-pinned, the two revisions below move with it.
+#
+# NEVER: A PUBLISH WITHOUT THE SECRET. VSCE_PAT is a repository secret the
+# owner creates; the publish job reads it only there.
+
+name: package
+
+on:
+  push:
+    branches: [vscode]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish every package of this run to the Marketplace ("publish" to do so)'
+        type: choice
+        options: ['no', 'publish']
+        default: 'no'
+
+permissions:
+  contents: read
+
+# NODE_VERSION is the floor the lockfile sets: @vscode/vsce 4.0.0 and several
+# of its dependencies declare node >= 22.
+env:
+  NODE_VERSION: 22
+  CORE_REV: 9f806bb916a3c50548b696b39707b07fde0d158c
+  IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
+  CHEZ_VERSION: 10.1.0
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `lock` is a word `file` prints for a module built for the target.
+          - target: darwin-arm64
+            os: macos-latest
+            lock: arm64
+          - target: darwin-x64
+            os: macos-15-intel
+            lock: x86_64
+          - target: linux-x64
+            os: ubuntu-latest
+            lock: x86-64
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            lock: aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      # The headers build-native.js compiles against: the ones that ship
+      # with the Node that setup-node installed, under its prefix.
+      - name: Node headers for the native lock
+        shell: bash
+        run: |
+          headers="$(dirname "$(dirname "$(command -v node)")")/include/node"
+          test -f "$headers/node_api.h" || { echo "no node_api.h under $headers"; exit 1; }
+          echo "THEOURGIA_NODE_HEADERS=$headers" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: npm run compile
+      - name: The lock was built for ${{ matrix.target }}
+        shell: bash
+        run: |
+          reading="$(file out/src/native/lease.node)"
+          echo "$reading"
+          case "$reading" in
+            *"${{ matrix.lock }}"*) ;;
+            *) echo "the lock is not built for ${{ matrix.target }}"; exit 1 ;;
+          esac
+      # The vsce of the lockfile, not whatever version npx would fetch.
+      - name: Package
+        run: ./node_modules/.bin/vsce package --target ${{ matrix.target }} --out theourgia-${{ matrix.target }}.vsix
+      # A package once shipped without the goeteia reader and never
+      # activated: these are the files activate() loads, by their place in
+      # the vsix (the list scripts/package-gate.js checks).
+      - name: The package carries what activate() loads
+        shell: bash
+        run: |
+          listing="$(unzip -Z1 theourgia-${{ matrix.target }}.vsix)"
+          echo "$listing" | wc -l
+          missing=0
+          for f in extension/package.json extension/out/src/extension.js extension/out/src/native/lease.node \
+                   extension/node_modules/goeteia/package.json extension/node_modules/goeteia/rt/sexpr.mjs; do
+            if echo "$listing" | grep -qxF "$f"; then echo "present $f"; else echo "MISSING $f"; missing=$((missing + 1)); fi
+          done
+          test "$missing" = 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: theourgia-${{ matrix.target }}.vsix
+          if-no-files-found: error
+
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+          - target: darwin-x64
+            os: macos-15-intel
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: extension
+    env:
+      THEOURGIA_CORE: ${{ github.workspace }}/pin/theourgia
+      THEOURGIA_LIBDIRS: ${{ github.workspace }}/pin
+    steps:
+      # The extension and the pin side by side, so that nothing the suite
+      # walks in the extension's tree is the core's.
+      - uses: actions/checkout@v4
+        with:
+          path: extension
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Theourgia
+          ref: ${{ env.CORE_REV }}
+          path: pin/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: ${{ env.IGROPYR_REV }}
+          path: pin/igropyr
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - name: Chez Scheme, libuv and OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: brew install chezscheme libuv openssl@3
+      # Chez Scheme 10 from its release source: the distribution's package
+      # is older than the 10 igropyr requires. The release carries the boot
+      # files that build it on either architecture. The -dev packages, not
+      # the runtime ones: Ubuntu 24.04 renamed those (libuv1t64, libssl3t64),
+      # and the -dev ones bring them and the bare libuv.so igropyr also tries.
+      - name: Chez Scheme, libuv and OpenSSL (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libuv1-dev libssl-dev build-essential
+          curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
+          cd "csv${CHEZ_VERSION}"
+          ./configure --threads --disable-x11 --disable-curses
+          make -j"$(nproc)"
+          sudo make install
+      # Readings, so a log says what it was taken on.
+      - name: What this run is on
+        run: |
+          uname -a
+          node --version
+          scheme --version
+          git -C "$THEOURGIA_CORE" rev-parse HEAD
+          git -C "$THEOURGIA_LIBDIRS/igropyr" rev-parse HEAD
+      - name: Node headers for the native lock
+        run: |
+          headers="$(dirname "$(dirname "$(command -v node)")")/include/node"
+          test -f "$headers/node_api.h" || { echo "no node_api.h under $headers"; exit 1; }
+          echo "THEOURGIA_NODE_HEADERS=$headers" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Unit suite
+        run: |
+          set -o pipefail
+          npm run test:unit 2>&1 | tee "$RUNNER_TEMP/unit-${{ matrix.target }}.log"
+      - name: Counts
+        if: always()
+        run: grep -E '^ +[0-9]+ (passing|failing|pending)' "$RUNNER_TEMP/unit-${{ matrix.target }}.log" || echo "no count line in the log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-log-${{ matrix.target }}
+          path: ${{ runner.temp }}/unit-${{ matrix.target }}.log
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == 'publish'
+    needs: [package, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          path: packages
+          merge-multiple: true
+      - name: Publish
+        shell: bash
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          ls -l packages
+          test "$(ls packages/*.vsix | wc -l)" = 4
+          ./node_modules/.bin/vsce publish --packagePath packages/*.vsix
