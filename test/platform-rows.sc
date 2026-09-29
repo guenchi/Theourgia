@@ -160,7 +160,7 @@
           '(4 2)
           (list (platform-field 'stat 'st_mode 'offset) (platform-field 'stat 'st_mode 'size))))
 (want "PN-P2 through that offset, a directory is a directory and this fixture is a regular file"
-      (list (entry-type here) (entry-type "platform-numbers.sc"))
+      (list (entry-type here) (entry-type "platform-rows.sc"))
       '(directory regular))
 
 ;; ---- L: the C library, from the text of /proc/self/maps ---------------------
@@ -542,11 +542,14 @@
 ;; the whole files, a library's export clause included: an exported value is
 ;; used by whoever imports it
 (define all-bodies (apply append (map forms-of scanned-files)))
-;; a top-level (define NAME <not a lambda>)
+;; a (define NAME <not a lambda>) at the top of a library's body -- looked
+;; for in the BODIES: the whole files' top-level forms are the library
+;; forms themselves, and a search there finds no definition at all
+(define definition-forms (apply append (map (lambda (f) (library-body (forms-of f))) scanned-files)))
 (define (value-definition? n)
   (exists (lambda (f) (and (pair? f) (eq? (car f) 'define) (pair? (cdr f)) (eq? (cadr f) n)
                            (pair? (cddr f)) (not (and (pair? (caddr f)) (eq? (car (caddr f)) 'lambda)))))
-          all-bodies))
+          definition-forms))
 (define read-definitions
   (let ((out '()))
     (for-each (lambda (x) (let ((n (cadr x))) (when (and (symbol? n) (not (memq n out)) (value-definition? n))
@@ -556,6 +559,11 @@
 (want "PN-P6 (e) every definition that holds a read is referred to beyond its own definition"
       (filter (lambda (n) (zero? (symbol-count n all-bodies))) read-definitions)
       '())
+(want "PN-P6 (e) CONTROL: the rule sees the value definitions it checks, and a use of one"
+      (list (length read-definitions)
+            (and (memq 'spawn-O_RDONLY read-definitions) #t)
+            (> (symbol-count 'spawn-O_RDONLY all-bodies) 0))
+      (list 54 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))
