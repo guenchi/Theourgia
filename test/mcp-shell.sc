@@ -1721,13 +1721,14 @@
        (b-name (and (pair? b-out) (announced (car b-out))))
        (c-out (talk* (list hello ready (call-tool "theourgia_drafts" '()))
                      wstore #f (string-append "env THEOURGIA_WRITER=" (or a-name "none") " ") " --actor gamma")))
-  (want "W5 a later session reads an ended one's drafts with drafts --writer, keeps its own writer after that call (its own draft listed, not the other's), and a session started as that writer lists them"
+  (want "W5 a later session reads an ended one's drafts with drafts --writer, keeps its own writer after that call (its own draft listed under its own name, not the other's), and a session started as that writer lists them"
         (list (and a-name b-name (not (string=? a-name b-name)))
               (and (>= (length b-out) 4) (string? wblock) (contains? (text-of (cadr b-out)) wblock))
               (and (>= (length b-out) 4) (string? wblock) (string? wblock2)
                    (starts-with-text? (text-of (caddr b-out)) "(ok")
                    (starts-with-text? (text-of (cadddr b-out)) "(ok")
                    (contains? (text-of (cadddr b-out)) wblock2)
+                   (string? b-name) (contains? (text-of (cadddr b-out)) b-name)
                    (not (contains? (text-of (cadddr b-out)) wblock)))
               (and (pair? c-out) (equal? (announced (car c-out)) a-name))
               (and (>= (length c-out) 2) (string? wblock) (contains? (text-of (cadr c-out)) wblock)))
