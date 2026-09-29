@@ -5,6 +5,19 @@ open a block in an editor, and save through a durable working draft and selected
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
+## Before you start
+
+The extension drives the theourgia core installed on this machine: it needs
+Chez Scheme and the theourgia programs, and asks the core through its own
+command line. Install the core first (from source today, `build.ss` into a
+directory of objects; a Homebrew tap arrives with the core's 1.0 release),
+then point the settings `theourgia.corePath` (the directory holding
+`theourgia/` and `igropyr/`, objects or sources) and `theourgia.scheme` (the
+Chez executable, `scheme` by default) at it, and `theourgia.store` at a
+store made with `theourgia init`. One store is one machine's: the core
+serves it through one daemon, and two machines writing one store is not
+this design.
+
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
 
 ## What this batch does
