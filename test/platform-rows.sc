@@ -383,7 +383,8 @@
 
 ;; ---- P6: no platform number written down in the code --------------------------
 ;;
-;; The four files are read as data. Each form is walked with the name of
+;; Every product source file but the table is read as data (the walk
+;; below). Each form is walked with the name of
 ;; the top-level definition it sits in and the forms that enclose it, and
 ;; four things are checked.
 ;;
@@ -673,7 +674,7 @@
       ((and (eq? (car x) 'machine-kind) (not (memq name mechanism-definitions)))
        (list 'machine-kind-outside-a-mechanism file name))
       (else #f))))
-(want "PN-P6 (b) the four files hold no platform number of their own, by every form the code used to use"
+(want "PN-P6 (b) the product sources hold no platform number of their own, by every form the code used to use"
       (filter (lambda (f) f) (map site-finding sites))
       '())
 

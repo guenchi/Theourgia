@@ -1115,13 +1115,24 @@
 (want "P-20 killed with SIGKILL, it is gone and its socket file is still there"
       (list (daemons-alive) (> (string-length (socket-files)) 0))
       (list "0" #t))
+(define dispatches-before-restart (dispatches))
 (define after-kill (client "" (string-append "outline --store " store " --wire")))
+;; NEVER: "NOT connect-failed" IS NOT AN ANSWER. The request must come back
+;; as the same outline the killed daemon gave -- carrying this store's
+;; block -- and the new daemon's log must show it served a request, so a
+;; client that exited 0 without sending anything does not pass.
 (want "P-20 the next request is answered, by a daemon started for it"
       (list (rc-of after-kill)
-            (if (contains? (out-of after-kill) "connect-failed") (list 'said (out-of after-kill)) 'answered)
+            (if (and (contains? (out-of after-kill) "PROGRAM-MARKER")
+                     (string=? (out-of after-kill) (out-of before-kill)))
+                'the-same-outline
+                (list 'said (out-of after-kill) 'before (out-of before-kill)))
+            (if (> (string->number (dispatches)) (string->number dispatches-before-restart))
+                'the-daemon-served-it
+                (list 'dispatches dispatches-before-restart '-> (dispatches)))
             (daemons-alive)
             (let ((now (daemon-pids))) (and (> (string-length now) 0) (not (string=? now killed-pids)))))
-      (list 0 'answered "1" #t))
+      (list 0 'the-same-outline 'the-daemon-served-it "1" #t))
 
 (kill-daemons!)
 (system (string-append "rm -rf " here " " sock-here))
