@@ -332,8 +332,9 @@ scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any 
   this.E=E;
   this.svg=el(`<svg class="full"><defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--acc2)"/></marker></defs><g stroke="var(--acc2)" stroke-width="4.5" fill="none" stroke-linecap="round"></g><g class="lab" font-family="SF Mono,Menlo,monospace" font-weight="700" font-size="20" fill="var(--acc2)"></g></svg>`,r);
   r.insertBefore(this.svg,this.b[0].e);
-  this.wall=el(`<div class="abs" style="width:6px;height:600px;background:repeating-linear-gradient(var(--red) 0 20px,transparent 20px 34px)"></div>`,r);
-  this.wl=el(`<div class="abs lbl" style="color:var(--red);font-size:20px;width:560px;text-align:center">repo | docs — a filesystem accident</div>`,r);
+  // two walls: docs | code | tests, each centred in the gap between the columns it separates
+  this.walls=[0,1].map(()=>el(`<div class="abs" style="width:6px;height:620px;background:repeating-linear-gradient(var(--red) 0 20px,transparent 20px 34px)"></div>`,r));
+  this.wl=el(`<div class="abs lbl" style="color:var(--red);font-size:20px;width:1920px;text-align:center">docs | code | tests — a filesystem accident</div>`,r);
   this.paths=[];
 },update(t){
   if(!this.paths.length){ // measure once, after layout
@@ -351,8 +352,12 @@ scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any 
   }
   const merge=P(t,1.2,2.2);
   this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.14);S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<6?-40:60),y:b.y,s:pp.s})});
-  S(this.wall,{o:P(t,.3,.6)*(1-merge),x:1030,y:230,sy:1-merge});
-  S(this.wl,{o:P(t,.5,.8)*(1-merge),x:750,y:850});
+  // column edges before the merge: docs and code shifted left by 40, tests and records right by 60
+  const L0=b=>b.x-40,R0=b=>b.x+60,W=b=>b.e.offsetWidth;
+  const docsR=Math.max(...[0,1].map(i=>L0(this.b[i])+W(this.b[i]))),codeL=Math.min(...[2,3,4,5].map(i=>L0(this.b[i])));
+  const codeR=Math.max(...[2,3,4,5].map(i=>L0(this.b[i])+W(this.b[i]))),testL=Math.min(...[6,7].map(i=>R0(this.b[i])));
+  [(docsR+codeL)/2,(codeR+testL)/2].forEach((x,i)=>S(this.walls[i],{o:P(t,.3,.6)*(1-merge),x:Math.round(x-3),y:200,sy:1-merge}));
+  S(this.wl,{o:P(t,.5,.8)*(1-merge),y:850});
   this.paths.forEach(([p,tx,len],i)=>{const a=2.4+i*.28;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
   // pulse flowing along the chain
 }});
