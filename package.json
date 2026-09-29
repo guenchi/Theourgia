@@ -2,6 +2,12 @@
   "name": "theourgia",
   "displayName": "theourgia",
   "description": "Browse and edit a theourgia block store from VS Code.",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guenchi/Theourgia.git",
+    "directory": "."
+  },
   "publisher": "theourgia",
   "version": "0.0.1",
   "license": "Apache-2.0",
@@ -10,6 +16,7 @@
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Programming Languages",
     "Other"
   ],
   "main": "./out/src/extension.js",

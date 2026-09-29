@@ -5,6 +5,8 @@ open a block in an editor, and save through a durable working draft and selected
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
+The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
+
 ## What this batch does
 
 * An **outline tree**: the top level comes from `outline --depth 1`, and opening a node
