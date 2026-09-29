@@ -1807,9 +1807,10 @@
   ;; NOTE: WHAT COVERS IT. `test/cli-forward.sc` ends a daemon with an
   ;; uncatchable signal, checks the socket it bound is still on disk, and
   ;; requires the next call to answer from the local store -- on this
-  ;; platform that path arrives here as ECONNREFUSED. The derivation itself
-  ;; is pinned by form in `test/platform-rows.sc`, since no row can make
-  ;; libuv report another platform's numbers. `test/client-start.sc`'s CS-9
+  ;; platform that path arrives here as ECONNREFUSED. The other platforms'
+  ;; numbers are asked of this predicate directly, under forced rows, by
+  ;; `test/platform-rows.sc`'s PN-E rows, since no row can make libuv
+  ;; report another platform's numbers. `test/client-start.sc`'s CS-9
   ;; rows separate "provably never went out" from "this may already have
   ;; happened" by the COUNT of bytes written, not by an errno.
   (define (transport-unreachable? outcome)
