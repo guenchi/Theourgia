@@ -458,8 +458,20 @@
   (define (source-reader-at text offset)
     (let ((reader (source-reader-open (substring text offset (string-length text)))))
       (source-reader-next reader)))
+  ;; THE PRINTER IS PINNED TO THE CHEZ VERSIONS IT WAS MEASURED ON. What a
+  ;; block's text is depends on pretty-print, which belongs to Chez and
+  ;; can change between releases, so a version whose output was never
+  ;; compared is refused rather than trusted. Measured 2026-09-29 with
+  ;; test/probe/printprobe.ss -- this reader and these parameters over 702
+  ;; files and 22249 forms: 10.3.0 and 10.4.1 print every file
+  ;; byte-identical to 10.1.0 (the record is
+  ;; archive/theourgia-chez-printer-2026-09-29 in the workspace root
+  ;; repository). NEVER: a new Chez is added here only after the probe
+  ;; reads it identical on the same corpus.
+  (define printer-measured-versions
+    '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.1"))
   (define (source-datum-print datum)
-    (unless (string=? (scheme-version) "Chez Scheme Version 10.1.0")
+    (unless (member (scheme-version) printer-measured-versions)
       (raise '(error unsupported-printer-version)))
     (parameterize ((pretty-line-length 72) (pretty-one-line-limit 72)
                    (pretty-initial-indent 0) (pretty-standard-indent 2)

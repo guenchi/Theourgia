@@ -5,7 +5,10 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
 
-**One set of prerequisites: Chez Scheme, and igropyr.** The verbs run from source:
+**One set of prerequisites: Chez Scheme, and igropyr.** Chez Scheme
+10.1.0, 10.3.0 or 10.4.1 (the datum printer is measured identical on
+these); on any other version the verbs that print a datum refuse with
+`(error unsupported-printer-version)`. The verbs run from source:
 
     scheme --script theourgia.sc <verb> [...]
 
