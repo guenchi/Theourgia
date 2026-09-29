@@ -339,6 +339,30 @@
         (list (car r) (data-of-text (cadr r))))
       (list 0 (list (list 1024 64 512 21585 84 80 16 4))))
 
+;; ---- E: "nobody is listening", by the platform's errnos ---------------------
+;;
+;; The client tells a missing daemon by ENOENT, ENOTSOCK and ECONNREFUSED,
+;; and rpc.sc asks the same question of libuv's statuses, which are those
+;; errnos negated. Both must answer by the running platform's numbers: on
+;; Linux 2, 88 and 111; on macOS and FreeBSD 2, 38 and 61. This kernel
+;; always reports its own numbers, so the rows ask the two predicates
+;; directly, in a fresh child on each forced row: a literal left in either
+;; place answers wrongly on one of the two.
+(define no-daemon-script
+  (string-append "(import (chezscheme) (theourgia client) (theourgia rpc))\n"
+                 "(write (list (map no-daemon-errno? '(2 38 61 88 111))\n"
+                 "             (map (lambda (s) (transport-unreachable? (list 'transport-error s))) '(-2 -38 -61 -88 -111))\n"
+                 "             (transport-unreachable? '(transport-error 111))))\n"
+                 "(newline)\n"))
+(want "PN-E forced Linux x86_64: 2, 88 and 111 mean nobody is listening, for the client and for rpc's libuv statuses; 38 and 61 do not"
+      (let ((r (child (string-append forced "Linux/x86_64/glibc") no-daemon-script)))
+        (list (car r) (data-of-text (cadr r))))
+      (list 0 (list (list '(#t #f #f #t #t) '(#t #f #f #t #t) #f))))
+(want "PN-E TWIN forced FreeBSD: 2, 38 and 61 mean nobody is listening; 88 and 111 do not"
+      (let ((r (child (string-append forced "FreeBSD/amd64") no-daemon-script)))
+        (list (car r) (data-of-text (cadr r))))
+      (list 0 (list (list '(#t #t #t #f #f) '(#t #t #t #f #f) #f))))
+
 ;; ---- P7: the append bit, through the log's own sequence ----------------------
 ;;
 ;; log.sc's write-line! opens a segment with (fd-open path '(write append)),
@@ -404,7 +428,35 @@
               (for-each (lambda (c) (visit c (cons x up))) (if (list? x) x (list (car x) (cdr x))))))))
       (library-body (forms-of file)))
     (reverse out)))
-(define scanned-files '("../ffi.sc" "../daemon.sc" "../eval-supervise.sc" "../mcp/server.sc"))
+;; EVERY PRODUCT SOURCE FILE, not a list of the files known to read the
+;; table: a platform number written into a file nobody thought of is the
+;; case this scan exists for (client.sc held three errnos as literals
+;; while the scan read four files). The walk takes every .sc under the
+;; tree but test/ and dot-directories; the table itself is left out.
+(define scanned-files
+  (let walk ((rel "") (out '()))
+    (let ((dir (if (string=? rel "") ".." (string-append "../" rel))))
+      (fold-left
+        (lambda (out name)
+          (let* ((r (if (string=? rel "") name (string-append rel "/" name)))
+                 (p (string-append "../" r)))
+            (cond
+              ((char=? (string-ref name 0) #\.) out)
+              ((and (string=? rel "") (string=? name "test")) out)
+              ((file-directory? p) (walk r out))
+              ((and (> (string-length name) 3)
+                    (string=? (substring name (- (string-length name) 3) (string-length name)) ".sc")
+                    (not (string=? r "platform-numbers.sc")))
+               (cons p out))
+              (else out))))
+        out
+        (list-sort string<? (directory-list dir))))))
+(want "PN-P6 CONTROL: the scan walks every product source but the table, client.sc and rpc.sc among them"
+      (list (length scanned-files)
+            (and (member "../client.sc" scanned-files) (member "../rpc.sc" scanned-files)
+                 (member "../mcp/server.sc" scanned-files) #t)
+            (member "../platform-numbers.sc" scanned-files))
+      (list 52 #t #f))
 (define sites (apply append (map walk-sites scanned-files)))
 (define (site-file s) (car s))
 (define (site-name s) (cadr s))
@@ -424,7 +476,10 @@
                                            (not (memq (site-name s) struct-helpers))))
                           sites))))
 (define expected-read-sites
-  '(("../daemon.sc" signal-term (platform-number (quote SIGTERM)))
+  '(("../client.sc" ECONNREFUSED (platform-number (quote ECONNREFUSED)))
+    ("../client.sc" ENOENT (platform-number (quote ENOENT)))
+    ("../client.sc" ENOTSOCK (platform-number (quote ENOTSOCK)))
+    ("../daemon.sc" signal-term (platform-number (quote SIGTERM)))
     ("../eval-supervise.sc" sigkill (platform-number (quote SIGKILL)))
     ("../ffi.sc" AF_UNIX (platform-number (quote AF_UNIX)))
     ("../ffi.sc" EACCES (platform-number (quote EACCES)))
@@ -540,31 +595,36 @@
           ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) sym)) 0)
           ((pair? x) (+ (count (car x)) (count (cdr x))))
           (else 0))))
-;; the whole files, a library's export clause included: an exported value is
-;; used by whoever imports it
-(define all-bodies (apply append (map forms-of scanned-files)))
+;; PER FILE: a definition is looked for, and its uses counted, in the file
+;; that holds it -- the whole file, a library's export clause included,
+;; since an exported value is used by whoever imports it. Counting across
+;; files would let another file's use of the same name hide this one's
+;; (ENOENT is defined in ffi.sc and in client.sc).
+(define (file-forms f) (forms-of f))
 ;; a (define NAME <not a lambda>) at the top of a library's body -- looked
-;; for in the BODIES: the whole files' top-level forms are the library
-;; forms themselves, and a search there finds no definition at all
-(define definition-forms (apply append (map (lambda (f) (library-body (forms-of f))) scanned-files)))
-(define (value-definition? n)
-  (exists (lambda (f) (and (pair? f) (eq? (car f) 'define) (pair? (cdr f)) (eq? (cadr f) n)
-                           (pair? (cddr f)) (not (and (pair? (caddr f)) (eq? (car (caddr f)) 'lambda)))))
-          definition-forms))
+;; for in the BODY: a file's top-level forms are the library form itself,
+;; and a search there finds no definition at all
+(define (value-definition-in? f n)
+  (exists (lambda (d) (and (pair? d) (eq? (car d) 'define) (pair? (cdr d)) (eq? (cadr d) n)
+                           (pair? (cddr d)) (not (and (pair? (caddr d)) (eq? (car (caddr d)) 'lambda)))))
+          (library-body (forms-of f))))
+;; (file name) for each value definition that holds an enumerated read
 (define read-definitions
   (let ((out '()))
-    (for-each (lambda (x) (let ((n (cadr x))) (when (and (symbol? n) (not (memq n out)) (value-definition? n))
-                                                (set! out (cons n out)))))
+    (for-each (lambda (x)
+                (let ((key (list (car x) (cadr x))))
+                  (when (and (symbol? (cadr x)) (not (member key out)) (value-definition-in? (car x) (cadr x)))
+                    (set! out (cons key out)))))
               expected-read-sites)
     (reverse out)))
-(want "PN-P6 (e) every definition that holds a read is referred to beyond its own definition"
-      (filter (lambda (n) (zero? (symbol-count n all-bodies))) read-definitions)
+(want "PN-P6 (e) every definition that holds a read is referred to in its own file beyond its definition"
+      (filter (lambda (d) (zero? (symbol-count (cadr d) (file-forms (car d))))) read-definitions)
       '())
-(want "PN-P6 (e) CONTROL: the rule sees the value definitions it checks, and a use of one"
+(want "PN-P6 (e) CONTROL: the rule sees the value definitions it checks, per file, and a use of one"
       (list (length read-definitions)
-            (and (memq 'spawn-O_RDONLY read-definitions) #t)
-            (> (symbol-count 'spawn-O_RDONLY all-bodies) 0))
-      (list 54 #t #t))
+            (and (member '("../client.sc" ENOENT) read-definitions) (member '("../ffi.sc" ENOENT) read-definitions) #t)
+            (> (symbol-count 'spawn-O_RDONLY (file-forms "../ffi.sc")) 0))
+      (list 57 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))

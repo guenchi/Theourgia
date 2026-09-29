@@ -1083,6 +1083,46 @@
       '(answers arguments client digest ffi incomplete platform-numbers render trace))
 
 
+;; ---- P-20 a daemon that died without tidying up ----------------------------
+;;
+;; KEY: A SOCKET FILE WITH NOBODY BEHIND IT IS "NO DAEMON". A daemon ended
+;; by a signal it cannot handle leaves the socket it bound on disk; the next
+;; request's connect is refused (ECONNREFUSED), and the client must read
+;; that as nobody listening and start a daemon -- not answer
+;; connect-failed. The errno is the running platform's (61 here, 111 on
+;; Linux); client.sc once held 61 as a literal, and on Linux every request
+;; after such an exit then failed. `cli-forward.sc` asks the same of
+;; core.sc's route, which falls back to the local store instead.
+(define (daemon-pids)
+  (let ((f (string-append here "/pids.txt")))
+    (system (string-append "pgrep -f 'serve " store "' > " f " 2>/dev/null"))
+    (file-text f)))
+(define (socket-files)
+  (let ((f (string-append here "/sockets.txt")))
+    (system (string-append "find " sock-here "/run -type s > " f " 2>/dev/null"))
+    (file-text f)))
+(kill-daemons!)
+(define before-kill (client "" (string-append "outline --store " store " --wire")))
+(define killed-pids (daemon-pids))
+(want "P-20 a daemon is up and answering before it is killed"
+      (list (rc-of before-kill) (daemons-alive) (> (string-length (socket-files)) 0))
+      (list 0 "1" #t))
+(system (string-append "pkill -9 -f 'serve " store "' 2>/dev/null"))
+(let wait ((n 0))
+  (unless (or (string=? (daemons-alive) "0") (> n 50))
+    (system "sleep 0.1")
+    (wait (+ n 1))))
+(want "P-20 killed with SIGKILL, it is gone and its socket file is still there"
+      (list (daemons-alive) (> (string-length (socket-files)) 0))
+      (list "0" #t))
+(define after-kill (client "" (string-append "outline --store " store " --wire")))
+(want "P-20 the next request is answered, by a daemon started for it"
+      (list (rc-of after-kill)
+            (if (contains? (out-of after-kill) "connect-failed") (list 'said (out-of after-kill)) 'answered)
+            (daemons-alive)
+            (let ((now (daemon-pids))) (and (> (string-length now) 0) (not (string=? now killed-pids)))))
+      (list 0 'answered "1" #t))
+
 (kill-daemons!)
 (system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-program complete\n" rows bad)
