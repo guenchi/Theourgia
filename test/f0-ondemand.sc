@@ -233,7 +233,25 @@
 ;; The record is archive/theourgia-f127-startup-2026-09-29/READINGS.md in
 ;; the workspace root repository. The budget follows this row's own rule:
 ;; today's tree reading times 1.09, 583 x 1.09 = 635.5, so 636.
-(define budget-ms 636)
+;;
+;; ---- moved again, from 636 to 637, for the platform numbers ---------------
+;;
+;; Every platform number ffi.sc uses now comes from a measured row, one per
+;; platform, instead of a literal: the rows are compiled from source at
+;; every start, and about sixty numbers that were constants are run-time
+;; values, so ffi.sc's own compiled code grows (nothing folds, the fixnum
+;; compares no longer inline). The user accepted the measured cost,
+;; 2026-09-29; a compiled build does not pay it. Measured on one machine,
+;; ten rounds alternated, base 64d92e0 against the tree:
+;;
+;;   this row's command        min 562 -> 576, median 571.5 -> 584
+;;   (theourgia rpc) alone     min 555 -> 567, median 558.5 -> 573.5
+;;   (theourgia ffi) alone     min 85 -> 96, the rows about 4 of it
+;;
+;; The record is archive/theourgia-f181-2026-09-29/measure-r1/ in the
+;; workspace root repository. The budget follows this row's own rule:
+;; today's tree reading times 1.09, 584 x 1.09 = 636.6, so 637.
+(define budget-ms 637)
 
 (define (median xs)
   (let ((v (list-sort < xs)))
