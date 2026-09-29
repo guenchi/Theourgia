@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Theourgia Intro</title>
+<style>
+:root{
+  --bg:#fbfaf7;--bg2:#f3f1ea;--panel:#ffffff;--line:#e4e0d5;--fg:#1c1b18;--dim:#6a655c;--com:#8a857a;
+  --acc:#12b09c;--acc2:#0d8a7a;--kw:#1a8f8f;--teal:#0f6f68;--gold:#9a6b12;--num:#8a4b12;--str:#0f6f3f;
+  --red:#d2493a;--redbg:#fbe9e5;--orange:#e08a1e;--violet:#5b3fc4;--ink:#23211d;
+  --sans:"Avenir Next","SF Pro Display",-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:"SF Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);height:100%;overflow:hidden}
+#wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+#stage{position:relative;width:1920px;height:1080px;overflow:hidden;background:var(--bg);font-family:var(--sans);color:var(--fg);transform-origin:center center;flex:none}
+.abs{position:absolute;left:0;top:0;will-change:transform,opacity}
+.scene{position:absolute;inset:0;opacity:0}
+.tag{position:absolute;left:120px;top:78px;font:600 22px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.tag.wall{color:var(--red)}.tag.feat{color:var(--acc2)}
+.title{position:absolute;left:120px;top:112px;font:700 62px/1.1 var(--sans);letter-spacing:-.01em}
+/* building blocks */
+.doc{background:var(--panel);border:2px solid var(--line);border-radius:18px;box-shadow:0 12px 40px rgba(60,50,30,.10);overflow:hidden}
+.doc .hd{position:relative;z-index:1;height:54px;border-bottom:2px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 20px;font:600 22px var(--mono);color:var(--dim);background:var(--bg2)}
+.doc .hd .dot{width:13px;height:13px;border-radius:50%;background:var(--line)}
+.bar{height:14px;border-radius:7px;background:#e9e5da;margin:12px 0}
+.h{font:700 26px var(--mono);color:var(--fg);margin:18px 0 6px}
+.codebar{background:#f1efe7;border-radius:10px;padding:10px 14px;font:500 20px/1.5 var(--mono);color:var(--teal)}
+.bot{position:absolute;width:120px;height:120px}
+.bot .body{position:absolute;left:0;top:18px;width:120px;height:100px;border-radius:30px;background:var(--acc)}
+.bot .eye{position:absolute;top:52px;width:18px;height:26px;border-radius:9px;background:#fff}
+.bot .ant{position:absolute;left:56px;top:0;width:8px;height:22px;border-radius:4px;background:var(--acc)}
+.bot .ant:after{content:"";position:absolute;left:-5px;top:-8px;width:18px;height:18px;border-radius:50%;background:inherit}
+.bot .name{position:absolute;top:128px;left:-40px;width:200px;text-align:center;font:600 20px var(--mono);color:var(--dim)}
+.chip{display:inline-block;padding:10px 18px;border-radius:12px;font:600 24px var(--mono);white-space:nowrap}
+.toast{padding:12px 22px;border-radius:14px;font:700 26px var(--sans);white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.ok{background:#e3f6ef;color:var(--str);border:2px solid #9fd9c2}
+.bad{background:var(--redbg);color:var(--red);border:2px solid #f0b3a8}
+.term{background:#1e1d1a;border-radius:18px;box-shadow:0 16px 50px rgba(0,0,0,.25);color:#e8e4d8;font:500 25px/1.6 var(--mono);padding:28px 34px;overflow:hidden}
+.term .p{color:var(--acc)}.term .k{color:#7fd6c9}.term .s{color:#e6c07b}.term .n{color:#f0a36b}.term .c{color:#8a857a}
+.blk{position:absolute;background:var(--panel);border:2.5px solid var(--line);border-radius:16px;padding:14px 18px;box-shadow:0 8px 26px rgba(60,50,30,.10);white-space:nowrap}
+.blk .id{font:600 16px var(--mono);color:var(--com)}
+.blk .t{font:700 24px var(--sans);margin-top:4px}
+.blk .k{font:700 15px var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.bubble{position:absolute;background:#fff;border:2px solid var(--line);border-radius:20px;padding:14px 20px;font:600 24px var(--sans);white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.08)}
+.lbl{font:700 17px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+svg.full{position:absolute;left:0;top:0;width:1920px;height:1080px;overflow:visible}
+#ctl{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:10px;padding:12px 14px 10px;z-index:9;background:linear-gradient(rgba(28,27,24,0),rgba(28,27,24,.28))}
+#ctl button{flex:none;width:34px;height:34px;border:0;border-radius:50%;background:#fff;color:#1c1b18;font:700 14px/34px var(--sans);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2);opacity:0;transition:opacity .25s}
+body:hover #ctl button,body.paused #ctl button,#ctl button:focus-visible{opacity:1}
+#ctl{background-size:100% 0;transition:background-size .25s}
+body:hover #ctl,body.paused #ctl{background-size:100% 100%}
+#segs{flex:1;display:flex;gap:3px;height:14px;align-items:center;cursor:pointer}
+.seg{position:relative;height:4px;border-radius:2px;background:rgba(28,27,24,.14);overflow:hidden;transition:height .15s}
+#segs:hover .seg{height:8px}
+.seg i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--acc)}
+#stage{cursor:pointer}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="stage"></div></div>
+<div id="ctl"><button id="pp" aria-label="Pause">❚❚</button><div id="segs" role="slider" aria-label="Chapters"></div><button id="rs" aria-label="Restart">↺</button></div>
+<script>
+// ---------------------------------------------------------------------------
+// Deterministic renderer: every frame is a pure function of t (seconds).
+// window.seek(t) draws the frame at t; the player below only advances t.
+// Embed with <iframe src="intro.html" style="aspect-ratio:16/9;width:100%;border:0">.
+// URL parameter ?t=<seconds> starts at that time.
+// ---------------------------------------------------------------------------
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const io=x=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const eo=x=>1-Math.pow(1-x,3);
+const bk=x=>{const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2)};
+const P=(t,a,b,f=io)=>f(clamp((t-a)/(b-a)));
+const L=(a,b,p)=>a+(b-a)*p;
+const stage=document.getElementById('stage');
+function el(html,parent){const d=document.createElement('div');d.innerHTML=html.trim();const n=d.firstChild;(parent||stage).appendChild(n);return n}
+function S(n,{o,x=0,y=0,s=1,r=0,sx,sy}={}){
+  if(o!==undefined)n.style.opacity=o;
+  n.style.transform=`translate(${x}px,${y}px) scale(${sx??s},${sy??s}) rotate(${r}deg)`;
+}
+// pop-in: returns {o,s} for an element appearing at time a
+const pop=(t,a,d=.45)=>{const p=clamp((t-a)/d);return{o:clamp(p*2.5),s:p<=0?.6:L(.6,1,bk(p))}};
+const typed=(str,t,a,cps=28)=>str.slice(0,Math.max(0,Math.floor((t-a)*cps)));
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296}}
+
+function botHTML(color,name,cls=''){return `<div class="bot ${cls}"><div class="ant" style="background:${color}"></div><div class="body" style="background:${color}"></div><div class="eye e1" style="left:30px"></div><div class="eye e2" style="left:72px"></div>${name?`<div class="name">${name}</div>`:''}</div>`}
+// eyes: mood 0 = normal, 1 = sad (flattened), blink by t
+function eyes(b,t,mood=0,look=0){
+  const bl=((t*1.7)%3.1)<.12?.15:1;
+  for(const e of b.querySelectorAll('.eye')){
+    e.style.transform=`translate(${look*8}px,${mood*10}px) scaleY(${bl*(1-mood*.55)})`;
+  }
+}
+function docHTML(name,w,h,inner){return `<div class="doc abs" style="width:${w}px;height:${h}px"><div class="hd"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:10px">${name}</span></div><div class="in" style="padding:10px 26px">${inner||''}</div></div>`}
+const bars=(n,ws=[92,80,86,64,90,72])=>Array.from({length:n},(_,i)=>`<div class="bar" style="width:${ws[i%ws.length]}%"></div>`).join('');
+
+// ---------------------------------------------------------------------------
+// Scene framework
+// ---------------------------------------------------------------------------
+const scenes=[];
+function scene(o){scenes.push(o)}
+const FADE=.45;
+
+// ============================== INTRO ======================================
+scene({dur:7, build(r){
+  this.doc=el(docHTML('notes.md',560,520,`<div class="h" style="opacity:0" id="i-h">## Ideas</div><div id="i-lines"></div>`),r);
+  this.lines=[];const box=this.doc.querySelector('#i-lines');
+  for(let i=0;i<7;i++){const b=el(`<div class="bar" style="width:${[90,76,84,60,88,70,80][i]}%;transform-origin:left"></div>`,box);this.lines.push(b)}
+  this.h=this.doc.querySelector('#i-h');
+  this.cursor=el(`<svg class="abs" width="44" height="56" viewBox="0 0 22 28"><path d="M2 2 L2 22 L7.5 17 L11 26 L14.5 24.5 L11 16 L18 16 Z" fill="#1c1b18" stroke="#fff" stroke-width="1.5"/></svg>`,r);
+  this.heart=el(`<div class="abs" style="font:700 30px var(--sans);color:var(--acc2)">Easy for humans ✓</div>`,r);
+  this.bots=[0,1,2].map(i=>el(botHTML(['#12b09c','#e08a1e','#5b3fc4'][i],''),r));
+  const names=['Silent write errors','Concurrent overwrites','Token black hole','Long-tail sprawl','Drifting indexes'];
+  this.walls=names.map((n,i)=>el(`<div class="abs" style="width:300px;height:92px;border-radius:14px;background:#fff;border:3px solid var(--red);display:flex;align-items:center;gap:14px;padding:0 18px;box-shadow:0 10px 26px rgba(210,73,58,.18)"><span style="font:800 34px var(--mono);color:var(--red)">${i+1}</span><span style="font:700 23px/1.15 var(--sans)">${n}</span></div>`,r));
+  this.big=el(`<div class="abs" style="left:0;top:0;font:800 64px/1.1 var(--sans);letter-spacing:-.01em;width:1920px;text-align:center"></div>`,r);
+},update(t){
+  S(this.big,{o:P(t,.1,.6)*(1-P(t,2.9,3.3)),y:108});
+  this.big.innerHTML='Markdown is great for humans…';
+  if(t>3.3){this.big.innerHTML='…but agents keep hitting <span style="color:var(--red)">five walls</span>';S(this.big,{o:P(t,3.3,3.8),y:108})}
+  const dx=L(680,300,P(t,3,4));
+  S(this.doc,{o:P(t,.2,.7),x:dx,y:280});
+  this.h.style.opacity=P(t,.6,.9);
+  this.lines.forEach((b,i)=>{const a=.9+i*.22;b.style.transform=`scaleX(${P(t,a,a+.25,eo)})`});
+  const cp=clamp((t-.6)/2.2);const li=Math.min(6,Math.floor(cp*7));
+  S(this.cursor,{o:P(t,.3,.6)*(1-P(t,2.8,3.1)),x:dx+80+L(0,440,(cp*7)%1),y:280+100+li*38});
+  S(this.heart,{o:P(t,2.2,2.6)*(1-P(t,3,3.3)),x:760,y:840});
+  this.bots.forEach((b,i)=>{S(b,{o:P(t,3.2+i*.15,3.6+i*.15),x:L(2000,1500+i*140,P(t,3.2+i*.15,3.9+i*.15,eo)),y:440+(i%2)*120});eyes(b,t+i,0,-1)});
+  this.walls.forEach((w,i)=>{const a=3.9+i*.32;const p=P(t,a,a+.4,eo);S(w,{o:clamp(p*3),x:1000+(i%2)*40,y:L(-200,262+i*108,p),r:L(-12,(i%2?1.5:-1.5),p)})});
+  const shake=t>4&&t<5.9?Math.sin(t*60)*3*(1-P(t,4,5.9)):0;
+  this.doc.style.marginLeft=shake+'px';
+}});
+
+// ============================== WALL 1 =====================================
+scene({tag:['wall','Wall 1 / 5'],title:'Silent write errors',dur:7,build(r){
+  this.doc=el(docHTML('design.md',620,560,`
+    <div class="h">## Goals</div>${bars(2)}
+    <div class="sec" style="overflow:hidden;border-radius:10px"><div class="h" style="color:var(--acc2)">## Design</div>${bars(3,[88,70,80])}</div>
+    <div class="ghost" style="height:0;overflow:hidden;opacity:0"><div style="height:60px;margin-top:10px;border:3px dashed var(--red);border-radius:12px;display:flex;align-items:center;justify-content:center;font:700 23px var(--sans);color:var(--red);background:rgba(251,233,229,.7)">“## Design” — gone. No error.</div></div>
+    <div class="h">## API</div><div class="codebar">(define (retry thunk n)<br>&nbsp;&nbsp;…)</div>`),r);
+  this.sec=this.doc.querySelector('.sec');this.secH=this.sec.scrollHeight||190;
+  this.ghost=this.doc.querySelector('.ghost');
+  this.bot=el(botHTML('#12b09c','agent'),r);
+  this.patch=el(`<div class="abs chip" style="background:#fff;border:2px solid var(--acc);color:var(--acc2)">patch.diff</div>`,r);
+  this.toast=el(`<div class="abs toast ok">✓ write succeeded</div>`,r);
+  this.meter=el(`<div class="abs" style="width:460px"><div class="lbl">tokens spent</div><div style="margin-top:10px;height:34px;border-radius:17px;background:var(--bg2);border:2px solid var(--line);overflow:hidden"><div class="fill" style="height:100%;width:0;background:var(--acc)"></div></div><div class="m" style="margin-top:12px;font:700 26px var(--sans)"></div></div>`,r);
+  this.fill=this.meter.querySelector('.fill');this.m=this.meter.querySelector('.m');
+},update(t){
+  S(this.doc,{o:P(t,0,.4),x:260,y:250});
+  S(this.bot,{o:P(t,.2,.6),x:1320,y:330});eyes(this.bot,t,0,-1);
+  const pp=P(t,1,1.9);S(this.patch,{o:P(t,.9,1.1)*(1-P(t,1.8,2)),x:L(1260,760,pp),y:L(390,470,pp)-Math.sin(pp*Math.PI)*90});
+  const c=P(t,2,2.7);this.sec.style.height=(this.secH*(1-c))+'px';this.sec.style.opacity=1-c;
+  S(this.toast,{...pop(t,2.7),x:1000,y:560});this.toast.style.opacity=pop(t,2.7).o*(1-P(t,6.6,7));
+  const g=P(t,3.2,3.7);this.ghost.style.height=(g*70)+'px';this.ghost.style.opacity=g;
+  const w=t<4.2?0:(t<5?L(0,48,P(t,4.2,5)):L(48,96,P(t,5.2,6.2)));
+  S(this.meter,{o:P(t,4,4.3),x:1200,y:680});
+  this.fill.style.width=w+'%';this.fill.style.background=w>60?'var(--red)':'var(--acc)';
+  this.m.innerHTML=t<5.2?'write':'write + <span style="color:var(--red)">re-read to verify = ×2</span>';
+}});
+
+// ============================== WALL 2 =====================================
+scene({tag:['wall','Wall 2 / 5'],title:'Concurrent overwrites',dur:6.5,build(r){
+  this.doc=el(docHTML('policy.md',640,380,`<div class="h">## Retry rule</div><div class="para" style="position:relative;height:70px;margin-top:14px"></div>${bars(2)}`),r);
+  this.para=this.doc.querySelector('.para');
+  const ws=[['#12b09c','agent-a','Retry 3 times'],['#e08a1e','agent-b','Retry 5 times'],['#5b3fc4','you','Never retry']];
+  this.ws=ws.map(([c,n,txt])=>({c,n,txt,bot:el(botHTML(c,n),r),chip:el(`<div class="abs chip" style="background:#fff;border:2.5px solid ${c};color:${c}">${txt}</div>`,r),line:el(`<div style="position:absolute;left:0;top:0;font:700 34px var(--sans);color:${c};white-space:nowrap">${txt}<span class="st" style="position:absolute;left:0;top:50%;height:4px;background:var(--red);width:0"></span></div>`,this.para)}));
+  this.lost=el(`<div class="abs toast bad">Lost work: 0 edits</div>`,r);
+},update(t){
+  S(this.doc,{o:P(t,0,.4),x:640,y:300});
+  const pos=[[240,300],[1600,300],[900,760]];
+  const saves=[1.2,2.8,4.4];
+  this.ws.forEach((w,i)=>{
+    const [bx,by]=pos[i];
+    S(w.bot,{o:P(t,.2+i*.1,.6+i*.1),x:bx,y:by});
+    const lost=i<2&&t>saves[i+1]+.3;
+    eyes(w.bot,t+i,lost?1:0,i==1?-1:(i==0?1:0));
+    const p=P(t,saves[i]-.9,saves[i]);
+    const tx=690,ty=440;
+    S(w.chip,{o:P(t,saves[i]-1,saves[i]-.8)*(1-P(t,saves[i]-.05,saves[i])),x:L(bx+(i==1?-120:0),tx,p),y:L(by+(i==2?-60:150),ty,p)});
+    const vis=t>saves[i]?(i<2?1-P(t,saves[i+1]+.3,saves[i+1]+.7):1):0;
+    S(w.line,{o:vis,y:i<2&&t>saves[i+1]?L(0,-10,P(t,saves[i+1],saves[i+1]+.5)):0});
+    w.line.querySelector('.st').style.width=(i<2?P(t,saves[i+1],saves[i+1]+.3)*100:0)+'%';
+  });
+  const n=(t>saves[1]+.3?1:0)+(t>saves[2]+.3?1:0);
+  this.lost.textContent=`Lost work: ${n} edit${n==1?'':'s'}`;
+  S(this.lost,{o:P(t,3.1,3.4),x:1360,y:660,s:1+(n==2?.12*(1-P(t,4.7,5.1)):0)});
+}});
+
+// ============================== WALL 3 =====================================
+scene({tag:['wall','Wall 3 / 5'],title:'The token black hole',dur:6.5,build(r){
+  let inner='';for(let i=0;i<40;i++){inner+= i==17?`<div class="rule" style="margin:10px 0;padding:6px 10px;border-radius:8px;background:#fff4d6;border:2px solid var(--gold);font:700 21px var(--mono);color:var(--gold)">rule 47: timeouts are 30s</div>`:`<div class="bar" style="width:${[92,70,84,60,88,76,66][i%7]}%"></div>`}
+  this.doc=el(docHTML('handbook.md',520,620,`<div class="scroll">${inner}</div>`),r);
+  this.scroll=this.doc.querySelector('.scroll');
+  this.cnt=el(`<div class="abs" style="font:700 26px var(--mono)"></div>`,r);
+  this.bot=el(botHTML('#12b09c','agent'),r);
+  this.q=el(`<div class="bubble">What's the timeout rule?</div>`,r);
+  this.win=el(`<div class="abs" style="width:150px;height:430px;border:3px solid var(--fg);border-radius:18px;overflow:hidden;background:#fff"><div class="f" style="position:absolute;left:0;right:0;bottom:0;height:0;background:var(--red)"></div></div>`,r);
+  this.winF=this.win.querySelector('.f');
+  this.winL=el(`<div class="abs lbl" style="width:220px;text-align:center">context window</div>`,r);
+  this.flies=Array.from({length:14},()=>el(`<div class="abs" style="width:120px;height:12px;border-radius:6px;background:#d9d3c4"></div>`,r));
+  this.stat=el(`<div class="abs" style="font:700 30px/1.5 var(--sans)"><div>Needed: <span style="color:var(--acc2)">1 line</span></div><div>Read: <span style="color:var(--red)">4,812 lines</span></div></div>`,r);
+},update(t){
+  S(this.doc,{o:P(t,0,.4)*(1-P(t,3,3.6)*.65),x:240,y:250,s:1-P(t,3,3.8)*.1});
+  this.scroll.style.transform=`translateY(${-L(0,420,P(t,.3,2.6))}px)`;
+  const added=Math.floor(L(3200,4811,P(t,.3,2.6,x=>x)));
+  S(this.cnt,{o:P(t,.3,.6),x:260,y:885-10});this.cnt.style.top='-12px';
+  this.cnt.innerHTML=`<span style="color:var(--str)">+${added.toLocaleString('en')} lines</span> · <span style="color:var(--red)">−0</span>`;
+  S(this.bot,{o:P(t,.2,.5),x:1080,y:380});eyes(this.bot,t,t>5?1:0,-1);
+  S(this.q,{...pop(t,1),x:1000,y:250});this.q.style.opacity=pop(t,1).o*(1-P(t,3,3.3));
+  S(this.win,{o:P(t,.4,.7),x:1400,y:300});S(this.winL,{o:P(t,.4,.7),x:1365,y:750});
+  this.flies.forEach((f,i)=>{const a=3+i*.1;const p=P(t,a,a+.6,io);S(f,{o:p>0&&p<1?1:0,x:L(300+(i%3)*110,1415,p),y:L(300+i*40,640-i*18,p)-Math.sin(p*Math.PI)*330,s:L(1,.6,p)})});
+  const fp=P(t,3.1,4.8);this.winF.style.height=(fp*94)+'%';
+  S(this.stat,{o:P(t,5,5.4),x:1600,y:420});
+}});
+
+// ============================== WALL 4 =====================================
+scene({tag:['wall','Wall 4 / 5'],title:'Runaway long-tail sprawl',dur:6.5,build(r){
+  const rnd=rng(7);
+  this.dust=Array.from({length:120},()=>({e:el(`<div class="abs" style="width:26px;height:32px;border-radius:5px;background:#fff;border:2px solid #d8d2c3"></div>`,r),x:180+rnd()*640,y:280+rnd()*480,d:rnd()*1.4,r:rnd()*40-20}));
+  this.dl=el(`<div class="abs lbl" style="font-size:22px">2,317 tiny notes</div>`,r);
+  this.mono=[0,1,2].map(i=>el(docHTML(['notes.md','design.md','log.md'][i],180,[520,440,560][i],bars(22)),r));
+  this.ml=el(`<div class="abs lbl" style="font-size:22px">3 monoliths, months deep</div>`,r);
+  // the cut monolith, drawn as three slices
+  this.pieces=[0,1,2].map(i=>el(`<div class="abs doc" style="width:180px;height:170px"><div style="padding:16px">${bars(6)}</div></div>`,r));
+  this.links=el(`<svg class="full"><g stroke="var(--acc)" stroke-width="5" fill="none" stroke-linecap="round"><path class="l1" d="M1545 520 C1600 540 1600 580 1545 600"/><path class="l2" d="M1545 700 C1600 720 1600 760 1545 780"/></g><g class="x" stroke="var(--red)" stroke-width="7" stroke-linecap="round"><path d="M1575 545 l24 24 M1599 545 l-24 24"/><path d="M1575 725 l24 24 M1599 725 l-24 24"/></g></svg>`,r);
+  this.sc=el(`<div class="abs" style="font-size:64px">✂︎</div>`,r);
+},update(t){
+  this.dust.forEach((d,i)=>{const p=P(t,.2+d.d*.9,.8+d.d*.9,eo);S(d.e,{o:p,x:L(500,d.x,p),y:L(520,d.y,p),r:d.r*p,s:L(.3,1,p)})});
+  S(this.dl,{o:P(t,1.6,2),x:340,y:790});
+  const cut=P(t,3.6,4.4);
+  this.mono.forEach((m,i)=>{S(m,{o:P(t,1+i*.2,1.4+i*.2)*(i==2?1-P(t,3.4,3.6):1),x:1000+i*230,y:280+[40,120,0][i],s:1})});
+  this.pieces.forEach((p,i)=>{const sp=P(t,3.6,4.4,eo);S(p,{o:P(t,3.4,3.6),x:1460,y:280+i*180+sp*i*20,r:L(0,[-4,3,-2][i],sp)})});
+  this.links.style.opacity=P(t,4.2,4.5);
+  this.links.querySelector('.x').style.opacity=P(t,4.9,5.2);
+  this.links.querySelector('g').style.opacity=1-P(t,4.9,5.4)*.6;
+  S(this.sc,{o:P(t,3,3.2)*(1-P(t,4.6,4.9)),x:L(1400,1700,P(t,3.2,4.4)),y:L(420,780,P(t,3.2,4.4)),r:90});
+  S(this.ml,{o:P(t,1.8,2.2),x:1080,y:880});
+}});
+
+// ============================== WALL 5 =====================================
+scene({tag:['wall','Wall 5 / 5'],title:'Drifting indexes',dur:6.5,build(r){
+  this.idx=el(`<div class="abs doc" style="width:500px;height:230px"><div class="hd">vector index · line map</div><div style="padding:20px 24px;font:600 24px/1.7 var(--mono)"><div>“timeout rule” → <b>:120</b></div><div style="color:var(--com)">“log format” → :138</div></div></div>`,r);
+  this.doc=el(`<div class="abs doc" style="width:640px;height:520px"><div class="hd">design.md</div><div class="rows" style="position:relative;height:460px;overflow:hidden"></div></div>`,r);
+  const rows=this.doc.querySelector('.rows');
+  this.rowsDef=[['118','bar'],['119','bar'],['120','Timeouts are 30s','t'],['121','bar'],['122','bar'],['123','bar'],['124','bar'],['125','bar']];
+  this.rowEls=this.rowsDef.map(([n,txt,k])=>el(`<div style="position:absolute;left:0;right:0;height:52px;display:flex;align-items:center;gap:18px;padding:0 20px;font:600 24px var(--mono)"><span style="color:var(--com);width:48px">${n}</span>${txt=='bar'?'<div class="bar" style="flex:1;margin:0"></div>':`<span class="${k}" style="padding:4px 10px;border-radius:8px">${txt}</span>`}</div>`,rows));
+  this.ins=[el(`<div style="position:absolute;left:0;right:0;height:52px;display:flex;align-items:center;gap:18px;padding:0 20px;background:#e3f6ef;font:600 24px var(--mono)"><span style="color:var(--str);width:48px">120</span><span class="l" style="padding:4px 10px;border-radius:8px">Logs are JSON lines</span></div>`,rows)];
+  this.nums=this.rowEls.map(e=>e.querySelector('span'));
+  this.arrow=el(`<svg class="full"><path d="M 760 434 L 1096 434" stroke="var(--acc)" stroke-width="6" fill="none" marker-end="url(#ah)"/><defs><marker id="ah" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--acc)"/></marker></defs></svg>`,r);
+  this.apath=this.arrow.querySelector('path');
+  this.bot=el(botHTML('#12b09c','agent'),r);
+  this.bub=el(`<div class="bubble" style="border-color:#f0b3a8">“Timeouts… are JSON lines?” <span style="color:var(--red)">🤔</span></div>`,r);
+  this.git=el(`<div class="abs chip" style="background:#fff;border:2px solid var(--line);color:var(--dim)">git diff: looks fine ✓</div>`,r);
+},update(t){
+  S(this.idx,{o:P(t,0,.4),x:260,y:310});
+  S(this.doc,{o:P(t,.1,.5),x:1100,y:240});
+  const shift=P(t,2.4,3.2)*52;
+  this.rowEls.forEach((e,i)=>{e.style.top=(i*52+10+(i>=2?shift:0))+'px'});
+  this.nums.forEach((n,i)=>{n.textContent=String(118+i+(i>=2?Math.round(shift/52):0))});
+  this.ins.forEach(e=>{e.style.top=(2*52+10)+'px';e.style.opacity=P(t,2.7,3.2)});
+  const target=this.rowEls[2].querySelector('.t'),other=this.ins[0].querySelector('.l');
+  const hi=t<2.4?P(t,1,1.4):0;
+  target.style.background=`rgba(18,176,156,${.2*hi})`;
+  other.style.background=t>3.4?`rgba(210,73,58,${.18*P(t,3.4,3.8)})`:'transparent';
+  const len=this.apath.getTotalLength?this.apath.getTotalLength():400;
+  this.apath.style.strokeDasharray=len;this.apath.style.strokeDashoffset=len*(1-P(t,.6,1.2));
+    S(this.bot,{o:P(t,3.4,3.8),x:1560,y:790});eyes(this.bot,t,1,-1);
+  S(this.bub,{...pop(t,4.2),x:1140,y:820});
+  S(this.git,{...pop(t,5.2),x:300,y:610});
+}});
+
+// ============================== TRANSITION =================================
+scene({dur:7.5,build(r){
+  this.head=el(`<div class="abs" style="width:1920px;text-align:center;font:800 60px var(--sans)"></div>`,r);
+  this.cards=[0,1,2].map(i=>el(docHTML(['design.md','retry.ss','ops.md'][i],300,360,bars(8)),r));
+  const rnd=rng(3);
+  const ids=['x9a3vtll.4','8pniyrtk.j','x9a3vtll.9','q7m2hs0c.1','8pniyrtk.p','x9a3vtll.12','q7m2hs0c.5','8pniyrtk.2','x9a3vtll.3'];
+  const kinds=[['DESIGN','Retry policy','var(--acc2)'],['CODE','(define retry)','var(--violet)'],['TEST','test W3','var(--gold)'],['RULING','Cap at 5','var(--red)'],['PROSE','Ops guide ¶3','var(--dim)'],['CODE','backoff()','var(--violet)'],['LESSON','Jitter matters','var(--str)'],['DESIGN','Timeouts','var(--acc2)'],['TASK','Add jitter','var(--orange)']];
+  this.goal=[[330,300],[760,250],[1180,300],[1560,330],[420,560],[880,520],[1300,560],[640,760],[1120,760]];
+  this.blocks=kinds.map(([k,tt,c],i)=>el(`<div class="blk"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${ids[i]}</div></div>`,r));
+  this.src=this.blocks.map((_,i)=>[480+(i%3)*380+20,380+Math.floor(i/3)*100]);
+  const E=[[0,1],[1,2],[2,3],[0,3],[1,5],[4,1],[6,5],[7,0],[8,1],[8,7],[5,2],[6,2]];
+  this.edges=el(`<svg class="full"><g stroke="var(--acc)" stroke-width="4" fill="none" stroke-linecap="round" opacity=".7">${E.map(([a,b])=>`<line x1="${this.goal[a][0]+100}" y1="${this.goal[a][1]+50}" x2="${this.goal[b][0]+100}" y2="${this.goal[b][1]+50}"/>`).join('')}</g></svg>`,r);
+  r.insertBefore(this.edges,this.blocks[0]);
+  this.el=[...this.edges.querySelectorAll('line')];
+  this.logo=el(`<div class="abs" style="width:1920px;display:flex;align-items:center;justify-content:center;gap:26px"><svg width="96" height="96" viewBox="0 0 64 64"><g transform="translate(32 32) scale(0.931) translate(-2.79 -1.11) rotate(21.77) translate(-32 -32)"><g transform="translate(32 32) skewX(-12) translate(-32 -32)" fill="none" stroke-linecap="butt"><path d="M35.0 10.0 V54.0 M48.750 4.0 V48.0 M35.0 29.0 H48.750" stroke="#12b09c" stroke-width="6.5"/><path d="M10.75 22.75 H31.75" stroke="#12b09c" stroke-width="6.5"/><path d="M21.25 22.75 V60.0" stroke="#12b09c" stroke-width="6.5"/></g></g></svg><div><div style="font:800 84px/1 var(--sans);letter-spacing:-.01em">Theourgia</div><div style="font:600 30px var(--sans);color:var(--acc2);margin-top:8px">A block-graph storage engine for LLM agents</div></div></div>`,r);
+},update(t){
+  this.head.innerHTML='Stop organizing knowledge by <span style="text-decoration:line-through;color:var(--red)">files</span>.';
+  S(this.head,{o:P(t,.1,.5)*(1-P(t,4.6,5)),y:110});
+  const sh=P(t,1.6,2.1);
+  this.cards.forEach((c,i)=>S(c,{o:P(t,.3+i*.1,.7+i*.1)*(1-sh),x:450+i*380,y:320,s:1+sh*.08,r:sh*[-3,2,-2][i]}));
+  this.blocks.forEach((b,i)=>{const a=1.7+i*.06;const p=P(t,a,a+1.1,io);const [gx,gy]=this.goal[i],[sx,sy]=this.src[i];
+    const fy=t>5?-P(t,5,6)*0:0;
+    S(b,{o:P(t,a,a+.2),x:L(sx,gx,p),y:L(sy,gy,p)+fy+Math.sin(t*1.3+i)*4*P(t,3,3.5),s:L(.7,1,p)*(1-P(t,5,5.8)*.15)})});
+  this.el.forEach((e,i)=>{const len=Math.hypot(e.x2.baseVal.value-e.x1.baseVal.value,e.y2.baseVal.value-e.y1.baseVal.value);e.style.strokeDasharray=len;e.style.strokeDashoffset=len*(1-P(t,3+i*.08,3.6+i*.08))});
+  const lg=P(t,5.1,5.8);
+  this.edges.style.opacity=1-lg*.75;this.blocks.forEach(b=>b.style.opacity*=1-lg*.72);
+  S(this.logo,{o:lg,y:L(430,410,lg),s:L(.94,1,lg)});
+}});
+
+// ============================== FEATURE 1 ==================================
+scene({tag:['feat','Feature 1 / 7'],title:'A minimal query surface for agents',dur:7.5,build(r){
+  this.term=el(`<div class="abs term" style="width:1040px;height:500px"><div class="l0"></div><div class="out"></div><div class="l1" style="margin-top:14px"></div><div class="out2"></div></div>`,r);
+  this.l0=this.term.querySelector('.l0');this.l1=this.term.querySelector('.l1');
+  const rows=[['x9a3vtll.4','"Goals"','38'],['x9a3vtll.9','"Retry policy"','112'],['8pniyrtk.j','"Timeouts"','64'],['q7m2hs0c.1','"parse-block"','205']];
+  this.rows=rows.map(([id,ti,tk],i)=>el(`<div class="row" style="border-radius:8px;padding:0 8px;margin:0 -8px">(<span class="k">block</span> ${id} <span class="s">${ti}</span> <span class="c">:tokens</span> <span class="n">${tk}</span>)</div>`,this.term.querySelector('.out')));
+  this.res=el(`<div>(<span class="k">text</span> <span class="s">"Every call times out after 30 s…"</span>)</div>`,this.term.querySelector('.out2'));
+  this.bot=el(botHTML('#12b09c','agent'),r);
+  this.bub=el(`<div class="bubble">Timeouts? That's <b style="color:var(--acc2)">64 tokens</b>. Read just that.</div>`,r);
+  this.no=el(`<div class="abs chip" style="background:#fff;border:2px dashed var(--line);color:var(--com)"><s>pretty-printed mode</s> — there isn't one</div>`,r);
+},update(t){
+  S(this.term,{o:P(t,0,.4),x:180,y:270});
+  const c0='$ theourgia outline';this.l0.innerHTML=`<span class="p">${typed(c0,t,.4,30)}</span>`;
+  this.rows.forEach((e,i)=>{e.style.opacity=P(t,1.2+i*.2,1.35+i*.2);e.style.background=i==2&&t>3.1?`rgba(18,176,156,${.28*P(t,3.1,3.4)})`:'transparent'});
+  const c1='$ theourgia read 8pniyrtk.j';this.l1.innerHTML=t>4.6?`<span class="p">${typed(c1,t,4.6,34)}</span>`:'';
+  this.res.style.opacity=P(t,5.6,5.8);
+  S(this.bot,{o:P(t,.3,.6),x:1440,y:470});eyes(this.bot,t,0,-1);
+  S(this.bub,{...pop(t,2.9),x:1300,y:330});this.bub.style.opacity=pop(t,2.9).o*(1-P(t,7.9,8.2));
+  S(this.no,{...pop(t,6.2),x:1290,y:700});
+}});
+
+// ============================== FEATURE 2 ==================================
+scene({tag:['feat','Feature 2 / 7'],title:'One graph across artifacts and languages',dur:7,build(r){
+  const B=[['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,330],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,250],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,560],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,330],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,620]];
+  this.b=B.map(([k,tt,id,c,x,y])=>({x,y,e:el(`<div class="blk" style="border-color:${c}"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${id}</div></div>`,r)}));
+  const E=[[0,1,'met by',0],[0,2,'met by',0],[1,3,'checked by',0],[2,3,'checked by',0],[3,4,'decided in',0]];
+  this.E=E;
+  this.svg=el(`<svg class="full"><defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--acc2)"/></marker></defs><g stroke="var(--acc2)" stroke-width="4.5" fill="none" stroke-linecap="round"></g><g class="lab" font-family="SF Mono,Menlo,monospace" font-weight="700" font-size="20" fill="var(--acc2)"></g></svg>`,r);
+  r.insertBefore(this.svg,this.b[0].e);
+  this.wall=el(`<div class="abs" style="width:6px;height:520px;background:repeating-linear-gradient(var(--red) 0 20px,transparent 20px 34px)"></div>`,r);
+  this.wl=el(`<div class="abs lbl" style="color:var(--red);font-size:20px;width:560px;text-align:center">repo | docs — a filesystem accident</div>`,r);
+  this.paths=[];
+},update(t){
+  if(!this.paths.length){ // measure once, after layout
+    const g=this.svg.querySelector('g:not(.lab)'),lab=this.svg.querySelector('.lab');
+    const rect=i=>{const b=this.b[i];return{x:b.x,y:b.y,w:b.e.offsetWidth,h:b.e.offsetHeight}};
+    this.E.forEach(([a,b,l])=>{const A=rect(a),Bb=rect(b);const x1=A.x+A.w,y1=A.y+A.h/2,x2=Bb.x-6,y2=Bb.y+Bb.h/2;const mx=(x1+x2)/2;
+      const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`);p.setAttribute('marker-end','url(#a2)');g.appendChild(p);
+      const tx=document.createElementNS('http://www.w3.org/2000/svg','text');tx.setAttribute('x',mx);tx.setAttribute('y',(y1+y2)/2-12);tx.setAttribute('text-anchor','middle');tx.textContent=l;tx.setAttribute('paint-order','stroke');tx.setAttribute('stroke','#fbfaf7');tx.setAttribute('stroke-width','8');lab.appendChild(tx);
+      this.paths.push([p,tx,p.getTotalLength()])});
+  }
+  const merge=P(t,1.2,2.2);
+  this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.18);const side=i==0||i==4?-1:1;S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<2?-40:60),y:b.y,s:pp.s})});
+  S(this.wall,{o:P(t,.3,.6)*(1-merge),x:1000,y:280,sy:1-merge});
+  S(this.wl,{o:P(t,.5,.8)*(1-merge),x:720,y:830});
+  this.paths.forEach(([p,tx,len],i)=>{const a=2.6+i*.45;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
+  // pulse flowing along the chain
+}});
+
+// ============================== FEATURE 3 ==================================
+scene({tag:['feat','Feature 3 / 7'],title:'Global backlinks at near-zero cost',dur:9.5,build(r){
+  this.c=el(`<div class="blk" style="border-color:var(--violet);border-width:3px"><div class="k" style="color:var(--violet)">CODE</div><div class="t">(define retry …)</div><div class="id">8pniyrtk.j</div></div>`,r);
+  this.q=el(`<div class="abs chip" style="background:#1e1d1a;color:#7fd6c9">refs 8pniyrtk.j</div>`,r);
+  const R=[['DESIGN','Retry policy §4',-470,-170],['PROSE','Ops guide ¶3',470,-170],['TEST','test W3',-470,170],['LESSON','Jitter matters',470,170]];
+  this.R=R.map(([k,tt,dx,dy])=>({dx,dy,e:el(`<div class="blk" style="border-color:var(--acc)"><div class="k" style="color:var(--acc2)">${k}</div><div class="t">${tt}</div></div>`,r)}));
+  this.svg=el(`<svg class="full"><g stroke="var(--acc)" stroke-width="5" stroke-linecap="round">${R.map(()=>'<line/>').join('')}</g></svg>`,r);r.insertBefore(this.svg,this.c);
+  this.lines=[...this.svg.querySelectorAll('line')];
+  this.log=el(`<div class="abs" style="display:flex;gap:10px;align-items:center;font:600 20px var(--mono);color:var(--dim)"><span>log:</span>${['v1 agent-a','v2 you','v3 agent-b'].map(s=>`<span class="chip" style="font-size:18px;padding:6px 12px;background:var(--bg2)">${s}</span>`).join('')}</div>`,r);
+  // chart
+  this.chart=el(`<div class="abs" style="width:1080px"><div class="lbl" style="font-size:20px">tokens per question · 56 questions over 20 real engineering documents</div><div class="rows" style="margin-top:26px"></div></div>`,r);
+  const D=[['Read the full document',100,'#c9c2b2'],['Browse outline, then read',20,'var(--acc)'],['Search, then read the block',15,'var(--acc2)']];
+  this.bars=D.map(([l,v,c])=>{const row=el(`<div style="display:flex;align-items:center;gap:20px;margin:22px 0"><div style="width:380px;font:600 27px var(--sans)">${l}</div><div style="flex:1;height:54px;position:relative"><div class="f" style="position:absolute;left:0;top:0;bottom:0;border-radius:10px;background:${c};width:0"></div><div class="v" style="position:absolute;top:10px;font:800 30px var(--sans)"></div></div></div>`,this.chart.querySelector('.rows'));return{v,f:row.querySelector('.f'),t:row.querySelector('.v')}});
+  this.stat=el(`<div class="abs" style="width:360px;padding:24px;border-radius:20px;background:#fff;border:3px solid var(--acc);text-align:center"><div style="font:800 76px/1 var(--sans);color:var(--acc2)" class="n">6%</div><div style="font:600 24px/1.3 var(--sans);margin-top:10px">the outline of a whole corpus, vs. its raw Markdown</div></div>`,r);
+},update(t){
+  const out=P(t,4.4,4.9);
+  const cx=860,cy=500;
+  S(this.c,{o:P(t,0,.4)*(1-out),x:cx-this.c.offsetWidth/2+100,y:cy-40});
+  S(this.q,{...pop(t,.5),x:cx-40,y:cy-150});this.q.style.opacity=pop(t,.5).o*(1-P(t,1.6,1.9))*(1-out);
+  this.R.forEach((b,i)=>{const a=1.6+i*.2;const p=P(t,a,a+.5,eo);S(b.e,{o:clamp(p*2)*(1-out),x:cx+100+b.dx*p-b.e.offsetWidth/2,y:cy-40+b.dy*p});
+    const l=this.lines[i];l.setAttribute('x1',cx+100);l.setAttribute('y1',cy);l.setAttribute('x2',cx+100+b.dx*p);l.setAttribute('y2',cy+b.dy*p+10);l.style.opacity=(p>0?1:0)*(1-out)});
+  S(this.log,{o:P(t,2.8,3.2)*(1-out),x:cx-130,y:cy+80});
+  S(this.chart,{o:P(t,4.8,5.2),x:180,y:300});
+  this.bars.forEach((b,i)=>{const p=P(t,5.2+i*.35,6+i*.35,eo);b.f.style.width=(b.v*p*.62)+'%';b.t.style.left=`calc(${b.v*p*.62}% + 14px)`;b.t.textContent=Math.round(b.v*p)+'%';b.t.style.color=i?'var(--acc2)':'var(--dim)'});
+  S(this.stat,{...pop(t,7.2),x:1400,y:360});
+}});
+
+// ============================== FEATURE 4 ==================================
+scene({tag:['feat','Feature 4 / 7'],title:'Deterministic context assembly',dur:11.5,build(r){
+  // part A: query
+  this.qt=el(`<div class="abs term" style="width:1000px;height:360px"><div class="ls"></div></div>`,r);
+  this.qs=[['(query blast-radius 8pniyrtk.j)','→ 4 blocks, 2 tests'],['(query open-rulings)','→ R4 “cap retries?”'],['(query definition \'backoff)','→ q7m2hs0c.1 (the live one)']].map(([a,b])=>el(`<div style="margin-bottom:12px"><span class="k"></span> <span class="n"></span></div>`,this.qt.querySelector('.ls')));
+  this.qd=[['(query blast-radius 8pniyrtk.j)','→ 4 blocks, 2 tests'],['(query open-rulings)','→ R4 “cap retries?”'],["(query definition 'backoff)",'→ q7m2hs0c.1, the live one']];
+  this.mem=el(`<div class="abs" style="display:flex;gap:14px">${['in memory','no disk writes','no user code'].map(s=>`<span class="chip" style="background:#e3f6ef;color:var(--str);border:2px solid #9fd9c2">✓ ${s}</span>`).join('')}</div>`,r);
+  // part B: compile
+  this.task=el(`<div class="blk" style="border-color:var(--orange);border-width:3px;width:330px;white-space:normal"><div class="k" style="color:var(--orange)">TASK</div><div class="t">Add jitter to retry</div><div style="font:500 19px/1.5 var(--mono);color:var(--dim);margin-top:8px">premises · goals · deliverables</div></div>`,r);
+  this.budget=el(`<div class="abs chip" style="background:var(--fg);color:#fff">budget: 6,000 tokens</div>`,r);
+  this.mach=el(`<div class="abs" style="width:190px;height:190px;border-radius:50%;background:var(--acc);color:#fff;display:flex;align-items:center;justify-content:center;font:800 32px var(--mono);box-shadow:0 12px 40px rgba(18,176,156,.35)">context</div>`,r);
+  const shelves=[['Must read — constraints','var(--acc2)','#e3f6ef'],['Evidence · counterexamples · background','var(--gold)','#fff4d6'],['Left out — with the reason','var(--dim)','var(--bg2)']];
+  this.sh=shelves.map(([n,c,bg])=>el(`<div class="abs" style="width:720px;height:170px;border-radius:18px;border:3px solid ${c};background:${bg};padding:14px 20px"><div class="lbl" style="color:${c};font-size:19px">${n}</div><div class="items" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div></div>`,r));
+  const items=[[0,'premise P1 + its deps'],[0,'open ruling R4'],[0,'def retry (authoritative)'],[0,'def backoff (used by retry)'],[1,'evidence: load test'],[1,'counterexample C2'],[1,'background: ops ¶3'],[2,'ADR-9 · superseded'],[2,'note N7 · over budget']];
+  this.items=items.map(([s,txt])=>({s,e:el(`<span class="chip" style="font-size:19px;padding:8px 12px;background:#fff;border:2px solid var(--line);color:var(--fg)">${txt}</span>`,this.sh[s].querySelector('.items'))}));
+  this.barred=el(`<div class="abs" style="font:800 30px var(--mono);color:var(--red);border:4px solid var(--red);border-radius:10px;padding:4px 12px;transform-origin:center">BARRED</div>`,r);
+},update(t){
+  const A=1-P(t,4.6,5.1);
+  S(this.qt,{o:P(t,0,.4)*A,x:180,y:280});
+  this.qs.forEach((e,i)=>{const a=.4+i*1.2;e.querySelector('.k').textContent=typed(this.qd[i][0],t,a,40);e.querySelector('.n').textContent=t>a+.95?this.qd[i][1]:''});
+  S(this.mem,{o:P(t,3.6,4)*A,x:1220,y:360});this.mem.style.flexDirection='column';
+  const B=P(t,5,5.5);
+  S(this.task,{o:B,x:150,y:300});S(this.budget,{...pop(t,5.6),x:150,y:520});this.budget.style.opacity=pop(t,5.6).o;
+  S(this.mach,{o:B,x:600,y:420,s:t>6.2&&t<10?1+.05*Math.sin((t-6.2)*9):1});
+  this.sh.forEach((s,i)=>S(s,{o:P(t,5.3+i*.15,5.7+i*.15),x:1030,y:250+i*195}));
+  this.items.forEach((it,i)=>{const a=6.3+i*.42;const p=pop(t,a);S(it.e,{o:p.o,s:p.s})});
+  // the superseded block tries the must-read shelf and is refused
+  const ba=6.3+7*.42;
+  S(this.barred,{o:P(t,ba-.5,ba-.35)*(1-P(t,ba+.6,ba+.9)),x:1560,y:300,r:-12,s:L(1.6,1,P(t,ba-.5,ba-.3,eo))});
+}});
+
+// ============================== FEATURE 5 ==================================
+scene({tag:['feat','Feature 5 / 7'],title:'Humans and agents, side by side in the IDE',dur:11,build(r){
+  this.ide=el(`<div class="abs" style="width:1360px;height:560px;border-radius:18px;overflow:hidden;background:#fff;border:2px solid var(--line);box-shadow:0 16px 50px rgba(60,50,30,.14);display:flex">
+    <div style="width:260px;background:var(--bg2);border-right:2px solid var(--line);padding:22px;font:600 21px/2 var(--mono);color:var(--dim)"><div class="lbl" style="font-size:16px">workspace</div><div>▾ src</div><div style="padding-left:20px;color:var(--fg)">retry.ss</div><div class="dr" style="margin-top:14px">▾ drafts/agent-b</div><div class="dr" style="padding-left:20px;color:var(--orange)">retry.ss ●</div></div>
+    <div style="flex:1;padding:40px 44px;font:500 28px/1.75 var(--mono);position:relative">
+      <div class="lens" style="font:600 19px var(--sans);color:var(--acc2);margin-bottom:2px">3 design sections · 2 lessons · last changed by agent-b (R12) · test W3</div>
+      <div>(<span style="color:var(--kw)">define</span> (<span class="nm" style="border-radius:6px;padding:0 2px">retry</span> thunk n)</div>
+      <div>&nbsp;&nbsp;(<span style="color:var(--kw)">let</span> loop ([i 0])</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:var(--kw)">guard</span> (e [(&lt; i n) (loop (+ i 1))])</div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(thunk))))</div>
+      <div style="margin-top:22px;color:var(--com)">(<span class="sq" style="text-decoration:underline wavy var(--red);text-underline-offset:6px">backof</span> 3)</div>
+    </div></div>`,r);
+  this.nm=this.ide.querySelector('.nm');this.lens=this.ide.querySelector('.lens');this.drs=[...this.ide.querySelectorAll('.dr')];this.sq=this.ide.querySelector('.sq').parentNode;
+  this.hover=el(`<div class="abs" style="width:560px;padding:18px 22px;border-radius:14px;background:#fff;border:2px solid var(--acc);box-shadow:0 12px 30px rgba(0,0,0,.12);font:500 22px/1.45 var(--sans)"><div class="lbl" style="color:var(--acc2);font-size:15px">design · retry policy §4</div>Retries are bounded; the cap was set in ADR-12. Read test W3 before changing.</div>`,r);
+  this.ren=el(`<div class="abs" style="display:flex;flex-direction:column;gap:12px"><div class="toast ok">✓ rename = 1 atomic change · every edge intact</div><div class="toast" style="background:#fff4d6;color:var(--gold);border:2px solid #e8cf8f">Prose still saying “retry”: ops guide ¶3 · design §2</div></div>`,r);
+  this.diag=el(`<div class="abs toast bad">draft diagnostic: unbound “backof” — seen by you and agent-b</div>`,r);
+  this.tests=el(`<div class="abs toast" style="background:var(--fg);color:#fff">tests to rerun: <span style="color:var(--acc)">2</span> of 148</div>`,r);
+},update(t){
+  S(this.ide,{o:P(t,0,.4),x:200,y:250});
+  this.lens.style.opacity=P(t,.8,1.2);
+  S(this.hover,{...pop(t,1.8),x:1000,y:360});this.hover.style.opacity=pop(t,1.8).o*(1-P(t,3.9,4.2));
+  const nw='retry-bounded';
+  if(t<4.4){this.nm.textContent='retry';this.nm.style.background=t>4.1?'rgba(18,176,156,.25)':'transparent'}
+  else{this.nm.textContent=nw.slice(0,Math.max(5,Math.min(nw.length,5+Math.floor((t-4.4)*22))));this.nm.style.background='rgba(18,176,156,.25)'}
+  S(this.ren,{o:P(t,5.2,5.6),x:760,y:600});this.ren.style.opacity=P(t,5.2,5.6)*(1-P(t,7.6,7.9));
+  this.drs.forEach(d=>d.style.background=t>8?`rgba(224,138,30,${.18*P(t,8,8.3)})`:'transparent');
+  this.sq.style.opacity=t<7.9?0:P(t,7.9,8.2);
+  S(this.diag,{...pop(t,8.4),x:640,y:640});this.diag.style.opacity=pop(t,8.4).o;
+  S(this.tests,{...pop(t,9.6),x:1250,y:190});this.tests.style.opacity=pop(t,9.6).o;
+}});
+
+// ============================== FEATURE 6 ==================================
+scene({tag:['feat','Feature 6 / 7'],title:'A zero-conflict concurrent workspace',dur:11,build(r){
+  this.main=el(`<div class="blk" style="width:330px;border-width:3px;border-color:var(--fg);text-align:center"><div class="k" style="color:var(--dim)">MAIN TREE</div><div class="t" style="font-size:30px">8pniyrtk.j</div><div class="v" style="font:800 40px var(--mono);color:var(--acc2);margin-top:6px">v7</div></div>`,r);
+  this.v=this.main.querySelector('.v');
+  this.W=[['#12b09c','agent-a','cap = 5',270],['#e08a1e','agent-b','add jitter',1330]].map(([c,n,d,x])=>({x,c,bot:el(botHTML(c,n),r),pad:el(`<div class="abs" style="width:330px;height:150px;border-radius:16px;border:3px dashed ${c};background:#fff;padding:14px 18px"><div class="lbl" style="color:${c};font-size:16px">private draft · ${n}</div><div class="d" style="font:700 28px var(--mono);margin-top:14px"></div><div class="b" style="font:600 18px var(--mono);color:var(--com);margin-top:8px"></div></div>`,r),d,chip:el(`<div class="abs chip" style="background:${c};color:#fff">commit</div>`,r)}));
+  this.un=el(`<div class="abs chip" style="background:var(--bg2);color:var(--dim)">main tree: untouched</div>`,r);
+  this.env=el(`<div class="abs" style="width:560px;padding:20px 24px;border-radius:18px;background:#fff;border:3px solid var(--red);box-shadow:0 14px 40px rgba(210,73,58,.18)"><div style="font:800 28px var(--mono);color:var(--red)">refused: stale-baseline</div><div style="font:600 22px/1.7 var(--mono);margin-top:10px"><div>your base&nbsp;&nbsp;&nbsp;&nbsp;v7</div><div>current&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;v8</div><div>applied since: agent-a “cap = 5”</div></div></div>`,r);
+  this.never=el(`<div class="abs chip" style="background:#e3f6ef;color:var(--str);border:2px solid #9fd9c2">nothing overwritten silently</div>`,r);
+},update(t){
+  S(this.main,{o:P(t,0,.4),x:795,y:300,s:1+.08*Math.max(0,1-Math.abs(t-3)*4)+.08*Math.max(0,1-Math.abs(t-9.4)*4)});
+  this.v.textContent=t<3?'v7':(t<9.4?'v8':'v9');
+  this.W.forEach((w,i)=>{
+    S(w.bot,{o:P(t,.2,.5),x:w.x+105,y:720});eyes(w.bot,t+i,i==1&&t>5&&t<7.2?1:0,i?-1:1);
+    S(w.pad,{o:P(t,.3,.6),x:w.x,y:300});
+    const d=w.pad.querySelector('.d'),b=w.pad.querySelector('.b');
+    d.textContent=typed(w.d,t,.8+i*.3,14);
+    b.textContent=i==0?'based on v7':(t<7.3?'based on v7':'merged · based on v8');
+    if(i==1&&t>7.3&&t<7.6)w.pad.style.borderStyle='solid';else w.pad.style.borderStyle='dashed';
+    const cs=i==0?[2.2,3]:(t<8?[4.2,5]:[8.6,9.4]);
+    const p=P(t,cs[0],cs[1]);
+    S(w.chip,{o:(p>0&&p<1)?1:0,x:L(w.x+100,860,p),y:L(470,380,p)-Math.sin(p*Math.PI)*80});
+  });
+  S(this.un,{o:P(t,1.2,1.5)*(1-P(t,2.6,2.9)),x:830,y:560});
+  S(this.env,{...pop(t,5.1),x:1000,y:500});this.env.style.opacity=pop(t,5.1).o*(1-P(t,7.3,7.7));
+  S(this.never,{...pop(t,9.8),x:790,y:540});
+}});
+
+// ============================== FEATURE 7 ==================================
+scene({tag:['feat','Feature 7 / 7'],title:'A Lisp machine: a living knowledge base',dur:10.5,build(r){
+  this.code=el(`<div class="abs term" style="width:760px;height:260px;font-size:27px"><div class="c1"></div><div class="c2"></div><div style="margin-top:16px">(<span class="k">greet</span> <span class="s">"agent"</span>)</div></div>`,r);
+  this.c1=this.code.querySelector('.c1');this.c2=this.code.querySelector('.c2');
+  this.box=el(`<div class="abs" style="width:520px;height:260px;border-radius:22px;border:3px solid var(--acc);background:#e9f7f4;padding:20px 24px"><div class="lbl" style="color:var(--acc2);font-size:17px">sandboxed child process</div><div class="gs" style="margin-top:16px;display:flex;flex-direction:column;gap:14px"></div></div>`,r);
+  this.g=['wall-clock','memory','output'].map((n,i)=>el(`<div style="display:flex;align-items:center;gap:14px;font:600 20px var(--mono)"><span style="width:130px">${n}</span><div style="flex:1;height:18px;border-radius:9px;background:#fff;border:2px solid #9fd9c2;position:relative;overflow:hidden"><div class="f" style="position:absolute;left:0;top:0;bottom:0;width:0;background:var(--acc)"></div></div><span style="color:var(--dim)">quota</span></div>`,this.box.querySelector('.gs')));
+  this.out=el(`<div class="abs" style="width:760px;padding:16px 24px;border-radius:16px;background:#fff;border:2px solid var(--line);font:600 27px var(--mono)"><span class="lbl" style="font-size:16px;margin-right:14px">stdout</span><span class="o"></span><span class="at" style="float:right;color:var(--com)"></span></div>`,r);
+  this.o=this.out.querySelector('.o');this.at=this.out.querySelector('.at');
+  this.tl=el(`<div class="abs" style="width:1480px;height:70px"><div style="position:absolute;left:0;right:0;top:32px;height:6px;border-radius:3px;background:var(--line)"></div><div class="ticks"></div><div class="h" style="position:absolute;top:14px;width:42px;height:42px;border-radius:50%;background:var(--acc);border:5px solid #fff;box-shadow:0 4px 12px rgba(0,0,0,.2)"></div><div class="hl" style="position:absolute;top:-26px;font:700 22px var(--mono);color:var(--acc2);white-space:nowrap"></div><div style="position:absolute;right:0;top:60px" class="lbl">log → now</div></div>`,r);
+  for(let i=0;i<=24;i++)el(`<div style="position:absolute;left:${i/24*100}%;top:${i%4?28:22}px;width:3px;height:${i%4?14:26}px;background:#d6d0c1"></div>`,this.tl.querySelector('.ticks'));
+  this.h=this.tl.querySelector('.h');this.hl=this.tl.querySelector('.hl');
+},update(t){
+  S(this.code,{o:P(t,0,.4),x:200,y:250});
+  const old=t>6.6;
+  this.c1.innerHTML=`(<span class="k">define</span> (greet who)`;
+  this.c2.innerHTML=old?`&nbsp;&nbsp;(<span class="k">string-append</span> <span class="s">"Hi "</span> who))`:`&nbsp;&nbsp;(<span class="k">string-append</span> <span class="s">"Hello, "</span> who <span class="s">"!"</span>))`;
+  this.c2.style.background=old?`rgba(18,176,156,${.35*(1-P(t,6.6,7.4))})`:'transparent';
+  S(this.box,{o:P(t,.8,1.2),x:1180,y:250});
+  const run=(a)=>P(t,a,a+.8);
+  const r1=run(1.4),r2=run(7.4);
+  this.g.forEach((g,i)=>{const lv=[.35,.22,.08][i];const v=t<7?r1*(1-P(t,6.2,6.5)):r2;g.querySelector('.f').style.width=(v*lv*100)+'%'});
+  S(this.out,{o:P(t,2.2,2.5),x:200,y:560});
+  this.o.innerHTML=t<2.3?'':(t<6.3?'<span style="color:var(--str)">"Hello, agent!"</span>':(t<8.2?'':'<span style="color:var(--acc2)">"Hi agent"</span>'));
+  this.at.textContent=t<6.3?'@ now':(t<8.2?'':'@ log 1042 — reproducible');
+  S(this.tl,{o:P(t,4.4,4.8),x:220,y:720});
+  const hp=t<5?1:L(1,.42,P(t,5,6.4));
+  this.h.style.left=`calc(${hp*100}% - 21px)`;this.hl.style.left=`calc(${hp*100}% - 60px)`;
+  this.hl.textContent=hp>.99?'now':'@ log '+Math.round(L(1042,2480,(hp-.42)/.58));
+}});
+
+// ============================== OUTRO ======================================
+scene({dur:6.5,build(r){
+  this.logo=el(`<div class="abs" style="width:1920px;display:flex;flex-direction:column;align-items:center;gap:22px"><svg width="150" height="150" viewBox="0 0 64 64"><g transform="translate(32 32) scale(0.931) translate(-2.79 -1.11) rotate(21.77) translate(-32 -32)"><g transform="translate(32 32) skewX(-12) translate(-32 -32)" fill="none" stroke-linecap="butt"><path d="M35.0 10.0 V54.0 M48.750 4.0 V48.0 M35.0 29.0 H48.750" stroke="#12b09c" stroke-width="6.5"/><path d="M10.75 22.75 H31.75" stroke="#12b09c" stroke-width="6.5"/><path d="M21.25 22.75 V60.0" stroke="#12b09c" stroke-width="6.5"/></g></g></svg><div style="font:800 110px/1 var(--sans);letter-spacing:-.015em">Theourgia</div><div style="font:600 38px var(--sans);color:var(--acc2)">Blocks, not files. Memory your agents can trust.</div></div>`,r);
+  const F=['Minimal query surface','One unified graph','Near-zero-cost backlinks','Deterministic context','IDE symbiosis','Zero-conflict writes','A living Lisp machine'];
+  this.f=F.map(s=>el(`<div class="abs chip" style="background:#fff;border:2px solid var(--line);font:600 22px var(--sans);color:var(--fg)">${s}</div>`,r));
+  this.sub=el(`<div class="abs" style="width:1920px;text-align:center;font:600 24px var(--mono);color:var(--dim)">Apache-2.0 · R6RS Scheme · runs on Igropyr</div>`,r);
+},update(t){
+  S(this.logo,{o:P(t,.1,.7),y:L(250,220,P(t,.1,.9,eo))});
+  let x=0;const ws=this.f.map(e=>e.offsetWidth);const tot=ws.reduce((a,b)=>a+b,0)+14*6;let cx=(1920-tot)/2;
+  this.f.forEach((e,i)=>{const p=pop(t,1.2+i*.12);S(e,{o:p.o,s:p.s,x:cx,y:720});cx+=ws[i]+14});
+  S(this.sub,{o:P(t,2.4,2.9),y:840});
+}});
+
+// ---------------------------------------------------------------------------
+let T0=0;scenes.forEach(s=>{s.t0=T0;T0+=s.dur});
+const TOTAL=T0;
+scenes.forEach((s,i)=>{
+  s.root=el(`<div class="scene"></div>`);
+  if(s.tag){el(`<div class="tag ${s.tag[0]}">${s.tag[1]}</div>`,s.root);}
+  if(s.title){s.tEl=el(`<div class="title">${s.title}</div>`,s.root)}
+  s.build(s.root);
+});
+function seek(t){
+  t=clamp(t,0,TOTAL);
+  scenes.forEach(s=>{
+    const lt=t-s.t0;
+    if(lt<-FADE||lt>s.dur+FADE){s.root.style.display='none';return}
+    s.root.style.display='block';
+    const o=Math.min(clamp((lt+FADE)/FADE),clamp((s.dur+FADE-lt)/FADE));
+    // first scene has no fade-in, last has no fade-out
+    const oo=(s===scenes[0]&&lt<0)?0:(s===scenes[0]&&lt<FADE?1:(s===scenes[scenes.length-1]&&lt>s.dur-FADE?1:o));
+    s.root.style.opacity=(s===scenes[0]&&lt>=0&&lt<s.dur-FADE)?1:oo;
+    if(s.tEl)S(s.tEl,{o:P(lt,0,.5),x:L(-30,0,P(lt,0,.5,eo))});
+    s.update(clamp(lt,0,s.dur));
+  });
+  segFill.forEach((f,i)=>{f.style.width=(clamp((t-scenes[i].t0)/scenes[i].dur)*100)+'%'});
+}
+
+// ---------------------------------------------------------------------------
+// Player: fits the stage to the frame, advances t, and stops the clock while
+// the tab is hidden or the player is scrolled out of view.
+// ---------------------------------------------------------------------------
+const segs=document.getElementById('segs');
+const segFill=scenes.map(s=>{const d=el(`<div class="seg" style="flex:${s.dur}"><i></i></div>`,segs);return d.firstChild});
+function fit(){const k=Math.min(innerWidth/1920,innerHeight/1080);stage.style.transform=`scale(${k})`}
+addEventListener('resize',fit);fit();
+
+const HOLD=2;
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+// with reduced motion, open paused on the frame that names the product
+const POSTER=scenes[6].t0+7;
+let cur=+(new URLSearchParams(location.search).get('t'))||(reduce?POSTER:0);
+let userPaused=reduce,visible=true,last=performance.now();
+const pp=document.getElementById('pp');
+function setPaused(v){userPaused=v;document.body.classList.toggle('paused',v);pp.textContent=v?'▶':'❚❚';pp.setAttribute('aria-label',v?'Play':'Pause')}
+setPaused(userPaused);
+pp.onclick=e=>{e.stopPropagation();setPaused(!userPaused)};
+stage.onclick=()=>setPaused(!userPaused);
+document.getElementById('rs').onclick=e=>{e.stopPropagation();cur=0;setPaused(false)};
+segs.onclick=e=>{
+  const r=segs.getBoundingClientRect();const x=(e.clientX-r.left)/r.width*TOTAL;
+  // a click jumps to the start of the chapter under the pointer
+  const sc=scenes.find(s=>x>=s.t0&&x<s.t0+s.dur)||scenes[0];cur=sc.t0;seek(cur);
+};
+addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();setPaused(!userPaused)}});
+if('IntersectionObserver' in window)new IntersectionObserver(es=>{visible=es[0].isIntersecting},{threshold:.2}).observe(stage);
+(function loop(now){
+  const dt=Math.min(.1,(now-last)/1000);last=now;
+  if(!userPaused&&visible&&!document.hidden){cur+=dt;if(cur>TOTAL+HOLD)cur=0;seek(cur)}
+  requestAnimationFrame(loop);
+})(performance.now());
+window.seek=seek;window.TOTAL=TOTAL;
+seek(cur);
+</script>
+</body>
+</html>
