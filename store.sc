@@ -1498,8 +1498,8 @@
   ;; depended on which build it was linked against. A wrong limit is now a
   ;; refusal at the door rather than a different answer.
   ;; `derived`, when given, is a procedure the caller supplies: given the
-  ;; state searched, it answers an editor's keywords for it as
-  ;; (<lookup: id -> ((("<word>" ...) <via>) ...) | #f> <tables read> <stale>).
+  ;; state searched, it answers #f (nothing to consult) or
+  ;; (<hook> <tables read> <stale>), the hook as store-search describes it.
   ;; This library does not read those tables itself; the caller does.
   (define (store-search-report store query limit . derived)
     (if (not (or (eq? limit #f)
@@ -1546,8 +1546,11 @@
            ;; only for a query that looks at blocks at all.
            (derived (and (pair? rest) (pair? (cdr rest)) (cadr rest) (pair? tokens)
                          ((cadr rest) state)))
-           (derived-words (if derived (car derived) (lambda (id) #f)))
-           ;; id -> the provenance of the derived words a hit was found by
+           ;; (hook <id> <author keywords> <score>) -> #f or
+           ;; (<row> <tier> (<via> ...) ("<word>" ...)); the rule for which
+           ;; blocks use an editor's words, and how, is the hook's.
+           (derived-words (if derived (car derived) (lambda (id kws score) #f)))
+           ;; id -> the provenances of the derived words a hit was found by
            (derived-used (make-hashtable string-hash string=?)))
       (if (null? tokens)
           (let ((none (prepared-end! (quote ()))))
@@ -1576,15 +1579,6 @@
                                ;; block whose keywords match is a better
                                ;; answer than one whose prose happens to.
                                (kws (field-strings block (quote keywords)))
-                               ;; HUMAN FIRST: A BLOCK WITH KEYWORDS OF ITS
-                               ;; AUTHOR'S IGNORES AN EDITOR'S. A block with
-                               ;; none is searched on the editor's words at
-                               ;; the source's tier, below any author's.
-                               (authored (exists (lambda (k) (> (string-length k) 0)) kws))
-                               ;; the editor's words in groups, one per fact:
-                               ;; ((("<word>" ...) <provenance>) ...)
-                               (dk (and alive (not authored) (derived-words id)))
-                               (dks (if dk (apply append (map car dk)) (quote ())))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
                                ;; ONE MATRIX, TWO PROJECTIONS OF IT.
@@ -1619,7 +1613,15 @@
                                (title-row (row field-tier titles))
                                (src-row (row field-tier srcs))
                                (kw-row (row field-tier kws))
-                               (dk-row (row field-tier dks))
+                               ;; AN EDITOR'S KEYWORDS, one call to the hook per
+                               ;; live block, scored as this search scores a
+                               ;; field; #f when the block has none to use.
+                               (dk (and alive
+                                        (derived-words id kws
+                                                       (lambda (strings)
+                                                         (let ((r (row field-tier strings)))
+                                                           (values r (collapse-field-row r)))))))
+                               (dk-row (if dk (car dk) (row field-tier (quote ()))))
                                ;; NEVER: AND THE THINGS ONLY A CODE BLOCK HAS.
                                ;; `names` is derived from the source rather
                                ;; than stored, so it is read from the view;
@@ -1665,7 +1667,7 @@
                                (title-tier (collapse-field-row title-row))
                                (src-tier (collapse-field-row src-row))
                                (kw-tier (collapse-field-row kw-row))
-                               (dk-tier (collapse-field-row dk-row))
+                               (dk-tier (and dk (cadr dk)))
                                (doc-tier (collapse-field-row doc-row))
                                (body-tier (collapse-field-row body-row))
                                (nm-tier (collapse-name-row name-row))
@@ -1677,13 +1679,9 @@
                                  (every-token-hit?
                                    (list title-row src-row kw-row dk-row
                                          name-row doc-row body-row)))
-                               ;; THE PROVENANCES OF THE GROUPS A TOKEN WAS FOUND
-                               ;; IN, not of every group the block has.
                                (ignored-derived
                                  (when (and alive every-token dk-tier)
-                                   (hashtable-set! derived-used id
-                                     (map cadr (filter (lambda (g) (collapse-field-row (row field-tier (car g))))
-                                                       dk))))))
+                                   (hashtable-set! derived-used id (caddr dk)))))
                           (loop (cdr ds)
                                 (if (and alive every-token)
                                     (cons (list id
@@ -1707,7 +1705,7 @@
                                                   ;; list to lines only lost
                                                   ;; that, and the row for it
                                                   ;; went red the same hour.
-                                                  (append kws dks titles
+                                                  (append kws (if dk (cadddr dk) (quote ())) titles
                                                           (apply append (map lines-of-text srcs))
                                                           names docs bodies srcs)
                                                   tokens)

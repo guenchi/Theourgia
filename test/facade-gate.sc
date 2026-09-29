@@ -676,7 +676,7 @@
 (want "S-B2b and these are the items sites the walk cannot follow"
       (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                  (cadr items-scan))
-      '((conflicts . store-conflicts) (diagnostics . map) (diff . store-diff) (read . map) (whereis . append)))
+      '((conflicts . store-conflicts) (diff . store-diff) (read . map) (whereis . append)))
 
 ;; THE THREE THINGS IT STILL CANNOT SEE, named rather than described as a
 ;; class:

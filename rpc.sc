@@ -627,44 +627,13 @@
                    (directory-entries dir))
            #t)))
 
-  ;; A DRAFT'S DIAGNOSTICS ARE COUNTED IN `drafts` once the writer has a
-  ;; table of them; a writer with no such table, or the writer named "-"
-  ;; (whose name is the committed tables'), gets the answer it always got.
-  ;; NO VIEW IS BUILT FOR A WRITER WITHOUT A TABLE: a drafts answer comes
-  ;; from the state it was given, and building the working view opens the
-  ;; log.
-  (define (with-draft-diagnostics store state writer answer)
-    (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
-                  (eq? (car (cadr answer)) 'items)))
-        answer
-        (let ((w (and (string? writer) (not (equal? writer "-"))
-                      (derived-tables? store 'diagnostics)
-                      ((derived 'derived-table-named?) store 'diagnostics writer)
-                      (working-state store state writer))))
-          (if (not (and (pair? w) (eq? 'ok (car w)) (not (equal? (cadr w) "-"))))
-              answer
-              ((derived 'drafts-with-diagnostics) store w answer)))))
-
-  ;; THE WRITER NAMED "-" CANNOT HAVE TABLES OF ITS OWN: "-" names the
-  ;; committed state's tables, so its working view would be judged against
-  ;; facts supplied for another view. The working readers refuse it.
-  (define reserved-writer '(error reserved-writer (writer "-")))
-
-  ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
-  ;; committed state's table ("-") against the committed state, or with
-  ;; --working the writer's table against the writer's working view.
-  ;; -> (ok (signature "<text>" | absent) [(stale <n>) (via ...)])
-  (define (read-signature store state writer id working?)
-    (let-values (((table-writer view)
-                  (if working?
-                      (let ((w (working-state store state writer)))
-                        (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
-                        (when (equal? (cadr w) "-") (raise reserved-writer))
-                        (values (cadr w) (caddr w)))
-                      (values "-" (reduction-for store state)))))
-      (cond ((not (state-read view id)) (unknown-id view id))
-            ((not (derived-tables? store 'signatures)) '(ok (signature absent)))
-            (else ((derived 'signature-answer) store table-writer view id)))))
+  ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
+  ;; its verbs use these definitions rather than copies of them.
+  (define (dispatch-helper name)
+    (case name
+      ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
+      ((reduction-for) reduction-for) ((count-argument) count-argument)
+      (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
   (define (one-write store actor intent req . check)
     (let ((answers (with-store-write store (lambda (state view) (list intent))
@@ -1123,18 +1092,20 @@
                     answer))))
       (cons 'drafts
             (lambda (store actor args req options state writer cwd)
-              (if (null? args) (with-draft-diagnostics store state writer (working-list store state writer))
+              (if (null? args)
+                  (let ((a (working-list store state writer)))
+                    ;; the answer's own refusals, and the writer "-", before
+                    ;; the derived directory is so much as listed
+                    (if (and (pair? a) (eq? (car a) 'ok) (string? writer) (not (equal? writer "-"))
+                             (derived-tables? store 'diagnostics))
+                        ((derived 'drafts-verb) dispatch-helper store state writer a)
+                        a))
                   (usage '(drafts ["--writer" <name>])))))
       (cons 'diagnostics
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(diagnostics ["--writer" <name>]))
-                  (let ((w (working-state store state writer)))
-                    (cond
-                      ((not (and (pair? w) (eq? 'ok (car w)))) w)
-                      ((equal? (cadr w) "-") reserved-writer)
-                      ((not (derived-tables? store 'diagnostics)) (items '()))
-                      (else (guarded (lambda () ((derived 'diagnostics-answer) store w)))))))))
+                  ((derived 'diagnostics-verb) dispatch-helper store args options state writer))))
       (cons 'discard
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
@@ -1178,19 +1149,9 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (= 2 (length args)))
                   (usage supply-usage)
-                  (let ((table-writer (or (argument-option options "--for") "-")))
-                    ;; #f from supply-command: the first argument names no kind
-                    (or (guarded
-                          (lambda ()
-                            ((derived 'supply-command) store (car args) (cadr args) table-writer
-                             (if (equal? table-writer "-")
-                                 (lambda () (reduction-for store state))
-                                 (lambda ()
-                                   (let ((w (working-state store state table-writer)))
-                                     (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
-                                     (caddr w))))
-                             (argument-option options "--clear"))))
-                        (usage supply-usage))))))
+                  ;; #f from the facts' library: the first argument names no kind
+                  (or ((derived 'supply-verb) dispatch-helper store args options state writer)
+                      (usage supply-usage)))))
       (cons 'def
             (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
@@ -1313,11 +1274,7 @@
                   ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
                                  ["--working"] ["--working-info"] ["--signature"])))
                   ((argument-option options "--signature")
-                   (if (or md? deep? (argument-option options "--working-info"))
-                       '(error bad-request incompatible-signature-options)
-                       (guarded (lambda ()
-                                  (read-signature store state writer (car rest)
-                                                  (argument-option options "--working"))))))
+                   ((derived 'read-signature-verb) dispatch-helper store (car rest) options state writer))
                   ((or (argument-option options "--working") (argument-option options "--working-info"))
                    (if (or md? deep?) '(error bad-request incompatible-working-options)
                        (working-read store state writer (car rest) (argument-option options "--working-info"))))
@@ -1431,13 +1388,7 @@
                 (if (or (not (= 1 (length args))) (and depth (not (count-argument depth)))
                         (and rel (= 0 (string-length rel))))
                     (usage '(reach <id> ["--rel" <rel>] ["--depth" <n>]))
-                    (guarded
-                      (lambda ()
-                        (let ((view (reduction-for store state)) (id (car args)))
-                          (if (not (state-read view id))
-                              (unknown-id view id)
-                              ((derived 'reach-answer) store view id (string->symbol (or rel "calls"))
-                               (if depth (count-argument depth) 1))))))))))
+                    ((derived 'reach-verb) dispatch-helper store args options state writer)))))
       ;; NEVER: A NAME CAN BE IN A LIBRARY WITHOUT BEING DEFINED THERE, AND
       ;; THE ANSWER SAYS WHICH IT IS. Three of this tree's own libraries
       ;; define nothing -- they re-export what igropyr defines -- so an answer
@@ -1516,7 +1467,7 @@
                                          ;; as before; #f when no table exists
                                          (lambda (st)
                                            (and (derived-tables? store 'signatures)
-                                                ((derived 'derived-keyword-table) store "-" st)))))
+                                                ((derived 'keyword-hook) store st)))))
                                     (hits (cdr (assq 'items r)))
                                     (omitted (cdr (assq 'omitted-hits r))))
                                (append (items (map (lambda (hit) (cons 'hit hit)) hits))

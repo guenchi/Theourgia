@@ -44,6 +44,7 @@
           table-file-name percent-encode read-supply-header
           signature-answer diagnostics-answer drafts-with-diagnostics outline-signatures
           refs-supplied reach-answer supply-command
+          supply-verb reach-verb diagnostics-verb read-signature-verb drafts-verb keyword-hook
           projection-range path-projection-key)
   (import (rnrs)
           (only (theourgia reduce) state-read reduce-applied-cut state-path-claimants)
@@ -55,7 +56,9 @@
                 unlink! directory-entries file-is-directory?)
           (only (theourgia wire) storable-encode storable-decode string->sexpr-extended
                 sexpr->string-extended)
-          (only (theourgia digest) sha256 bytevector->hex))
+          (only (theourgia digest) sha256 bytevector->hex)
+          (only (theourgia working) working-state)
+          (only (theourgia arguments) argument-option))
 
   ;; ---- names ----------------------------------------------------------------
 
@@ -738,4 +741,107 @@
       (cond ((not (memq kind derived-kinds)) #f)
             (clear? (clear-derived store kind path table-writer))
             (else (supply-derived store kind path table-writer view)))))
+
+  ;; ---- the verbs, whole, behind the dispatcher's one entry ------------------------
+  ;;
+  ;; `h` answers the dispatcher's own helpers by name -- guarded, items,
+  ;; unknown-id, reduction-for, count-argument -- so each keeps one
+  ;; definition, the dispatcher's, and this library uses it rather than a copy.
+
+  (define reserved-writer '(error reserved-writer (writer "-")))
+
+  ;; `supply <kind> <file>`, its arguments' count already checked by the
+  ;; dispatcher; #f when <kind> names no kind, for the usage form.
+  (define (supply-verb h store args options state writer)
+    (let ((table-writer (or (argument-option options "--for") "-")))
+      ((h 'guarded)
+       (lambda ()
+         (supply-command store (car args) (cadr args) table-writer
+                         (if (equal? table-writer "-")
+                             (lambda () ((h 'reduction-for) store state))
+                             (lambda ()
+                               (let ((w (working-state store state table-writer)))
+                                 (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                                 (caddr w))))
+                         (argument-option options "--clear"))))))
+
+  ;; `reach <id> [--rel <rel>] [--depth <n>]`, its arguments already
+  ;; checked by the dispatcher, where the usage form is written.
+  (define (reach-verb h store args options state writer)
+    (let ((count-argument (h 'count-argument))
+          (rel (argument-option options "--rel")) (depth (argument-option options "--depth")))
+      ((h 'guarded)
+       (lambda ()
+         (let ((view ((h 'reduction-for) store state)) (id (car args)))
+           (if (not (state-read view id))
+               ((h 'unknown-id) view id)
+               (reach-answer store view id (string->symbol (or rel "calls"))
+                             (if depth (count-argument depth) 1))))))))
+
+  ;; `diagnostics [--writer <name>]`, its arguments already checked by the
+  ;; dispatcher.
+  (define (diagnostics-verb h store args options state writer)
+    (let ((w (working-state store state writer)))
+      (cond
+        ((not (and (pair? w) (eq? 'ok (car w)))) w)
+        ((equal? (cadr w) "-") reserved-writer)
+        ((null? (table-names store 'diagnostics (cadr w))) ((h 'items) '()))
+        (else ((h 'guarded) (lambda () (diagnostics-answer store w)))))))
+
+  ;; `read <id> --signature`: from the committed state's table ("-")
+  ;; against the committed state, or with --working the writer's table
+  ;; against the writer's working view.
+  (define (read-signature-verb h store id options state writer)
+    (if (or (argument-option options "--md") (argument-option options "--recursive")
+            (argument-option options "--working-info"))
+        '(error bad-request incompatible-signature-options)
+        ((h 'guarded)
+         (lambda ()
+           (let-values (((table-writer view)
+                         (if (argument-option options "--working")
+                             (let ((w (working-state store state writer)))
+                               (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                               (when (equal? (cadr w) "-") (raise reserved-writer))
+                               (values (cadr w) (caddr w)))
+                             (values "-" ((h 'reduction-for) store state)))))
+             (if (not (state-read view id))
+                 ((h 'unknown-id) view id)
+                 (signature-answer store table-writer view id)))))))
+
+  ;; `drafts`, once a diagnostics table of some writer exists: the answer
+  ;; working-list gave, with each draft's count when this writer has a table
+  ;; of its own. A writer without one, or the writer named "-" (whose name
+  ;; is the committed tables'), gets the answer it always got, and no view
+  ;; is built for it: building the working view opens the log.
+  (define (drafts-verb h store state writer answer)
+    (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+                  (eq? (car (cadr answer)) 'items)
+                  (string? writer) (not (equal? writer "-"))
+                  (derived-table-named? store 'diagnostics writer)))
+        answer
+        (let ((w (working-state store state writer)))
+          (if (not (and (pair? w) (eq? 'ok (car w)) (not (equal? (cadr w) "-"))))
+              answer
+              (drafts-with-diagnostics store w answer)))))
+
+  ;; SEARCH'S HOOK FOR AN EDITOR'S KEYWORDS, one call per block:
+  ;; (hook <id> <author keyword strings> <score>) -> #f, or
+  ;; (<row> <tier> (<via> ...) ("<word>" ...)): `score` is the search's own
+  ;; scoring of a list of strings, (values <row> <tier>). Human first: a
+  ;; block with keywords of its author's answers #f, whatever it was
+  ;; supplied. The provenances are those of the facts whose words a token
+  ;; was found in, not every fact the block has.
+  ;; -> (list <hook> <tables read> <stale>)
+  (define (keyword-hook store view)
+    (let* ((t (derived-keyword-table store "-" view)) (lookup (car t)))
+      (list (lambda (id kws score)
+              (and (not (exists (lambda (k) (> (string-length k) 0)) kws))
+                   (let ((groups (lookup id)))
+                     (and groups
+                          (let ((words (apply append (map car groups))))
+                            (let-values (((row tier) (score words)))
+                              (list row tier
+                                    (map cadr (filter (lambda (g) (let-values (((r t) (score (car g)))) t)) groups))
+                                    words)))))))
+            (cadr t) (caddr t))))
 )

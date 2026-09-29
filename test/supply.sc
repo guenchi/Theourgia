@@ -1245,10 +1245,10 @@
       '(#t #t))
 
 ;; ==== the command line loads the facts' library only when it needs it ====
-;; A process of its own: on a store with no table, read (with --signature),
-;; outline (with --with-signatures), search, refs and drafts answer without
-;; loading (theourgia derived); a supply loads it. The library list of the
-;; process says which.
+;; A process of its own: on a store with no table, read, outline (with
+;; --with-signatures), search, refs and drafts answer without loading
+;; (theourgia derived); read --signature, an option that asks for a fact,
+;; loads it. The library list of the process says which.
 (define (probe-load-text st)
   (string-append
     "(import (chezscheme) (theourgia rpc))\n"
@@ -1258,12 +1258,12 @@
     "(ask 'init)\n"
     "(define ev (cdr (assq 'events (cdr (ask 'insert \"--under\" \"root\" \"--title\" \"x\" \"--text\" \"a word\")))))\n"
     "(define id (string-append (car (car (car ev))) \".\" (number->string (cdr (car (car ev))))))\n"
-    "(ask 'read id \"--signature\") (ask 'outline \"--with-signatures\") (ask 'search \"word\")\n"
+    "(ask 'read id) (ask 'outline \"--with-signatures\") (ask 'search \"word\")\n"
     "(ask 'refs id) (ask 'drafts \"--writer\" \"w1\")\n"
     "(define before (loaded?))\n"
-    "(ask 'supply \"signatures\" \"/nonexistent/supply.sexp\")\n"
+    "(ask 'read id \"--signature\")\n"
     "(write (list before (loaded?)))\n"))
-(want "startup: with no table, read --signature, outline --with-signatures, search, refs and drafts load no (theourgia derived); a supply does"
+(want "startup: with no table, read, outline --with-signatures, search, refs and drafts load no (theourgia derived); read --signature does"
       (let* ((d (fresh-dir! "load")) (f (string-append d "/probe.ss")) (out (string-append d "/out.txt")))
         (write! f (probe-load-text (string-append d "/store")))
         (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' scheme --script '" f "' > '" out
