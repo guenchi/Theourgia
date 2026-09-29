@@ -163,7 +163,11 @@
   ;; waits for go exactly as the worker does; after go it becomes the
   ;; interpreter, so what arrives on stdout and stderr is the interpreter's
   ;; raw output and is collected as bytes. The spec carries the launcher's
-  ;; absolute path, the interpreter's argv, the cwd and the environment.
+  ;; absolute path, the interpreter's argv, the cwd, the launcher's own
+  ;; environment, and the runner's environment pairs (runner-env, each
+  ;; "NAME=VALUE"), which travel in the launcher's argv as --env so that
+  ;; the launcher applies them after it clears its environment for the
+  ;; interpreter, and none of them reaches the launcher's own loading.
   (define (supervise-runner spec)
     (let* ((timeout-ms (spec-of spec 'timeout-ms))
            (memory-bytes (spec-of spec 'memory-bytes))
@@ -172,7 +176,10 @@
            (me self)
            (pid (spawn-worker! (spec-of spec 'scheme)
                                (append (list "scheme" "--script" (spec-of spec 'launcher)
-                                             (number->string cpu-seconds) "--")
+                                             (number->string cpu-seconds))
+                                       (apply append (map (lambda (p) (list "--env" p))
+                                                          (or (spec-of spec 'runner-env) '())))
+                                       (list "--")
                                        (spec-of spec 'runner-argv))
                                (list (cons 'cwd (spec-of spec 'cwd)) (cons 'env (spec-of spec 'env)))
                                me)))

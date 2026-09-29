@@ -183,6 +183,29 @@
   (define (expand-argv argv file dir)
     (map (lambda (a) (cond ((string=? a "{file}") file) ((string=? a "{dir}") dir) (else a))) argv))
 
+  ;; THE RUNNER'S ENVIRONMENT PAIRS, as "NAME=VALUE". In a value "{file}",
+  ;; "{dir}" and "{libdirs}" -- the launcher's own library path, as written
+  ;; for it above -- are replaced WHEREVER THEY OCCUR, not only as the whole
+  ;; value as in argv: a value is a path list, and the projection is joined
+  ;; to other directories inside it. One scan, left to right; what a
+  ;; placeholder is replaced by is not scanned again.
+  (define (expand-value v file dir)
+    (let ((places (list (cons "{file}" file) (cons "{dir}" dir)
+                        (cons "{libdirs}" (launcher-library-directories))))
+          (n (string-length v)))
+      (let loop ((i 0) (out '()))
+        (if (= i n)
+            (apply string-append (reverse out))
+            (let ((hit (find (lambda (p)
+                               (let ((k (string-length (car p))))
+                                 (and (<= (+ i k) n) (string=? (substring v i (+ i k)) (car p)))))
+                             places)))
+              (if hit
+                  (loop (+ i (string-length (car hit))) (cons (cdr hit) out))
+                  (loop (+ i 1) (cons (string (string-ref v i)) out))))))))
+  (define (expand-env env file dir)
+    (map (lambda (p) (string-append (car p) "=" (expand-value (cadr p) file dir))) env))
+
   ;; REMOVED DEPTH FIRST through the door, so the injection build can make a
   ;; removal fail (unlink-fail@eval-cleanup).
   ;;
@@ -250,6 +273,7 @@
   (define (in-scratch key lang source options working)
     (let* ((runner (language-runner (language-for-name lang)))
            (argv (cadr (assq 'argv runner)))
+           (env (let ((e (assq 'env runner))) (if e (cadr e) '())))
            (source-name (cadr (assq 'source-name runner)))
            (given-root (absolute (run-root))))
       (mkdir-p! given-root)
@@ -270,13 +294,13 @@
                         (lambda ()
                           (mkdir-p! tree)
                           (mkdir-p! source-dir)
-                          (project-and-run key lang source options working argv tree file))
+                          (project-and-run key lang source options working argv env tree file))
                         (lambda () (cleanup! dir)))))))))))
 
   ;; THE VIEW THE EXPORT READS, and the cut it used: the writer's working
   ;; view with --working (its baseline under its drafts), otherwise the
   ;; committed state now, loaded under the evaluation's key.
-  (define (project-and-run key lang source options working argv tree file)
+  (define (project-and-run key lang source options working argv env tree file)
     (let* ((seen #f)
            ;; A STORE THAT CANNOT BE LOADED AT ALL -- meta.sexp missing or
            ;; not a store's -- raises a log-error, which no answer here
@@ -297,6 +321,7 @@
             (overwrite-entry! file (string->utf8 source))
             (let ((answer (supervise-eval
                             (list (cons 'runner-argv (expand-argv argv file tree))
+                                  (cons 'runner-env (expand-env env file tree))
                                   (cons 'launcher (option-of options 'launcher))
                                   (cons 'scheme (option-of options 'scheme))
                                   (cons 'cwd tree)

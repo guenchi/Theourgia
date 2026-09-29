@@ -14,7 +14,8 @@
 ;; limitations under the License.
 (library (theourgia languages)
   (export language-table register-language! language-for-path
-    language-for-name language-property language-runner runner-valid?)
+    language-for-name language-property language-runner runner-valid?
+    override-valid? runner-problem runner-with-override checked-catalogue)
   ;; The entry accessor moved to (theourgia markers), which
   ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
   ;; (theourgia wire), and nothing else. That, not "it imports nothing",
@@ -23,8 +24,100 @@
   ;; caller of this library changed. See markers.sc for why.
   (import (only (theourgia markers) language-property)
           (rnrs))
+  ;; HOW `eval --lang` RUNS A SOURCE IN THIS LANGUAGE, or #f: an alist of
+  ;; (argv <strings>), (source-name <one path component>) and, optionally,
+  ;; (env ((<name> <value>) ...)). argv is a list, never a shell string;
+  ;; "{file}" in it stands for the source's absolute path and "{dir}" for
+  ;; the projection directory, each as a whole argument. env's pairs are
+  ;; added to the interpreter's environment after it is cleared to PATH,
+  ;; HOME and LANG, so none of those three can be named; in a value
+  ;; "{file}", "{dir}" and "{libdirs}" (the launcher's own library path) are
+  ;; replaced wherever they occur. A language with no runner is answered
+  ;; no-runner.
+  (define (language-runner entry) (language-property entry 'runner #f))
+
+  ;; NEVER: NO NUL IN ANYTHING THAT CROSSES THE EXEC. The interpreter's
+  ;; argv and environment are handed over as C strings, which end at the
+  ;; first NUL, so a string holding one would reach the interpreter as a
+  ;; different, shorter string.
+  (define (nul-free? s) (not (memv #\nul (string->list s))))
+  ;; argv[0] is the interpreter: an empty name would be looked up as
+  ;; nothing and answered interpreter-missing, far from its cause.
+  (define (runner-argv-valid? a)
+    (and (list? a) (pair? a) (for-all string? a) (for-all nul-free? a)
+         (> (string-length (car a)) 0)))
+  (define (runner-source-name-valid? n)
+    (and (string? n) (> (string-length n) 0)
+         (not (member n '("." "..")))
+         (not (memv #\/ (string->list n)))
+         (nul-free? n)))
+  (define (runner-env-valid? e)
+    (and (list? e)
+         (for-all
+           (lambda (p)
+             (and (list? p) (= (length p) 2) (string? (car p)) (string? (cadr p))
+                  (let ((name (car p)))
+                    (and (> (string-length name) 0)
+                         (not (memv #\= (string->list name)))
+                         (nul-free? name)
+                         (not (member name '("PATH" "HOME" "LANG")))))
+                  (nul-free? (cadr p))))
+           e)))
+  (define runner-field-checks
+    (list (cons 'argv runner-argv-valid?)
+          (cons 'source-name runner-source-name-valid?)
+          (cons 'env runner-env-valid?)))
+
+  ;; -> #f when `r` is a runner of this shape holding every field in
+  ;; `required`, else the name of what is wrong: `runner` when it is not a
+  ;; list of (<field> <value>), otherwise the first field that is unknown,
+  ;; repeated, missing or whose value its check refuses.
+  (define (runner-problem r required)
+    (if (not (and (list? r)
+                  (for-all (lambda (e) (and (list? e) (= (length e) 2) (symbol? (car e)))) r)))
+        'runner
+        (let ((keys (map car r)))
+          (cond
+            ((find (lambda (k) (not (assq k runner-field-checks))) keys) => (lambda (k) k))
+            ((let repeated ((ks keys))
+               (and (pair? ks) (if (memq (car ks) (cdr ks)) (car ks) (repeated (cdr ks)))))
+             => (lambda (k) k))
+            ((find (lambda (k) (not (assq k r))) required) => (lambda (k) k))
+            ((find (lambda (e) (not ((cdr (assq (car e) runner-field-checks)) (cadr e)))) r)
+             => (lambda (e) (car e)))
+            (else #f)))))
+  (define (runner-valid? r) (not (runner-problem r '(argv source-name))))
+  ;; AN OPERATOR'S OVERRIDE names any non-empty set of the fields, each held
+  ;; to the same check as the table's.
+  (define (override-valid? r) (and (pair? r) (not (runner-problem r '()))))
+
+  ;; THE TABLE'S RUNNER WITH AN OVERRIDE IN PLACE, FIELD BY FIELD: a field
+  ;; the override names replaces the table's whole -- env included, whose
+  ;; pairs are not merged one by one, so (env ()) empties it -- and the
+  ;; table's other fields stay.
+  (define (runner-with-override runner override)
+    (append (map (lambda (f) (or (assq (car f) override) f)) runner)
+            (filter (lambda (f) (not (assq (car f) runner))) override)))
+
+  ;; NEVER: THE BUILT-IN TABLE IS HELD TO THE CHECK register-language!
+  ;; APPLIES. The table is built through this constructor, so an entry
+  ;; whose runner the check would refuse stops the library's load with the
+  ;; entry and the field named, instead of running as a runner the table
+  ;; could never have accepted.
+  (define (checked-catalogue entries)
+    (for-each
+      (lambda (e)
+        (let ((r (language-runner e)))
+          (when (and r (not (runner-valid? r)))
+            (assertion-violation 'checked-catalogue
+              "Invalid runner in the language table"
+              (language-property e 'lang #f)
+              (runner-problem r '(argv source-name))))))
+      entries)
+    (vector entries))
+
   (define catalog
-    (vector
+    (checked-catalogue
       '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls"))
           (line-comment ";;") (block-comment ("#|" "|#"))
           (def-heads
@@ -201,22 +294,6 @@
         (lambda (e)
           (member extension (language-property e 'extensions '())))
         (language-table))))
-  ;; HOW `eval --lang` RUNS A SOURCE IN THIS LANGUAGE, or #f: an alist of
-  ;; exactly (argv <strings>) and (source-name <one path component>). argv
-  ;; is a list, never a shell string; "{file}" in it stands for the source's
-  ;; absolute path and "{dir}" for the projection directory. A language with
-  ;; no runner is answered no-runner.
-  (define (language-runner entry) (language-property entry 'runner #f))
-  (define (runner-valid? r)
-    (and (list? r) (= (length r) 2)
-         (for-all (lambda (e) (and (pair? e) (pair? (cdr e)) (null? (cddr e)))) r)
-         (let ((argv (assq 'argv r)) (name (assq 'source-name r)))
-           (and argv name
-                (list? (cadr argv)) (pair? (cadr argv)) (for-all string? (cadr argv))
-                (let ((n (cadr name)))
-                  (and (string? n) (> (string-length n) 0)
-                       (not (member n '("." "..")))
-                       (not (memv #\/ (string->list n)))))))))
   (define (register-language! entry)
     (unless (and (list? entry)
                  (string? (language-property entry 'lang #f))

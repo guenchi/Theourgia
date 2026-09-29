@@ -15,7 +15,7 @@
 
 ;; The runner's launcher: the first of the two stages of `eval --lang`.
 ;;
-;;     scheme --script eval-runner-exec.sc <cpu-seconds> -- <interpreter argv...>
+;;     scheme --script eval-runner-exec.sc <cpu-seconds> [--env NAME=VALUE]... -- <interpreter argv...>
 ;;
 ;; started by the supervisor with its cwd in the projection's tree/ and an
 ;; environment of PATH, HOME, LANG and the Chez library path, nothing else.
@@ -29,8 +29,9 @@
 ;;   2. a session of its own and the CPU ceiling (isolate-evaluation!);
 ;;   3. `(ready <pgid>)`;
 ;;   4. `go`, read from stdin -- nothing runs before it;
-;;   5. the environment is replaced by PATH, HOME and LANG alone, and the
-;;      interpreter replaces this process. If exec returns anyway (the file
+;;   5. the environment is replaced by PATH, HOME and LANG alone, then the
+;;      runner's --env pairs are added to it, and the interpreter replaces
+;;      this process. If exec returns anyway (the file
 ;;      changed between the check and the exec), this exits 127 with no
 ;;      output, which the supervisor reports as the runner's own exit data:
 ;;      the one answer the evaluated side could also produce.
@@ -40,12 +41,37 @@
 
 (define args (cdr (command-line)))
 
-;; <cpu-seconds> -- <interpreter> <arg>...
+;; <cpu-seconds> [--env NAME=VALUE]... -- <interpreter> <arg>...
+;;
+;; NEVER: EVERYTHING AFTER THE FIRST STANDALONE "--" IS THE INTERPRETER'S,
+;; VERBATIM. The pairs are read up to it and not beyond, so an interpreter
+;; argument spelled "--env" or "--" means nothing here. The pairs are the
+;; runner's environment; they are applied after the clear below and never
+;; to this program's own startup, whose library path is the calling
+;; process's (eval-runner.sc).
 (define (usage-exit) (exit 2))
-(unless (and (>= (length args) 3) (string=? (cadr args) "--")) (usage-exit))
+(unless (pair? args) (usage-exit))
 (define cpu-seconds (string->number (car args)))
 (unless (and cpu-seconds (exact? cpu-seconds) (integer? cpu-seconds) (> cpu-seconds 0)) (usage-exit))
-(define interpreter-argv (cddr args))
+(define-values (env-pairs interpreter-argv)
+  (let loop ((rest (cdr args)) (pairs '()))
+    (cond ((null? rest) (usage-exit))
+          ((string=? (car rest) "--") (values (reverse pairs) (cdr rest)))
+          ((and (string=? (car rest) "--env") (pair? (cdr rest))) (loop (cddr rest) (cons (cadr rest) pairs)))
+          (else (usage-exit)))))
+(when (null? interpreter-argv) (usage-exit))
+
+;; A PAIR IS NAME=VALUE, split at its first "=", with a name that is not
+;; empty. One that is not exits 3 before ready: the supervisor never sends
+;; one (the runner was checked before it spawned this), and before ready
+;; nothing the evaluated side controls has run, so the status is still
+;; unforgeable.
+(define (pair-valid? p)
+  (let loop ((i 0))
+    (cond ((= i (string-length p)) #f)
+          ((char=? (string-ref p i) #\=) (> i 0))
+          (else (loop (+ i 1))))))
+(unless (for-all pair-valid? env-pairs) (exit 3))
 (define interpreter (car interpreter-argv))
 
 (define (split-colons s)
@@ -90,5 +116,5 @@
           (else (loop (cdr names) acc)))))
 
 (guard (e (#t (exit 127)))
-  (exec-argv-env! resolved interpreter-argv kept-environment))
+  (exec-argv-env! resolved interpreter-argv (append kept-environment env-pairs)))
 (exit 127)
