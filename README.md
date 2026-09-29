@@ -1771,8 +1771,10 @@ adding a word to that argv.
 
 `eval --lang <language> <source>` runs the source with the RUNNER the
 language table names for that language -- `node` for `javascript`,
-`python3` for `python`, `sh` for `shell` -- over a projection of the store.
-`--lang scheme` is the evaluation above, unchanged, with all its options.
+`python3` for `python`, `sh` for `shell`, `scheme --script` for `chez` --
+over a projection of the store. `--lang scheme` is the evaluation above,
+unchanged, with all its options; `--lang chez` runs Scheme outside that
+sandbox (below).
 
 **Runners are off** unless the operator sets `THEOURGIA_RUNNERS=on` in the
 environment of the process that runs `eval`; otherwise the answer is
@@ -1784,8 +1786,9 @@ environment is inherited. The launcher that starts it is a Scheme program;
 it finds its libraries where the calling process found its own -- its
 `CHEZSCHEMELIBDIRS` and `CHEZSCHEMELIBEXTS` are written from that process's
 library directories (made absolute) and extensions, never from its
-environment -- so nothing the projection holds is ever loaded as a
-library.
+environment -- so nothing the projection holds is ever loaded as a library
+by the launcher; a runner configured to search it, as `chez` is, loads from
+it after exec, and that is the runner's reach.
 
 The store is projected by `export-code` with raw bytes (no markers) -- the
 committed state, or with `--working` the writer's working view -- into
@@ -1858,6 +1861,67 @@ directory whose name holds `:` is one, when the libraries are found by the
 default `.`) -- or that holds a NUL character. If the interpreter
 disappears between that check and its start, the answer is `(exit 127)` --
 the one answer a runner could also produce itself.
+
+A runner is an `argv`, a `source-name` and, optionally, an `env`: a list of
+`(<name> <value>)` pairs added to the interpreter's environment after it is
+cleared to `PATH`, `HOME` and `LANG` (those three cannot be named). In
+`argv`, `{file}` and `{dir}` are replaced only as whole arguments; in an
+`env` value, `{file}`, `{dir}` and `{libdirs}` -- the launcher's own library
+path, as written for it -- are replaced wherever they occur, since a value
+is a path list. No string of a runner may hold a NUL character, and the
+interpreter's name may not be empty.
+
+#### `--lang chez`: Scheme outside the sandbox
+
+`chez` runs Scheme source with the interpreter or compiler the operator
+configures, over the projection, with the libraries the store holds on its
+path: a library imported with `import-code` (`lib/a.sc` holding
+`(library (lib a) ...)`) is reached by `(import (lib a))`. It claims no file
+extension; files stay `scheme`'s, and `--lang scheme` stays the sandbox.
+Its default runner is
+
+    (runner ((argv ("scheme" "--script" "{file}")) (source-name "__eval.ss")
+             (env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")
+                   ("CHEZSCHEMELIBEXTS" ".sc:.ss:.sls:.scm")))))
+
+so the projection is searched first and then the calling process's own
+library directories, and `.sc` comes first among the extensions (single
+colons: in Chez `a::b` pairs a source extension with an object one). It is
+behind the same gate as every other runner, with the same answer, limits,
+`--working`, refusals and cleanup, and it reaches whatever the operator's
+Chez reaches on the machine.
+
+The operator configures it with `THEOURGIA_RUNNER_CHEZ`, read from the
+environment of the process that runs `eval` and never from the store:
+one datum naming any of `argv`, `source-name` and `env`. The fields it
+names replace the table's, field by field, and a named field replaces the
+table's whole: `(env ())` leaves the interpreter `PATH`, `HOME` and `LANG`
+alone. An empty value is unset. A value that is not exactly one datum, or
+that a runner's checks refuse, answers `(error bad-request (reason
+runner-config-invalid) (variable "THEOURGIA_RUNNER_CHEZ") (detail ...))`,
+naming the field (`(detail (field argv))`) or `(detail not-one-datum)`, and
+nothing runs: a default never runs in place of what the operator named. An
+interpreter:
+
+    THEOURGIA_RUNNER_CHEZ='((argv ("petite" "--script" "{file}")))'
+
+A compiler pipeline is an `argv` too. Since `{file}` is replaced only as a
+whole argument, it goes to the shell as `$1`:
+
+    THEOURGIA_RUNNER_CHEZ='((argv ("sh" "-c" "goeteia build \"$1\" && ./a.out" "compile" "{file}")))'
+
+theourgia adds no build step and no cache, and removes only `eval-<token>/`:
+what a pipeline writes elsewhere is the operator's. Pointing `chez` at
+another implementation means replacing `argv`, `env` and `source-name`. A
+store cannot choose the runner or what the launcher loads; but a projected
+library the source imports runs with the runner's reach, which is what this
+runner is for.
+
+When the runner's `CHEZSCHEMELIBDIRS` names `{dir}` and the projection's
+directory, as resolved at the claim, cannot be carried in that variable (a
+run root whose path holds `:`), the answer is `(error spawn-refused (reason
+projection-directory-unrepresentable) (directory <d>))`, before anything is
+exported, and the claimed `eval-<token>/` is removed.
 
 ## Serving a store
 
@@ -1982,6 +2046,7 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |
+| `THEOURGIA_RUNNER_CHEZ` | `eval-runner.sc` | the operator's runner for `eval --lang chez`: one datum naming any of `argv`, `source-name` and `env`, each replacing the language table's field whole. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
