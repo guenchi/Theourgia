@@ -327,7 +327,7 @@
            (argument-option nodes "--latest"))
        "")
       (else
-       (let ((answer (working-baseline store #f (argument-option nodes "--writer"))))
+       (let ((answer (working-baseline store #f (eval-writer nodes))))
          (cond
            ((and (pair? answer) (eq? 'ok (car answer)) (pair? (caddr answer)))
             (cut->text (caddr answer)))
@@ -388,13 +388,39 @@
   (if (not (argument-option nodes "--working"))
       (list 'working #f #f '())
       (let* ((state (open-and-reduce store))
-             (answer (working-snapshot store state (argument-option nodes "--writer"))))
+             (answer (working-snapshot store state (eval-writer nodes))))
         (if (and (pair? answer) (eq? 'ok (car answer)))
             (list 'working (cadr answer) cut (caddr answer))
             ;; A REFUSAL IS THE EVAL'S ANSWER (F100b, D19), answered by the
             ;; caller with `(during view)`; it was carried as an empty view
             ;; and the source ran against nothing.
             (list 'refused answer)))))
+
+;; THE MODE AN EVALUATION ANSWERS IN: `--wire` on its command line, else
+;; THEOURGIA_WIRE=1 in its environment. The variable exists for a caller
+;; that runs this program as a child and must not add a word to the
+;; caller's own argv -- the MCP shell, whose child's argv is the tool
+;; call's argv and nothing else -- and it is read for `eval` only: every
+;; other verb's mode is its own `--wire`, as before. A parse error is
+;; answered in the variable's mode, since an argv that did not parse
+;; cannot be trusted to say where `--wire` is.
+(define (environment-wire?) (equal? (getenv "THEOURGIA_WIRE") "1"))
+(define (eval-wire? nodes)
+  (or (and (argument-option nodes "--wire") #t) (environment-wire?)))
+
+;; THE WRITER AN EVALUATION'S VIEW IS FOR, BY THE DISPATCHER'S RULE: an
+;; explicit `--writer`, else THEOURGIA_WRITER when it is set and not empty,
+;; and never the actor. Every place eval asks -- the cut's baseline, the
+;; working view, a foreign runner's projection -- asks here, so the two
+;; branches cannot come to different writers. With neither there is no
+;; writer, and `--working` is refused writer-required, as before.
+;;
+;; NOTE: A CHANGE TO THE COMMAND LINE, deliberately: `eval --working` with
+;; THEOURGIA_WRITER set and no `--writer` used to refuse writer-required,
+;; because eval read `--writer` from argv alone, while every other verb
+;; took the variable. It now selects that writer, as they do.
+(define (eval-writer nodes)
+  (or (argument-option nodes "--writer") (environment-writer)))
 
 ;; NOTE: `eval-usage` IS rpc.sc'S, imported with the rest of that library.
 ;; It moved there when the catalogue began to publish eval's entry (route
@@ -420,7 +446,7 @@
 ;; the runner projects the committed state or the writer's working view, so
 ;; a cut and a library have nothing to name.
 (define (eval-foreign-and-exit! nodes lang key heard timeout memory output)
-  (let* ((wire? (argument-option nodes "--wire"))
+  (let* ((wire? (eval-wire? nodes))
          (done (lambda (a) (finish (with-heard-clause a (heard)) wire?)))
          (entry (language-for-name lang)))
     (cond
@@ -453,7 +479,7 @@
                              ((later '(theourgia eval-runner) 'run-foreign-eval)
                                key lang source
                                (list (cons 'working? (argument-option nodes "--working"))
-                                     (cons 'writer (argument-option nodes "--writer"))
+                                     (cons 'writer (eval-writer nodes))
                                      (cons 'timeout-ms timeout)
                                      (cons 'memory-bytes memory)
                                      (cons 'output-bytes output)
@@ -474,7 +500,7 @@
     (if (and (pair? nodes) (eq? (car nodes) 'error))
         (finish (list 'error 'bad-request '(reason eval-arguments)
                       (list 'usage eval-usage))
-                #f)
+                (environment-wire?))
         (let ((timeout (eval-number nodes "--timeout-ms" 3000 1 60000))
               (memory (eval-number nodes "--memory-bytes" 268435456 1048576 2147483648))
               (output (eval-number nodes "--output-bytes" 65536 128 1048576))
@@ -484,7 +510,7 @@
              (eval-foreign-and-exit! nodes (foreign-lang nodes) key heard timeout memory output)
          (let ((cut (eval-cut nodes key))
               (under (or (argument-option nodes "--under") ""))
-              (wire? (argument-option nodes "--wire")))
+              (wire? (eval-wire? nodes)))
           (cond
             ;; NEVER: TWO ANSWERS TO ONE QUESTION. `--cut` names a coordinate
             ;; and `--latest` asks for whichever one is current; a rule
@@ -611,7 +637,8 @@
   ;; this process's mutation-record scope, and a filesystem condition that
   ;; leaves it is answered by (theourgia answers)' table with that record,
   ;; on stdout, exit 1; before, it left as an uncaught exception, exit 255.
-  (let ((wire-flag (and (member "--wire" argv) #t)))
+  (let ((wire-flag (or (and (member "--wire" argv) #t)
+                       (and (pair? argv) (string=? (car argv) "eval") (environment-wire?)))))
   (with-mutation-record (lambda ()
   (guard (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag))))
   ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which

@@ -1524,6 +1524,21 @@ with `(error bad-request (reason cut-and-latest) ...)` rather than
 resolved by a precedence rule -- a rule would make one of the two
 spellings silently do nothing.
 
+**Whose working view.** `--writer <name>` names the writer; without it,
+`THEOURGIA_WRITER` when it is set and not empty; never the actor -- the
+rule every other draft verb follows, and the same in the cut, the view and a
+`--lang` runner's projection. With neither, `--working` is refused
+`writer-required`, `(during cut)`, or `(during view)` under `--latest`.
+NOTE: A change: `eval` used to read `--writer` alone, so `eval --working`
+with `THEOURGIA_WRITER` set and no `--writer` was refused `writer-required`;
+it now reads that writer's drafts.
+
+**The answer's mode.** `--wire` on the command line, else
+`THEOURGIA_WIRE=1` in the environment, and for `eval` only. The variable is
+for a caller that runs `core.sc` as its child and passes the caller's
+argv through untouched -- the MCP shell does -- so the mode travels without
+adding a word to that argv.
+
 #### `--lang`: another language
 
 `eval --lang <language> <source>` runs the source with the RUNNER the
@@ -1716,10 +1731,11 @@ the transport's tag rather than on the answer's text.
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. No source file here reads them; `eval --lang` WRITES them for its launcher, from the running process's own library directories and extensions (see `--lang`). |
 | `THEOURGIA_STORE` | `core.sc`, `theourgiad.sc` | the store to use when `--store` is absent. Falls back to `.` |
 | `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
-| `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
+| `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes, `eval --working`'s view included. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire` |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`) |
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |

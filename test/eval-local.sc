@@ -611,8 +611,11 @@
 ;; the answer too, not only working-unavailable: no --writer, and a
 ;; writer id that is not well formed.
 (let ((s (m1-store!)))
-  (want "P3-h eval --working with no --writer: writer-required is the answer, (during cut), rc 1"
-        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--store" s "(+ 1 2)"))
+  ;; NO WRITER AT ALL, which now means no --writer AND no THEOURGIA_WRITER:
+  ;; eval takes the variable when --writer is absent, so the fixture's own
+  ;; environment is cleared here to keep asking the case this row is about.
+  (want "P3-h eval --working with no --writer and THEOURGIA_WRITER cleared: writer-required is the answer, (during cut), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=" "../core.sc" (list "eval" "--working" "--store" s "(+ 1 2)"))
         '(1 (error writer-required (during cut))))
   ;; A well-formed id the store does not have is a writer with no drafts
   ;; (its view is empty and the eval answers ok); the refusal is for an id
@@ -622,8 +625,8 @@
         '(1 (error bad-request invalid-working-writer (during cut))))
   ;; The same two refusals met by eval-view (--latest reads no cut), so a
   ;; view that dropped them would show (F100b M1 review r2, F2).
-  (want "P3-h-view eval --working --latest with no --writer: writer-required is the answer, (during view), rc 1"
-        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--store" s "(+ 1 2)"))
+  (want "P3-h-view eval --working --latest with no --writer and THEOURGIA_WRITER cleared: writer-required is the answer, (during view), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=" "../core.sc" (list "eval" "--working" "--latest" "--store" s "(+ 1 2)"))
         '(1 (error writer-required (during view))))
   (want "P3-i-view eval --working --latest naming a writer id that is not one: invalid-working-writer is the answer, (during view), rc 1"
         (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" "BAD" "--store" s "(+ 1 2)"))

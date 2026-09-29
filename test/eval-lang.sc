@@ -418,6 +418,34 @@
               (and d (holds-datum? (cddr d) '(getenv "THEOURGIA_RUNNERS")))))
       (list #t #t #t))
 
+;; ---- L14: the writer an evaluation's view is for ---------------------------------
+;; An explicit --writer, else THEOURGIA_WRITER when it is set and not empty,
+;; never the actor -- the dispatcher's rule, now eval's in every branch: the
+;; cut's baseline, the working view (--latest reaches it directly), and a
+;; foreign runner's projection. Two writers draft the same block, so a row
+;; that read the wrong one, or none, says which.
+(define X5 (make-store! "x5" (list (cons "a.sh" "echo x5 committed\n"))))
+(define X5-ID (block-holding X5 "x5 committed"))
+(cli X5 "write" "--writer" "wx5" X5-ID "echo x5 draft of wx5\n")
+(cli X5 "write" "--writer" "vx5" X5-ID "echo x5 draft of vx5\n")
+(define (reads a) (list (head-of a)
+                        (has-substring? (format "~s" a) "draft of wx5")
+                        (has-substring? (format "~s" a) "draft of vx5")))
+(define X5-BLOCK (string-append "(block \"" (or X5-ID "none") "\")"))
+(want "L14 THEOURGIA_WRITER=wx5 and no --writer: eval --working (the cut) reads wx5's draft"
+      (reads (ask "THEOURGIA_WRITER=wx5" X5 X5-BLOCK "--working"))
+      '(ok #t #f))
+(want "L14 THEOURGIA_WRITER=wx5 and no --writer: eval --working --latest (the view) reads wx5's draft"
+      (reads (ask "THEOURGIA_WRITER=wx5" X5 X5-BLOCK "--working" "--latest"))
+      '(ok #t #f))
+(want "L14 THEOURGIA_WRITER=wx5 and no --writer: eval --lang shell --working (a runner's projection) reads wx5's draft"
+      (reads (ask (string-append ON " THEOURGIA_WRITER=wx5") X5 "cat a.sh\n" "--lang" "shell" "--working"))
+      '(ok #t #f))
+(want "L14 an explicit --writer vx5 wins over THEOURGIA_WRITER=wx5, in the cut and in a runner's projection"
+      (list (reads (ask "THEOURGIA_WRITER=wx5" X5 X5-BLOCK "--working" "--writer" "vx5"))
+            (reads (ask (string-append ON " THEOURGIA_WRITER=wx5") X5 "cat a.sh\n" "--lang" "shell" "--working" "--writer" "vx5")))
+      '((ok #f #t) (ok #f #t)))
+
 ;; ---- L12, L13: a store missing a writer ------------------------------------------
 ;; The mirror M's directory is made unreadable. The projection is DECLARED: it
 ;; runs under eval's store key, projects what can be read, and the answer
