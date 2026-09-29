@@ -1484,15 +1484,20 @@
         (list #t 'ok #t)))
 
 ;; THE CONTROL: node through the table's own entry, with no env field, sees
-;; the kept names and nothing else.
-(let ((a (ask ON S "console.log(Object.keys(process.env).sort().join(' '))" "--lang" "javascript")))
-  (want "C6 control: node with the table's entry (no env field) sees exactly the kept names, PATH, HOME and LANG as this fixture has them (node present)"
-        (list (have? "node") (head-of a) (stdout-of a))
-        (list #t 'ok (string-append (let loop ((ns (list-sort string<? kept-names)) (acc ""))
-                                      (cond ((null? ns) acc)
-                                            ((string=? acc "") (loop (cdr ns) (car ns)))
-                                            (else (loop (cdr ns) (string-append acc " " (car ns))))))
-                                    "\n"))))
+;; the kept names and nothing that came from outside it. On macOS node adds
+;; __CF_USER_TEXT_ENCODING to its own environment as it starts (measured: the
+;; shell row L6, handed the same environment, never shows it), as sh adds PWD
+;; and SHLVL; it is allowed, and nothing else is.
+(define node-own-names '("__CF_USER_TEXT_ENCODING"))
+(let* ((a (ask ON S "console.log(Object.keys(process.env).sort().join(' '))" "--lang" "javascript"))
+       (names (let split ((cs (string->list (stdout-of a))) (cur '()) (acc '()))
+                (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+                      ((memv (car cs) '(#\space #\newline))
+                       (split (cdr cs) '() (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+                      (else (split (cdr cs) (cons (car cs) cur) acc))))))
+  (want "C6 control: node with the table's entry (no env field) sees every kept name (PATH, HOME, LANG as this fixture has them) and nothing else but node's own (node present)"
+        (list (have? "node") (head-of a) (names-within? names (append kept-names node-own-names)))
+        (list #t 'ok #t)))
 
 ;; ---- the launcher's arguments, read by the launcher itself --------------------------
 ;; The launcher is started directly, as the supervisor starts it, with a
