@@ -77,7 +77,8 @@ from.
 ## Before you start it
 
 NOTE: **Create the store first.** This shell has no local route: everything it
-lists, it sends to that store's daemon, and a daemon for a store that does not
+lists but eval, it sends to that store's daemon -- and it asks that daemon for
+the tool list even before an eval -- and a daemon for a store that does not
 exist cannot start. Run
 
     theourgia init --store <path>
@@ -87,13 +88,15 @@ deliberately **not** offered as a tool — see below.
 
 ## Tools
 
-One per verb the core's `describe` reports as routed to the daemon, asked
-again on every call — a verb added to the core is a tool this shell can see
-without a restart.
+One per verb the core's `describe` reports as routed to the daemon or to a
+child, asked again on every call — a verb added to the core is a tool this
+shell can see without a restart.
 
 NEVER: **A verb this shell cannot carry out is not offered.** `describe` marks each
-verb `daemon` or `local`; the ones marked `local` are the ones a client runs
-in its own process, and this shell has no such route. `init` is the case that
+verb `daemon`, `local` or `child`. `daemon` verbs are sent to the store's
+server; the one `child` verb, `eval`, is run as this shell's own child (see
+"Eval" below); the ones marked `local` are the ones a client runs in its
+own process, and this shell has no such route. `init` is the case that
 matters: offered as a tool it could never succeed, because it is what creates
 the store there would otherwise be no daemon for — and an agent reading the
 tool list would have been told a capability existed.
@@ -105,12 +108,83 @@ tool list would have been told a capability existed.
 * arguments: `{"argv": ["…"]}`, `additionalProperties: false`. Every item
   must be a string; each reaches the core byte for byte, and nothing on
   the way hands them to a shell.
-* `eval` is not a tool. Calling it is indistinguishable from calling a
-  verb that does not exist.
+* `eval` is a tool, `theourgia_eval`, carried out as this shell's child
+  (see "Eval").
 
-## One route, and what happens when it is not there
+## Eval
 
-Every request goes over the socket in the envelope `request-frame` packs —
+`theourgia_eval` runs `core.sc eval` as a CHILD of this shell, the same
+program the command line execs for `theourgia eval`, and returns its answer
+byte for byte. The daemon never runs user code, and the shell loads no core.
+
+* **The child's argv is the caller's, verbatim and alone**:
+  `<THEOURGIA_SCHEME or scheme> --script <core.sc beside this program> eval
+  <argv>`. The store, the wire mode and this session's writer travel in its
+  environment -- `THEOURGIA_STORE`, `THEOURGIA_WIRE=1` and
+  `THEOURGIA_WRITER=<the session's writer>`, each replacing any binding of
+  that name -- so a parse refusal is the one the command line gives for the
+  same argv. A caller's own `--writer v` still wins. Its cwd is the shell's.
+* **The transport is not the caller's to name.** An argv that parses with
+  an option `--store`, `--actor`, `--wire` or `--socket` answers
+  `(error bad-request transport-option-in-rpc)` as a result and runs
+  nothing, as the daemon's route does. Positional text that only spells one,
+  and anything after `--`, is not refused. A NUL byte in an argument or in
+  `stdin` answers `(error bad-request nul-in-argument)` and runs nothing.
+* **Its input is the call's.** The tool's `stdin` becomes its standard
+  input; without one it reads `/dev/null`. It never reads this shell's own
+  input.
+* **The gate is this shell's environment.** A language other than Scheme
+  runs only if the shell was started with `THEOURGIA_RUNNERS=on` -- the
+  host's server configuration, the operator's word for that client. No
+  argument, source text or envelope field can set it, and the daemon's
+  environment is never consulted.
+* **The quotas are core.sc's**, `--timeout-ms`, `--memory-bytes` and
+  `--output-bytes`, with its bounds and defaults. The shell waits for the
+  child for twice the evaluation's timeout plus a preparation allowance of
+  70 s -- a chosen allowance, not a measured bound -- and polls it every
+  25 ms. `THEOURGIA_MCP_PREPARATION_MS` replaces the allowance (a positive
+  integer; a test seam).
+
+What comes back:
+
+* the child exited 0 or 1 with a non-empty answer that is UTF-8: that
+  answer as the tool's text, `isError: false`, whatever it says;
+* an empty answer, another exit code, a signal, bytes that are not UTF-8,
+  or an answer that could not be read: the JSON-RPC error "Core answer
+  unavailable; execution may be unknown", with `data: {reason, diag}` --
+  `reason` one of `exit <n>`, `signal <s>`, `empty-answer`, `not-utf8`,
+  `answer-unreadable`, `wait-failed <errno>`, `signal-failed <errno>`,
+  `deadline <ms>`, `deadline-unreaped <ms>`, and `diag` the last 4096 bytes
+  of the child's standard error, or null when they cannot be read or are
+  not UTF-8. It is never re-sent. The child's standard error is never part
+  of an answer.
+* nothing ran: `core.sc` missing (`core-missing`), a program that could not
+  be started (`spawn-failed`), or no call directory (`scratch-unavailable`)
+  -- the "not sent" error.
+
+NEVER: **What a deadline leaves.** At the deadline the child is killed with
+SIGKILL and its status polled for 2 s. The supervisor dies without running
+its exits, so its worker's or runner's process group is not signalled and its
+scratch is not removed: a CPU-bound survivor ends at its CPU ceiling, if the
+kernel accepted one; a sleeping or blocked one has no finite bound from here;
+a descendant that left the group had none before either. A child whose status
+was not collected is collected by a later call's reaping, once it has exited;
+without another call there is no promise it is.
+
+**The call's files.** Each call claims a directory
+`<run root>/<store key>/mcp-<shell pid>-<n>` with mode 0700, trying the next
+`<n>` when the name is taken, up to 8; its stdin, answer and diagnostics
+files are there, and all of it is removed on every outcome. A removal that
+fails is written to the shell's own stderr -- not a channel to the host --
+and the directory is left.
+
+Calls are served one at a time, eval included: the next frame is read after
+the child has finished, so EOF is seen after it. A host that closes the shell
+abruptly leaves the child to its own bounds.
+
+## One route to a daemon, and what happens when it is not there
+
+Every request but eval's goes over the socket in the envelope `request-frame` packs —
 the same one the command line sends, from the same procedure.
 
 NOTE: **This shell no longer dispatches in its own process.** It used to, when it

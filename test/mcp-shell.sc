@@ -26,7 +26,7 @@
         ;; produce one, measured.
         (only (theourgia ffi) spawn-detached! reap-children!)
         ;; F100b M3a's P7 rows: the key directory the client derives.
-        (only (theourgia client) socket-path)
+        (only (theourgia client) socket-path store-key)
         ;; The shell's own option table, probed as data.
         (only (theourgia arguments) parse-arguments))
 
@@ -439,17 +439,17 @@
               'nobody-expanded-it)
           'nobody-expanded-it)))
 
-;; ---- MC-05 eval is not a tool ------------------------------------------------
+;; ---- MC-05 eval is a tool ----------------------------------------------------
 ;;
-;; NEVER: `eval` IS ABSENT FROM THE CATALOGUE AND INDISTINGUISHABLE FROM A
-;; VERB THAT DOES NOT EXIST. A shell that refused it with a message of
-;; its own would be telling a client that the capability is there and
-;; withheld, which is a different fact and a worse one.
+;; NEVER: `eval` IS LISTED, AND CALLING IT ANSWERS AN EVALUATION, which is not
+;; what calling a verb that does not exist answers. Both halves changed when
+;; the shell began to carry eval out as its own child: this row used to pin
+;; that eval was absent and indistinguishable from nothing.
 (let ((out (talk (list hello ready
                        "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}"
                        (call-tool "theourgia_eval" '("(+ 1 1)"))
                        (call-tool "theourgia_no_such_verb_at_all" '())))))
-  (want "MC-05 eval is not listed, and calling it is the same as calling nothing"
+  (want "MC-05 eval is listed, calling it answers an evaluation as a result, and calling nothing is still unknown tool"
         (let ((names (let ((tools (field (cadr out) "result" "tools")))
                        (if (vector? tools)
                            (map (lambda (i) (json-ref* (vector-ref tools i) "name"))
@@ -457,15 +457,12 @@
                                   (if (= i (vector-length tools)) (reverse acc)
                                       (loop (+ i 1) (cons i acc)))))
                            '()))))
-          (list (if (member "theourgia_eval" names) 'LISTED 'absent)
-                (code-of (caddr out))
-                (code-of (cadddr out))
-                (if (equal? (field (caddr out) "error" "message")
-                            (field (cadddr out) "error" "message"))
-                    'one-shape-for-both
-                    (list (field (caddr out) "error" "message")
-                          (field (cadddr out) "error" "message")))))
-        '(absent -32602 -32602 one-shape-for-both)))
+          (list (if (member "theourgia_eval" names) 'listed 'ABSENT)
+                (is-error-of (caddr out))
+                (if (starts-with-text? (text-of (caddr out)) "(ok (values (2))") 'an-evaluation
+                    (list 'said (text-of (caddr out))))
+                (code-of (cadddr out))))
+        '(listed #f an-evaluation -32602)))
 
 ;; ---- MC-06 which route served it ---------------------------------------------
 ;;
@@ -1458,12 +1455,14 @@
 ;; from the actor, the start instant and the pid -- said in `instructions`,
 ;; carried on every frame, and checked at start.
 
-;; The three sentences the shell has always answered with, byte for byte.
+;; The three sentences the shell answers with, byte for byte. The third said
+;; "Eval is available only in the local CLI." until the shell began to carry
+;; eval out as its own child; it now says where eval runs and what gates it.
 (define base-instructions
   (string-append
     "Tools return the unmodified core command answer as S-expression text. "
     "Core refusals are successful transport results. "
-    "Eval is available only in the local CLI."))
+    "Eval runs on the store's machine as a child of this shell; a language other than Scheme runs only where the operator has set THEOURGIA_RUNNERS=on for it."))
 (define writer-sentence-head " This session's writer is ")
 (define writer-sentence-tail
   "; drafts left by an earlier session are read with `drafts --writer <that session's writer>`.")
@@ -1844,6 +1843,862 @@
             '(serve [<store>] ["--socket" <path>]
                     ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
                     ["--attempt" <token> (started-by-a-client-not-by-hand)])))
+
+;; ---- X: eval, carried out as the shell's own child ----------------------------
+;;
+;; KEY: THE SHELL RUNS `core.sc eval <argv>` AS ITS CHILD, the program the
+;; command line execs for `theourgia eval`, and returns the answer byte for
+;; byte. Most rows below replace that program with a STUB: a directory D in
+;; which D/mcp/server.sc and D/theourgiad.sc are links to the real programs and
+;; D/core.sc is the row's own script, so the shell -- which finds core.sc beside
+;; itself -- runs the stub. Every stub first appends one line, its pid and the
+;; clock in milliseconds, to a counter file the row names: "no child ran" is
+;; zero lines, "ran once" is one. The wrapper stub then execs the real core.sc
+;; with its own argv, keeping its environment, so it counts real evaluations.
+
+(define repo (string-append (current-directory) "/.."))
+
+(define (scheme-literal x) (call-with-string-output-port (lambda (p) (write x p))))
+
+(define (wall-ms)
+  (let ((t (current-time 'time-utc)))
+    (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+
+;; The stub's first act: one counter line, "<pid> <wall ms>".
+(define (stub-text counter body)
+  (string-append
+    "(import (chezscheme))\n"
+    "(let ((p (open-file-output-port " (scheme-literal counter)
+    " (file-options no-fail no-truncate append) (buffer-mode block) (native-transcoder)))"
+    " (t (current-time 'time-utc)))\n"
+    "  (put-string p (string-append (number->string (get-process-id)) \" \""
+    " (number->string (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))) \"\\n\"))\n"
+    "  (close-port p))\n"
+    body "\n"))
+
+;; -> (D counter-path). A #f body leaves D without core.sc.
+(define (stub-dir! name body)
+  (let ((d (string-append here "/stub-" name))
+        (counter (string-append here "/stub-" name ".count")))
+    (system (string-append "rm -rf " d " " counter " " d ".err; mkdir -p " d "/mcp"
+                           "; ln -s " repo "/mcp/server.sc " d "/mcp/server.sc"
+                           "; ln -s " repo "/theourgiad.sc " d "/theourgiad.sc"))
+    (when body
+      (call-with-output-file (string-append d "/core.sc")
+        (lambda (p) (put-string p (stub-text counter body))) 'truncate))
+    (list d counter)))
+
+(define (stub-err d) (string-append (car d) ".err"))
+
+(define (lines-of-text t)
+  (let loop ((i 0) (start 0) (out '()))
+    (cond ((= i (string-length t)) (reverse (if (< start i) (cons (substring t start i) out) out)))
+          ((char=? (string-ref t i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring t start i) out)))
+          (else (loop (+ i 1) start out)))))
+
+(define (counter-lines counter) (lines-of-text (file-text counter)))
+
+;; (pid ms) of the first counter line, or #f.
+(define (first-counter counter)
+  (let ((ls (counter-lines counter)))
+    (and (pair? ls)
+         (let ((p (open-input-string (car ls))))
+           (let* ((pid (read p)) (ms (read p))) (list pid ms))))))
+
+;; The shell at `shell-path`, its stderr appended to `err`.
+(define (start-at-shell shell-path store socket launch extra err)
+  (let ((command (string-append
+                   "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                   "THEOURGIA_RUN=" sock-here "/run exec " launch
+                   "scheme --script " shell-path " --store " store
+                   (if socket (string-append " --socket " socket) "")
+                   extra
+                   " 2>>" err)))
+    (let-values (((to from errs pid) (open-process-ports command 'line (native-transcoder))))
+      (list to from pid))))
+
+(define xstore (string-append here "/store"))
+
+(define (stub-shell d launch . extra)
+  (start-at-shell (string-append (car d) "/mcp/server.sc") xstore #f
+                  launch (if (pair? extra) (car extra) "") (stub-err d)))
+
+(define (stub-talk d launch frames) (drain (stub-shell d launch) frames))
+
+(define (call-tool-stdin name argv stdin)
+  (string-append "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":"
+                 (json->string name) ",\"arguments\":{\"argv\":" (json->string (list->vector argv))
+                 ",\"stdin\":" (json->string stdin) "}}}"))
+
+(define describe-frame (call-tool "theourgia_describe" '()))
+(define tools-list-frame "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}")
+(define (eval-call argv) (call-tool "theourgia_eval" argv))
+
+(define (tool-names line)
+  (let ((tools (field line "result" "tools")))
+    (if (vector? tools)
+        (let loop ((i 0) (acc '()))
+          (if (= i (vector-length tools)) (reverse acc)
+              (loop (+ i 1) (cons (json-ref* (vector-ref tools i) "name") acc))))
+        '())))
+
+(define (tool-description line name)
+  (let ((tools (field line "result" "tools")))
+    (and (vector? tools)
+         (let loop ((i 0))
+           (cond ((= i (vector-length tools)) #f)
+                 ((equal? (json-ref* (vector-ref tools i) "name") name)
+                  (json-ref* (vector-ref tools i) "description"))
+                 (else (loop (+ i 1))))))))
+
+(define (reason-of line) (field line "error" "data" "reason"))
+(define (diag-of line) (field line "error" "data" "diag"))
+(define (message-of line) (field line "error" "message"))
+
+(define (text-datum line)
+  (let ((t (text-of line)))
+    (if (string? t) (guard (e (#t 'unreadable)) (read (open-input-string t))) t)))
+
+;; The command line's own answer bytes for an eval, with the environment the
+;; shell gives its child: THEOURGIA_STORE and THEOURGIA_WIRE=1.
+(define (cli-eval-bytes store env argv)
+  (let ((out (string-append here "/cli-eval.txt")))
+    (system (string-append
+              "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+              "THEOURGIA_RUN=" sock-here "/run THEOURGIA_STORE=" store " THEOURGIA_WIRE=1 " env
+              " scheme --script ../core.sc eval"
+              (apply string-append (map (lambda (a) (string-append " " (shell-quote a))) argv))
+              " > " out " 2>/dev/null < /dev/null"))
+    (file-text out)))
+
+(define (pause-ms ms) (sleep (make-time 'time-duration (* ms 1000000) 0)))
+
+;; Until `ok?` answers true or `ms` pass; -> its last answer.
+(define (within ms ok?)
+  (let ((end (+ (wall-ms) ms)))
+    (let loop ()
+      (let ((v (ok?)))
+        (cond (v v) ((> (wall-ms) end) #f) (else (pause-ms 50) (loop)))))))
+
+(define (ps-stat pid)
+  (let ((out (string-append here "/ps.txt")))
+    (system (string-append "ps -o stat= -p " (number->string pid) " > " out " 2>/dev/null"))
+    (let ((t (file-text out)))
+      (let loop ((i 0))
+        (cond ((= i (string-length t)) "")
+              ((char-whitespace? (string-ref t i)) (loop (+ i 1)))
+              (else (substring t i (string-length t))))))))
+
+;; The call directories this shell pid left under the run root, by name.
+(define (call-dirs-of pid)
+  (let ((out (string-append here "/calls.txt")))
+    (system (string-append "find " sock-here "/run -maxdepth 2 -name 'mcp-" (number->string pid)
+                           "-*' > " out " 2>/dev/null"))
+    (lines-of-text (file-text out))))
+
+;; ONE STUB, MANY BEHAVIOURS, chosen by its first argument. Each mode is one
+;; of the child endings the rows below are about. `calldir` finds the call's
+;; own directory: the shell is the stub's parent, and its directories are
+;; named after its pid under the run root, which the stub inherits.
+(define STUB-MODES
+  (string-append
+    "(define mode (if (pair? (cddr (command-line))) (caddr (command-line)) \"\"))\n"
+    "(define (out! s) (put-string (current-output-port) s) (flush-output-port (current-output-port)))\n"
+    "(define (err! s) (put-string (current-error-port) s) (flush-output-port (current-error-port)))\n"
+    "(define (calldir)\n"
+    "  (let ((f (string-append (getenv \"THEOURGIA_RUN\") \"/../calldir-\" (number->string (get-process-id)))))\n"
+    "    (system (string-append \"ls -d \\\"$THEOURGIA_RUN\\\"/*/mcp-$(ps -o ppid= -p \" (number->string (get-process-id))"
+    " \" | tr -d ' ')-* | tail -1 > \" f))\n"
+    "    (let ((t (call-with-input-file f get-string-all))) (substring t 0 (- (string-length t) 1)))))\n"
+    "(cond\n"
+    " ((string=? mode \"ok\") (out! \"(ok (stub))\\n\") (exit 0))\n"
+    " ((string=? mode \"empty\") (exit 0))\n"
+    " ((string=? mode \"exit2\") (out! \"(ok x)\\n\") (exit 2))\n"
+    " ((string=? mode \"err1\") (out! \"(error x)\\n\") (exit 1))\n"
+    " ((string=? mode \"open\") (out! \"(ok\") (exit 0))\n"
+    " ((string=? mode \"fffe\") (let ((o (standard-output-port))) (put-bytevector o (bytevector 255 254)) (flush-output-port o)) (exit 0))\n"
+    " ((string=? mode \"forever\") (let loop () (sleep (make-time 'time-duration 0 1)) (loop)))\n"
+    " ((string=? mode \"late\") (sleep (make-time 'time-duration 0 2)) (out! \"(ok late)\\n\") (exit 0))\n"
+    " ((string=? mode \"slow\") (sleep (make-time 'time-duration 0 3)) (out! \"(ok slow)\\n\") (exit 0))\n"
+    " ((string=? mode \"exit-in-3\") (sleep (make-time 'time-duration 0 3)) (exit 0))\n"
+    " ((string=? mode \"sigkill\") (out! \"half\") (err! \"diag line\\n\")"
+    " (system (string-append \"kill -9 \" (number->string (get-process-id)))) (sleep (make-time 'time-duration 0 5)))\n"
+    " ((or (string=? mode \"bigdiag0\") (string=? mode \"bigdiag2\"))"
+    " (err! (make-string (- 1048576 4096) #\\a))"
+    " (err! (let loop ((i 0) (acc '())) (if (= i 4096) (list->string (reverse acc)) (loop (+ i 1) (cons (string-ref \"0123456789\" (mod i 10)) acc)))))"
+    " (out! \"(ok big)\\n\") (exit (if (string=? mode \"bigdiag0\") 0 2)))\n"
+    " ((string=? mode \"unlinkanswer\") (out! \"(ok gone)\\n\")"
+    " (let ((d (calldir))) (system (string-append \"rm -f '\" d \"/answer'; mkdir '\" d \"/answer'\"))) (exit 0))\n"
+    " ((string=? mode \"unlinkdiag\") (err! \"diag gone\\n\")"
+    " (let ((d (calldir))) (system (string-append \"rm -f '\" d \"/diag'; mkdir '\" d \"/diag'\"))) (exit 2))\n"
+    " ((string=? mode \"cutdiag\") (let ((e (standard-error-port))) (put-bytevector e (string->utf8 (make-string 2000 (integer->char #x20AC)))) (flush-output-port e)) (exit 2))\n"
+    " ((string=? mode \"extrafile\")"
+    " (let ((d (calldir))) (system (string-append \"touch '\" d \"/extra'\"))) (out! \"(ok x)\\n\") (exit 0))\n"
+    " (else (out! \"(ok (mode unknown))\\n\") (exit 0)))\n"))
+
+(define STUB-ECHO
+  (string-append
+    "(write (list 'ok (list 'argv (cddr (command-line)))"
+    " (list 'env (getenv \"THEOURGIA_STORE\") (getenv \"THEOURGIA_WIRE\") (getenv \"THEOURGIA_WRITER\"))))"
+    " (newline) (flush-output-port (current-output-port)) (exit 0)"))
+
+(define STUB-WRAPPER
+  (string-append
+    "(import (only (theourgia ffi) exec-argv!))"
+    " (exec-argv! (append (list \"scheme\" \"--script\" " (scheme-literal (string-append repo "/core.sc"))
+    ") (cdr (command-line))))"))
+
+(define modes (stub-dir! "modes" STUB-MODES))
+(define (mode-call mode . more) (eval-call (cons mode more)))
+
+;; Make sure the store's daemon is up before rows that assume it.
+(talk (list hello ready tools-list-frame))
+
+;; ---- X1 the catalogue ---------------------------------------------------------
+(let ((out (talk (list hello ready tools-list-frame))))
+  (let ((names (tool-names (cadr out))))
+    (want "X1 tools/list holds theourgia_eval once, no theourgia_init and no theourgia_serve, and eval's description names --lang"
+          (list (length (filter (lambda (n) (equal? n "theourgia_eval")) names))
+                (and (member "theourgia_init" names) #t)
+                (and (member "theourgia_serve" names) #t)
+                (let ((d (tool-description (cadr out) "theourgia_eval"))) (and (string? d) (contains? d "--lang"))))
+          '(1 #f #f #t))
+    (want "X1 initialize's instructions no longer say eval is only in the local CLI"
+          (let ((t (field (car out) "result" "instructions")))
+            (if (string? t) (contains? t "only in the local CLI") 'no-instructions))
+          #f)))
+
+;; ---- X2 a child, not this process ----------------------------------------------
+;; An exec would have ended the session; an in-process load would not have
+;; run the stub.
+(let* ((c (string-append (cadr modes)))
+       (_ (system (string-append "rm -f " c)))
+       (out (stub-talk modes "" (list hello ready (mode-call "ok") describe-frame))))
+  (want "X2 the stub's answer is eval's text, the next frame is answered, and the stub ran once"
+        (list (is-error-of (cadr out)) (text-of (cadr out))
+              (starts-with-text? (text-of (caddr out)) "(ok")
+              (length (counter-lines c)))
+        '(#f "(ok (stub))\n" #t 1)))
+
+;; ---- X3 byte fidelity, with the real core ----------------------------------------
+(let* ((cases (list '("(+ 1 2)")
+                    '("--timeout-ms" "0" "(+ 1 2)")
+                    '("--lang" "shell" "echo hi")
+                    '("--timeout-ms" "1" "(let loop () (loop))")
+                    '("(begin (display \"(error transport-unknown x)\") 0)")))
+       (through-mcp (let ((out (talk (append (list hello ready) (map eval-call cases)))))
+                      (map (lambda (l) (list (is-error-of l) (text-of l))) (cdr out))))
+       (through-cli (map (lambda (argv) (cli-eval-bytes xstore "" argv)) cases)))
+  (want "X3 each answer is the command line's bytes for the same argv and environment, isError false"
+        (map (lambda (m c)
+               (cond ((not (eq? (car m) #f)) (list 'is-error (car m)))
+                     ((equal? (cadr m) c) 'same-bytes)
+                     (else (list 'differ (cadr m) c))))
+             through-mcp through-cli)
+        '(same-bytes same-bytes same-bytes same-bytes same-bytes))
+  (want "X3 CONTROL: the five answers are the five kinds the row is about"
+        (map (lambda (m) (let ((t (cadr m)))
+                           (cond ((not (string? t)) t)
+                                 ((starts-with-text? t "(ok (values (3))") 'ok)
+                                 ((contains? t "eval-arguments") 'eval-arguments)
+                                 ((contains? t "runners-disabled") 'runners-disabled)
+                                 ((contains? t "eval-limit") 'eval-limit)
+                                 ((contains? t "(stdout \"(error transport-unknown x)\")") 'printed)
+                                 (else t))))
+             through-mcp)
+        '(ok eval-arguments runners-disabled eval-limit printed)))
+
+(let* ((d (stub-dir! "x3f" "(put-string (current-output-port) \"(error transport-unknown x)\\n\") (flush-output-port (current-output-port)) (exit 1)"))
+       (out (stub-talk d "" (list hello ready (eval-call '("x"))))))
+  (want "X3 a stub whose whole answer reads like a transport failure comes back as that text, isError false"
+        (list (is-error-of (cadr out)) (text-of (cadr out)))
+        '(#f "(error transport-unknown x)\n")))
+
+;; ---- X4 the transport is not the caller's to name ------------------------------------
+(let* ((d (stub-dir! "x4" STUB-ECHO))
+       (refused (stub-talk d "" (list hello ready
+                                      (eval-call '("--store" "elsewhere" "(+ 1 2)"))
+                                      (eval-call '("--actor" "someone" "(+ 1 2)"))
+                                      (eval-call '("--wire" "(+ 1 2)"))
+                                      (eval-call '("--socket" "/tmp/x" "(+ 1 2)")))))
+       (lines-then (length (counter-lines (cadr d))))
+       (passed (stub-talk d "" (list hello ready
+                                     (eval-call '("(display \"--store y\")"))
+                                     (eval-call '("--" "--store")))))
+       (daemon-route (talk (list hello ready (call-tool "theourgia_read" '("--store" "elsewhere" "x.1"))))))
+  (want "X4 --store, --actor, --wire and --socket each answer transport-option-in-rpc as a result, and no child ran"
+        (list (map (lambda (l) (list (is-error-of l) (text-of l))) (cdr refused)) lines-then)
+        (list (map (lambda (x) (list #f "(error bad-request transport-option-in-rpc)\n")) '(1 2 3 4)) 0))
+  (want "X4 the daemon route answers the same datum for --store (a control)"
+        (text-of (cadr daemon-route))
+        "(error bad-request transport-option-in-rpc)\n")
+  (want "X4 a positional that only spells --store, and --store after --, reach the child as the caller wrote them"
+        (map (lambda (l) (let ((dt (text-datum l)))
+                           (and (pair? dt) (let ((a (assq 'argv (cdr dt)))) (and a (cadr a))))))
+             (cdr passed))
+        '(("(display \"--store y\")") ("--" "--store"))))
+
+;; ---- X4b the child's argv is the caller's, and its parse is the command line's --------
+(let* ((d (stub-dir! "x4b" STUB-WRAPPER))
+       (argvs (list '("--" "(+ 1 2)")
+                    '("--store" "X" "--store" "Y")
+                    '("--store")
+                    '("--timeout-ms")))
+       (out (stub-talk d "" (append (list hello ready) (map eval-call argvs))))
+       (cli (map (lambda (argv) (cli-eval-bytes xstore "" argv)) argvs)))
+  (want "X4b each answers the command line's bytes for the same argv, and the child answered every one"
+        (list (map (lambda (l c) (if (equal? (text-of l) c) 'same-bytes (list 'differ (text-of l) c)))
+                   (cdr out) cli)
+              (length (counter-lines (cadr d))))
+        (list '(same-bytes same-bytes same-bytes same-bytes) 4))
+  (want "X4b CONTROL: -- then a source is an ok answer in wire form; the three bad argvs are eval-arguments"
+        (map (lambda (l) (let ((t (text-of l)))
+                           (cond ((starts-with-text? t "(ok (values (3))") 'ok)
+                                 ((contains? t "eval-arguments") 'eval-arguments)
+                                 (else t))))
+             (cdr out))
+        '(ok eval-arguments eval-arguments eval-arguments)))
+
+(let* ((d (stub-dir! "x4c" STUB-ECHO))
+       (out (stub-talk d "" (list hello ready (eval-call '("--timeout-ms" "5" "(+ 1 2)" "")))))
+       (dt (text-datum (cadr out))))
+  (want "X4b the child's argv is exactly the caller's: nothing prepended, nothing appended"
+        (and (pair? dt) (let ((a (assq 'argv (cdr dt)))) (and a (cadr a))))
+        '("--timeout-ms" "5" "(+ 1 2)" "")))
+
+;; ---- X5 the writer: the session's, replacing the variable -----------------------------
+;; A store of its own with one code block; three writers draft it.
+(define x5store (string-append here "/x5store"))
+(define x5src (string-append here "/x5src"))
+(system (string-append "mkdir -p " x5store " " x5src))
+(call-with-output-file (string-append x5src "/a.sh") (lambda (p) (put-string p "echo x5 committed\n")) 'truncate)
+(cli-answer x5store '("init"))
+(cli-answer x5store (list "import-code" x5src))
+(define x5block
+  (let ((answer (guard (e (#t #f)) (read (open-input-string (cli-answer x5store '("grep" "x5 committed")))))))
+    (let find ((x answer))
+      (cond ((and (pair? x) (eq? (car x) 'match) (pair? (cdr x)) (string? (cadr x))) (cadr x))
+            ((pair? x) (or (find (car x)) (find (cdr x))))
+            (else #f)))))
+(for-each (lambda (w)
+            (cli-answer x5store (list "write" "--writer" w (or x5block "none")
+                                      (string-append "echo x5 draft of " w "\n"))))
+          '("w5" "v5"))
+(define x5-source (string-append "(block \"" (or x5block "none") "\")"))
+(define (x5-reads line)
+  (let ((t (text-of line)))
+    (list (and (string? t) (starts-with-text? t "(ok"))
+          (and (string? t) (contains? t "draft of w5"))
+          (and (string? t) (contains? t "draft of v5")))))
+
+(let ((out (talk* (list hello ready
+                        (eval-call (list "--working" x5-source))
+                        (eval-call (list "--working" "--latest" x5-source))
+                        (eval-call (list "--lang" "shell" "--working" "cat a.sh"))
+                        (eval-call (list "--working" "--writer" "v5" x5-source)))
+                  x5store #f "env THEOURGIA_WRITER=w5 THEOURGIA_RUNNERS=on " "")))
+  (want "X5 a shell started with THEOURGIA_WRITER=w5: the cut, the view and a runner's projection read w5's draft; --writer v5 reads v5's"
+        (map x5-reads (cdr out))
+        '((#t #t #f) (#t #t #f) (#t #t #f) (#t #f #t))))
+
+(let ((out (talk* (list hello ready (eval-call (list "--working" x5-source)))
+                  x5store #f "env THEOURGIA_WRITER= " " --writer w5")))
+  (want "X5 a shell started with --writer w5 and no variable: eval --working reads w5's draft"
+        (x5-reads (cadr out))
+        '(#t #t #f)))
+
+;; A derived writer writes its own draft through the daemon route, then its
+;; eval --working reads it: the child's writer is the session's.
+(let ((out (talk* (list hello ready
+                        (call-tool "theourgia_write" (list (or x5block "none") "echo x5 draft of the session\n"))
+                        (eval-call (list "--working" x5-source)))
+                  x5store #f no-writer " --actor delta")))
+  (want "X5 a derived session writes a draft and its eval --working reads that draft, not w5's or v5's"
+        (list (starts-with-text? (text-of (cadr out)) "(ok")
+              (let ((t (text-of (caddr out))))
+                (list (and (string? t) (contains? t "draft of the session"))
+                      (and (string? t) (contains? t "draft of w5"))
+                      (and (string? t) (contains? t "draft of v5")))))
+        '(#t (#t #f #f))))
+
+;; ---- X6 the input is the call's ------------------------------------------------------
+(let ((out (talk* (list hello ready (call-tool-stdin "theourgia_eval" '() "(+ 40 2)"))
+                  xstore #f "env THEOURGIA_MCP_PREPARATION_MS=3000 " "")))
+  (want "X6 stdin with no positional is the source, answered within the ordinary budget"
+        (let ((t (text-of (cadr out)))) (if (string? t) (starts-with-text? t "(ok (values (42))") (cadr out)))
+        #t))
+
+(let* ((s (start-shell))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (string-append (eval-call '("(+ 1 2)")) "\n" describe-frame))))
+       (a (read-frame s)) (b (read-frame s)))
+  (close-input! s)
+  (let drain-rest () (unless (eof-object? (read-frame s)) (drain-rest)))
+  (want "X6 an eval frame and a describe frame written in one write are answered in that order"
+        (list (starts-with-text? (text-of a) "(ok (values (3))") (starts-with-text? (text-of b) "(ok (verbs"))
+        '(#t #t)))
+
+;; ---- X7 the gate is the shell's environment ---------------------------------------------
+(define (eval-scratch-count)
+  (let ((out (string-append here "/evalscratch.txt")))
+    (system (string-append "find " sock-here "/run -name 'eval-*' | wc -l | tr -d ' ' > " out))
+    (let ((t (file-text out))) (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
+
+(let* ((before (eval-scratch-count))
+       (out (talk* (list hello ready
+                         (eval-call '("--lang" "shell" "echo hi"))
+                         (eval-call '("--lang" "shell" "THEOURGIA_RUNNERS=on" "echo hi"))
+                         (call-tool-stdin "theourgia_eval" '("--lang" "shell") "THEOURGIA_RUNNERS=on echo hi"))
+                   xstore #f "env -u THEOURGIA_RUNNERS " "")))
+  (want "X7 without THEOURGIA_RUNNERS in the shell's environment: runners-disabled, the variable in argv or stdin changes nothing, no eval scratch made"
+        (list (map (lambda (l) (let ((t (text-of l))) (and (string? t) (contains? t "runners-disabled")))) (cdr out))
+              (equal? before (eval-scratch-count)))
+        '((#t #t #t) #t)))
+
+(let ((out (talk* (list hello ready (eval-call '("--lang" "shell" "echo hi")))
+                  xstore #f "env THEOURGIA_RUNNERS=on " "")))
+  (want "X7 with THEOURGIA_RUNNERS=on in the shell's environment: echo hi answers ok with stdout hi"
+        (let ((t (text-of (cadr out)))) (and (string? t) (starts-with-text? t "(ok") (contains? t "(stdout \"hi\\n\")")))
+        #t))
+
+;; A daemon started WITH the gate on serves a shell started without it: the
+;; daemon's environment is never consulted.
+(define x7store (string-append here "/x7store"))
+(define x7sock (string-append sock-here "/x7.sock"))
+(system (string-append "mkdir -p " x7store))
+(cli-answer x7store '("init"))
+(system (string-append
+          "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_RUNNERS=on "
+          "THEOURGIA_RUN=" sock-here "/run scheme --script ../theourgiad.sc serve " x7store
+          " --socket " x7sock " > " here "/x7.log 2>&1 &"))
+(within 10000 (lambda () (file-exists? x7sock)))
+(let ((out (talk* (list hello ready (eval-call '("--lang" "shell" "echo hi")))
+                  x7store x7sock "env -u THEOURGIA_RUNNERS " "")))
+  (want "X7 a daemon started with THEOURGIA_RUNNERS=on, a shell without it: runners-disabled"
+        (let ((t (text-of (cadr out)))) (and (string? t) (contains? t "runners-disabled")))
+        #t))
+
+;; ---- X8 past the socket's deadline (opt-in) ----------------------------------------------
+;; The answer deadline for a daemon call is 30 s; an evaluation's budget is its
+;; own. 33 s of sleep is too long for every suite run, so this row runs only
+;; with THEOURGIA_MCP_X8=1 and says so when it does not. The budget's own
+;; discriminators are X9 and X9b, which run always.
+(if (equal? (getenv "THEOURGIA_MCP_X8") "1")
+    (let ((out (talk* (list hello ready (eval-call '("--lang" "shell" "--timeout-ms" "40000" "sleep 33")))
+                      xstore #f "env THEOURGIA_RUNNERS=on " "")))
+      (want "X8 --lang shell --timeout-ms 40000 on sleep 33 answers ok past the socket's 30 s"
+            (let ((t (text-of (cadr out)))) (and (string? t) (starts-with-text? t "(ok")))
+            #t))
+    (printf "SKIP X8: set THEOURGIA_MCP_X8=1 to run the 33 s row (an opt-in, not a failure)\n"))
+
+;; ---- X9 the budget ----------------------------------------------------------------------
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes "env THEOURGIA_MCP_PREPARATION_MS=1000 "))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "forever" "--timeout-ms" "1"))))
+       (answer (read-frame s))
+       (arrived (wall-ms))
+       (started (first-counter c))
+       (gone (and started (within 2000 (lambda () (string=? "" (ps-stat (car started)))))))
+       (_ (send-frame! s describe-frame))
+       (next (read-frame s)))
+  (close-input! s)
+  (let drain-rest () (unless (eof-object? (read-frame s)) (drain-rest)))
+  (want "X9 the deadline error arrives within 1002 ms plus 3 s of the stub's start, the stub is gone within 2 s, the next frame is answered"
+        (list (let ((r (reason-of answer))) (and (string? r) (starts-with-text? r "deadline")))
+              (and started (<= (- arrived (cadr started)) (+ 1002 3000)))
+              (and gone #t)
+              (starts-with-text? (text-of next) "(ok"))
+        '(#t #t #t #t)))
+
+(let ((out (stub-talk modes "env THEOURGIA_MCP_PREPARATION_MS=1000 "
+                      (list hello ready (mode-call "late" "--timeout-ms" "1")))))
+  (want "X9b preparation is bounded by the seam: a child that answers after 2 s is past the deadline, not an answer"
+        (list (code-of (cadr out)) (let ((r (reason-of (cadr out)))) (and (string? r) (starts-with-text? r "deadline"))))
+        '(-32603 #t)))
+
+;; M18: an invalid --timeout-ms is not the budget; the child refuses it at once.
+(let ((out (talk (list hello ready (eval-call '("--timeout-ms" "-100000" "(+ 1 2)"))))))
+  (want "X9 an invalid --timeout-ms is answered by the child's eval-arguments refusal, not a deadline"
+        (let ((t (text-of (cadr out)))) (and (string? t) (contains? t "eval-arguments")))
+        #t))
+
+;; ---- X10 a child that died by a signal ------------------------------------------------------
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes ""))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "sigkill"))))
+       (answer (read-frame s))
+       (lines-now (length (counter-lines c)))
+       (_ (pause-ms 500))
+       (lines-later (length (counter-lines c)))
+       (_ (send-frame! s describe-frame))
+       (next (read-frame s)))
+  (close-input! s)
+  (let drain-rest () (unless (eof-object? (read-frame s)) (drain-rest)))
+  (want "X10 signal 9 with the diagnostics in the data, one run and no replay, and the session goes on"
+        (list (reason-of answer)
+              (let ((d (diag-of answer))) (and (string? d) (contains? d "diag line")))
+              lines-now lines-later
+              (starts-with-text? (text-of next) "(ok"))
+        '("signal 9" #t 1 1 #t)))
+
+;; ---- X11 exit codes ---------------------------------------------------------------------------
+(let ((out (stub-talk modes "" (list hello ready (mode-call "empty") (mode-call "exit2")
+                                     (mode-call "err1") (mode-call "fffe")))))
+  (want "X11 exit 0 with nothing written, exit 2, exit 1 with an answer, and bytes that are not UTF-8"
+        (list (reason-of (cadr out))
+              (reason-of (caddr out))
+              (list (is-error-of (cadddr out)) (text-of (cadddr out)))
+              (reason-of (car (cddddr out))))
+        '("empty-answer" "exit 2" (#f "(error x)\n") "not-utf8")))
+
+;; ---- X12 the diagnostics stay out of the answer, and only their tail is read ---------------------
+(define x12-tail
+  (let loop ((i 0) (acc '()))
+    (if (= i 4096) (list->string (reverse acc))
+        (loop (+ i 1) (cons (string-ref "0123456789" (mod i 10)) acc)))))
+
+(let ((out (stub-talk modes "" (list hello ready (mode-call "bigdiag0")))))
+  (want "X12 1 MiB on stderr and an answer: the answer intact, the diagnostics not in it"
+        (list (is-error-of (cadr out)) (text-of (cadr out)))
+        '(#f "(ok big)\n")))
+
+(let* ((d modes)
+       (_ (system (string-append "rm -f " (stub-err d))))
+       (out (stub-talk d "env THEOURGIA_TRACE=1 " (list hello ready (mode-call "bigdiag2"))))
+       (trace-lines (filter (lambda (l) (or (contains? l "(trace diag-seek ") (contains? l "(trace diag-read ")))
+                            (lines-of-text (file-text (stub-err d))))))
+  (want "X12b exit 2: the diag is exactly the last 4096 bytes, read by one seek to size-4096 and one read of 4096"
+        (list (reason-of (cadr out))
+              (equal? (diag-of (cadr out)) x12-tail)
+              (length trace-lines)
+              (and (= 2 (length trace-lines))
+                   (contains? (car trace-lines) "(trace diag-seek ")
+                   (contains? (car trace-lines) " 1044480")
+                   (contains? (cadr trace-lines) "(trace diag-read ")
+                   (contains? (cadr trace-lines) " 4096")))
+        '("exit 2" #t 2 #t)))
+
+;; ---- X13 every outcome removes the call's files, and leaks no descriptor --------------------------
+;; The instrument is lsof on macOS, procstat on FreeBSD; neither is a red, not
+;; a skip. The shell's regular files and pipes are counted as a multiset of
+;; (type name) with descriptors 0-2 (the MCP stdio) left out; sockets are not
+;; files or pipes, so the daemon's is not counted.
+(define (descriptor-tool)
+  (cond ((= 0 (system "command -v lsof > /dev/null 2>&1")) 'lsof)
+        ((= 0 (system "command -v procstat > /dev/null 2>&1")) 'procstat)
+        (else #f)))
+
+(define (descriptors pid)
+  (let ((out (string-append here "/fds.txt")))
+    (case (descriptor-tool)
+      ((lsof)
+       (system (string-append "lsof -n -P -p " (number->string pid) " -F ftn > " out " 2>/dev/null"))
+       ;; f<fd>, t<type>, n<name> lines, one group per descriptor. Only
+       ;; numbered descriptors: the executable and its libraries are listed
+       ;; as txt, and they are not what a call could leak.
+       (let loop ((ls (lines-of-text (file-text out))) (fd #f) (type #f) (name #f) (acc '()))
+         (define (flush)
+           (if (and fd type (string->number fd) (> (string->number fd) 2)
+                    (member type '("REG" "PIPE" "FIFO")))
+               (cons (if (string=? type "REG") (string-append type " " (or name "")) type) acc)
+               acc))
+         (define (rest-of l) (substring l 1 (string-length l)))
+         (cond ((null? ls) (list-sort string<? (flush)))
+               ((= 0 (string-length (car ls))) (loop (cdr ls) fd type name acc))
+               ((char=? #\f (string-ref (car ls) 0)) (loop (cdr ls) (rest-of (car ls)) #f #f (flush)))
+               ((char=? #\t (string-ref (car ls) 0)) (loop (cdr ls) fd (rest-of (car ls)) name acc))
+               ((char=? #\n (string-ref (car ls) 0)) (loop (cdr ls) fd type (rest-of (car ls)) acc))
+               (else (loop (cdr ls) fd type name acc)))))
+      ((procstat)
+       (system (string-append "procstat -f " (number->string pid) " > " out " 2>/dev/null"))
+       (list-sort string<?
+                  (let loop ((ls (cdr (append (lines-of-text (file-text out)) '("")))) (acc '()))
+                    (cond ((null? ls) acc)
+                          ((let ((p (open-input-string (car ls))))
+                             (let* ((pid* (read p)) (comm (read p)) (fd (read p)) (t (read p)))
+                               (and (number? fd) (> fd 2) (memq t '(v p)) (symbol->string t))))
+                           => (lambda (t) (loop (cdr ls) (cons t acc))))
+                          (else (loop (cdr ls) acc))))))
+      (else 'no-instrument))))
+
+;; THE INSTRUMENT SEES ONE MORE: two sleeping processes, one holding an extra
+;; regular file open.
+(let* ((pa (string-append here "/pa.pid")) (pb (string-append here "/pb.pid"))
+       (_ (system (string-append "sh -c 'echo $$ > " pa "; exec sleep 5' > /dev/null 2>&1 &")))
+       (_ (system (string-append "sh -c 'echo $$ > " pb "; exec 7< /etc/hosts; exec sleep 5' > /dev/null 2>&1 &")))
+       (_ (within 3000 (lambda () (and (> (string-length (file-text pa)) 0) (> (string-length (file-text pb)) 0)))))
+       (a (descriptors (read (open-input-string (file-text pa)))))
+       (b (descriptors (read (open-input-string (file-text pb))))))
+  (want "X13 CONTROL: the descriptor instrument (lsof or procstat) sees the one extra file a process holds"
+        (list (descriptor-tool) (and (list? a) (list? b) (- (length b) (length a))))
+        (list (descriptor-tool) 1)))
+
+(let* ((c (cadr modes))
+       (s (stub-shell modes "env THEOURGIA_MCP_PREPARATION_MS=1000 "))
+       (pid (shell-pid s))
+       (ask! (lambda (frame) (send-frame! s frame) (read-frame s)))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)))
+       (_ (ask! tools-list-frame))
+       (before (descriptors pid))
+       (core (string-append (car modes) "/core.sc"))
+       (outcomes
+         (append
+           (map (lambda (i) (ask! (mode-call "ok"))) '(1 2 3 4 5 6 7 8 9 10))
+           (map (lambda (i) (ask! (mode-call "sigkill"))) '(1 2 3 4 5))
+           (map (lambda (i) (ask! (mode-call "forever" "--timeout-ms" "1"))) '(1 2 3))
+           (begin (system (string-append "mv " core " " core ".away"))
+                  (let ((r (map (lambda (i) (ask! (mode-call "ok"))) '(1 2))))
+                    (system (string-append "mv " core ".away " core))
+                    r))
+           (map (lambda (i) (ask! (mode-call "unlinkanswer"))) '(1 2))
+           (list (ask! (mode-call "fffe")))))
+       (after (descriptors pid))
+       (left (call-dirs-of pid)))
+  (close-input! s)
+  (let drain-rest () (unless (eof-object? (read-frame s)) (drain-rest)))
+  (want "X13 after twenty-three outcomes of seven kinds, no call directory is left and the shell's descriptors are those it had"
+        (list (length outcomes)
+              (length (filter (lambda (l) (starts-with-text? (text-of l) "(ok (stub))")) outcomes))
+              left
+              (equal? before after)
+              (descriptor-tool))
+        (list 23 10 '() #t (descriptor-tool))))
+
+;; ---- X14 a call in flight at EOF is answered, then the shell ends ---------------------------------
+(let* ((frames (string-append here "/x14.in")) (out (string-append here "/x14.out")) (rc (string-append here "/x14.rc")))
+  (call-with-output-file frames
+    (lambda (p) (for-each (lambda (f) (put-string p f) (newline p)) (list hello ready (mode-call "slow"))))
+    'truncate)
+  (system (string-append
+            "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_RUN=" sock-here "/run "
+            "scheme --script " (car modes) "/mcp/server.sc --store " xstore
+            " < " frames " > " out " 2>> " (stub-err modes) "; echo $? > " rc))
+  (let ((lines (lines-of-text (file-text out))))
+    (want "X14 the eval written before EOF is answered, then the shell exits 0"
+          (list (length lines) (and (= 2 (length lines)) (text-of (cadr lines))) (file-text rc))
+          '(2 "(ok slow)\n" "0\n"))))
+
+;; ---- X15 two shells, one store: evaluations overlap ------------------------------------------------
+(let* ((a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
+       (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
+       (open! (lambda (s) (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                      (send-frame! s (eval-call '("(+ 1 1)"))) (read-frame s)))
+       (_ (begin (open! a) (open! b)))
+       (_ (send-frame! a (eval-call '("--lang" "shell" "sleep 2"))))
+       (_ (send-frame! b (eval-call '("--lang" "shell" "sleep 2"))))
+       (sent (wall-ms))
+       (ra (read-frame a)) (rb (read-frame b))
+       (done (wall-ms)))
+  (for-each (lambda (s) (close-input! s) (let d () (unless (eof-object? (read-frame s)) (d)))) (list a b))
+  (want "X15 two shells' sleep 2 both answer ok within 3.5 s of the later send (one after the other would need over 4)"
+        (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok") (< (- done sent) 3500))
+        '(#t #t #t)))
+
+;; ---- X16 the reaper does not run while a child is owned ------------------------------------------------
+;; Deterministic: the shell holds after the spawn and before its first poll;
+;; the row waits for the hold, then for the stub to be a zombie (exited, not
+;; collected), then releases. A shell that reaped any child inside its wait
+;; would collect it there, and its own waitpid would find no child.
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c " " (stub-err modes))))
+       (release (string-append here "/x16.release"))
+       (_ (system (string-append "rm -f " release " " release ".held")))
+       (s (stub-shell modes (string-append "env THEOURGIA_INJECT=on THEOURGIA_HOLD=mcp-child-wait:" release " ")))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "ok"))))
+       (held (within 10000 (lambda () (file-exists? (string-append release ".held")))))
+       (started (within 10000 (lambda () (first-counter c))))
+       (zombie (and started (within 10000 (lambda () (starts-with-text? (ps-stat (car started)) "Z")))))
+       (_ (system (string-append "touch " release)))
+       (answer (read-frame s)))
+  (close-input! s)
+  (let d () (unless (eof-object? (read-frame s)) (d)))
+  (want "X16 held before the first poll, the stub a zombie, then released: the stub's answer, and no hold expired"
+        (list (and held #t) (and zombie #t) (text-of answer)
+              (contains? (file-text (stub-err modes)) "hold-expired"))
+        '(#t #t "(ok (stub))\n" #f)))
+
+;; ---- X17 preflight: nothing is sent when nothing can run -------------------------------------------------
+;; The store's daemon is started first, by the real shell, so the catalogue
+;; is served whatever the stub shell could or could not start.
+(talk (list hello ready tools-list-frame))
+(let* ((d (stub-dir! "x17" #f))
+       (out (stub-talk d "" (list hello ready (eval-call '("(+ 1 2)")) describe-frame))))
+  (want "X17 no core.sc beside the shell: not sent, core-missing, the session goes on, nothing ran"
+        (list (code-of (cadr out))
+              (let ((m (message-of (cadr out)))) (and (string? m) (contains? m "was not sent") (contains? m "core-missing")))
+              (starts-with-text? (text-of (caddr out)) "(ok")
+              (length (counter-lines (cadr d))))
+        '(-32603 #t #t 0)))
+
+(talk (list hello ready tools-list-frame))
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (out (stub-talk modes "env THEOURGIA_SCHEME=/nonexistent " (list hello ready (mode-call "ok")))))
+  (want "X17 a scheme that cannot be started, with the daemon already up: not sent, spawn-failed, nothing ran"
+        (list (code-of (cadr out))
+              (let ((m (message-of (cadr out)))) (and (string? m) (contains? m "spawn-failed")))
+              (length (counter-lines c)))
+        '(-32603 #t 0)))
+
+;; ---- X18 a name already taken is left alone ------------------------------------------------------------
+(define (key-dir-of store)
+  (string-append (resolved-by-the-shell (string-append sock-here "/run")) "/" (store-key store)))
+
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes ""))
+       (pid (number->string (shell-pid s)))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s tools-list-frame) (read-frame s)))
+       (kd (key-dir-of xstore))
+       (n (lambda (i) (string-append kd "/mcp-" pid "-" (number->string i))))
+       (other (string-append here "/x18-other"))
+       (_ (system (string-append "mkdir -p " (n 0) " " other "; echo kept > " (n 0) "/kept"
+                                 "; ln -s " other " " (n 1) "; echo file > " (n 2))))
+       (_ (send-frame! s (mode-call "ok")))
+       (answer (read-frame s)))
+  (close-input! s)
+  (let d () (unless (eof-object? (read-frame s)) (d)))
+  (want "X18 three taken names are untouched, the call used the fourth and removed it"
+        (list (text-of answer)
+              (file-text (string-append (n 0) "/kept"))
+              (file-symbolic-link? (n 1))
+              (file-text (n 2))
+              (file-exists? (n 3)))
+        '("(ok (stub))\n" "kept\n" #t "file\n" #f)))
+
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes ""))
+       (pid (number->string (shell-pid s)))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s tools-list-frame) (read-frame s)))
+       (kd (key-dir-of xstore))
+       (_ (for-each (lambda (i) (system (string-append "mkdir -p " kd "/mcp-" pid "-" (number->string i))))
+                    '(0 1 2 3 4 5 6 7)))
+       (_ (send-frame! s (mode-call "ok")))
+       (answer (read-frame s)))
+  (close-input! s)
+  (let d () (unless (eof-object? (read-frame s)) (d)))
+  (want "X18 eight names taken: not sent, scratch-unavailable, nothing ran"
+        (list (code-of answer)
+              (let ((m (message-of answer))) (and (string? m) (contains? m "scratch-unavailable")))
+              (length (counter-lines c)))
+        '(-32603 #t 0)))
+
+;; ---- X19 a NUL cannot reach a C argv -----------------------------------------------------------------
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (out (stub-talk modes "" (list hello ready
+                                      (eval-call (list (string-append "ok" (string #\nul) "x")))
+                                      (call-tool-stdin "theourgia_eval" '("ok") (string-append "a" (string #\nul) "b"))))))
+  (want "X19 a NUL in an argument or in stdin answers nul-in-argument as a result, and nothing ran"
+        (list (map (lambda (l) (list (is-error-of l) (text-of l))) (cdr out)) (length (counter-lines c)))
+        (list '((#f "(error bad-request nul-in-argument)\n") (#f "(error bad-request nul-in-argument)\n")) 0)))
+
+;; ---- X20 a wait or a signal that fails ----------------------------------------------------------------
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes "env THEOURGIA_INJECT=on THEOURGIA_FAULT=waitpid-fail@mcp-wait "))
+       (pid (shell-pid s))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "ok"))))
+       (answer (read-frame s))
+       (left (call-dirs-of pid))
+       (_ (send-frame! s describe-frame))
+       (next (read-frame s)))
+  (close-input! s)
+  (let d () (unless (eof-object? (read-frame s)) (d)))
+  (want "X20 a poll whose waitpid fails: the transport error, wait-failed 5, the call directory gone, the next frame answered"
+        (list (code-of answer) (reason-of answer) left (starts-with-text? (text-of next) "(ok"))
+        '(-32603 "wait-failed 5" () #t)))
+
+(let* ((c (cadr modes)) (_ (system (string-append "rm -f " c)))
+       (s (stub-shell modes "env THEOURGIA_INJECT=on THEOURGIA_FAULT=kill-fail@mcp-signal THEOURGIA_MCP_PREPARATION_MS=1000 "))
+       (pid (shell-pid s))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "exit-in-3" "--timeout-ms" "1"))))
+       (answer (read-frame s))
+       (left (call-dirs-of pid))
+       (stub (first-counter c))
+       (_ (pause-ms 3500))
+       (_ (send-frame! s describe-frame))
+       (next (read-frame s))
+       (collected (and stub (within 3000 (lambda () (string=? "" (ps-stat (car stub))))))))
+  (close-input! s)
+  (let d () (unless (eof-object? (read-frame s)) (d)))
+  (want "X20 a deadline whose signal fails: signal-failed 5, the directory gone, and the stub collected by a later call's reap once it exited"
+        (list (code-of answer) (reason-of answer) left (starts-with-text? (text-of next) "(ok") (and collected #t))
+        '(-32603 "signal-failed 5" () #t #t)))
+
+;; ---- X21 files that cannot be read --------------------------------------------------------------------
+(let ((out (stub-talk modes "" (list hello ready (mode-call "unlinkanswer") (mode-call "unlinkdiag")
+                                     (mode-call "cutdiag")))))
+  (want "X21 an answer file replaced by a directory: answer-unreadable; a diag replaced so: diag null; a diag cut inside a character: diag null"
+        (list (reason-of (cadr out))
+              (list (reason-of (caddr out)) (diag-of (caddr out)))
+              (list (reason-of (cadddr out)) (diag-of (cadddr out))))
+        '("answer-unreadable" ("exit 2" null) ("exit 2" null))))
+
+;; ---- X22 the answer is not parsed ------------------------------------------------------------------------
+(let ((out (stub-talk modes "" (list hello ready (mode-call "open")))))
+  (want "X22 an answer that is only \"(ok\" comes back as that text, isError false"
+        (list (is-error-of (cadr out)) (text-of (cadr out)))
+        '(#f "(ok")))
+
+;; ---- X23 the environment's bindings are replaced, not appended -------------------------------------------
+(let* ((d (stub-dir! "x23" STUB-ECHO))
+       (s (start-at-shell (string-append (car d) "/mcp/server.sc") xstore #f
+                          "env THEOURGIA_STORE=/elsewhere THEOURGIA_WIRE=0 THEOURGIA_WRITER= " " --writer wx"
+                          (stub-err d)))
+       (out (drain s (list hello ready (eval-call '("x")))))
+       (dt (text-datum (cadr out))))
+  (want "X23 the child sees the shell's store, wire 1 and the session's writer, whatever the shell's own environment held"
+        (and (pair? dt) (let ((e (assq 'env (cdr dt)))) (and e (cdr e))))
+        (list xstore "1" "wx")))
+
+;; ---- X24 a call directory that cannot be removed ----------------------------------------------------------
+(let* ((d modes) (_ (system (string-append "rm -f " (stub-err d))))
+       (s (stub-shell d ""))
+       (pid (shell-pid s))
+       (_ (begin (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                 (send-frame! s (mode-call "extrafile"))))
+       (answer (read-frame s))
+       (left (call-dirs-of pid))
+       (_ (send-frame! s (mode-call "ok")))
+       (next (read-frame s)))
+  (close-input! s)
+  (let dr () (unless (eof-object? (read-frame s)) (dr)))
+  (want "X24 the answer is returned, the shell's stderr names the directory once, the directory is left with only the extra file, the next call succeeds"
+        (list (text-of answer)
+              (length (filter (lambda (l) (contains? l "call-directory-left")) (lines-of-text (file-text (stub-err d)))))
+              (length left)
+              (and (= 1 (length left))
+                   (let ((out (string-append here "/x24ls.txt")))
+                     (system (string-append "ls -A " (car left) " > " out))
+                     (file-text out)))
+              (text-of next))
+        '("(ok x)\n" 1 1 "extra\n" "(ok (stub))\n")))
+
+;; ---- M13's row: the route comes from the catalogue, not from the name ------------------------------------
+;; A peer that serves a catalogue routing eval to the DAEMON: the shell must
+;; send it there, and run no child. A shell that dispatched on the verb's name
+;; would spawn.
+(let* ((saved wcatalogue)
+       (_ (set! wcatalogue
+                (reply-text
+                  (string-append
+                    "(ok (verbs "
+                    "(eval (usage (eval <source>)) (description \"Evaluate.\") (protocol #f) (route daemon)) "
+                    "(describe (usage (describe)) (description \"Describe.\") (protocol #f) (route daemon))) "
+                    "(protocol \"p\"))\n"))))
+       (_ (start-wpeer!))
+       (d (stub-dir! "m13" STUB-ECHO))
+       (out (drain (start-at-shell (string-append (car d) "/mcp/server.sc") xstore wsock "" "" (stub-err d))
+                   (list hello ready (eval-call '("(+ 1 2)")))))
+       (sent (filter (lambda (f) (and (pair? f) (memq 'eval f))) (recorded-frames))))
+  (stop-wpeer!)
+  (set! wcatalogue saved)
+  (want "X25 a catalogue routing eval to the daemon: the shell sends it there, and no child runs"
+        (list (text-of (cadr out)) (length sent) (length (counter-lines (cadr d))))
+        '("(ok)\n" 1 0)))
 
 ;; ---- teardown ---------------------------------------------------------------
 ;;

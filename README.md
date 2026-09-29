@@ -1533,6 +1533,11 @@ NOTE: A change: `eval` used to read `--writer` alone, so `eval --working`
 with `THEOURGIA_WRITER` set and no `--writer` was refused `writer-required`;
 it now reads that writer's drafts.
 
+**Through the MCP shell** `eval` is the tool `theourgia_eval`: the shell runs
+`core.sc eval` with the caller's argv as its own child and returns the answer
+byte for byte, so everything in this section holds there too
+(`mcp/README.md`, "Eval").
+
 **The answer's mode.** `--wire` on the command line, else
 `THEOURGIA_WIRE=1` in the environment, and for `eval` only. The variable is
 for a caller that runs `core.sc` as its child and passes the caller's
@@ -1735,8 +1740,9 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
-| `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire` |
-| `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`) |
+| `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
+| `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
+| `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 

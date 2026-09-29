@@ -39,19 +39,25 @@
 ;; NEVER: THE SHELL IS AS THIN AS THE COMMAND LINE. It does not import the
 ;; core, the scheduler or the socket machinery: it speaks to a daemon
 ;; through `(theourgia client)` and knows nothing about what any verb
-;; means. NOTE: It used to dispatch in this process when there was no
+;; means -- except eval's `--timeout-ms`, read only to decide how long to
+;; wait for the child it runs for eval (the child budget). NOTE: It used to dispatch in this process when there was no
 ;; daemon, which meant every shell loaded the whole core to serve the
 ;; first call -- and that is the cost the split exists to avoid. It now
 ;; starts a daemon instead, the same way the command line does.
 (import (chezscheme)
-        (only (theourgia render) answer-printing!)
+        (only (theourgia render) answer-printing! render-wire)
         (only (theourgia client)
               socket-path serve-log-path request-frame call! ensure-daemon!
               answer-field readable-shape?)
-        ;; NOTE: ONE NAME, AND IT WIDENS NOTHING: `(theourgia ffi)` is already
-        ;; in this shell's closure through `(theourgia client)`, which is
-        ;; what opens the socket and starts the daemon.
-        (only (theourgia ffi) reap-children!)
+        ;; NOTE: THESE NAMES WIDEN NOTHING: `(theourgia ffi)` is already in
+        ;; this shell's closure through `(theourgia client)`, which is what
+        ;; opens the socket and starts the daemon. The child route uses the
+        ;; rest: the spawn, the pid wait and signal, the call directory.
+        (only (theourgia ffi) reap-children! spawn-captured! waitpid-status signal-pid!
+              mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
+              read-entry read-entry-range theourgia-stage hold-point! trace-event!
+              fs-error? fs-error-errno)
+        (only (theourgia client) run-root store-key)
         ;; F100b item 8: a refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
         ;; table (point 7).
@@ -70,11 +76,12 @@
   (string-append
     "Tools return the unmodified core command answer as S-expression text. "
     "Core refusals are successful transport results. "
-    "Eval is available only in the local CLI."))
+    "Eval runs on the store's machine as a child of this shell; a language other than Scheme runs only where the operator has set THEOURGIA_RUNNERS=on for it."))
 
 ;; THE SESSION'S WRITER IS SAID TO THE CLIENT: the three sentences above,
-;; unchanged, and one more naming the writer this run chose and how an
-;; earlier session's drafts are reached.
+;; and one more naming the writer this run chose and how an earlier
+;; session's drafts are reached. The third said "Eval is available only in
+;; the local CLI" until the shell began to carry eval out as its child.
 (define (session-instructions)
   (string-append instructions
                  " This session's writer is " (shell-writer)
@@ -207,15 +214,17 @@
            ;; breaking the whole listing.
            ((not name) (loop (cdr es) out))
            ;; NEVER: AND A VERB THIS SHELL CANNOT CARRY OUT IS NOT OFFERED.
-           ;; The shell has no local route: everything it lists, it sends
-           ;; to a daemon. `init` is what CREATES a store, so there is no
-           ;; daemon to send it to -- offered as a tool it could never
-           ;; succeed, and an agent told the capability exists would keep
-           ;; trying. A host creates the store once before starting this.
-           ((not (eq? 'daemon (entry-field entry 'route))) (loop (cdr es) out))
+           ;; It carries out two routes: `daemon`, sent to the store's
+           ;; server, and `child`, run as this shell's own child. `init` is
+           ;; `local` -- what CREATES a store, so there is no daemon to send
+           ;; it to -- and offered as a tool it could never succeed; an agent
+           ;; told the capability exists would keep trying. A host creates
+           ;; the store once before starting this.
+           ((not (memq (entry-field entry 'route) '(daemon child))) (loop (cdr es) out))
            (else
             (loop (cdr es)
-                  (cons (list name verb (description-of entry protocol)) out)))))))))
+                  (cons (list name verb (description-of entry protocol) (entry-field entry 'route))
+                        out)))))))))
 
 (define (entry-field entry name)
   (let ((hit (assq name (cdr entry))))
@@ -447,8 +456,10 @@
 
 ;; ---- reaching the daemon -----------------------------------------------------
 ;;
-;; NEVER: ONE ROUTE. There is a daemon or there is about to be one: the shell
-;; asks, and if nothing is listening it starts one and asks again. NOTE: It
+;; NEVER: ONE ROUTE TO A DAEMON, AND A CHILD ROUTE. There is a daemon or there
+;; is about to be one: the shell asks, and if nothing is listening it starts
+;; one and asks again. A verb the catalogue routes `child` -- eval -- is not
+;; sent at all: it is run as this shell's child (below). NOTE: It
 ;; used to fall back to dispatching in this process, which is why this
 ;; program imported the core -- and a shell that loads the core to serve
 ;; its first call has paid for the server it exists not to be.
@@ -590,6 +601,295 @@
 
 (define (answer-origin envelope)
   (answer-field envelope 'origin (lambda (x) #t)))
+
+;; ---- carrying out eval: the child route ------------------------------------
+;;
+;; KEY: THE CHILD IS THE COMMAND LINE'S OWN EVAL INVOCATION. `theourgia eval
+;; <argv>` execs `core.sc eval <argv>`; this shell runs the same program with
+;; the same argv as its CHILD and reads the answer, so it can answer the next
+;; call afterwards. The daemon never executes user code, and this process
+;; loads no core: the evaluation, its supervisor and its limits are core.sc's.
+;;
+;; NEVER: THE CHILD'S argv IS THE CALLER'S, VERBATIM AND ALONE. The store,
+;; the wire mode and this session's writer reach it through its
+;; environment -- THEOURGIA_STORE, THEOURGIA_WIRE=1, THEOURGIA_WRITER --
+;; each REPLACING any binding of that name. Nothing is prepended to the
+;; argv, so the child's parse of it is the caller-only parse, and every
+;; refusal of that argv is the one the command line gives for it.
+;;
+;; NEVER: ITS STREAMS ARE THIS CALL'S FILES. fd 0 is the tool's stdin written
+;; to a file, or /dev/null; fd 1 and fd 2 are the call's answer and
+;; diagnostics files. The child can never read this shell's standard input,
+;; which is the host's pipe, nor write into its answers.
+;;
+;; OUTCOMES: `(text <s>)` when the child exited 0 or 1 with a non-empty
+;; answer that is UTF-8 -- whatever the datum says, as for every tool; a
+;; result datum for a refusal this shell makes before anything runs;
+;; `(not-sent <datum>)` when nothing ran; `(child-lost <reason> <diag>)`
+;; otherwise, and that one says execution may be unknown.
+(define (child-route store verb argv stdin)
+  (let ((nodes (parse-arguments verb argv)))
+    (cond
+      ;; NEVER: C STRINGS END AT NUL, so an argument holding one would reach the
+      ;; child cut short. Refused before anything is made or run.
+      ((or (exists (lambda (a) (string-has-nul? a)) argv)
+           (and (string? stdin) (string-has-nul? stdin)))
+       (list 'result-datum '(error bad-request nul-in-argument)))
+      ;; A CALLER'S argv MAY NOT NAME THE TRANSPORT, on this route as on the
+      ;; daemon's (transport-option-in-rpc, the same list): the child would
+      ;; take a caller's `--store` over the store this shell serves. Only an
+      ;; option NODE counts, so positional text that merely spells one, or
+      ;; anything after `--`, is not refused. A parse ERROR is not this
+      ;; shell's to answer: the child answers it, as the command line would.
+      ((and (not (parse-error? nodes))
+            (exists (lambda (o) (argument-option nodes o)) transport-options))
+       (list 'result-datum '(error bad-request transport-option-in-rpc)))
+      (else
+       (let ((core (beside-this-program "core.sc")))
+         (if (not (eq? (entry-type core) 'regular))
+             (list 'not-sent (list 'error 'core-missing (list 'path core)))
+             (let ((dir (claim-call-directory store)))
+               (if (not dir)
+                   (list 'not-sent '(error scratch-unavailable))
+                   (run-child-in dir core argv stdin (child-budget-ms nodes))))))))))
+
+(define (parse-error? nodes) (and (pair? nodes) (eq? (car nodes) 'error)))
+
+(define (string-has-nul? s)
+  (let loop ((i 0))
+    (and (< i (string-length s))
+         (or (char=? (string-ref s i) #\nul) (loop (+ i 1))))))
+
+;; THE BUDGET, IN ONE PLACE. T is the caller's `--timeout-ms` when it is an
+;; exact integer in 1..60000 -- the bound core.sc applies -- and 3000
+;; otherwise: an invalid value is refused by the child at once, so the
+;; default is enough for that. Twice T covers a wait for an evaluation slot
+;; (at most T) and the evaluation (at most T); preparation is on top.
+;;
+;; NOTE: THIS IS THE ONE PLACE THE SHELL READS A VERB'S OPTION, and it reads
+;; it only to decide how long to wait for a child, never to decide anything
+;; about the request.
+(define (child-budget-ms nodes)
+  (let* ((given (and (not (parse-error? nodes)) (argument-option nodes "--timeout-ms")))
+         (n (and (string? given) (string->number given 10)))
+         (t (if (and n (exact? n) (integer? n) (<= 1 n 60000)) n 3000)))
+    (+ (* 2 t) preparation-ms)))
+
+;; A CHOSEN ALLOWANCE, NOT A MEASURED BOUND: ready 5 s, the group wait and
+;; drain 3 s, and 62 s for projection, cleanup and everything else a child
+;; does before and after its evaluation. THEOURGIA_MCP_PREPARATION_MS
+;; replaces it, a positive integer, checked at start; it is a test seam.
+(define preparation-ms 70000)
+
+(define (preparation-from-environment)
+  (let ((v (getenv "THEOURGIA_MCP_PREPARATION_MS")))
+    (cond ((not v) 70000)
+          ((let ((n (string->number v 10))) (and n (exact? n) (integer? n) (> n 0) n)) => (lambda (n) n))
+          (else #f))))
+
+;; THE CALL'S DIRECTORY IS THIS SHELL'S, CLAIMED EXCLUSIVELY. Under the run
+;; root resolved once by real-path, in the daemon's own `<store-key>`
+;; directory (made if absent), `mcp-<pid>-<counter>` with mode 0700; a name
+;; already taken -- a file, a directory, a link -- is left alone and the
+;; next counter is tried, up to 8 names. -> the directory, or #f when the
+;; root cannot be resolved or every name was taken. A filesystem condition
+;; raised here is left to raise: the request's table answers it as a
+;; result, as it answers any other before the spawn.
+(define call-counter 0)
+
+(define (claim-call-directory store)
+  (let ((root (real-path (run-root))))
+    (and root
+         (let ((parent (string-append root "/" (store-key store))))
+           (mkdir-p! parent)
+           (let loop ((tries 0))
+             (and (< tries 8)
+                  (let ((dir (string-append parent "/mcp-" (number->string (get-process-id))
+                                            "-" (number->string call-counter))))
+                    (set! call-counter (+ call-counter 1))
+                    (if (eq? 'created (mkdir-exclusive! dir #o700))
+                        dir
+                        (loop (+ tries 1))))))))))
+
+(define (scheme-binary)
+  (or (getenv "THEOURGIA_SCHEME") "scheme"))
+
+(define (run-child-in dir core argv stdin budget)
+  (let ((stdin-path (and (string? stdin) (string-append dir "/stdin")))
+        (answer-path (string-append dir "/answer"))
+        (diag-path (string-append dir "/diag")))
+    (when stdin-path
+      (call-with-port (open-file-output-port stdin-path (file-options no-fail) (buffer-mode block)
+                                             (make-transcoder (utf-8-codec)))
+        (lambda (p) (put-string p stdin))))
+    (let-values (((pid spawn-errno)
+                  (spawn-captured! (append (list (scheme-binary) "--script" core "eval") argv)
+                                   (list (cons "THEOURGIA_STORE" serving-store)
+                                         (cons "THEOURGIA_WIRE" "1")
+                                         (cons "THEOURGIA_WRITER" (shell-writer)))
+                                   stdin-path answer-path diag-path)))
+      (if (not pid)
+          (begin (remove-call-files! dir (list stdin-path answer-path diag-path))
+                 (list 'not-sent (list 'error 'spawn-failed (list 'errno spawn-errno))))
+          (let ((ending (await-child pid budget)))
+            (let ((outcome (outcome-of ending answer-path diag-path)))
+              (remove-call-files! dir (list stdin-path answer-path diag-path))
+              outcome))))))
+
+;; THE STORE THIS SHELL SERVES, as the child is told it.
+(define serving-store #f)
+
+(define (now-ms)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* (time-second t) 1000) (quotient (time-nanosecond t) 1000000))))
+
+(define (pause-ms ms) (sleep (make-time 'time-duration (* ms 1000000) 0)))
+
+;; NEVER: THE STATUS IS ASKED OF THAT PID, NOT OF ANY CHILD. While a child is
+;; owned here nothing calls reap-children!, which collects any exited child
+;; and would take this one's status; `ask` runs before or after, never
+;; during. A waitpid that raises, on any poll, is caught here: its execution
+;; is unknown, and left to the request's table it would be answered as a
+;; filesystem RESULT.
+;;
+;; -> (status <(exit n)|(signal s)>), (wait-failed <errno>),
+;;    (deadline <ms>), (deadline-unreaped <ms>) or (signal-failed <errno>).
+(define (await-child pid budget)
+  (hold-point! 'mcp-child-wait)
+  (let ((deadline (+ (now-ms) budget)))
+    (let poll ()
+      (let ((status (poll-child pid)))
+        (cond
+          ((and (pair? status) (eq? (car status) 'wait-failed)) status)
+          (status (list 'status status))
+          ((< (now-ms) deadline) (pause-ms 25) (poll))
+          (else (kill-at-deadline pid budget)))))))
+
+;; -> #f while it runs, its status once it ended, or (wait-failed <errno>).
+(define (poll-child pid)
+  (guard (e (#t (list 'wait-failed (if (fs-error? e) (fs-error-errno e) 'unknown))))
+    (parameterize ((theourgia-stage 'mcp-wait)) (waitpid-status pid))))
+
+;; WHAT A KILL LEAVES. SIGKILL ends the supervisor without running its
+;; exits, so its worker's or runner's process group is NOT signalled and its
+;; scratch is not removed: a CPU-bound survivor ends at its CPU ceiling, if
+;; the kernel accepted one; a sleeping or blocked one has no finite bound
+;; from here; and a descendant that left the group had none before either.
+;; The status is then polled for up to 2 s.
+(define (kill-at-deadline pid budget)
+  (let ((r (parameterize ((theourgia-stage 'mcp-signal)) (signal-pid! pid 9))))
+    (if (not (eqv? r 0))
+        (list 'signal-failed r)
+        (let ((grace (+ (now-ms) 2000)))
+          (let poll ()
+            (let ((status (poll-child pid)))
+              (cond
+                ((and (pair? status) (eq? (car status) 'wait-failed)) status)
+                (status (list 'deadline budget))
+                ((< (now-ms) grace) (pause-ms 25) (poll))
+                (else (list 'deadline-unreaped budget)))))))))
+
+(define (outcome-of ending answer-path diag-path)
+  (case (car ending)
+    ((status)
+     (let ((status (cadr ending)))
+       (cond
+         ((and (eq? (car status) 'exit) (memv (cadr status) '(0 1)))
+          (let ((bytes (guard (e (#t 'unreadable)) (read-entry answer-path))))
+            (cond
+              ((not (bytevector? bytes)) (lost "answer-unreadable" diag-path))
+              ((= 0 (bytevector-length bytes)) (lost "empty-answer" diag-path))
+              ((not (valid-utf8? bytes)) (lost "not-utf8" diag-path))
+              (else (list 'text (utf8-text bytes))))))
+         ((eq? (car status) 'exit)
+          (lost (string-append "exit " (number->string (cadr status))) diag-path))
+         (else
+          (lost (string-append "signal " (number->string (cadr status))) diag-path)))))
+    ((wait-failed) (lost (string-append "wait-failed " (errno-word (cadr ending))) diag-path))
+    ((signal-failed) (lost (string-append "signal-failed " (errno-word (cadr ending))) diag-path))
+    ((deadline) (lost (string-append "deadline " (number->string (cadr ending))) diag-path))
+    (else (lost (string-append "deadline-unreaped " (number->string (cadr ending))) diag-path))))
+
+(define (errno-word e) (if (number? e) (number->string e) "unknown"))
+
+(define (lost reason diag-path)
+  (list 'child-lost reason (diag-tail diag-path)))
+
+;; THE LAST 4096 BYTES OF THE DIAGNOSTICS, READ AS ONE SEEK AND ONE READ: a
+;; child may write any amount there, and reading all of it to keep the end
+;; would cost its whole size. -> a string, or #f when the file is not a
+;; regular file, cannot be read, or its tail is not UTF-8 -- a tail cut
+;; inside a multibyte character included.
+(define (diag-tail path)
+  (guard (e (#t #f))
+    (and (eq? 'regular (entry-type path))
+    (let* ((size (file-size path))
+           (offset (max 0 (- size 4096))))
+      (trace-event! 'diag-seek path offset)
+      (let ((bytes (read-entry-range path offset (- size offset))))
+        (trace-event! 'diag-read path (bytevector-length bytes))
+        (and (valid-utf8? bytes) (utf8-text bytes)))))))
+
+;; THE CALL'S FILES ARE REMOVED ON EVERY OUTCOME, each whether it is a file or
+;; an empty directory, then the directory. A removal that fails is written to
+;; this shell's own stderr -- which is not a channel to the host -- and the
+;; directory is left; the call's outcome is unchanged by it.
+(define (remove-call-files! dir paths)
+  (guard (e (#t (let ((p (current-error-port)))
+                  (put-string p "(theourgia-mcp call-directory-left \"")
+                  (put-string p dir)
+                  (put-string p "\")\n")
+                  (flush-output-port p))))
+    (for-each (lambda (path)
+                (when path
+                  (case (entry-type path)
+                    ((absent) (void))
+                    ((directory) (rmdir! path))
+                    (else (unlink! path)))))
+              paths)
+    (rmdir! dir)))
+
+;; STRICT UTF-8: overlong forms, surrogates and code points above U+10FFFF
+;; are refused, as is a sequence cut short at the end.
+(define (valid-utf8? b)
+  (let ((n (bytevector-length b)))
+    (define (byte i) (bytevector-u8-ref b i))
+    (define (cont? i) (and (< i n) (= #x80 (fxand (byte i) #xC0))))
+    (define (in? i lo hi) (and (< i n) (<= lo (byte i) hi)))
+    (let loop ((i 0))
+      (if (= i n)
+          #t
+          (let ((c (byte i)))
+            (cond
+              ((< c #x80) (loop (+ i 1)))
+              ((<= #xC2 c #xDF) (and (cont? (+ i 1)) (loop (+ i 2))))
+              ((= c #xE0) (and (in? (+ i 1) #xA0 #xBF) (cont? (+ i 2)) (loop (+ i 3))))
+              ((or (<= #xE1 c #xEC) (<= #xEE c #xEF))
+               (and (cont? (+ i 1)) (cont? (+ i 2)) (loop (+ i 3))))
+              ((= c #xED) (and (in? (+ i 1) #x80 #x9F) (cont? (+ i 2)) (loop (+ i 3))))
+              ((= c #xF0) (and (in? (+ i 1) #x90 #xBF) (cont? (+ i 2)) (cont? (+ i 3)) (loop (+ i 4))))
+              ((<= #xF1 c #xF3) (and (cont? (+ i 1)) (cont? (+ i 2)) (cont? (+ i 3)) (loop (+ i 4))))
+              ((= c #xF4) (and (in? (+ i 1) #x80 #x8F) (cont? (+ i 2)) (cont? (+ i 3)) (loop (+ i 4))))
+              (else #f)))))))
+
+;; THE TEXT OF VALID UTF-8 BYTES, EVERY CHARACTER KEPT. utf8->string drops a
+;; leading byte-order mark, so one is put back: the answer is byte for byte
+;; what the child wrote.
+(define (utf8-text b)
+  (if (and (>= (bytevector-length b) 3)
+           (= #xEF (bytevector-u8-ref b 0)) (= #xBB (bytevector-u8-ref b 1)) (= #xBF (bytevector-u8-ref b 2)))
+      (let ((rest (make-bytevector (- (bytevector-length b) 3))))
+        (bytevector-copy! b 3 rest 0 (bytevector-length rest))
+        (string-append (string (integer->char #xFEFF)) (utf8->string rest)))
+      (utf8->string b)))
+
+;; THE TRANSPORT ERROR A LOST CHILD IS ANSWERED WITH: the one this shell uses
+;; when a request's fate is unknown, with what is known in its data. Never
+;; re-sent.
+(define (child-lost-error-json reason diag)
+  (string-append "{\"code\":-32603,\"message\":\"Core answer unavailable; execution may be unknown\""
+                 ",\"data\":{\"reason\":" (json->string reason)
+                 ",\"diag\":" (if diag (json->string diag) "null") "}}"))
 
 ;; NEVER: THE SERVER'S OWN WORDS, RENDERED AS TEXT. What `ensure-daemon!`
 ;; hands back is the refusal the server wrote to its log --
@@ -795,12 +1095,29 @@
              (let ((entry (assoc name (cadr listing))))
                (if (not entry)
                    (list 'error identity -32602 "Unknown tool")
-                   (let ((outcome (ask store actor socket (cadr entry)
-                                       (vector->list* (member-of arguments "argv"))
-                                       (member-of arguments "stdin"))))
+                   ;; THE SHELL DISPATCHES ON THE ROUTE THE CATALOGUE GIVES, not
+                   ;; on the verb's name: `child` is run here as this shell's
+                   ;; child, `daemon` is sent.
+                   (let ((outcome (if (eq? 'child (cadddr entry))
+                                      (child-route store (cadr entry)
+                                                   (vector->list* (member-of arguments "argv"))
+                                                   (member-of arguments "stdin"))
+                                      (ask store actor socket (cadr entry)
+                                           (vector->list* (member-of arguments "argv"))
+                                           (member-of arguments "stdin")))))
                      (cond
                        ((eq? 'text (car outcome))
                         (list 'result identity (text-result-json (cadr outcome))))
+                       ;; A refusal this shell made before anything ran, as the
+                       ;; core would have rendered it: an ordinary result.
+                       ((eq? 'result-datum (car outcome))
+                        (list 'result identity (text-result-json (render-wire (cadr outcome)))))
+                       ;; A child that ran and whose answer did not come back
+                       ;; whole: execution may be unknown, with the reason and
+                       ;; the end of its diagnostics.
+                       ((eq? 'child-lost (car outcome))
+                        (list 'error-object identity
+                              (child-lost-error-json (cadr outcome) (caddr outcome))))
                        ;; NEVER: THE DAEMON DECLINING IS NOT THE TOOL ANSWERING.
                        ;; A draining daemon, or one that lost the process
                        ;; serving this request, refuses in the same envelope
@@ -1018,6 +1335,10 @@
             ((not store) (usage-exit))
             ((and env (not (working-id? env))) (usage-exit))
             ((and opt (not (working-id? opt))) (usage-exit))
+            ;; The test seam for the child budget is checked where the
+            ;; writers are: a value that is not a positive integer is a
+            ;; mistake in how the shell was started.
+            ((not (preparation-from-environment)) (usage-exit))
             (else
              (let ((socket (or (argument-option nodes "--socket")
                                ;; NEVER: THE SHARED RULE. This defaulted to
@@ -1025,6 +1346,8 @@
                                ;; path that has one function for it.
                                (socket-path store))))
                (set! session-writer (or env opt (derived-writer actor)))
+               (set! serving-store store)
+               (set! preparation-ms (preparation-from-environment))
                ;; NOTE: NO SCHEDULER. Reaching a daemon used to need one,
                ;; because the socket went through the actor system; the
                ;; client's calls are plain blocking reads and writes, so
