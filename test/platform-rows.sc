@@ -226,17 +226,18 @@
 (define (def-name f)
   (and (pair? f) (eq? (car f) 'define) (pair? (cdr f))
        (if (pair? (cadr f)) (caadr f) (cadr f))))
-;; The row above sees behaviour only; this one reads the text. The seam is
+;; The row above sees behaviour only; this one reads the code. The seam is
 ;; a meta-cond of exactly two clauses on a value read at EXPANSION, its
 ;; ordinary branch defines forced-key as the constant #f, and the
-;; variable's name occurs three times in the file's text -- two comments
-;; and the one getenv, inside the injection clause -- so an ordinary build
-;; has no code that reads it, and a further clause or read that names it
-;; changes the count.
+;; variable's name occurs as a string in the library's CODE exactly once,
+;; inside the injection clause -- so an ordinary build has no code that
+;; reads it, and a read anywhere else, at expansion or at run time, adds
+;; to the count. Comments are not code and are not counted.
 (define table-body (library-body (forms-of "../platform-numbers.sc")))
 (define seam-form (find (lambda (f) (and (pair? f) (eq? (car f) 'meta-cond))) table-body))
-(define (holds-string? x str)
-  (let search ((x x)) (cond ((string? x) (string=? x str)) ((pair? x) (or (search (car x)) (search (cdr x)))) (else #f))))
+;; how many times a string occurs as a datum in the forms
+(define (string-count x str)
+  (let count ((x x)) (cond ((string? x) (if (string=? x str) 1 0)) ((pair? x) (+ (count (car x)) (count (cdr x)))) (else 0))))
 (want "PN-P3 the seam in the text: an expansion-time meta-cond, #f in its ordinary branch, the variable read nowhere else"
       (list (and seam-form (cadr seam-form) (car (cadr seam-form)))
             (and seam-form (assq 'else (cdr seam-form)))
@@ -245,13 +246,9 @@
                        table-body)
                  #t)
             (and seam-form (length (cdr seam-form)))
-            (let ((text (call-with-input-file "../platform-numbers.sc" get-string-all)) (k "THEOURGIA_PLATFORM_KEY"))
-              (let loop ((i 0) (n 0))
-                (cond ((> (+ i (string-length k)) (string-length text)) n)
-                      ((string=? (substring text i (+ i (string-length k))) k) (loop (+ i 1) (+ n 1)))
-                      (else (loop (+ i 1) n)))))
-            (and seam-form (holds-string? (cadr seam-form) "THEOURGIA_PLATFORM_KEY")))
-      (list '(eq? inject-mode 'on) '(else (define (forced-key) #f)) #t 2 3 #t))
+            (string-count table-body "THEOURGIA_PLATFORM_KEY")
+            (and seam-form (string-count (cadr seam-form) "THEOURGIA_PLATFORM_KEY")))
+      (list '(eq? inject-mode 'on) '(else (define (forced-key) #f)) #t 2 1 1))
 
 ;; ---- P4: the probe, compiled here, against this platform's row -----------------
 ;;
