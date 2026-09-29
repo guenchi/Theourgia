@@ -37,7 +37,7 @@
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           request-frame transport-unreachable?
           count-argument outline-text write-protocol verb-catalogue
-          describe-log-error)
+          describe-log-error eval-usage)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
           (only (theourgia client) request-frame verb-spelling-error)
@@ -720,6 +720,23 @@
   ;; removed from it by a second rule somewhere, which is how a verb
   ;; comes back by accident -- so an unknown tag and a deliberately
   ;; absent one are the same answer, and there is nowhere to forget.
+  ;; NEVER: THE SPELLING IS ADVERTISED WHERE IT IS REFUSED, AND IT IS WRITTEN
+  ;; ONCE. `eval` is not a dispatcher verb, so no handler here refuses it;
+  ;; its refusals are `core.sc`'s, which imports this form, and the
+  ;; catalogue publishes the same form so that a caller who has only
+  ;; `describe` can see what eval takes. `options-gate.sc` reads it as data
+  ;; and checks every option in it against `parse-arguments`, in both
+  ;; directions.
+  ;;
+  ;; NOTE: ONLY VERB-SPECIFIC OPTIONS BELONG HERE. `--store`, `--wire`,
+  ;; `--actor`, `--req`, `--cursor` and `--socket` are accepted for every
+  ;; verb by the common part of the table, and listing them in one usage
+  ;; form would suggest they are special to it.
+  (define eval-usage
+    '(eval ["--lang" <language>] ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
+           ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
+           ["--output-bytes" <n>] <source>))
+
   ;; ---- the catalogue -------------------------------------------------------
   ;;
   ;; KEY: WHAT THE VERBS ARE, FOR SOMETHING THAT HAS TO ASK. The MCP shell
@@ -736,12 +753,18 @@
   ;; undocumented; one here and not there would be advertised and
   ;; missing. Nothing in the language stops either, so `describe.sc` has
   ;; a row that compares the two lists in both directions -- that row is
-  ;; the only thing holding this table honest.
+  ;; the only thing holding this table honest. The one exception is an
+  ;; entry whose route is `child`: it is carried out by a program the
+  ;; caller runs, never by the dispatcher, so it is here and not there.
   ;;
   ;; KEY: THE FIFTH FIELD SAYS WHO CARRIES THE VERB OUT. `daemon` means a
   ;; client sends it over the socket; `local` means the client runs the
   ;; server in its own process instead, because there is nothing to send
   ;; it to yet or because the work has to be this process's child.
+  ;; `child` means an MCP shell runs `core.sc` as its own child and reads
+  ;; the answer, and the command line execs it, as for `local`: the work
+  ;; has to be a process's child, and the shell is a process that can have
+  ;; one and still answer the next call.
   ;;
   ;; NEVER: IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
   ;; THE SHELL. `init` is what CREATES a store, so there is no daemon for
@@ -764,6 +787,8 @@
     (list
       (list 'init '(init)
             "Create a store in this directory." #f 'local)
+      (list 'eval eval-usage
+            "Evaluate source against the store, or against a writer's working view with --working: Scheme by default, another language with --lang, whose runner runs only where the operator has set THEOURGIA_RUNNERS=on. It runs as a child process of the caller, never in the store's server." #f 'child)
       (list 'insert insert-usage
             "Add a block under a parent, with a title and optional text." #t 'daemon)
       ;; NOTE: NOT MARKED, ALTHOUGH `set <id> src <text>` DOES PUT PROSE IN.
@@ -1878,8 +1903,7 @@
         ((not entry)
          (list 'error 'unknown-verb (list 'spelling (datum-spelling verb))
                (cons 'verbs (rpc-verbs))))
-        ((or (argument-option options "--store") (argument-option options "--actor")
-             (argument-option options "--wire") (argument-option options "--socket"))
+        ((exists (lambda (o) (argument-option options o)) transport-options)
          '(error bad-request transport-option-in-rpc))
         ;; NEVER: ONLY THE SHAPE THAT USED TO BE SILENT. A verb whose input is
         ;; simply absent answers its own usage line and always has; the one

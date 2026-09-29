@@ -396,25 +396,10 @@
             ;; and the source ran against nothing.
             (list 'refused answer)))))
 
-;; NEVER: THE SPELLING IS ADVERTISED WHERE IT IS REFUSED. `eval` is this
-;; program's own verb -- it is not in `rpc-verbs`, so the dispatcher's
-;; usage forms say nothing about it -- and until this batch a caller
-;; who misspelled an option got a refusal that named no alternative.
-;; `serve` is the other such verb; its form, `serve-usage`, is in
-;; `theourgiad.sc` since F46. `options-gate.sc` reads both forms as data
-;; and checks every option in them against `parse-arguments`, in both
-;; directions, which is what makes them a claim rather than a comment: the
-;; bug that prompted the gate was `eval --timeout-ms` parsing as a
-;; positional because the option table had no `eval` entry at all.
-;;
-;; NOTE: ONLY VERB-SPECIFIC OPTIONS BELONG HERE. `--store`, `--wire`,
-;; `--actor`, `--req`, `--cursor` and `--socket` are accepted for every
-;; verb by the common part of the table, and listing them in one usage
-;; form would suggest they are special to it.
-(define eval-usage
-  '(eval ["--lang" <language>] ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
-         ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
-         ["--output-bytes" <n>] <source>))
+;; NOTE: `eval-usage` IS rpc.sc'S, imported with the rest of that library.
+;; It moved there when the catalogue began to publish eval's entry (route
+;; `child`), so the form a caller reads in `describe` and the form these
+;; refusals carry are one definition, not two that can drift.
 
 ;; A LANGUAGE OTHER THAN SCHEME, or #f. `--lang scheme` is today's evaluation
 ;; exactly, with all its options; any other name takes the runner path.
@@ -703,7 +688,7 @@
                                 (getenv "THEOURGIA_STORE") "."))
                      (actor (or (argument-option nodes "--actor") (environment-actor)))
                      (socket-path* (or (argument-option nodes "--socket") (socket-path store)))
-                     (resolved (argument-stdin verb (argument-remove nodes '("--store" "--actor" "--wire" "--socket"))
+                     (resolved (argument-stdin verb (argument-remove nodes transport-options)
                                  (lambda () (read-all-text (current-input-port))))))
                  (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (not (eq? (entry-type socket-path*) 'absent)))
                    (forward-then-exit! socket-path* store actor verb resolved

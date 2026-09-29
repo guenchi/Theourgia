@@ -367,12 +367,18 @@
         ((error bad-request) (reason lang-and-under))))
 
 ;; ---- L11: the documents ----------------------------------------------------------
+;; A top-level define, or one in the body of a `(library ...)` form: eval's
+;; usage form is rpc.sc's, and that file is one library form.
 (define (defined-datum file name)
+  (define (found x)
+    (and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) name) (pair? (cddr x))
+         (let ((v (caddr x))) (if (and (pair? v) (eq? (car v) 'quote)) (cadr v) v))))
   (call-with-input-file file
     (lambda (p) (let loop () (let ((x (read p)))
                                (cond ((eof-object? x) #f)
-                                     ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) name))
-                                      (let ((v (caddr x))) (if (and (pair? v) (eq? (car v) 'quote)) (cadr v) v)))
+                                     ((found x) => (lambda (v) v))
+                                     ((and (pair? x) (eq? (car x) 'library) (list? x))
+                                      (or (exists found (cdr x)) (loop)))
                                      (else (loop))))))))
 ;; THE TABLE ROW IS READ INSIDE THE TABLE: the lines that start with "|"
 ;; directly after README's environment-table header. THE getenv IS READ AS
@@ -402,7 +408,7 @@
                  (else (holds-datum? l d)))))
         (else #f)))
 (want "L11 docs: eval's usage names --lang; README's environment table has a THEOURGIA_RUNNERS row; runners-enabled? reads it by a literal getenv"
-      (list (and (member "--lang" (map (lambda (x) (and (pair? x) (car x))) (or (defined-datum "../core.sc" 'eval-usage) '()))) #t)
+      (list (and (member "--lang" (map (lambda (x) (and (pair? x) (car x))) (or (defined-datum "../rpc.sc" 'eval-usage) '()))) #t)
             (and (exists (lambda (l) (prefix? l "| `THEOURGIA_RUNNERS` | `core.sc` |")) (environment-table-rows)) #t)
             ;; ONLY INSIDE THE GATE'S OWN DEFINITION: a binding elsewhere of the
             ;; same shape, (let ((getenv "THEOURGIA_RUNNERS")) ...), is not the read.

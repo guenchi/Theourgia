@@ -45,7 +45,8 @@
 (library (theourgia arguments)
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin argument-wants-stdin?
-          argument-stdin-placeholder? working-id? parse-shell-arguments)
+          argument-stdin-placeholder? working-id? parse-shell-arguments
+          transport-options)
   (import (rnrs base) (rnrs lists))
 
   ;; WARNING -- THESE TWO TABLES ARE A SECOND PLACE THAT KNOWS THE COMMAND LINE.
@@ -113,6 +114,13 @@
         ((eval) '("--cut" "--under" "--timeout-ms" "--memory-bytes"
                   "--output-bytes" "--writer" "--lang"))
         (else '()))))
+
+  ;; THE OPTIONS THAT SAY WHERE A REQUEST GOES AND HOW ITS ANSWER TRAVELS,
+  ;; and not what it asks. A request that reached a server has already been
+  ;; routed, so one naming any of these is refused there rather than obeyed:
+  ;; the dispatcher's check and the MCP shell's check on `eval` read this one
+  ;; list, and the refusal is `transport-option-in-rpc` on both.
+  (define transport-options '("--store" "--actor" "--wire" "--socket"))
 
   ;; AN OPTION THAT MAY BE GIVEN MORE THAN ONCE.
   ;;

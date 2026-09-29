@@ -74,20 +74,33 @@
           (else (loop (cdr xs) (cons (car xs) out))))))
 
 ;; ---- DS-1 the two lists ----------------------------------------------------
+;;
+;; NOTE: WITH ONE NAMED EXCEPTION. An entry whose route is `child` is carried
+;; out by a program the caller runs (`eval`, by `core.sc`), never by the
+;; dispatcher, so it is described and not dispatched. The exception is read
+;; from the entries' own route, and the rows below pin that it is `eval`
+;; alone.
+(define child-only
+  (map car (filter (lambda (e) (eq? 'child (entry-field e 'route))) entries)))
 
 (want "DS-1 every verb the dispatcher has is described"
       (missing-from (rpc-verbs) described)
       '())
 
-(want "DS-1 TWIN: and nothing is described that the dispatcher has not got"
-      (missing-from described (rpc-verbs))
+(want "DS-1 TWIN: and nothing is described that the dispatcher has not got, except a child-route entry"
+      (missing-from (missing-from described (rpc-verbs)) child-only)
       '())
 
 ;; NEVER: AND THE COUNTS AGREE, which the two rows above do not by themselves
-;; guarantee: a catalogue that listed a verb twice passes both.
-(want "DS-1 and there are as many entries as verbs"
-      (list (length described) (length (rpc-verbs)))
-      (list (length (rpc-verbs)) (length (rpc-verbs))))
+;; guarantee: a catalogue that listed a verb twice passes both. The entries
+;; are the dispatcher's verbs plus the child-route ones, and no name twice.
+(want "DS-1 and there are as many entries as verbs plus child-route entries, no name twice"
+      (list (length described)
+            (let loop ((xs described) (seen '()) (twice '()))
+              (cond ((null? xs) (reverse twice))
+                    ((memq (car xs) seen) (loop (cdr xs) seen (cons (car xs) twice)))
+                    (else (loop (cdr xs) (cons (car xs) seen) twice)))))
+      (list (+ (length (rpc-verbs)) (length child-only)) '()))
 
 ;; ---- DS-2 asking costs nothing ---------------------------------------------
 ;;
@@ -395,19 +408,25 @@
 (want "DS-6 every entry in the catalogue carries a route that exists"
       (let loop ((es entries) (bad '()))
         (cond ((null? es) (reverse bad))
-              ((memq (entry-field (car es) 'route) '(local daemon))
+              ((memq (entry-field (car es) 'route) '(local daemon child))
                (loop (cdr es) bad))
               (else (loop (cdr es)
                           (cons (list (car (car es)) (entry-field (car es) 'route)) bad)))))
       '())
 
-;; NOTE: THE OTHER DIRECTION HAS AN EXEMPTION, AND IT IS NAMED. `serve` and
-;; `eval` are commands of the server PROGRAM, not core verbs, so they are
-;; not in the catalogue at all and cannot have a route. Only a client
-;; local-verb that IS a core verb has to be marked local.
-(define not-core-verbs '("serve" "eval"))
+;; NOTE: THE OTHER DIRECTION HAS AN EXEMPTION, AND IT IS NAMED. `serve` is a
+;; command of the daemon PROGRAM, not a core verb, so it is not in the
+;; catalogue at all and cannot have a route. A client local-verb that IS in
+;; the catalogue has to be marked `local` or `child` there: both are carried
+;; out by a process the client runs, and `child` is the one an MCP shell can
+;; carry out as well.
+(define not-core-verbs '("serve"))
 
-(want "DS-6 every core verb the client runs locally is marked local"
+(define catalogue-child
+  (map (lambda (e) (symbol->string (car e)))
+       (filter (lambda (e) (eq? 'child (entry-field e 'route))) entries)))
+
+(want "DS-6 every core verb the client runs locally is marked local or child"
       (let loop ((xs client-local) (bad '()))
         (cond
           ((null? xs) (reverse bad))
@@ -415,12 +434,29 @@
           ((not (member (car xs) (map (lambda (e) (symbol->string (car e))) entries)))
            (loop (cdr xs) (cons (list (car xs) 'not-a-core-verb) bad)))
           ((member (car xs) catalogue-local) (loop (cdr xs) bad))
+          ((member (car xs) catalogue-child) (loop (cdr xs) bad))
           (else (loop (cdr xs) (cons (list (car xs) 'routed-to-the-daemon) bad)))))
       '())
 
-;; NEVER: AND THE EXEMPTION IS NOT A HOLE: the two names it covers must really
-;; be absent from the catalogue. If `eval` ever became a core verb this
-;; row goes red and somebody decides, rather than the exemption quietly
+;; NEVER: `child` IS ONE VERB'S ROUTE, AND IT IS NOT A DISPATCHER VERB. The
+;; exception DS-1 makes is this entry and nothing else: a second child
+;; entry, or eval also appearing in the dispatcher's table, turns this red
+;; and somebody decides.
+(want "DS-6 eval is in the catalogue with route child, is the only such entry, and is not a dispatcher verb"
+      (list catalogue-child (and (memq 'eval (rpc-verbs)) #t))
+      (list '("eval") #f))
+
+;; NEVER: AND A DAEMON STILL DOES NOT CARRY IT OUT. eval is advertised; the
+;; dispatcher answers a request naming it as it answers any verb it does
+;; not have. A control: green before eval was catalogued, and green after.
+(want "DS-6 eval sent to the dispatcher is still an unknown verb"
+      (let ((a (rpc-dispatch store '(eval "(+ 1 2)") "test")))
+        (and (pair? a) (list (car a) (cadr a))))
+      '(error unknown-verb))
+
+;; NEVER: AND THE EXEMPTION IS NOT A HOLE: the name it covers must really be
+;; absent from the catalogue. If `serve` ever became a core verb this row
+;; goes red and somebody decides, rather than the exemption quietly
 ;; covering a verb that now has a route.
 (want "DS-6 the exempted names are genuinely not core verbs"
       (let loop ((xs not-core-verbs) (bad '()))

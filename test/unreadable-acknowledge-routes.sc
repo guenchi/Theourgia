@@ -707,20 +707,27 @@
                   (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
                   "--wire > " out " 2> /dev/null < " (if in (quoted in) "/dev/null"))))
       (list rc (first-datum-of out)))))
-;; THE BASE ANSWER'S USAGE FORM, read out of core.sc as data (code review
+;; THE BASE ANSWER'S USAGE FORM, read out of rpc.sc as data (code review
 ;; r4): the healthy bad-limits answer is compared whole, and its usage clause
-;; is whatever `eval-usage` says -- a form F77c does not change.
+;; is whatever `eval-usage` says -- a form F77c does not change. It is found
+;; at the top level or in the body of a `(library ...)` form: rpc.sc is one
+;; library form, and eval's usage form moved there from core.sc when the
+;; catalogue began to publish it.
 (define (defined-datum file name)
+  (define (found x)
+    (and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) name) (pair? (cddr x))
+         (let ((v (caddr x)))
+           (if (and (pair? v) (eq? (car v) 'quote)) (cadr v) v))))
   (call-with-input-file file
     (lambda (p)
       (let loop ()
         (let ((x (read p)))
           (cond ((eof-object? x) #f)
-                ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) name) (pair? (cddr x)))
-                 (let ((v (caddr x)))
-                   (if (and (pair? v) (eq? (car v) 'quote)) (cadr v) v)))
+                ((found x) => (lambda (v) v))
+                ((and (pair? x) (eq? (car x) 'library) (list? x))
+                 (or (exists found (cdr x)) (loop)))
                 (else (loop))))))))
-(define eval-usage-form (defined-datum "../core.sc" 'eval-usage))
+(define eval-usage-form (defined-datum "../rpc.sc" 'eval-usage))
 (define (without-incomplete a)
   (if (and (pair? a) (list? a))
       (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'incomplete)))) a)

@@ -38,7 +38,7 @@
         (only (chezscheme) with-input-from-file system get-process-id call-with-input-file
               get-string-all file-exists? load)
         (only (theourgia arguments) parse-arguments)
-        (only (theourgia rpc) rpc-verbs))
+        (only (theourgia rpc) rpc-verbs verb-catalogue))
 
 (define bad 0)
 (define rows 0)
@@ -1318,15 +1318,17 @@
 ;;   commit   rpc.sc:499  `commit-usage`
 ;;   outline  rpc.sc:502  `outline-usage`
 ;;   insert   rpc.sc:505  `insert-usage`
+;;   eval     rpc.sc      `eval-usage`
 ;;     Each is reached from the catalogue entry and from the `(usage <name>)`
 ;;     sites BY NAME, so several arrivals are one place to edit.
 ;;     `commit-usage` is never passed to `usage` at all -- `commit` appends
 ;;     it to whatever refusal came back -- which is why it has no call site,
-;;     and is not why it has one place.
-;;   eval     core.sc:369       `eval-usage`
+;;     and is not why it has one place. `eval-usage` is core.sc's refusals'
+;;     form too, imported from rpc.sc; eval's catalogue entry has route
+;;     `child` and the dispatcher never answers it.
 ;;   serve    theourgiad.sc:55  `serve-usage`
-;;     The programs' own verbs; they never reach the dispatcher's catalogue.
-;;     Since F46 `serve` is the daemon program's, `theourgiad.sc`.
+;;     The daemon program's own verb; it never reaches the dispatcher's
+;;     catalogue. Since F46 `serve` is the daemon program's, `theourgiad.sc`.
 ;;     `serve` was in this list for a round with the wrong reason: a second
 ;;     spelling in `core.sc` gave a partial form in which `--detach` was not
 ;;     bracketed, so it read as required rather than optional -- a false
@@ -1602,13 +1604,21 @@
 ;; out of the definition drops its verb out of the scan and this row names
 ;; it, and a misspelt definition name finds nothing at all rather than
 ;; quietly finding less.
+;;
+;; NOTE: PLUS THE ENTRIES WHOSE ROUTE IS `child`. Such a verb is carried out
+;; by a program the caller runs -- `eval`, by `core.sc` -- so it is in the
+;; catalogue and not in the dispatcher's table, by design. It is taken from
+;; the running catalogue's route field, not named here.
+(define child-only-verbs
+  (map car (filter (lambda (e) (eq? 'child (list-ref e 4))) (verb-catalogue))))
+
 (want "GATE-C the catalogue scan found an entry for exactly the verbs the program has"
       (let ((by-name (lambda (xs)
                        (list-sort (lambda (a b) (string<? (symbol->string a)
                                                           (symbol->string b)))
                                   xs))))
         (let ((found (by-name (map car catalogue-found)))
-              (theirs (by-name (rpc-verbs))))
+              (theirs (by-name (append (rpc-verbs) child-only-verbs))))
           (if (equal? found theirs)
               'the-same
               (list 'scanned found 'dispatcher theirs))))
