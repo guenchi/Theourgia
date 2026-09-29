@@ -31,7 +31,10 @@
 ;;; Every flag, errno, request number, struct size, offset and width this
 ;;; file passes to or reads from the kernel is the platform's row in
 ;;; (theourgia platform-numbers): the output of test/probe/layout.c,
-;;; compiled against the system headers on that platform.
+;;; compiled against the system headers on that platform. The one width
+;;; the rows do not measure, size_t's, is Chez's own for its machine type
+;;; (foreign-sizeof), and what POSIX fixes -- permission bits, the wait
+;;; status encoding -- stays in the code.
 ;;;
 ;;; This file once held them as literals, measured on macOS and FreeBSD,
 ;;; with this warning: the values agreeing across two Unixes is exactly
