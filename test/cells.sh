@@ -471,7 +471,7 @@ fi
 # It logs its argv and execs the real Chez. Built with cc; without cc the
 # cell is skipped by name.
 cshim() {
-  local out=$1 log=$2 replaced=$3
+  local out=$1 log=$2 replaced=$3 next=${4:-} self=${5:-}
   cat > "$W/cshim.c" <<'EOF'
 #include <stdio.h>
 #include <string.h>
@@ -483,6 +483,9 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) fprintf(f, "[%s]\n", argv[i]);
     fclose(f);
   }
+#ifdef SHIM_NEXT
+  if (argc > 1 && strcmp(argv[1], "--version") == 0 && access(SHIM_NEXT, F_OK) == 0) rename(SHIM_NEXT, SHIM_SELF);
+#endif
   if (SHIM_REPLACED && argc > 1 && strcmp(argv[1], "--version") == 0) {
     fprintf(stderr, "10.1.0-replaced\n");
     return 0;
@@ -492,7 +495,12 @@ int main(int argc, char **argv) {
   return 127;
 }
 EOF
-  cc -O0 -o "$out" -DSHIM_LOG="\"$log\"" -DSHIM_REAL="\"$REAL\"" -DSHIM_REPLACED="$replaced" "$W/cshim.c"
+  if [ -n "$next" ]; then
+    cc -O0 -o "$out" -DSHIM_LOG="\"$log\"" -DSHIM_REAL="\"$REAL\"" -DSHIM_REPLACED="$replaced" \
+       -DSHIM_NEXT="\"$next\"" -DSHIM_SELF="\"$self\"" "$W/cshim.c"
+  else
+    cc -O0 -o "$out" -DSHIM_LOG="\"$log\"" -DSHIM_REAL="\"$REAL\"" -DSHIM_REPLACED="$replaced" "$W/cshim.c"
+  fi
 }
 if has N15; then
   if ! command -v cc > /dev/null 2>&1; then
@@ -520,6 +528,23 @@ if has N15; then
     verdict $v "N15 the key remembered: a warm call started Chez $calls time(s), the program $program; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs); records $records"
     stop_daemons
   fi
+fi
+
+# ---- N15d a binary replaced while it is probed: the facts are discarded and it is probed again
+if has N15 && command -v cc > /dev/null 2>&1; then
+  scratch n15d; P=$T/prefix; install_into "$P" --ignore-scripts
+  cshim "$T/next" "$T/chez.log" 1
+  cshim "$T/chez" "$T/chez.log" 0 "$T/next" "$T/chez"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+   "$P/bin/theourgia" init --store "$T/s" > "$R/N15d.out" 2> "$R/N15d.err"; echo $? > "$R/N15d.rc")
+  cp "$T/chez.log" "$R/N15d.log"
+  (cd "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null && cat ./*.json 2>/dev/null) > "$R/N15d-records.txt"
+  records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
+  replaced=$(grep -c '10.1.0-replaced' "$R/N15d-records.txt")
+  versions=$(grep -c '^\[--version\]$' "$R/N15d.log")
+  [ "$(cat "$R/N15d.rc")" = 0 ] && grep -q '(ok (store' "$R/N15d.out" && [ "$records" = 1 ] && [ "$replaced" = 1 ] && [ "$versions" = 2 ]; v=$?
+  verdict $v "N15d replaced mid-probe: init rc $(cat "$R/N15d.rc"); --version probes $versions (a retry); records $records, of them the replacement's $replaced"
+  stop_daemons
 fi
 
 # ---- N15c a record that cannot be written is skipped, never an error
