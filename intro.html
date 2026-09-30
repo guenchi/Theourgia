@@ -592,7 +592,8 @@ const pp=document.getElementById('pp');
 function setPaused(v){userPaused=v;document.body.classList.toggle('paused',v);pp.textContent=v?'▶':'❚❚';pp.setAttribute('aria-label',v?'Play':'Pause')}
 setPaused(userPaused);
 pp.onclick=e=>{e.stopPropagation();setPaused(!userPaused)};
-stage.onclick=()=>setPaused(!userPaused);
+// framed in another page, a click on the picture opens the intro on its own
+stage.onclick=window.top!==window.self?()=>{window.top.location.href=location.pathname}:()=>setPaused(!userPaused);
 document.getElementById('rs').onclick=e=>{e.stopPropagation();cur=0;setPaused(false)};
 segs.onclick=e=>{
   const r=segs.getBoundingClientRect();const x=(e.clientX-r.left)/r.width*TOTAL;
