@@ -1,0 +1,61 @@
+# The npm package's cells N2, N2b, N6 and N10 (test/cells.sh), where it
+# will be published for: Linux on x86_64 and aarch64 under Node 18 (Chez
+# 10.4.1 built from its release source, since distribution packages are
+# older) and macOS on arm64 (Homebrew's chezscheme). Each job assembles
+# vendor/, packs, and runs the cells against the tarball. It publishes
+# nothing and uses no secrets.
+name: npm-package
+
+on:
+  push:
+    branches: [npm, npm-check-*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ runner.os == 'Linux' && '18' || '20' }}
+      - name: Chez and libuv (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libuv1 libncurses-dev uuid-dev
+          curl -fsSL -o csv.tar.gz https://github.com/cisco/ChezScheme/releases/download/v10.4.1/csv10.4.1.tar.gz
+          tar -xzf csv.tar.gz
+          cd csv10.4.1
+          ./configure --threads --disable-x11 --installprefix=/usr/local > ../chez-configure.log
+          make -j"$(nproc)" > ../chez-make.log 2>&1
+          sudo make install > ../chez-install.log 2>&1
+          scheme --version
+      - name: Chez and libuv (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install chezscheme libuv
+          command -v chez scheme chezscheme || true
+      - name: assemble, pack, and the cells
+        run: |
+          uname -a; node --version; npm --version
+          sh scripts/assemble.sh
+          npm pack
+          CELLS="N2 N2b N6 N10" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
+            bash test/cells.sh "$PWD/theourgia-1.0.0.tgz"
+      - name: keep the readings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-${{ matrix.os }}
+          path: ${{ runner.temp }}/readings
