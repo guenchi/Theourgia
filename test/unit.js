@@ -26,6 +26,7 @@ want('N3b Debian', lib.installLineFor('linux', debian), 'sudo apt install chezsc
 want('N3b Ubuntu', lib.installLineFor('linux', ubuntu), 'sudo apt install chezscheme libuv1');
 want('N3b Fedora', lib.installLineFor('linux', fedora), 'sudo dnf install chez-scheme libuv');
 want('N3b Arch', lib.installLineFor('linux', arch), 'sudo pacman -S chez-scheme libuv');
+want('N3b a single-quoted ID', lib.installLineFor('linux', "ID='fedora'\n"), 'sudo dnf install chez-scheme libuv');
 want('N3b darwin', lib.installLineFor('darwin', ''), 'brew install chezscheme libuv');
 want('N3b unknown os-release: the generic sentence', lib.installLineFor('linux', unknown), generic);
 want('N3b no os-release at all: the generic sentence', lib.installLineFor('linux', ''), generic);

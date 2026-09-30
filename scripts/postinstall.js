@@ -13,7 +13,7 @@ try {
   lib.ensureCache(chez, true);
   process.stderr.write('theourgia: ready, compiled for ' + chez + '\n');
 } catch (e) {
-  const code = lib.report(e);
-  if (code === 70) process.stderr.write('theourgia: the first run will try again.\n');
+  lib.report(e);
+  if (e && e.retry) process.stderr.write('theourgia: the first run will try again.\n');
 }
 process.exit(0);

@@ -15,14 +15,15 @@
 #                   the repository this script is checked out in)
 #   IGROPYR_REPO    a clone of guenchi/Igropyr, or its URL (default:
 #                   https://github.com/guenchi/Igropyr)
-#   THEOURGIA_TAG, THEOURGIA_COMMIT, IGROPYR_REV
-#                   the pins; the defaults are this release's, and the
-#                   variables exist so the refusal can be tested
+#   THEOURGIA_TAG, IGROPYR_REV
+#                   the names looked up; the defaults are this release's,
+#                   and the variables exist so the refusal can be tested.
+#                   The commits they must resolve to are fixed here.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 tag=${THEOURGIA_TAG:-v1.0.0}
-want_theourgia=${THEOURGIA_COMMIT:-f50525f8e343ad072b57aeea5986af9c51d78a99}
+want_theourgia=f50525f8e343ad072b57aeea5986af9c51d78a99
 igropyr_rev=${IGROPYR_REV:-56ca0db9c8bb1c32bafa1e1472852a6186ada31b}
 want_igropyr=56ca0db9c8bb1c32bafa1e1472852a6186ada31b
 theourgia_repo=${THEOURGIA_REPO:-$here}

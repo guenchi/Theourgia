@@ -54,13 +54,19 @@ const deadline = setTimeout(() => {
   send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'theourgia_eval', arguments: { argv: ['(+ 1 2)'] } } });
   const evaluated = await answerTo(2);
   child.stdin.end();
-  child.on('exit', (code) => {
+  // after 'close', not 'exit': the stream may still hold data when the
+  // process has exited, and a line written last must be judged too
+  child.on('close', (code) => {
     clearTimeout(deadline);
     if (buffered.length > 0) lines.push(buffered);
+    // a message is a request or notification (method), or a response (id
+    // with result or error); anything else on stdout is not the protocol
     const notJson = lines.filter((l) => {
       try {
         const m = JSON.parse(l);
-        return !(m && m.jsonrpc === '2.0');
+        const request = typeof m.method === 'string';
+        const response = 'id' in m && ('result' in m || 'error' in m);
+        return !(m && m.jsonrpc === '2.0' && (request || response));
       } catch (e) {
         return true;
       }

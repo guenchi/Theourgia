@@ -21,6 +21,7 @@ R=${CELLS_OUT:-$here/readings}
 W=$(mktemp -d /tmp/tc.XXXXXX)
 mkdir -p "$R"
 NODE=$(command -v node)
+NPM=$(command -v npm)
 REAL=${CELLS_CHEZ:-$(command -v scheme || command -v chez || command -v chezscheme)}
 TGZ=${1:-}
 fails=0
@@ -59,7 +60,7 @@ scratch() {
 }
 install_into() {
   local prefix=$1; shift
-  npm install -g --prefix "$prefix" "$@" "$TGZ" > "$prefix.install.out" 2> "$prefix.install.err"
+  "$NPM" install -g --prefix "$prefix" "$@" "$TGZ" > "$prefix.install.out" 2> "$prefix.install.err"
 }
 has() { case " $CELLS " in *" $1 "*) return 0;; *) return 1;; esac; }
 
@@ -71,11 +72,25 @@ if [ -z "$TGZ" ]; then
 fi
 [ -f "$TGZ" ] || { say "FAIL no tarball"; exit 1; }
 PKGBIN_DIR=$(bindir chez); ln -sf "$REAL" "$PKGBIN_DIR/$(basename "$REAL")"
-BASEPATH=/usr/bin:/bin
+# NO SYSTEM DIRECTORY ON A CELL'S PATH, because one could hold a Chez of its
+# own and "no Chez" or "only chez" would not mean what it says. The base is
+# a directory of links to the named tools the cells and npm use, checked to
+# hold no Chez by any of the three names. npm is called by its absolute path.
+BASEPATH=$W/sys; mkdir -p "$BASEPATH"
+for t in sh bash env ls cat grep awk sed tr wc head tail cut sort uniq tee xargs find rm mkdir chmod ln cp mv \
+         touch stat date seq cmp diff sleep ps pgrep pkill kill perl git tar gzip dirname basename readlink uname \
+         printf test expr id true false; do
+  p=$(PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v "$t" 2>/dev/null)
+  case "$p" in /*) ln -sf "$p" "$BASEPATH/$t";; esac
+done
+for n in scheme chez chezscheme; do
+  [ -e "$BASEPATH/$n" ] && { echo "FAIL the cells' base PATH holds $n"; exit 1; }
+done
 
 # ---- N1 inventory: the packed list equals test/expected-files.txt; package.json
 if has N1; then
   tar -tzf "$TGZ" | sed 's#^package/##' | LC_ALL=C sort > "$R/N1-files.txt"
+  tar -xzOf "$TGZ" package/package.json > "$W/n1-package.json"
   diff "$here/test/expected-files.txt" "$R/N1-files.txt" > "$R/N1-diff.txt"; d=$?
   node -e '
     const p = require(process.argv[1]);
@@ -94,7 +109,7 @@ if has N1; then
     for (const k of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
       "bundleDependencies", "bundledDependencies"]) want(!(k in p), "no " + k);
     want(files.includes("README.md") && files.includes("LICENSE"), "README.md and LICENSE at the root");
-  ' "$here/package.json" "$R/N1-files.txt" > "$R/N1-package.txt"; j=$?
+  ' "$W/n1-package.json" "$R/N1-files.txt" > "$R/N1-package.txt"; j=$?
   verdict $((d + j)) "N1 inventory: $(wc -l < "$R/N1-files.txt" | tr -d ' ') files, list diff $(wc -l < "$R/N1-diff.txt" | tr -d ' ') lines; package.json $( [ $j = 0 ] && echo as specified || cat "$R/N1-package.txt" | tr '\n' ' '); tarball $(wc -c < "$TGZ" | tr -d ' ') bytes"
 fi
 
@@ -107,37 +122,43 @@ if has N1b; then
   case "$igr" in http*) git clone -q "$igr" "$X/igr" && igr=$X/igr;; esac
   git -C "$igr" archive 56ca0db9c8bb1c32bafa1e1472852a6186ada31b | tar -x -C "$X/i"
   rm -rf "$X/t/test" "$X/i/test"; find "$X/t" "$X/i" \( -name '*.so' -o -name .gitignore \) -type f -exec rm -f {} +
-  sums() { (cd "$1" && find . -type f | LC_ALL=C sort | while read -r f; do echo "$(openssl md5 -r "$f" | cut -d' ' -f1) $f"; done); }
+  sums() { (cd "$1" && find . -type f | LC_ALL=C sort | while read -r f; do echo "$(node -e 'process.stdout.write(require("crypto").createHash("md5").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$f") $f"; done); }
   sums "$X/pkg/package/vendor/theourgia" > "$R/N1b-vendor-theourgia.md5"; sums "$X/t" > "$R/N1b-archive-theourgia.md5"
   sums "$X/pkg/package/vendor/igropyr" > "$R/N1b-vendor-igropyr.md5"; sums "$X/i" > "$R/N1b-archive-igropyr.md5"
   diff "$R/N1b-archive-theourgia.md5" "$R/N1b-vendor-theourgia.md5" > "$R/N1b-diff-theourgia.txt"; a=$?
   diff "$R/N1b-archive-igropyr.md5" "$R/N1b-vendor-igropyr.md5" > "$R/N1b-diff-igropyr.txt"; b=$?
   extra=$(ls "$X/pkg/package/vendor" | LC_ALL=C sort | tr '\n' ' ')
-  verdict $((a + b)) "N1b vendor: theourgia $(wc -l < "$R/N1b-vendor-theourgia.md5" | tr -d ' ') files vs archive $(wc -l < "$R/N1b-archive-theourgia.md5" | tr -d ' '), igropyr $(wc -l < "$R/N1b-vendor-igropyr.md5" | tr -d ' ') vs $(wc -l < "$R/N1b-archive-igropyr.md5" | tr -d ' '); vendor/ holds: $extra"
+  bad=$(cat "$R/N1b-vendor-theourgia.md5" "$R/N1b-archive-theourgia.md5" "$R/N1b-vendor-igropyr.md5" "$R/N1b-archive-igropyr.md5" | grep -cv '^[0-9a-f]\{32\} ')
+  [ "$bad" = 0 ] && [ -s "$R/N1b-vendor-theourgia.md5" ] && [ -s "$R/N1b-vendor-igropyr.md5" ]; c=$?
+  verdict $((a + b + c)) "N1b vendor: theourgia $(wc -l < "$R/N1b-vendor-theourgia.md5" | tr -d ' ') files vs archive $(wc -l < "$R/N1b-archive-theourgia.md5" | tr -d ' '), igropyr $(wc -l < "$R/N1b-vendor-igropyr.md5" | tr -d ' ') vs $(wc -l < "$R/N1b-archive-igropyr.md5" | tr -d ' '); vendor/ holds: $extra"
 fi
 
 # ---- N2 install and use, and N2b the daemon program, with a PATH of the prefix and Chez only
 if has N2 || has N2b; then
   scratch n2; P=$T/prefix
-  install_into "$P"; irc=$?
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH; install_into "$P"); irc=$?
   (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
    "$P/bin/theourgia" init --store "$T/s" > "$R/N2-init.out" 2> "$R/N2-init.err"
    "$P/bin/theourgia" insert --title N2-MARKER --store "$T/s" > "$R/N2-insert.out" 2> "$R/N2-insert.err"
    "$P/bin/theourgia" outline --store "$T/s" > "$R/N2-outline.out" 2> "$R/N2-outline.err"; echo $? > "$R/N2-outline.rc")
-  grep -q N2-MARKER "$R/N2-outline.out"; m=$?
+  grep -q N2-MARKER "$R/N2-outline.out" && [ "$(cat "$R/N2-outline.rc")" = 0 ]; m=$?
   has N2 && verdict $((irc + m)) "N2 install and use: install rc $irc, outline rc $(cat "$R/N2-outline.rc"), the block $( [ $m = 0 ] && echo shown || echo MISSING)"
   stop_daemons
   if has N2b; then
     (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
      "$P/bin/theourgia" init --store "$T/d" > /dev/null 2>&1
-     "$P/bin/theourgiad" serve "$T/d" > "$R/N2b-daemon.out" 2> "$R/N2b-daemon.err" &
-     for i in $(seq 1 100); do pgrep -f "theourgiad.sc serve $T/d" > /dev/null && break; sleep 0.1; done
-     sleep 2
+     "$P/bin/theourgiad" serve "$T/d" > "$R/N2b-daemon.out" 2> "$R/N2b-daemon.err" & wrapper=$!
+     for i in $(seq 1 100); do [ -S "$(ls -d "$HOME/.theourgia/run/"*/socket 2>/dev/null | head -1)" ] && break; sleep 0.1; done
+     child=$(pgrep -P "$wrapper" | head -1)
      "$P/bin/theourgia" outline --store "$T/d" > "$R/N2b-outline.out" 2> "$R/N2b-outline.err"; echo $? > "$R/N2b-outline.rc"
-     ps -ax -ww -o pid= -o command= | grep "theourgiad.sc serve $T/d" | grep -v grep > "$R/N2b-ps.txt")
-    n=$(wc -l < "$R/N2b-ps.txt" | tr -d ' ')
-    grep -q "/theourgia/theourgiad.sc serve $T/d" "$R/N2b-ps.txt" && [ "$n" = 1 ] && [ "$(cat "$R/N2b-outline.rc")" = 0 ]; v=$?
-    verdict $v "N2b theourgiad: outline rc $(cat "$R/N2b-outline.rc") through it; daemons for the store $n; ps: $(head -1 "$R/N2b-ps.txt" | sed 's/^ *[0-9]* //' | cut -c1-140)"
+     ps -ax -ww -o pid= -o command= | grep "theourgiad.sc serve $T/d" | grep -v grep > "$R/N2b-ps.txt"
+     alive=no; kill -0 "$wrapper" 2>/dev/null && alive=yes
+     echo "$wrapper ${child:-none} $alive" > "$R/N2b-pids.txt")
+    read -r wpid cpid alive < "$R/N2b-pids.txt"
+    n=$(wc -l < "$R/N2b-ps.txt" | tr -d ' '); dpid=$(awk '{print $1}' "$R/N2b-ps.txt" | head -1)
+    grep -q "/theourgia/theourgiad.sc serve $T/d" "$R/N2b-ps.txt" && [ "$n" = 1 ] && [ "$dpid" = "$cpid" ] && [ "$alive" = yes ] &&
+      [ "$(cat "$R/N2b-outline.rc")" = 0 ]; v=$?
+    verdict $v "N2b theourgiad: outline rc $(cat "$R/N2b-outline.rc") through it; daemons for the store $n, pid $dpid, the theourgiad wrapper's child $cpid, the wrapper still running $alive; ps: $(head -1 "$R/N2b-ps.txt" | sed 's/^ *[0-9]* //' | cut -c1-140)"
     stop_daemons
   fi
 fi
@@ -176,11 +197,14 @@ if has N4; then
   (cd "$XDG_CACHE_HOME/theourgia" && find . -type f -exec perl -e 'for (@ARGV) { print "$_ ", (stat $_)[9], "\n" }' {} + | LC_ALL=C sort) > "$R/N4-mtimes-1.txt"
   sleep 1
   (export PATH=$P4/bin:$PKGBIN_DIR:$BASEPATH
-   "$P4/bin/theourgia" outline --store "$T/s" > "$R/N4-second.out" 2> "$R/N4-second.err"; echo $? > "$R/N4-second.rc")
+   "$P4/bin/theourgia" outline --wire --store "$T/s" > "$R/N4-second.out" 2> "$R/N4-second.err"; echo $? > "$R/N4-second.rc")
   (cd "$XDG_CACHE_HOME/theourgia" && find . -type f -exec perl -e 'for (@ARGV) { print "$_ ", (stat $_)[9], "\n" }' {} + | LC_ALL=C sort) > "$R/N4-mtimes-2.txt"
   b1=$(grep -c 'compiling once' "$R/N4-first.err"); b2=$(grep -c 'compiling once' "$R/N4-second.err")
   cmp -s "$R/N4-mtimes-1.txt" "$R/N4-mtimes-2.txt"; same=$?
-  [ "$before" = 0 ] && [ "$b1" = 1 ] && [ "$b2" = 0 ] && [ $same = 0 ] && [ "$(cat "$R/N4-first.rc")" = 0 ] && [ "$(cat "$R/N4-second.rc")" = 0 ]; v=$?
+  nfiles=$(wc -l < "$R/N4-mtimes-1.txt" | tr -d ' ')
+  [ "$before" = 0 ] && [ "$b1" = 1 ] && [ "$b2" = 0 ] && [ $same = 0 ] && [ "$nfiles" -ge 100 ] &&
+    [ "$(cat "$R/N4-first.rc")" = 0 ] && [ "$(cat "$R/N4-second.rc")" = 0 ] &&
+    grep -q '(ok (store' "$R/N4-first.out" && grep -q '^(ok' "$R/N4-second.out"; v=$?
   verdict $v "N4 --ignore-scripts: cache before $before; first run built $b1, rc $(cat "$R/N4-first.rc"); second built $b2, rc $(cat "$R/N4-second.rc"); $(wc -l < "$R/N4-mtimes-1.txt" | tr -d ' ') cache files, mtimes $( [ $same = 0 ] && echo unchanged || echo CHANGED)"
   stop_daemons
 fi
@@ -228,7 +252,8 @@ if has N5b; then
    ls -a "$XDG_CACHE_HOME/theourgia" > "$R/N5b-after-kill.txt"
    "$P/bin/theourgia" init --store "$T/s2" > "$R/N5b-next.out" 2> "$R/N5b-next.err"; echo $? > "$R/N5b-next.rc")
   finals=$(grep -v '^\.' "$R/N5b-after-kill.txt" | wc -l | tr -d ' ')
-  [ "$(cat "$R/N5b-seen.txt")" = yes ] && [ "$finals" = 0 ] && [ "$(cat "$R/N5b-next.rc")" = 0 ] && grep -q '(ok' "$R/N5b-next.out"; v=$?
+  [ "$(cat "$R/N5b-seen.txt")" = yes ] && [ "$finals" = 0 ] && [ "$(cat "$R/N5b-next.rc")" = 0 ] && grep -q '(ok' "$R/N5b-next.out" &&
+    [ "$(grep -c 'compiling once' "$R/N5b-next.err")" = 1 ]; v=$?
   verdict $v "N5b interrupted build: killed mid-build $(cat "$R/N5b-seen.txt"); final directories after the kill $finals ($(grep '^\.build-' "$R/N5b-after-kill.txt" | wc -l | tr -d ' ') temporary); next run rc $(cat "$R/N5b-next.rc"), built $(grep -c 'compiling once' "$R/N5b-next.err")"
   stop_daemons
 fi
@@ -250,10 +275,13 @@ EOF
    "$P/bin/theourgia" init --store "$T/s" > "$R/N5c-next.out" 2> "$R/N5c-next.err"; echo $? > "$R/N5c-next.rc"
    rm -rf "$XDG_CACHE_HOME"
    THEOURGIA_SCHEME=$T/badchez node "$P/lib/node_modules/theourgia/scripts/postinstall.js" > "$R/N5c-post.out" 2> "$R/N5c-post.err"; echo $? > "$R/N5c-post.rc"
-   "$P/bin/theourgia" outline --store "$T/s" > "$R/N5c-post-next.out" 2> "$R/N5c-post-next.err"; echo $? > "$R/N5c-post-next.rc")
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N5c-post-next.out" 2> "$R/N5c-post-next.err"; echo $? > "$R/N5c-post-next.rc")
   finals=$(grep -v '^\.' "$R/N5c-after-fail.txt" | wc -l | tr -d ' ')
   [ "$(cat "$R/N5c-fail.rc")" = 70 ] && grep -q 'N5C-SHIM-LAST-LINE' "$R/N5c-fail.err" && [ ! -s "$R/N5c-fail.out" ] && [ "$finals" = 0 ] &&
-    [ "$(cat "$R/N5c-next.rc")" = 0 ] && [ "$(cat "$R/N5c-post.rc")" = 0 ] && [ "$(cat "$R/N5c-post-next.rc")" = 0 ]; v=$?
+    [ "$(cat "$R/N5c-next.rc")" = 0 ] && grep -q '(ok (store' "$R/N5c-next.out" && [ "$(grep -c 'compiling once' "$R/N5c-next.err")" = 1 ] &&
+    [ "$(cat "$R/N5c-post.rc")" = 0 ] && grep -q 'N5C-SHIM-LAST-LINE' "$R/N5c-post.err" && grep -q 'the first run will try again' "$R/N5c-post.err" &&
+    [ ! -s "$R/N5c-post.out" ] &&
+    [ "$(cat "$R/N5c-post-next.rc")" = 0 ] && grep -q '(ok' "$R/N5c-post-next.out" && [ "$(grep -c 'compiling once' "$R/N5c-post-next.err")" = 1 ]; v=$?
   verdict $v "N5c build failure: rc $(cat "$R/N5c-fail.rc"), the shim's last line $(grep -c 'N5C-SHIM-LAST-LINE' "$R/N5c-fail.err"), stdout $(wc -c < "$R/N5c-fail.out" | tr -d ' ') bytes, final directories $finals; next run rc $(cat "$R/N5c-next.rc"); postinstall rc $(cat "$R/N5c-post.rc"), then a run rc $(cat "$R/N5c-post-next.rc")"
   stop_daemons
 fi
@@ -271,6 +299,7 @@ if has N6; then
     console.log((ok ? "ok" : "bad") + " " + JSON.stringify({ initialized: r.initialized, stdoutLines: r.stdoutLines, notJson: r.notJson.length, evalText: r.evalText, isError: r.evalIsError }));
     process.exit(ok ? 0 : 1);
   ' "$R/N6.json" > "$R/N6.txt" 2>&1; v=$?
+  [ "$(grep -c 'compiling once' "$R/N6.err")" = 1 ] || v=1
   verdict $v "N6 MCP: $(cat "$R/N6.txt" | cut -c1-220); built on this run $(grep -c 'compiling once' "$R/N6.err")"
   stop_daemons
 fi
@@ -394,17 +423,37 @@ if has N12; then
   sed -i.bak 's#//theourgia/#/theourgia/#' "$R/N12-argv-expected.txt"; rm -f "$R/N12-argv-expected.txt.bak"
   cmp -s "$R/N12-argv-expected.txt" "$R/N12-argv.txt"; a=$?
   [ "$(cat "$R/N12-wrapped.rc")" = "$(cat "$R/N12-direct.rc")" ] && [ "$(cat "$R/N12-wrapped.rc")" != 0 ]; b=$?
-  verdict $((a + b)) "N12 argv and exit: the program's argv $( [ $a = 0 ] && echo equals the caller\'s || echo DIFFERS); a refused verb exits $(cat "$R/N12-wrapped.rc") wrapped and $(cat "$R/N12-direct.rc") direct"
+  # a child killed by a signal: the wrapper ends the same way, SIGPIPE
+  # included (Node ignores that one, so it is passed on as 128 + 13)
+  cat > "$T/dies" <<EOF
+#!/bin/sh
+case "\$1" in --script) kill -\$N12_SIGNAL \$\$ ;; esac
+exec "$REAL" "\$@"
+EOF
+  chmod +x "$T/dies"
+  sigs=""
+  for sig in PIPE TERM; do
+    (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/dies N12_SIGNAL=$sig
+     "$P/bin/theourgia" outline --store "$T/s" > /dev/null 2>&1; echo $? > "$R/N12-signal-$sig.rc")
+    sigs="$sigs $sig:$(cat "$R/N12-signal-$sig.rc")"
+  done
+  [ "$(cat "$R/N12-signal-PIPE.rc")" = 141 ] && [ "$(cat "$R/N12-signal-TERM.rc")" = 143 ]; c=$?
+  verdict $((a + b + c)) "N12 argv, exit and signals: killed by SIGPIPE, SIGTERM the wrapper exits$sigs (141, 143 wanted); the program's argv $( [ $a = 0 ] && echo equals the caller\'s || echo DIFFERS); a refused verb exits $(cat "$R/N12-wrapped.rc") wrapped and $(cat "$R/N12-direct.rc") direct"
   stop_daemons
 fi
 
 # ---- N13 no package manager is ever run
 if has N13; then
-  grep -nE '(spawn|exec)[A-Za-z]*\(' "$here/lib/"*.js "$here/bin/"*.js "$here/scripts/"*.js > "$R/N13-calls.txt"
-  grep -E "brew|apt|dnf|pacman|yum|\bport\b" "$R/N13-calls.txt" > "$R/N13-hits.txt"
-  n=$(wc -l < "$R/N13-hits.txt" | tr -d ' ')
-  [ "$n" = 0 ]; v=$?
-  verdict $v "N13 no package manager: $(wc -l < "$R/N13-calls.txt" | tr -d ' ') spawn/exec calls in lib/, bin/, scripts/; naming a package manager $n"
+  # every mention of a package manager in any file the package runs; the
+  # only ones allowed are the install lines installLineFor returns as text
+  grep -rnE "\b(brew|apt|apt-get|dnf|pacman|yum|port)\b" "$here/lib" "$here/bin" "$here/scripts" > "$R/N13-hits.txt"
+  lo=$(grep -n '^function installLineFor' "$here/lib/theourgia.js" | cut -d: -f1)
+  hi=$(awk -v lo="$lo" 'NR > lo && /^}/ {print NR; exit}' "$here/lib/theourgia.js")
+  outside=$(awk -F: -v f="$here/lib/theourgia.js" -v lo="$lo" -v hi="$hi" '!($1 == f && $2 > lo && $2 < hi)' "$R/N13-hits.txt" | grep -v '^[^:]*:[0-9]*: *//' | wc -l | tr -d ' ')
+  inside=$(wc -l < "$R/N13-hits.txt" | tr -d ' ')
+  grep -rnE "(spawn|exec)[A-Za-z]*\(" "$here/lib" "$here/bin" "$here/scripts" > "$R/N13-calls.txt"
+  [ "$outside" = 0 ] && [ "$inside" -ge 4 ]; v=$?
+  verdict $v "N13 no package manager: $inside mentions in lib/, bin/, scripts/, $outside outside installLineFor's returned text (lines $lo-$hi); spawn/exec calls $(wc -l < "$R/N13-calls.txt" | tr -d ' ')"
 fi
 
 stop_daemons
