@@ -8,7 +8,7 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 **Requirements: Chez Scheme, libuv, and igropyr.** Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum
 printer is measured identical on these; on any other version the verbs that print a datum refuse with
 `(error unsupported-printer-version)`). On Homebrew the Chez binary is `chez`, not `scheme`; use that
-name wherever `scheme` appears below.
+name wherever `scheme` appears below, and set `THEOURGIA_SCHEME=chez`: the programs start each other (the daemon, `core.sc`, `eval`'s worker) with `THEOURGIA_SCHEME`, else `scheme`.
 
 **Platforms: the ones with a measured row.** The numbers the code hands
 to the kernel or reads back from it that differ between platforms --
@@ -62,7 +62,7 @@ needs: `theourgia` for `theourgia/theourgia.sc`, `theourgia-mcp` for `theourgia/
 `theourgiad.sc` beside itself when none is running; `init`, `eval` and any request under
 `THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc` starts `eval-worker.sc` for `eval` and
 `eval-runner-exec.sc` for `eval --lang`. `mcp/server.sc` is the MCP shell and starts `theourgiad.sc`
-one level up. `theourgiad.sc` takes only `serve`. The programs find each other by path, not through
+one level up, and runs `core.sc`, also one level up, as its own child for `eval`. `theourgiad.sc` takes only `serve`. The programs find each other by path, not through
 the library path, so keep the output directory as `build.ss` lays it out.
 
 NOTE: **The shipped form is this directory of objects, not one file.** `eval`, forwarding and the
@@ -102,21 +102,24 @@ process even when a daemon is running.
 ## Global options
 
 NOTE: **These are accepted by EVERY verb**, and they are here rather than in
-each verb's line because repeating them thirty-three times would say they
+each verb's line because repeating them thirty-eight times would say they
 were somehow special to each one.
 
 | option | what it does |
 |---|---|
 | `--store <dir>` | which store. Falls back to `THEOURGIA_STORE`, then `.` |
-| `--actor <name>` | who the request is from. Falls back to `USER`, then `cli` |
+| `--actor <name>` | who the request is from. Falls back to `THEOURGIA_ACTOR`, then `USER`, then `cli` |
 | `--socket <path>` | reach a daemon at this path instead of the default |
 | `--wire` | print the answer as one S-expression per line rather than for a person to read |
 | `--req <id>` | the request's identity, so a retry is recognised as the same request rather than a second one |
 | `--cursor <w:n>` | the position this request is composed against |
+`THEOURGIA_WRITER` is the writer a request is for when it names no writer of its own; unset or empty, there is none, and it never falls back to the actor. `THEOURGIA_WIRE=1` does what `--wire` does, for `eval` only.
 
 `THEOURGIA_LOCAL=1` answers in this process even when a daemon's socket
 is there. NOTE: It is a debugging path: it skips the daemon rather than
 doing something the daemon cannot.
+
+`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent; a request that reaches a server still naming one (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc)`.
 
 ## Writing for agents
 
@@ -206,7 +209,7 @@ writer's drafts laid over the blocks they cover. `--writer` names whose;
 without it the writer is the one this caller was given. A block with no
 draft still reads as committed in the same answer -- the overlay replaces
 the blocks it covers, not the view. `--working-info` adds what the view
-is made of rather than changing what is read.
+is made of rather than changing what is read. `--working` or `--working-info` with `--md` or `--recursive` is refused with `(error bad-request incompatible-working-options)`.
 
 ### `refs`
 
@@ -215,6 +218,8 @@ is made of rather than changing what is read.
 It answers:
 
     (ref (from <id>) (rel <rel>) (via link|md))
+
+A text reference's rel is always `ref`. Rows are ordered by the referring id, then by rel. An id the store does not know is refused with `(error unknown-id <id> (nearest ...))`.
 
 What points **at** this block, from the two places a reference can live. A `link`
 record is an edge someone wrote and `unlink` removes it; a reference in the text is a
@@ -298,6 +303,8 @@ that; a prefix match ties with it and the tie is broken by id, which is the
 intended answer -- a name that merely BEGINS with the query is not obviously a
 better result than a page about the query.
 Fields are counted once each however many times they match.
+Order is score descending then id ascending — total, so two runs over one store agree.
+The query is only ever text: nothing in it reaches a numeric parser.
 
 Keywords an editor supplied (see "Derived data from an editor") are
 searched only for a block with no keywords of its own author's, and score as
@@ -314,7 +321,7 @@ that exist is the outline.
 
 #### What a `--wire` answer says about the scan
 
-`search` and `grep` carry, after their items:
+`search` and `grep` carry, after their items, the cut they read as `(cut ((<writer> . <seq>) ...))` and then:
 
     (scanned (blocks <n>) (fields (<field> ...)) (unreadable-blocks <m>))
 
@@ -358,7 +365,7 @@ answer with items writes the items and nothing else.
 It answers:
 
     (match <id> <line-no> "<text>")
-    --under <id>    only the block given and what is under it
+    --under <id>    only the block given and what is under it; an id that names no block matches nothing
     --all           no limit on how many lines come back
 
 `search` finds blocks; `grep` finds lines. It prints every line of a live
@@ -386,8 +393,7 @@ Both `grep` and `search` are answered against the same blocks: a deleted block
 has no lines.
 
 
-Order is score descending then id ascending — total, so two runs over one store agree.
-The query is only ever text: nothing in it reaches a numeric parser.
+
 
 ### `whereis`
 
@@ -437,6 +443,7 @@ already covers — which would produce a log that silently began in the middle.
 It answers:
 
     (tag (name "<name>") (cut ((<writer> . <seq>) ...)))
+    (tag (name "<name>") (cut ((<writer> . <seq>) ...)) (event <writer> <seq>) (unsettled #t))
 
 With a name, binds it to the cut this store has **applied** — not the frontier it has
 discovered, which would name records no reader of this store could produce. The cut is
@@ -468,7 +475,7 @@ fields would call two states identical when an edge had moved.
 A cut literal is parsed by shape and never handed to `read` — the reader implements
 the whole numeric syntax, and `#e` with a large exponent asks it to build an integer
 of any size from eleven characters of argument. A cut this store cannot reach is
-refused as `cut-unavailable` rather than truncated to the part it can reach.
+refused as `(error cut-unavailable (cut from|to) (reason ...))` rather than truncated to the part it can reach. A name that is not a tag is refused as `(error unknown-tag <name> (cut from|to))`, and a name whose tags are unsettled as `(error tag-unsettled <name> (cut from|to))` rather than resolved to one of them.
 
 ### `describe`
 
@@ -476,7 +483,7 @@ refused as `cut-unavailable` rather than truncated to the part it can reach.
 
 What the verbs are, what each is for, and the protocol for writing. Answers
 
-    (ok (verbs (<verb> (usage <form>) (description <text>) (protocol <bool>)) ...)
+    (ok (verbs (<verb> (usage <form>) (description <text>) (protocol <bool>) (route <route>)) ...)
         (protocol "<the writing protocol>"))
 
 for something that has to ask rather than be told: the MCP shell builds its
@@ -497,8 +504,9 @@ promise the second breaks.
 
 Each entry also carries `route`, which says who carries that verb out:
 `daemon` for a verb a client sends over the socket, `local` for one the client
-runs in its own process. `init` is `local`, because it is what creates the
-store there would otherwise be nothing to send to.
+runs in its own process, `child` for one run by `core.sc` as a child of the caller (the
+command line execs it, the MCP shell runs it as its child). `init` is `local`, because it is what creates the
+store there would otherwise be nothing to send to; `eval` is `child`.
 
 The `protocol` flag on an entry says that verb's description carries the
 writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
@@ -511,7 +519,11 @@ writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 It answers:
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
-      | (duplicate-path <path> (ids (<id> ...)))
+      | (nested-document <id>) | (duplicate-path <path> (ids (<id> ...)))
+      | (unknown-verb (event <w> <seq>) (verb <v>)) | (malformed-record (event <w> <seq>) (reason ...))
+      | (cut <writer> <path> <kind> <after>)
+
+A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`.
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
 parent was deleted or never arrived, and records still waiting for premises. A record
@@ -537,6 +549,7 @@ across two verbs.
 Creates a store in the directory named by `--store`, and answers with the
 store's id and the writer the caller was given. It also writes
 `<store>/.gitignore`; see [A store in git](#a-store-in-git).
+The answer is `(ok (store <id>) (writer <writer>))`. A directory that already holds a store is refused `(error already-initialised (store <dir>))`, and one holding another instance's writer is refused `(error foreign-writer (writer <w>) (remedy adopt))`.
 
 ### `insert`
 
@@ -563,6 +576,7 @@ Replaces one field of one block. `--if-unchanged` makes the write
 conditional: the store refuses it if the block has moved on from that
 version, so a caller that read, thought, and came back cannot overwrite
 what happened in between.
+A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`, which lists the records that moved the block on since that version. Given with no `<value>`, `set <id> <field>` makes the field absent.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
 fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision` -- and a
@@ -589,6 +603,7 @@ make a cycle together; that one is shown by `conflicts` after the merge.
 
 Marks a block deleted. The block and its history stay in the log -- what
 changes is what the outline and the reads answer.
+The deletion is permanent: nothing brings a deleted block back.
 
 ### `link <from> <rel> <to>`
 
@@ -620,14 +635,14 @@ is not removed by it.
 
     (def <name> ("--under" <library>) <source>)
 
-Defines one datum by name, optionally inside a library block.
+Defines one datum by name inside a datum library block, adding it after the library's last child. `<source>` must be exactly one form, and that form must define `<name>`; otherwise it is refused `expected-one-form` or `name-mismatch`. Without `--under`, the store's only datum library is used; if there is not exactly one, the request is refused `library-required`. A name one of the library's children already defines is refused `(error name-exists (name <name>) (ids (<id> ...)))`: `def` does not replace a definition.
 
 ### `outline`
 
     (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"])
 
-Prints the store's block tree as indented text: one line per block, its
-`<id>.<version>` and its title. `--depth` stops at that many levels.
+Prints the store's block tree as indented text, answered as `(ok (text "..."))`: one line per block, `- <id>  <title>`, indented two spaces per level. `--depth` stops at that many levels.
+A row whose position is in structural conflict carries the conflict's mark after its title, and a row that is also an orphan carries `orphan`. Orphans the tree did not draw are listed after it under `orphans:`, each with its subtree, under the same `--depth` limit, so `--depth 0` prints nothing. A `--depth` that is not a count is answered with the usage form.
 
 `--with-keywords` appends `  [<keywords>]` to each row that has them. NOTE:
 A block without the field prints no brackets: empty ones would say the
@@ -678,8 +693,7 @@ stated here because the failure it prevents is silent.
 
 Puts a draft in that writer's slot for that block. A draft's version is
 the name of its content -- `sha256(bytes || based-on || cut)` -- so the
-same bytes written twice are the same version. `--rebase` moves a draft
-onto a newer committed parent.
+same bytes written twice are the same version. A write into a slot that already holds a live draft keeps that draft's `based-on` and cut. `--rebase` moves a draft onto the committed version the caller merged onto, which it must name with both `--based-on <version>` and `--working-cut <cut>`, or it is refused `(error bad-request rebase-needs-baseline)`. A named baseline that cannot be checked is refused `(error invalid-working-baseline (reason cut-unusable|block-not-at-cut|hash-not-at-cut))`. The answer is `(ok (saved <block>) (writer <w>) (version <v>) (based-on <v>))`.
 
 ### `restore`
 
@@ -723,7 +737,8 @@ others. `--cut` is not accepted by the export verbs.
 Lists that writer's live drafts. Each carries `block`, `writer`,
 `version`, `based-on`, `now` (what the committed block is at this
 moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
-(whether the draft's bytes differ from what is committed).
+(#t when the draft is fresh and its bytes are the same as what is committed; a stale draft is never unchanged).
+After the drafts it lists the writer's revoked consumptions, drafts a commit took and a retraction gave back, whose slot is empty now: `(revoked (block <id>) (writer <w>) (version <v>) (based-on <v>) (plan-event <e>))`.
 
 Once an editor has supplied diagnostics for the writer (see "Derived data
 from an editor"), each draft also carries `(diagnostics <n>)`, the
@@ -744,7 +759,7 @@ The diagnostics an editor supplied for this writer (`supply diagnostics
 `error`, `warning`, `information` or `hint`. `(at <start> <end>)` is a byte
 range of the block's own src, so an edit of another block does not move it;
 a range the editor gave inside a marker line, or across two blocks, is
-`(at unmappable)`. Items are ordered by block and then by start. Once a table
+`(at unmappable)`. Items are ordered by block and then by start, an unmappable one first among its block's. Once a table
 was read the answer ends with `(stale <n>)`, the diagnostics dropped because
 what they were computed from has changed, and `(via ...)` for those it lists.
 
@@ -763,6 +778,7 @@ Turns drafts into committed versions. Naming no block commits all of that
 writer's drafts. `--working-version` may be given once per block to say
 which version of the draft is being committed; with exactly one block
 named, the bare version may be given.
+A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. Every refusal ends with `(usage ...)`, the commit form.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is
@@ -817,7 +833,7 @@ Writes the store out as Markdown. `--with-ids` keeps each block's id in
 the text, so the result can be imported back onto the same blocks.
 
 `--working` writes the writer's working view instead of the committed store
-(see "The working view on disk" below); `--writer` selects whose drafts, with
+(see "The working view on disk" above); `--writer` selects whose drafts, with
 `--working`, and is accepted and ignored without it.
 
 The answer counts the files written. Every block this projection should have
@@ -831,13 +847,14 @@ resolves that by relocating them -- and `path-conflict` for a document whose
 one path the first by id is written, so which one survives does not depend on
 the order the blocks happen to come back in. A caller reading `ok` and a
 number is never being told less than the whole story.
+The directory must already exist: `export-md` and `import-md` refuse one that does not with `(error projection-invalid (reason not-a-directory) (dir <dir>))` and do not create it. A file that cannot be written stops the export with `(error unreadable (path <path>) (reason "...") (written (<path> ...)))`, which names the files already written.
 
 A document's `path` is checked before anything is written, by the same rule
 the code projection uses: it must be relative and non-empty, with no `.`,
 `..` or empty component, no NUL and no backslash. A path that fails, or that
-leads out of the directory you named once symlinks are resolved, is refused
-with `path-not-usable` and the path you gave quoted back, and nothing is
-written for it.
+leads out of the directory you named once symlinks are resolved, is not
+written, and neither is its subtree. The export still answers `ok` and writes the other documents; the document is listed in `skipped` as
+`(<id> path-not-usable (path "<path>") (subtree <n>))`, with the path quoted back as you gave it.
 
 Two documents conflict when they would write the same FILE, which is asked of
 the filesystem rather than compared as text: on a volume that folds case
@@ -885,6 +902,7 @@ bytes happen to be valid UTF-8 with no NUL. A UTF-8 byte-order mark at the
 start of a file is text: the file is imported, its bytes stored as they
 are, mark included. With `--datum` a file that begins
 with a mark is refused `invalid-utf8`, as it always was.
+In text mode, a file that carries the projection header `export-code` writes is matched back to its file block and children. A child the file no longer holds is refused `(error projection-invalid (reason would-delete) (ids (<id> ...)))` until `--allow-delete` is given, which deletes it. A file with no header, whether hand-written or exported `--raw`, is always imported as a new file block, even when another block already holds its path. `--allow-delete` has no effect with `--datum`.
 
 With `--datum`, a file WITHOUT a projection header, whose path an alive
 datum library in the store already holds, updates that library rather
@@ -904,12 +922,13 @@ they changed, the import is refused `(error stale-baseline (path <path>)
 
 Writes the store out as source. Without `--datum` it writes the text-mode
 files -- the blocks `import-code` made without `--datum`; a store with no
-text-mode files answers `(ok (files 0))`. NEVER: `--datum` and `--raw` together are
+text-mode files answers `(ok (files 0))`. `--raw` writes each file as its blocks' bytes run together, with no header or marker lines. Such a file cannot be imported back onto the same blocks: `import-code` treats it as a new file.
+NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".
 
 `--working` writes the writer's working view instead of the committed store,
-in any of the three projections (see "The working view on disk" below);
+in any of the three projections (see "The working view on disk" above);
 `--writer` selects whose drafts, with `--working`, and is accepted and
 ignored without it.
 
@@ -943,6 +962,7 @@ with a UTF-8 byte-order mark is cut as it would be without one, and every
 boundary, and the offset of an uncertain token, counts the mark. With
 `--symbols`, the file's first line starts at byte 0, not after the mark,
 so a symbol starting at byte 3 is refused `symbols-not-a-line-start`.
+Without `--output`, the review file is written beside the file as `<file>.review-<pid>-<ms>-<n><ext>`. An existing file is never overwritten: an `--output` that exists is refused `(error projection-invalid (reason output-exists))`. A file that changed while it was being scanned is refused `input-changed`.
 
 With `--symbols`, the cuts come from a list of the file's top-level
 symbols that an editor collected, in place of the definition patterns.
@@ -1023,7 +1043,7 @@ line is numbered as the file is. Line 1 is the header:
 `writer` is `-` for the committed store and must be the `--for` given;
 `files` is every file the projection wrote, with the sha256 of its bytes;
 `replaces` names the files whose facts this supply replaces. Every other
-line is one fact, by kind:
+line is one fact, by kind: `signature` and `keywords` lines in a `signatures` supply, `calls` lines in a `calls` supply, and `diagnostic` lines in a `diagnostics` supply, where `<severity>` is `error`, `warning`, `information` or `hint`:
 
     (signature <id> "<text>" (kind <k>) (depends (<id> ...)))
     (keywords <id> ("<word>" ...) (depends (<id> ...)))
@@ -1058,7 +1078,7 @@ listed file against it before it keeps anything. What it refuses:
 `supply-malformed` answers are `(error supply-malformed (line <n>) (reason
 <r>))`. A view the exporter refuses (a path two blocks hold, an unsafe
 path) is refused with the exporter's own answer. Nothing is written until
-the whole file passes.
+the whole file passes. The first refusal met is the answer, checked in this order: the header, then every line's shape, then the exporter's own answer, then `supply-stale`, then `replaces-not-listed`, then each fact against the view in line order.
 
 Facts are kept per kind, writer and language, in
 `derived/<kind>-<writer>-<languageId>.sexp`, with every byte of the writer
@@ -1100,7 +1120,7 @@ readers of a writer's own facts -- `read --signature --working` and
 
     (check)
 
-Reads the store and reports what does not hold together. A path two alive
+Reads the store and reports what does not hold together, as `(check (store <id>) (local-writer <w>) (writers ...) (snapshots ...) (registry inside-store|outside-store) (notes ...) ... (verdict <v>))`. Each writer carries its `end`, `torn` and `integrity` notes (`unreadable` where a writer could not be read). Each snapshot is `usable` with its cut, or `unusable` with why, which does not change the verdict. `local-writer` is present only when the store has a writer this copy may write as. A path two alive
 datum libraries, or two alive text files, both hold is reported under
 `(paths ((duplicate-path <path> (ids (<id> ...))) ...))`, a clause that is
 there only when there is such a path. It is not damage -- the log is whole;
@@ -1120,8 +1140,9 @@ way out of `duplicates` is under "A path several blocks hold".
     (snapshot)
 
 Writes a snapshot of the current reduction and answers
-`(ok (snapshot <n>) (cut <cut>))`. Later opens start from it instead of
+`(ok (snapshot "<path>") (cut <cut>))`, `<path>` being the new file under `<store>/snap/`, numbered above every snapshot already there. Later opens start from it instead of
 replaying the whole log.
+A store with no local writer to write as is refused `(error no-local-writer)`; a cut that reaches past what is durable is refused `(error cut-ahead ...)`. It also writes the evidence checkpoint, `request-index.sexp`.
 
 ### `adopt`
 
@@ -1133,6 +1154,7 @@ is not. When the reason is the store's identity, the answer says which
 part of it: `(reason identity) (identity <field>)`, where `<field>` is
 `machine`, `device`, `inode`, `nonce`, or `instance-absent` for a checkout
 that has no `instance.sexp` yet.
+The answer is `(ok (from <old-writer>) (to <new-writer>) (prefix <segment> <offset> <seq>) (reason <r>))`. `<r>` is `identity`, or one of the recovery reasons: `retired` (an adopt left unfinished), `missing-generation`, `registry-ahead` (the log is behind what the registry saw written) or `damage` (the writer's log fails its integrity check). A store that needs none of these is refused `(error not-needed (checked (identity retired missing-generation registry-ahead damage)))`. A store file it cannot read is refused by kind (`owner-unreadable`, `segment-unreadable`, `metadata-unreadable`, `registry-unreadable`) with `(path <p>) (reason <r>)`, and nothing is written.
 
 ## A store in git
 
@@ -1184,9 +1206,7 @@ Restoring or moving is: clone, read, adopt, write. A clone has no
 generation of the writer and installs its successor, and writes from then
 on land in the new generation. A checkout is adopted this way -- for a
 missing `instance.sexp` -- only when that name is absent from the store's
-directory, not merely unreadable or a link that points nowhere, and only
-when the directory can be listed: if it cannot, `adopt` answers as it would
-for a store that has an identity. (A copy whose `instance.sexp` does not
+directory, not merely unreadable or a link that points nowhere. The name is asked with an lstat, which needs search permission on the directory, not a listing. If that fails for any reason but absence, `adopt` refuses, `(error metadata-unreadable (path <p>) (reason <r>))`, and writes nothing. (A copy whose `instance.sexp` does not
 match, such as the stale copy below, is adopted for that mismatch.)
 
 A request answered before the restore is replayed on the checkout once it
@@ -1224,7 +1244,7 @@ accept a request identity. A client that did not hear the answer can send the
 same request again and be told what happened, rather than having to choose
 between doing the work twice and not doing it at all.
 
-`batch` carries one too, and is covered below. So does `tag <name>`, which
+`batch` carries one too, and is covered below, and so do `commit`, `import-code` and `def`. So does `tag <name>`, which
 writes a record — but not `tag` with no argument, which only lists what is
 there. Trackability is a property of the **request**, not of the verb's name.
 
@@ -1232,6 +1252,7 @@ there. Trackability is a property of the **request**, not of the verb's name.
 req-not-tracked <verb>)`. The store-level verbs and the read-only ones have no
 replay to offer, and taking an identity only to drop it would leave a caller
 believing it was protected. Refusing says so.
+The checks run in this order: `--req` without `--cursor` is `req-without-cursor` on any verb, so `req-not-tracked` answers only a request that carries both. `--cursor` alone is `cursor-without-req` on any verb.
 
     theourgia insert --title "One" --req <id> --cursor <writer>:<seq>
 
@@ -1246,10 +1267,10 @@ A write with neither option behaves exactly as it did before and is not tracked.
 
 **The cursor is `--cursor <writer>:<sequence>`** and is parsed by shape.
 Anything else — no colon, an empty or non-numeric sequence — is `(error
-bad-request malformed-cursor)`. It is spelled `--cursor` and not `--after`
+bad-request malformed-cursor)` (so is an empty writer, or a sequence of more than 18 digits). It is spelled `--cursor` and not `--after`
 because `--after` already names the sibling a new block is placed behind, on
 `insert` and `move`; one spelling cannot carry both, because the dispatcher
-must consume the retry cursor before any verb sees its arguments. An id outside the permitted format is `(error bad-request
+must consume the retry cursor before any verb sees its arguments. A request id is 1 to 64 characters of `[A-Za-z0-9._-]`; any other id is `(error bad-request
 malformed-req-id)`.
 
 ### What a request is answered with
@@ -1266,6 +1287,8 @@ abbreviated as `...`. An RPC `batch` answer is wrapped once more, as
 | `(error cursor-unreachable (after (<writer> . <seq>)) (writing ...))` | the cursor names a position the record could not have been written at, so the store cannot reason about where the request would have landed. |
 | `(error resolved-executed ...)` | an operator has recorded a determination for this request, and it says the work was done. |
 | `(error unknown <why>)` | the store cannot tell whether the request ran. It never guesses. |
+| `(error not-written reserved-not-written (sequence <n>))` | the append was reserved and nothing reached the log. Sending the request again runs it. |
+| `(error incomplete-request ...)` | some of the request's sub-operations are on disk and its plan record cannot be found to finish it from. |
 
 `unknown` always says why, and the reason is something an operator can act on.
 They fall into three families, and this is not the whole list — the store adds a
@@ -1301,7 +1324,7 @@ malformed manifest or retirement -- with the kind of damage (its name is
 also the reason) and `after`, the last sequence kept. The records up to
 `after` are delivered; nothing after the cut is. A verb that must not act
 on a partial history -- `export-code`,
-`export-md`, `import-md`, `import-code`, `def`, `snapshot` -- refuses instead,
+`export-md`, `import-md`, `import-code`, `def`, `snapshot`, `supply` -- refuses instead,
 `(error incomplete-reduction (notes ...))` with the same entries, before
 it writes a record or a snapshot. A cut refuses nothing else: every other
 operation reads a cut store as it always has (a write whose own writer's
@@ -1347,9 +1370,11 @@ forms:
     echo '((insert root #f ((kind . section) (title . "One")))
            (insert (from 0) #f ((kind . section) (title . "Two"))))' \
       | theourgia batch
+Text that does not read as data is `(error bad-request unreadable-intents)`. Intents given both as an argument and on standard input are answered with the usage line, not with one of the two chosen.
 
 A field is a **pair**: `(title . "One")`. Written `(title "One")` the value is
 the list `("One")`, which is a different thing and is stored as one.
+`(from <n>)` names the block made by intent `<n>` of the same batch, counted from 0. It is accepted only as an `insert`'s or a `move`'s parent or predecessor. A reference that is not `(from <index>)` is `malformed-intent` (`back-reference-not-a-form`, `back-reference-not-an-index`), and one naming no intent that made a block is `(error no-such-intent <n>)`.
 
 An intent is the shape the library takes, not a shorthand, and each verb has
 its own:
@@ -1367,9 +1392,10 @@ wrapped as `(expect <hash> <intent>)`, which refuses the work if that block's
 hash is no longer the one given. `insert` and `tag` have no subject and answer
 `(error no-subject)` if wrapped. The hash must be a string: a wrapper holding
 anything else is `malformed-intent`, not a wrapper that quietly does nothing.
+A hash that no longer matches is answered `(error changed (current <hash>))`, and a subject that does not exist or is deleted is answered `unknown-id` or `deleted`.
 
 An item the store will not accept is answered `(error malformed-intent
-(<reason> <what-was-sent>))` for that item — never raised. The reason names the
+(<reason> <clause> ...))` for that item — never raised. The clauses say what the reason is about, such as `(spelling "<the datum>")`, `(argument <position>)`, or `(verb <v>) (given <n>) (needs <m>)`; the item is not sent back. The reason names the
 rule, because more than one can apply to the same item and they do not send you
 to the same place:
 
@@ -1390,10 +1416,10 @@ to the same place:
 A record the store was going to write but cannot apply is refused the same way,
 with the reason from the reducer's own vocabulary — `id-not-a-string`,
 `tag-name-not-a-string`, `relation-not-a-symbol`, `parent-not-an-id`,
-`ord-not-a-number` — and what is shown is the payload rather than the item.
+`ord-not-a-number`, `field-value-not-text`, `kind-not-known`, `symbol-not-wire-safe` — and only the reason is shown, with its own clauses when it has any. Neither the payload nor the item is shown.
 
 A form headed by a symbol this build does not know is a different answer,
-`(error unknown-verb <verb>)`: it may be a record shape a newer build writes,
+`(error unknown-verb (spelling "<verb>"))`: it may be a record shape a newer build writes,
 and calling it malformed would send an operator to repair something that only
 needs a newer binary.
 
@@ -1413,7 +1439,7 @@ The receipt records, for each item, the cursor that item was written against.
 
 A tracked request of a **single** intent has no receipt — it takes the
 single-record path — but it is still tracked, and repeating it is still a
-replay. A tracked request that produces **no** intent appends nothing at all.
+replay. A tracked request that produces **no** intent writes one record, an empty plan, which is its identity's durable evidence; sending it again replays that plan and appends nothing.
 
 An **untracked** batch has neither a receipt nor replay protection; repeating
 its text does the work again.
@@ -1482,10 +1508,15 @@ written to survive that shape. Do not resume a captured continuation out of a
 A store receives another store's history one segment at a time. `publish` hands the
 bytes of one segment to the log layer and prints what it decided, as a single
 S-expression on stdout; the exit code is zero only for the four outcomes that leave
-the segment published.
+the segment published. Those four are printed inside `(ok ...)`, as
+`(ok (published 1))`; every refusal is printed inside `(error ...)`, as
+`(error (incomplete 1))`, except the ones already headed `error`, which are printed
+as they stand: `(error invalid-candidate sha-mismatch)`. The tables below show the
+inner answer.
 
 The hash is the **sender's declaration**. Given one, it is checked against the bytes
-before anything else happens, so a segment that was damaged in transit is refused
+before anything about the bytes is decided (only the writer name, the manifest's
+readability and the active-writer rule come before it), so a segment that was damaged in transit is refused
 rather than installed and discovered later by a reader. Given none, the bytes on
 disk are taken as their own: computing the hash here from the same bytes would
 compare a number with itself.
@@ -1507,7 +1538,8 @@ published and exit zero:
 | `(repaired <n> (evidence <path>))` | the local copy failed validation, the candidate covers every valid record it still held, and it has been replaced. |
 | `(extended <n> (evidence <path>))` | the segment holds a retired prefix and the candidate continues it; the retirement coordinates were re-checked against the candidate first. |
 
-Both replacements name the file the displaced bytes were copied to. The sender is the
+Both replacements name the file the displaced bytes were copied to, under
+`writers/<writer>/damaged/`. The sender is the
 one party that may want them, and deriving that name on its side would be a second
 supplier of it — the two would part company the first time the naming rule changed.
 
@@ -1516,14 +1548,27 @@ The rest refuse, and exit non-zero:
 | answer | meaning |
 |---|---|
 | `(incomplete <n>)` | the candidate is a prefix of what is already here; accepting it would discard records. |
-| `newer-history-unmergeable` | the candidate is longer than a sealed segment, which is not a segment this store may replace. |
+| `(newer-history-unmergeable (kept <path>) (writer <w>) (segment <n>))` | the candidate is longer than a sealed segment, which is not a segment this store may replace. |
+
+NOTE: the two refusals whose candidate is kept under `incoming/` -- this one and
+`segment-layout-conflict` -- also carry `(kept <path>) (writer <w>) (segment <n>)`:
+`((segment-layout-conflict <reason>) (kept <path>) (writer <w>) (segment <n>))`.
 | `(divergence (fork <seq>))` | a record disagrees with one this writer's history already holds; the fork is recorded at the lowest such sequence and never moves up. |
 | `(refused insufficient-coverage (seq <n>))` | the local copy is damaged, but the candidate does not cover record `<n>`, which is still valid here. Absence is not evidence of disagreement. |
-| `(refused active-writer-segment)` | the segment is this store's own active writer's current segment. This is checked above every other rule. |
-| `(refused retirement-coordinates <detail>)` | the candidate would move the byte offset at which the retired prefix's last sequence ends, so the declaration would silently stop being true. |
+| `(refused active-writer-segment)` | the segment is this store's own active writer's current segment. This is checked above every rule about the candidate; only an invalid writer name and an unreadable manifest are refused before it. |
+| `(refused retirement-coordinates <detail>)` | the candidate would move the byte offset at which the retired prefix's last sequence ends, so the declaration would silently stop being true. `<detail>` is `(offset-moved (declared <n>) (candidate <n>))`, or `(sequence-absent <seq>)` when the candidate does not hold that sequence at all. |
 | `(error invalid-candidate sha-mismatch)` | the bytes do not hash to the declared value. |
 | `(error invalid-candidate not-contiguous)` | the candidate's own sequences jump, repeat or go backwards. |
 | `(segment-layout-conflict <reason>)` | the candidate cannot sit at this segment number. The reasons are below. |
+| `(refused invalid-writer (writer <w>))` | the writer name is not eight characters of `[0-9a-z]`; nothing is written. |
+| `(refused manifest-unreadable (path <p>) (reason <r>))` | this writer's `published.sexp` cannot be read or parsed; nothing is written, not even to `incoming/`. |
+| `(error invalid-candidate <reason> (offset <n>))` | a record's envelope is refused (`seq-not-a-number`, `ts-not-a-number`, `actor-malformed`, `deps-malformed`, `payload-not-a-form`); `<n>` is that record's byte offset in the candidate. |
+| `(refused kept-unreadable (path <p>) (reason <r>))` | a copy already kept under `incoming/` cannot be read, so it is not replaced. |
+| `(error no-candidate (path <p>))` | the file does not exist. |
+| `(error candidate-unreadable (path <p>) (reason <r>))` | the file exists and cannot be read. |
+
+A wrong number of arguments, or a segment that is not a positive integer, answers
+the usage form.
 
 ### Where a candidate may sit
 
@@ -1548,6 +1593,9 @@ nothing — there is no record in it to miss — while a gap between *sequences*
 history nobody holds. A candidate that continues the sequence may therefore take any
 free segment number, which is what lets a publisher choose one without knowing which
 numbers its peer has already used.
+A segment is stored as a six-digit file name (`000001.sexp`), so segment numbers run
+from 1 to 999999; a larger number is not refused by the usage check but fails as an
+internal error.
 
 **Layout coordinates come from what the store declares, never from whichever files
 happen to be in the directory.** Two declarations exist: the manifest, which lists
@@ -1591,8 +1639,9 @@ contradicting itself, and in both cases the store cannot say what the segment is
 
 #### `incoming/`
 
-A refused candidate is **kept, not installed**. Its bytes are written under
-`writers/<writer>/incoming/`, named by their own hash, with an empty marker file
+A candidate refused as `segment-layout-conflict` or `newer-history-unmergeable` is
+**kept, not installed**; no other refusal keeps anything. Its bytes are written under
+`writers/<writer>/incoming/` as `<segment file>.<sha256>.seg`, named by their own hash, with an empty marker file
 beside them recording that the bytes passed the checks that are properties of the
 bytes alone — per-record CRC and internal sequence continuity. Nothing is written at
 the segment's own name and nothing is added to the manifest.
@@ -1608,6 +1657,8 @@ missing middle arrives, and the kept bytes are then accepted unchanged.
 Four answers leave the segment published, and a sender deletes its own copy on the
 strength of any of them. So all four have to promise the same thing, and they promise
 it by going through one table:
+(The same table is also run for `commit`, whose answer asserts only the segment
+file and its directory, so a local writer with no manifest is not refused.)
 
 | row | the file |
 |---|---|
@@ -1673,14 +1724,18 @@ the metadata a recovery actually reads has been written down, and it has not bee
 
 ### Durability stages
 
-Every call that makes something durable names the stage it belongs to —
-`deliver-barrier`, `commit`, `registry`, `publish`, `snapshot`, `repair` — and the
+Every call that makes something durable names the stage it belongs to, from the
+list `known-stages` in `ffi.sc` — `deliver-barrier`, `commit`, `registry`,
+`publish`, `snapshot`, `repair`, `report`, `working`, `index`, `eval-cleanup`,
+`presence`, `presence-decision`, `mcp-wait`, `mcp-signal`, `admission`, `derived`,
+and `conn` and `client`, which are fault points rather than flushes — and the
 stage is a required argument, not a decoration:
 
     (fsync! fd subject stage)
     (fsync-dir! path stage)
     (atomic-write! path bytes stage)
     (directory-entry-durable! path stage)
+    (stage-candidate! store writer bytes stage)
 
 Fault injection matches on the stage, and a staged fault never matches a call that
 declares none. That makes the list of stages **the list of steps a test can reach**:
@@ -1691,9 +1746,10 @@ is what turns the rule from something to remember into something that cannot be
 written wrongly; `test/stage-gate.sc` reads the sources and checks that every one of
 these calls names a stage from the list.
 
-Run the suites from source (igropyr must be a sibling checkout):
+Run the suites from inside `test/`, with `THEOURGIA_LIBDIR` naming a directory that
+holds both `theourgia/` and `igropyr/` (see `test/RUN.md`):
 
-    sh test/run-all.sh
+    cd test && . ./env.sh && sh run-fixtures.sh <output-directory>
 
 ## Evaluating against a store
 
@@ -1706,6 +1762,8 @@ Run the suites from source (igropyr must be a sibling checkout):
 Evaluates one expression against what the store holds, in a child process
 that is given nothing else: no filesystem, no network, no way to reach
 the committed store except by reading it.
+With no `<source>` argument the source is read from standard input. A source
+longer than 1048576 characters is refused `(error bad-source (reason input-limit))`.
 
 **The answer is one complete line**, always, and one of:
 
@@ -1717,6 +1775,16 @@ the committed store except by reading it.
     (error eval-exception (kind raised) (reason unwritable-value) (type <t>))
     (error bad-request (reason ...) (usage (eval ...)))
     (error eval-busy (slots <K>) (waited-ms <n>))
+    (error eval-value (kind <t>) (index <i>))
+    (error bad-source (reason input-limit|expected-one-form|expected-one-cut))
+    (error eval-context (reason unavailable-cut|library-required))
+    (error eval-denied (operation library-import))
+    (error eval-worker-exit (status <n>|unknown))
+    (error eval-worker-unavailable (reason ...))
+    (error spawn-refused (reason ...))
+
+`eval-value` is a value the source RETURNED that cannot be written back (the same
+kinds as `unwritable-value`); `<i>` is its position among the values.
 
 NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
@@ -1875,8 +1943,9 @@ naming it.
 
 The refusals: `(error bad-request (reason lang-and-cut))` for `--cut` or
 `--latest`, `(reason lang-and-under)` for `--under`, `(reason no-runner)`
-for a language with no runner (`typescript` has none: it needs a compile
-step); `(error projection-failed <the export's answer>)` when the store
+with `(lang <language>)` for a language the table does not know or one with no
+runner (`typescript` has none: it needs a compile step; nor do `go`, `rust`,
+`c`, `java` or `markdown`); `(error projection-failed <the export's answer>)` when the store
 cannot be projected, and nothing runs -- a store whose `meta.sexp` is
 missing, or is not a store's, answers the export verb's own `(error meta
 (path ...))` inside it -- with `--working` the view meets it first and
@@ -1905,7 +1974,10 @@ cleared to `PATH`, `HOME` and `LANG` (those three cannot be named). In
 path, as written for it -- are replaced only as whole arguments; in an
 `env` value the same three are replaced wherever they occur, since a value
 is a path list. No string of a runner may hold a NUL character, and the
-interpreter's name may not be empty.
+interpreter's name may not be empty. `source-name` is one path component: not
+empty, not `.` or `..`, and without `/`. An `env` name may not be empty or hold
+`=`. An interpreter name holding `/` is taken as a path; any other is searched
+for on `PATH`.
 
 #### `--lang chez`: Scheme outside the sandbox
 
@@ -1986,6 +2058,12 @@ startup report it writes, so the client can tell its own start's report
 from another's in the shared log. A start made by hand has none, and its
 reports end with `(attempt #f)`.
 
+A `--socket` given by hand is not given a directory. An empty one answers
+`(error bad-socket-path (reason empty))`. One whose directory does not
+exist answers `(error socket-dir-missing (dir <dir>))`. Both exit 2,
+before `--detach` and before anything is created. Only the default
+socket's directory is made by the daemon.
+
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or
 `$HOME/.theourgia/run` and the key is the first 16 hex digits of the
@@ -2018,27 +2096,38 @@ the whole struct on every platform.
 process leaves the caller's session and replaces its standard streams,
 and it does NOT fork. Typed at a prompt it stops there and prints
 nothing, because the output it would have shown has already gone to the
-log. It requires `--log <path>`, and refuses without one -- a detached
+log. It requires `--log <path>`, and refuses without one, answering `(error detach-needs-a-log (usage ...))`, exit 71 -- a detached
 daemon with nowhere to write is one whose every startup refusal is lost,
 and the client that started it could then only report that it did not
 come up. The log is opened for APPEND, so several starts against one
 store share it and a failed start's reason is still there afterwards.
 In order: leave the session, replace the streams, then take the lock and
-open the socket. A `serve` without `--detach` does none of it.
+open the socket. A `serve` without `--detach` does none of it. If
+leaving the session or opening the log fails, it writes `(error
+detach-failed (step setsid|log) (path <log>) (errno <e>))` on stderr and
+exits 71. The clients that start a daemon pass `--detach --log
+<run-root>/<key>/serve.log`.
 
 **Starting when one is already there.** The lock attempt never waits: a
 second daemon answers `(error serve-busy (path <socket>))` and exits 75.
 If the socket path is occupied by something that is not a socket it
-answers `(error serve-path-occupied (path <socket>))` and exits 75. A
+answers `(error serve-path-occupied (path <socket>))` and exits 75. Both
+are startup reports: a `(written ...)` clause follows when this start
+created the lock file, and `(attempt ...)` comes last. Any other
+filesystem failure while starting is reported the same way, also with
+exit 75. A
 LEFTOVER socket file whose daemon is gone is cleared and taken over --
 the lock, not the file, is what decides which of those two it is. When it
 is up it reports `(serving (store <path>) (socket <path>))`.
 
 **`SIGTERM` drains; a second one stops.** The first signal lets work that
 has already begun run to its end, within a budget of five seconds, while
-refusing new requests with `(error draining)`. A second signal stops
-immediately -- a drain that is taking too long is exactly when somebody
-needs to be able to end it.
+refusing new requests with `(error draining)`. It reports `(draining
+(in-flight <n>))`, then `(exiting (reason drained))` and exits 0. A drain
+still running at five seconds reports `(exiting (reason drain-timeout)
+(in-flight <n>))` and exits 75. A second signal stops immediately with
+`(exiting (reason second-signal))`, exit 75 -- a drain that is taking too
+long is exactly when somebody needs to be able to end it.
 
 **`(error store-busy (path <path>))`** is an answer, not a crash: a
 request waited for the store's lock past its five-second budget because
@@ -2057,7 +2146,7 @@ process decides it on the store as it stands under the lock. A fold that
 fails keeps the earlier state. Writing one store from two machines is a
 separate design.
 
-**`THEOURGIA_TRACE=1`** makes the daemon write its filesystem and
+**`THEOURGIA_TRACE=1`** makes the daemon, like any process started with it, write its filesystem and
 dispatch events as `(trace <op> <path> <detail>)` lines on stderr.
 
 ## The MCP shell
@@ -2074,19 +2163,19 @@ the transport's tag rather than on the answer's text.
 | variable | read by | what it does |
 |---|---|---|
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. No source file here reads them; `eval --lang` WRITES them for its launcher, from the running process's own library directories and extensions (see `--lang`). |
-| `THEOURGIA_STORE` | `core.sc`, `theourgiad.sc` | the store to use when `--store` is absent. Falls back to `.` |
-| `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
+| `THEOURGIA_STORE` | `theourgia.sc`, `core.sc`, `theourgiad.sc` | the store to use when `--store` (and, for `serve`, the positional) is absent. Falls back to `.`. The MCP shell sets it to its own store for the `eval` child it runs |
+| `THEOURGIA_ACTOR` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | who the requests are from when `--actor` is absent. Empty is unset. Falls back to `USER`, then `cli` |
 | `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes, `eval --working`'s view included. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
-| `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
-| `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
-| `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_HOME` | `ffi.sc` | where the machine registry (`instances.sexp`) and its lock live. Empty is unset. Falls back to `$HOME/.theourgia` (`/tmp/.theourgia` with no `HOME`). When set, every process announces it on stderr at load as `(theourgia machine-home <value>)`, since it lets a process ignore a rollback the registry exists to catch |
+| `THEOURGIA_RUN` | `client.sc` (for `theourgia.sc`, `theourgiad.sc`, the daemon and `mcp/server.sc`) | the run root holding daemon sockets, their logs and the MCP shell's `eval` call directories. Empty is unset. Falls back to `$HOME/.theourgia/run`, or `/tmp/.theourgia/run` with no `HOME` |
+| `THEOURGIA_LOCAL` | `theourgia.sc`, `core.sc` | `1` answers in process even when a daemon's socket is there. The thin client hands the request to `core.sc` for any non-empty value, but `core.sc` stays in process only for `1`; for any other value it still forwards to a daemon whose socket is there |
 | `THEOURGIA_EVAL_SLOTS` | `eval-admission.sc` | how many evaluations one run root runs at once (the admission pool, `### eval`); a positive integer. Unset or empty, the number of online processors. Anything else answers `(error bad-request (reason eval-slots))` |
 | `THEOURGIA_EVAL_SLOTS_DEFAULT` | `ffi.sc` | a test seam: a positive integer read in place of the online processors when `THEOURGIA_EVAL_SLOTS` is unset or empty, so a row can ask for a pool of a known size on any machine. Empty, it is unset; any other value that is not a positive integer answers `(error bad-request (reason eval-slots))` |
 | `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |
 | `THEOURGIA_RUNNER_CHEZ` | `eval-runner.sc` | the operator's runner for `eval --lang chez`: one datum naming any of `argv`, `source-name` and `env`, each replacing the language table's field whole. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
-| `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
+| `THEOURGIA_SCHEME` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | the Chez binary every program starts its Scheme children with: the thin client's `core.sc` and daemon, the MCP shell's daemon and `eval` child, and `eval`'s worker. A tree started under a particular Chez therefore starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
 **Test-only. Six of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
@@ -2097,7 +2186,7 @@ them at all.**
 
 | variable | what it does |
 |---|---|
-| `THEOURGIA_INJECT` | `on` at EXPANSION time builds the fault-injection branches. With it unset or `off` there is no fault code in the object at all -- not a disabled branch, none |
+| `THEOURGIA_INJECT` | `on` at EXPANSION time builds the fault-injection branches and says `theourgia: EXPANDING WITH FAULT INJECTION ON` on stderr. With it unset or `off` there is no fault code in the object at all -- not a disabled branch, none. Any other value is refused at expansion |
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
@@ -2130,7 +2219,7 @@ was found rather than left for a reader to discover.
     `eval --working` does without options; a historical cut with drafts
     over it (`eval --cut ... --working`) has no export. The rows for the
     working exports are in `test/export-working.sc`.
-  * **Twenty fixtures define `want` as a procedure**, which evaluates
+  * **Twenty-two fixtures define `want` as a procedure**, which evaluates
     both arguments before the call: a row that raises ends the file
     rather than failing. `run-fixtures.sh` counts and names them on every
     run. New fixtures use the `want`/`caught` macro pair instead.
