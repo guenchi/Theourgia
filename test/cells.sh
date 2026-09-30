@@ -466,30 +466,88 @@ if has N13; then
 fi
 
 # ---- N15 a warm cache runs no Chez before the program; a replaced binary is probed again
+# The shim here is a compiled executable, not a script: a script is probed
+# on every call by design (N15b), since what it starts can change under it.
+# It logs its argv and execs the real Chez. Built with cc; without cc the
+# cell is skipped by name.
+cshim() {
+  local out=$1 log=$2 replaced=$3
+  cat > "$W/cshim.c" <<'EOF'
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  FILE *f = fopen(SHIM_LOG, "a");
+  if (f) {
+    fprintf(f, "=== %s\n", argv[0]);
+    for (int i = 1; i < argc; i++) fprintf(f, "[%s]\n", argv[i]);
+    fclose(f);
+  }
+  if (SHIM_REPLACED && argc > 1 && strcmp(argv[1], "--version") == 0) {
+    fprintf(stderr, "10.1.0-replaced\n");
+    return 0;
+  }
+  argv[0] = SHIM_REAL;
+  execv(SHIM_REAL, argv);
+  return 127;
+}
+EOF
+  cc -O0 -o "$out" -DSHIM_LOG="\"$log\"" -DSHIM_REAL="\"$REAL\"" -DSHIM_REPLACED="$replaced" "$W/cshim.c"
+}
 if has N15; then
-  scratch n15; P=$T/prefix; install_into "$P" --ignore-scripts
+  if ! command -v cc > /dev/null 2>&1; then
+    say "SKIP N15 the key remembered: no C compiler (cc) on PATH to build a native shim; install one to run this cell"
+  else
+    scratch n15; P=$T/prefix; install_into "$P" --ignore-scripts
+    cshim "$T/chez" "$T/chez.log" 0
+    (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+     "$P/bin/theourgia" init --store "$T/s" > /dev/null 2> "$R/N15-cold.err"
+     "$P/bin/theourgia" insert --title N15 --store "$T/s" > /dev/null 2>&1
+     : > "$T/chez.log"
+     "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-warm.out" 2> "$R/N15-warm.err"; echo $? > "$R/N15-warm.rc"
+     cp "$T/chez.log" "$R/N15-warm.log")
+    # the replacement is compiled here, outside the cell's PATH, which holds no cc
+    rm -f "$T/chez"
+    cshim "$T/chez" "$T/chez.log" 1
+    (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+     "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-replaced.out" 2> "$R/N15-replaced.err"; echo $? > "$R/N15-replaced.rc")
+    calls=$(grep -c '^===' "$R/N15-warm.log")
+    program=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N15-warm.log")
+    dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' ')
+    records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
+    [ "$calls" = 1 ] && [ "$program" = 1 ] && [ "$(cat "$R/N15-warm.rc")" = 0 ] && grep -q '^(ok' "$R/N15-warm.out" &&
+      [ "$dirs" = 2 ] && [ "$(cat "$R/N15-replaced.rc")" = 0 ] && [ "$(grep -c 'compiling once' "$R/N15-replaced.err")" = 1 ]; v=$?
+    verdict $v "N15 the key remembered: a warm call started Chez $calls time(s), the program $program; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs); records $records"
+    stop_daemons
+  fi
+fi
+
+# ---- N15c a record that cannot be written is skipped, never an error
+if has N15; then
+  scratch n15c; P=$T/prefix; install_into "$P" --ignore-scripts
+  mkdir -p "$XDG_CACHE_HOME/theourgia/.chez"; chmod 000 "$XDG_CACHE_HOME/theourgia/.chez"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
+   "$P/bin/theourgia" init --store "$T/s" > "$R/N15c.out" 2> "$R/N15c.err"; echo $? > "$R/N15c.rc")
+  chmod 700 "$XDG_CACHE_HOME/theourgia/.chez"
+  [ "$(cat "$R/N15c.rc")" = 0 ] && grep -q '(ok (store' "$R/N15c.out"; v=$?
+  verdict $v "N15c an unwritable record directory: init rc $(cat "$R/N15c.rc"), answered $(grep -c '(ok (store' "$R/N15c.out")"
+  stop_daemons
+fi
+
+# ---- N15b a script named as Chez is probed on every call, never remembered
+if has N15; then
+  scratch n15b; P=$T/prefix; install_into "$P" --ignore-scripts
   shim "$T/chez" "$T/chez.log"
   (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
-   "$P/bin/theourgia" init --store "$T/s" > /dev/null 2> "$R/N15-cold.err"
-   "$P/bin/theourgia" insert --title N15 --store "$T/s" > /dev/null 2>&1
+   "$P/bin/theourgia" init --store "$T/s" > /dev/null 2>&1
+   "$P/bin/theourgia" insert --title N15b --store "$T/s" > /dev/null 2>&1
    : > "$T/chez.log"
-   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-warm.out" 2> "$R/N15-warm.err"; echo $? > "$R/N15-warm.rc"
-   cp "$T/chez.log" "$R/N15-warm.log"
-   rm -f "$T/chez"
-   cat > "$T/chez" <<EOF
-#!/bin/sh
-echo "=== \$0" >> "$T/chez.log"
-[ "\$1" = --version ] && { echo "10.1.0-replaced" >&2; exit 0; }
-exec "$REAL" "\$@"
-EOF
-   chmod +x "$T/chez"
-   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-replaced.out" 2> "$R/N15-replaced.err"; echo $? > "$R/N15-replaced.rc")
-  calls=$(grep -c '^===' "$R/N15-warm.log")
-  program=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N15-warm.log")
-  dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' ')
-  [ "$calls" = 1 ] && [ "$program" = 1 ] && [ "$(cat "$R/N15-warm.rc")" = 0 ] && grep -q '^(ok' "$R/N15-warm.out" &&
-    [ "$dirs" = 2 ] && [ "$(cat "$R/N15-replaced.rc")" = 0 ] && [ "$(grep -c 'compiling once' "$R/N15-replaced.err")" = 1 ]; v=$?
-  verdict $v "N15 the key remembered: a warm call started Chez $calls time(s), the program $program; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs), rc $(cat "$R/N15-replaced.rc")"
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15b.out" 2> "$R/N15b.err"; echo $? > "$R/N15b.rc"
+   cp "$T/chez.log" "$R/N15b.log")
+  calls=$(grep -c '^===' "$R/N15b.log"); probes=$(grep -c '^\[--version\]$' "$R/N15b.log")
+  records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
+  [ "$calls" = 3 ] && [ "$probes" = 1 ] && [ "$records" = 0 ] && [ "$(cat "$R/N15b.rc")" = 0 ]; v=$?
+  verdict $v "N15b a script is not remembered: a warm call started it $calls times ($probes --version probe), records $records"
   stop_daemons
 fi
 
