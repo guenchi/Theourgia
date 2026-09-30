@@ -1,4 +1,4 @@
-# theourgia as an agent's memory
+# Theourgia as an agent's memory
 
 Two prompts, both meant to be copied as they are. The first migrates an
 existing markdown memory into a store. The second makes Claude Code (or any
