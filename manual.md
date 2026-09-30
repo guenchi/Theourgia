@@ -2,7 +2,7 @@
 
 ## Installing
 
-One set of prerequisites: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.
+Requirements: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.
 
 Chez Scheme 10.x, measured on 10.1 and 10.3; the minimum is an open release item.
 
@@ -25,7 +25,7 @@ The tap arrives with the 1.0 release.
 
 ### npm
 
-`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the prerequisites; when one is missing it prints the platform's install line. The npm package arrives with the 1.0 release.
+`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the requirements; when one is missing it prints the platform's install line. The npm package arrives with the 1.0 release.
 
 ### From source
 
@@ -476,7 +476,7 @@ The extension drives the theourgia core installed on the machine. Install the co
 Install the `.vsix` package from the command line:
 
 ```
-code --install-extension theourgia-darwin-arm64-0.1.0.vsix
+code --install-extension theourgia-darwin-arm64-1.0.0.vsix
 ```
 
 The Visual Studio Marketplace listing arrives when the extension is published there.
@@ -507,7 +507,7 @@ An agent reads the facts through MCP; from the command line they come back from 
 
 ### Platforms
 
-0.1.0 is packaged for macOS on Apple Silicon. The extension takes a file lock through a small native module built for the packaging machine. Packages for Intel macOS and for Linux (x86-64 and arm64) are built by the repository's GitHub Actions workflow, each on its own platform; one is published only when the unit suite has passed on every target against a real core. There is no Windows package.
+Packages are built for macOS on Apple Silicon and Linux on x86_64 and arm64; macOS on Intel is not supported by the core yet. The extension takes a file lock through a small native module built for the packaging machine. There is no Windows package.
 
 ## Limits
 
