@@ -476,7 +476,7 @@ The extension drives the theourgia core installed on the machine. Install the co
 Install the `.vsix` package from the command line:
 
 ```
-code --install-extension theourgia-darwin-arm64-1.0.0.vsix
+code --install-extension theourgia-vsc-darwin-arm64-1.0.0.vsix
 ```
 
 The Visual Studio Marketplace listing arrives when the extension is published there.
