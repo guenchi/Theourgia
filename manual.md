@@ -495,6 +495,16 @@ A text-mode code block opens as its source in the language its `lang` field name
 
 When a writer's log cannot be read, the outline shows every other writer's blocks and says which one is missing, the path and the reason. The conflict count, the search results and the status bar all carry the same note until every writer is readable again.
 
+### Supplying what the editor knows
+
+Three commands hand the store facts that the editor's language support computes: "Theourgia: Supply Signatures and Keywords", "Theourgia: Supply Calls" and "Theourgia: Supply Diagnostics". Each projects the store's code into files, asks VS Code's language server for that language, and hands the facts to the core, which keeps them beside the blocks with the editor and version they came from. The language's own extension must be installed: for C, clangd.
+
+Signatures, keywords and calls are taken from the committed store. Diagnostics are this window's writer's, taken from its working view, and are collected once the analysis has been quiet for a second, at most after ten. A text-mode import makes one block per file, so the facts attach to the file's block. VS Code files `.h` under C++, so a header's facts sit in the cpp table.
+
+An agent reads the facts through MCP; from the command line they come back from `read <id> --signature`, `refs <id>`, `reach <id>`, `search <word>` and `diagnostics --writer <w>`. Each answer names the source of its facts (`via`) and how many of them are stale (`stale`). The facts are as fresh as the last supply: after a source changes, supply again.
+
+1.0 does not show these facts inside the editor; that is a later release.
+
 ### Platforms
 
 0.1.0 is packaged for macOS on Apple Silicon. The extension takes a file lock through a small native module built for the packaging machine. Packages for Intel macOS and for Linux (x86-64 and arm64) are built by the repository's GitHub Actions workflow, each on its own platform; one is published only when the unit suite has passed on every target against a real core. There is no Windows package.
