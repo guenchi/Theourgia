@@ -4,7 +4,7 @@
 
 Requirements: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.
 
-Chez Scheme 10.x, measured on 10.1 and 10.3; the minimum is an open release item.
+Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum printer is measured identical on these; any other version refuses the verbs that print a datum).
 
 macOS: `brew install chezscheme libuv`
 Debian / Ubuntu: `apt install chezscheme libuv1-dev`
@@ -21,11 +21,11 @@ brew tap guenchi/theourgia
 brew install theourgia
 ```
 
-The tap arrives with the 1.0 release.
-
 ### npm
 
-`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the requirements; when one is missing it prints the platform's install line. The npm package arrives with the 1.0 release.
+`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the requirements; when one is missing it prints the platform's install line.
+
+The Homebrew tap and the npm package are not published yet; until they are, install from source as below.
 
 ### From source
 
@@ -459,7 +459,7 @@ To use a store as persistent memory for Claude Code sessions: turn off the built
 
 ### Before you start
 
-The extension drives the theourgia core installed on the machine. Install the core first (from source today; a Homebrew tap arrives with the 1.0 release), then configure the settings:
+The extension drives the theourgia core installed on the machine. Install the core first (from source for now: the Homebrew tap and the npm package are not published yet), then configure the settings:
 
 | Setting | What it is |
 |---|---|
