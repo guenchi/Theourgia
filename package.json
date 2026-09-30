@@ -1,0 +1,30 @@
+{
+  "name": "theourgia",
+  "version": "1.0.0",
+  "description": "Agent-and-human shared block-graph knowledge base, with its daemon and MCP shell.",
+  "license": "Apache-2.0",
+  "author": "guenchi",
+  "keywords": ["mcp", "knowledge-base", "chez-scheme", "agents"],
+  "bin": {
+    "theourgia": "bin/theourgia.js",
+    "theourgia-mcp": "bin/theourgia-mcp.js",
+    "theourgiad": "bin/theourgiad.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/postinstall.js",
+    "vendor/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepack": "node -e \"require('fs').statSync('vendor/PINS')\" || (echo 'run sh scripts/assemble.sh first' >&2; exit 1)",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "os": ["darwin", "linux"],
+  "cpu": ["arm64", "x64"],
+  "engines": {
+    "node": ">=18"
+  }
+}
