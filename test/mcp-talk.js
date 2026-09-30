@@ -59,16 +59,22 @@ const deadline = setTimeout(() => {
   child.on('close', (code) => {
     clearTimeout(deadline);
     if (buffered.length > 0) lines.push(buffered);
-    // a message is a request or notification (a method, no result or
-    // error), or a response: an id, and exactly one of a result or an error
-    // object with an integer code and a string message. Anything else on
-    // stdout is not the protocol.
+    // THE JSON-RPC 2.0 MESSAGE SHAPES, whole: a request or notification is
+    // a string method, params (if present) an object or array, an id (if
+    // present) a string, number or null, and no result or error; a response
+    // is such an id and exactly one of a result or an error object with an
+    // integer code and a string message. Anything else on stdout is not the
+    // protocol.
     const isId = (v) => typeof v === 'string' || typeof v === 'number' || v === null;
     const isError = (e) => e !== null && typeof e === 'object' && !Array.isArray(e) &&
       Number.isInteger(e.code) && typeof e.message === 'string';
     const valid = (m) => {
       if (m === null || typeof m !== 'object' || Array.isArray(m) || m.jsonrpc !== '2.0') return false;
-      if ('method' in m) return typeof m.method === 'string' && !('result' in m) && !('error' in m);
+      if ('method' in m) {
+        const params = !('params' in m) || (m.params !== null && typeof m.params === 'object');
+        const id = !('id' in m) || isId(m.id);
+        return typeof m.method === 'string' && params && id && !('result' in m) && !('error' in m);
+      }
       if (!('id' in m) || !isId(m.id)) return false;
       if ('result' in m) return !('error' in m);
       return 'error' in m && isError(m.error);
