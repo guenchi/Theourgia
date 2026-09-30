@@ -13,7 +13,7 @@
 set -u
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-CELLS=${CELLS:-"N1 N1b N2 N2b N3 N3bc N4 N4b N5 N5b N5c N6 N7 N7b N8 N9 N10 N11 N12 N13"}
+CELLS=${CELLS:-"N1 N1b N2 N2b N3 N3bc N4 N4b N5 N5b N5c N6 N7 N7b N8 N9 N10 N11 N12 N13 N15"}
 R=${CELLS_OUT:-$here/readings}
 # NEVER UNDER $TMPDIR: on macOS it is a long path under /var/folders, and a
 # store's socket under a scratch HOME there passes the 104-byte limit of a
@@ -109,6 +109,10 @@ if has N1; then
     for (const k of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
       "bundleDependencies", "bundledDependencies"]) want(!(k in p), "no " + k);
     want(files.includes("README.md") && files.includes("LICENSE"), "README.md and LICENSE at the root");
+    want(p.homepage === "https://theourgia.dev", "homepage");
+    want(p.bugs === "https://github.com/guenchi/Theourgia/issues", "bugs");
+    want(p.repository && p.repository.type === "git" &&
+      p.repository.url === "git+https://github.com/guenchi/Theourgia.git", "repository");
   ' "$W/n1-package.json" "$R/N1-files.txt" > "$R/N1-package.txt"; j=$?
   verdict $((d + j)) "N1 inventory: $(wc -l < "$R/N1-files.txt" | tr -d ' ') files, list diff $(wc -l < "$R/N1-diff.txt" | tr -d ' ') lines; package.json $( [ $j = 0 ] && echo as specified || cat "$R/N1-package.txt" | tr '\n' ' '); tarball $(wc -c < "$TGZ" | tr -d ' ') bytes"
 fi
@@ -459,6 +463,34 @@ if has N13; then
   grep -rnE "(spawn|exec)[A-Za-z]*\(" "$here/lib" "$here/bin" "$here/scripts" > "$R/N13-calls.txt"
   [ "$outside" = 0 ] && [ "$notext" = 0 ] && [ "$calls" = 0 ] && [ "$inside" -ge 4 ]; v=$?
   verdict $v "N13 no package manager: $inside mentions in lib/, bin/, scripts/: $outside outside installLineFor (lines $lo-$hi), $notext inside it that are not returned text; calls inside it $calls; spawn/exec calls in all $(wc -l < "$R/N13-calls.txt" | tr -d ' ')"
+fi
+
+# ---- N15 a warm cache runs no Chez before the program; a replaced binary is probed again
+if has N15; then
+  scratch n15; P=$T/prefix; install_into "$P" --ignore-scripts
+  shim "$T/chez" "$T/chez.log"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+   "$P/bin/theourgia" init --store "$T/s" > /dev/null 2> "$R/N15-cold.err"
+   "$P/bin/theourgia" insert --title N15 --store "$T/s" > /dev/null 2>&1
+   : > "$T/chez.log"
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-warm.out" 2> "$R/N15-warm.err"; echo $? > "$R/N15-warm.rc"
+   cp "$T/chez.log" "$R/N15-warm.log"
+   rm -f "$T/chez"
+   cat > "$T/chez" <<EOF
+#!/bin/sh
+echo "=== \$0" >> "$T/chez.log"
+[ "\$1" = --version ] && { echo "10.1.0-replaced" >&2; exit 0; }
+exec "$REAL" "\$@"
+EOF
+   chmod +x "$T/chez"
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-replaced.out" 2> "$R/N15-replaced.err"; echo $? > "$R/N15-replaced.rc")
+  calls=$(grep -c '^===' "$R/N15-warm.log")
+  program=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N15-warm.log")
+  dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' ')
+  [ "$calls" = 1 ] && [ "$program" = 1 ] && [ "$(cat "$R/N15-warm.rc")" = 0 ] && grep -q '^(ok' "$R/N15-warm.out" &&
+    [ "$dirs" = 2 ] && [ "$(cat "$R/N15-replaced.rc")" = 0 ] && [ "$(grep -c 'compiling once' "$R/N15-replaced.err")" = 1 ]; v=$?
+  verdict $v "N15 the key remembered: a warm call started Chez $calls time(s), the program $program; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs), rc $(cat "$R/N15-replaced.rc")"
+  stop_daemons
 fi
 
 stop_daemons
