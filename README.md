@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
 
-**Prerequisites: Chez Scheme, libuv, and igropyr.** Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum
+**Requirements: Chez Scheme, libuv, and igropyr.** Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum
 printer is measured identical on these; on any other version the verbs that print a datum refuse with
 `(error unsupported-printer-version)`). On Homebrew the Chez binary is `chez`, not `scheme`; use that
 name wherever `scheme` appears below.
