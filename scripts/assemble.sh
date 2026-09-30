@@ -1,9 +1,11 @@
 #!/bin/sh
 # Fills vendor/ with the two sources this package ships: theourgia at its
 # release tag and igropyr at the revision the release was measured with.
-# Both come from `git archive` of the exact commits; test/ and any compiled
-# object are left out. Each pin must resolve to the expected commit, or
-# nothing is written: vendor/ is built in a temporary sibling and moved into
+# Both come from `git archive` of the exact commits; test/, any compiled
+# object and any .gitignore are left out (npm never packs a file by that
+# name, so leaving it here would make vendor/ differ from what ships). Each
+# pin must resolve to the expected commit, or nothing is written: vendor/
+# is built in a temporary sibling and moved into
 # place only when both are complete, and an existing vendor/ is removed
 # first, so a refusal leaves no vendor/ at all.
 #
@@ -54,7 +56,7 @@ mkdir -p "$work/vendor/theourgia" "$work/vendor/igropyr"
 git -C "$theourgia_repo" archive --format=tar "$got_theourgia" | tar -x -C "$work/vendor/theourgia"
 git -C "$igropyr_repo" archive --format=tar "$got_igropyr" | tar -x -C "$work/vendor/igropyr"
 rm -rf "$work/vendor/theourgia/test" "$work/vendor/igropyr/test"
-find "$work/vendor" -name '*.so' -type f -exec rm -f {} +
+find "$work/vendor" \( -name '*.so' -o -name .gitignore \) -type f -exec rm -f {} +
 
 for f in theourgia/theourgia.sc theourgia/build.ss theourgia/LICENSE igropyr/LICENSE; do
   [ -f "$work/vendor/$f" ] || refuse "the assembled tree has no $f"

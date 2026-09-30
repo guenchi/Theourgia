@@ -1,9 +1,9 @@
-# The npm package, installed and used where it will be published for:
-# Linux on x86_64 and aarch64 (Chez 10.4.1 built from its release source,
-# since distribution packages are older) and macOS on arm64 (Homebrew's
-# chezscheme). Each job assembles vendor/, packs, installs the tarball
-# globally into a scratch prefix, runs init, insert and outline, and asks
-# the MCP shell for initialize. It publishes nothing and uses no secrets.
+# The npm package's cells N2, N2b, N6 and N10 (test/cells.sh), where it
+# will be published for: Linux on x86_64 and aarch64 under Node 18 (Chez
+# 10.4.1 built from its release source, since distribution packages are
+# older) and macOS on arm64 (Homebrew's chezscheme). Each job assembles
+# vendor/, packs, and runs the cells against the tarball. It publishes
+# nothing and uses no secrets.
 name: npm-package
 
 on:
@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ runner.os == 'Linux' && '18' || '20' }}
       - name: Chez and libuv (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -46,29 +46,13 @@ jobs:
         run: |
           brew install chezscheme libuv
           command -v chez scheme chezscheme || true
-      - name: assemble, pack, install, use
+      - name: assemble, pack, and the cells
         run: |
-          set -x
-          R="$RUNNER_TEMP/readings"; mkdir -p "$R"
-          uname -a | tee "$R/platform.txt"; node --version | tee -a "$R/platform.txt"
-          sh scripts/assemble.sh 2> "$R/assemble.err"; cat "$R/assemble.err"
-          npm pack > "$R/pack.out"
-          export HOME="$RUNNER_TEMP/home" XDG_CACHE_HOME="$RUNNER_TEMP/cache"
-          mkdir -p "$HOME"
-          npm install -g --foreground-scripts --prefix "$RUNNER_TEMP/prefix" ./theourgia-1.0.0.tgz > "$R/install.out" 2> "$R/install.err"
-          echo "install rc $?" | tee "$R/N2.txt"; cat "$R/install.err"
-          T="$RUNNER_TEMP/prefix/bin"
-          "$T/theourgia" init --store "$RUNNER_TEMP/s" > "$R/init.out" 2> "$R/init.err"; echo "init rc $?" >> "$R/N2.txt"
-          "$T/theourgia" insert --title N10-MARKER --store "$RUNNER_TEMP/s" > "$R/insert.out" 2> "$R/insert.err"; echo "insert rc $?" >> "$R/N2.txt"
-          "$T/theourgia" outline --store "$RUNNER_TEMP/s" > "$R/outline.out" 2> "$R/outline.err"; echo "outline rc $?" >> "$R/N2.txt"
-          echo "outline has the block: $(grep -c N10-MARKER "$R/outline.out")" >> "$R/N2.txt"
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"n10","version":"0"}}}' \
-            | "$T/theourgia-mcp" --store "$RUNNER_TEMP/s" > "$R/mcp.out" 2> "$R/mcp.err"
-          echo "mcp rc $?" > "$R/N6.txt"
-          node -e 'const ls=require("fs").readFileSync(process.argv[1],"utf8").split("\n").filter(Boolean); let ok=ls.length===1; try { const d=JSON.parse(ls[0]); ok = ok && d.id===1 && !!d.result; } catch (e) { ok=false; } console.log("stdout lines " + ls.length + ", one initialize result: " + ok);' "$R/mcp.out" >> "$R/N6.txt"
-          pkill -f "theourgiad.sc serve $RUNNER_TEMP" || true
-          cat "$R/N2.txt" "$R/N6.txt"
-          grep -q "outline has the block: 1" "$R/N2.txt" && grep -q "one initialize result: true" "$R/N6.txt"
+          uname -a; node --version; npm --version
+          sh scripts/assemble.sh
+          npm pack
+          CELLS="N2 N2b N6 N10" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
+            bash test/cells.sh "$PWD/theourgia-1.0.0.tgz"
       - name: keep the readings
         if: always()
         uses: actions/upload-artifact@v4
