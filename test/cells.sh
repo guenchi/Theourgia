@@ -449,11 +449,16 @@ if has N13; then
   grep -rnE "\b(brew|apt|apt-get|dnf|pacman|yum|port)\b" "$here/lib" "$here/bin" "$here/scripts" > "$R/N13-hits.txt"
   lo=$(grep -n '^function installLineFor' "$here/lib/theourgia.js" | cut -d: -f1)
   hi=$(awk -v lo="$lo" 'NR > lo && /^}/ {print NR; exit}' "$here/lib/theourgia.js")
+  # a hit is allowed only as returned text inside installLineFor: a line
+  # that is a return of a string or a string's continuation, and that
+  # function may not spawn or exec anything at all
   outside=$(awk -F: -v f="$here/lib/theourgia.js" -v lo="$lo" -v hi="$hi" '!($1 == f && $2 > lo && $2 < hi)' "$R/N13-hits.txt" | grep -v '^[^:]*:[0-9]*: *//' | wc -l | tr -d ' ')
+  notext=$(awk -F: -v f="$here/lib/theourgia.js" -v lo="$lo" -v hi="$hi" '$1 == f && $2 > lo && $2 < hi' "$R/N13-hits.txt" | cut -d: -f3- | grep -vcE "return '|^ *'")
+  calls=$(sed -n "${lo},${hi}p" "$here/lib/theourgia.js" | grep -cE "spawn|exec|child_process|require\(")
   inside=$(wc -l < "$R/N13-hits.txt" | tr -d ' ')
   grep -rnE "(spawn|exec)[A-Za-z]*\(" "$here/lib" "$here/bin" "$here/scripts" > "$R/N13-calls.txt"
-  [ "$outside" = 0 ] && [ "$inside" -ge 4 ]; v=$?
-  verdict $v "N13 no package manager: $inside mentions in lib/, bin/, scripts/, $outside outside installLineFor's returned text (lines $lo-$hi); spawn/exec calls $(wc -l < "$R/N13-calls.txt" | tr -d ' ')"
+  [ "$outside" = 0 ] && [ "$notext" = 0 ] && [ "$calls" = 0 ] && [ "$inside" -ge 4 ]; v=$?
+  verdict $v "N13 no package manager: $inside mentions in lib/, bin/, scripts/: $outside outside installLineFor (lines $lo-$hi), $notext inside it that are not returned text; calls inside it $calls; spawn/exec calls in all $(wc -l < "$R/N13-calls.txt" | tr -d ' ')"
 fi
 
 stop_daemons

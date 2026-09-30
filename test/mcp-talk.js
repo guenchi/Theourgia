@@ -59,14 +59,23 @@ const deadline = setTimeout(() => {
   child.on('close', (code) => {
     clearTimeout(deadline);
     if (buffered.length > 0) lines.push(buffered);
-    // a message is a request or notification (method), or a response (id
-    // with result or error); anything else on stdout is not the protocol
+    // a message is a request or notification (a method, no result or
+    // error), or a response: an id, and exactly one of a result or an error
+    // object with an integer code and a string message. Anything else on
+    // stdout is not the protocol.
+    const isId = (v) => typeof v === 'string' || typeof v === 'number' || v === null;
+    const isError = (e) => e !== null && typeof e === 'object' && !Array.isArray(e) &&
+      Number.isInteger(e.code) && typeof e.message === 'string';
+    const valid = (m) => {
+      if (m === null || typeof m !== 'object' || Array.isArray(m) || m.jsonrpc !== '2.0') return false;
+      if ('method' in m) return typeof m.method === 'string' && !('result' in m) && !('error' in m);
+      if (!('id' in m) || !isId(m.id)) return false;
+      if ('result' in m) return !('error' in m);
+      return 'error' in m && isError(m.error);
+    };
     const notJson = lines.filter((l) => {
       try {
-        const m = JSON.parse(l);
-        const request = typeof m.method === 'string';
-        const response = 'id' in m && ('result' in m || 'error' in m);
-        return !(m && m.jsonrpc === '2.0' && (request || response));
+        return !valid(JSON.parse(l));
       } catch (e) {
         return true;
       }
