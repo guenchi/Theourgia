@@ -76,7 +76,7 @@ td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-sp
 .verb .d{color:var(--dim);font-size:15px;margin-top:8px}
 .verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
   color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
-.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+.note{border-left:3px solid var(--acc);background:var(--panel);padding:14px 18px;
   border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
 .note b{color:var(--fg)}
 .steps{counter-reset:s;margin-top:28px}
@@ -89,7 +89,7 @@ td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-sp
 footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
 footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
 footer .sp{margin-left:auto}
-.diagram{margin-top:36px}
+.diagram{margin-top:36px;max-width:700px}
 .diagram svg{width:100%;height:auto;display:block}
 @media (max-width:760px){
   h1{font-size:38px}
@@ -120,7 +120,7 @@ ul.design li b{color:var(--fg);font-weight:600}
 .md-body h3{font-size:20px;margin:30px 0 8px}
 .md-body h4{font-size:16px;margin:22px 0 6px;color:var(--fg)}
 .md-body p{color:var(--dim);margin:0 0 14px}
-.md-body blockquote{margin:18px 0;padding:12px 18px;border-left:3px solid var(--gold);background:#fdfaf2;border-radius:0 8px 8px 0}
+.md-body blockquote{margin:18px 0;padding:12px 18px;border-left:3px solid var(--acc);background:var(--panel);border-radius:0 8px 8px 0}
 .md-body blockquote p{margin:0}
 .md-body pre{margin:14px 0}
 .md-body code{color:var(--acc)}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><img src="favicon.svg" alt="" width="24" height="24"> Theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="manual.html" class="on">Manual</a><a href="changelog.html">Changelog</a><a href="agents.html">Agents</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><div class="md-body"><h1>Theourgia manual</h1><h2>Installing</h2><p>Requirements: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.</p><p>Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum printer is measured identical on these; any other version refuses the verbs that print a datum).</p><p>macOS: <code>brew install chezscheme libuv</code> Debian / Ubuntu: <code>apt install chezscheme libuv1-dev</code> Fedora: <code>dnf install chez-scheme libuv-devel</code> Arch: <code>pacman -S chez-scheme libuv</code> FreeBSD: <code>pkg install chez-scheme libuv</code></p><h3>Homebrew</h3><p>On macOS and Linux, a Homebrew tap installs everything in one step:</p><pre><code>brew tap guenchi/theourgia
