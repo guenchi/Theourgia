@@ -110,7 +110,8 @@ scene({dur:7, build(r){
   this.lines=[];const box=this.doc.querySelector('#i-lines');
   for(let i=0;i<7;i++){const b=el(`<div class="bar" style="width:${[90,76,84,60,88,70,80][i]}%;transform-origin:left"></div>`,box);this.lines.push(b)}
   this.h=this.doc.querySelector('#i-h');
-  this.cursor=el(`<svg class="abs" width="44" height="56" viewBox="0 0 22 28"><path d="M2 2 L2 22 L7.5 17 L11 26 L14.5 24.5 L11 16 L18 16 Z" fill="#1c1b18" stroke="#fff" stroke-width="1.5"/></svg>`,r);
+  // a text caret, not a mouse pointer: it rides the end of whatever is being written
+  this.cursor=el(`<div class="abs" style="width:3px;height:28px;border-radius:1.5px;background:var(--fg)"></div>`,r);
   this.heart=el(`<div class="abs" style="font:700 30px var(--sans);color:var(--acc2)">Easy for humans ✓</div>`,r);
   this.bots=[0,1,2].map(i=>el(botHTML(['#12b09c','#e08a1e','#5b3fc4'][i],''),r));
   const names=['Silent write errors','Concurrent overwrites','Token black hole','Long-tail sprawl','Drifting indexes'];
@@ -124,8 +125,14 @@ scene({dur:7, build(r){
   S(this.doc,{o:P(t,.2,.7),x:dx,y:280});
   this.h.style.opacity=P(t,.6,.9);
   this.lines.forEach((b,i)=>{const a=.9+i*.22;b.style.transform=`scaleX(${P(t,a,a+.25,eo)})`});
-  const cp=clamp((t-.6)/2.2);const li=Math.min(6,Math.floor(cp*7));
-  S(this.cursor,{o:P(t,.3,.6)*(1-P(t,2.8,3.1)),x:dx+80+L(0,440,(cp*7)%1),y:280+100+li*38});
+  // caret after the heading, then at the growing end of the line being written; solid while typing, blinking at rest
+  const hr=this.h.getBoundingClientRect(),rg=document.createRange();rg.selectNodeContents(this.h);
+  // the heading is a block, so measure the text itself (in layout px, undoing the stage's display scale)
+  const textW=hr.width?rg.getBoundingClientRect().width/hr.width*this.h.offsetWidth:0;
+  let cx=this.h.offsetLeft+textW+6,cy=this.h.offsetTop+this.h.offsetHeight/2,typing=t>.6&&t<.9;
+  this.lines.forEach((b,i)=>{const a=.9+i*.22;if(t>=a){const q=P(t,a,a+.25,eo);cx=b.offsetLeft+b.offsetWidth*q+6;cy=b.offsetTop+b.offsetHeight/2;if(q<1)typing=true}});
+  const blink=typing||((t*2.2)%1)<.55?1:0;
+  S(this.cursor,{o:P(t,.3,.5)*(1-P(t,2.8,3.1))*blink,x:dx+cx,y:280+cy-14});
   S(this.heart,{o:P(t,2.2,2.6)*(1-P(t,3,3.3)),x:760,y:840});
   this.bots.forEach((b,i)=>{S(b,{o:P(t,3.2+i*.15,3.6+i*.15),x:L(2000,1500+i*140,P(t,3.2+i*.15,3.9+i*.15,eo)),y:440+(i%2)*120});eyes(b,t+i,0,-1)});
   this.walls.forEach((w,i)=>{const a=3.9+i*.32;const p=P(t,a,a+.4,eo);S(w,{o:clamp(p*3),x:1000+(i%2)*40,y:L(-200,262+i*108,p),r:L(-12,(i%2?1.5:-1.5),p)})});
@@ -585,8 +592,7 @@ const pp=document.getElementById('pp');
 function setPaused(v){userPaused=v;document.body.classList.toggle('paused',v);pp.textContent=v?'▶':'❚❚';pp.setAttribute('aria-label',v?'Play':'Pause')}
 setPaused(userPaused);
 pp.onclick=e=>{e.stopPropagation();setPaused(!userPaused)};
-// framed in another page, a click on the picture opens the intro on its own
-stage.onclick=window.top!==window.self?()=>{window.top.location.href=location.pathname}:()=>setPaused(!userPaused);
+stage.onclick=()=>setPaused(!userPaused);
 document.getElementById('rs').onclick=e=>{e.stopPropagation();cur=0;setPaused(false)};
 segs.onclick=e=>{
   const r=segs.getBoundingClientRect();const x=(e.clientX-r.left)/r.width*TOTAL;
