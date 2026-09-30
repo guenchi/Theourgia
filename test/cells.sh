@@ -547,6 +547,56 @@ if has N15 && command -v cc > /dev/null 2>&1; then
   stop_daemons
 fi
 
+# ---- N15e a script replaced while it is probed: its facts are checked the same way
+if has N15; then
+  scratch n15e; P=$T/prefix; install_into "$P" --ignore-scripts
+  shim "$T/chez" "$T/chez.log"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+   "$P/bin/theourgia" init --store "$T/s" > /dev/null 2>&1)
+  cat > "$T/next" <<EOF
+#!/bin/sh
+{ echo "=== next"; for a in "\$@"; do printf '[%s]\n' "\$a"; done; } >> "$T/chez.log"
+[ "\$1" = --version ] && { echo "10.1.0-replaced" >&2; exit 0; }
+exec "$REAL" "\$@"
+EOF
+  cat > "$T/chez.new" <<EOF
+#!/bin/sh
+{ echo "=== first"; for a in "\$@"; do printf '[%s]\n' "\$a"; done; } >> "$T/chez.log"
+[ "\$1" = --version ] && [ -e "$T/next" ] && mv "$T/next" "$T/chez"
+exec "$REAL" "\$@"
+EOF
+  chmod +x "$T/next" "$T/chez.new"; mv "$T/chez.new" "$T/chez"
+  : > "$T/chez.log"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15e.out" 2> "$R/N15e.err"; echo $? > "$R/N15e.rc")
+  cp "$T/chez.log" "$R/N15e.log"
+  versions=$(grep -c '^\[--version\]$' "$R/N15e.log")
+  dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' ')
+  records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
+  built=$(grep -c 'compiling once' "$R/N15e.err")
+  [ "$(cat "$R/N15e.rc")" = 0 ] && grep -q '^(ok' "$R/N15e.out" && [ "$versions" = 2 ] && [ "$dirs" = 2 ] && [ "$built" = 1 ] && [ "$records" = 0 ]; v=$?
+  verdict $v "N15e script replaced mid-probe: rc $(cat "$R/N15e.rc"); --version probes $versions (a retry); new caches built $built (directories now $dirs); records $records"
+  stop_daemons
+fi
+
+# ---- N15f a binary that may be executed but not read is probed on every call, never remembered
+if has N15 && command -v cc > /dev/null 2>&1; then
+  scratch n15f; P=$T/prefix; install_into "$P" --ignore-scripts
+  cshim "$T/chez" "$T/chez.log" 0
+  chmod 111 "$T/chez"
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+   "$P/bin/theourgia" init --store "$T/s" > "$R/N15f-init.out" 2> "$R/N15f-init.err"; echo $? > "$R/N15f-init.rc"
+   : > "$T/chez.log"
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15f.out" 2> "$R/N15f.err"; echo $? > "$R/N15f.rc")
+  cp "$T/chez.log" "$R/N15f.log"
+  chmod 755 "$T/chez"
+  versions=$(grep -c '^\[--version\]$' "$R/N15f.log")
+  records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
+  [ "$(cat "$R/N15f-init.rc")" = 0 ] && [ "$(cat "$R/N15f.rc")" = 0 ] && grep -q '^(ok' "$R/N15f.out" && [ "$versions" = 1 ] && [ "$records" = 0 ]; v=$?
+  verdict $v "N15f execute-only binary: init rc $(cat "$R/N15f-init.rc"), warm rc $(cat "$R/N15f.rc"); --version probes on the warm call $versions; records $records"
+  stop_daemons
+fi
+
 # ---- N15c a record that cannot be written is skipped, never an error
 if has N15; then
   scratch n15c; P=$T/prefix; install_into "$P" --ignore-scripts
