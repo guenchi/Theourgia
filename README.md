@@ -19,7 +19,10 @@ status encoding, the file-type mask operation), a C scalar the rows do
 not measure (`size_t`) takes Chez's width for its machine type, and the
 signal names an evaluation reports are those whose numbers every row
 shares. The rows: macOS on arm64, Linux on x86_64
-and on aarch64 with glibc, and FreeBSD 15 on amd64. The row is chosen when
+and on aarch64 with glibc, and FreeBSD 15 on amd64. FreeBSD 15 on amd64
+has a measured row, but the daemon does not start there yet (reading its
+own environment fails intermittently); it is expected in a later
+release. The row is chosen when
 the programs start, from Chez's machine type and, on Linux, from the C
 library the process has mapped. On any other platform -- another
 architecture, macOS on x86_64 or under Rosetta, a Linux with musl, a
