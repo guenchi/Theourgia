@@ -486,7 +486,7 @@ describe('I8 a save the store took without a writer is saved, and its receipt ca
     const r = schedule('incomplete-save');
     const information = r.shown.filter((s: { level: string }) => s.level === 'information').map((s: { text: string }) => s.text);
     assert.ok(
-      information.some((text: string) => /^theourgia: Incomplete: writer zzzzzzzz could not be read/.test(text)),
+      information.some((text: string) => /^Theourgia: Incomplete: writer zzzzzzzz could not be read/.test(text)),
       `the save's notes were not shown: ${JSON.stringify(r.shown)}`
     );
     assert.deepStrictEqual(r.shown.filter((s: { level: string }) => s.level === 'error'), []);

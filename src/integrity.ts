@@ -185,7 +185,7 @@ export class IntegrityWatch {
     try {
       follow(
         on.record(
-          `theourgia: the warning about ${on.store} could not be shown (${describeValue(thrown)}) ` +
+          `Theourgia: the warning about ${on.store} could not be shown (${describeValue(thrown)}) ` +
             `at ${new Date().toISOString()}`
         ),
         () => undefined

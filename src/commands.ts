@@ -37,32 +37,32 @@ export interface CommandName {
 
 export const REFRESH_OUTLINE: CommandName = {
   id: 'theourgia.refreshOutline',
-  title: 'theourgia: Refresh Outline'
+  title: 'Theourgia: Refresh Outline'
 };
 
 export const OPEN_BLOCK: CommandName = {
   id: 'theourgia.openBlock',
-  title: 'theourgia: Open Block'
+  title: 'Theourgia: Open Block'
 };
 
 export const RETRY_OUTBOX: CommandName = {
   id: 'theourgia.retryOutbox',
-  title: 'theourgia: Retry Pending Saves'
+  title: 'Theourgia: Retry Pending Saves'
 };
 
 export const SHOW_STATUS: CommandName = {
   id: 'theourgia.showStatus',
-  title: 'theourgia: Show Store Status'
+  title: 'Theourgia: Show Store Status'
 };
 
 export const RECONCILE_BLOCK: CommandName = {
   id: 'theourgia.reconcileBlock',
-  title: 'theourgia: Reconcile Block'
+  title: 'Theourgia: Reconcile Block'
 };
 
 export const OTHER_SESSIONS: CommandName = {
   id: 'theourgia.otherSessions',
-  title: 'theourgia: Other Sessions'
+  title: 'Theourgia: Other Sessions'
 };
 
 /*
@@ -72,7 +72,7 @@ export const OTHER_SESSIONS: CommandName = {
  * reader thought of will not shout about the one they forgot.
  */
 export const MIGRATE_BLOCK: CommandName = {
-  id:'theourgia.migrateBlock',title:'theourgia: Migrate Legacy Block Files'
+  id:'theourgia.migrateBlock',title:'Theourgia: Migrate Legacy Block Files'
 };
 
 /*
@@ -85,7 +85,7 @@ export const MIGRATE_BLOCK: CommandName = {
  */
 export const SEARCH_BLOCKS: CommandName = {
   id: 'theourgia.search',
-  title: 'theourgia: Search Blocks'
+  title: 'Theourgia: Search Blocks'
 };
 
 /*
@@ -95,7 +95,7 @@ export const SEARCH_BLOCKS: CommandName = {
  */
 export const OPEN_AS_DOCUMENT: CommandName = {
   id: 'theourgia.openAsDocument',
-  title: 'theourgia: Open as Document'
+  title: 'Theourgia: Open as Document'
 };
 
 /*
@@ -104,7 +104,7 @@ export const OPEN_AS_DOCUMENT: CommandName = {
  */
 export const GO_TO_DEFINITION: CommandName = {
   id: 'theourgia.goToDefinition',
-  title: 'theourgia: Go to Definition'
+  title: 'Theourgia: Go to Definition'
 };
 
 /*
@@ -114,27 +114,27 @@ export const GO_TO_DEFINITION: CommandName = {
  */
 export const SHOW_FILES: CommandName = {
   id: 'theourgia.showFiles',
-  title: 'theourgia: Show Files'
+  title: 'Theourgia: Show Files'
 };
 
 export const SHOW_OUTLINE: CommandName = {
   id: 'theourgia.showOutline',
-  title: 'theourgia: Show Outline'
+  title: 'Theourgia: Show Outline'
 };
 
 export const NEW_FILE_HERE: CommandName = {
   id: 'theourgia.newFileHere',
-  title: 'theourgia: New File Here'
+  title: 'Theourgia: New File Here'
 };
 
 export const MOVE_TO_DIRECTORY: CommandName = {
   id: 'theourgia.moveToDirectory',
-  title: 'theourgia: Move to Directory'
+  title: 'Theourgia: Move to Directory'
 };
 
 export const RENAME_FILE: CommandName = {
   id: 'theourgia.renameFile',
-  title: 'theourgia: Rename File'
+  title: 'Theourgia: Rename File'
 };
 
 /*
@@ -143,7 +143,7 @@ export const RENAME_FILE: CommandName = {
  */
 export const SUGGEST_SPLIT: CommandName = {
   id: 'theourgia.suggestSplit',
-  title: 'theourgia: Suggest a Split of This File'
+  title: 'Theourgia: Suggest a Split of This File'
 };
 
 /*
@@ -152,17 +152,17 @@ export const SUGGEST_SPLIT: CommandName = {
  */
 export const SUPPLY_SIGNATURES: CommandName = {
   id: 'theourgia.supplySignatures',
-  title: 'theourgia: Supply Signatures and Keywords'
+  title: 'Theourgia: Supply Signatures and Keywords'
 };
 
 export const SUPPLY_CALLS: CommandName = {
   id: 'theourgia.supplyCalls',
-  title: 'theourgia: Supply Calls'
+  title: 'Theourgia: Supply Calls'
 };
 
 export const SUPPLY_DIAGNOSTICS: CommandName = {
   id: 'theourgia.supplyDiagnostics',
-  title: 'theourgia: Supply Diagnostics'
+  title: 'Theourgia: Supply Diagnostics'
 };
 
 export const COMMANDS: CommandName[] = [

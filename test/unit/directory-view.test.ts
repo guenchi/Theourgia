@@ -1054,9 +1054,9 @@ describe('V3 V4 the files view in the window', function () {
       'a write of the path did not carry the version it was read at, or the batch carried one'
     );
     assert.deepStrictEqual(r.actions.shown, [
-      { level: 'information', text: 'theourgia: created docs/n.md' },
-      { level: 'information', text: 'theourgia: moved to lib/x.scm' },
-      { level: 'information', text: 'theourgia: renamed to lib/y.scm' }
+      { level: 'information', text: 'Theourgia: created docs/n.md' },
+      { level: 'information', text: 'Theourgia: moved to lib/x.scm' },
+      { level: 'information', text: 'Theourgia: renamed to lib/y.scm' }
     ]);
   });
 
@@ -1074,7 +1074,7 @@ describe('V3 V4 the files view in the window', function () {
       r.oldDirectory.requests.map((w: any) => [...w.args.slice(0, 3), ...w.args.slice(w.args.indexOf('--if-unchanged'))]),
       [['a.4', 'path', 'deep/y.scm', '--if-unchanged', 'v3']]
     );
-    assert.deepStrictEqual(r.oldDirectory.shown, [{ level: 'information', text: 'theourgia: moved to deep/y.scm' }]);
+    assert.deepStrictEqual(r.oldDirectory.shown, [{ level: 'information', text: 'Theourgia: moved to deep/y.scm' }]);
   });
 
   it('sends a write the store refuses when the block changed during the prompt, says so and refreshes', () => {
@@ -1083,7 +1083,7 @@ describe('V3 V4 the files view in the window', function () {
       [['a.4', 'path', 'deep/z.scm', '--if-unchanged', 'v4']]
     );
     assert.deepStrictEqual(r.raced.shown, [
-      { level: 'warning', text: 'theourgia: this item changed since it was listed; the view is refreshed' }
+      { level: 'warning', text: 'Theourgia: this item changed since it was listed; the view is refreshed' }
     ]);
     assert.strictEqual(r.raced.refreshed, true, 'the view was not refreshed');
     assert.deepStrictEqual([r.raced.path, r.raced.version], ['other/q.scm', 'v5'], 'the write made during the prompt was overwritten');
@@ -1095,11 +1095,11 @@ describe('V3 V4 the files view in the window', function () {
       r.sameStore.requests.map((w: any) => [...w.args.slice(0, 3), ...w.args.slice(w.args.indexOf('--if-unchanged'))]),
       [['a.4', 'path', 'other/w.scm', '--if-unchanged', 'v5']]
     );
-    assert.deepStrictEqual(r.sameStore.shown, [{ level: 'information', text: 'theourgia: renamed to other/w.scm' }]);
+    assert.deepStrictEqual(r.sameStore.shown, [{ level: 'information', text: 'Theourgia: renamed to other/w.scm' }]);
   });
 
   it('refuses Outline nodes of another store, and a child expanded from one, and asks that store nothing', () => {
-    const refused = { level: 'warning', text: 'theourgia: this item was listed under another store. Refresh the view and select it again.' };
+    const refused = { level: 'warning', text: 'Theourgia: this item was listed under another store. Refresh the view and select it again.' };
     assert.deepStrictEqual(r.outlineStale, {
       childIds: ['a.2'],
       outlineRoot: 0,
@@ -1110,7 +1110,7 @@ describe('V3 V4 the files view in the window', function () {
   });
 
   it("refuses rows kept from another store's listing -- expanded, acted on or opened -- and asks that store nothing", () => {
-    const refused = { level: 'warning', text: 'theourgia: this item was listed under another store. Refresh the view and select it again.' };
+    const refused = { level: 'warning', text: 'Theourgia: this item was listed under another store. Refresh the view and select it again.' };
     assert.deepStrictEqual(r.B.staleRow, {
       sent: 0,
       askedOfB: [],
@@ -1131,7 +1131,7 @@ describe('a stale path change drained by the retry command', function () {
     assert.ok(r.sets.length >= 2, JSON.stringify(r.sets));
     assert.ok(r.sets.every((s: string[]) => s.length === 2 && s[0] === '--if-unchanged' && s[1] === 'v1'), JSON.stringify(r.sets));
     assert.ok(
-      r.retried.some((n: any) => n.level === 'warning' && n.text === 'theourgia: this item changed since it was listed; the view is refreshed'),
+      r.retried.some((n: any) => n.level === 'warning' && n.text === 'Theourgia: this item changed since it was listed; the view is refreshed'),
       JSON.stringify(r.retried)
     );
     assert.strictEqual(r.refreshed, true, 'the view was not listed again');
@@ -1141,12 +1141,12 @@ describe('a stale path change drained by the retry command', function () {
 
 describe('a stale path change drained by any drain is said', function () {
   this.timeout(60000);
-  const notice = { level: 'warning', text: 'theourgia: this item changed since it was listed; the view is refreshed' };
+  const notice = { level: 'warning', text: 'Theourgia: this item changed since it was listed; the view is refreshed' };
 
   it('says so when a kept move is drained in front of another save', () => {
     const r = schedule('files-drain-changed');
     assert.deepStrictEqual(r.verbs, ['set', 'batch'], 'the kept move was not drained in front of the new document');
-    assert.deepStrictEqual(r.shown, [notice, { level: 'information', text: 'theourgia: created docs/n2.md' }]);
+    assert.deepStrictEqual(r.shown, [notice, { level: 'information', text: 'Theourgia: created docs/n2.md' }]);
     assert.strictEqual(r.path, 'other/q.scm');
   });
 
@@ -1177,7 +1177,7 @@ describe('a store switched while a move waits sends nothing', function () {
   it('refuses after the fresh read when the store changed while it was on its way, and asks nothing', () => {
     assert.deepStrictEqual(r.duringRead, {
       sets: [],
-      shown: [{ level: 'warning', text: 'theourgia: the store changed while the file was being read. Select the file again.' }],
+      shown: [{ level: 'warning', text: 'Theourgia: the store changed while the file was being read. Select the file again.' }],
       asked: 0
     });
   });
@@ -1185,7 +1185,7 @@ describe('a store switched while a move waits sends nothing', function () {
   it('refuses right before the send when the store changed while the prompt was open', () => {
     assert.deepStrictEqual(r.duringPrompt, {
       sets: [],
-      shown: [{ level: 'warning', text: 'theourgia: the store changed while the name was being asked for. Select the file again.' }],
+      shown: [{ level: 'warning', text: 'Theourgia: the store changed while the name was being asked for. Select the file again.' }],
       asked: 1
     });
     assert.deepStrictEqual([r.pathA, r.pathB], ['src/x.scm', 'src/x.scm']);
@@ -1260,7 +1260,7 @@ describe('V5 V2 the files view agrees with export, on a real core', function () 
 
   it('makes a new document through the window on the real core, and lists it', () => {
     assert.ok(r.created.found, 'there was no docs directory to make it in');
-    assert.deepStrictEqual(r.created.shown, [{ level: 'information', text: 'theourgia: created docs/fresh.md' }]);
+    assert.deepStrictEqual(r.created.shown, [{ level: 'information', text: 'Theourgia: created docs/fresh.md' }]);
     assert.strictEqual(r.created.listed, true, 'the new document is not in the next listing');
     assert.strictEqual(r.created.exported, true, 'export-md did not write the new document');
   });
@@ -1273,11 +1273,11 @@ describe('V5 V2 the files view agrees with export, on a real core', function () 
   it('renames on a real core against the version read, and the store refuses a rename that raced a write', () => {
     assert.strictEqual(r.guarded.found, true, 'the moved text file has no row');
     assert.deepStrictEqual(r.guarded.renameAsked, ['New name for src/x.scm']);
-    assert.deepStrictEqual(r.guarded.renameShown, [{ level: 'information', text: 'theourgia: renamed to src/renamed.scm' }]);
+    assert.deepStrictEqual(r.guarded.renameShown, [{ level: 'information', text: 'Theourgia: renamed to src/renamed.scm' }]);
     assert.ok(r.guarded.exported.includes('src/renamed.scm'), JSON.stringify(r.guarded.exported));
     assert.deepStrictEqual(r.guarded.staleAsked, ['New name for src/renamed.scm']);
     assert.deepStrictEqual(r.guarded.staleShown, [
-      { level: 'warning', text: 'theourgia: this item changed since it was listed; the view is refreshed' }
+      { level: 'warning', text: 'Theourgia: this item changed since it was listed; the view is refreshed' }
     ]);
     assert.strictEqual(r.guarded.pathAfter, 'src/elsewhere.scm', 'the rename overwrote the write made during its prompt');
   });

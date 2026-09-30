@@ -1907,7 +1907,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
         `(${what}) the save did not stay in the queue, parked`
       );
       assert.match(outcome.message, new RegExp(`\\(instance ${what}\\)`), `(${what}) the sentence lost the clause`);
-      assert.match(outcome.message, /theourgia: Retry Pending Saves/, `(${what}) the sentence does not say how to go on`);
+      assert.match(outcome.message, /Theourgia: Retry Pending Saves/, `(${what}) the sentence does not say how to go on`);
       assert.match(outcome.message, /THEOURGIA_HOME/, `(${what}) the sentence does not name the home to run under`);
       assert.match(outcome.message, /`adopt`/, `(${what}) the sentence does not name adopt`);
       core.dispose();

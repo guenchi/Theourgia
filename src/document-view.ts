@@ -357,15 +357,15 @@ export class DocumentTexts {
     }
     const asked = readDocumentQuery(query);
     if (asked === null) {
-      throw new Error(`theourgia: ${address} does not name a store and a block`);
+      throw new Error(`Theourgia: ${address} does not name a store and a block`);
     }
     const now = this.current();
     if (now === null) {
-      throw new Error('theourgia: set theourgia.corePath and theourgia.store first.');
+      throw new Error('Theourgia: set theourgia.corePath and theourgia.store first.');
     }
     if (now.store !== asked.store) {
       throw new Error(
-        `theourgia: this document was composed from the store ${asked.store}, and the store ` +
+        `Theourgia: this document was composed from the store ${asked.store}, and the store ` +
           `configured now is ${now.store}; it is not read from another store under the same id.`
       );
     }
@@ -378,7 +378,7 @@ export class DocumentTexts {
      */
     const composed = await this.compose(now.client, asked.id);
     if (!composed.ok) {
-      throw new Error(`theourgia: ${refusalOf(composed)}`);
+      throw new Error(`Theourgia: ${refusalOf(composed)}`);
     }
     this.held.set(address, composed.text);
     return composed.text;

@@ -242,7 +242,7 @@ function showIncompleteBanner(editor: vscode.TextEditor, notes: Note[], keep: vs
  * opened or acted on: nothing is asked of the store now configured with an
  * id that came from the other one.
  */
-const LISTED_ELSEWHERE = 'theourgia: this item was listed under another store. Refresh the view and select it again.';
+const LISTED_ELSEWHERE = 'Theourgia: this item was listed under another store. Refresh the view and select it again.';
 
 class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
   private readonly changed = new vscode.EventEmitter<OutlineElement | undefined>();
@@ -638,11 +638,11 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
  */
 function show(notice: Notice): Thenable<unknown> | undefined {
   if (notice.level === 'error') {
-    return vscode.window.showErrorMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showErrorMessage(`Theourgia: ${notice.text}`);
   } else if (notice.level === 'warning') {
-    return vscode.window.showWarningMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showWarningMessage(`Theourgia: ${notice.text}`);
   } else if (notice.level === 'information') {
-    return vscode.window.showInformationMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showInformationMessage(`Theourgia: ${notice.text}`);
   }
   return undefined;
 }
@@ -690,10 +690,10 @@ class DocumentViews implements vscode.TextDocumentContentProvider {
 
 function reportFailure(e: unknown): void {
   if (e instanceof TransportError) {
-    vscode.window.showErrorMessage(`theourgia: ${e.message}`);
+    vscode.window.showErrorMessage(`Theourgia: ${e.message}`);
     return;
   }
-  vscode.window.showErrorMessage(`theourgia: ${(e as Error).message ?? String(e)}`);
+  vscode.window.showErrorMessage(`Theourgia: ${(e as Error).message ?? String(e)}`);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -903,7 +903,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       outbox = null;
       saver = null;
       provider.use(null);
-      status.text = '$(book) theourgia $(gear)';
+      status.text = '$(book) Theourgia $(gear)';
       status.tooltip = problems.map((p) => `${p.setting}: ${p.message}`).join('\n');
       status.show();
       return;
@@ -1145,7 +1145,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * holds what could not be said any other way: a warning about a store
    * that the editor failed to show (queue item 18).
    */
-  const channel = vscode.window.createOutputChannel('theourgia');
+  const channel = vscode.window.createOutputChannel('Theourgia');
   context.subscriptions.push(channel);
 
   function checkIntegrity(): void {
@@ -1227,18 +1227,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function suggestSplit(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (editor === undefined) {
-      vscode.window.showWarningMessage('theourgia: open the source file to split first.');
+      vscode.window.showWarningMessage('Theourgia: open the source file to split first.');
       return;
     }
     const document = editor.document;
     const within = path.relative(storage, document.uri.fsPath);
     if (document.uri.scheme !== 'file' || (!within.startsWith('..') && !path.isAbsolute(within))) {
-      vscode.window.showWarningMessage("theourgia: only a source file on disk is split this way, not a block's own file or a document view.");
+      vscode.window.showWarningMessage("Theourgia: only a source file on disk is split this way, not a block's own file or a document view.");
       return;
     }
     const using = client;
     if (using === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const asked = generation;
@@ -1274,7 +1274,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               files.unlink(written);
             } catch (e) {
               if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-                vscode.window.showWarningMessage(`theourgia: the symbols file ${written} could not be removed: ${String(e)}`);
+                vscode.window.showWarningMessage(`Theourgia: the symbols file ${written} could not be removed: ${String(e)}`);
               }
             }
           }
@@ -1285,20 +1285,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (outcome.done === 'stopped') {
-      vscode.window.showWarningMessage(`theourgia: ${outcome.why}.`);
+      vscode.window.showWarningMessage(`Theourgia: ${outcome.why}.`);
       return;
     }
     if (outcome.done === 'refused') {
-      vscode.window.showErrorMessage(`theourgia: ${splitRefusalNotice(outcome.refusal)}`);
+      vscode.window.showErrorMessage(`Theourgia: ${splitRefusalNotice(outcome.refusal)}`);
       return;
     }
     if (asked !== generation) {
-      vscode.window.showInformationMessage(`theourgia: ${outcome.notice}; the review is at ${outcome.review}.`);
+      vscode.window.showInformationMessage(`Theourgia: ${outcome.notice}; the review is at ${outcome.review}.`);
       return;
     }
     const review = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.review));
     await vscode.window.showTextDocument(review, { preview: false });
-    vscode.window.showInformationMessage(`theourgia: ${outcome.notice}.`);
+    vscode.window.showInformationMessage(`Theourgia: ${outcome.notice}.`);
   }
 
   /*
@@ -1314,7 +1314,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function supplyFacts(kind: SupplyKind): Promise<void> {
     const using = client;
     if (using === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const store = storeIdentity();
@@ -1402,20 +1402,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       outcome.done === 'ran' ? supplyNotice(kind, outcome) : outcome.done === 'refused' ? outcome.notice : outcome.why;
     const current = storeIdentity();
     if (current !== store) {
-      vscode.window.showInformationMessage(`theourgia: for the store ${store}: ${said}.`);
+      vscode.window.showInformationMessage(`Theourgia: for the store ${store}: ${said}.`);
       return;
     }
     if (outcome.done === 'refused') {
-      vscode.window.showErrorMessage(`theourgia: ${said}.`);
+      vscode.window.showErrorMessage(`Theourgia: ${said}.`);
     } else if (
       outcome.done === 'stopped' ||
       outcome.results.some((r) => r.done === 'refused') ||
       outcome.incomplete ||
       outcome.notRemoved.length > 0
     ) {
-      vscode.window.showWarningMessage(`theourgia: ${said}.`);
+      vscode.window.showWarningMessage(`Theourgia: ${said}.`);
     } else {
-      vscode.window.showInformationMessage(`theourgia: ${said}.`);
+      vscode.window.showInformationMessage(`Theourgia: ${said}.`);
     }
   }
 
@@ -1474,17 +1474,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const current = storeIdentity();
     if (current !== store) {
-      vscode.window.showWarningMessage('theourgia: the store changed while the name was being asked for. Select the directory again.');
+      vscode.window.showWarningMessage('Theourgia: the store changed while the name was being asked for. Select the directory again.');
       return;
     }
     const sending = saver;
     if (sending === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const target = newDocumentPath(directory, name);
     if (target === null) {
-      vscode.window.showErrorMessage(`theourgia: ${name.trim()} does not make a path export would write.`);
+      vscode.window.showErrorMessage(`Theourgia: ${name.trim()} does not make a path export would write.`);
       return;
     }
     let outcome: SaveOutcome;
@@ -1523,7 +1523,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const reading = model;
     if (reading === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const asked = generation;
@@ -1537,13 +1537,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const readIn = storeIdentity();
     if (readIn !== store) {
-      vscode.window.showWarningMessage('theourgia: the store changed while the file was being read. Select the file again.');
+      vscode.window.showWarningMessage('Theourgia: the store changed while the file was being read. Select the file again.');
       return;
     }
     const version = fresh.version;
     const now = fresh.block === null ? null : candidateOf(fresh.block, node.title, false, false).path;
     if (fresh.block === null || version === null || now === null) {
-      vscode.window.showWarningMessage(`theourgia: ${node.id} no longer has a path to ${how}; the view is refreshed.`);
+      vscode.window.showWarningMessage(`Theourgia: ${node.id} no longer has a path to ${how}; the view is refreshed.`);
       provider.refresh();
       return;
     }
@@ -1563,17 +1563,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     const sendIn = storeIdentity();
     if (sendIn !== store) {
-      vscode.window.showWarningMessage('theourgia: the store changed while the name was being asked for. Select the file again.');
+      vscode.window.showWarningMessage('Theourgia: the store changed while the name was being asked for. Select the file again.');
       return;
     }
     const sending = saver;
     if (sending === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const target = how === 'move' ? movedPath(now, answer) : renamedPath(now, answer);
     if (target === null) {
-      vscode.window.showErrorMessage(`theourgia: ${answer.trim()} does not make a path export would write.`);
+      vscode.window.showErrorMessage(`Theourgia: ${answer.trim()} does not make a path export would write.`);
       return;
     }
     if (target === now) {
@@ -1611,7 +1611,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (client === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const asked = generation;
@@ -1624,11 +1624,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (asked !== generation) {
-      vscode.window.showWarningMessage('theourgia: the store changed while the document was being read. Select the block again.');
+      vscode.window.showWarningMessage('Theourgia: the store changed while the document was being read. Select the block again.');
       return;
     }
     if (!composed.ok) {
-      vscode.window.showErrorMessage(`theourgia: ${refusalOf(composed)}`);
+      vscode.window.showErrorMessage(`Theourgia: ${refusalOf(composed)}`);
       return;
     }
     const uri = vscode.Uri.from({
@@ -1665,7 +1665,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (model === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const asked = generation;
@@ -1716,12 +1716,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     if (asked !== generation) {
       vscode.window.showWarningMessage(
-        `theourgia: the store setting changed while ${id} was being read, so it was not opened.`
+        `Theourgia: the store setting changed while ${id} was being read, so it was not opened.`
       );
       return;
     }
     if (block === null) {
-      vscode.window.showWarningMessage(`theourgia: the store has no block ${id}.`);
+      vscode.window.showWarningMessage(`Theourgia: the store has no block ${id}.`);
       return;
     }
     // The store was captured before the read. Acceptance checks recorded store
@@ -1828,13 +1828,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   async function goToDefinition(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     if (editor === undefined || client === null) {
-      vscode.window.showInformationMessage('theourgia: open a block and put the cursor on a name first.');
+      vscode.window.showInformationMessage('Theourgia: open a block and put the cursor on a name first.');
       return;
     }
     const at = editor.selection.active;
     const name = identifierAt(editor.document.getText(), at.line, at.character);
     if (name === null) {
-      vscode.window.showInformationMessage('theourgia: there is no name under the cursor.');
+      vscode.window.showInformationMessage('Theourgia: there is no name under the cursor.');
       return;
     }
     const asked = generation;
@@ -1852,7 +1852,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       show({ level: 'information', text: incompleteWarning(answer.notes) });
     }
     if (!('found' in answer)) {
-      vscode.window.showInformationMessage(`theourgia: ${noDefinitionNotice(name, answer.nearest)}`);
+      vscode.window.showInformationMessage(`Theourgia: ${noDefinitionNotice(name, answer.nearest)}`);
       return;
     }
     let chosen = answer.found[0];
@@ -1975,7 +1975,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return notice;
     }
     if (model === null) {
-      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
       return null;
     }
     const asked = generation;
@@ -1995,13 +1995,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     if (asked !== generation) {
       vscode.window.showWarningMessage(
-        `theourgia: the store setting changed while ${sidecar.blockId} was being read, so nothing ` +
+        `Theourgia: the store setting changed while ${sidecar.blockId} was being read, so nothing ` +
           'was reconciled.'
       );
       return null;
     }
     if (block === null) {
-      vscode.window.showWarningMessage(`theourgia: the store has no block ${sidecar.blockId}.`);
+      vscode.window.showWarningMessage(`Theourgia: the store has no block ${sidecar.blockId}.`);
       return null;
     }
     const document = documentFor(block, sidecar.storeId);

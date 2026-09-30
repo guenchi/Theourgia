@@ -49,7 +49,7 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
   fields are put in a markdown buffer, in that order. One file per (store, block), so
   opening a block twice reaches the same document.
 * **Opening a subtree as one document**: right-click a node in the outline and choose
-  `theourgia: Open as Document`. It asks `read <id> --recursive --wire` and composes
+  `Theourgia: Open as Document`. It asks `read <id> --recursive --wire` and composes
   the block and everything under it into one markdown document. **It is a read-only,
   composed view** under its own scheme, `theourgia-document` -- not a projection file,
   not on disk, and never written back: it cannot be edited or saved in place. (VS Code's
@@ -74,7 +74,7 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
   at all, the tooltip carries the core's own sentence rather than a question mark: a
   refusal such as `serve-path-occupied (path "...")` names a directory you can remove.
 * **Searching**: the magnifying glass in the outline's title bar, or
-  `theourgia: Search Blocks`, asks the core's `search` for blocks whose title, keywords
+  `Theourgia: Search Blocks`, asks the core's `search` for blocks whose title, keywords
   or text hold every word you type. One hit opens; several are offered in a list, best
   score first, each showing its keywords or a cut of its text.
 * **Keywords in the outline**: a block that has any shows them beside its id. They come
@@ -113,7 +113,7 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
 
 ### Recovering another window's unsent work: where it stops
 
-`theourgia: Other Sessions` lists the windows that left something behind and
+`Theourgia: Other Sessions` lists the windows that left something behind and
 offers to take it over or to discard it. Four limits are deliberate, and each
 of them is a decision rather than an oversight:
 
@@ -227,13 +227,13 @@ block, body and selected working namespace/version **before** commit is sent. Th
   `cursor` nor an `event` leaves the next save with nothing to be composed against.
 * `(error unknown <why>)`, a bare `(error unreadable ...)`, a timeout, or a core that
   printed nothing: the entry is **kept**. The store may hold the record; asking again with the same request id is the
-  only way to find out. "theourgia: Retry Pending Saves" sends the same bytes again —
+  only way to find out. "Theourgia: Retry Pending Saves" sends the same bytes again —
   the same id, the same cursor, the same body, not whatever the buffer now holds.
 * A refusal only a person can answer -- the store directory is missing, the socket path
   is too long, or `(error refused (instance ...))`, a store created under another
   `THEOURGIA_HOME` or moved since: the entry is **kept and parked**, and later saves of
   the same block wait behind it. Changing a setting sends it again, and so does
-  "theourgia: Retry Pending Saves" once the cause is fixed outside the editor; if it is
+  "Theourgia: Retry Pending Saves" once the cause is fixed outside the editor; if it is
   not fixed, it is parked again.
 * Any other refusal: the entry is dropped and the refusal is shown, with everything the
   core said after its name (and in words, the remedy the core names), because retrying
@@ -300,7 +300,7 @@ Sequential saves advance their baseline only with proof that the displayed W ver
 was committed. The next draft uses that commit's causal cut, retaining any intervening
 external write as a stale-baseline refusal.
 
-`theourgia: Migrate Legacy Block Files` explicitly migrates a selected numbered block.
+`Theourgia: Migrate Legacy Block Files` explicitly migrates a selected numbered block.
 The command retains an archive of every original file and resumes from its journal after
 interruption. Pending sends, live owners, dirty buffers, changed inputs, and drafts whose
 bytes cannot be verified against committed/W data stop migration. Multiple unprotected
@@ -553,14 +553,14 @@ are not UTF-8 does not open: the store says so by name (`non-text-projection`), 
 such a field refuses with `text-not-utf8`, the field, the block and the offset of the first byte that
 does not decode. A file that begins with a byte-order mark is not saved.
 
-**Go to definition.** On a name in a block, "theourgia: Go to Definition" -- or the editor's own Go to
+**Go to definition.** On a name in a block, "Theourgia: Go to Definition" -- or the editor's own Go to
 Definition -- asks the store's `whereis` which block defines it. One answer opens that block at the
 line of its `(define ...)`, found in the text as it is shown, a draft included; several are listed with
 their library and kind, or `export` for a library that exports the name, which opens at the library's first
 line. A name nobody defines is said, with the nearest names the store knows. The line search reads `;` and
 `#| |#` comments as comments; a `#;` datum comment is not recognised.
 
-**Suggest a split of a source file.** On a source file on disk (not a block's own file), "theourgia:
+**Suggest a split of a source file.** On a source file on disk (not a block's own file), "Theourgia:
 Suggest a Split of This File" asks the core's `split-suggest` where the file could be divided into
 blocks, and opens the review file the core writes; nothing is recorded. The cuts come from the
 editor's own symbols for the file -- the top-level ones the language's symbol provider gives, sent as
@@ -577,8 +577,8 @@ editor merges them.
 
 **Supplying what the editor knows.** Three commands hand the store facts the editor's language
 support computes, which the core keeps beside the store and never in its log (the core's README,
-"Derived data from an editor"): "theourgia: Supply Signatures and Keywords" and "theourgia: Supply
-Calls" for the committed store, and "theourgia: Supply Diagnostics" for this window's writer, from its
+"Derived data from an editor"): "Theourgia: Supply Signatures and Keywords" and "Theourgia: Supply
+Calls" for the committed store, and "Theourgia: Supply Diagnostics" for this window's writer, from its
 working view. Each projects the store with `export-code` into a directory in this extension's own
 storage, emptied first, opens the projected files without showing them, asks the editor's providers,
 and sends one `supply` per language with every projected file listed by its digest and every file of

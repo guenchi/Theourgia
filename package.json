@@ -1,6 +1,6 @@
 {
   "name": "theourgia",
-  "displayName": "theourgia",
+  "displayName": "Theourgia",
   "description": "Browse and edit a theourgia block store from VS Code.",
   "icon": "media/icon.png",
   "repository": {
@@ -28,7 +28,7 @@
       "activitybar": [
         {
           "id": "theourgia",
-          "title": "theourgia",
+          "title": "Theourgia",
           "icon": "media/outline.svg"
         }
       ]
@@ -44,84 +44,84 @@
     "commands": [
       {
         "command": "theourgia.openAsDocument",
-        "title": "theourgia: Open as Document"
+        "title": "Theourgia: Open as Document"
       },
       {
         "command": "theourgia.goToDefinition",
-        "title": "theourgia: Go to Definition"
+        "title": "Theourgia: Go to Definition"
       },
       {
         "command": "theourgia.search",
-        "title": "theourgia: Search Blocks",
+        "title": "Theourgia: Search Blocks",
         "icon": "$(search)"
       },
       {
         "command": "theourgia.refreshOutline",
-        "title": "theourgia: Refresh Outline",
+        "title": "Theourgia: Refresh Outline",
         "icon": "$(refresh)"
       },
       {
         "command": "theourgia.openBlock",
-        "title": "theourgia: Open Block"
+        "title": "Theourgia: Open Block"
       },
       {
         "command": "theourgia.retryOutbox",
-        "title": "theourgia: Retry Pending Saves"
+        "title": "Theourgia: Retry Pending Saves"
       },
       {
         "command": "theourgia.showStatus",
-        "title": "theourgia: Show Store Status"
+        "title": "Theourgia: Show Store Status"
       },
       {
         "command": "theourgia.reconcileBlock",
-        "title": "theourgia: Reconcile Block"
+        "title": "Theourgia: Reconcile Block"
       },
       {
         "command": "theourgia.otherSessions",
-        "title": "theourgia: Other Sessions"
+        "title": "Theourgia: Other Sessions"
       },
       {
         "command": "theourgia.migrateBlock",
-        "title": "theourgia: Migrate Legacy Block Files"
+        "title": "Theourgia: Migrate Legacy Block Files"
       },
       {
         "command": "theourgia.suggestSplit",
-        "title": "theourgia: Suggest a Split of This File"
+        "title": "Theourgia: Suggest a Split of This File"
       },
       {
         "command": "theourgia.supplySignatures",
-        "title": "theourgia: Supply Signatures and Keywords"
+        "title": "Theourgia: Supply Signatures and Keywords"
       },
       {
         "command": "theourgia.supplyCalls",
-        "title": "theourgia: Supply Calls"
+        "title": "Theourgia: Supply Calls"
       },
       {
         "command": "theourgia.supplyDiagnostics",
-        "title": "theourgia: Supply Diagnostics"
+        "title": "Theourgia: Supply Diagnostics"
       },
       {
         "command": "theourgia.showFiles",
-        "title": "theourgia: Show Files",
+        "title": "Theourgia: Show Files",
         "icon": "$(file-directory)"
       },
       {
         "command": "theourgia.showOutline",
-        "title": "theourgia: Show Outline",
+        "title": "Theourgia: Show Outline",
         "icon": "$(list-tree)"
       },
       {
         "command": "theourgia.newFileHere",
-        "title": "theourgia: New File Here",
+        "title": "Theourgia: New File Here",
         "icon": "$(new-file)"
       },
       {
         "command": "theourgia.moveToDirectory",
-        "title": "theourgia: Move to Directory"
+        "title": "Theourgia: Move to Directory"
       },
       {
         "command": "theourgia.renameFile",
-        "title": "theourgia: Rename File"
+        "title": "Theourgia: Rename File"
       }
     ],
     "menus": {
@@ -190,7 +190,7 @@
       ]
     },
     "configuration": {
-      "title": "theourgia",
+      "title": "Theourgia",
       "properties": {
         "theourgia.corePath": {
           "type": "string",

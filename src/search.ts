@@ -292,7 +292,7 @@ export async function runSearch(
   editor: Asking
 ): Promise<SearchOutcome> {
   if (model === null) {
-    editor.say('theourgia has no store to search; check the settings.', 'error');
+    editor.say('Theourgia has no store to search; check the settings.', 'error');
     return { did: 'nothing', because: 'no-store' };
   }
   const typed = await editor.ask('Find blocks whose title, keywords or text hold every word');

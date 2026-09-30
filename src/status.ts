@@ -113,7 +113,7 @@ export interface StatusLine {
 }
 
 export function statusLine(facts: StatusFacts): StatusLine {
-  const parts: string[] = ['$(book) theourgia'];
+  const parts: string[] = ['$(book) Theourgia'];
   if (facts.conflicts === null) {
     parts.push('$(question)');
   } else if (facts.conflicts > 0) {

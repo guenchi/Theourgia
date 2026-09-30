@@ -132,8 +132,8 @@ describe('X1c the commands the extension offers', () => {
   it('gives every command an id under the extension name and a title a palette can show', () => {
     for (const command of COMMANDS) {
       assert.ok(command.id.startsWith('theourgia.'), `${command.id} is not this extension's`);
-      assert.ok(command.title.startsWith('theourgia: '), `${command.title} would not be findable`);
-      assert.ok(command.title.length > 'theourgia: '.length, `${command.id} has an empty title`);
+      assert.ok(command.title.startsWith('Theourgia: '), `${command.title} would not be findable`);
+      assert.ok(command.title.length > 'Theourgia: '.length, `${command.id} has an empty title`);
     }
   });
 
@@ -196,6 +196,11 @@ describe('X1c the commands the extension offers', () => {
    * AND IT WALKS THE WHOLE OF src. The first version read only the
    * immediate children, so a title written inside a subdirectory was
    * invisible to it.
+   *
+   * NOTE: BOTH CASES OF THE PREFIX. The titles once began "theourgia: "
+   * and now begin "Theourgia: "; a spelling left in the old case names a
+   * command the palette does not show, and a pattern for the new case
+   * alone would pass it.
    */
   it('holds every command title in one file and no other', () => {
     const offenders: string[] = [];
@@ -210,7 +215,7 @@ describe('X1c the commands the extension offers', () => {
           continue;
         }
         const source = fs.readFileSync(full, 'utf8');
-        for (const match of source.matchAll(/theourgia: [A-Z][A-Za-z ]*/g)) {
+        for (const match of source.matchAll(/[Tt]heourgia: [A-Z][A-Za-z ]*/g)) {
           offenders.push(`${shown}${name}: ${match[0].trimEnd()}`);
         }
       }

@@ -51,7 +51,7 @@ describe('plugin-r3 39 the editor is told at the level the notice has', function
     assert.strictEqual(r.requests, 1, 'the save never reached the store, so there was no answer to read');
     const information = r.shown.filter((n) => n.level === 'information');
     assert.strictEqual(information.length, 1, `not one information notice: ${JSON.stringify(r.shown)}`);
-    assert.ok(information[0].text.startsWith('theourgia: '), information[0].text);
+    assert.ok(information[0].text.startsWith('Theourgia: '), information[0].text);
     assert.ok(information[0].text.includes('other has 2 records'), `the notice does not name who landed: ${information[0].text}`);
     assert.ok(!information[0].text.includes('w has'), `the notice names this save's own writer: ${information[0].text}`);
   });
@@ -61,7 +61,7 @@ describe('plugin-r3 39 the editor is told at the level the notice has', function
     assert.strictEqual(r.requests, 1, 'the save never reached the store, so there was no refusal to read');
     const errors = r.shown.filter((n) => n.level === 'error');
     assert.strictEqual(errors.length, 1, `not one error notice: ${JSON.stringify(r.shown)}`);
-    assert.ok(errors[0].text.startsWith('theourgia: a.1: '), `the notice does not name the block: ${errors[0].text}`);
+    assert.ok(errors[0].text.startsWith('Theourgia: a.1: '), `the notice does not name the block: ${errors[0].text}`);
     assert.ok(errors[0].text.includes('cursor-unreachable'), `the notice lost the store's reason: ${errors[0].text}`);
     assert.ok(
       errors[0].text.endsWith('Your text is still in the file and has not been saved to the store.'),

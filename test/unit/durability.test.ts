@@ -948,7 +948,7 @@ describe('D4 the window shows each queue warning once, whichever Saver raised it
     return result.result;
   };
   const sentence = (queue: string): string =>
-    `theourgia: the queue at ${queue} was written, but its directory could not be flushed (the disk said no), ` +
+    `Theourgia: the queue at ${queue} was written, but its directory could not be flushed (the disk said no), ` +
     'so it may not survive the machine losing power';
   const times = (shown: unknown, text: string): number =>
     (shown as Array<{ text: string; level: string }>).filter((n) => n.text === text && n.level === 'warning').length;
@@ -983,7 +983,7 @@ describe('D4 the window shows each queue warning once, whichever Saver raised it
     assert.strictEqual(r.left, 0);
     assert.deepStrictEqual(r.after, [], 'the entry was not settled out of the queue');
     const said = (reason: string): string =>
-      `theourgia: the queue at ${r.queue as string} was written, but its directory could not be flushed (${reason}), ` +
+      `Theourgia: the queue at ${r.queue as string} was written, but its directory could not be flushed (${reason}), ` +
       'so it may not survive the machine losing power';
     assert.strictEqual(times(r.shown, said('the newer reason')), 1, `the newer warning was not shown: ${JSON.stringify(r.shown)}`);
     assert.strictEqual(times(r.shown, said('the older reason')), 0, 'the older warning was shown in its place');

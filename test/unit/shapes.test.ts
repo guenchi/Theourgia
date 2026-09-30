@@ -953,7 +953,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * this is the report agreeing with them.
    */
   const ADVICE =
-    ' Run "theourgia: Retry Pending Saves" to try this window\'s queue now. The next save tries ' +
+    ' Run "Theourgia: Retry Pending Saves" to try this window\'s queue now. The next save tries ' +
     'it too, but only after reaching the store, so a store that cannot be reached leaves the ' +
     'queue untouched.';
   const ADVICE_AFTER: Record<string, string> = { imported: ADVICE, movedButUnmarked: ADVICE };
