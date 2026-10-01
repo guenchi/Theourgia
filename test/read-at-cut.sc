@@ -32,6 +32,7 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) store-resident-cache!)
+        (only (theourgia ffi) real-path)
         (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia client) serve-log-path socket-path call! request-frame)
         (only (theourgia wire) encode-record storable-encode)
@@ -477,7 +478,9 @@
   (want "RC-R5 refused before being handed on, each answered and traced connection: arguments that do not parse, another store, no datum"
         (list (payload shape) (payload other) (payload garbage) routes)
         (list '(error bad-request missing-option-value "--cut")
-              (list 'error 'transport-store-mismatch (list 'serving st) (list 'asked root))
+              ;; Both paths travel by their resolved spelling (a root such as
+              ;; /tmp/ or one under a symlinked directory is not that spelling).
+              (list 'error 'transport-store-mismatch (list 'serving (real-path st)) (list 'asked (real-path root)))
               '(error bad-request (reason not-a-datum))
               '("(trace routed read connection)" "(trace routed read connection)" "(trace routed unknown connection)"))))
 
