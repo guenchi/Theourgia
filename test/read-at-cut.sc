@@ -475,8 +475,10 @@
        (routes (filter (lambda (l) (not (prefix? "(trace routed outline" l))) (trace-lines-with st "routed "))))
   (stop-daemon! st)
   (want "RC-R5 refused before being handed on, each answered and traced connection: arguments that do not parse, another store, no datum"
-        (list (head-of (payload shape)) (head-of (payload other)) (head-of (payload garbage)) routes)
-        (list '(error bad-request) '(error transport-store-mismatch) '(error bad-request)
+        (list (payload shape) (payload other) (payload garbage) routes)
+        (list '(error bad-request missing-option-value "--cut")
+              (list 'error 'transport-store-mismatch (list 'serving st) (list 'asked root))
+              '(error bad-request (reason not-a-datum))
               '("(trace routed read connection)" "(trace routed read connection)" "(trace routed unknown connection)"))))
 
 (for-each stop-daemon! d-stores)
