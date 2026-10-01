@@ -1,0 +1,113 @@
+# The core's whole suite on macOS x86_64 (Intel hardware, macos-15-intel),
+# from source. The tree it tests is the commit named in
+# .github/intel-suite.ref, not this branch's own; igropyr is pinned beside
+# it. Chez Scheme 10.4.1 is built from its release source, so the machine
+# type is ta6osx. A second job runs one reading on the base named in
+# .github/intel-suite.base: init, then insert, which there fails on the
+# legacy struct stat. Nothing is written back; no secrets are used.
+name: intel-suite
+
+on:
+  push:
+    branches: [intel-suite]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CHEZ_VERSION: 10.4.1
+  IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [ref, base]
+    runs-on: macos-15-intel
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - name: the tree under test
+        run: |
+          echo "REF=$(cat harness/.github/intel-suite.${{ matrix.which }})" >> "$GITHUB_ENV"
+          cat harness/.github/intel-suite.${{ matrix.which }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+          path: lib/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: ${{ env.IGROPYR_REV }}
+          path: lib/igropyr
+      - name: libuv and OpenSSL
+        run: brew install libuv openssl@3
+      - name: Chez Scheme ${{ env.CHEZ_VERSION }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
+          cd "csv${CHEZ_VERSION}"
+          ./configure --threads --disable-x11 --disable-curses > "$RUNNER_TEMP/chez-configure.log"
+          make -j"$(getconf _NPROCESSORS_ONLN)" > "$RUNNER_TEMP/chez-make.log" 2>&1
+          sudo make install > "$RUNNER_TEMP/chez-install.log" 2>&1
+      - name: what this run is on
+        run: |
+          uname -a; sw_vers; sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          scheme --version
+          echo '(display (machine-type))' | scheme -q; echo
+          git -C lib/theourgia rev-parse HEAD
+          git -C lib/igropyr rev-parse HEAD
+          rm -rf lib/theourgia/.git lib/igropyr/.git
+          echo "so files: $(find lib -name '*.so' | wc -l)"
+      # X1: init, then insert, on this machine. On the base the insert
+      # answers the mkdir refusal; on the tree under test it answers ok.
+      - name: init then insert
+        run: |
+          W="$PWD"; mkdir -p "$W/x1"; S="$(mktemp -d /tmp/x1.XXXXXX)/s"
+          export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_SCHEME=scheme
+          export CHEZSCHEMELIBDIRS="$W/lib" CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
+          scheme --script lib/theourgia/theourgia.sc init --store "$S" > x1/init.out 2> x1/init.err; echo $? > x1/init.rc
+          scheme --script lib/theourgia/theourgia.sc insert --title X1 --store "$S" > x1/insert.out 2> x1/insert.err; echo $? > x1/insert.rc
+          scheme --script lib/theourgia/theourgia.sc outline --wire --store "$S" > x1/outline.out 2> x1/outline.err; echo $? > x1/outline.rc
+          for f in init insert outline; do echo "== $f rc $(cat x1/$f.rc)"; head -c 2000 x1/$f.out; head -c 2000 x1/$f.err; done
+          pkill -f theourgiad.sc || true
+      - name: the whole suite
+        if: matrix.which == 'ref'
+        run: |
+          W="$PWD"; mkdir -p "$W/out" "$W/testroot"
+          cd lib/theourgia/test
+          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot"; . ./env.sh
+            sh run-fixtures.sh "$W/out" > "$W/suite.log" 2>&1; echo $? > "$W/suite.rc" ) || true
+          cd "$W"
+          echo "suite rc: $(cat suite.rc)"
+          tail -80 suite.log
+          # EACH NOT-GREEN FIXTURE AGAIN, ALONE: fresh roots, the runner's own
+          # limit. One that passes alone and failed in the suite is timing
+          # under load; one that fails alone the same way is not.
+          mkdir -p "$W/rerun"
+          for fx in $(grep '^RED ' suite.log | awk '{print $2}'); do
+            f="$W/lib/theourgia/test/$fx.sc"; runner="scheme --script"
+            [ -f "$f" ] || { f="$W/lib/theourgia/test/$fx.py"; runner="python3"; }
+            root=$(mktemp -d "$W/testroot/rerun.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
+            ( cd "$W/lib/theourgia/test"; export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock"; . ./env.sh
+              perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$W/rerun/$fx.out" 2>&1 < /dev/null; echo $? > "$W/rerun/$fx.rc" ) || true
+            echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
+          done
+      - name: keep the readings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-suite-${{ matrix.which }}-${{ env.REF }}
+          path: |
+            x1
+            out
+            suite.log
+            suite.rc
+            rerun
