@@ -49,6 +49,7 @@
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
           (only (theourgia datum-code) datum-source-read)
+          (only (theourgia template-read) store-template template-roots template-relations)
           (only (theourgia ffi) read-entry entry-type directory-entries fs-error? with-mutation-record mutation-record)
           (only (theourgia answers) classify-failure)
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
@@ -625,6 +626,20 @@
   ;; no tables answers read, outline, search, refs and drafts as it did
   ;; before tables existed, and loads nothing for them.
   (define (derived name) (eval name (environment '(theourgia derived))))
+
+  ;; NEVER: APPLYING A TEMPLATE IS ENTERED ON USE, as (theourgia derived) is
+  ;; above: init answers every start that names no template without it.
+  (define (template-entry name) (eval name (environment '(theourgia template))))
+
+  ;; A new store, then the template applied to it in this process. The
+  ;; answer is init's with what was applied and what it made; plain init's
+  ;; answer is not touched. NEVER: AN APPLY THAT FAILS AFTER THE STORE WAS
+  ;; MADE SAYS SO: the store stays, and the error carries (store-created).
+  (define (init-with-template store actor req init-answer datum named)
+    (let ((r ((template-entry 'template-apply!) store actor req datum)))
+      (if (eq? (car r) 'ok)
+          (append init-answer (list (list 'template named)) (cdr r))
+          (append r (list '(store-created))))))
   (define (derived-tables? store kind)
     (let ((dir (string-append store "/derived")) (prefix (string-append (symbol->string kind) "-")))
       (and (eq? (entry-type dir) 'directory)
@@ -841,8 +856,8 @@
 
   (define (built-in-catalogue)
     (list
-      (list 'init '(init)
-            "Create a store in this directory." #f 'local)
+      (list 'init '(init ["--template" <name>] ["--template-file" <template-file>])
+            "Create a store in this directory; with --template (a built-in such as project) or --template-file, then apply that template to it." #f 'local)
       (list 'eval eval-usage
             "Evaluate source against the store, or against a writer's working view with --working: Scheme by default, another language with --lang, whose runner runs only where the operator has set THEOURGIA_RUNNERS=on. It runs as a child process of the caller, never in the store's server." #f 'child)
       (list 'insert insert-usage
@@ -993,7 +1008,7 @@
                   x)))
 
   (define (entry-problem e)
-    (cond ((not (and (list? e) (= 8 (length e)))) "an entry is (verb usage description protocol? route value-options flag-options (library . name))")
+    (cond ((not (and (list? e) (memv (length e) '(8 9)))) "an entry is (verb usage description protocol? route value-options flag-options (library . name) [declaration])")
           ((not (symbol? (list-ref e 0))) "the verb is not a symbol")
           ((not (pair? (list-ref e 1))) "the usage is not a form")
           ((not (string? (list-ref e 2))) "the description is not a string")
@@ -1003,7 +1018,19 @@
           ((not (option-names? (list-ref e 6))) "the flag options are not option names")
           ((not (let ((h (list-ref e 7))) (and (pair? h) (list? (car h)) (pair? (car h)) (symbol? (cdr h)))))
            "the handler is not (library . name)")
+          ((and (= 9 (length e)) (not (declaration? (list-ref e 8))))
+           "the declaration is not accept, refuse, or (refuse <action> ...)")
           (else #f)))
+
+  ;; A REGISTERED VERB'S DECLARATION, the ninth field and optional: `accept`
+  ;; (the default, what an entry without it means) answers from a load that
+  ;; could not read a writer and says so; `refuse` refuses such a load, as the
+  ;; built-in undeclared verbs do; `(refuse <action> ...)` refuses it only when
+  ;; the first argument is one of those actions, for a verb whose actions
+  ;; differ in whether they write from the reduction.
+  (define (declaration? d)
+    (or (memq d '(accept refuse))
+        (and (list? d) (pair? d) (eq? (car d) 'refuse) (pair? (cdr d)) (for-all string? (cdr d)))))
 
   (define (register-verbs! batch)
     (unless (list? batch)
@@ -1037,6 +1064,28 @@
              (cons verb
                    (lambda arguments
                      (apply (eval (cdr h) (environment (car h))) arguments)))))))
+
+  ;; THE STORE'S TEMPLATE, AS DESCRIBE ADDS IT: its roots and its relations,
+  ;; or #f.
+  ;;
+  ;; NEVER: DESCRIBE DOES NOT OPEN THE STORE, take a lock or write a byte, on any
+  ;; route (test/describe.sc DS-2c). So the clause comes only from a state the
+  ;; verb is HANDED -- the daemon's published reduction, which the daemon
+  ;; already holds -- and with none there is no clause: the in-process route
+  ;; does not load a store to describe it. A handed state that could not read
+  ;; every writer adds nothing either: a template read from part of a store is
+  ;; not the store's template.
+  ;; A SEALED STATE'S NOTES ARE ALL OF ITS NOTES -- the reduction's own and
+  ;; what the daemon's probe found since -- so a sealed state is asked for
+  ;; those, and a bare one for its own.
+  (define (describe-template state)
+    (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
+                       (else state)))
+           (complete (cond ((sealed-state? state) (null? (sealed-state-notes state)))
+                           (view (null? (unreadable-behind view)))
+                           (else #f)))
+           (t (and view complete (reduction? view) (store-template view))))
+      (and t (list 'template (cons 'roots (template-roots t)) (cons 'relations (template-relations t))))))
 
   ;; The catalogue as an answer. NEVER: The protocol is carried ONCE, beside
   ;; the verbs, rather than repeated into each entry that needs it: the
@@ -1129,14 +1178,27 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(describe))
-                  (describe-answer))))
+                  (let ((t (describe-template state)))
+                    (if t (append (describe-answer) (list t)) (describe-answer))))))
       (cons 'init
             (lambda (store actor args req options state writer cwd)
-              (if (not (null? args))
-                  (usage '(init))
-                  (guarded (lambda ()
-                             (let ((a (store-init! store)))
-                               (if (eq? (car a) 'ok) a (cons 'error (cdr a)))))))))
+              (let ((name (argument-option options "--template"))
+                    (file (argument-option options "--template-file")))
+                (if (or (not (null? args)) (and name file))
+                    (usage '(init ["--template" <name>] ["--template-file" <template-file>]))
+                    (guarded (lambda ()
+                               ;; THE TEMPLATE IS READ BEFORE THE STORE IS MADE, so a
+                               ;; name or file that cannot be used refuses without
+                               ;; leaving a new store behind.
+                               (let ((d (and (or name file) ((template-entry 'template-datum-for) name file))))
+                                 (if (and d (not (eq? (car d) 'ok)))
+                                     d
+                                     (let ((a (store-init! store)))
+                                       (cond
+                                         ((not (eq? (car a) 'ok)) (cons 'error (cdr a)))
+                                         ((not d) a)
+                                         (else (init-with-template store actor req a (cadr d)
+                                                                   (if file (list 'file file) name)))))))))))))
       (cons 'insert (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-insert store actor args req options)))))
       (cons 'set (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-set store actor args req options state)))))
       (cons 'move (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-move store actor args req options)))))
@@ -2052,17 +2114,28 @@
   ;; THE UNDECLARED VERBS ARE STRICT: a cut refuses them before they build
   ;; anything (the load raises), where every consumer outside a request
   ;; still loads a cut store as it always has.
-  (define (verb-declaration verb)
-    (if (memq verb undeclared-verbs) incomplete-refused incomplete-accepted))
+  ;; ONE PLACE ANSWERS FOR EVERY VERB: the built-in list, then a registered
+  ;; verb's own declaration (rpc.sc, entry-problem), read with the arguments
+  ;; the verb was given.
+  (define (verb-declaration verb args)
+    (cond ((memq verb undeclared-verbs) incomplete-refused)
+          ((find (lambda (e) (eq? (car e) verb)) extensions)
+           => (lambda (e)
+                (let ((d (if (= 9 (length e)) (list-ref e 8) 'accept)))
+                  (if (or (eq? d 'refuse)
+                          (and (pair? d) (pair? args) (member (car args) (cdr d))))
+                      incomplete-refused
+                      incomplete-accepted))))
+          (else incomplete-accepted)))
 
   ;; THE DECLARATION RIDES ON THE REQUEST'S STORE OBJECT for the extent of
   ;; the verb (plan amendment A2), and the outer one is put back on the way
   ;; out -- a normal return AND an escape -- so a nested verb of another
   ;; class is judged by its own class and leaves its caller's intact.
-  (define (with-verb-declaration store verb thunk)
+  (define (with-verb-declaration store verb args thunk)
     (let ((outer (load-declaration-of store)))
       (dynamic-wind
-        (lambda () (load-declaration-set! store (verb-declaration verb)))
+        (lambda () (load-declaration-set! store (verb-declaration verb args)))
         thunk
         (lambda () (load-declaration-set! store outer)))))
 
@@ -2168,7 +2241,7 @@
         ((and after (not id)) '(error bad-request cursor-without-req))
         ((and id (not (req-id-ok? id))) '(error bad-request malformed-req-id))
         ((eq? after 'malformed) '(error bad-request malformed-cursor))
-        (else (with-verb-declaration store verb
+        (else (with-verb-declaration store verb args
                 (lambda ()
                   ((cdr entry) store actor args
                    (and id (make-write-request actor verb (argument-strings options) id after))

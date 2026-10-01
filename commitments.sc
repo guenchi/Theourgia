@@ -47,7 +47,10 @@
                 block-id)
           (only (theourgia store) parse-cut)
           (only (theourgia project) subtree-ids)
-          (only (theourgia extensions) commitments-usage))
+          (only (theourgia extensions) commitments-usage)
+          (only (theourgia template-read) query-scope-root)
+          (only (theourgia field-reading) field-of conflict-form? conflict-values lenient-status
+                decision-statuses task-statuses rows-left-out))
 
   ;; The handler, with the eight arguments every verb's handler takes.
   (define (commitments-verb store actor args req options state writer cwd)
@@ -66,24 +69,6 @@
                  (commitments-answer view (if all 'all 'open) (and drifted #t) since under))))))))
 
   ;; ---- reading one field ----------------------------------------------------
-
-  ;; NEVER: A MISSING FIELD IS NOT A VALUE A FIELD CAN HOLD. It is this
-  ;; object, which no record can contain; a symbol here would read a status
-  ;; field whose value is that symbol as no field at all.
-  (define missing (list 'missing))
-
-  (define (field-of row name)
-    (let ((e (assq name (cdr (assq 'fields row))))) (if e (cdr e) missing)))
-
-  (define (conflict-form? v) (and (pair? v) (eq? (car v) 'conflict)))
-
-  ;; The values a conflict form holds, each as written. A stored value can
-  ;; have the head `conflict` without the shape the reducer gives one (a
-  ;; record from elsewhere wrote it), and it holds no values then.
-  (define (conflict-values v)
-    (if (and (pair? (cdr v)) (list? (cadr v)))
-        (map car (filter pair? (cadr v)))
-        '()))
 
   ;; WHAT KIND OF ROW A BLOCK IS FOR THIS QUERY: decision, a skip reason,
   ;; or #f for a block that is not a decision at all.
@@ -105,15 +90,7 @@
 
   ;; STATUS IS READ LENIENTLY: the symbol or the string spelling of open,
   ;; done or dropped. Anything else is open, and the answer says which.
-  (define (status-reading v)
-    (cond ((eq? v missing) 'absent)
-          ((conflict-form? v) 'conflict)
-          ((and (symbol? v) (memq v '(open done dropped))) v)
-          ((and (string? v) (member v '("open" "done" "dropped"))) (string->symbol v))
-          (else (list 'unreadable (if (string? v) v (written v))))))
-
-  (define (written v)
-    (call-with-string-output-port (lambda (port) (write v port))))
+  (define (status-reading v) (lenient-status v decision-statuses))
 
   (define (status-discharges? s) (or (eq? s 'done) (eq? s 'dropped)))
 
@@ -124,6 +101,9 @@
   (define (edge-discharges? view source)
     (let ((row (state-read view source)))
       (case (and row (let ((k (field-of row 'kind))) (and (symbol? k) k)))
+        ;; A TASK DISCHARGES ONLY ONCE IT IS DONE: an implements edge from a
+        ;; task says what will implement the decision, not that it has.
+        ((task) (eq? 'done (lenient-status (field-of row 'status) task-statuses)))
         (else #t))))
 
   ;; ---- cuts -----------------------------------------------------------------
@@ -150,37 +130,64 @@
   (define-record-type decision
     (fields id event title status origin implementers drifted deleted discharged))
 
+  ;; THE SCOPE: `--under <id>` is that block's subtree, `--under root` the
+  ;; whole store, and with neither the root the store's template names for
+  ;; commitments, when it has a readable one and exactly one block carries
+  ;; that root's slug; otherwise the whole store.
+  ;;
+;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
+  ;; it, the last item is (scope <root-id> (outside <n>)): n is the number of
+  ;; rows this same request would list with --under root that this answer does
+  ;; not (rows-left-out, field-reading.sc), so a narrowed ledger of obligations
+  ;; never reads as the whole one, and the count obeys the same filters. An
+  ;; item, not a clause, because the human rendering prints items.
   (define (commitments-answer view which drifted-only since under)
-    (let ((scope (and under (subtree-ids view under))))
-      (if (and under (not scope))
+    (let* ((root (and (not under) (query-scope-root view 'commitments)))
+           (scope (cond ((equal? under "root") #f)
+                        (under (subtree-ids view under))
+                        (root (subtree-ids view root))
+                        (else #f))))
+      (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) view under)
-          (let ((origins (make-hashtable string-hash string=?)))
-            (for-each (lambda (event)
-                        (hashtable-set! origins (block-id (car event) (cdr event)) event))
-                      (state-put-events view))
-            (let loop ((ids (state-block-ids view)) (decisions '()) (skipped '()))
-              (if (null? ids)
-                  ((dispatch-helper 'items)
-                   (append (listing (filter (lambda (d) (wanted? d which drifted-only since))
-                                            decisions))
-                           (map (lambda (s) (list 'skipped (car s) (cdr s)))
-                                (list-sort (lambda (x y) (string<? (car x) (car y))) skipped))))
-                  (let* ((id (car ids))
-                         (row (and (or (not scope) (member id scope)) (state-read view id)))
-                         (kind (and row (row-kind row))))
-                    (cond
-                      ((not kind) (loop (cdr ids) decisions skipped))
-                      ((not (eq? kind 'decision))
-                       (loop (cdr ids) decisions (cons (cons id kind) skipped)))
-                      ((not (string? (field-of row 'title)))
-                       (loop (cdr ids) decisions (cons (cons id 'unreadable-block) skipped)))
-                      ((not (hashtable-ref origins id #f))
-                       (loop (cdr ids) decisions (cons (cons id 'no-origin) skipped)))
-                      (else
-                       (loop (cdr ids)
-                             (cons (read-decision view id row (hashtable-ref origins id #f))
-                                   decisions)
-                             skipped))))))))))
+          (let ((rows (commitment-rows view which drifted-only since scope)))
+            ((dispatch-helper 'items)
+             (if (and root scope)
+                 (append rows
+                         (list (list 'scope root
+                                     (list 'outside (rows-left-out
+                                                      rows
+                                                      (commitment-rows view which drifted-only since #f))))))
+                 rows))))))
+
+  ;; The decision rows and the skipped rows for one scope (#f: the whole
+  ;; store), with the request's filters.
+  (define (commitment-rows view which drifted-only since scope)
+    (let ((origins (make-hashtable string-hash string=?)))
+      (for-each (lambda (event)
+                  (hashtable-set! origins (block-id (car event) (cdr event)) event))
+                (state-put-events view))
+      (let loop ((ids (state-block-ids view)) (decisions '()) (skipped '()))
+        (if (null? ids)
+            (append (listing (filter (lambda (d) (wanted? d which drifted-only since))
+                                     decisions))
+                    (map (lambda (s) (list 'skipped (car s) (cdr s)))
+                         (list-sort (lambda (x y) (string<? (car x) (car y))) skipped)))
+            (let* ((id (car ids))
+                   (row (and (or (not scope) (member id scope)) (state-read view id)))
+                   (kind (and row (row-kind row))))
+              (cond
+                ((not kind) (loop (cdr ids) decisions skipped))
+                ((not (eq? kind 'decision))
+                 (loop (cdr ids) decisions (cons (cons id kind) skipped)))
+                ((not (string? (field-of row 'title)))
+                 (loop (cdr ids) decisions (cons (cons id 'unreadable-block) skipped)))
+                ((not (hashtable-ref origins id #f))
+                 (loop (cdr ids) decisions (cons (cons id 'no-origin) skipped)))
+                (else
+                 (loop (cdr ids)
+                       (cons (read-decision view id row (hashtable-ref origins id #f))
+                             decisions)
+                       skipped))))))))
 
   ;; A DELETED SOURCE DOES NOT DISCHARGE AND IS NOT LISTED AS AN
   ;; IMPLEMENTER; it is named apart, so a decision a deletion reopened says

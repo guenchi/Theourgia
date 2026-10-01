@@ -188,7 +188,9 @@
   ;; that, and every write route asks it. This says which of those kinds this
   ;; verb is responsible for, so that a `code` block no markdown file contains
   ;; is understood as addressed elsewhere rather than reported as lost.
-  (define md-kinds '(doc section))
+  ;; A decision and a task under a document are written as sections of it,
+  ;; so one placed outside every document is this verb's to report.
+  (define md-kinds '(doc section decision task))
 
   ;; THE PATH IS CHECKED BEFORE ANYTHING IS WRITTEN, AND TWO SPELLINGS OF ONE
   ;; FILE ARE ONE FILE. Readings that got here, each of them something this
