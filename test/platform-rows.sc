@@ -107,16 +107,22 @@
 ;; The readings, as archived: the probe's output on each platform.
 (define reading-files
   '("probe/readings/linux-ubuntu-latest.sexp" "probe/readings/linux-ubuntu-2404-arm.sexp"
-    "probe/readings/freebsd-15-paris.sexp" "probe/readings/darwin-arm64-local.sexp"))
+    "probe/readings/freebsd-15-paris.sexp" "probe/readings/darwin-arm64-local.sexp"
+    "probe/readings/darwin-x86_64-rosetta.sexp"))
 
 ;; ---- P10: each row is its archived reading, every datum ----------------------
 
-(want "PN-P10 the four rows are the four archived readings, datum for datum, in order"
+(want "PN-P10 the five rows are the five archived readings, datum for datum, in order"
       (map (lambda (f r) (equal? (data-of-file f) r)) reading-files (platform-readings))
-      '(#t #t #t #t))
-(want "PN-P10 the four rows' keys: Linux x86_64 and aarch64 with glibc, FreeBSD amd64, Darwin arm64"
+      '(#t #t #t #t #t))
+(want "PN-P10 the five rows' keys: Linux x86_64 and aarch64 with glibc, FreeBSD amd64, Darwin arm64 and x86_64"
       (map reading-key (platform-readings))
-      '(("Linux" "x86_64" "glibc") ("Linux" "aarch64" "glibc") ("FreeBSD" "amd64" #f) ("Darwin" "arm64" #f)))
+      '(("Linux" "x86_64" "glibc") ("Linux" "aarch64" "glibc") ("FreeBSD" "amd64" #f) ("Darwin" "arm64" #f)
+        ("Darwin" "x86_64" #f)))
+(want "PN-P10 the Darwin x86_64 reading equals the arm64 one in every datum but the machine"
+      (let ((strip (lambda (r) (filter (lambda (d) (not (and (pair? d) (eq? (car d) 'machine)))) r))))
+        (equal? (strip (list-ref (platform-readings) 3)) (strip (list-ref (platform-readings) 4))))
+      #t)
 
 ;; ---- P2: the selection on this machine -----------------------------------------
 ;;
@@ -194,13 +200,18 @@
 ;; NOTE: IMPORTING A LIBRARY DOES NOT RUN ITS BODY -- Chez runs it at the
 ;; first reference to one of its bindings -- so the child refers to one.
 (define loads-table "(import (chezscheme) (theourgia platform-numbers))\n(platform-key)\n(display \"loaded\")\n(newline)\n")
-(define refusal-darwin-x86
-  '(error platform-unmeasured (system "Darwin") (machine "x86_64")
+(define refusal-darwin-i386
+  '(error platform-unmeasured (system "Darwin") (machine "i386")
           (remedy "run test/probe/layout.c and add its row")))
-(want "PN-P3 Darwin x86_64 (and so Rosetta) is refused: the datum on stderr, exit 75, nothing on stdout"
-      (let ((r (child (string-append forced "Darwin/x86_64") loads-table)))
+(want "PN-P3 an unlisted Darwin machine (i386) is refused: the datum on stderr, exit 75, nothing on stdout"
+      (let ((r (child (string-append forced "Darwin/i386") loads-table)))
         (list (car r) (cadr r) (errors-of (caddr r))))
-      (list 75 "" (list refusal-darwin-x86)))
+      (list 75 "" (list refusal-darwin-i386)))
+(want "PN-X3 Darwin x86_64 (and so Rosetta) selects its own row and is not refused"
+      (let ((r (child (string-append forced "Darwin/x86_64")
+                      "(import (chezscheme) (theourgia platform-numbers))\n(write (list (platform-key) (reading-key (platform-row))))\n(newline)\n")))
+        (list (car r) (data-of-text (cadr r)) (errors-of (caddr r))))
+      (list 0 '((("Darwin" "x86_64" #f) ("Darwin" "x86_64" #f))) '()))
 (want "PN-P3 Linux x86_64 with musl is refused, and the datum names the C library"
       (let ((r (child (string-append forced "Linux/x86_64/musl") loads-table)))
         (list (car r) (cadr r) (errors-of (caddr r))))
@@ -208,9 +219,9 @@
             (list '(error platform-unmeasured (system "Linux") (machine "x86_64") (libc "musl")
                           (remedy "run test/probe/layout.c and add its row")))))
 (want "PN-P3 a program that loads the FFI (core.sc, no arguments) is refused before it prints anything"
-      (let ((r (run-script (string-append forced "Darwin/x86_64") "../core.sc")))
+      (let ((r (run-script (string-append forced "Darwin/i386") "../core.sc")))
         (list (car r) (cadr r) (errors-of (caddr r))))
-      (list 75 "" (list refusal-darwin-x86)))
+      (list 75 "" (list refusal-darwin-i386)))
 (want "PN-P3 the seam is the injection build's alone: with THEOURGIA_INJECT unset the key is not read"
       (let ((r (child "-u THEOURGIA_INJECT THEOURGIA_PLATFORM_KEY=Darwin/x86_64"
                       "(import (chezscheme) (theourgia platform-numbers))\n(write (platform-key))\n(newline)\n")))
@@ -319,7 +330,7 @@
                     (path (find (lambda (d) (and (pair? d) (eq? (car d) 'field) (eq? (cadr d) 'sun_path))) (cddr s))))
                (= (caddr sl) (+ (cadr (assq 'offset (cddr path))) (string-length (cadr sl))))))
            (platform-readings))
-      '(#t #t #t #t))
+      '(#t #t #t #t #t))
 
 ;; ---- P9: the Linux numbers the BSD literals got wrong, through the table ------
 
@@ -790,7 +801,7 @@
                    (pm (cadr (assq 'PATH_MAX (cdr (assq 'constants r))))))
                (list (>= (max 8 16 fa) fa) (>= (max 512 st) st) (>= (max 4096 pm) pm))))
            (platform-readings))
-      '((#t #t #t) (#t #t #t) (#t #t #t) (#t #t #t)))
+      '((#t #t #t) (#t #t #t) (#t #t #t) (#t #t #t) (#t #t #t)))
 
 ;; ---- signedness is the reader's, from the C type --------------------------------
 ;;
@@ -820,7 +831,53 @@
                (list (= (fxand (fxsra #x0300 8) #xff) (cadr (assq 'WEXITSTATUS-0x0300 w)))
                      (= (fxand #x0009 #x7f) (cadr (assq 'WTERMSIG-0x0009 w))))))
            (platform-readings))
-      '((#t #t) (#t #t) (#t #t) (#t #t)))
+      '((#t #t) (#t #t) (#t #t) (#t #t) (#t #t)))
+
+;; ---- X2: the symbol a C name is bound as ------------------------------------
+;;
+;; KEY: THE LIST IS A READING, not a copy of ffi.sc's: the $INODE64 symbols
+;; the SDK exports for x86_64-macos, archived beside the layout readings.
+;; ffi.sc's libc-entry-name is asked about every name in it, on every
+;; machine type, and about every name ffi.sc binds.
+(define inode64-reading (car (data-of-file "probe/readings/darwin-x86_64-inode64.sexp")))
+(define x86-macos-types '(a6osx ta6osx))
+(define other-types '(tarm64osx arm64osx ta6le a6le tarm64le arm64le ta6fb a6fb))
+
+;; -> the strings that follow each occurrence of OPENER in TEXT, up to the
+;; next double quote: the literal names a form spells.
+(define (names-after text opener)
+  (let ((n (string-length opener)) (m (string-length text)))
+    (let loop ((i 0) (out '()))
+      (cond ((> (+ i n) m) (reverse out))
+            ((string=? (substring text i (+ i n)) opener)
+             (let close ((j (+ i n)))
+               (if (char=? (string-ref text j) #\") (loop (+ j 1) (cons (substring text (+ i n) j) out))
+                   (close (+ j 1)))))
+            (else (loop (+ i 1) out))))))
+(define ffi-text (file-text "../ffi.sc"))
+(define bound-bare (names-after ffi-text "(foreign-procedure \""))
+(define bound-by-entry (names-after ffi-text "(libc-entry \""))
+
+(want "PN-X2 the reading: 39 names, stat, lstat, opendir and readdir among them"
+      (list (length inode64-reading)
+            (for-all (lambda (x) (and (member x inode64-reading) #t)) '("stat" "lstat" "opendir" "readdir")))
+      '(39 #t))
+(want "PN-X2 on macOS x86_64 every name in the reading binds its $INODE64 twin"
+      (map (lambda (m) (for-all (lambda (x) (string=? (libc-entry-name m x) (string-append x "$INODE64")))
+                                inode64-reading))
+           x86-macos-types)
+      '(#t #t))
+(want "PN-X2 on every other machine type every name in the reading binds itself"
+      (map (lambda (m) (for-all (lambda (x) (string=? (libc-entry-name m x) x)) inode64-reading)) other-types)
+      (map (lambda (m) #t) other-types))
+(want "PN-X2 ffi.sc binds through libc-entry exactly the names it binds that the reading holds"
+      (list (list-sort string<? bound-by-entry)
+            (filter (lambda (x) (member x inode64-reading)) bound-bare))
+      (list '("lstat" "opendir" "readdir" "stat") '()))
+(want "PN-X2 every name ffi.sc binds by its literal name binds itself on macOS x86_64 too"
+      (list (> (length bound-bare) 30)
+            (for-all (lambda (x) (string=? (libc-entry-name 'ta6osx x) x)) bound-bare))
+      '(#t #t))
 
 (sh "rm -rf " (quoted here))
 (printf "rows: ~a\n~a failures\nplatform-rows complete\n" rows bad)

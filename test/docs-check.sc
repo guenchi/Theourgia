@@ -30,7 +30,8 @@
               get-string-all directory-list file-exists? load)
         (only (theourgia arguments) parse-arguments)
         (only (theourgia rpc) rpc-verbs write-protocol verb-catalogue register-verbs!)
-        (only (theourgia extensions) extension-verbs))
+        (only (theourgia extensions) extension-verbs)
+        (only (theourgia platform-numbers) platform-readings reading-key))
 
 ;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
 ;; register them: this census reads the registry itself, not a copy of it.
@@ -639,6 +640,62 @@
       (let ((sec (readme-section "### `export-code`")))
         (and sec (contains? (squashed sec) "Without `--datum` it writes the text-mode files -- the blocks `import-code` made without `--datum`; a store with no text-mode files answers `(ok (files 0))`.") #t))
       #t)
+
+;; ---- the platforms it names, against the table's rows -------------------------
+;;
+;; KEY: THE PLATFORMS ARE THE TABLE'S, not a list here: every row's
+;; (system machine) is read from platform-numbers.sc, and the README's two
+;; sentences -- the one that lists the rows and the one that lists what is
+;; refused -- are read as segments, each starting at a system's name and
+;; holding the machine names that follow it. The only copy kept here is
+;; the README's word for each system.
+(define system-words '(("Darwin" . "macOS") ("Linux" . "Linux") ("FreeBSD" . "FreeBSD")))
+(define row-pairs
+  (map (lambda (r) (let ((k (reading-key r))) (list (car k) (cadr k)))) (platform-readings)))
+(define row-machines
+  (fold-left (lambda (acc p) (add-unique (cadr p) acc)) '() row-pairs))
+
+;; -> the text from the first occurrence of START to the first END after
+;; it, or #f.
+(define (span text start end)
+  (let ((i (index-of text start 0)))
+    (and i (let ((j (index-of text end (+ i (string-length start)))))
+             (and j (substring text i j))))))
+
+;; -> the (system machine) pairs a sentence names: each system word opens a
+;; segment that runs to the next system word, and every row's machine name
+;; found in a segment pairs with that segment's system.
+(define (named-pairs sentence)
+  (let* ((starts (filter (lambda (x) (car x))
+                         (map (lambda (sw) (cons (index-of sentence (cdr sw) 0) (car sw))) system-words)))
+         (starts (list-sort (lambda (a b) (< (car a) (car b))) starts)))
+    (let loop ((ss starts) (out '()))
+      (if (null? ss)
+          (list-sort (lambda (a b) (string<? (apply string-append a) (apply string-append b))) out)
+          (let* ((from (caar ss))
+                 (to (if (null? (cdr ss)) (string-length sentence) (caadr ss)))
+                 (segment (substring sentence from to)))
+            (loop (cdr ss)
+                  (fold-left (lambda (acc m) (if (contains? segment m) (add-unique (list (cdar ss) m) acc) acc))
+                             out row-machines)))))))
+
+(define (sorted-pairs ps)
+  (list-sort (lambda (a b) (string<? (apply string-append a) (apply string-append b))) ps))
+
+(define rows-sentence (let ((t (span readme "The rows:" "."))) (and t (squashed t))))
+(define refused-sentence (let ((t (span readme "On any other platform" "writes"))) (and t (squashed t))))
+
+(want "DOC-P the README's sentence listing the rows names exactly the table's (system machine) pairs"
+      (and rows-sentence (named-pairs rows-sentence))
+      (sorted-pairs row-pairs))
+(want "DOC-P the README's list of refused platforms names no platform the table has a row for"
+      (and refused-sentence (filter (lambda (p) (member p row-pairs)) (named-pairs refused-sentence)))
+      '())
+(want "DOC-P CONTROL: the reader of the rows sentence sees a pair it lacks, and a pair the table lacks"
+      (list (named-pairs "The rows: macOS on arm64, Linux on x86_64 and on aarch64 with glibc, and FreeBSD 15 on amd64.")
+            (named-pairs "On any other platform -- another architecture, macOS on x86_64 or under Rosetta, a Linux with musl --"))
+      (list (sorted-pairs '(("Darwin" "arm64") ("Linux" "x86_64") ("Linux" "aarch64") ("FreeBSD" "amd64")))
+            '(("Darwin" "x86_64"))))
 
 ;; ---- the environment variables it lists ---------------------------------------
 ;;
