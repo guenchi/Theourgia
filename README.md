@@ -576,7 +576,7 @@ Replaces one field of one block. `--if-unchanged` makes the write
 conditional: the store refuses it if the block has moved on from that
 version, so a caller that read, thought, and came back cannot overwrite
 what happened in between.
-A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`, which lists the records that moved the block on since that version. Given with no `<value>`, `set <id> <field>` makes the field absent.
+A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
 fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision` -- and a
@@ -778,7 +778,7 @@ Turns drafts into committed versions. Naming no block commits all of that
 writer's drafts. `--working-version` may be given once per block to say
 which version of the draft is being committed; with exactly one block
 named, the bare version may be given.
-A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. Every refusal ends with `(usage ...)`, the commit form.
+A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. A commit that repeats a request this store has already applied is answered from that request's record, without these checks: its `items` hold `(ok (replay #t) (event ...))`. What makes two requests the same, and what `req-mismatch` answers, is in *Requests and replay* below; for `commit`, the blocks are compared as a set, so naming them in another order is the same request. Every refusal that `commit` itself makes carries `(usage ...)`, the commit form; when the store missed a writer, an `(incomplete ...)` clause follows it. The checks the dispatcher makes before it -- among them the transport options, the store's presence and the `--req` and `--cursor` rules -- answer without it: `commit --req <id>` with no `--cursor` is `(error bad-request req-without-cursor)`.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is
@@ -1252,7 +1252,7 @@ there. Trackability is a property of the **request**, not of the verb's name.
 req-not-tracked <verb>)`. The store-level verbs and the read-only ones have no
 replay to offer, and taking an identity only to drop it would leave a caller
 believing it was protected. Refusing says so.
-The checks run in this order: `--req` without `--cursor` is `req-without-cursor` on any verb, so `req-not-tracked` answers only a request that carries both. `--cursor` alone is `cursor-without-req` on any verb.
+Of these checks, `--req` without `--cursor` comes first: it is `req-without-cursor` on any verb the dispatcher answers, so `req-not-tracked` answers only a request that carries both. `--cursor` alone is `cursor-without-req` on any such verb. Checks the dispatcher makes earlier answer before any of these -- among them an unknown verb, a transport option (`transport-option-in-rpc`), a source it expected on standard input, and a store that is not there (for every verb but `init` and `describe`). `eval` is not one of the dispatcher's verbs: `core.sc` runs it itself, from the command line or as the MCP shell's child, and never sends it to the dispatcher, so it accepts `--req` and `--cursor` as options and checks neither.
 
     theourgia insert --title "One" --req <id> --cursor <writer>:<seq>
 
@@ -1515,11 +1515,16 @@ as they stand: `(error invalid-candidate sha-mismatch)`. The tables below show t
 inner answer.
 
 The hash is the **sender's declaration**. Given one, it is checked against the bytes
-before anything about the bytes is decided (only the writer name, the manifest's
-readability and the active-writer rule come before it), so a segment that was damaged in transit is refused
+before anything about the bytes is decided, so a segment that was damaged in transit is refused
 rather than installed and discovered later by a reader. Given none, the bytes on
 disk are taken as their own: computing the hash here from the same bytes would
-compare a number with itself.
+compare a number with itself. The hash is compared after, among other things, these,
+in this order: the usage form's checks; the candidate file must be there and readable
+(`no-candidate`, `candidate-unreadable`); the store is taken for the publish (another
+operation in progress refuses it); the writer name must be valid; the writer's
+directory is made if it is missing; this store's own copy of that segment and every
+other segment it holds for that writer must be readable; the manifest must be
+readable; and the active-writer rule.
 
 `publish` **waits** for the store lock rather than failing. Another process
 publishing, or a reader holding the shared lock, blocks this call until the store is
@@ -1555,7 +1560,7 @@ NOTE: the two refusals whose candidate is kept under `incoming/` -- this one and
 `((segment-layout-conflict <reason>) (kept <path>) (writer <w>) (segment <n>))`.
 | `(divergence (fork <seq>))` | a record disagrees with one this writer's history already holds; the fork is recorded at the lowest such sequence and never moves up. |
 | `(refused insufficient-coverage (seq <n>))` | the local copy is damaged, but the candidate does not cover record `<n>`, which is still valid here. Absence is not evidence of disagreement. |
-| `(refused active-writer-segment)` | the segment is this store's own active writer's current segment. This is checked above every rule about the candidate; only an invalid writer name and an unreadable manifest are refused before it. |
+| `(refused active-writer-segment)` | the writer is this store's own active writer, and the segment is its current one -- or the store finds no segment it could append to for that writer, in which case every segment of that writer is refused. A writer with no segment yet is not refused here. This is checked above every rule about the candidate's content; the checks listed with the hash above, from the usage form to the manifest, come before it. |
 | `(refused retirement-coordinates <detail>)` | the candidate would move the byte offset at which the retired prefix's last sequence ends, so the declaration would silently stop being true. `<detail>` is `(offset-moved (declared <n>) (candidate <n>))`, or `(sequence-absent <seq>)` when the candidate does not hold that sequence at all. |
 | `(error invalid-candidate sha-mismatch)` | the bytes do not hash to the declared value. |
 | `(error invalid-candidate not-contiguous)` | the candidate's own sequences jump, repeat or go backwards. |
@@ -1594,8 +1599,9 @@ history nobody holds. A candidate that continues the sequence may therefore take
 free segment number, which is what lets a publisher choose one without knowing which
 numbers its peer has already used.
 A segment is stored as a six-digit file name (`000001.sexp`), so segment numbers run
-from 1 to 999999; a larger number is not refused by the usage check but fails as an
-internal error.
+from 1 to 999999. A larger number of up to eighteen digits is not refused by the usage
+check but fails as an internal error; one of nineteen digits or more is answered with
+the usage form, as any argument that is not a count is.
 
 **Layout coordinates come from what the store declares, never from whichever files
 happen to be in the directory.** Two declarations exist: the manifest, which lists
@@ -1783,8 +1789,10 @@ longer than 1048576 characters is refused `(error bad-source (reason input-limit
     (error eval-worker-unavailable (reason ...))
     (error spawn-refused (reason ...))
 
-`eval-value` is a value the source RETURNED that cannot be written back (the same
-kinds as `unwritable-value`); `<i>` is its position among the values.
+`eval-value` is a value the source RETURNED that cannot be written back; `<t>` is
+`procedure`, `port`, `cycle`, `size` or `unsupported` -- the kinds of
+`unwritable-value` below, except that a value too large is `size` here and
+`too-large` there. `<i>` is its position among the values.
 
 NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
