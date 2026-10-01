@@ -172,6 +172,18 @@ Add a second entry with `"matcher": "compact"` if the outline should return
 after context compaction. `--depth 1` gives the top-level sections only; the
 agent goes deeper with `search` and `read` when it needs to.
 
+To open every session with the decisions still owed, add a second command to
+the same `startup` entry:
+
+```json
+{
+  "type": "command",
+  "command": "theourgia commitments --open --store /path/to/memory-store"
+}
+```
+
+This page gives the line; installing the hook is done in your own settings.
+
 ### 2.3 Tell the agent how to use it (CLAUDE.md)
 
 Copy this into the project's `CLAUDE.md`:

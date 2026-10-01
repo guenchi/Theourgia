@@ -131,6 +131,8 @@ Place a block under the parent its source or subject puts it under, with --under
 Do not rewrite the source bytes: splitting a document must not edit its prose.
 Change a block with write and then commit, through a draft, rather than replacing it.
 Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
+Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.
+Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.
 
 ## Reading a store
 
@@ -535,6 +537,50 @@ would write both to one file, and refuses.
 
 The structural conflicts are read from the same place `outline` reads them, so the two
 cannot disagree; `outline` prints the mark as a fourth column on that row.
+
+### `commitments`
+
+    (commitments ["--open"] ["--all"] ["--drifted"] ["--since" <cut>] ["--under" <id>])
+
+A decision is a block of kind `decision`, and it is owed until it is discharged in
+one of two ways: a block implements it, said with
+
+    theourgia link <impl> implements <decision>
+
+(the implementation is the source, the decision the target), or its `status` field
+reads `done` or `dropped`. `status` is read leniently, as the symbol or the string
+(`set` writes strings, `batch` may write symbols); any other value, a conflict or
+no `status` at all leaves the decision open, and the answer says which. An edge of
+another relation does not discharge it, and neither does an `implements` edge whose
+source block was deleted: the answer names that source under `implementer-deleted`.
+
+Time is a cut, never a sequence number. A decision's **origin** is the cut just after
+the write that created the block, and its **frontier** is the join of the cuts of its own
+field values, origin included; moving a block or linking to it does not change it. An
+implementation is **attested** at the join of the decision's frontier and the cuts of
+its `implements` links to the decision, and it has **drifted** when its own fields
+changed at a cut that attestation does not cover: it was edited after it was linked,
+or the linking writer had not seen the edit. Editing the decision, or unlinking and
+linking again, attests anew. A draft that is not committed is not a change.
+
+By default it lists the open decisions; `--all` lists every decision. `--drifted`
+keeps those with at least one drifted implementation, `--since <cut>` those whose
+origin the cut does not cover, and `--under <id>` those in that block's subtree, the
+block included (an unknown id answers `unknown-id`). Oldest origin first: decisions
+whose origins are not ordered against each other are listed in a fixed order and say
+so under `concurrent-with`. It answers:
+
+    (decision <id> (title "<t>") (status <s>) (origin <cut>)
+      (implemented-by (<impl> <cut>) ...) [(drifted (<impl> <cut>) ...)]
+      [(implementer-deleted <impl> ...)] [(concurrent-with <id> ...)])
+    (skipped <id> <reason>)
+
+The cut beside an implementation under `implemented-by` is when it was linked; under
+`drifted`, when it last changed. A block that looks like a decision but cannot be
+read as one is not left out silently: it is listed as `skipped`, with the reason, under
+every option, for example a kind spelt as the string `"decision"`
+(`kind-not-a-symbol`) or a block that a `set` or `move` named but nothing created (`no-origin`). The verb writes
+nothing.
 
 ## Making and changing blocks
 

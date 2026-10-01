@@ -282,14 +282,9 @@
                  (filter block-name? (list-sort string<? names)))))))
 
   ;; ONE CUT COVERS ANOTHER when it has reached at least as far along
-  ;; every writer the other names. Two cuts that neither covers are
-  ;; CONCURRENT, which is a fact about the store and not a tie to be
-  ;; broken.
-  (define (cut-covers? a b)
-    (for-all (lambda (e)
-               (let ((mine (assoc (car e) a)))
-                 (and mine (>= (cdr mine) (cdr e)))))
-             b))
+  ;; every writer the other names (`cut-covers?`, from the reduction, the
+  ;; one definition). Two cuts that neither covers are CONCURRENT, which is
+  ;; a fact about the store and not a tie to be broken.
 
   ;; A committed parent advances a sequential edit only to that
   ;; execution's causal cut. A later external edit is never adopted as

@@ -38,7 +38,12 @@
         (only (chezscheme) with-input-from-file system get-process-id call-with-input-file
               get-string-all file-exists? load)
         (only (theourgia arguments) parse-arguments)
-        (only (theourgia rpc) rpc-verbs verb-catalogue))
+        (only (theourgia rpc) rpc-verbs verb-catalogue register-verbs!)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
+;; register them: this census reads the registry itself, not a copy of it.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)
@@ -197,6 +202,8 @@
 (define rpc-data (read-data "../rpc.sc"))
 (define cli-data (read-data "../core.sc"))
 (define daemon-data (read-data "../theourgiad.sc"))
+;; The verbs registered from outside the core table write their forms here.
+(define extension-data (read-data "../extensions.sc"))
 
 ;; EVERY OPTION SPELLING THE TABLE KNOWS, as data. This is the set the
 ;; probe sweeps; it is read from the table because the table is where a
@@ -311,7 +318,8 @@
         (let* ((name (string->symbol (string-append (symbol->string (car vs)) "-usage")))
                (found (or (find-quoted-define name rpc-data)
                           (find-quoted-define name cli-data)
-                          (find-quoted-define name daemon-data))))
+                          (find-quoted-define name daemon-data)
+                          (find-quoted-define name extension-data))))
           (loop (cdr vs) (if found (cons found out) out))))))
 
 (define usage-forms (append rpc-usage named-usage-forms))
@@ -926,7 +934,13 @@
 ;; NOTE: NOTHING PINS THIS NAME BY ITSELF, and nothing needs to. Misspell it
 ;; and no catalogue entry is found at all, which the population row reads as
 ;; a collapse rather than as a quiet zero.
-(define catalogue-definition 'verb-catalogue)
+;; NOTE: TWO DEFINITIONS, ONE PER KIND OF ENTRY: the built-in literal in
+;; rpc.sc, and the entries registered from outside the core table, written
+;; as data in extensions.sc. `verb-catalogue` is their union at run time and
+;; holds no literal of its own.
+(define catalogue-definition 'built-in-catalogue)
+(define extension-catalogue-file "../extensions.sc")
+(define extension-catalogue-definition 'extension-verbs)
 
 (define (catalogue-places file definition)
   (let ((found '()))
@@ -1182,7 +1196,9 @@
 ;; for the closure row below would build every catalogue place a second time
 ;; and the constructor's count would stop matching the list -- the census
 ;; would report a defect that the act of measuring had caused.
-(define catalogue-found (catalogue-places catalogue-file catalogue-definition))
+(define catalogue-found
+  (append (catalogue-places catalogue-file catalogue-definition)
+          (catalogue-places extension-catalogue-file extension-catalogue-definition)))
 
 (define all-places
   (append catalogue-found
@@ -1260,7 +1276,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 39 39))
+      (list 40 40))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1353,7 +1369,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit eval insert outline serve supply))
+      '(commit commitments eval insert outline serve supply))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1688,11 +1704,11 @@
                                 (else (loop (- i 1))))))
                       source-file-list))
       '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
-        "code-markers.sc" "code-project.sc" "code-suggest.sc" "core.sc" "crc32.sc"
+        "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
-        "eval-worker.sc" "evidence-index.sc" "ffi.sc" "incomplete.sc" "json.sc"
+        "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "incomplete.sc" "json.sc"
         "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "proc.sc" "project.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"

@@ -34,7 +34,7 @@
 ;; reach becomes an answer with a name in it; deciding what to do with an
 ;; answer belongs to whoever asked.
 (library (theourgia rpc)
-  (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
+  (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs register-verbs! dispatch-helper
           request-frame transport-unreachable?
           count-argument outline-text write-protocol verb-catalogue
           describe-log-error eval-usage)
@@ -171,7 +171,9 @@
       "Place a block under the parent its source or subject puts it under, with --under.\n"
       "Do not rewrite the source bytes: splitting a document must not edit its prose.\n"
       "Change a block with write and then commit, through a draft, rather than replacing it.\n"
-      "Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.\n"))
+      "Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.\n"
+      "Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.\n"
+      "Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.\n"))
 
   (define (usage form) (list 'usage form))
 
@@ -633,6 +635,7 @@
     (case name
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((count-argument) count-argument)
+      ((usage) usage)
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
   (define (one-write store actor intent req . check)
@@ -830,7 +833,9 @@
   ;; had not put there. "Does it change the store" is a real question and
   ;; this table is not the place that answers it: nothing consumes such
   ;; an answer.
-  (define (verb-catalogue)
+  (define (verb-catalogue) (append (built-in-catalogue) (extension-catalogue)))
+
+  (define (built-in-catalogue)
     (list
       (list 'init '(init)
             "Create a store in this directory." #f 'local)
@@ -943,6 +948,86 @@
             "List blocks whose writers disagree." #f 'daemon)
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
+
+  ;; ---- verbs registered from outside the core ---------------------------------
+  ;;
+  ;; KEY: A VERB THE CORE DOES NOT KNOW IS ADDED AS DATA, not by editing the
+  ;; tables above. An entry is (verb usage description protocol? route
+  ;; value-options flag-options (library . name)): the first five project
+  ;; into the catalogue, so describe and the MCP shell's tools see it as they
+  ;; see a built-in; the options go to the parser (set-extension-options!);
+  ;; and the verb dispatches to the handler named, with the same
+  ;; eight-argument contract as every built-in handler.
+  ;;
+  ;; NEVER: REGISTERING DOES NOT LOAD THE HANDLER'S LIBRARY. The handler is a
+  ;; name, entered on dispatch as (theourgia derived) is above, so a start
+  ;; that answers another verb compiles nothing of it.
+  ;;
+  ;; NEVER: A BATCH IS CHECKED WHOLE BEFORE ANYTHING IS PUBLISHED. A name
+  ;; that is a built-in verb, a name given twice in the batch or already
+  ;; registered, a route outside daemon / local / child, or an entry of
+  ;; another shape refuses the whole batch, by name, and leaves the
+  ;; registry as it was: a half-registered batch would answer for some of
+  ;; its verbs and not others.
+  (define extensions '())
+
+  (define (extension-catalogue)
+    (map (lambda (e) (list (list-ref e 0) (list-ref e 1) (list-ref e 2) (list-ref e 3) (list-ref e 4)))
+         extensions))
+
+  (define extension-routes '(daemon local child))
+
+  (define (option-names? x)
+    (and (list? x)
+         (for-all (lambda (o) (and (string? o) (> (string-length o) 2)
+                                   (char=? #\- (string-ref o 0)) (char=? #\- (string-ref o 1))))
+                  x)))
+
+  (define (entry-problem e)
+    (cond ((not (and (list? e) (= 8 (length e)))) "an entry is (verb usage description protocol? route value-options flag-options (library . name))")
+          ((not (symbol? (list-ref e 0))) "the verb is not a symbol")
+          ((not (pair? (list-ref e 1))) "the usage is not a form")
+          ((not (string? (list-ref e 2))) "the description is not a string")
+          ((not (boolean? (list-ref e 3))) "the protocol mark is not a boolean")
+          ((not (memq (list-ref e 4) extension-routes)) "the route is not daemon, local or child")
+          ((not (option-names? (list-ref e 5))) "the value options are not option names")
+          ((not (option-names? (list-ref e 6))) "the flag options are not option names")
+          ((not (let ((h (list-ref e 7))) (and (pair? h) (list? (car h)) (pair? (car h)) (symbol? (cdr h)))))
+           "the handler is not (library . name)")
+          (else #f)))
+
+  (define (register-verbs! batch)
+    (unless (list? batch)
+      (assertion-violation 'register-verbs! "a batch is a list of entries" batch))
+    (for-each (lambda (e)
+                (let ((problem (entry-problem e)))
+                  (when problem (assertion-violation 'register-verbs! problem e))))
+              batch)
+    (let ((built-in (append (map car verbs) (map car (built-in-catalogue))))
+          (earlier (map car extensions)))
+      (let loop ((es batch) (seen '()))
+        (unless (null? es)
+          (let ((name (car (car es))))
+            (cond ((memq name built-in)
+                   (assertion-violation 'register-verbs! "the name is a built-in verb" name))
+                  ((memq name earlier)
+                   (assertion-violation 'register-verbs! "the name is already registered" name))
+                  ((memq name seen)
+                   (assertion-violation 'register-verbs! "the name is given twice in the batch" name))
+                  (else (loop (cdr es) (cons name seen))))))))
+    (set! extensions (append extensions batch))
+    (set-extension-options!
+      (map (lambda (e) (list (list-ref e 0) (list-ref e 5) (list-ref e 6))) extensions)))
+
+  ;; (verb . handler) for a registered verb, or #f; the handler's library is
+  ;; entered here, on the dispatch that needs it.
+  (define (extension-dispatch-entry verb)
+    (let ((e (find (lambda (e) (eq? (car e) verb)) extensions)))
+      (and e
+           (let ((h (list-ref e 7)))
+             (cons verb
+                   (lambda arguments
+                     (apply (eval (cdr h) (environment (car h))) arguments)))))))
 
   ;; The catalogue as an answer. NEVER: The protocol is carried ONCE, beside
   ;; the verbs, rather than repeated into each entry that needs it: the
@@ -1599,7 +1684,7 @@
 
   (define verbs (verb-table))
 
-  (define (rpc-verbs) (map car verbs))
+  (define (rpc-verbs) (append (map car verbs) (map car extensions)))
 
   ;; ---- dispatch -------------------------------------------------------------
 
@@ -1964,7 +2049,7 @@
                       (argument-stdin verb nodes stdin-reader)
                       nodes))
            (nodes (under-cwd-nodes cwd verb nodes))
-           (entry (assq verb verbs))
+           (entry (or (assq verb verbs) (extension-dispatch-entry verb)))
            (id (argument-option nodes "--req"))
            (cursor (argument-option nodes "--cursor"))
            (after (and cursor (parse-after cursor)))

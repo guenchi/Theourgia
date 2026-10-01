@@ -22,7 +22,12 @@
 ;; is edited, and the reader follows whichever they happened to meet.
 
 (import (chezscheme)
-        (only (theourgia rpc) write-protocol verb-catalogue))
+        (only (theourgia rpc) write-protocol verb-catalogue register-verbs!)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
+;; register them: this census reads the registry itself, not a copy of it.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)

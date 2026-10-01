@@ -49,6 +49,7 @@
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
+          cut-covers? state-put-events state-field-events state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version
@@ -2107,6 +2108,52 @@
                        past)
               (loop (+ n 1)))
              (else #f)))))))
+
+  ;; A CUT COVERS ANOTHER when each of the other's components is at or
+  ;; below its own: a writer the first does not name covers nothing of
+  ;; that writer. Order between cuts is this, never a comparison of
+  ;; sequence numbers across writers.
+  (define (cut-covers? a b)
+    (for-all (lambda (e) (past-covers? a (car e) (cdr e))) b))
+
+  ;; THE APPLIED PUTS, as event ids in the order they were admitted. A
+  ;; block's id is derived from the put that created it (block-id), so this
+  ;; is what tells a block that has a creating put from one that a set,
+  ;; move or delete materialised under an id no put made.
+  (define (state-put-events r)
+    (let loop ((recs (reverse (reduction-history r))) (out '()))
+      (if (null? recs)
+          (reverse out)
+          (let* ((rec (car recs)) (event (cons (rec-writer rec) (rec-seq rec))))
+            (loop (cdr recs)
+                  (if (and (pair? (rec-payload rec)) (eq? 'put (car (rec-payload rec)))
+                           (event-applied? r event))
+                      (cons event out)
+                      out))))))
+
+  ;; THE LINK EVENTS THAT STILL HOLD ONE EDGE UP, as event ids. An edge is
+  ;; one set element however many links made it, and an unlink removes only
+  ;; the links in its past (do-unlink!), so after concurrent links several
+  ;; can survive, and each says when that writer stated the edge.
+  (define (state-link-events r from rel to)
+    (map cadddr
+         (filter (lambda (l) (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)))
+                 (reduction-links r))))
+
+  ;; THE IDS OF THE BLOCKS THIS STATE HOLDS ALIVE, a deleted block left out,
+  ;; in the order the reduction made them. Nothing else of the block.
+  (define (state-block-ids r)
+    (map car (filter (lambda (e) (not (blk-tomb (cdr e)))) (reduction-blocks r))))
+
+  ;; THE EVENTS OF A BLOCK'S OWN SURVIVING FIELD CANDIDATES, an absence
+  ;; included: what the block itself says and who said it last. Its
+  ;; position and its edges are not among them -- moving a block or
+  ;; linking to it is not an edit of the block. '() for an unknown id.
+  (define (state-field-events r id)
+    (let ((b (find-block r id)))
+      (if (not b)
+          '()
+          (apply append (map (lambda (f) (map cdr (cdr f))) (blk-fields b))))))
 
   ;; Return the causal cut immediately after this applied event.
   (define (state-event-cut state event)

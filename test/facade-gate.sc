@@ -55,13 +55,18 @@
         ;; What the run-time census at the end of this file needs to make each
         ;; verb answer: the dispatcher, and the pieces restore's and publish's
         ;; own setups are built from.
-        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs)
+        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs register-verbs!)
         (only (theourgia ffi) mkdir-p!)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia request) ev-actor ev-payload actor-sub)
         (only (theourgia code-project) code-field)
-        (only (theourgia digest) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
+;; register them: this census reads the registry itself, not a copy of it.
+(register-verbs! extension-verbs)
 
 (define failures 0)
 (define rows 0)
@@ -959,6 +964,10 @@
 (define census-table
   (list
     (cons 'describe (seeded (lambda (st x s) (census-ask st 'describe))))
+    ;; B is made a decision first, so the answer has an item to classify.
+    (cons 'commitments (seeded (lambda (st x s)
+                                 (census-ask st 'set (census-get s 'B) "kind" "decision")
+                                 (census-ask st 'commitments))))
     ;; init is given a directory nothing has initialised
     (cons 'init (lambda (st x) (census-ask st 'init)))
     (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))
@@ -1198,7 +1207,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit conflicts def diagnostics diff drafts grep import-code log refs search tag whereis))
+      '(commit commitments conflicts def diagnostics diff drafts grep import-code log refs search tag whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1215,7 +1224,7 @@
 ;; is filtered out as not a real tag.
 (want "F58 each tagged verb's heads, and how many of its items carry none"
       (census-detail 'tagged)
-      '((commit (ok) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
+      '((commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
         (import-code (ok) . 0) (log (entry) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (whereis (def export) . 0)))
