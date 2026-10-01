@@ -443,7 +443,9 @@
            ;; NEVER: SET HERE TOO, AND FOR THE SAME REASON: one publication
            ;; for the whole VM, and only the process that writes ever
            ;; reaches it.
-           (store-publish-hook! (lambda (state) (publish! store state)))
+           ;; The write path's snapshot is sampled here, inside the store's
+           ;; lock (see publish!).
+           (store-publish-hook! (lambda (state) (publish! store state (store-state-snapshot store))))
            ;; NOTE: INSTALLED BEFORE ANYTHING CAN BE ACCEPTED, so a signal
            ;; that arrives during the store's first load is not lost --
            ;; the count is read by a process, and the process is here.
@@ -955,13 +957,44 @@
   ;; NOTE: AND THE SNAPSHOT TRAVELS WITH IT, because "is this still what is
   ;; on the disk" is a question about the instant the value was made, not
   ;; about now.
+  ;;
+  ;; NEVER: A SNAPSHOT SAMPLED AFTER THE STATE IT IS PUBLISHED WITH. The
+  ;; probe compares the published snapshot with the disk, and a snapshot
+  ;; that is NEWER than its state hides every change made in between: the
+  ;; probe finds the disk equal to it, asks for no fold, and the daemon
+  ;; answers the older state until something else changes. Sampled after a
+  ;; fold that had released the store's lock, it was exactly that: a
+  ;; commit by another process between the fold and the sample was never
+  ;; read. So every caller hands publish! the snapshot it sampled, and each
+  ;; says why its moment is no later than its state's:
+  ;;   - a fold (start-up, refold-and-publish!) samples BEFORE the fold: a
+  ;;     commit between the two is in the state and not in the snapshot,
+  ;;     so the next probe finds a change and folds once more -- one fold
+  ;;     too many, never one too few;
+  ;;   - the write path samples inside the store's lock, after the
+  ;;     session's own records and before the lock is released: nothing
+  ;;     that takes the lock can change the disk in between, and its own
+  ;;     records are in both (sampling before them would make every write
+  ;;     look like an outside change and cost a fold).
   (define published #f)
   (define publish-seq 0)
 
-  (define (publish! store state)
+  (define (publish! store state snapshot)
     (set! publish-seq (+ publish-seq 1))
-    (set! published (vector state publish-seq (store-state-snapshot store)))
+    (set! published (vector state publish-seq snapshot))
     (trace-event! 'published publish-seq #f))
+
+  ;; FOLD AGAIN AND PUBLISH WHAT CAME BACK, with the snapshot sampled before
+  ;; the fold (see publish!). The one body of `(reload)`, and of every other
+  ;; refold this process makes.
+  ;; NOTE: THE HOLD SEAM `reload-before-publish` sits between the fold and
+  ;; the publication, where the order above matters: a row commits from
+  ;; another process while it is held.
+  (define (refold-and-publish! store)
+    (let* ((snapshot (store-state-snapshot store))
+           (state (obtain-state store #f incomplete-accepted)))
+      (hold-point! 'reload-before-publish)
+      (publish! store state snapshot)))
 
   (define (published-state) (and published (vector-ref published 0)))
   (define (published-snapshot) (and published (vector-ref published 2)))
@@ -1074,7 +1107,8 @@
                          ;; THE DAEMON DECLARES: it holds the state and answers
                          ;; nothing from it itself; every consumer of the
                          ;; publication judges it when it unseals (F77c).
-                         (publish! store (obtain-state store #f incomplete-accepted))
+                         (let ((snapshot (store-state-snapshot store)))
+                           (publish! store (obtain-state store #f incomplete-accepted) snapshot))
                          #f)))))
       (when failure
         (let ((e (car failure)) (record (cdr failure)))
@@ -1102,7 +1136,7 @@
                                      #f)))
            (when (eq? (theourgia-fault) 'reload-raise)
              (raise (make-message-condition "injected reload raise")))
-           (publish! store (obtain-state store #f incomplete-accepted)))
+           (refold-and-publish! store))
          (loop))
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
