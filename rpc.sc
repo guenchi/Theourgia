@@ -1032,95 +1032,6 @@
             (map string->symbol (reverse out))
             (take (cdr l) (+ n 1) (cons (car l) out))))))
 
-  ;; THE READ ITSELF, over whatever state it is given: the present (the
-  ;; request's own, or a fresh fold) or a past cut's (see `read` in the
-  ;; verb table).
-  (define (read-from store args options state writer)
-    (let ((md? (argument-option options "--md"))
-          (deep? (argument-option options "--recursive")) (rest args))
-      (cond
-        ((argument-option options "--signature")
-         ((derived 'read-signature-verb) dispatch-helper store (car rest) options state writer))
-        ((or (argument-option options "--working") (argument-option options "--working-info"))
-         (if (or md? deep?) '(error bad-request incompatible-working-options)
-             (working-read store state writer (car rest) (argument-option options "--working-info"))))
-        (md?
-         (guarded
-           (lambda ()
-             ;; `state-read`, NOT `view-read`, AND THE COMMENT
-             ;; BELOW IS THE REASON. This branch answers with
-             ;; the block's own bytes -- `front`, `heading-src`
-             ;; and `src` -- every one of which is stored. It
-             ;; reads no derived field, so asking the view
-             ;; layer for it would say that it does.
-             ;;
-             ;; IT WAS `view-read` UNTIL A MUTATION SURVIVED
-             ;; HERE. Swapping this one call back left every
-             ;; cell green, which is what a call with no
-             ;; consumer looks like; the other three
-             ;; `view-read`s in this file each kill a row.
-             (let* ((state (reduction-for store state))
-                    (b (state-read state (car rest))))
-               (cond
-                 ((not b) (unknown-id state (car rest)))
-                 (deep? (text (block-text state (car rest) #f)))
-                 (else
-                  ;; ONE BLOCK'S OWN BYTES, which is not the
-                  ;; same question and is answered from the
-                  ;; block rather than from the renderer: a
-                  ;; reader asking for this block is asking
-                  ;; what IT says, not what its heading would
-                  ;; look like if the title had since changed.
-                  ;; A FIELD THAT IS NOT TEXT IS NOT TEXT. These
-                  ;; three go straight into `string-append`, and
-                  ;; a value that is not a string raised -- the
-                  ;; caller got `(error internal ...)` for a
-                  ;; record the store had applied happily. A
-                  ;; field can also be UNSETTLED: two concurrent
-                  ;; writes leave a conflict representation
-                  ;; rather than a value, which is ordinary,
-                  ;; correct data and is likewise not a string.
-                  ;; So the reader asks what it has rather than
-                  ;; assuming, in both cases.
-                  ;;
-                  ;; AND A DOCUMENT'S FRONT MATTER IS PART OF
-                  ;; ITS OWN BYTES. The README says a file-level
-                  ;; block's body is the front matter and
-                  ;; whatever sits above the first heading; this
-                  ;; read answered only the latter.
-                  (let* ((fs (cdr (assq 'fields b)))
-                         (str (lambda (k)
-                                (let ((e (assq k fs)))
-                                  (if (and e (string? (cdr e))) (cdr e) ""))))
-                         (front (str 'front))
-                         (head (str 'heading-src))
-                         (body (str 'src)))
-                    (text (string-append front head body)))))))))
-        (deep?
-         (guarded
-           (lambda ()
-             (let* ((state (reduction-for store state))
-                    (ids (subtree-ids state (car rest))))
-               (if (not ids)
-                   (unknown-id state (car rest))
-                   ;; The items are the records a plain read gives,
-                   ;; unchanged; the versions are one clause after
-                   ;; them, in item order, so a reader of the items
-                   ;; reads what it read before.
-                   (append (items (map (lambda (id) (view-read state id)) ids))
-                           (list (list 'versions
-                                       (filter cdr (map (lambda (id) (cons id (read-version state id)))
-                                                        ids))))))))))
-        (else
-         (guarded
-           (lambda ()
-             (let* ((state (reduction-for store state))
-                    (b (view-read state (car rest)))
-                    (v (and b (read-version state (car rest)))))
-               (cond ((not b) (unknown-id state (car rest)))
-                     (v (list 'ok b (cons 'version (if (string? v) (list v) v))))
-                     (else (list 'ok b))))))))))
-
   (define (verb-table)
     (list
       (cons 'describe
@@ -1368,6 +1279,95 @@
       ;; refused together, before any state is read.
       (cons 'read
             (lambda (store actor args req options state writer cwd)
+              ;; THE READ ITSELF, over whatever state it is given: the present (the
+              ;; request's own, or a fresh fold) or the state at a causal cut. It
+              ;; is defined here, inside the handler, so the facade gate's walk of
+              ;; `(items ...)` sites still finds this verb's.
+              (define (read-from store args options state writer)
+                (let ((md? (argument-option options "--md"))
+                      (deep? (argument-option options "--recursive")) (rest args))
+                  (cond
+                    ((argument-option options "--signature")
+                     ((derived 'read-signature-verb) dispatch-helper store (car rest) options state writer))
+                    ((or (argument-option options "--working") (argument-option options "--working-info"))
+                     (if (or md? deep?) '(error bad-request incompatible-working-options)
+                         (working-read store state writer (car rest) (argument-option options "--working-info"))))
+                    (md?
+                     (guarded
+                       (lambda ()
+                         ;; `state-read`, NOT `view-read`, AND THE COMMENT
+                         ;; BELOW IS THE REASON. This branch answers with
+                         ;; the block's own bytes -- `front`, `heading-src`
+                         ;; and `src` -- every one of which is stored. It
+                         ;; reads no derived field, so asking the view
+                         ;; layer for it would say that it does.
+                         ;;
+                         ;; IT WAS `view-read` UNTIL A MUTATION SURVIVED
+                         ;; HERE. Swapping this one call back left every
+                         ;; cell green, which is what a call with no
+                         ;; consumer looks like; the other three
+                         ;; `view-read`s in this file each kill a row.
+                         (let* ((state (reduction-for store state))
+                                (b (state-read state (car rest))))
+                           (cond
+                             ((not b) (unknown-id state (car rest)))
+                             (deep? (text (block-text state (car rest) #f)))
+                             (else
+                              ;; ONE BLOCK'S OWN BYTES, which is not the
+                              ;; same question and is answered from the
+                              ;; block rather than from the renderer: a
+                              ;; reader asking for this block is asking
+                              ;; what IT says, not what its heading would
+                              ;; look like if the title had since changed.
+                              ;; A FIELD THAT IS NOT TEXT IS NOT TEXT. These
+                              ;; three go straight into `string-append`, and
+                              ;; a value that is not a string raised -- the
+                              ;; caller got `(error internal ...)` for a
+                              ;; record the store had applied happily. A
+                              ;; field can also be UNSETTLED: two concurrent
+                              ;; writes leave a conflict representation
+                              ;; rather than a value, which is ordinary,
+                              ;; correct data and is likewise not a string.
+                              ;; So the reader asks what it has rather than
+                              ;; assuming, in both cases.
+                              ;;
+                              ;; AND A DOCUMENT'S FRONT MATTER IS PART OF
+                              ;; ITS OWN BYTES. The README says a file-level
+                              ;; block's body is the front matter and
+                              ;; whatever sits above the first heading; this
+                              ;; read answered only the latter.
+                              (let* ((fs (cdr (assq 'fields b)))
+                                     (str (lambda (k)
+                                            (let ((e (assq k fs)))
+                                              (if (and e (string? (cdr e))) (cdr e) ""))))
+                                     (front (str 'front))
+                                     (head (str 'heading-src))
+                                     (body (str 'src)))
+                                (text (string-append front head body)))))))))
+                    (deep?
+                     (guarded
+                       (lambda ()
+                         (let* ((state (reduction-for store state))
+                                (ids (subtree-ids state (car rest))))
+                           (if (not ids)
+                               (unknown-id state (car rest))
+                               ;; The items are the records a plain read gives,
+                               ;; unchanged; the versions are one clause after
+                               ;; them, in item order, so a reader of the items
+                               ;; reads what it read before.
+                               (append (items (map (lambda (id) (view-read state id)) ids))
+                                       (list (list 'versions
+                                                   (filter cdr (map (lambda (id) (cons id (read-version state id)))
+                                                                    ids))))))))))
+                    (else
+                     (guarded
+                       (lambda ()
+                         (let* ((state (reduction-for store state))
+                                (b (view-read state (car rest)))
+                                (v (and b (read-version state (car rest)))))
+                           (cond ((not b) (unknown-id state (car rest)))
+                                 (v (list 'ok b (cons 'version (if (string? v) (list v) v))))
+                                 (else (list 'ok b))))))))))
               (let ((at (argument-option options "--cut")))
                 (cond
                   ((not (= 1 (length args))) (usage read-usage-form))

@@ -1020,6 +1020,14 @@
   ;; `(reload)` does, and the cut is judged against it.
   ;; NOTE: THE SNAPSHOT TAKEN HERE IS ONLY COMPARED: the publication keeps
   ;; the one its own fold sampled (see publish!).
+  ;; A SNAPSHOT THAT CANNOT BE TAKEN COUNTS AS BEHIND, WHATEVER RAISED, and
+  ;; the catch-all below is that rule: the question is only whether the
+  ;; publication is still current, and the safe answer to a doubt about it
+  ;; is to fold. The fold reads the store under its lock, and it is what
+  ;; names an unreadable writer -- in the answer's notes, or as
+  ;; reload-failed when it cannot complete -- so nothing the snapshot could
+  ;; not see goes unsaid. (The probe that answer-published runs next meets
+  ;; the same failure and traces probe-failed.)
   (define (refresh-if-behind! store)
     (let ((now (guard (e (#t #f)) (store-state-snapshot store))))
       (unless (and now (equal? now (published-snapshot)))
@@ -1641,9 +1649,12 @@
   ;; the reads this process answers itself; store or writer for the process
   ;; it was sent to. A frame whose verb cannot be read says `unknown`. It
   ;; changes nothing; the rows read it to tell the routes apart.
+  ;; NOTE: NO HANDLER: a frame that did not parse is a symbol, and one that
+  ;; did is an alist that may lack the field; both are asked, not caught.
   (define (routed! parsed route)
     (trace-event! 'routed
-                  (let ((request (and (pair? parsed) (guard (e (#t #f)) (frame-field 'request parsed)))))
+                  (let* ((field (and (pair? parsed) (assq 'request parsed)))
+                         (request (and (pair? field) (cdr field))))
                     (if (and (pair? request) (symbol? (car request))) (car request) 'unknown))
                   route))
 
