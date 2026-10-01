@@ -76,6 +76,17 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
   showInLanguageOf:
     'it sets the language mode of the document it is handed and decides nothing; its caller, openBlock, ' +
     'captured the store before its first wait and opened that document from it',
+  showInMode:
+    'as showInLanguageOf, which it serves, and openDatumBlock: it sets the language mode of the document it is ' +
+    'handed and decides nothing',
+  openDatumBlock:
+    'the store was captured before openBlock\'s first wait and the read-only address it opens names that store; ' +
+    'its waits ask that store\'s client for the datum export, into a scratch directory of its own that it removes, ' +
+    'and show the text read-only, writing nothing to any record. A settings change meanwhile leaves a tab that names ' +
+    'the store it came from, as openAsDocument does',
+  composeDatum:
+    'it composes the text of a datum tab the editor restored, from the store the address names: DocumentTexts ' +
+    'compared that store with the configured one before calling it, and nothing is written but its own scratch',
   pick: 'it returns the user’s answer and decides nothing; its caller holds the generation',
   confirm: 'as pick',
   open:

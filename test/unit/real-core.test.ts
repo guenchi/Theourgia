@@ -1383,7 +1383,14 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
         }
       }, IGNORED_DURABILITY);
       const commitOf = async (body: string, req: string): Promise<SaveOutcome> => {
-        const draft = await window.write(mine, body, prefix);
+        /*
+         * NOTE: TEXT, AS THE FILE THIS WINDOW OPENED WOULD RECORD IT. Without a
+         * mode the write reads the block first (src/working.ts, requireText),
+         * and measured so, this write -- which names no baseline -- was
+         * followed by a commit that carried no notice. This cell is about the
+         * notice, not the gate.
+         */
+        const draft = await window.write(mine, body, prefix, false, undefined, 'text');
         return saver.submit(
           recordFor({
             req,

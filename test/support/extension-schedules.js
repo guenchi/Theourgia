@@ -40,6 +40,30 @@ function sameUri(a,b){if(!a||!b)return false;if(a.fsPath!==undefined||b.fsPath!=
 // scheme, language and a pattern's base, each only when the filter names it.
 function selects(selector,doc){const filters=Array.isArray(selector)?selector:[selector];return filters.some(f=>(f.scheme===undefined||f.scheme===(doc.uri.scheme||'file'))&&(f.language===undefined||f.language===doc.languageId)&&(f.pattern===undefined||String(doc.uri.fsPath||'').startsWith(f.pattern.base)));}
 const decorations=[];const definitionProviders=[];
+// The content providers the extension registers, by scheme: what a read-only
+// document's tab is given, asked as the editor asks it.
+const contentProviders={};let commitSeq=0;
+// The mode under interleaving and failure: q.1 and r.1 answer the mode a
+// scenario sets; f.1's read is refused, g.1's request is rejected while
+// rejectG is set, n.1 is gone while goneN is set; commits are taken while
+// commitsTaken is set.
+let qMode='text',rMode='text',rejectG=false,goneN=false,commitsTaken=false;
+const MODE_RECORD=(id,mode)=>mode==='datum'
+ ?`((id . "${id}") (deleted . #f) (fields (body define x 1) (kind . code) (lang . chez) (mode . datum) (name . x) (names x)) (position root . 0) (edges))`
+ :`((id . "${id}") (deleted . #f) (fields (heading-src . "# Alpha\\n") (src . "body\\n") (title . "Alpha")) (position root . 0) (edges))`;
+// A datum library and one definition in it, and the datum export the core
+// writes for them (the layout measured on the pinned core: a `#!chezscheme`
+// line, the header, the library's own lines, a marker per definition).
+const DATUM_BLOCKS={
+ 'd.1':'((id . "d.1") (deleted . #f) (fields (exports alpha) (imports (rnrs)) (kind . library) (lang . chez) (mode . datum) (name probe d) (path . "probe.sls")) (position root . 0) (edges))',
+ 'd.2':'((id . "d.2") (deleted . #f) (fields (body define alpha 1) (doc . "") (kind . code) (lang . chez) (mode . datum) (name . alpha) (names alpha)) (position "d.1" . 0) (edges))',
+ // For the mode at a write: another datum definition, a block whose mode
+ // this build does not know, and a text section.
+ 'd.3':'((id . "d.3") (deleted . #f) (fields (body define beta 2) (doc . "") (kind . code) (lang . chez) (mode . datum) (name . beta) (names beta)) (position "d.1" . 1) (edges))',
+ 'o.1':'((id . "o.1") (deleted . #f) (fields (kind . code) (lang . chez) (mode . other) (src . "x")) (position root . 3) (edges))',
+ 'o.2':'((id . "o.2") (deleted . #f) (fields (kind . code) (lang . chez) (mode . other) (src . "y")) (position root . 5) (edges))',
+ 't.5':'((id . "t.5") (deleted . #f) (fields (heading-src . "# T\\n") (src . "body\\n") (title . "T")) (position root . 4) (edges))'};
+const DATUM_FILE=`#!chezscheme\n;; @file ${Buffer.from('(code-projection 1 "s0000001" "d.1" (("w" . 2)) datum 0)').toString('hex')}\n(library (probe d)\n(export alpha)\n(import (rnrs))\n;; @block d.2\n(define alpha 1)\n)\n`;
 // Documents a scenario shows as the editor holds them (a dirty draft, a view):
 // openTextDocument answers these before reading a file.
 const displayed=[];const statusItem={show(){},dispose(){}};
@@ -74,7 +98,8 @@ const vs = {
  EventEmitter:class{constructor(){this.event=()=>disposable;}fire(){fired.push(1);}dispose(){}},
  TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p}),from:o=>({...o,toString(){return `${o.scheme}:${o.path}?${o.query}`;}})},
- Range:class{constructor(a,b,c,d){this.start={line:a,character:b};this.end={line:c,character:d};}},
+ // Four numbers, or two positions, as the editor's own Range takes either.
+ Range:class{constructor(a,b,c,d){if(typeof a==='object'){this.start=a;this.end=b;}else{this.start={line:a,character:b};this.end={line:c,character:d};}}},
  // The editor's definition dispatch: providers registered with their
  // selectors, and a document matched to them as VS Code matches one.
  languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language}),registerDefinitionProvider:(selector,provider)=>{definitionProviders.push({selector,provider});return disposable;}},
@@ -95,8 +120,12 @@ const vs = {
   showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async(d,options)=>{shownAt.push({fsPath:d&&d.fsPath!==undefined?d.fsPath:(d&&d.uri?d.uri.fsPath:null),line:options&&options.selection?options.selection.start.line:null});shownDocs.push({fsPath:d&&d.uri?d.uri.fsPath:null,languageId:d?d.languageId:null});return Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})});}},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
-  registerTextDocumentContentProvider:()=>disposable,onDidCloseTextDocument:()=>disposable,
-  openTextDocument:async uri=>displayed.find(d=>sameUri(d.uri,uri))||({uri,isDirty:false,getText:()=>fs.readFileSync(uri.fsPath,'utf8')})},
+  registerTextDocumentContentProvider:(scheme,p)=>{contentProviders[scheme]=p;return disposable;},onDidCloseTextDocument:()=>disposable,
+  // A document of a scheme a content provider serves is loaded from that
+  // provider, as the editor loads one; a file is read from disk.
+  openTextDocument:async uri=>{const shown=displayed.find(d=>sameUri(d.uri,uri));if(shown)return shown;
+   if(uri.scheme!==undefined&&uri.scheme!=='file'&&contentProviders[uri.scheme]){const text=await contentProviders[uri.scheme].provideTextDocumentContent(uri);return {uri,isDirty:false,getText:()=>text};}
+   return {uri,isDirty:false,getText:()=>fs.readFileSync(uri.fsPath,'utf8')};}},
  commands:{registerCommand:(n,f)=>{commands.set(n,f);return disposable;},
   // The editor's own dispatch for a definition request, over the providers
   // registered for the document; and a symbol provider that answers a
@@ -133,6 +162,17 @@ Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',
   const note=workingNotes.get(key),q=JSON.stringify;
   return {argv:[verb,...args],rc:0,stdout:`(ok (projection ${note?'working':'committed'} ${q(writer)} ${q(args[0])} ${note?q(note.version):'#f'} "base" () ${q(note?note.body:'body\n')} ${q('# '+title+'\n')}))\n`,stderr:''};
  }
+ if(/^(queued|race|fail)-/.test(process.argv[3])){
+  const ok=stdout=>({argv:[verb,...args],rc:0,stdout,stderr:''});
+  if(verb==='read'&&args.length===1){
+   if(args[0]==='q.1')return ok(`(ok ${MODE_RECORD('q.1',qMode)})\n`);
+   if(args[0]==='r.1')return ok(`(ok ${MODE_RECORD('r.1',rMode)})\n`);
+   if(args[0]==='f.1')return {argv:[verb,...args],rc:1,stdout:'(error unavailable (reason schedule))\n',stderr:''};
+   if(args[0]==='g.1'){if(rejectG)throw new Error('the transport failed (schedule)');return ok(`(ok ${MODE_RECORD('g.1','text')})\n`);}
+   if(args[0]==='n.1')return goneN?{argv:[verb,...args],rc:1,stdout:'(error unknown-id "n.1" (nearest))\n',stderr:''}:ok(`(ok ${MODE_RECORD('n.1','text')})\n`);
+  }
+  if(verb==='commit'&&commitsTaken){commitSeq+=1;return ok(`(ok (items (ok (events (("w" . ${commitSeq}))) (state ((${JSON.stringify(args[0])} . "h${commitSeq}"))) (cursor ("w" . ${commitSeq})) (replay #f))))\n`);}
+ }
  // Queue item 39: in notice-behind a commit succeeds and says who else landed; in
  // notice-refused the store refuses it. Every other scenario keeps `unknown`.
  if(verb==='commit'&&process.argv[3]==='notice-behind') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (behind (("w" . 1) ("other" . 2))))\n',stderr:''};
@@ -140,6 +180,9 @@ Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',
  // carries the clause after its own.
  if(verb==='commit'&&process.argv[3]==='incomplete-save') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (incomplete (unreadable (writer "zzzzzzzz") (path "/stores/A/writers/zzzzzzzz") (reason "Permission denied"))))\n',stderr:''};
  if(verb==='commit'&&process.argv[3]==='notice-refused') return {argv:[verb,...args],rc:1,stdout:'(error cursor-unreachable (after ("w" . 999)) (writing ("w" . 8)))\n',stderr:''};
+ // The mode scenario: every commit is taken, so each save stands on its own.
+ if(verb==='set'&&process.argv[3]==='datum-legacy'){commitSeq+=1;return {argv:[verb,...args],rc:0,stdout:`(ok (events (("w" . ${commitSeq}))) (state ((${JSON.stringify(args[0])} . "h${commitSeq}"))) (cursor ("w" . ${commitSeq})) (replay #f))\n`,stderr:''};}
+ if(verb==='commit'&&process.argv[3]==='datum-legacy'){commitSeq+=1;return {argv:[verb,...args],rc:0,stdout:`(ok (items (ok (events (("w" . ${commitSeq}))) (state ((${JSON.stringify(args[0])} . "h${commitSeq}"))) (cursor ("w" . ${commitSeq})) (replay #f))))\n`,stderr:''};}
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
  // A store that could not read one writer: every answer carries the clause the
  // core appends, after the rows it did read.
@@ -175,6 +218,13 @@ Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',
    const n=storeSet(cfg.store,args[0],args[2]);
    return ok(`(ok (events (("w" . ${n}))) (state ((${q(args[0])} . "h"))) (cursor ("w" . ${n})) (replay #f))\n`);
   }
+ }
+ // The datum view: a plain read of either datum block, and the datum export
+ // written into the directory the extension names.
+ if(process.argv[3].startsWith('datum-')){
+  const ok=stdout=>({argv:[verb,...args],rc:0,stdout,stderr:''});
+  if(verb==='read'&&args.length===1&&DATUM_BLOCKS[args[0]])return ok(`(ok ${DATUM_BLOCKS[args[0]]})\n`);
+  if(verb==='export-code'&&args.includes('--datum')){fs.mkdirSync(args[0],{recursive:true});fs.writeFileSync(path.join(args[0],'probe.sls'),DATUM_FILE);return ok('(ok (files 1))\n');}
  }
  // Queue item 48 (review r1 #2): the store reports a.2, a child of a.1, as a nested document.
  if(verb==='conflicts'&&process.argv[3]==='outline-nested') return {argv:[verb,...args],rc:0,stdout:'(nested-document "a.2")\n',stderr:''};
@@ -589,6 +639,279 @@ async function main(){
  };
  // A text-mode block opened through the tree's command: the text it shows, in
  // the block's language; and a block whose bytes are not UTF-8, refused by name.
+ // A datum block opened from the outline: a library, then a definition in it.
+ // What was asked of the store, what the tab is given (and given again when
+ // the editor restores it), where it opens, what was said, and what was
+ // written to disk.
+ if(scenario==='datum-open'){
+  const datumDir=path.join(storage,'datum-view');
+  // Every file outside the export's scratch, with its bytes: a file written
+  // or rewritten by the open shows as a change.
+  const outside=()=>Object.entries(tree(storage)).filter(([p])=>!p.startsWith('datum-view'+path.sep)).map(([p,hex])=>`${p} ${hex}`);
+  const opened=[];
+  for(const id of ['d.1','d.2']){
+   const before=outside();requests.length=0;shown.length=0;
+   const got=await commands.get('theourgia.openBlock')(id);
+   const asked=requests.map(r=>[r.verb,...r.args.filter(a=>a.startsWith('--'))]);
+   const views=contentProviders['theourgia-document'];
+   const text=got?await views.provideTextDocumentContent(got.uri):null;
+   const restoredUri=got?vs.Uri.from({scheme:got.uri.scheme,path:'/restored.sls',query:got.uri.query}):null;
+   const restored=got?await views.provideTextDocumentContent(restoredUri):null;
+   opened.push({id,asked,restoreAsked:requests.slice(asked.length).map(r=>r.verb),
+    uri:got?{scheme:got.uri.scheme,path:got.uri.path,query:got.uri.query}:null,prefixLength:got?got.prefixLength:null,
+    text,restored,shown:shown.slice(),written:outside().filter(p=>!before.includes(p)).map(p=>p.split(' ')[0]),
+    line:(shownAt[shownAt.length-1]||{}).line??null,
+    language:(shownDocs[shownDocs.length-1]||{}).languageId??null});
+  }
+  return {opened,file:DATUM_FILE,scratchLeft:fs.existsSync(datumDir)?fs.readdirSync(datumDir).length:0};
+ }
+ // The block's mode at the working write, recorded in a file's record. A text
+ // file this build made saves with no read of its own; a file whose record has
+ // no mode (as an earlier version made it) costs one read at its first save,
+ // which the record then keeps; a datum block's file is refused before the
+ // write is sent, and so is a block whose mode cannot be read; a
+ // reconciliation of a datum block's file is refused the same way.
+ if(scenario==='datum-legacy'){
+  const metaOf=file=>JSON.parse(fs.readFileSync(file+'.meta','utf8'));
+  const plainReads=from=>requests.slice(from).filter(r=>r.verb==='read'&&r.args.length===1).map(r=>r.args[0]);
+  const verbsFrom=from=>requests.slice(from).map(r=>r.verb);
+  const save=async(file,text)=>{fs.writeFileSync(file,text);const from=requests.length;shown.length=0;
+   await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>text});
+   return {reads:plainReads(from),verbs:verbsFrom(from),shown:shown.slice(),mode:metaOf(file).mode};};
+  // A file as an earlier version made it: published from the working read,
+  // with no mode in its record.
+  const {Working}=require(path.join(out,'working.js'));
+  const legacy=async(id,dirOfA)=>{
+   const directory=path.join(path.dirname(dirOfA),id);
+   const reading=await new Working(Client.fromConfig({...settings}),'window-legacy').read(id,'');
+   const published=await core.publisher.publish({directory,storeId:'/stores/A',blockId:id,prefix:reading.prefix,
+    text:reading.prefix+reading.body,cursor:null,projection:reading.source,expected:null});
+   if(!published.published)throw new Error(`the legacy file for ${id} was not published: ${published.because}`);
+   return {file:published.file,prefix:reading.prefix};
+  };
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const made={mode:metaOf(a).mode,first:await save(a,'# Alpha\nfirst A\n')};
+  // The same file with its mode taken out of the record, as an older record reads.
+  const record=metaOf(a);record.mode=null;fs.writeFileSync(a+'.meta',JSON.stringify(record,null,2)+'\n');
+  const textLegacy={first:await save(a,'# Alpha\nsecond A\n')};
+  textLegacy.second=await save(a,'# Alpha\nthird A\n');
+  const d2=await legacy('d.2',path.dirname(a));
+  const datumLegacy={before:metaOf(d2.file).mode??null,first:await save(d2.file,d2.prefix+'(define alpha 2)\n')};
+  datumLegacy.second=await save(d2.file,d2.prefix+'(define alpha 3)\n');
+  // The open of a datum block over a record of it that says text (written
+  // before the block was datum): the read is datum, and the record says so.
+  {const rec=metaOf(d2.file);rec.mode='text';fs.writeFileSync(d2.file+'.meta',JSON.stringify(rec,null,2)+'\n');}
+  await commands.get('theourgia.openBlock')('d.2');
+  datumLegacy.openedOver={mode:metaOf(d2.file).mode};
+  const x9=await legacy('x.9',path.dirname(a));
+  const unreadable={first:await save(x9.file,x9.prefix+'whatever\n')};
+  const o1=await legacy('o.1',path.dirname(a));
+  const unknownMode={first:await save(o1.file,o1.prefix+'whatever\n')};
+  // A block of an unknown mode opened from the outline: its record starts
+  // with no mode, and its first save asks the store and is refused.
+  await commands.get('theourgia.openBlock')('o.2');
+  const o2=files(storage).find(p=>path.basename(path.dirname(p))==='o.2'&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+  const o2Prefix=o2?(core.publisher.sidecarOf(o2)||{prefix:''}).prefix:'';
+  const firstOpen=o2?metaOf(o2).mode:'no file';
+  // Its record made to say text, as one written before the block's mode
+  // changed would; reopening reads the block and clears it.
+  if(o2){const rec=metaOf(o2);rec.mode='text';fs.writeFileSync(o2+'.meta',JSON.stringify(rec,null,2)+'\n');}
+  await commands.get('theourgia.openBlock')('o.2');
+  unknownMode.opened={mode:firstOpen,reopened:o2?metaOf(o2).mode:'no file',save:o2?await save(o2,o2Prefix+'edited\n'):null};
+  // A read that shows a block as not text clears every record of it at the
+  // read, even when what follows is refused: o.2 reopened while its file is
+  // dirty in the editor (the publication refuses), its record saying text.
+  if(o2){const rec=metaOf(o2);rec.mode='text';fs.writeFileSync(o2+'.meta',JSON.stringify(rec,null,2)+'\n');}
+  const dirty={uri:{fsPath:o2},isDirty:true,getText:()=>'unsaved'};docs.push(dirty);
+  shown.length=0;await commands.get('theourgia.openBlock')('o.2');docs.splice(docs.indexOf(dirty),1);
+  unknownMode.refusedReopen={mode:o2?metaOf(o2).mode:'no file',shown:shown.slice()};
+  // A record with no projection, as a much earlier version wrote one.
+  const unprojected=async id=>{const made=await legacy(id,path.dirname(a));const rec=metaOf(made.file);delete rec.projection;fs.writeFileSync(made.file+'.meta',JSON.stringify(rec,null,2)+'\n');return made;};
+  const d3=await unprojected('d.3');
+  const noProjectionDatum={first:await save(d3.file,d3.prefix+'(define beta 3)\n')};
+  const t5=await unprojected('t.5');
+  const noProjectionText={first:await save(t5.file,t5.prefix+'new body\n')};
+  const d1=await legacy('d.1',path.dirname(a));
+  fs.writeFileSync(d1.file,d1.prefix+'(library (probe d))\n');
+  const from=requests.length;shown.length=0;
+  await commands.get('theourgia.reconcileBlock')(d1.file);
+  const reconciled={verbs:verbsFrom(from),shown:shown.slice(),mode:metaOf(d1.file).mode};
+  // A reconciliation of o.1, whose record is made to say text while the
+  // block's mode is one this build does not know: refused, nothing written,
+  // and the record left with no mode.
+  {const rec=metaOf(o1.file);rec.mode='text';fs.writeFileSync(o1.file+'.meta',JSON.stringify(rec,null,2)+'\n');}
+  const from2=requests.length;shown.length=0;
+  await commands.get('theourgia.reconcileBlock')(o1.file);
+  reconciled.unknown={verbs:verbsFrom(from2),shown:shown.slice(),mode:metaOf(o1.file).mode};
+  return {made,textLegacy,datumLegacy,unreadable,unknownMode,noProjectionDatum,noProjectionText,reconciled};
+ }
+ // A read attempt that does not show text clears every record of the block:
+ // an open whose read is refused, an open of a block no longer in the store,
+ // a reconciliation whose read is refused (each over a record saying text),
+ // and the save gate's read rejected at the transport (a record with no mode).
+ if(scenario==='fail-reads'){
+  const metaOf=file=>JSON.parse(fs.readFileSync(file+'.meta','utf8'));
+  const setMode=(file,mode)=>{const rec=metaOf(file);rec.mode=mode;fs.writeFileSync(file+'.meta',JSON.stringify(rec,null,2)+'\n');};
+  const {Working}=require(path.join(out,'working.js'));
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const made=async id=>{const directory=path.join(path.dirname(path.dirname(a)),id);
+   const reading=await new Working(Client.fromConfig({...settings}),'window-legacy').read(id,'');
+   const published=await core.publisher.publish({directory,storeId:'/stores/A',blockId:id,prefix:reading.prefix,
+    text:reading.prefix+reading.body,cursor:null,projection:reading.source,expected:null});
+   if(!published.published)throw new Error(`no file for ${id}: ${published.because}`);return {file:published.file,prefix:reading.prefix};};
+  const f1=await made('f.1');setMode(f1.file,'text');
+  shown.length=0;await commands.get('theourgia.openBlock')('f.1');
+  const openRefused={mode:metaOf(f1.file).mode,shown:shown.slice()};
+  const n1=await made('n.1');setMode(n1.file,'text');goneN=true;
+  shown.length=0;await commands.get('theourgia.openBlock')('n.1');
+  const openGone={mode:metaOf(n1.file).mode,shown:shown.slice()};
+  setMode(f1.file,'text');
+  shown.length=0;await commands.get('theourgia.reconcileBlock')(f1.file);
+  const reconcileRefused={mode:metaOf(f1.file).mode,shown:shown.slice()};
+  const g1=await made('g.1');rejectG=true;
+  const from=requests.length;shown.length=0;const text=g1.prefix+'edited\n';fs.writeFileSync(g1.file,text);
+  await savedHandler({uri:{fsPath:g1.file},isDirty:false,getText:()=>text});
+  const gateRejected={verbs:requests.slice(from).map(r=>r.verb),shown:shown.slice(),mode:metaOf(g1.file).mode};
+  return {openRefused,openGone,reconcileRefused,gateRejected};
+ }
+ // A save accepted while its block was text, queued behind an unresolved one;
+ // then the block is read again, as datum (or, for the control, as text), and
+ // the queue is retried with commits now taken.
+ if(scenario==='queued-datum'||scenario==='queued-text'){
+  await commands.get('theourgia.openBlock')('q.1');
+  const q=files(storage).find(p=>path.basename(path.dirname(p))==='q.1'&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+  const prefix=core.publisher.sidecarOf(q).prefix;
+  for(const body of ['first\n','second\n']){const text=prefix+body;fs.writeFileSync(q,text);await savedHandler({uri:{fsPath:q},isDirty:false,getText:()=>text});}
+  const queue=core.outboxPath('/stores/A');
+  const queuedBefore=JSON.parse(fs.readFileSync(queue,'utf8')).entries.map(e=>e.state);
+  if(scenario==='queued-datum')qMode='datum';
+  await commands.get('theourgia.openBlock')('q.1');
+  const modeAfterRead=JSON.parse(fs.readFileSync(q+'.meta','utf8')).mode;
+  commitsTaken=true;
+  const from=requests.length;
+  await commands.get('theourgia.retryOutbox')();
+  const after=JSON.parse(fs.readFileSync(queue,'utf8')).entries.map(e=>({state:e.state,lastError:e.lastError}));
+  // The parked entry cleared (as a person would, by resolving it), and the
+  // queue let go on: the entry that waited behind it meets the same check
+  // at its own transmission.
+  let cleared=null;
+  if(scenario==='queued-datum'){
+   const {Outbox}=require(path.join(out,'outbox.js')),q2=new Outbox(queue);q2.load();
+   const first=q2.entries.find(e=>e.state==='parked');
+   if(first)q2.resolve(first.req,null);
+   const from2=requests.length;
+   await commands.get('theourgia.retryOutbox')();
+   cleared={sent:requests.slice(from2).map(r=>r.verb),after:JSON.parse(fs.readFileSync(queue,'utf8')).entries.map(e=>({state:e.state,lastError:e.lastError}))};
+  }
+  return {queuedBefore,modeAfterRead,sent:requests.slice(from).map(r=>r.verb),after,cleared};
+ }
+ // Two opens of one block: A reads it as text and is held between its reading
+ // and its publication; B then reads it as datum (or, for the control, text).
+ // The record A publishes says text only if no not-text read came between.
+ if(scenario==='race-datum'||scenario==='race-text'){
+  const held=gate();afterRead=held;
+  const first=commands.get('theourgia.openBlock')('r.1');
+  await held.entered;
+  if(scenario==='race-datum')rMode='datum';
+  const second=commands.get('theourgia.openBlock')('r.1');
+  if(scenario==='race-datum')await second;
+  else for(let i=0;i<20;i++)await new Promise(r=>setTimeout(r,10));
+  held.release();await first;await second;
+  const r=files(storage).find(p=>path.basename(path.dirname(p))==='r.1'&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+  return {mode:r?JSON.parse(fs.readFileSync(r+'.meta','utf8')).mode:'no file'};
+ }
+ // A save's behind notice through the extension on a real core, after another
+ // instance's segment is published into the store: the record left with no
+ // mode, as 1.0.0 left its files (the save reads the block first), or with
+ // text, as this release records it (no read). Every request of that save is
+ // kept with the start of its answer, so a difference between the two can be
+ // read off them.
+ if(scenario==='behind-real-legacy'||scenario==='behind-real-text'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const store=await real.RealStore.make('behind-mode');
+  const copy=path.join(store.root,'s2');
+  try{
+   const transport=store.transport();
+   const idOf=async(title,text)=>{const made=await transport.send('insert',['--title',title,'--text',text]);
+    const id=(/\(state \(\("([^"]+)"/.exec(made.stdout)||[])[1];if(!id)throw new Error(`no id for ${title}: ${made.stdout}`);return id;};
+   const mine=await idOf('A','olda\n'),theirs=await idOf('B','oldb\n');
+   const client=new Client(transport),log=[],request=client.request.bind(client);
+   client.request=async(verb,args,input)=>{const answer=await request(verb,args,input);
+    log.push({verb,args:(args||[]).map(a=>a.length>80?a.slice(0,80)+'...':a),ok:answer.ok,text:String(answer.text).slice(0,400)});return answer;};
+   realClient=client;change(store.store);
+   await commands.get('theourgia.openBlock')(mine);
+   const file=files(storage).find(p=>path.basename(path.dirname(p))===mine&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+   if(!file)throw new Error(`the block ${mine} was not opened into a file`);
+   const prefix=core.publisher.sidecarOf(file).prefix;
+   const saveText=async text=>{fs.writeFileSync(file,text);shown.length=0;await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>text});return shown.slice();};
+   // One ordinary save first, while the store has one writer, so the queue
+   // holds a cursor before a second instance exists (as T2 does, and why).
+   const firstShown=await saveText(prefix+'edited here\n');
+   fs.cpSync(store.store,copy,{recursive:true});
+   const adopted=/\(to "([^"]+)"\)/.exec(store.cli(['adopt','--store',copy]));
+   if(adopted===null)throw new Error('the copy was not adopted');
+   const other=adopted[1];
+   const wrote=/\(version "([^"]+)"\)/.exec(store.cli(['write',theirs,'from the copy','--store',copy,'--writer','w2']));
+   if(wrote===null)throw new Error('the copy would not take a draft');
+   store.cli(['commit',theirs,'--working-version',`${theirs}=${wrote[1]}`,'--store',copy,'--writer','w2']);
+   const segments=fs.readdirSync(path.join(copy,'writers',other)).filter(n=>/^\d+\.sexp$/.test(n));
+   if(segments.length!==1)throw new Error(`the copy's writer holds ${segments.length} segments`);
+   const published=store.cli(['publish',other,'1',path.join(copy,'writers',other,segments[0]),'--store',store.store]);
+   if(!/\(ok \(published 1\)\)/.test(published))throw new Error(`the segment was not published: ${published}`);
+   const meta=JSON.parse(fs.readFileSync(file+'.meta','utf8'));
+   if(scenario==='behind-real-legacy'){meta.mode=null;fs.writeFileSync(file+'.meta',JSON.stringify(meta,null,2)+'\n');}
+   const modeBefore=JSON.parse(fs.readFileSync(file+'.meta','utf8')).mode;
+   const from=log.length;
+   const secondShown=await saveText(prefix+'edited again\n');
+   return {mine,other,firstShown,modeBefore,second:{requests:log.slice(from),shown:secondShown},
+    modeAfter:JSON.parse(fs.readFileSync(file+'.meta','utf8')).mode};
+  }finally{realClient=null;store.dispose();fs.rmSync(copy,{recursive:true,force:true});}
+ }
+ // The same open against the real core: a library imported with --datum,
+ // opened as the library and as its definition. Every request the client
+ // sent is recorded, and the definition is read back afterwards.
+ if(scenario==='datum-real'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const store=await real.RealStore.make();
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-datum-'));
+  const exportDir=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-datum-export-'));
+  try{
+   fs.writeFileSync(path.join(dir,'probe.sls'),'(library (probe d)\n  (export alpha)\n  (import (rnrs))\n  (define (alpha x) (+ x 1)))\n');
+   const transport=store.transport();
+   const made=await transport.send('import-code',[dir,'--datum']);
+   if(made.rc!==0)throw new Error(`the library was not imported: ${made.stdout}${made.stderr}`);
+   const outline=(await transport.send('outline',[])).stdout;
+   const libId=(/^- (\S+)/m.exec(outline)||[])[1],defId=(/^  - (\S+)/m.exec(outline)||[])[1];
+   if(!libId||!defId)throw new Error(`the outline holds no library and definition: ${outline}`);
+   const exported=await transport.send('export-code',[exportDir,'--datum']);
+   if(exported.rc!==0)throw new Error(`the datum export was refused: ${exported.stdout}${exported.stderr}`);
+   const fileText=fs.readFileSync(path.join(exportDir,'probe.sls'),'utf8');
+   const client=new Client(transport),sent=[],request=client.request.bind(client);
+   client.request=async(verb,args,input)=>{sent.push([verb,...(args||[]).filter(a=>a.startsWith('--'))]);return request(verb,args,input);};
+   realClient=client;change(store.store);
+   const opened=[];
+   for(const id of [libId,defId]){
+    sent.length=0;shown.length=0;
+    const got=await commands.get('theourgia.openBlock')(id);
+    const text=got?await contentProviders['theourgia-document'].provideTextDocumentContent(got.uri):null;
+    opened.push({id,sent:sent.slice(),text,prefixLength:got?got.prefixLength:null,shown:shown.slice(),line:(shownAt[shownAt.length-1]||{}).line??null});
+   }
+   // Go to definition on a call of the datum definition: the picker's
+   // def is chosen, and the view opens at its line.
+   vs.window.activeTextEditor={document:{uri:{fsPath:'/nowhere/use.ss'},languageId:'scheme',isDirty:false,getText:()=>'(alpha 1)\n'},selection:{active:{line:0,character:2}}};
+   pickGate=gate();
+   const running=commands.get('theourgia.goToDefinition')();
+   const items=await Promise.race([pickGate.entered,running.then(()=>null)]);
+   let definition=null;
+   if(items!==null){const def=items.find(i=>i.record.kind==='def');pickGate.release(def);await running;
+    const last=shownAt[shownAt.length-1]||null;definition={kinds:items.map(i=>i.record.kind),line:last?last.line:null};}
+   pickGate=null;
+   const after=(await transport.send('read',[defId,'--wire'])).stdout;
+   return {libId,defId,fileText,opened,after,definition};
+  }finally{realClient=null;store.dispose();fs.rmSync(dir,{recursive:true,force:true});fs.rmSync(exportDir,{recursive:true,force:true});}
+ }
  if(scenario==='bytes-open'){
   const real=require(path.join(__dirname,'real-core.js'));
   const good=Buffer.from(';; \u4e2d\u6587\r\n(define alpha 1)\r\n','utf8');

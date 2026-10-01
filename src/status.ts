@@ -707,6 +707,7 @@ export function refusalNotice(
   refusal:
     | { because: 'document-dirty' }
     | { because: 'working-unavailable'; detail:string }
+    | { because: 'datum-block' }
     | { because: 'byte-order-mark' }
     | { because: 'not-utf8' }
     | { because: 'disk-differs-from-snapshot' }
@@ -718,6 +719,18 @@ export function refusalNotice(
 ): Notice {
   if (refusal.because === 'working-unavailable') return {level:'error',text:`${id}: the working note was not confirmed saved. Your file is retained. Retry saving after resolving: ${refusal.detail}`};
   switch (refusal.because) {
+    /*
+     * AN ERROR, BECAUSE THE FILE LOOKS SAVED: the editor wrote it to disk,
+     * and only this sentence says the store has none of it.
+     */
+    case 'datum-block':
+      return {
+        level: 'error',
+        text:
+          `${id} was not sent: it is a datum block, whose code the store keeps as a datum, and this ` +
+          'editor cannot write one yet. Your file is kept; open the block from the outline to see it ' +
+          'read-only as the datum export writes it.'
+      };
     case 'document-dirty':
       /*
        * NOT AN ERROR AT ALL. The user carried on typing after the save,

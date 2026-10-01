@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+* A datum-mode block -- a library imported with `import-code --datum`, or one
+  definition in it -- now opens read-only, as the datum export writes its
+  library's file, at the block's own place. Before, it opened as an empty
+  buffer, and an edit saved through it was answered as saved and never
+  reached the code.
+* A file opened under 1.0.0 on a datum block is now refused on save instead
+  of appearing to save.
+
 ## 1.0.0 — 2026-09-29
 
 First published version. It needs the theourgia core installed on the machine

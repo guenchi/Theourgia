@@ -297,7 +297,7 @@ describe('plugin-r3 6 a subtree as one read-only document', () => {
 
   it('carries its store and block in its address, and reads back nothing from a partial one', () => {
     const query = documentQuery('/tmp/a store?&=', 'a.1');
-    assert.deepStrictEqual(readDocumentQuery(query), { store: '/tmp/a store?&=', id: 'a.1' });
+    assert.deepStrictEqual(readDocumentQuery(query), { store: '/tmp/a store?&=', id: 'a.1', view: 'subtree' });
     assert.strictEqual(readDocumentQuery('id=a.1'), null);
     assert.strictEqual(readDocumentQuery('store=s'), null);
     assert.strictEqual(readDocumentQuery('store=&id=a.1'), null);

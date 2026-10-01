@@ -553,6 +553,14 @@ are not UTF-8 does not open: the store says so by name (`non-text-projection`), 
 such a field refuses with `text-not-utf8`, the field, the block and the offset of the first byte that
 does not decode. A file that begins with a byte-order mark is not saved.
 
+A datum-mode block -- a library `import-code --datum` made, or one definition in it -- keeps its
+code as a datum, not as text, and this extension cannot write one yet. It opens read-only: the
+library's file as `export-code --datum` writes it, at the block's own place, with a note saying why.
+Nothing is written or committed for it. Go to definition on a datum definition opens the same view at
+its `(define ...)`. A block's file records the block's mode when it is opened; a file opened before the
+mode was recorded is checked once at its first save, and a datum block's file is refused there, with
+nothing sent, rather than saved where the store would not run it.
+
 **Go to definition.** On a name in a block, "Theourgia: Go to Definition" -- or the editor's own Go to
 Definition -- asks the store's `whereis` which block defines it. One answer opens that block at the
 line of its `(define ...)`, found in the text as it is shown, a draft included; several are listed with

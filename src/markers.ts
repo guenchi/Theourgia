@@ -74,6 +74,13 @@ export interface Projection {
 export type ProjectionReading = { ok: true; projection: Projection } | { ok: false; file: string; why: string };
 
 /*
+ * WHICH PROJECTION A FILE IS READ AS. The header says its mode, and a
+ * reader asks for the one it expects: a header of the other mode does not
+ * read, as one of no mode does not.
+ */
+export type ProjectionMode = 'text' | 'datum';
+
+/*
  * THE LINES OF A FILE AS THE CORE SPLITS THEM (markers.sc, `byte-lines`):
  * each is [start, end of its content, end of the line], the content without
  * its `\n` or `\r\n`; a last line with no line feed ends at the end.
@@ -158,15 +165,16 @@ const HEADER_LINE = /^([^@]* )@file ([0-9a-f]+)((?: \S+)?)$/;
 
 /*
  * THE HEADER'S DATUM FROM ITS HEX: `(code-projection 1 <store-id>
- * <file-id> ((<writer> . <seq>) ...) text <pad>)`, checked as the core's
- * `header-read` (markers.sc) checks it, text mode only. Null when the hex is
- * not such a header.
+ * <file-id> ((<writer> . <seq>) ...) <mode> <pad>)`, checked as the core's
+ * `header-read` (markers.sc) checks it, for the one mode the caller reads:
+ * `text` for a supply, `datum` for the read-only view of a datum block.
+ * Null when the hex is not such a header.
  *
  * NOTE: THE FOURTH ELEMENT IS THE FILE'S BLOCK ID, NOT ITS PATH
  * (code-project.sc, `export-code-view`). Nothing in the file says which
  * path it was written at, so the header is not matched against one.
  */
-function headerOf(hex: string): { pad: number; fileId: string } | null {
+function headerOf(hex: string, mode: ProjectionMode): { pad: number; fileId: string } | null {
   if (hex.length % 2 !== 0) {
     return null;
   }
@@ -187,7 +195,7 @@ function headerOf(hex: string): { pad: number; fileId: string } | null {
   const head = data.length === 1 ? data[0] : null;
   if (
     head === null ||
-    answerOf(head, 'code-projection', { at: 5, is: 'text' }) === null ||
+    answerOf(head, 'code-projection', { at: 5, is: mode }) === null ||
     !isList(head) ||
     head.length !== 7
   ) {
@@ -249,7 +257,7 @@ const BLOCK_MARKER = /^block ([a-z0-9._-]{1,256})(?: pad ([01]))?$/;
  * THE PIECES OF ONE PROJECTED FILE, `file` being its path as the export
  * wrote it (relative, `/` between parts), which names it in a refusal.
  */
-export function readProjection(bytes: Uint8Array, file: string): ProjectionReading {
+export function readProjection(bytes: Uint8Array, file: string, mode: ProjectionMode = 'text'): ProjectionReading {
   const lines = byteLines(bytes);
   const contents = lines.map(([start, end]) => utf8(bytes.subarray(start, end)));
   /*
@@ -272,7 +280,7 @@ export function readProjection(bytes: Uint8Array, file: string): ProjectionReadi
   }
   const headerText = headerAt >= 0 ? contents[headerAt] : null;
   const headerLine = headerText === null ? null : HEADER_LINE.exec(headerText);
-  const header = headerLine === null ? null : headerOf(headerLine[2]);
+  const header = headerLine === null ? null : headerOf(headerLine[2], mode);
   if (headerLine === null || header === null) {
     return { ok: false, file, why: 'no code-projection header line where the prefix ends' };
   }

@@ -40,7 +40,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { CoreDirectory } from './config';
-import {createHash} from 'crypto';
+import {createHash, randomUUID} from 'crypto';
 
 export interface FileOps {
   readText(file: string): string;
@@ -293,6 +293,29 @@ export function emptyDirectory(directory: string): void {
 export function insideDirectory(directory: string, file: string): boolean {
   const within = path.relative(directory, file);
   return within !== '' && within !== '..' && !within.startsWith(`..${path.sep}`) && !path.isAbsolute(within);
+}
+
+/*
+ * A FRESH DIRECTORY PER USE under a root this extension owns, listed as
+ * `filesUnder` lists one, read, and removed whole when the use is over: the
+ * datum view's export (src/datum-view.ts, `DatumScratch`).
+ */
+export function scratchUnder(root: string): {
+  make(): string;
+  files(directory: string): string[];
+  read(directory: string, file: string): Uint8Array;
+  remove(directory: string): void;
+} {
+  return {
+    make: () => {
+      const directory = path.join(root, randomUUID());
+      fs.mkdirSync(directory, { recursive: true });
+      return directory;
+    },
+    files: (directory) => filesUnder(directory),
+    read: (directory, file) => new Uint8Array(fs.readFileSync(path.join(directory, file))),
+    remove: (directory) => fs.rmSync(directory, { recursive: true, force: true })
+  };
 }
 
 export function controlDirectory(directory:string): string {

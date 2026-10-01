@@ -337,9 +337,16 @@ export type Composer = (client: Client, id: string) => Promise<Composed>;
 export class DocumentTexts {
   private readonly held = new Map<string, string>();
 
+  /*
+   * NOTE: TWO VIEWS SHARE THE SCHEME: a subtree composed as one document,
+   * and a datum block shown as its library's datum export
+   * (src/datum-view.ts). The address says which, so a restored tab is
+   * composed as the view it was, not as a subtree under the same id.
+   */
   constructor(
     private readonly current: () => { client: Client; store: string } | null,
-    private readonly compose: Composer = documentOf
+    private readonly compose: Composer = documentOf,
+    private readonly composeDatum: Composer | null = null
   ) {}
 
   public hold(address: string, text: string): void {
@@ -376,7 +383,11 @@ export class DocumentTexts {
      * names -- which is what the document says it is -- and nothing is
      * written anywhere.
      */
-    const composed = await this.compose(now.client, asked.id);
+    const composer = asked.view === 'datum' ? this.composeDatum : this.compose;
+    if (composer === null) {
+      throw new Error(`Theourgia: ${address} names a datum view, and nothing here composes one`);
+    }
+    const composed = await composer(now.client, asked.id);
     if (!composed.ok) {
       throw new Error(`Theourgia: ${refusalOf(composed)}`);
     }
@@ -391,16 +402,26 @@ export class DocumentTexts {
  * so a document names its store, and one whose store is no longer the
  * configured one is not read from the other store under the same id.
  */
-export function documentQuery(store: string, id: string): string {
-  return new URLSearchParams({ store, id }).toString();
+export type DocumentKind = 'subtree' | 'datum';
+
+/*
+ * NOTE: A SUBTREE'S ADDRESS CARRIES NO `view`, as before the datum view
+ * existed, so a tab restored from an earlier version still reads as one.
+ */
+export function documentQuery(store: string, id: string, view: DocumentKind = 'subtree'): string {
+  return new URLSearchParams(view === 'subtree' ? { store, id } : { store, id, view }).toString();
 }
 
-export function readDocumentQuery(query: string): { store: string; id: string } | null {
+export function readDocumentQuery(query: string): { store: string; id: string; view: DocumentKind } | null {
   const params = new URLSearchParams(query);
   const store = params.get('store');
   const id = params.get('id');
+  const view = params.get('view');
   if (store === null || id === null || store.length === 0 || id.length === 0) {
     return null;
   }
-  return { store, id };
+  if (view !== null && view !== 'datum') {
+    return null;
+  }
+  return { store, id, view: view === null ? 'subtree' : 'datum' };
 }

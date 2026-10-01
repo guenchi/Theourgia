@@ -133,6 +133,19 @@ const AT_LEAST: Array<[string, number]> = [
    * three more in its r2 (the local writer listed twice, two forms).
    */
   ['damaged-check.test.ts', 12],
+  /*
+   * ADDED with the read-only datum view: thirteen cells on the view, its
+   * address and a restored tab, two on the open itself, one against a
+   * stand-in core and one against a real store, and five on the mode a
+   * write goes by (a file this version made, a file with no mode on a text
+   * block and on a datum block, a record with no projection, and a
+   * reconciliation), the census of the places that can record text, and on a
+   * real core the behind notice of a save that reads the block first and of
+   * one that does not; and six on a read that does not show text (a failed
+   * open, reconciliation and gate; a queued write and its control; two
+   * opens racing and its control).
+   */
+  ['datum-view.test.ts', 29],
   ['decoding.test.ts', 12],
   ['definition.test.ts', 14],
   ['dependency-sexpr.test.ts', 15],

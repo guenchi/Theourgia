@@ -255,6 +255,20 @@ export interface SaverOptions {
    */
   retired?: (record: SendRecord) => { known: true; retired: boolean } | { known: false };
   /*
+   * WHAT THE RECORD BESIDE A FILE SAYS ITS BLOCK IS NOW: text, datum, or
+   * null for no mode (src/working.ts, requireText; the record is a cache this
+   * window clears whenever its read of the block does not show text).
+   * Undefined when there is no record.
+   *
+   * NOTE: READ BEFORE EVERY TRANSMISSION OF A WRITE OF A BLOCK'S TEXT. An
+   * entry accepted while the block was text can sit in the queue while this
+   * window reads the block again and finds it is not; sending it then would
+   * write `src` where the store does not run it. A record saying datum or no
+   * mode parks the entry, by name, rather than sending it. Absent, no check
+   * is made, as for `baselineOf`.
+   */
+  modeOf?: (file: string) => 'text' | 'datum' | null | undefined;
+  /*
    * THE KEPT WRITES A DRAIN SENT THAT THE STORE REFUSED AS STALE, `(error
    * changed ...)`: the block moved on after the version they carry was
    * read. Called once per drain, with every such outcome, when the drain
@@ -1483,6 +1497,7 @@ export class Saver {
   private readonly notNowCounts = new Map<string, number>();
   private readonly now: () => number;
   private readonly baselineOf?: (file: string) => { highWater: number } | null;
+  private readonly modeOf?: (file: string) => 'text' | 'datum' | null | undefined;
   private readonly stale?: (outcomes: SaveOutcome[]) => void;
   private readonly retired?: (
     record: SendRecord
@@ -1541,6 +1556,7 @@ export class Saver {
     this.newRequestId = options.newRequestId ?? (() => randomUUID());
     this.now = options.now ?? (() => Date.now());
     this.baselineOf = options.baselineOf;
+    this.modeOf = options.modeOf;
     this.retired = options.retired;
     this.stale = options.stale;
     this.durability = options.durability;
@@ -2173,6 +2189,11 @@ export class Saver {
         this.kept(this.outbox.markParked(entry.req, overtaken));
         continue;
       }
+      const notText = this.isNoLongerText(entry);
+      if (notText !== null) {
+        this.kept(this.outbox.markParked(entry.req, notText));
+        continue;
+      }
       /*
        * NOTE: FROM HERE THE ITERATION'S QUEUE WARNINGS ARE GATHERED FOR THE
        * OUTCOME IT PRODUCES. (queue item 22, ruled Q5) The `finally` below
@@ -2337,6 +2358,27 @@ export class Saver {
       return 'this request could not be checked against the retired ones, so it was not sent';
     }
     return asked.retired ? 'this request was retired, so it is not sent' : null;
+  }
+
+  /*
+   * A WRITE OF A BLOCK'S TEXT WHOSE FILE'S RECORD NO LONGER SAYS TEXT: the
+   * block was read since as a datum block, or as one whose mode this window
+   * could not take for text. Parked by name, not sent.
+   */
+  private isNoLongerText(entry: OutboxEntry): string | null {
+    const record = entry.record;
+    if (record === undefined || this.modeOf === undefined || record.intent.field !== 'src') {
+      return null;
+    }
+    const mode = this.modeOf(record.file);
+    if (mode === undefined || mode === 'text') {
+      return null;
+    }
+    return mode === 'datum'
+      ? `${record.blockId} has since been read as a datum block, whose code the store keeps as a datum; this write ` +
+          'of its text is kept for you rather than sent. Open the block from the outline to see it read-only'
+      : `${record.blockId} has since been read and its mode could not be taken for text; this write of its text is ` +
+          'kept for you rather than sent. Saving the file again asks the store for its mode';
   }
 
   private hasBeenOvertaken(entry: OutboxEntry): string | null {

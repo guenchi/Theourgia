@@ -652,6 +652,9 @@ describe('plugin-r3 no sixth route into a clause', function () {
    * adds to it.
    */
   const NOT_LOOKING_FOR_A_CLAUSE: Record<string, string> = {
+    'datum-view.ts:isDatumBlock':
+      "reads a block's FIELD VALUE -- its mode, a symbol, compared with `datum` -- to choose between the " +
+      'editable projection and the read-only datum view. No answer form and no clause is looked for.',
     'blocks.ts:languageModeOf.code':
       "reads a block's FIELD VALUES -- its kind, a symbol, compared with `code`, and its lang, a symbol whose " +
       'name is the language -- to choose an editor mode. No answer form and no clause is looked for.',

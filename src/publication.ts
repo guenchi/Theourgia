@@ -71,7 +71,20 @@ export interface ProjectionSource {
   cut?: string;
 }
 
+/*
+ * HOW A BLOCK KEEPS ITS CODE: as text the editor can write back, or as a
+ * datum it cannot (src/datum-view.ts).
+ */
+export type BlockMode = 'text' | 'datum';
+
 export interface Sidecar {
+  /*
+   * THE BLOCK'S MODE, recorded where the file is made from a reading of the
+   * block, or learned at the first save of a file made without one (a file
+   * an earlier version made). Absent means not recorded, which is not text:
+   * the working write reads the block before it writes (src/working.ts).
+   */
+  mode?: BlockMode;
   /*
    * THE RECORD SAYS WHICH SHAPE IT IS. A queue written without a version
    * field was the one shape the outbox could not tell from a corrupt
@@ -307,6 +320,19 @@ export type Acknowledgement =
 export interface PublishRequest {
   projection?: ProjectionSource;
   /*
+   * THE BLOCK'S MODE, given only by a caller that has just read the block
+   * (text) or found it not text (none). Absent, the record has no mode: a
+   * publication never carries a mode over from the record it replaces, since
+   * that would set text with no reading behind it.
+   */
+  mode?: BlockMode;
+  /*
+   * HOW MANY NOT-TEXT READS OF THIS BLOCK THE CALLER HAD SEEN when it read
+   * it (`invalidationsOf`, taken before the read). Text is recorded only if
+   * none has happened since; otherwise the record gets no mode.
+   */
+  modeSeenAt?: number;
+  /*
    * THE REVISION OF THE RECORD THIS PUBLICATION REPLACES, or null when it
    * replaces none. (queue item 43) Required: a publication that does not say
    * which record it read is the defect the item removes. Read inside the same
@@ -385,6 +411,11 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     'body-has-crlf': sidecar.bodyHasCrlf,
     'legacy-send': sidecar.legacySend,
     revision: sidecar.revision,
+    /*
+     * NOTE: WRITTEN EVERY TIME, null when not recorded, so that the record
+     * has one shape on disk.
+     */
+    mode: sidecar.mode ?? null,
     /*
      * NOTE: WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
      * writes must be one this build can read back with the same meaning,
@@ -547,9 +578,15 @@ export function sidecarFromDisk(text: string): SidecarRead {
         'in flight over this file is not known'
     };
   }
+  /*
+   * A MODE THIS BUILD DOES NOT KNOW IS READ AS NOT RECORDED: the next save
+   * reads the block and records it again, rather than refusing the record.
+   */
+  const mode = record.mode === 'text' || record.mode === 'datum' ? record.mode : undefined;
   return {
     read: true,
     sidecar: {
+      ...(mode===undefined?{}:{mode}),
       ...(projection===undefined?{}:{projection:projection as ProjectionSource}),
       ...(prior===undefined?{}:{prior}),
       format: 1,
@@ -1238,7 +1275,9 @@ export class Publisher {
     this.files.makeDirectory(directory);
     if (!this.takeIfUnowned(directory).may) return refuse('not-ours');
     const projection = what.projection ?? {id:randomUUID(),kind:baseline===null?'local':'committed',writer:this.ownership?.sessionId ?? 'local',version:randomUUID(),basedOn:null};
+    const mode = this.textStillHolds(directory, what.mode, what.modeSeenAt);
     const record: Sidecar = {
+      ...(mode === undefined ? {} : { mode }),
       ...UNNUMBERED,
       nextSeq:old?.nextSeq ?? 1, highWater:old?.highWater ?? 0, outstanding:old?.outstanding ?? [],
       writtenBy:old?.writtenBy ?? null, legacySend:old?.legacySend ?? false,
@@ -1522,7 +1561,7 @@ export class Publisher {
    */
   public reconcileBy(file: string, action: 'prepend-prefix' | 'take-store-version', storePrefix: string,
       storeText: string, offered: string | undefined, projection: ProjectionSource | undefined,
-      expected: number | null): {done:boolean;file:string;because?:string} {
+      expected: number | null, mode?: BlockMode, modeSeenAt?: number): {done:boolean;file:string;because?:string} {
     return withExclusive(path.dirname(file), (): {done:boolean;file:string;because?:string} => {
     if (this.documents.isDirty?.(file)) return {done:false,file,because:'dirty-document'};
     const sidecar=this.sidecarOf(file);
@@ -1531,7 +1570,7 @@ export class Publisher {
     const current=this.files.exists(file)?this.files.readText(file):null;
     if (current===null || offered!==undefined && current!==offered) return {done:false,file,because:'file-changed'};
     const text=action==='take-store-version'?storeText:current.startsWith(storePrefix)?current:storePrefix+current;
-    const result=this.publishInto(path.dirname(file),{storeId:sidecar.storeId,blockId:sidecar.blockId,prefix:storePrefix,text,projection,expected},
+    const result=this.publishInto(path.dirname(file),{storeId:sidecar.storeId,blockId:sidecar.blockId,mode,modeSeenAt,prefix:storePrefix,text,projection,expected},
       action==='take-store-version'?{cursor:null}:null,true,digestOfBytes(current));
     return result.published?{done:true,file:result.file}:{done:false,file,because:result.because};
 
@@ -1554,15 +1593,95 @@ export class Publisher {
    * write makes this refuse and the save report `working-unavailable`: the
    * accepted cost (ruled 2026-09-26, Q2).
    */
-  public recordWorking(file: string, projection: ProjectionSource, rawDigest: string, priorId: string | undefined, expected: number | null): boolean {
+  public recordWorking(file: string, projection: ProjectionSource, rawDigest: string, priorId: string | undefined, expected: number | null, mode?: BlockMode, modeSeenAt?: number): boolean {
     return withExclusive(path.dirname(file), (): boolean => {
     if (!this.mayWrite(file).may) return false;
     const held=this.sidecarOf(file);
     if (!held || held.revision!==expected || held.phase!=='published' || held.projection?.id!==priorId ||
         !this.files.exists(file) || digestOfBytes(this.files.readBytes(file))!==rawDigest) return false;
-    this.write(file,{...held,projection,written:rawDigest,confirmed:null,acknowledgedRaw:null,localOnly:false});
+    const learned=this.textStillHolds(path.dirname(file),mode,modeSeenAt);
+    this.write(file,{...held,...(learned===undefined?{}:{mode:learned}),projection,written:rawDigest,confirmed:null,acknowledgedRaw:null,localOnly:false});
     return true;
 
+    });
+  }
+
+  /*
+   * THE NOT-TEXT READS OF EACH BLOCK THIS WINDOW HAS MADE, by the block's
+   * directory: `recordModeOfBlock` counts one every time. A caller that will
+   * record text takes the count before its read and hands it back; if it
+   * moved, a not-text read came after that read, and text is not recorded.
+   * In memory, because both the reads and the records it guards are this
+   * window's.
+   */
+  private readonly notTextReads = new Map<string, number>();
+
+  public invalidationsOf(directory: string): number {
+    return this.notTextReads.get(path.resolve(directory)) ?? 0;
+  }
+
+  /*
+   * THE MODE TO RECORD: datum or none as given; text only with the count the
+   * caller took before its read, and only if no not-text read came since.
+   */
+  private textStillHolds(directory: string, mode: BlockMode | undefined, seenAt: number | undefined): BlockMode | undefined {
+    if (mode !== 'text') return mode;
+    return seenAt !== undefined && seenAt === this.invalidationsOf(directory) ? 'text' : undefined;
+  }
+
+  /*
+   * TEXT, LEARNED BY A SAVE WITH NO WORKING WRITE (a record with no
+   * projection), written into the record the save read -- its revision --
+   * and only by the code that has just read the block as text. A save that
+   * writes a working note records text in that write instead
+   * (`recordWorking`). A record that moved is left alone; its next save asks
+   * again.
+   */
+  public recordText(file: string, expected: number | null, modeSeenAt: number): boolean {
+    return withExclusive(path.dirname(file), (): boolean => {
+      if (!this.mayWrite(file).may) return false;
+      const held = this.sidecarOf(file);
+      if (!held || held.revision !== expected) return false;
+      if (this.textStillHolds(path.dirname(file), 'text', modeSeenAt) === undefined) return false;
+      if (held.mode === 'text') return true;
+      this.write(file, { ...held, mode: 'text' });
+      return true;
+    });
+  }
+
+  /*
+   * A BLOCK THIS WINDOW HAS JUST READ AS NOT TEXT: every record of it in this
+   * session's directory says so, at once -- datum, or no mode for a mode this
+   * build does not know or could not read -- including a prepared record's
+   * prior, which a recovery could restore.
+   *
+   * NOTE: NO REVISION CHECK, ON PURPOSE. Clearing a mode, or setting datum,
+   * can only make a later save read the block or refuse it; it never lets a
+   * write through. A save in flight whose record this moves fails its own
+   * revision check and asks to be saved again. Answers how many records it
+   * changed.
+   */
+  public recordModeOfBlock(directory: string, mode: 'datum' | null): number {
+    const key = path.resolve(directory);
+    this.notTextReads.set(key, (this.notTextReads.get(key) ?? 0) + 1);
+    if (!this.files.exists(directory)) return 0;
+    return withExclusive(directory, (): number => {
+      let changed = 0;
+      for (const name of this.files.list(directory)) {
+        if (!name.endsWith('.meta')) continue;
+        const file = path.join(directory, name.slice(0, -'.meta'.length));
+        const held = this.sidecarOf(file);
+        if (!held || !this.mayWrite(file).may) continue;
+        const restate = (record: Sidecar): Sidecar => {
+          const { mode: _old, ...rest } = record;
+          return mode === null ? rest : { ...rest, mode };
+        };
+        const prior = held.prior ? restate(held.prior) : held.prior;
+        if ((held.mode ?? null) === mode && (held.prior?.mode ?? null) === (prior?.mode ?? null)) continue;
+        this.write(file, { ...restate(held), ...(prior === undefined ? {} : { prior }) });
+        changed += 1;
+      }
+      return changed;
     });
   }
 

@@ -497,10 +497,14 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    *
    * NOTE: THE SUPPLY COMMANDS SEND TWO OF THEM, `export-code` and `supply`,
    * and show whatever refusal either answers by name (src/supply.ts; the
-   * cells in supply.test.ts drive both with `incomplete-reduction`). Those
-   * two, from that file only, are the expected ones; any other is red.
+   * cells in supply.test.ts drive both with `incomplete-reduction`). The
+   * read-only view of a datum block sends `export-code --datum` too, and
+   * says the store's refusal as the core wrote it (src/datum-view.ts; the
+   * cell "says the store's refusal of the export" in datum-view.test.ts).
+   * Those, from those two files only, are the expected ones; any other is
+   * red.
    */
-  it('sends of the core\'s undeclared verbs only export-code and supply, from the supply commands', () => {
+  it('sends of the core\'s undeclared verbs only export-code and supply, from the supply commands and the datum view', () => {
     const rpc = readFileSync(path.join(coreSources().directory, 'rpc.sc'), 'utf8');
     const listed = /\(define undeclared-verbs '\(([^)]*)\)\)/.exec(rpc);
     assert.ok(listed !== null, 'the pinned core defines no undeclared-verbs list this cell can read');
@@ -517,7 +521,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
     const senders = sources()
       .filter(({ text }) => /\.request\(\s*'(export-code|supply)'/.test(text))
       .map(({ name }) => path.basename(name));
-    assert.deepStrictEqual(senders, ['supply.ts'], 'export-code or supply is sent from somewhere other than src/supply.ts');
+    assert.deepStrictEqual(senders, ['datum-view.ts', 'supply.ts'], 'export-code or supply is sent from somewhere other than src/supply.ts and src/datum-view.ts');
   });
 
   /*

@@ -60,6 +60,11 @@ export interface SaveDocument {
 export type Refusal =
   | { because: 'document-dirty' }
   | { because: 'working-unavailable'; detail:string }
+  /*
+   * The block is a datum: its code is not the text this file holds, and
+   * this editor cannot write one (src/datum-view.ts). Nothing was sent.
+   */
+  | { because: 'datum-block' }
   | { because: 'byte-order-mark' }
   | { because: 'not-utf8' }
   | { because: 'disk-differs-from-snapshot' }

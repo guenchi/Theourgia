@@ -31,7 +31,7 @@ import * as path from 'path';
 import { performance } from 'perf_hooks';
 import * as vscode from 'vscode';
 import { Block, documentFor, languageModeOf, prefixOf } from './blocks';
-import {Working} from './working';
+import {DatumBlockRefused, ModeNotKnown, Working, requireText} from './working';
 import {MIGRATE_BLOCK} from './commands';
 import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
@@ -62,6 +62,7 @@ import {
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
 import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
+import { datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
 import { projectionNameFor } from './projection-name';
 import { runSplit, splitRefusalNotice } from './split-symbols';
 import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
@@ -101,7 +102,7 @@ import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
 import { Tombstones } from './tombstones';
 import { DurabilitySink } from './durability';
-import { coreDirectoryAt, emptyDirectory, filesUnder, insideDirectory, nodeFileOps } from './fsops';
+import { coreDirectoryAt, emptyDirectory, filesUnder, insideDirectory, nodeFileOps, scratchUnder } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
@@ -145,7 +146,10 @@ function readConfig(): CoreConfig {
  * markdown, which would read the code as prose.
  */
 async function showInLanguageOf(document: vscode.TextDocument, block: Block): Promise<void> {
-  const mode = languageModeOf(block);
+  await showInMode(document, languageModeOf(block));
+}
+
+async function showInMode(document: vscode.TextDocument, mode: string): Promise<void> {
   try {
     await vscode.languages.setTextDocumentLanguage(document, mode);
   } catch (e) {
@@ -1023,6 +1027,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          */
         retired: (record) => tombstones.isRetired(record.storeHash, record.req),
         /*
+         * WHAT THE RECORD BESIDE A FILE SAYS ITS BLOCK IS NOW, read before a
+         * write of the block's text goes out (src/saver.ts, modeOf).
+         */
+        modeOf: (file: string) => {
+          const sidecar = publisher.sidecarOf(file);
+          return sidecar === null ? undefined : sidecar.mode ?? null;
+        },
+        /*
          * A KEPT WRITE THE STORE REFUSED AS STALE, whichever drain sent it --
          * the retry command, the one at startup, or the drain in front of
          * another save: said once per drain however many there were, and
@@ -1211,8 +1223,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     paint();
   }
 
+  const datumScratch = scratchUnder(path.join(storage, 'datum-view'));
+  /*
+   * THE TEXT A RESTORED DATUM TAB IS GIVEN: the datum export of the store its
+   * address names, which DocumentTexts has compared with the configured one.
+   */
+  const composeDatum = async (asking: Client, id: string): Promise<Composed> => {
+    const view = await datumViewOf(asking, id, datumScratch);
+    return view.ok ? { ok: true, title: id, text: view.text } : { ok: false, reason: view.reason, ids: [] };
+  };
   const views = new DocumentViews(
-    new DocumentTexts(() => (client === null ? null : { client, store: config.store }))
+    new DocumentTexts(() => (client === null ? null : { client, store: config.store }), documentOf, composeDatum)
   );
 
   /*
@@ -1676,6 +1697,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * block are ordered by when they asked the store rather than by
      * which of them finished first. See src/open.ts.
      */
+    const directory = sessions.directoryFor(sessionId, storeHash(store), id);
+    /*
+     * THE NOT-TEXT READS OF THIS BLOCK SEEN BEFORE THIS ONE (Publisher,
+     * `invalidationsOf`): the publication below records text only if no
+     * other read found the block not text meanwhile.
+     */
+    const seenBefore = publisher.invalidationsOf(directory);
     let block;
     let notes: Note[] | null;
     try {
@@ -1683,6 +1711,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       block = reading.block;
       notes = reading.notes;
     } catch (e) {
+      /*
+       * A READ THAT FAILED DID NOT SHOW TEXT, so no record of this block
+       * goes on saying it did.
+       */
+      publisher.recordModeOfBlock(directory, null);
       reportFailure(e);
       return;
     }
@@ -1721,13 +1754,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (block === null) {
+      publisher.recordModeOfBlock(directory, null);
       vscode.window.showWarningMessage(`Theourgia: the store has no block ${id}.`);
       return;
+    }
+    /*
+     * WHAT THIS READ SAYS THE BLOCK IS, written at once into every record of
+     * it this session holds when it is not text (datum, or a mode this build
+     * does not know), before anything below can be refused; text is written
+     * only by the publication of this very reading.
+     */
+    const openedMode = recordedModeOf(block);
+    if (openedMode !== 'text') {
+      publisher.recordModeOfBlock(directory, openedMode);
+    }
+    /*
+     * NEVER: A DATUM BLOCK OPENED AS TEXT TO EDIT. Its code is its `body`;
+     * the working read below projects `src`, which it does not have, and a
+     * save would write `src` beside the body and change nothing the store
+     * runs (src/datum-view.ts). It is shown read-only instead, and nothing
+     * is published, written or committed for it.
+     */
+    if (isDatumBlock(block)) {
+      return openDatumBlock(id, block, store, reading);
     }
     // The store was captured before the read. Acceptance checks recorded store
     // identity again inside the save chain, before numbering (XO-01/02/10).
 
-    const directory = sessions.directoryFor(sessionId, storeHash(store), id);
     const prefix = prefixOf(block);
     let shownPrefix = prefix;
 
@@ -1747,7 +1800,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const expected = publisher.revisionIn(directory);
       const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,prefix);
       shownPrefix = projection.prefix;
-      return publisher.publish({directory,storeId:store,blockId:id,prefix:projection.prefix,
+      return publisher.publish({directory,storeId:store,blockId:id,mode:openedMode ?? undefined,modeSeenAt:seenBefore,prefix:projection.prefix,
         text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
     }).catch((e: unknown) => {
       /*
@@ -1796,6 +1849,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       showIncompleteBanner(editor, notes, context.subscriptions);
     }
     return { uri: opened.uri, prefixLength: shownPrefix.length };
+  }
+
+  /*
+   * A DATUM BLOCK, READ-ONLY: its library's file as the datum export writes
+   * it, under the read-only scheme, opened at the block's own place. The
+   * prefix length answered is where the block's source starts, so go to
+   * definition finds the definition's line from there.
+   *
+   * NOTE: NO GENERATION CHECK AFTER THE EXPORT. The address names the store
+   * the export was asked of, so the tab says which store its text is from,
+   * and a restored tab is not read from another store under the same id.
+   */
+  async function openDatumBlock(id: string, block: Block, store: string, asking: Client): Promise<OpenedBlock | undefined> {
+    let view;
+    try {
+      view = await datumViewOf(asking, id, datumScratch);
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    if (!view.ok) {
+      vscode.window.showErrorMessage(`Theourgia: ${id} was not opened: ${view.reason}.`);
+      return;
+    }
+    const uri = vscode.Uri.from({
+      scheme: DOCUMENT_SCHEME,
+      path: `/${view.file}`,
+      query: documentQuery(store, id, 'datum')
+    });
+    views.show(uri, view.text);
+    const document = await vscode.workspace.openTextDocument(uri);
+    await showInMode(document, datumLanguageOf(block));
+    const at = positionOf(view.text, view.offset);
+    const place = new vscode.Position(at.line, at.character);
+    await vscode.window.showTextDocument(document, { preview: false, selection: new vscode.Range(place, place) });
+    vscode.window.showInformationMessage(`Theourgia: ${datumNotice(id)}`);
+    return { uri, prefixLength: view.offset };
   }
 
   /*
@@ -1980,10 +2070,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const asked = generation;
     const reconciling = client as Client;
+    const seenAtRead = publisher.invalidationsOf(path.dirname(file));
     let block;
     try {
       block = await model.blockOf(sidecar.blockId);
     } catch (e) {
+      publisher.recordModeOfBlock(path.dirname(file), null);
       reportFailure(e);
       return null;
     }
@@ -2001,8 +2093,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return null;
     }
     if (block === null) {
+      publisher.recordModeOfBlock(path.dirname(file), null);
       vscode.window.showWarningMessage(`Theourgia: the store has no block ${sidecar.blockId}.`);
       return null;
+    }
+    /*
+     * ONLY A TEXT BLOCK IS RECONCILED. A datum block, or one whose mode this
+     * build does not know, is refused, and every record of it this session
+     * holds is made to say what was read -- datum, or no mode -- so that a
+     * text mode an earlier record held is not left to wave a save through.
+     */
+    const known = recordedModeOf(block);
+    if (known !== 'text') {
+      publisher.recordModeOfBlock(path.dirname(file), known);
+      const notice = refusalNotice(sidecar.blockId, file, known === 'datum'
+        ? {because:'datum-block'}
+        : {because:'working-unavailable',detail:`the mode of ${sidecar.blockId} is not one this editor knows, so it is not reconciled`});
+      show(notice);
+      paint();
+      return notice;
     }
     const document = documentFor(block, sidecar.storeId);
     const directory = path.dirname(file);
@@ -2032,8 +2141,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (heldRecord?.projection) {
           try {
             const note=await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
-              .write(heldRecord.blockId,text.slice(heldRecord.prefix.length),heldRecord.prefix,false,heldRecord.projection);
-            if (!publisher.recordWorking(file,note.source,digestOfBytes(text),heldRecord.projection.id,held)) throw new Error('Projection changed');
+              .write(heldRecord.blockId,text.slice(heldRecord.prefix.length),heldRecord.prefix,false,heldRecord.projection,'text');
+            if (!publisher.recordWorking(file,note.source,digestOfBytes(text),heldRecord.projection.id,held,'text',seenAtRead)) throw new Error('Projection changed');
           } catch (error) {
             reportFailure(error);
             return {reconciled:false as const,because:'working-unavailable' as const,choices:[],storeText:document.text,previousText:null,fileText:text,held,heldProjection};
@@ -2100,12 +2209,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (outcome.heldProjection) {
         const text=picked.action==='take-store-version'?document.text:
           outcome.fileText.startsWith(document.prefix)?outcome.fileText:document.prefix+outcome.fileText;
+        /*
+         * TEXT, READ AT THE START: any other mode went no further, so the
+         * write needs no read of its own and the record learns text with the
+         * note.
+         */
         try {
           projection=(await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
-            .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',outcome.heldProjection)).source;
+            .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',outcome.heldProjection,'text')).source;
         } catch (error) {reportFailure(error);return {done:false,file,because:'working-unavailable'};}
       }
-      return publisher.reconcileBy(file,picked.action,document.prefix,document.text,outcome.fileText,projection,outcome.held);
+      return publisher.reconcileBy(file,picked.action,document.prefix,document.text,outcome.fileText,projection,outcome.held,'text',seenAtRead);
     });
     /*
      * THE RECORD MOVED WHILE THE PICK WAS OPEN (queue item 43): refused by the
@@ -2306,18 +2420,68 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!decision.send) {
         return { decision };
       }
-      if (currentSidecar?.projection && currentSidecar.storeId === config.store) {
+      /*
+       * THE STORE CHECK OF W PREPARATION, read once for both routes below:
+       * the working write and the save through `set` of a record with no
+       * projection.
+       */
+      const inConfiguredStore = currentSidecar?.storeId === config.store;
+      /*
+       * THE NOT-TEXT READS OF THIS BLOCK SEEN BEFORE THE GATE'S OWN READ: text
+       * learned by it is recorded only if none came since.
+       */
+      const seenAtSave = publisher.invalidationsOf(path.dirname(file));
+      if (currentSidecar?.projection && inConfiguredStore) {
         const capturedSidecar = currentSidecar;
         const source = currentSidecar.projection;
         try {
           const working = await new Working(writing,`window-${sessionId.toLowerCase()}`)
-            .write(capturedSidecar.blockId,decision.src,capturedSidecar.prefix,false,source);
-          if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id,capturedSidecar.revision)) {
+            .write(capturedSidecar.blockId,decision.src,capturedSidecar.prefix,false,source,capturedSidecar.mode ?? null);
+          if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id,capturedSidecar.revision,working.mode,seenAtSave)) {
             throw new Error('The file or its projection changed while the working note was being saved');
           }
           currentSidecar = publisher.sidecarOf(file);
           decision = {...decision,intent:{verb:'commit',field:'src',expectation:JSON.stringify({writer:working.source.writer,version:working.source.version})}};
         } catch (error) {
+          /*
+           * A BLOCK THE GATE FOUND NOT TEXT IS NOT SAVED, AND EVERY RECORD OF
+           * IT THIS SESSION HOLDS LEARNS IT: datum, refused next time without
+           * asking the store; no mode, asked again.
+           */
+          if (error instanceof DatumBlockRefused) {
+            publisher.recordModeOfBlock(path.dirname(file),'datum');
+            return {decision:{send:false as const,refusal:{because:'datum-block' as const}}};
+          }
+          if (error instanceof ModeNotKnown) publisher.recordModeOfBlock(path.dirname(file),null);
+          return {decision:{send:false as const,refusal:{because:'working-unavailable' as const,detail:String(error)}}};
+        }
+      } else if (currentSidecar && !currentSidecar.projection && inConfiguredStore) {
+        /*
+         * A RECORD WITH NO PROJECTION -- a file a much earlier version made --
+         * saves through `set <id> src`, not a working write, and goes through
+         * the same mode gate first.
+         */
+        const unprojected = currentSidecar;
+        try {
+          const read = await requireText(writing,unprojected.blockId,unprojected.mode ?? null);
+          /*
+           * NEVER: A RECORD THAT MOVED WHILE THE MODE WAS READ. The decision
+           * was split against this record; a replacement is not adopted under
+           * it. Only the record the reading was taken against learns text, and
+           * only when this save read it.
+           */
+          if (read) {
+            if (!publisher.recordText(file,unprojected.revision,seenAtSave)) {
+              throw new Error('the file\'s record changed while the block\'s mode was being read; save again');
+            }
+            currentSidecar = publisher.sidecarOf(file);
+          }
+        } catch (error) {
+          if (error instanceof DatumBlockRefused) {
+            publisher.recordModeOfBlock(path.dirname(file),'datum');
+            return {decision:{send:false as const,refusal:{because:'datum-block' as const}}};
+          }
+          if (error instanceof ModeNotKnown) publisher.recordModeOfBlock(path.dirname(file),null);
           return {decision:{send:false as const,refusal:{because:'working-unavailable' as const,detail:String(error)}}};
         }
       }
