@@ -73,6 +73,7 @@ jobs:
       - name: the layout probe on this machine
         if: matrix.which == 'ref'
         run: |
+          set +e
           mkdir -p probe
           cc -O0 -o probe/layout lib/theourgia/test/probe/layout.c
           ./probe/layout > probe/layout-intel.txt; echo $? > probe/layout.rc
@@ -81,10 +82,18 @@ jobs:
           diff probe/rosetta.cmp probe/intel.cmp > probe/layout.diff; echo $? > probe/layout-diff.rc
           echo "probe rc $(cat probe/layout.rc), lines $(wc -l < probe/layout-intel.txt), diff rc $(cat probe/layout-diff.rc)"
           head -3 probe/layout-intel.txt; cat probe/layout.diff
-      # X1: init, then insert, on this machine. On the base the insert
-      # answers the mkdir refusal; on the tree under test it answers ok.
+          [ "$(cat probe/layout.rc)" = 0 ] && [ "$(cat probe/layout-diff.rc)" = 0 ] && [ -s probe/intel.cmp ]
+      # X1: init, insert and outline on this machine, each status kept (the
+      # step runs with errexit off: a refusal is a reading, not the end of
+      # the step), then judged against what this job's tree should answer:
+      #   ref      all three rc 0, and the outline names X1;
+      #   base     init refused platform-unmeasured, exit 75 (no row);
+      #   rowonly  the row without the symbols: init or insert answers a
+      #            refusal carrying (errno 17), the legacy struct stat read
+      #            with the row's offsets.
       - name: init then insert
         run: |
+          set +e
           W="$PWD"; mkdir -p "$W/x1"; S="$(mktemp -d /tmp/x1.XXXXXX)/s"
           export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_SCHEME=scheme
           export CHEZSCHEMELIBDIRS="$W/lib" CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
@@ -92,10 +101,21 @@ jobs:
           scheme --script lib/theourgia/theourgia.sc insert --title X1 --store "$S" > x1/insert.out 2> x1/insert.err; echo $? > x1/insert.rc
           scheme --script lib/theourgia/theourgia.sc outline --wire --store "$S" > x1/outline.out 2> x1/outline.err; echo $? > x1/outline.rc
           for f in init insert outline; do echo "== $f rc $(cat x1/$f.rc)"; head -c 2000 x1/$f.out; head -c 2000 x1/$f.err; done
-          pkill -f theourgiad.sc || true
+          pkill -f theourgiad.sc
+          r() { cat "x1/$1.rc"; }
+          case "${{ matrix.which }}" in
+            ref) [ "$(r init)" = 0 ] && [ "$(r insert)" = 0 ] && [ "$(r outline)" = 0 ] && grep -q 'X1' x1/outline.out ;;
+            base) [ "$(r init)" = 75 ] && grep -q 'platform-unmeasured' x1/init.err ;;
+            rowonly) ! { [ "$(r init)" = 0 ] && [ "$(r insert)" = 0 ]; } && cat x1/init.out x1/init.err x1/insert.out x1/insert.err | grep -q '(errno 17)' ;;
+            *) false ;;
+          esac
+          v=$?
+          echo "X1 ${{ matrix.which }}: $([ $v = 0 ] && echo as-predicted || echo NOT-AS-PREDICTED)" | tee x1/verdict.txt
+          exit $v
       - name: the whole suite
         if: matrix.which == 'ref'
         run: |
+          set +e
           W="$PWD"; mkdir -p "$W/out" "$W/testroot"
           cd lib/theourgia/test
           ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot"; . ./env.sh
@@ -103,9 +123,11 @@ jobs:
           cd "$W"
           echo "suite rc: $(cat suite.rc)"
           tail -80 suite.log
-          # EACH NOT-GREEN FIXTURE AGAIN, ALONE: fresh roots, the runner's own
-          # limit. One that passes alone and failed in the suite is timing
-          # under load; one that fails alone the same way is not.
+          # EACH NOT-GREEN FIXTURE AGAIN, ALONE: fresh roots, a 900 s limit,
+          # outside the runner (no launch.pl, no process census). This is
+          # evidence for the classification, not the classification: a
+          # fixture that passes alone and failed in the suite is reported as
+          # intermittent, and its cause is read from its own output.
           mkdir -p "$W/rerun"
           for fx in $(grep '^RED ' suite.log | awk '{print $2}'); do
             f="$W/lib/theourgia/test/$fx.sc"; runner="scheme --script"
@@ -113,8 +135,12 @@ jobs:
             root=$(mktemp -d "$W/testroot/rerun.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
             ( cd "$W/lib/theourgia/test"; export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock"; . ./env.sh
               perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$W/rerun/$fx.out" 2>&1 < /dev/null; echo $? > "$W/rerun/$fx.rc" ) || true
-            echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
+            echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") mismatch=$(grep -c 'MISMATCH' "$W/rerun/$fx.out") exception=$(grep -c -i 'exception' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
           done
+          # THE SUITE MUST HAVE RUN TO ITS END: a run that stopped before its
+          # summary has no RED lines to rerun and would otherwise read clean.
+          grep -q 'fixtures run:' suite.log || { echo "the suite printed no summary: it did not run to its end"; exit 1; }
+          [ "$(cat suite.rc)" = 0 ] || { echo "suite rc $(cat suite.rc): not green, see RED lines and reruns"; exit 1; }
       - name: keep the readings
         if: always()
         uses: actions/upload-artifact@v4
