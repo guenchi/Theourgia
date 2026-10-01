@@ -1025,9 +1025,9 @@
   ;; publication is still current, and the safe answer to a doubt about it
   ;; is to fold. The fold reads the store under its lock, and it is what
   ;; names an unreadable writer -- in the answer's notes, or as
-  ;; reload-failed when it cannot complete -- so nothing the snapshot could
-  ;; not see goes unsaid. (The probe that answer-published runs next meets
-  ;; the same failure and traces probe-failed.)
+  ;; reload-failed when it cannot complete. A failure that has passed by the
+  ;; time the fold reads leaves no trace here: the fold simply succeeds, and
+  ;; what it read is what is answered.
   (define (refresh-if-behind! store)
     (let ((now (guard (e (#t #f)) (store-state-snapshot store))))
       (unless (and now (equal? now (published-snapshot)))

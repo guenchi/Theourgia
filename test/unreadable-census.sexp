@@ -192,7 +192,7 @@
   ("daemon.sc" (refresh-if-behind!) 1 guard
    (#t)
    conservative a
-   "a snapshot that cannot be taken counts as behind: the store process folds before answering a cut read, and that fold names an unreadable writer in its notes or as reload-failed; the probe answer-published runs next traces probe-failed"
+   "a snapshot that cannot be taken counts as behind: the store process folds before answering a cut read, and that fold names an unreadable writer in its notes or as reload-failed; a failure gone by the time the fold reads leaves no trace"
    (e (#t #f)))
   ("daemon.sc" (answer-for) 1 guard
    ((and (pair? e) (eq? (quote error) (car e))) (unreadable-entry? e) #t)
