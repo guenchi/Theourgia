@@ -874,6 +874,16 @@
       (list (list-sort string<? bound-by-entry)
             (filter (lambda (x) (member x inode64-reading)) bound-bare))
       (list '("lstat" "opendir" "readdir" "stat") '()))
+;; NEVER: THE ROW CHOOSES NO SYMBOL. A child forced to Darwin/x86_64 loads
+;; the FFI and stats a directory: the symbols are this process's own
+;; family, so on any machine but an x86_64 Mac they stay bare -- a binding
+;; chosen by the forced row would name $INODE64 twins this library does
+;; not have, and the load would fail.
+(want "PN-X2 forced to Darwin/x86_64, the FFI binds this machine's family and stat answers"
+      (let ((r (child (string-append forced "Darwin/x86_64")
+                      "(import (chezscheme) (theourgia ffi))\n(write (list (file-is-directory? \"/\") (libc-entry-name (machine-type) \"stat\")))\n(newline)\n")))
+        (list (car r) (data-of-text (cadr r))))
+      (list 0 (list (list #t (if (memq (machine-type) x86-macos-types) "stat$INODE64" "stat")))))
 (want "PN-X2 every name ffi.sc binds by its literal name binds itself on macOS x86_64 too"
       (list (> (length bound-bare) 30)
             (for-all (lambda (x) (string=? (libc-entry-name 'ta6osx x) x)) bound-bare))
