@@ -361,13 +361,16 @@
   ;; -> the library name an import spec names, or #f when it does not reduce:
   ;; only, except, prefix, rename and for (with its levels) are removed to any
   ;; depth, the library wrapper too, and a trailing version reference dropped.
+  ;; A name that starts with one of those words is written inside the
+  ;; library wrapper (R6RS 7.1), so `(only)` bare is a malformed spec, not
+  ;; the library (only).
   (define (import-library-name spec)
     (cond
       ((not (and (pair? spec) (list? spec))) #f)
-      ((and (memq (car spec) '(only except prefix rename for)) (pair? (cdr spec)))
-       (import-library-name (cadr spec)))
-      ((and (eq? (car spec) 'library) (= (length spec) 2))
-       (library-name-proper (cadr spec)))
+      ((memq (car spec) '(only except prefix rename for))
+       (and (pair? (cdr spec)) (import-library-name (cadr spec))))
+      ((eq? (car spec) 'library)
+       (and (= (length spec) 2) (library-name-proper (cadr spec))))
       (else (library-name-proper spec))))
 
   (define (library-name-proper name)
