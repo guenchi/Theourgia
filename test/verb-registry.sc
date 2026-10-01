@@ -119,6 +119,11 @@
 (register-verbs! extension-verbs)
 (register-verbs! (list probe-entry))
 (define verbs-registered (rpc-verbs))
+;; The registered names, in registration order: every extension entry, then
+;; the probe. Read from the data rather than spelt here, so a verb the
+;; extensions gain is excluded from the built-in comparison without a row
+;; edit.
+(define registered-names (append (map car extension-verbs) '(probe)))
 
 (want "V1 registered, commitments answers ok and describe lists it with its catalogue fields"
       (list (car (run 'commitments))
@@ -129,7 +134,7 @@
       (list (run 'probe) (run 'probe "--loud"))
       '((ok (items (probe quiet ()))) (ok (items (probe loud ())))))
 (want "V1 every built-in verb's describe entry is the base's, byte for byte"
-      (let ((now (filter (lambda (e) (not (memq (car e) '(commitments probe))))
+      (let ((now (filter (lambda (e) (not (memq (car e) registered-names)))
                          (cdr (assq 'verbs (cdr (run 'describe)))))))
         (if (equal? now (base-of 'describe-entries)) 'identical
             (list 'differs (filter (lambda (e) (not (member e (base-of 'describe-entries)))) now))))
@@ -137,7 +142,7 @@
 (want "V1 three representative built-ins answer as on the base"
       (map (lambda (form) (equal? (answer-of form)
                                   (if (equal? form '(describe-verbs))
-                                      (append (base-of 'describe-verbs) '(commitments probe))
+                                      (append (base-of 'describe-verbs) registered-names)
                                       (cadr (assoc form (base-of 'answers))))))
            representative)
       '(#t #t #t))

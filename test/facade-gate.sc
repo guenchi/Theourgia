@@ -999,6 +999,12 @@
     (cons 'export-code (seeded (lambda (st x s) (census-ask st 'export-code (string-append x "/code-out")))))
     (cons 'def (seeded (lambda (st x s)
                          (census-ask st 'def "freshname" "--under" (census-get s 'lib) "(define freshname 1)"))))
+    ;; names on the seed's library block: its one import is the item.
+    (cons 'names (seeded (lambda (st x s) (census-ask st 'names (census-get s 'lib)))))
+    ;; uses needs a code block that uses something: one is defined first.
+    (cons 'uses (seeded (lambda (st x s)
+                          (census-ask st 'def "usesname" "--under" (census-get s 'lib) "(define usesname (car gnarlwick))")
+                          (census-ask st 'uses "car"))))
     ;; THE DIRECTORY IS MADE FIRST: export-md into one that does not exist
     ;; yet writes nothing and calls every document's path unusable (F82).
     (cons 'export-md (seeded (lambda (st x s)
@@ -1207,7 +1213,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit commitments conflicts def diagnostics diff drafts grep import-code log refs search tag whereis))
+      '(commit commitments conflicts def diagnostics diff drafts grep import-code log names refs search tag uses whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1226,8 +1232,8 @@
       (census-detail 'tagged)
       '((commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
-        (import-code (ok) . 0) (log (entry) . 0) (refs (ref) . 0) (search (hit) . 0)
-        (tag (tag) . 0) (whereis (def export) . 0)))
+        (import-code (ok) . 0) (log (entry) . 0) (names (import) . 0) (refs (ref) . 0) (search (hit) . 0)
+        (tag (tag) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)
       '((batch . batch) (check . check) (del . ok) (describe . ok) (discard . ok)

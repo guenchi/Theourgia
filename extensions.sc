@@ -25,11 +25,15 @@
 ;;; An entry is (verb usage description protocol? route value-options
 ;;; flag-options (library . name)).
 (library (theourgia extensions)
-  (export extension-verbs commitments-usage)
+  (export extension-verbs commitments-usage names-usage uses-usage)
   (import (rnrs base))
 
   (define commitments-usage
     '(commitments ["--open"] ["--all"] ["--drifted"] ["--since" <cut>] ["--under" <id>]))
+
+  (define names-usage '(names <id>))
+
+  (define uses-usage '(uses <name> ["--under" <id>]))
 
   (define extension-verbs
     (list
@@ -37,4 +41,14 @@
             "List the decisions still owed: by default those neither implemented (an incoming implements edge) nor marked done or dropped; with --all every decision. --drifted keeps those with an implementation whose latest change was seen neither by its implements link nor by the decision's latest edit."
             #f 'daemon
             '("--since" "--under") '("--open" "--all" "--drifted")
-            '((theourgia commitments) . commitments-verb)))))
+            '((theourgia commitments) . commitments-verb))
+      (list 'names names-usage
+            "Which names a code block uses, as its stored code shows them, and which libraries a library block imports. A datum block's body is walked as data: a symbol is a use unless something in the form binds it, and an unknown macro's operands count as uses. A text block's uses are every token its language's identifier pattern matches, comments and strings included. No name is resolved."
+            #f 'daemon
+            '() '()
+            '((theourgia name-use) . names-verb))
+      (list 'uses uses-usage
+            "The live code blocks that use a name, compared whole and exactly, one row per block with its library and mode; with --under, those inside that block. It is not find-references: a use is listed whether or not anything defines the name, and a text block that defines the name also lists it."
+            #f 'daemon
+            '("--under") '()
+            '((theourgia name-use) . uses-verb)))))
