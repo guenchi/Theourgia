@@ -116,9 +116,19 @@
 
   (define defining-heads '(define define-syntax define-record-type define-values))
 
+  ;; A definition whose shape does not fit (a define whose formals are not
+  ;; formals, define-values whose names are not formals, a define-syntax
+  ;; whose name is not a symbol) is not a definition: it is walked by the
+  ;; fallback, as any malformed known form is.
   (define (definition? f env)
     (and (pair? f) (symbol? (car f)) (not (bound? (car f) env)) (memq (car f) defining-heads)
-         (list? f) (pair? (cdr f))))
+         (list? f) (pair? (cdr f))
+         (let ((target (cadr f)))
+           (case (car f)
+             ((define) (or (symbol? target) (and (pair? target) (symbol? (car target)) (formals? (cdr target)))))
+             ((define-syntax) (symbol? target))
+             ((define-values) (formals? target))
+             (else #t)))))
 
   ;; The names a definition defines. define-values' formals are its names;
   ;; the others are datum-names', the one reading of a definition's names.
@@ -133,11 +143,9 @@
     (case (car d)
       ((define)
        (let ((target (cadr d)))
-         (cond
-           ((and (pair? target) (symbol? (car target)))
-            (walk-body (cddr d) (append (formals-names (cdr target)) env)))
-           ((pair? (cddr d)) (walk-all (cddr d) env))
-           (else '()))))
+         (if (pair? target)
+             (walk-body (cddr d) (append (formals-names (cdr target)) env))
+             (walk-all (cddr d) env))))
       ((define-syntax) (walk-all (cddr d) env))
       ((define-values) (walk-all (cddr d) env))
       ((define-record-type)
@@ -227,7 +235,7 @@
     (for-each
      (lambda (entry) (register-name-use-form! (car entry) (cdr entry)))
      (list
-      (cons 'quote (lambda (x env walk body) '()))
+      (cons 'quote (lambda (x env walk body) (and (= (length x) 2) '())))
       (cons 'quasiquote
             (lambda (x env walk body)
               (and (= (length x) 2) (template (cadr x) 1 env))))
@@ -310,6 +318,8 @@
       (cons 'case
             (lambda (x env walk body)
               (and (>= (length x) 2) (lists? (cddr x))
+                   (for-all (lambda (c) (or (list? (car c)) (and (eq? (car c) 'else) (not (bound? 'else env)))))
+                            (cddr x))
                    (append (walk (cadr x) env)
                            (apply append
                                   (map (lambda (c) (walk-all (cdr c) env)) (cddr x)))))))
@@ -393,7 +403,15 @@
   (define missing (list 'missing))
   (define (field-of row name)
     (let ((e (assq name (cdr (assq 'fields row))))) (if e (cdr e) missing)))
-  (define (conflict-form? v) (and (pair? v) (eq? (car v) 'conflict)))
+  ;; THE REDUCER'S CONFLICT, BY ITS WHOLE SHAPE: (conflict (<candidate> ...))
+  ;; with two candidates or more, each (value writer seq). The head alone
+  ;; would take a stored application of a procedure named conflict for one.
+  (define (conflict-form? v)
+    (and (list? v) (= (length v) 2) (eq? (car v) 'conflict)
+         (list? (cadr v)) (>= (length (cadr v)) 2)
+         (for-all (lambda (c) (and (list? c) (= (length c) 3) (string? (cadr c))
+                                   (integer? (caddr c)) (exact? (caddr c))))
+                  (cadr v))))
 
   ;; -> ((names <sym> ...) (imports <lib> ...) (import-unreadable <d> ...)
   ;;     (contract syntactic [(lexing whole-text)] | none (reason <r>)))

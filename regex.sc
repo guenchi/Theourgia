@@ -75,20 +75,22 @@
         (unless (= i n) (assertion-violation 'regex "Unmatched parenthesis" source)) ast)))
 
   (define (regex-match ast text . spans)
-    (let ((answer (match-span ast text 0 (string-length text) "Definition line exceeds limit")))
+    (let ((answer (match-span ast text 0 (string-length text) "Definition line exceeds limit" #f)))
       (and answer
            (if (pair? spans) answer
                (map (lambda (p) (cons (car p) (substring text (cadr p) (cddr p)))) answer)))))
 
-  ;; THE SAME MATCH, ANCHORED AT START and reading no further than END, with
-  ;; no copy of the text: ^ is START and $ is END. -> the captures as
+  ;; A MATCH ANCHORED AT START and reading no further than END, with no copy
+  ;; of the text: ^ is START and $ is END. It answers the LONGEST of the
+  ;; matches, whatever the pattern's alternation order or laziness prefers
+  ;; (regex-match answers the preferred one). -> the captures as
   ;; (index start . end) in positions of TEXT, or #f.
   (define (regex-match-at ast text start end)
     (unless (and (<= 0 start end (string-length text)))
       (assertion-violation 'regex-match-at "Invalid span" start end))
-    (match-span ast text start end "Span exceeds limit"))
+    (match-span ast text start end "Span exceeds limit" #t))
 
-  (define (match-span ast text from n limit-message)
+  (define (match-span ast text from n limit-message longest?)
     (let ((budget 30000))
       (define (tick!)
         (set! budget (- budget 1))
@@ -134,5 +136,8 @@
             (else (assertion-violation 'regex "Unknown compiled operator" (car pattern))))))
       (when (> (- n from) 4096) (assertion-violation 'regex-limit limit-message))
       (let ((matches (run ast (cons from '()))))
-        (and (pair? matches) (cdar matches)))))
+        (and (pair? matches)
+             (if longest?
+                 (cdr (fold-left (lambda (best m) (if (> (car m) (car best)) m best)) (car matches) (cdr matches)))
+                 (cdar matches))))))
 )

@@ -635,7 +635,10 @@ The known forms are `quote`, `quasiquote` (its unquoted parts are walked), `lamb
 `case-lambda`, `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values`, `do`,
 `begin`, `if`, `and`, `or`, `when`, `unless`, `set!`, `cond`, `case`, `guard`,
 `parameterize`, `rec` and `foreign-procedure`; their own keyword is not a use, nor
-`else` or `=>` in a clause, nor `case`'s data or `foreign-procedure`'s types. Every
+`else` at the head of a `cond`, `case` or `guard` clause, nor `=>` as the second
+element of a `cond` or `guard` clause as written (`case` has no arrow: `=>` there is a
+name), nor `case`'s data or `foreign-procedure`'s types and calling convention. A known
+form whose shape does not fit its rule is walked as the fallback walks it. Every
 other form, a macro of the code's own included, is walked whole: its keyword and every
 name in it count as uses -- a pattern variable of `syntax-rules` too. That is the
 **over-approximation**. A name that only a macro's expansion introduces is not seen:
@@ -645,7 +648,7 @@ A text block's uses are every token of its text that matches its language's
 `identifier` pattern (the language table holds one per language), **comments and
 strings included** and keywords too: the answer says `(lexing whole-text)`. A token
 starts where the pattern first matches, so in `9abc` the token is `abc`, and is
-the longest match there, read up to 4096 characters (a longer one is read as more
+the longest match there whatever the pattern's alternation order prefers, read up to 4096 characters (a longer one is read as more
 than one). A block whose language has no entry answers
 `(name-use none (reason no-language))`.
 

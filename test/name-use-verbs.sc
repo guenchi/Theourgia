@@ -125,8 +125,15 @@
 (want "U8 a formals position that holds no formals is a malformed form: it falls back"
       (in-order (datum-uses '(lambda 42 x))
                 (datum-uses '(case-lambda (42 x)))
-                (datum-uses '(let-values (((1) p)) q)))
-      '((lambda x) (case-lambda x) (let-values p q)))
+                (datum-uses '(let-values (((1) p)) q))
+                (datum-uses '(let*-values (((1) p)) q)))
+      '((lambda x) (case-lambda x) (let-values p q) (let*-values p q)))
+(want "U8 a definition, a quote or a case clause whose shape does not fit falls back"
+      (in-order (datum-uses '(define (f (x)) x))
+                (datum-uses '(lambda () (define-values ((x)) (g)) x))
+                (datum-uses '(quote x y))
+                (datum-uses '(case k (x y))))
+      '((define f x) (define-values g x) (quote x y) (case k x y)))
 (want "U5 every begin in a body is spliced: nested, mixed with expressions, empty"
       (in-order (datum-uses '(lambda () (begin (begin (define x y))) x))
                 (datum-uses '(lambda () (begin (define x y) (f x))))
@@ -287,6 +294,9 @@
                 (map (lambda (s) (string-length (symbol->string s)))
                      (text-uses (make-string 4097 #\a) default-identifier-pattern)))
       '((4096) (1 4096)))
+(want "U13 the longest match whatever the pattern prefers: an alternation's first branch, a lazy repeat"
+      (in-order (text-uses "ab" "a|ab") (text-uses "abc" "[a-z]+?"))
+      '((ab) (abc)))
 (want "U14 a template literal's text and its substitution are both listed, and a lone $ is a JavaScript name"
       (text-uses "`hi ${name}` + x" (pattern-of "javascript"))
       '($ hi name x))
@@ -428,6 +438,12 @@
 ;; ---- U24b: the stored value, never a printed or re-read one --------------------------
 
 (define DB (datum 'root (list 'define '(f) (list (string->symbol "a b") "(x)"))))
+;; A stored application of a procedure named conflict is code, not the
+;; reducer's conflict value.
+(define DC (datum 'root '(conflict x)))
+(want "U18 a body that is an application of conflict is walked"
+      (run 'names DC)
+      '(ok (items (name conflict) (name x)) (name-use syntactic)))
 (want "U24b a symbol that needs bars and a string holding a parenthesis: the stored datum's names"
       (run 'names DB)
       (list 'ok (list 'items (list 'name (string->symbol "a b"))) '(name-use syntactic)))
@@ -498,7 +514,7 @@
 ;; means the same files holding the same bytes.
 (define (file-digests)
   (let ((f (string-append root "/digests.txt")))
-    (system (string-append "cd '" store "' && find . -type f | LC_ALL=C sort | while read x; do echo \"$(md5 -q \"$x\") $x\"; done > '" f "'"))
+    (system (string-append "cd '" store "' && find . -type f | LC_ALL=C sort | while read x; do echo \"$(md5 -q \"$x\" || echo MD5-FAILED) $x\"; done > '" f "'"))
     (file-text f)))
 (define (file-list)
   (let ((f (string-append root "/files.txt")))
@@ -637,9 +653,24 @@
 (stop-daemons!)
 
 (define pins-after (list (file-digests) (file-list)))
-(want "U24 CONTROL: the digest listing read the store's files"
-      (> (string-length (car pins-before)) 100)
-      #t)
+;; Each line of a listing is 32 hexadecimal digits, a space and a name.
+(define (digest-lines? text)
+  (let ((lines (let loop ((i 0) (start 0) (out '()))
+                 (cond ((>= i (string-length text))
+                        (reverse (if (> i start) (cons (substring text start i) out) out)))
+                       ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
+                       (else (loop (+ i 1) start out))))))
+    (and (pair? lines)
+         (for-all (lambda (l) (and (> (string-length l) 33)
+                                   (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f)))
+                                            (string->list (substring l 0 32)))
+                                   (char=? (string-ref l 32) #\space)))
+                  lines)
+         (length lines))))
+(want "U24 CONTROL: every line of both digest listings carries a digest, and there are files"
+      (let ((a (digest-lines? (car pins-before))) (b (digest-lines? (car pins-after))))
+        (list (and a (> a 3)) (equal? a b)))
+      '(#t #t))
 (want "U24 every route above wrote nothing: every file of the store holds the bytes it held, and no file came or went"
       (map equal? pins-before pins-after)
       '(#t #t))
@@ -681,7 +712,7 @@
 (putenv "THEOURGIA_RUN" (string-append sock-root "/run"))
 (stop-daemons!)
 (define hold-release (string-append root "/u23.release"))
-(define hold-env (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=reload-before-publish:" hold-release)))
+(define hold-env (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD_MS=120000 THEOURGIA_HOLD=reload-before-publish:" hold-release)))
 (define (held-uses name)
   (first-datum (sh-out "u23" (string-append hold-env "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc uses '"
                                             name "' --store '" store "' --wire"))))
@@ -698,13 +729,18 @@
 (define DG (datum 'root '(define (g) (gnu 1))))
 (define gnu-held (held-uses "gnu"))
 (define fold-held (wait-for (lambda () (file-exists? (string-append hold-release ".held")))))
+;; ASKED AGAIN WHILE THE FOLD IS CONFIRMED HELD: the fold that has the new
+;; block exists and is not published, and this answer must not list it.
+(define gnu-during (held-uses "gnu"))
 (call-with-output-file hold-release (lambda (o) (write 'go o)) 'truncate)
 (define published-twice (wait-for (lambda () (>= (publications) 2))))
 (define gnu-after (held-uses "gnu"))
+(define hold-expired (string-contains? (file-text (serve-log-path store)) "hold-expired"))
 (stop-daemons!)
 (want "U23 on the daemon: held out of the publication the new block is not listed; published, it is"
-      (in-order (cadr gnu-before) (cadr gnu-held) fold-held published-twice (map cadr (cdadr gnu-after)))
-      (list '(items) '(items) #t #t (list DG)))
+      (in-order (cadr gnu-before) (cadr gnu-held) fold-held (cadr gnu-during) hold-expired published-twice
+                (map cadr (cdadr gnu-after)))
+      (list '(items) '(items) #t '(items) #f #t (list DG)))
 
 ;; ---- U27: the README -------------------------------------------------------------------
 
