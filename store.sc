@@ -29,6 +29,7 @@
           store-init! nearest-ids store-snapshot!
           batch-answer
           store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
+          library-locator
           make-write-request write-request? store-successors store-intervals
           request-verdict failure-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -1079,18 +1080,34 @@
             (set! defs-index-builds (+ defs-index-builds 1))
             built))))
 
+  ;; THE LIBRARY A BLOCK BELONGS TO: the nearest enclosing block whose kind
+  ;; is library, walking the outline's parents, or #f when there is none.
+  ;; -> a procedure from a block id to that library's id or #f, built once
+  ;; for a state. KIND-OF reads a block's kind; the caller decides how (the
+  ;; definitions index reads it through its own guarded field memo). Both
+  ;; the definitions index and name use answer "which library" with this one
+  ;; walk.
+  ;; NEVER: THE ROWS ARE WALKED ONCE. The first version asked
+  ;; `parent-in-outline` for every step of every block's ancestry, and that
+  ;; rescans the whole outline each time -- measured on a store of this
+  ;; tree's own sources, 906 blocks: ONE INDEX BUILD TOOK 8.5 SECONDS, and
+  ;; `whereis` rebuilds it per call, so the verb answered in 8.7. The same
+  ;; walk done once, into a parent table, is the shape the markdown
+  ;; projection already uses for the same reason.
+  (define (library-locator state kind-of)
+    (let ((parent (make-hashtable string-hash string=?)))
+      (for-each (lambda (r) (hashtable-set! parent (caddr r) (car r))) (state-outline state))
+      (lambda (id)
+        (let loop ((up (hashtable-ref parent id #f)))
+          (cond ((not up) #f)
+                ((eq? up (quote root)) #f)
+                ((eq? (quote library) (kind-of up)) up)
+                (else (loop (hashtable-ref parent up #f))))))))
+
   (define (build-defs-index state)
     (let ((by-name (make-hashtable string-hash string=?))
           (live (make-hashtable string-hash string=?))
-          ;; NEVER: THE ROWS ARE WALKED ONCE. The first version asked
-          ;; `parent-in-outline` for every step of every block's ancestry, and
-          ;; that rescans the whole outline each time -- measured on a store of
-          ;; this tree's own sources, 906 blocks: ONE INDEX BUILD TOOK 8.5
-          ;; SECONDS, and `whereis` rebuilds it per call, so the verb answered
-          ;; in 8.7. The same walk done once, into a parent table, is the shape
-          ;; the markdown projection already uses for the same reason.
-          (parent (make-hashtable string-hash string=?))
-          ;; And each block's fields are derived ONCE. `view-read` is cheap --
+          ;; Each block's fields are derived ONCE. `view-read` is cheap --
           ;; 2 ms over every block in that store -- but not when it is called
           ;; per ancestor step per block.
           (fields (make-hashtable string-hash string=?)))
@@ -1140,14 +1157,8 @@
       ;; `kind` of `code` and a `library` block does not go through the path
       ;; that raises -- but "unreachable today" is a reason, not a promise, and
       ;; the merge is written here rather than left to be rediscovered.
-      (define (library-of id)
-        (let loop ((up (hashtable-ref parent id #f)))
-          (cond ((not up) #f)
-                ((eq? up (quote root)) #f)
-                ((eq? (quote library) (field up (quote kind))) up)
-                (else (loop (hashtable-ref parent up #f))))))
+      (define library-of (library-locator state (lambda (up) (field up (quote kind)))))
       (for-each (lambda (r)
-                  (hashtable-set! parent (caddr r) (car r))
                   ;; NEVER: A DELETED BLOCK IS NOT AN ANSWER. `state-datum`
                   ;; lists tombstones and `state-outline` does not, and this
                   ;; read the first and checked neither -- measured, a deleted

@@ -1388,7 +1388,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit commitments eval insert outline serve supply))
+      '(commit commitments eval insert names outline serve supply uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1728,7 +1728,7 @@
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "incomplete.sc" "json.sc"
-        "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"
+        "languages.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "proc.sc" "project.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"

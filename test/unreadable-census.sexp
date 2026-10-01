@@ -214,6 +214,16 @@
    unrelated a
    "frame parse"
    (e (#t (quote not-a-datum))))
+  ("name-use.sc" (block-name-use) 1 guard
+   (#t)
+   unrelated a
+   "a stored block the name-use walk cannot read (a malformed fields list, a definition datum-names raises on): the body reads a row already in the reduction, never a file, and answers (name-use none (reason unreadable-code)), which uses counts under skipped"
+   (e (#t (none (quote unreadable-code)))))
+  ("name-use.sc" (live-kind) 1 guard
+   (#t)
+   unrelated a
+   "a block's kind for the library column of uses: a row already in the reduction, never a file; a kind that cannot be read is no library"
+   (e (#t #f)))
   ("datum-code.sc" (discarded-datum) 1 guard
    ((lexical-violation? e))
    unrelated a
