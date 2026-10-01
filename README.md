@@ -1,6 +1,6 @@
 # Theourgia
 
-Agent-and-human shared block-graph knowledge base. 
+A block-graph store that agents and people write into together.
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
