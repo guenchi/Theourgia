@@ -68,6 +68,19 @@ jobs:
           git -C lib/igropyr rev-parse HEAD
           rm -rf lib/theourgia/.git lib/igropyr/.git
           echo "so files: $(find lib -name '*.so' | wc -l)"
+      # THE ROW ON INTEL HARDWARE: the probe compiled here and run, compared
+      # with the row read under Rosetta, every line but machine and release.
+      - name: the layout probe on this machine
+        if: matrix.which == 'ref'
+        run: |
+          mkdir -p probe
+          cc -O0 -o probe/layout lib/theourgia/test/probe/layout.c
+          ./probe/layout > probe/layout-intel.txt; echo $? > probe/layout.rc
+          sed -E 's/ *\(release "[^"]*"\)//; s/\(machine "[^"]*"\) *//' probe/layout-intel.txt > probe/intel.cmp
+          sed -E 's/ *\(release "[^"]*"\)//; s/\(machine "[^"]*"\) *//' lib/theourgia/test/probe/readings/darwin-x86_64-rosetta.sexp > probe/rosetta.cmp
+          diff probe/rosetta.cmp probe/intel.cmp > probe/layout.diff; echo $? > probe/layout-diff.rc
+          echo "probe rc $(cat probe/layout.rc), lines $(wc -l < probe/layout-intel.txt), diff rc $(cat probe/layout-diff.rc)"
+          head -3 probe/layout-intel.txt; cat probe/layout.diff
       # X1: init, then insert, on this machine. On the base the insert
       # answers the mkdir refusal; on the tree under test it answers ok.
       - name: init then insert
@@ -108,6 +121,7 @@ jobs:
         with:
           name: intel-suite-${{ matrix.which }}-${{ env.REF }}
           path: |
+            probe
             x1
             out
             suite.log
