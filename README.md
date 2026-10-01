@@ -513,7 +513,7 @@ for something that has to ask rather than be told: the MCP shell builds its
 tool list from this, so a tool description and the verb it describes cannot
 drift apart.
 
-It reads a table and runs nothing. NEVER: It does not open the store, take a lock
+It reads a table and runs nothing. NEVER: In process it does not open the store, take a lock
 or write a byte. When the store has a template, the daemon adds `(template (roots ...)
 (relations ...))` from the state it publishes; there describe is a read like any other, which may
 check the store's files for a change made from outside and reload, and never writes. The in-process

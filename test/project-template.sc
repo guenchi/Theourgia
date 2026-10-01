@@ -23,7 +23,8 @@
         (only (theourgia crc32) crc32-hex)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia reduce) reduce-empty reduce-apply! state-read state-block-ids)
-        (only (theourgia store) open-and-reduce)
+        (only (theourgia store) open-and-reduce seal-state)
+        (only (theourgia log) unreadable-behind)
         (only (theourgia commitments) commitments-answer)
         (only (theourgia template-read) store-template template-problem)
         (only (theourgia templates) built-in-template))
@@ -392,8 +393,10 @@
 (want "T4 a document under docs/ is written at docs/x.md with its section, code files and a datum library at code/"
       (list (has-line? (file-text (string-append out4 "/md/docs/x.md")) "# Reading the store")
             (file-exists? (string-append out4 "/code/code/a.js")) (file-exists? (string-append out4 "/code/code/b.js"))
-            (string-contains? (file-text (string-append out4 "/datum/code/tools.sc")) "(library (tools)"))
-      '(#t #t #t #t))
+            (let ((t (file-text (string-append out4 "/datum/code/tools.sc"))))
+              (list (string-contains? t "(library (tools)") (string-contains? t "(export gnarlwick)")
+                    (string-contains? t "(define gnarlwick 1)"))))
+      '(#t #t #t (#t #t #t)))
 (want "T4 changing one code block changes its file's body and no other file's; every header moves with the cut"
       (list (string? a-code) export2
             (equal? (body-of (string-append out4 "/code2/code/a.js")) a-before)
@@ -592,6 +595,16 @@
 (want "D a handed state with every writer read adds the clause; one that missed a writer adds none"
       (list sh-whole (clause-of (describe-of sh) 'template))
       '(#t #f))
+;; AND A COMPLETE REDUCTION SEALED WITH A NOTE FROM ELSEWHERE -- what the
+;; daemon's probe adds when a writer became unreadable after the publication --
+;; is not complete: its notes are all the sealed state's notes.
+(define probe-notes (unreadable-behind (open-and-reduce sh)))
+(define s1-complete (open-and-reduce s1))
+(want "D a complete reduction sealed with no note adds the clause; sealed with a probe's note it adds none"
+      (list (pair? probe-notes)
+            (and (clause-of (rpc-dispatch s1 '(describe) "test" (seal-state s1-complete '())) 'template) #t)
+            (clause-of (rpc-dispatch s1 '(describe) "test" (seal-state s1-complete probe-notes)) 'template))
+      '(#t #t #f))
 
 ;; THROUGH THE DAEMON: describe answers the clause from the publication and opens
 ;; nothing of its own. The daemon's trace lines are counted before and after,
@@ -637,25 +650,37 @@
 (want "D through the daemon, a store with an unreadable writer: describe is the answer with no store"
       (equal? via-daemon-broken bare)
       #t)
-;; A STORE THAT CANNOT BE FOLDED AT ALL: no publication; describe still answers
-;; the catalogue, without a clause.
-(define unfoldable (store-with))
-(corrupt! unfoldable)
-(define via-daemon-unfoldable (client unfoldable "describe"))
-(system (string-append "pkill -f 'serve " unfoldable "' 2>/dev/null; sleep 1"))
-(want "D through the client, a store whose publication is incomplete: describe answers the catalogue without a clause"
-      (list (and (pair? via-daemon-unfoldable) (car via-daemon-unfoldable)) (equal? via-daemon-unfoldable bare))
-      '(ok #t))
+;; A TEMPLATED STORE WHOSE PUBLICATION BECOMES INCOMPLETE: the clause it had is
+;; withheld, and describe answers the catalogue.
+(define incomplete (store-with))
+(run incomplete 'template "apply" "project")
+(define incomplete-whole (client incomplete "describe"))
+(system (string-append "pkill -f 'serve " incomplete "' 2>/dev/null; sleep 1"))
+(break-writer! incomplete)
+(define via-daemon-incomplete (client incomplete "describe"))
+(system (string-append "pkill -f 'serve " incomplete "' 2>/dev/null; sleep 1"))
+(want "D through the client, a templated store whose publication is incomplete: the clause is withheld and describe answers the catalogue"
+      (list (and (clause-of incomplete-whole 'template) #t)
+            (and (pair? via-daemon-incomplete) (car via-daemon-incomplete)) (equal? via-daemon-incomplete bare))
+      '(#t ok #t))
 ;; A FOLD THAT FAILS: no daemon starts, and describe is refused as every verb is.
 (define unstartable (store-with))
 (system (string-append "chmod 000 '" unstartable "/meta.sexp'"))
 (define refused-describe (client unstartable "describe"))
 (define refused-outline (client unstartable "outline"))
+;; Read BEFORE anything is stopped: whether a daemon for this store is running.
+(define unstartable-daemons
+  (let ((f (string-append root "/daemons.txt")))
+    (system (string-append "pgrep -f 'serve " unstartable "' | wc -l | tr -d ' ' > '" f "'"))
+    (string->number (let ((t (file-text f))) (substring t 0 (- (string-length t) 1))))))
 (system (string-append "chmod 644 '" unstartable "/meta.sexp'; pkill -f 'serve " unstartable "' 2>/dev/null"))
-(want "D a store whose fold fails: no daemon starts, and describe is refused as outline is"
+(printf "   (fold failure: describe answered ~s)\n" refused-describe)
+(want "D a store whose fold fails: no daemon is running, and describe is refused with outline's error, not an internal one"
       (list (and (pair? refused-describe) (car refused-describe)) (and (pair? refused-outline) (car refused-outline))
-            (and (pair? refused-describe) (pair? refused-outline) (equal? (cadr refused-describe) (cadr refused-outline))))
-      '(error error #t))
+            (and (pair? refused-describe) (pair? refused-outline) (equal? (cadr refused-describe) (cadr refused-outline)))
+            (and (pair? refused-describe) (pair? (cdr refused-describe)) (eq? (cadr refused-describe) 'internal))
+            unstartable-daemons)
+      '(error error #t #f 0))
 ;; WHY THE DAEMON'S DESCRIBE IS A READ OF THE PUBLICATION: a template applied
 ;; from outside the daemon -- in this process -- reaches its describe as it
 ;; reaches every read there. The probe that notices the outside write starts the
