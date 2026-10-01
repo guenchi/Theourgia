@@ -28,7 +28,7 @@
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
-          store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
+          store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict failure-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -2128,17 +2128,42 @@
   ;; by shape; a name is looked up among the tags, and an unsettled name
   ;; is refused rather than resolved to one of its candidates -- picking
   ;; one here would answer a question about history with a guess.
-  (define (resolve-cut store which text)
+  ;; THE TAGS ARE LOOKED UP IN THE STATE THE CALLER IS ANSWERING FROM, when
+  ;; it has one (a cut read on the daemon has the published reduction), and
+  ;; otherwise in a fresh fold made only if the text is not a literal --
+  ;; diff's and tag's answers and their cost are what they were.
+  (define (resolve-cut store which text . state)
     (let ((literal (parse-cut text)))
       (if literal
           (list (quote ok) literal)
-          (let ((found (filter (lambda (t) (equal? (cadr t) text)) (store-tags store))))
+          (let ((found (filter (lambda (t) (equal? (cadr t) text)) (apply store-tags store state))))
             (cond
               ((null? found)
                (list (quote error) (quote unknown-tag) text (list (quote cut) which)))
               ((eq? (car (car found)) (quote unsettled))
                (list (quote error) (quote tag-unsettled) text (list (quote cut) which)))
               (else (list (quote ok) (caddr (car found)))))))))
+
+  ;; THE STATE A READ AT A CUT ANSWERS FROM: the cut text resolved (a
+  ;; literal, or a settled tag) and judged usable against the state the
+  ;; caller already holds -- the daemon's publication, unsealed here, or a
+  ;; fresh fold when there is none -- then ONE restricted replay to that
+  ;; cut, which never seeds from the snapshot or the resident cache (see
+  ;; replay). -> a reduction, or the refusal:
+  ;;   (error unknown-tag <text> (cut cut)) | (error tag-unsettled ...)
+  ;;   (error cut-unavailable (cut cut) (reason duplicate-writer|not-received|not-closed|malformed))
+  ;; the shapes diff gives.
+  (define (store-state-at-cut store supplied text)
+    (let* ((base (obtain-state store supplied #f))
+           (resolved (resolve-cut store (quote cut) text base)))
+      (if (eq? (car resolved) (quote error))
+          resolved
+          (let ((verdict (cut-usable? base (cadr resolved))))
+            (if (eq? verdict (quote usable))
+                (replay store (cadr resolved) #f)
+                (list (quote error) (quote cut-unavailable)
+                      (list (quote cut) (quote cut))
+                      (list (quote reason) (if (pair? verdict) (cadr verdict) verdict))))))))
 
   (define (store-diff store from-text to-text)
     (let ((from (resolve-cut store (quote from) from-text))
@@ -2244,8 +2269,8 @@
                    (let ((e (parse-entry text i)))
                      (and e (loop (cdr e) (cons (car e) out))))))))))
 
-  (define (store-tags store)
-    (let ((state (open-and-reduce store)))
+  (define (store-tags store . given)
+    (let ((state (if (and (pair? given) (car given)) (car given) (open-and-reduce store))))
       (map (lambda (t)
              (let ((name (car t)) (candidates (cadr t)))
                (if (= 1 (length candidates))
@@ -2324,10 +2349,15 @@
                     (let loop ((es (reverse (vector-ref collected 0))) (out (quote ())))
                       (cond
                         ((null? es) (reverse out))
+                        ;; EACH ENTRY WITH ITS CAUSAL COORDINATES, taken while
+                        ;; this reduction is in hand: (entry cut past), the
+                        ;; causal cut right after the event and right before it.
                         ((and (member (cons (entry-writer (car es)) (entry-seq (car es)))
                                       applied)
                               (or (not id) (touches? (car es) id)))
-                         (loop (cdr es) (cons (car es) out)))
+                         (let ((event (cons (entry-writer (car es)) (entry-seq (car es)))))
+                           (loop (cdr es) (cons (list (car es) (state-event-cut r event) (state-event-past r event))
+                                                out))))
                         (else (loop (cdr es) out))))))))))
 
 

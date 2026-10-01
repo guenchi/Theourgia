@@ -184,11 +184,16 @@
    propagate c
    "F100b point 2: the store process's startup scope hands every failure, with the scope's record, to the code after it, which sends (startup-failed <answer> <record>) to main and raises it again (P2-startup and its TWIN, F79-3); main writes the report. c makes the daemon declare acceptance of an incomplete reduction"
    (e (#t (cons e (mutation-record)))))
-  ("daemon.sc" (store-loop) 2 guard
+  ("daemon.sc" (reload-or-say-why!) 1 guard
    (#t)
    fact c
-   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4)"
+   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4); the one body of (reload) and of the store process's refresh before a cut read"
    (e (#t (trace-event! (quote reload-failed) (or (classify-failure e (quote ())) (condition-text e)) #f))))
+  ("daemon.sc" (refresh-if-behind!) 1 guard
+   (#t)
+   conservative a
+   "a snapshot that cannot be taken counts as behind: the store process folds before answering a cut read, and that fold names an unreadable writer in its notes or as reload-failed; a failure gone by the time the fold reads leaves no trace"
+   (e (#t #f)))
   ("daemon.sc" (answer-for) 1 guard
    ((and (pair? e) (eq? (quote error) (car e))) (unreadable-entry? e) #t)
    refuse c
