@@ -42,14 +42,16 @@
   (if (equal? got expected)
       (printf "ok   ~a\n" name)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
+;; A ROW THAT RAISES IS A FAIL LINE, and the rows after it still run.
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+                                     (condition-message e) e))))
+       e0))))
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected)
-     (want-1 name
-             (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
-                                             (condition-message e) e))))
-               got)
-             expected))))
+    ((_ name got expected) (want-1 name (caught got) expected))))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
