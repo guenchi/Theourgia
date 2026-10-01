@@ -31,6 +31,7 @@
 
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
+        (only (theourgia store) store-resident-cache!)
         (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia client) serve-log-path socket-path call! request-frame)
         (only (theourgia wire) encode-record storable-encode)
@@ -175,6 +176,23 @@
                 (list (list (cons w 1)) (list (cons w 2)))
                 (list (list (cons w 2)) (list (cons w 3))))))
 
+;; THE RESIDENT CACHE IS NOT A SEED EITHER: warmed on a later state, a read at
+;; an earlier cut still replays from the beginning.
+(let* ((c (fresh-store!)) (st (car c)) (w (cadr c))
+       (_ (store-resident-cache! #t))
+       (id (new-id (ask st 'insert "--under" "root" "--title" "R" "--text" "resident-zero")))
+       (cut1 (entry-clause (entry-for st (cons w 1)) 'cut))
+       (_ (ask st 'set id "src" "resident-one"))
+       (later (new-id (ask st 'insert "--under" "root" "--title" "R-later")))
+       (_ (ask st 'read id))
+       (_ (ask st 'read id))
+       (then (text-of (ask st 'read id "--md" "--cut" (cut-text cut1))))
+       (later-then (head-of (ask st 'read later "--cut" (cut-text cut1)))))
+  (store-resident-cache! #f)
+  (want "RC-1R with the resident cache warm on a later state, a cut read answers the earlier text and no later block"
+        (list (and then (has-substring? then "resident-zero")) (and then (has-substring? then "resident-one")) later-then)
+        '(#t #f (error unknown-id))))
+
 ;; =============================================================================
 (printf "== RC-2: transitive and implicit pasts ==\n")
 ;; A.1, B.1 depending on A.1, C.1 depending on B.1 only, and B.2 with no
@@ -267,6 +285,7 @@
        (cut2 (entry-clause (entry-for st (cons w 2)) 'cut))
        (_ (ask st 'set id "src" "body-one"))
        (_ (ask st 'set child "src" "child-one"))
+       (_ (ask st 'set id "title" "Doc renamed"))
        (cut (cut-text cut2)))
   (want "RC-4 --working, --working-info, --writer and --signature with --cut are refused incompatible-cut-options"
         (list (ask st 'read id "--cut" cut "--working")
@@ -282,6 +301,15 @@
         (let ((t (text-of (ask st 'read id "--recursive" "--md" "--cut" cut))))
           (list (has-substring? t "child-zero") (has-substring? t "child-one") (has-substring? t "body-one")))
         '(#t #f #f))
+  (want "RC-4 --md at a cut gives that time's heading: the title set later is not in it, and is now"
+        (list (has-substring? (text-of (ask st 'read id "--md" "--cut" cut)) "Doc renamed")
+              (has-substring? (text-of (ask st 'read id "--md")) "Doc renamed"))
+        '(#f #t))
+  (want "RC-4 --recursive without --md at a cut answers that time's records, and their versions are not the present ones"
+        (let ((then (ask st 'read id "--recursive" "--cut" cut)) (now (ask st 'read id "--recursive")))
+          (list (head-of then) (mentions? then "child-zero") (mentions? then "child-one")
+                (equal? (clause-of then 'versions) (clause-of now 'versions))))
+        '(ok #t #f #f))
   (want "RC-4 a plain read at a cut answers the block with the version AT the cut, not the present one"
         (let ((then (ask st 'read id "--cut" cut)) (now (ask st 'read id)))
           (list (head-of then) (equal? (clause-of then 'version) (clause-of now 'version))))
@@ -404,24 +432,34 @@
        (cut12 (cut-text (entry-clause (entry-for st (cons w 2)) 'cut)))
        (bare (client traced "read" b1 "--cut" cut12 "--store" st))
        (with (client (string-append traced " THEOURGIA_WRITER=" w) "read" b1 "--cut" cut12 "--store" st))
-       (refused (client (string-append traced " THEOURGIA_WRITER=" w) "read" b1 "--cut" cut12 "--working" "--store" st))
+       (refused (map (lambda (opts)
+                       (cadr (apply client (string-append traced " THEOURGIA_WRITER=" w)
+                                    (append (list "read" b1 "--cut" cut12) opts (list "--store" st)))))
+                     (list '("--working") '("--working-info") (list "--writer" w) '("--signature"))))
        (routes (trace-lines-with st "routed read ")))
   (stop-daemon! st)
-  (want "RC-D4 an envelope writer answers a cut read as without one; --working is refused at the store process, not in a writer process"
-        (list (equal? (cadr bare) (cadr with)) (head-of (cadr bare)) (cadr refused) routes)
-        (list #t 'ok '(error bad-request incompatible-cut-options)
-              '("(trace routed read store)" "(trace routed read store)" "(trace routed read store)"))))
+  (want "RC-D4 an envelope writer answers a cut read as without one; the four incompatible options are refused at the store process, none in a writer process"
+        (list (equal? (cadr bare) (cadr with)) (head-of (cadr bare)) refused routes)
+        (list #t 'ok (make-list 4 '(error bad-request incompatible-cut-options))
+              (make-list 6 "(trace routed read store)"))))
 
-;; R5's early paths: a request whose arguments do not parse is refused
-;; before it is handed on, and is classified `connection` like the others.
+;; R5's early paths: a request refused before it is handed on is classified
+;; `connection` -- arguments that do not parse, another store's request, a
+;; frame that is not a datum (its verb unknown). The draining path is the
+;; fourth and has no row here.
 (let* ((s (daemon-store!)) (st (car s)) (b1 (caddr s))
        (_ (client traced "outline" "--store" st))
-       (r (call! (socket-path st) (request-frame st 'read (list b1 "--no-such-option") '()) 5000))
-       (routes (trace-lines-with st "routed read ")))
+       (payload (lambda (r) (and (pair? r) (eq? (car r) 'answer) (pair? (cdr r)) (bytevector? (cadr r))
+                                 (guard (e (#t 'UNREADABLE)) (read (open-string-input-port (utf8->string (cadr r))))))))
+       (shape (call! (socket-path st) (request-frame st 'read (list b1 "--cut") '()) 5000))
+       (other (call! (socket-path st) (request-frame root 'read (list b1) '()) 5000))
+       (garbage (call! (socket-path st) (string->utf8 "(((\n") 5000))
+       (routes (filter (lambda (l) (not (prefix? "(trace routed outline" l))) (trace-lines-with st "routed "))))
   (stop-daemon! st)
-  (want "RC-R5 a read whose arguments do not parse is refused at the connection and traced so"
-        (list (and (pair? r) (car r)) routes)
-        '(answer ("(trace routed read connection)"))))
+  (want "RC-R5 refused before being handed on, each answered and traced connection: arguments that do not parse, another store, no datum"
+        (list (head-of (payload shape)) (head-of (payload other)) (head-of (payload garbage)) routes)
+        (list '(error bad-request) '(error transport-store-mismatch) '(error bad-request)
+              '("(trace routed read connection)" "(trace routed read connection)" "(trace routed unknown connection)"))))
 
 (for-each stop-daemon! d-stores)
 (printf "rows: ~a\n" rows)

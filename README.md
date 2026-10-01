@@ -216,13 +216,18 @@ out as `(("writer" . 12) ...)`, as `diff` takes them -- typically an entry's `cu
 from `log`, which is the store right after that event. The answer is the one a
 read gives without `--cut`, over the state at that cut, `--md` and `--recursive`
 included; a block that did not exist yet answers `unknown-id`, and at the empty cut
-`()` every block does. A causal cut holds an event's premises and nothing else, so
-a writer the event did not depend on is absent from it whatever its clock said.
+`()` every block does. An event's `cut` from `log` holds the event and its premises
+and nothing else (its `past` holds the premises alone), so a writer the event did
+not depend on is absent from it whatever its clock said; a cut written out by
+hand holds whatever it names, provided every event in it has its premises with it.
 The cut is judged as `diff` judges it: a name no tag has answers `unknown-tag`, an
 unsettled tag `tag-unsettled`, and a cut naming an event not yet received, a writer
 twice, or an event without its premises `(error cut-unavailable (cut cut) (reason
 not-received|duplicate-writer|not-closed))`. Each such read replays the log from
-its beginning to the cut. `--working`, `--working-info`, `--writer` and
+its beginning to the cut. Through the daemon, a cut naming an event another
+process wrote after the daemon last read the store is answered: the daemon
+reads the store again first. An event written after that check is a cut it
+has not seen yet (`not-received`), and asking again answers it. `--working`, `--working-info`, `--writer` and
 `--signature` ask about a writer's draft or an editor's present facts and are
 refused with it: `(error bad-request incompatible-cut-options)`. The version is the
 block's version AT the cut; given to `--if-unchanged` it is refused unless the
