@@ -1,0 +1,105 @@
+# The core's whole suite on GitHub's runners, from source, for a pushed
+# stage branch. The tree under test is the pushed commit itself; igropyr is
+# pinned beside it. Chez Scheme is built from its release source and cached.
+# Each not-green fixture is run again alone, as evidence for classifying it.
+# Nothing is written back; no secrets.
+name: suite
+
+on:
+  push:
+    branches: ['stage/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CHEZ_VERSION: 10.4.1
+  IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: lib/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: ${{ env.IGROPYR_REV }}
+          path: lib/igropyr
+      - name: libuv and OpenSSL
+        run: brew install libuv openssl@3
+      - name: Chez Scheme, cached
+        id: chez
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/chez-prefix
+          key: chez-${{ env.CHEZ_VERSION }}-${{ matrix.runner }}-${{ runner.arch }}
+      - name: Chez Scheme ${{ env.CHEZ_VERSION }}, built
+        if: steps.chez.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
+          cd "csv${CHEZ_VERSION}"
+          ./configure --threads --disable-x11 --disable-curses --installprefix="$RUNNER_TEMP/chez-prefix" > "$RUNNER_TEMP/chez-configure.log"
+          make -j"$(getconf _NPROCESSORS_ONLN)" > "$RUNNER_TEMP/chez-make.log" 2>&1
+          make install > "$RUNNER_TEMP/chez-install.log" 2>&1
+      - name: what this run is on
+        run: |
+          echo "$RUNNER_TEMP/chez-prefix/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/chez-prefix/bin:$PATH"
+          uname -a; sw_vers; sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          scheme --version
+          echo '(display (machine-type))' | scheme -q; echo
+          git -C lib/theourgia rev-parse HEAD
+          git -C lib/igropyr rev-parse HEAD
+          rm -rf lib/theourgia/.git lib/igropyr/.git lib/theourgia/.github
+          echo "so files: $(find lib -name '*.so' | wc -l)"
+      - name: the whole suite
+        run: |
+          set +e
+          W="$PWD"; mkdir -p "$W/out" "$W/testroot"
+          date '+suite start %H:%M:%S'
+          cd lib/theourgia/test
+          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot"; . ./env.sh
+            sh run-fixtures.sh "$W/out" > "$W/suite.log" 2>&1; echo $? > "$W/suite.rc" ) || true
+          cd "$W"
+          date '+suite end %H:%M:%S'
+          echo "suite rc: $(cat suite.rc)"
+          tail -60 suite.log
+          # EACH NOT-GREEN FIXTURE AGAIN, ALONE: fresh roots, a 900 s limit,
+          # outside the runner. Evidence for the classification, not the
+          # classification itself.
+          mkdir -p "$W/rerun"
+          for fx in $(grep '^RED ' suite.log | awk '{print $2}'); do
+            f="$W/lib/theourgia/test/$fx.sc"; runner="scheme --script"
+            [ -f "$f" ] || { f="$W/lib/theourgia/test/$fx.py"; runner="python3"; }
+            root=$(mktemp -d "$W/testroot/rerun.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
+            ( cd "$W/lib/theourgia/test"; export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock"; . ./env.sh
+              perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$W/rerun/$fx.out" 2>&1 < /dev/null; echo $? > "$W/rerun/$fx.rc" ) || true
+            echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") mismatch=$(grep -c 'MISMATCH' "$W/rerun/$fx.out") exception=$(grep -c -i 'exception' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
+          done
+          # THE SUITE MUST HAVE RUN TO ITS END: a run that stopped before its
+          # summary has no RED lines to rerun and would otherwise read clean.
+          grep -q 'fixtures run:' suite.log || { echo "the suite printed no summary: it did not run to its end"; exit 1; }
+          [ "$(cat suite.rc)" = 0 ] || { echo "suite rc $(cat suite.rc): not green, see RED lines and reruns"; exit 1; }
+      - name: keep the readings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-${{ matrix.runner }}-${{ github.sha }}
+          path: |
+            out
+            suite.log
+            suite.rc
+            rerun
