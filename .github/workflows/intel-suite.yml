@@ -111,9 +111,17 @@ jobs:
           esac
           v=$?
           echo "X1 ${{ matrix.which }}: $([ $v = 0 ] && echo as-predicted || echo NOT-AS-PREDICTED)" | tee x1/verdict.txt
+          # WHAT A DAEMON THAT DID NOT START SAID: every serve.log under the
+          # run directory, then the daemon once in the foreground on the
+          # same store for ten seconds, its own stdout and stderr kept.
+          mkdir -p x1/run
+          for f in "$HOME"/.theourgia/run/*/serve.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; cp "$f" "x1/run/$(basename "$(dirname "$f")").serve.log"; }; done
+          perl -e 'alarm 10; exec @ARGV' scheme --script lib/theourgia/theourgiad.sc serve "$S" > x1/foreground.out 2> x1/foreground.err; echo $? > x1/foreground.rc
+          echo "== foreground daemon rc $(cat x1/foreground.rc)"; head -c 4000 x1/foreground.out; head -c 4000 x1/foreground.err
+          pkill -f theourgiad.sc
           exit $v
       - name: the whole suite
-        if: matrix.which == 'ref'
+        if: always() && matrix.which == 'ref'
         run: |
           set +e
           W="$PWD"; mkdir -p "$W/out" "$W/testroot"
