@@ -4,7 +4,9 @@
 
 Requirements: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.
 
-Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum printer is measured identical on these; any other version refuses the verbs that print a datum).
+Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum printer is measured identical on these; any other version refuses the verbs that print a datum with `(error unsupported-printer-version)`).
+
+Platforms: the ones with a measured row in `platform-numbers.sc` -- macOS on arm64, Linux on x86_64 and on aarch64 with glibc, and FreeBSD on amd64 (the row was measured on FreeBSD 15, and it is chosen by machine type alone, so another FreeBSD release on amd64 gets it too). On any other platform (another architecture, macOS on x86_64 or under Rosetta, a Linux with musl) every program writes `(error platform-unmeasured ...)` and exits 75 before it does anything else.
 
 macOS: `brew install chezscheme libuv`
 Debian / Ubuntu: `apt install chezscheme libuv1-dev`
@@ -49,26 +51,30 @@ Objects start about twelve times faster than source (measured: 50 ms from object
 
 ### Connecting a client
 
-Register `theourgia-mcp --store <path>` in the client's MCP configuration. One store per project or per person, on one machine.
+Create the store first, once: `theourgia init --store <path>`. The MCP shell has no local route and does not offer `init` as a tool. Then register `theourgia-mcp --store <path>` in the client's MCP configuration. One store per project or per person, on one machine.
 
 ## What a store is
 
 ### A store
 
-A store is a directory, and everything in it is a plain file. meta.sexp names the store. Each writer owns a directory under writers/, holding one numbered segment file per run of writing: one record per line, a CRC and an S-expression, readable by a person and diffable by git. Large payloads go to blobs/. published.sexp records what has been handed to other machines.
+A store is a directory, and everything in it is a plain file. meta.sexp names the store. Each writer owns a directory under writers/, holding one numbered segment file per run of writing: one record per line, a CRC and an S-expression, readable by a person and diffable by git. Large payloads go to blobs/. A writer's published.sexp records which of its segments have been handed to other machines.
 
 ```
 store/
   meta.sexp            the store's identity
   instance.sexp        which machine and directory this copy is
+  lock                 zero bytes; only its existence is used
+  .gitignore           written by init: what stays out of git
   writers/
     f0sjkuzn/
       owner.sexp       who this writer is
       000001.sexp      one record per line: a CRC and an S-expression
+      published.sexp   which segments have been handed to other machines
+      incoming/        published segments kept but not installed
       working/         this writer's drafts -- not part of the log
   blobs/               payloads too large to sit in a record
-  published.sexp       what has been handed to other machines
   snap/                a cached reduction; delete it and it is rebuilt
+  derived/             facts an editor supplied; the next supply rebuilds them
 ```
 
 ### A block
@@ -122,26 +128,32 @@ One store per project or per person, on one machine. The machine registry tracks
 
 ### The daemon
 
-Every verb can run standalone: open the store, answer, exit. For a session that sends many verbs, serve holds the store open and answers over a unix socket. The client finds the socket by the same rule the daemon used to create it, so nothing needs to be told where it is. The daemon's answer is the CLI's answer, byte for byte; both call the same dispatcher, and no verb or answer shape exists in one and not the other. When no daemon is running, the CLI starts one beside itself and asks again. The daemon answers one commit behind an outside change: a record appended by another process or a git pull is applied before the next request, so what the daemon says is never staler than the previous commit.
+Every verb can run standalone: open the store, answer, exit. For a session that sends many verbs, serve holds the store open and answers over a unix socket. The client finds the socket by the same rule the daemon used to create it, so nothing needs to be told where it is. The daemon's answer is the CLI's answer, byte for byte; both call the same dispatcher, and no verb or answer shape exists in one and not the other, except eval: the daemon does not run it -- sent over the socket, it is answered unknown-verb -- and the CLI runs it in core.sc as its own child. When no daemon is running, the CLI starts one beside itself and asks again; `THEOURGIA_LOCAL=1` skips the socket and answers in process, for debugging. The daemon answers reads from the state it last folded, and can be one commit behind an outside change: a read that notices a record appended by another process, or a segment a git pull brought in, is still answered from that state and asks for a fresh fold, and the reads after the fold see the change. A write is never answered from that state: it is decided on the store as it stands under the lock. While a daemon serves a store, write through it.
 
 ### Put the store in git
 
-A store is plain files: meta.sexp, one numbered segment per writer with one record per line, the blobs, and published.sexp. Committing them commits the knowledge base itself. There is no export step, nothing to project, and nothing that has to be kept in step with the content, because the content is what was committed. A segment file's diff is the records that were appended: the revision of these pages that corrected four figures shows up in git as 15 added lines and no deleted ones, the log being append-only.
+A store is plain files: meta.sexp, the lock, each writer's numbered segments with one record per line and its owner.sexp and published.sexp, and the blobs. Committing them commits the knowledge base itself. There is no export step, nothing to project, and nothing that has to be kept in step with the content, because the content is what was committed. A segment file's diff is the records that were appended: the revision of these pages that corrected four figures shows up in git as 15 added lines and no deleted ones, the log being append-only.
 
 #### What to exclude, and what to keep
 
-```
-# Track store/lock. It is zero bytes and only its existence is used,
-# but a clone without it answers store-busy to every verb, reads
-# included -- and init will not create it in a store that exists.
+init writes `<store>/.gitignore`, which keeps out what belongs to this copy of the store rather than to its history:
 
-# A writer's drafts are that writer's own space, not part of the log.
-store/writers/*/working/
-store/writers/*/draft.lock
-
-# The snapshot is a cached reduction of the log; it rebuilds itself.
-store/snap/
 ```
+/instance.sexp
+/request-index.sexp
+/snap/
+/derived/
+/writers/*/working/
+/writers/*/draft.lock
+*.tmp-*
+!/writers/*/incoming/*
+```
+
+instance.sexp is this copy's identity. request-index.sexp and snap/ are rebuilt from the log, and derived/ by the next supply. The working areas and draft locks are one machine's drafts. The `*.tmp-*` files are what an atomic write keeps after a failure -- except under a writer's incoming/, which the last line brings back, because a candidate kept there is evidence a replay is answered from.
+
+Track the lock. It is zero bytes and only its existence is used, but a clone without it answers store-busy to every verb, reads included -- and init will not create it in a store that exists.
+
+Add the store as a whole, never named files -- `git add <store>` -- because a segment rolls over after 1 MiB, and a list of named files misses the one that rolled since.
 
 #### What a clone can do, and when
 
@@ -162,19 +174,19 @@ $ theourgia insert --store store --under root --title "..."
 (ok (events (("x9a3vtll" . 1))) (state (("x9a3vtll.1" . "bf28cd40..."))) ...)
 ```
 
-> **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
+> **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. A clone that carries another copy's instance.sexp is refused for the mismatch, as above; a clone without one -- what the .gitignore init writes gives -- is refused `(error refused no-instance (remedy adopt))`. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
 ## 38 verbs
 
-Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, or daemon over the socket.
+Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, daemon over the socket, or child: a process the caller runs itself, so the store's server never runs user code.
 
 ### Reading a store
 
 ```
-read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info]
+read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info] [--signature]
 ```
 
-Read one block: its fields, or its text. (daemon)
+Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. (daemon)
 
 ```
 refs <id>
@@ -207,7 +219,7 @@ log [<id>]
 Show the changes recorded, for the store or for one block. (daemon)
 
 ```
-outline [--depth <n>] [--with-keywords]
+outline [--depth <n>] [--with-keywords] [--with-signatures]
 ```
 
 List the blocks as a tree of titles. (daemon)
@@ -239,7 +251,7 @@ init
 Create a store in this directory. (local)
 
 ```
-insert --under <id> [--after <id>] --title <text> [--text <text>] [--keywords <text>]
+insert [--under <id>] [--after <id>] --title <text> [--text <text>] [--keywords <text>]
 ```
 
 Add a block under a parent, with a title and optional text. (daemon)
@@ -283,7 +295,7 @@ Define or replace one named definition. (daemon)
 ### Drafts, and committing them
 
 ```
-write <block> <bytes> [--writer <name>] [--based-on <version>] [--rebase]
+write <block> <bytes> [--writer <name>] [--based-on <version>] [--working-cut <cut>] [--working-parent-writer <name>] [--working-parent <version>] [--rebase]
 ```
 
 Save a draft of a block in a writer's own space, without committing it. (daemon)
@@ -321,7 +333,7 @@ import-md <dir> [--allow-delete]
 Read a directory of markdown into the store. (daemon)
 
 ```
-export-md <dir> [--with-ids]
+export-md <dir> [--with-ids] [--working] [--writer <name>]
 ```
 
 Write the store out as markdown. (daemon)
@@ -330,19 +342,19 @@ Write the store out as markdown. (daemon)
 import-code <dir> [--allow-delete] [--datum]
 ```
 
-Read a directory of source into the store. (daemon)
+Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. (daemon)
 
 ```
-export-code <dir> [--raw] [--datum]
+export-code <dir> [--raw] [--datum] [--working] [--writer <name>]
 ```
 
 Write the store's source back out to a directory. (daemon)
 
 ```
-split-suggest <file> [--output <review-file>]
+split-suggest <file> [--output <review-file>] [--symbols <symbols-file>]
 ```
 
-Propose where a long file could be divided into blocks. (daemon)
+Propose where a long file could be divided into blocks. With --symbols, the cuts come from an editor's list of the file's top-level symbols instead of the language's definition patterns; the answer's cuts-from says which. (daemon)
 
 ### Checking, syncing, serving
 
@@ -388,7 +400,7 @@ Carry out several changes as one request. (daemon)
 eval [--lang <language>] [--cut <cut>] [--under <library>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>] <source>
 ```
 
-Evaluate source against the store. (child)
+Evaluate source against the store, or against a writer's working view with --working: Scheme by default, another language with --lang, whose runner runs only where the operator has set THEOURGIA_RUNNERS=on. It runs as a child process of the caller, never in the store's server. (child)
 
 ### Derived data from an editor
 
@@ -396,28 +408,57 @@ Evaluate source against the store. (child)
 supply <kind> <file> [--for <writer>] [--clear]
 ```
 
-Keep facts an editor computed from an export-code projection. (daemon)
+Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- beside the store, never in it. The file's header names the projection it was made from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed. (daemon)
 
 ```
 reach <id> [--rel <rel>] [--depth <n>]
 ```
 
-List the blocks a block reaches over the edges an editor supplied. (daemon)
+List the blocks a block reaches over the edges an editor supplied (calls, by default), outward, up to --depth hops (1 by default); the block itself is at depth 0. (daemon)
 
 ```
 diagnostics [--writer <name>]
 ```
 
-List the diagnostics an editor supplied for a writer's working view. (daemon)
+List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src. (daemon)
+
+## Options every verb takes
+
+These are accepted by every verb, and are left out of each usage line above.
+
+| Option | What it does |
+|---|---|
+| `--store <dir>` | Which store. Falls back to `THEOURGIA_STORE`, then `.` |
+| `--actor <name>` | Who the request is from. Falls back to `THEOURGIA_ACTOR`, then `USER`, then `cli` |
+| `--socket <path>` | Reach a daemon at this path instead of the default |
+| `--wire` | Print the answer as one S-expression per line rather than for a person to read |
+| `--req <id>` | The request's identity, so a retry is recognised as the same request rather than a second one |
+| `--cursor <w:n>` | The position this request is composed against |
+
+A request that reaches a server naming `--store`, `--actor`, `--wire` or `--socket` inside it is refused `transport-option-in-rpc`: those say where a request goes, and it has already gone.
+
+| Variable | What it does |
+|---|---|
+| `THEOURGIA_STORE` | The store when `--store` is absent |
+| `THEOURGIA_ACTOR` | Who the requests are from when `--actor` is absent |
+| `THEOURGIA_WRITER` | Whose drafts a request reads and writes when `--writer` is absent |
+| `THEOURGIA_HOME` | Where the machine registry and its lock live. Falls back to `$HOME/.theourgia`, or `/tmp/.theourgia` when `HOME` is unset |
+| `THEOURGIA_RUN` | The run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
+| `THEOURGIA_LOCAL` | `1` answers in process even when a daemon is there |
+| `THEOURGIA_SCHEME` | The Chez binary `eval` starts its child with. Falls back to `scheme` |
+| `THEOURGIA_EVAL_SLOTS` | How many evaluations one run root runs at once. Falls back to the number of online processors |
+| `THEOURGIA_RUNNERS` | `on` turns on `eval --lang`'s runners for another language |
+| `THEOURGIA_RUNNER_CHEZ` | The operator's runner for `eval --lang chez`, replacing the language table's fields |
+| `THEOURGIA_TRACE` | `1` writes filesystem and dispatch events to stderr |
 
 ## Working with agents
 
 ### The MCP shell
 
-`theourgia-mcp --store <path>` speaks MCP `2025-11-25` over stdio. Register it once:
+`theourgia-mcp --store <path> [--socket <path>] [--actor <name>] [--writer <name>]` speaks MCP `2025-11-25` over stdio. Create the store with `theourgia init` first, then register the shell once:
 
 ```
-claude mcp add theourgia -- theourgia-mcp --store /path/to/store --actor <name> --writer <name>
+claude mcp add theourgia -- theourgia-mcp --store /path/to/store --actor <name>
 ```
 
 Or in a client's JSON configuration:
@@ -427,25 +468,40 @@ Or in a client's JSON configuration:
   "mcpServers": {
     "theourgia": {
       "command": "theourgia-mcp",
-      "args": ["--store", "/path/to/store", "--actor", "<name>", "--writer", "<name>"]
+      "args": ["--store", "/path/to/store", "--actor", "<name>"]
     }
   }
 }
 ```
 
-One tool per verb, named `theourgia_<verb>`, each taking `{"argv": [...]}` with the command line's own arguments as an array of strings. The shell asks the core what verbs exist on every call, so a verb added to a newer build appears without restarting the server.
+One tool per verb the shell can carry out -- every verb routed to the daemon, and `eval` -- named `theourgia_<verb>`, each taking `{"argv": [...]}` with the command line's own arguments as an array of strings. The shell asks the store's daemon for the catalogue on every call and never caches it, so a verb added to a newer build appears without restarting the server. `theourgia_insert` and `theourgia_write` carry the core's writing protocol in their descriptions.
 
-The core's answer arrives as S-expression text, byte for byte. A core refusal is a successful tool result, not a JSON-RPC error: `(error unknown-id ...)` is the store's answer to the question asked, delivered with `isError: false`. Only the shell's own failures use the JSON-RPC error channel: a frame it could not parse, a frame past the size limit, or a connection that was made and then lost. A lost connection says the request may have been carried out, because it may have been; a request that reached nobody says it was not.
+The core's answer arrives as S-expression text, byte for byte. A core refusal is a successful tool result, not a JSON-RPC error: `(error unknown-id ...)` is the store's answer to the question asked, delivered with `isError: false`. Only the shell's own failures use the JSON-RPC error channel: a frame it could not parse, a frame past the size limit, or a connection that was made and then lost. A lost connection says the request may have been carried out, because it may have been; a request that reached nobody says it was not. A store condition the shell meets before the verb runs -- a daemon that would not start, a refused or unreadable catalogue -- is a tool result with `isError: true` and the refusal in `_meta.refusal`: read the text, not the flag.
 
-`eval` is offered as `theourgia_eval`. The shell runs `core.sc eval` as its own child, not through the daemon: the store's server never runs user code. Transport options (`--store`, `--wire`, `--socket`, `--actor`) are refused with `transport-option-in-rpc`; the writer defaults to the session's unless `--writer` is given; a language other than Scheme runs only where the shell was started with `THEOURGIA_RUNNERS=on`; a lost evaluation is a protocol error naming the reason. `init` is not offered, because the store must exist before the MCP server starts.
+`eval` is offered as `theourgia_eval`. The shell runs `core.sc eval` as its own child, not through the daemon: the store's server never runs user code. The call's optional `stdin` string becomes the child's standard input; without one it reads `/dev/null`. Transport options (`--store`, `--wire`, `--socket`, `--actor`) are refused with `transport-option-in-rpc`; the writer defaults to the session's unless `--writer` is given; a language other than Scheme runs only where the shell was started with `THEOURGIA_RUNNERS=on`; a lost evaluation is a protocol error naming the reason. `init` is not offered, because the store must exist before the MCP server starts.
 
-The tool list the shell reports to a client is taken from the store's daemon when the client connects, once per session. After a core upgrade, stop the store's daemon first — the next request starts one from the new core — then restart the agent's session. A session restarted while the old daemon still runs keeps the old tool list and sees none of the new verbs.
+The catalogue comes from whichever daemon is serving the store, and a client may read `tools/list` only once per session. After a core upgrade, stop the store's daemon first — the next request starts one from the new core — then restart the agent's session. A session restarted while the old daemon still runs is given the old catalogue and sees none of the new verbs.
+
+### The writing protocol
+
+describe carries this text once, beside the verbs, and the MCP shell puts it in the descriptions of `theourgia_insert` and `theourgia_write`:
+
+```
+A block is the unit of writing: one block should answer one question on its own.
+Keep a block under about 800 tokens (roughly 3000 bytes); split a longer one.
+Give every block a one-sentence title.
+Give every block 3 to 8 keywords, comma separated, with --keywords.
+Place a block under the parent its source or subject puts it under, with --under.
+Do not rewrite the source bytes: splitting a document must not edit its prose.
+Change a block with write and then commit, through a draft, rather than replacing it.
+Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
+```
 
 ### One writer per session
 
-A writer id is held by one live agent at a time. The id is derived from the actor name by default, or set explicitly with `THEOURGIA_WRITER` in the environment or `--writer` on the command line; the MCP shell's initialize response names which writer the session is using.
+A writer id is held by one live agent at a time. On the command line it is `--writer`, else `THEOURGIA_WRITER`; with neither, a draft verb is refused `writer-required`. The MCP shell decides it once, when it starts: `THEOURGIA_WRITER` when set and not empty, else `--writer`, else one derived for the session, `<actor>-<start>-<pid>` -- the actor reduced to what a writer id may hold, the start in milliseconds in base 36, the shell's process id. The initialize response names it, and a tool call's own `--writer` overrides it for that call only. A name a writer cannot have (1 to 128 characters of `a-z`, `0-9`, `.`, `_`, `-`, and not `.` or `..`) stops the shell at start with its usage line, exit 2.
 
-A later session may bind the same id and carry on with its drafts, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. A host giving several agents the same actor must give each its own `--writer`.
+A later session may bind the same id and carry on with its drafts, by starting with `THEOURGIA_WRITER=<that name>`, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. Derived writers differ between sessions, so the risk comes from a fixed name: a host that sets one `--writer` or `THEOURGIA_WRITER` for several agents makes them share it.
 
 ### One store per machine
 
@@ -459,47 +515,55 @@ To use a store as persistent memory for Claude Code sessions: turn off the built
 
 ### Before you start
 
-The extension drives the theourgia core installed on the machine. Install the core first (from source for now: the Homebrew tap and the npm package are not published yet), then configure the settings:
+The extension drives the Theourgia core installed on the machine, and needs VS Code 1.138.0 or later. Install the core first (from source for now: the Homebrew tap and the npm package are not published yet), then configure the settings:
 
 | Setting | What it is |
 |---|---|
-| `theourgia.corePath` | The directory holding the core (a checkout or a product directory). Required. |
-| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. |
-| `theourgia.store` | The store directory. Required. |
+| `theourgia.corePath` | The directory holding the core: a checkout, or a directory built by the core's build.ss. The extension tells which by looking for `client.sc` or `client.so`, and refuses a directory with neither. Required. |
+| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The core imports igropyr, so the directory holding igropyr belongs here. |
+| `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
-| `theourgia.writer` | The draft space this window writes into. Defaults to the actor. |
+| `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, and the writer whose working view Supply Diagnostics reads. Defaults to the actor. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`. |
-| `theourgia.timeoutMs` | How long one request may take. Defaults to 30000. |
+| `theourgia.timeoutMs` | How long to wait for one request before killing the child process (SIGTERM, then SIGKILL two seconds later). Defaults to 30000. |
+
+Until `corePath` names a checkout or a built directory and `store` is set, the outline is empty, the status bar shows a gear whose tooltip names each setting at fault, and every command answers that they have to be set first. `store` is only checked for being set: a path that does not exist passes, and the requests go to the core.
+
+Each request runs the core's client as a child process, `<scheme> --script <corePath>/theourgia.sc <verb> ... --store <store> --actor <actor>`, with `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS`, `THEOURGIA_ACTOR`, `THEOURGIA_WRITER` and `THEOURGIA_SCHEME` set from the settings. The client starts the store's daemon when none is running. A core that cannot find a library is answered with advice to add its directory to `libDirs`; a platform the core has no row for is answered with the core's own remedy.
 
 ### Installing the extension
 
-Install the `.vsix` package from the command line:
+Install the `.vsix` package for your platform from the command line:
 
 ```
-code --install-extension theourgia-vsc-darwin-arm64-1.0.0.vsix
+code --install-extension theourgia-darwin-arm64.vsix
 ```
 
-The Visual Studio Marketplace listing arrives when the extension is published there.
+The packages are named `theourgia-<target>.vsix`. The Visual Studio Marketplace listing arrives when the extension is published there.
 
 ### What it does
 
-An outline tree of the store appears in the side bar. Opening a node shows the blocks directly under it. A block opens as a markdown buffer with its heading and body.
+An outline tree of the store appears in the side bar. Expanding a node lists the blocks directly under it; a row shows the block's keywords, and an icon for a conflict, an orphan or an unknown mark. Clicking a block opens it. A prose block opens as a markdown buffer: its heading, then this window's working draft of its body. The heading is not edited there -- a save that changed it is refused `prefix-changed`.
 
-Saving writes a durable working draft first, then sends a commit carrying the block's version. If the baseline has moved since the draft was taken, the commit is refused and the refusal hands back the winner's content. A save whose answer is lost is kept and can be retried; the request id, cursor and body are recorded before the commit is sent.
+Saving writes a working draft first, under a writer of this window's own (`window-<session>`), reads it back, and then sends a commit carrying the draft's version. The request id, cursor and record are written to disk before the commit is sent, so a save whose answer is lost -- a timeout, a lost connection -- stays pending and is retried: at startup, on a settings change, or with "Retry Pending Saves". A commit is refused `stale-baseline` when the block itself has changed since the draft's baseline. When other writers have written since, but not to this block, the commit is accepted and the save names those writers; the number shown beside each, worded as records since the save's baseline, is that writer's latest record number, not a count of the records added since. A commit the core refuses (`stale-baseline`, `working-version-changed`, `changed`) is shown as an error naming the refusal and its clauses, and says the text is still in the file and has not been saved; nothing is merged for you. Before anything is sent, a save is refused for a byte-order mark, bytes that are not UTF-8, a file on disk that differs from the editor, or a changed heading.
 
-Right-clicking a node and choosing "Open as Document" composes the block and everything under it into one read-only markdown document. Each block's heading level is its depth under the opened block. The document is re-read from the store each time it is opened.
+"Reconcile Block" is for a block file holding a version neither this window nor the store wrote. If the file still begins with the block's heading, it keeps the text as a draft against the store without asking. Otherwise it offers two choices -- keep my text, with the block's heading in front of it, or take the store's version -- and publishes a new version either way; nothing is deleted.
 
-The tree has a second mode, Files, showing the directory tree that export would write. "New File Here" creates a document at that path. "Move to Directory" and "Rename File" write the block's path, guarded by its version: a block that changed after the listing is refused and the view refreshes.
+Right-clicking a node and choosing "Open as Document" composes the block and everything under it into one read-only markdown document. The opened block's heading is level 1 and each level under it one deeper, down to level 6; headings inside a body are shifted down with it, and each block is preceded by a `<!-- theourgia block <id> depth <n> -->` marker. A block that is deleted, cannot be placed, appears twice or is not text refuses the whole document rather than leaving a gap. The document is composed again each time the command runs.
 
-A text-mode code block opens as its source in the language its `lang` field names. "Go to Definition" asks the store's `whereis` which block defines a name. "Suggest a Split" asks the core where a source file on disk could be divided into blocks, using the editor's own symbols for the cuts.
+The tree has a second mode, Files, showing the directory tree that export would write, with a group for blocks that are in no file. A store whose root blocks carry paths opens in Files mode; "Show Files" and "Show Outline" switch, and the choice is kept per store. "New File Here" creates a root `doc` block with that path (`.md` appended) and title. "Move to Directory" and "Rename File" read the block's version when they run and set its path with `--if-unchanged`: a block that changes before the answer is refused, and the view refreshes.
 
-When a writer's log cannot be read, the outline shows every other writer's blocks and says which one is missing, the path and the reason. The conflict count, the search results and the status bar all carry the same note until every writer is readable again.
+A text-mode code block opens as its source in the language its `lang` field names, or as plain text without one. A datum-mode definition -- one imported with --datum or written with def -- opens with an empty body today: the extension reads a block's src, and a datum definition keeps its code in body. "Go to Definition", as a command and as the editor's own, asks the store's `whereis` which block defines a name, offers a choice when several do, and the nearest names when none does. "Suggest a Split" asks the core where a source file on disk could be divided into blocks, using the editor's own symbols for the cuts when it has them and the language's patterns otherwise, and opens the review file the core wrote; nothing is recorded in the store.
+
+"Search Blocks" asks for words that must all match: one hit opens straight away, several give a list with scores. "Show Store Status" and the status bar show the store, actor, conflict count, pending and blocked saves. "Other Sessions" lists the unsent saves another window left behind, to take over or discard. "Migrate Legacy Block Files" moves verified block files of an earlier version into a recovery archive. The store is checked with `check` each time the extension connects to it -- at start and after a settings change -- and a bad verdict is warned about once per session; the extension's log is the "Theourgia" output channel.
+
+When a writer's log cannot be read, the outline shows the blocks the other writers' logs can still place -- a block whose records depend on the unreadable writer's stays pending and is not shown -- and says which one is missing, the path and the reason. The note is carried by the outline, the status bar, search, Go to Definition and the banner of an opened block or document, and it belongs to the last reading: the next complete reading clears it.
 
 ### Supplying what the editor knows
 
-Three commands hand the store facts that the editor's language support computes: "Theourgia: Supply Signatures and Keywords", "Theourgia: Supply Calls" and "Theourgia: Supply Diagnostics". Each projects the store's code into files, asks VS Code's language server for that language, and hands the facts to the core, which keeps them beside the blocks with the editor and version they came from. The language's own extension must be installed: for C, clangd.
+Three commands hand the store facts that the editor's language support computes: "Theourgia: Supply Signatures and Keywords", "Theourgia: Supply Calls" and "Theourgia: Supply Diagnostics". Each projects the store's code with `export-code` into the extension's own storage, asks VS Code's providers for that language (symbols, hover, call hierarchy, diagnostics), and hands the facts to the core with `supply`, which keeps them beside the blocks with the editor and version they came from. The language's own extension must be installed: for C, clangd.
 
-Signatures, keywords and calls are taken from the committed store. Diagnostics are this window's writer's, taken from its working view, and are collected once the analysis has been quiet for a second, at most after ten. A text-mode import makes one block per file, so the facts attach to the file's block. VS Code files `.h` under C++, so a header's facts sit in the cpp table.
+Signatures, keywords and calls are taken from the committed store. Diagnostics are `theourgia.writer`'s, taken from its working view, and are collected once the analysis has been quiet for a second, at most after ten; a supply taken at the cap says the analysis may be incomplete. Facts are grouped by VS Code's language id, and VS Code files `.h` under C++, so a header's facts sit in the cpp table. A run stops if a projected file or document changes, or the store changes, while it is collecting. The supply file is removed afterwards, except one the core refused `supply-malformed`, which is kept to be read.
 
 An agent reads the facts through MCP; from the command line they come back from `read <id> --signature`, `refs <id>`, `reach <id>`, `search <word>` and `diagnostics --writer <w>`. Each answer names the source of its facts (`via`) and how many of them are stale (`stale`). The facts are as fresh as the last supply: after a source changes, supply again.
 
@@ -507,7 +571,7 @@ An agent reads the facts through MCP; from the command line they come back from 
 
 ### Platforms
 
-Packages are built for macOS on Apple Silicon and Linux on x86_64 and arm64; macOS on Intel is not supported by the core yet. The extension takes a file lock through a small native module built for the packaging machine. There is no Windows package.
+Packages are built for macOS on Apple Silicon and on Intel, and Linux on x86_64 and arm64. The core has no measured row for macOS on Intel yet, so there the extension installs but the core refuses to start (`platform-unmeasured`). The extension takes a file lock through a small native module (`flock`) built on each target's own runner. There is no Windows package.
 
 ## Limits
 
@@ -515,7 +579,9 @@ Two agents on one writer id: silent overwrite, no detection. The rule is in the 
 
 Two machines on one store: not supported. A store belongs to one machine's registry; moving it to another requires adopt.
 
-Linux: the platform library compiles and the test suite passes. macOS and FreeBSD are the platforms with production readings; Linux's are pending.
+Platforms: only those with a measured row run -- macOS on arm64, Linux on x86_64 and aarch64 with glibc, FreeBSD on amd64 (measured on FreeBSD 15; the row is chosen by machine type, not by release). Anything else exits 75 with platform-unmeasured; the remedy is to run test/probe/layout.c there and add its row.
 
-Runners (--lang): the Scheme evaluator runs in a sandboxed child process with no filesystem and no network. A runner for another language (node, python3, sh) gets a projected copy of the store's code files in a temporary directory and the machine's own interpreter, so it has the reach of a local script. Runners are off by default (THEOURGIA_RUNNERS=on).
+Exports at a cut: export-md and export-code take no --cut. They write the committed state, or with --working the writer's working view; only a --working export's answer names the cut its view stands on, and an earlier cut has no export.
+
+Runners (--lang): the Scheme evaluator runs in a sandboxed child process with no filesystem and no network. A runner for another language (node, python3, sh, or chez, which runs Scheme outside the sandbox with the store's libraries on its path) gets a projected copy of the store's code files in a temporary directory and the machine's own interpreter, so it has the reach of a local script. Runners are off by default (THEOURGIA_RUNNERS=on).
 
