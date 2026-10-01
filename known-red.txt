@@ -7,6 +7,12 @@
 #   run 36869518726 (suite 64 min): cli2, client-program, f0-ondemand,
 #     mcp-shell, startup-ratio
 #   run 36870111438 (suite 49 min): client-program, f0-ondemand, startup-ratio
+#   run 36879561067 (suite 62 min): those five, and eval-lang L15 (a waited-ms
+#     window of one 100 ms step; red alone too) and facade-record H8 (a
+#     900 ms hold; green alone)
+# The runner's speed varies from run to run, and a slow one turns more timing
+# rows red on the same tree: three runs gave 5, 3 and 7. A timing row that
+# appears here for the first time is added only after it is read.
 # Always red there: client-program P-17 (the runner has no terminal),
 # f0-ondemand F0-2 (a start costs about twice the budget), startup-ratio
 # (its calibration is this machine's). Red on a slow runner: cli2's CONTROL
@@ -17,3 +23,5 @@ f0-ondemand	^FAIL F0-2
 startup-ratio	^FAIL C[13] 
 cli2	^FAIL CONTROL: with the product's lock removed
 mcp-shell	^FAIL X15 
+eval-lang	^FAIL L15 
+facade-record	^FAIL H8 

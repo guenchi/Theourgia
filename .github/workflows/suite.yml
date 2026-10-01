@@ -119,7 +119,8 @@ jobs:
             pat=$(awk -F'\t' -v f="$fx" '$1==f {print $2}' harness/known-red.txt)
             hard=$(grep -E '^FAIL|MISMATCH|Exception' "out/$fx.out" || true)
             if [ -z "$pat" ]; then
-              echo "UNEXPECTED $fx: not in known-red.txt" >> verdict.txt; unexpected=$((unexpected+1))
+              echo "UNEXPECTED $fx: not in known-red.txt; alone it answered rc $(cat "rerun/$fx.rc" 2>/dev/null || echo ?)" >> verdict.txt
+              printf '%s\n' "$hard" | cut -c1-200 >> verdict.txt; unexpected=$((unexpected+1))
             elif [ -z "$hard" ]; then
               echo "UNEXPECTED $fx: red with no hard line (rc, sentinel or counters)" >> verdict.txt; unexpected=$((unexpected+1))
             elif printf '%s\n' "$hard" | grep -v -E "$pat" > /dev/null; then
