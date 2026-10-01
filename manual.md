@@ -132,7 +132,7 @@ Every verb can run standalone: open the store, answer, exit. For a session that 
 
 ### Put the store in git
 
-A store is plain files: meta.sexp, the lock, each writer's numbered segments with one record per line and its owner.sexp and published.sexp, and the blobs. Committing them commits the knowledge base itself. There is no export step, nothing to project, and nothing that has to be kept in step with the content, because the content is what was committed. A segment file's diff is the records that were appended: the revision of these pages that corrected four figures shows up in git as 15 added lines and no deleted ones, the log being append-only.
+A store is plain files: meta.sexp, the lock, each writer's numbered segments with one record per line and its owner.sexp and published.sexp, and the blobs. Committing them commits the store itself. There is no export step, nothing to project, and nothing that has to be kept in step with the content, because the content is what was committed. A segment file's diff is the records that were appended: the revision of these pages that corrected four figures shows up in git as 15 added lines and no deleted ones, the log being append-only.
 
 #### What to exclude, and what to keep
 
