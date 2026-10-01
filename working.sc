@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia working)
-  (export working-write! working-read working-discard! working-list working-commit!
+  (export working-write! working-read working-discard! working-list working-commit! latest-parent-cut
           working-restore! working-snapshot working-baseline working-state
           ;; NOTE: EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
@@ -300,22 +300,26 @@
   ;; unsynchronised replicas each completed one -- there is no single
   ;; parent and the answer is #f, which sends the client to an explicit
   ;; `--rebase` rather than to a cut that is not after both.
+  ;; THE PARENT AMONG SEVERAL COMMITTED CUTS: the one that covers every
+  ;; other, or #f when two of them are not ordered (or there are none).
+  (define (latest-parent-cut cuts)
+    (and (pair? cuts)
+         (fold-left (lambda (best c)
+                      (and best (cond ((cut-covers? c best) c)
+                                      ((cut-covers? best c) best)
+                                      (else #f))))
+                    (car cuts) (cdr cuts))))
+
   (define (committed-parent store state writer id version hash original-cut)
     (and writer version (safe-id? writer)
       ;; THE CUT IS THE JOIN OF THE PLAN'S MEMBER CUTS, which for every
       ;; plan this core writes is the last member's -- and for a plan
       ;; whose members came from two writers is the only cut that
       ;; contains both. `state-consumed-parent-cuts` computes it.
-      (let ((cuts (filter values (state-consumed-parent-cuts state writer version))))
-        (and (pair? cuts)
-          (let ((latest (fold-left (lambda (best c)
-                                     (and best (cond ((cut-covers? c best) c)
-                                                     ((cut-covers? best c) best)
-                                                     (else #f))))
-                                   (car cuts) (cdr cuts))))
-            (and latest
-              (let ((past (open-and-reduce store latest)))
-                (and (reduction? past) past))))))))
+      (let ((latest (latest-parent-cut (filter values (state-consumed-parent-cuts state writer version)))))
+        (and latest
+          (let ((past (open-and-reduce store latest)))
+            (and (reduction? past) past))))))
 
   (define (working-write! store state supplied id bytes rebase? . provenance)
     (needing-writer supplied (lambda ()

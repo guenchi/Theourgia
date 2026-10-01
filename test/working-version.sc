@@ -35,7 +35,8 @@
         (theourgia digest) (theourgia wire) (theourgia ffi)
         (theourgia request)
         (only (theourgia log) writer-directory)
-        (only (theourgia store) store-evidence))
+        (only (theourgia store) store-evidence)
+        (only (theourgia working) latest-parent-cut))
 
 (define bad 0)
 (define rows 0)
@@ -306,5 +307,24 @@
       (map (lambda (e) (list (actor-sub (ev-actor e)) (list-ref (ev-payload e) 4)))
            (store-evidence store (cons writer "N1")))
       '((plan ())))
+
+;; ---- WV-P: the parent among several committed cuts -----------------------------
+;;
+;; Two requests can each complete a plan consuming the same version (two
+;; replicas). Their cuts name the parent of the next sequential edit only when
+;; one covers the other; when neither does there is no single parent and the
+;; answer is #f, which sends the client to an explicit --rebase. Covering is
+;; the reduction's cut-covers?, read per writer and never as one number.
+(want "WV-P the covering cut is the parent, whichever order the cuts come in"
+      (list (latest-parent-cut '((("a" . 2) ("b" . 1)) (("a" . 1))))
+            (latest-parent-cut '((("a" . 1)) (("a" . 2) ("b" . 1))))
+            (latest-parent-cut '((("a" . 1)) (("a" . 2) ("b" . 1)) (("b" . 1)))))
+      '((("a" . 2) ("b" . 1)) (("a" . 2) ("b" . 1)) (("a" . 2) ("b" . 1))))
+(want "WV-P two cuts neither covers have no parent, nor has an empty list; one cut is its own"
+      (list (latest-parent-cut '((("a" . 5)) (("b" . 1))))
+            (latest-parent-cut '((("a" . 1) ("b" . 9)) (("a" . 3) ("b" . 2))))
+            (latest-parent-cut '())
+            (latest-parent-cut '((("a" . 1)))))
+      '(#f #f #f (("a" . 1))))
 
 (printf "rows: ~a\n~a failures\nworking-version complete\n" rows bad)

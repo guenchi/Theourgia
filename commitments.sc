@@ -227,21 +227,43 @@
   ;; two origins that are not ordered -- three incomparable cuts compared
   ;; pairwise can form a cycle. Origins not ordered against another listed
   ;; one say so, by id, in listing order.
+  ;;
+  ;; ONE PASS, NOT A SEARCH PER STEP. Each decision starts with the number of
+  ;; other origins its own covers; it is eligible at zero, and listing one
+  ;; takes one from every decision still waiting whose origin covers it. Two
+  ;; distinct origins never cover each other (each holds its own put, which
+  ;; the other's past cannot contain unless it is later), so the counts are
+  ;; those of a graph without cycles. Asking each step again which decisions
+  ;; covered none of the remaining ones gave the same order at a cost cubic
+  ;; in the number of decisions.
   (define (listing decisions)
-    (let ((ordered
-            (let loop ((left decisions) (out '()))
-              (if (null? left)
-                  (reverse out)
-                  (let* ((eligible
-                           (filter (lambda (d)
-                                     (not (exists (lambda (o)
-                                                    (and (not (eq? o d))
-                                                         (cut-covers? (decision-origin d) (decision-origin o))))
-                                                  left)))
-                                   left))
-                         (first (fold-left (lambda (best d) (if (put<? (decision-event d) (decision-event best)) d best))
-                                           (car eligible) (cdr eligible))))
-                    (loop (remq first left) (cons first out)))))))
+    (let* ((v (list->vector decisions))
+           (n (vector-length v))
+           (origin (lambda (i) (decision-origin (vector-ref v i))))
+           (count (make-vector n 0))
+           (listed (make-vector n #f)))
+      (do ((i 0 (+ i 1))) ((= i n))
+        (do ((j 0 (+ j 1))) ((= j n))
+          (when (and (not (= i j)) (cut-covers? (origin i) (origin j)))
+            (vector-set! count i (+ 1 (vector-ref count i))))))
+      (let ((ordered
+              (let loop ((k 0) (out '()))
+                (if (= k n)
+                    (reverse out)
+                    (let ((first
+                            (let pick ((i 0) (best #f))
+                              (cond ((= i n) best)
+                                    ((and (not (vector-ref listed i)) (= 0 (vector-ref count i))
+                                          (or (not best)
+                                              (put<? (decision-event (vector-ref v i))
+                                                     (decision-event (vector-ref v best)))))
+                                     (pick (+ i 1) i))
+                                    (else (pick (+ i 1) best))))))
+                      (vector-set! listed first #t)
+                      (do ((i 0 (+ i 1))) ((= i n))
+                        (when (and (not (vector-ref listed i)) (cut-covers? (origin i) (origin first)))
+                          (vector-set! count i (- (vector-ref count i) 1))))
+                      (loop (+ k 1) (cons (vector-ref v first) out)))))))
       (map (lambda (d)
              (let ((concurrent (filter (lambda (o) (and (not (eq? o d))
                                                         (not (comparable? (decision-origin d) (decision-origin o)))))
@@ -255,7 +277,7 @@
                  (if (null? (decision-drifted d)) '() (list (cons 'drifted (decision-drifted d))))
                  (if (null? (decision-deleted d)) '() (list (cons 'implementer-deleted (decision-deleted d))))
                  (if (null? concurrent) '() (list (cons 'concurrent-with (map decision-id concurrent)))))))
-           ordered)))
+           ordered))))
 
   (define (put<? a b)
     (or (string<? (car a) (car b))
