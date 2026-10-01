@@ -1,6 +1,6 @@
 # Theourgia
 
-A block-graph store that agents and people write into together.
+A block-graph store where agents and people write together.
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
