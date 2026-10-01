@@ -19,6 +19,12 @@ permissions:
 
 env:
   CHEZ_VERSION: 10.4.1
+  # DIAGNOSTIC ONLY (not an acceptance run): igropyr 56ca0db names libuv on
+  # macOS as /opt/homebrew/lib/... or by its bare name, and the bare name
+  # was not found on this runner, whose Homebrew is under /usr/local. This
+  # run puts /usr/local/lib on dyld's fallback path to read what else, if
+  # anything, is not green on Intel.
+  DYLD_FALLBACK_LIBRARY_PATH: /usr/local/lib
   IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
 
 jobs:
