@@ -613,8 +613,10 @@ the **under-approximation**.
 A text block's uses are every token of its text that matches its language's
 `identifier` pattern (the language table holds one per language), **comments and
 strings included** and keywords too: the answer says `(lexing whole-text)`. A token
-starts where the pattern first matches, so in `9abc` the token is `abc`. A block
-whose language has no entry answers `(name-use none (reason no-language))`.
+starts where the pattern first matches, so in `9abc` the token is `abc`, and is
+the longest match there, read up to 4096 characters (a longer one is read as more
+than one). A block whose language has no entry answers
+`(name-use none (reason no-language))`.
 
 A library block, a program's included, answers its imports, each spec reduced to the
 library it names (`only`, `except`, `prefix`, `rename`, `for` and the `library`

@@ -61,7 +61,7 @@
           (only (theourgia project) subtree-ids)
           (only (theourgia datum-code) datum-names)
           (only (theourgia languages) language-for-name language-property)
-          (only (theourgia regex) regex-compile regex-match)
+          (only (theourgia regex) regex-compile regex-match-at)
           (only (theourgia extensions) names-usage uses-usage))
 
   ;; ---- sets of symbols --------------------------------------------------------
@@ -77,6 +77,14 @@
   ;; ---- the walk -----------------------------------------------------------------
 
   (define (bound? s env) (memq s env))
+
+  ;; A formals list: a list or an improper list of symbols, or one symbol.
+  ;; Anything else makes the form malformed, and it falls back.
+  (define (formals? f)
+    (cond ((symbol? f) #t)
+          ((null? f) #t)
+          ((pair? f) (and (symbol? (car f)) (formals? (cdr f))))
+          (else #f)))
 
   ;; The names a formals list binds: a list, an improper list or one symbol.
   (define (formals-names f)
@@ -145,15 +153,24 @@
   ;; A BODY: the definitions at its head, begin-spliced ones included, are
   ;; collected first and bound in the whole body, their own right-hand sides
   ;; included. A form whose head is bound here is not a definition.
+  ;; Every begin in the body is spliced first, nested and empty ones too, as
+  ;; the expander splices them; a begin among the expressions walks to the
+  ;; same names spliced or not.
+  (define (splice-begins forms env)
+    (if (not (list? forms))
+        forms
+        (apply append
+               (map (lambda (f)
+                      (if (and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)) (list? f))
+                          (splice-begins (cdr f) env)
+                          (list f)))
+                    forms))))
+
   (define (walk-body forms env)
-    (let collect ((fs forms) (defs '()))
+    (let collect ((fs (splice-begins forms env)) (defs '()))
       (cond
         ((and (pair? fs) (definition? (car fs) env))
          (collect (cdr fs) (cons (car fs) defs)))
-        ((and (pair? fs) (pair? (car fs)) (eq? (car (car fs)) 'begin) (not (bound? 'begin env))
-              (list? (car fs)) (pair? (cdr (car fs)))
-              (for-all (lambda (g) (definition? g env)) (cdr (car fs))))
-         (collect (cdr fs) (append (reverse (cdr (car fs))) defs)))
         (else
          (let* ((defs (reverse defs))
                 (env2 (append (apply append (map defined-names defs)) env)))
@@ -193,13 +210,14 @@
       (else '())))
 
   ;; A clause of cond, or of guard: `else` at its head and `=>` as its second
-  ;; element are not uses unless bound; every other element is walked.
+  ;; element, both positions read on the clause as written, are not uses
+  ;; unless bound; every other element is walked.
   (define (cond-clause c env)
-    (let* ((c (if (and (eq? (car c) 'else) (not (bound? 'else env))) (cdr c) c))
-           (c (if (and (pair? c) (pair? (cdr c)) (eq? (cadr c) '=>) (not (bound? '=> env)))
-                  (cons (car c) (cddr c))
-                  c)))
-      (walk-all c env)))
+    (let ((else? (and (eq? (car c) 'else) (not (bound? 'else env))))
+          (arrow? (and (pair? (cdr c)) (eq? (cadr c) '=>) (not (bound? '=> env)))))
+      (append (if else? '() (walk (car c) env))
+              (if (pair? (cdr c)) (if arrow? '() (walk (cadr c) env)) '())
+              (if (pair? (cdr c)) (walk-all (cddr c) env) '()))))
 
   (define (lists? xs) (and (list? xs) (for-all (lambda (c) (and (pair? c) (list? c))) xs)))
 
@@ -215,10 +233,11 @@
               (and (= (length x) 2) (template (cadr x) 1 env))))
       (cons 'lambda
             (lambda (x env walk body)
-              (and (>= (length x) 2) (body (cddr x) (append (formals-names (cadr x)) env)))))
+              (and (>= (length x) 2) (formals? (cadr x))
+                   (body (cddr x) (append (formals-names (cadr x)) env)))))
       (cons 'case-lambda
             (lambda (x env walk body)
-              (and (lists? (cdr x))
+              (and (lists? (cdr x)) (for-all (lambda (c) (formals? (car c))) (cdr x))
                    (apply append (map (lambda (c) (body (cdr c) (append (formals-names (car c)) env)))
                                       (cdr x))))))
       (cons 'let
@@ -253,14 +272,14 @@
       (cons 'let-values
             (lambda (x env walk body)
               (and (>= (length x) 2) (lists? (cadr x))
-                   (for-all (lambda (b) (= (length b) 2)) (cadr x))
+                   (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
                    (append (apply append (map (lambda (b) (walk (cadr b) env)) (cadr x)))
                            (body (cddr x) (append (apply append (map (lambda (b) (formals-names (car b))) (cadr x)))
                                                   env))))))
       (cons 'let*-values
             (lambda (x env walk body)
               (and (>= (length x) 2) (lists? (cadr x))
-                   (for-all (lambda (b) (= (length b) 2)) (cadr x))
+                   (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
                    (let loop ((bs (cadr x)) (env env) (out '()))
                      (if (null? bs)
                          (append out (body (cddr x) env))
@@ -293,13 +312,7 @@
               (and (>= (length x) 2) (lists? (cddr x))
                    (append (walk (cadr x) env)
                            (apply append
-                                  (map (lambda (c)
-                                         (let ((rest (cdr c)))
-                                           (walk-all (if (and (pair? rest) (eq? (car rest) '=>) (not (bound? '=> env)))
-                                                         (cdr rest)
-                                                         rest)
-                                                     env)))
-                                       (cddr x)))))))
+                                  (map (lambda (c) (walk-all (cdr c) env)) (cddr x)))))))
       (cons 'guard
             (lambda (x env walk body)
               (and (>= (length x) 2) (pair? (cadr x)) (symbol? (car (cadr x))) (lists? (cdr (cadr x)))
@@ -330,30 +343,26 @@
   ;; that language's own item. The answer says (lexing whole-text).
   ;; A token is the longest match of the pattern starting where the scan is;
   ;; a character that starts no match is passed over, so in `9abc` the token
-  ;; is `abc`. The pattern is matched against a window of the text, short
-  ;; first and the long one only when a match fills the short one; a token
-  ;; longer than the long window is cut there and read on as a second one.
+  ;; is `abc`. The match is anchored at the scan position and reads the text
+  ;; in place, no copy taken; it reads at most 4096 characters, the bounded
+  ;; matcher's own limit, so a token longer than that is read as more than
+  ;; one.
 
   (define default-identifier-pattern "[A-Za-z_][A-Za-z0-9_]*")
-  (define short-window 32)
-  (define long-window 1024)
+  (define longest-token 4096)
 
   ;; -> the distinct tokens, as symbols, sorted.
   (define (text-uses text pattern)
     (let* ((ast (regex-compile (string-append "(" pattern ")")))
            (n (string-length text)))
-      (define (token-end i size)
-        (let* ((window (substring text i (min n (+ i size))))
-               (caps (regex-match ast window #t))
-               (span (and caps (assv 1 caps))))
-          (and span (cddr span))))
       (let loop ((i 0) (out '()))
         (if (>= i n)
             (symbol-set out)
-            (let* ((short (token-end i short-window))
-                   (end (if (and short (= short short-window)) (token-end i long-window) short)))
-              (if (and end (> end 0))
-                  (loop (+ i end) (cons (string->symbol (substring text i (+ i end))) out))
+            (let* ((caps (regex-match-at ast text i (min n (+ i longest-token))))
+                   (span (and caps (assv 1 caps)))
+                   (end (and span (cddr span))))
+              (if (and end (> end i))
+                  (loop end (cons (string->symbol (substring text i end)) out))
                   (loop (+ i 1) out)))))))
 
   ;; ---- imports ----------------------------------------------------------------------

@@ -78,8 +78,9 @@
       (in-order (datum-uses '(let ((x x)) x))
                 (datum-uses '(let* ((a 1) (b a)) b))
                 (datum-uses '(letrec ((f (lambda () f))) (f)))
-                (datum-uses '(let loop ((x (loop seed))) (loop x))))
-      '((x) () () (loop seed)))
+                (datum-uses '(let loop ((x (loop seed))) (loop x)))
+                (datum-uses '(let* ((a b) (b 1)) a)))
+      '((x) () () (loop seed) (b)))
 (want "U3b letrec* is not let*: every name is bound in every init"
       (datum-uses '(letrec* ((x y) (y 1)) x))
       '())
@@ -117,8 +118,19 @@
       (in-order (datum-uses '(lambda (a b) (f a b c)))
                 (datum-uses '(lambda (a . r) (g a r s)))
                 (datum-uses '(lambda args (h args)))
-                (datum-uses '(case-lambda ((x) (f x)) ((x . y) (g x y z)))))
-      '((c f) (g s) (h) (f g z)))
+                (datum-uses '(case-lambda ((x) (f x)) ((x . y) (g x y z))))
+                (datum-uses '(case-lambda ((x) y) ((y) x))))
+      '((c f) (g s) (h) (f g z) (x y)))
+(want "U8 a formals position that holds no formals is a malformed form: it falls back"
+      (in-order (datum-uses '(lambda 42 x))
+                (datum-uses '(case-lambda (42 x)))
+                (datum-uses '(let-values (((1) p)) q)))
+      '((lambda x) (case-lambda x) (let-values p q)))
+(want "U5 every begin in a body is spliced: nested, mixed with expressions, empty"
+      (in-order (datum-uses '(lambda () (begin (begin (define x y))) x))
+                (datum-uses '(lambda () (begin (define x y) (f x))))
+                (datum-uses '(lambda () (begin) (define x y) x)))
+      '((y) (f y) (y)))
 (want "U9 the fallback: an unknown macro's every name; a bound name stays bound and a quote is still a quote"
       (in-order (datum-uses '(my-macro (a b) c))
                 (datum-uses '(lambda (x) (my-macro x 'q))))
@@ -155,6 +167,14 @@
       (in-order (datum-uses '(cond ((p a) => f) (else b)))
                 (datum-uses '(let ((cond list)) (cond (else 1)))))
       '((a b f p) (else list)))
+(want "K3 => is judged on the clause as written: after else it is not the second element"
+      (in-order (datum-uses '(cond (else => f)))
+                (datum-uses '(cond (else x => y)))
+                (datum-uses '(guard (e (else => f)) 1)))
+      '((f) (=> x y) (f)))
+(want "K4 case has no arrow: => in a clause body is an ordinary name"
+      (datum-uses '(case k ((a) => f)))
+      '(=> f k))
 (want "K4 case: the key and the bodies, not the datums or else"
       (datum-uses '(case k ((p q) (f r)) (else g)))
       '(f g k r))
@@ -257,9 +277,18 @@
              (let ((lang (language-property e 'lang #f)))
                (list lang (if (member lang '("javascript" "typescript" "scheme" "chez")) '($x a_1) '(a_1 x)))))
            (language-table)))
-(want "U13 a token longer than the short window is read whole"
-      (text-uses (string-append "a" (make-string 40 #\b) " c") default-identifier-pattern)
-      (list (string->symbol (string-append "a" (make-string 40 #\b))) 'c))
+(want "U13 a token is the longest match wherever it ends: 31 letters, a hyphen and one more under a hyphen pattern"
+      (text-uses (string-append (make-string 31 #\a) "-b c") "[A-Za-z]+(-[A-Za-z]+)*")
+      (list (string->symbol (string-append (make-string 31 #\a) "-b")) 'c))
+(want "U13 a token of 4096 characters is read whole; one longer is read as more than one"
+      (in-order (map (lambda (s) (string-length (symbol->string s)))
+                     (text-uses (make-string 4096 #\a) default-identifier-pattern))
+                (map (lambda (s) (string-length (symbol->string s)))
+                     (text-uses (make-string 4097 #\a) default-identifier-pattern)))
+      '((4096) (1 4096)))
+(want "U14 a template literal's text and its substitution are both listed, and a lone $ is a JavaScript name"
+      (text-uses "`hi ${name}` + x" (pattern-of "javascript"))
+      '($ hi name x))
 
 ;; ---- imports -------------------------------------------------------------------------
 
@@ -416,6 +445,27 @@
               '(read get-datum eval interpret load compile write display put-datum format pretty-print
                 with-output-to-string open-string-input-port open-input-string string->sexpr-extended))
       '())
+;; AND THE LIBRARY'S IMPORTS ARE PINNED: a print or read delegated to a
+;; helper would need a name from a library this list does not hold.
+(define library-imports
+  (call-with-input-file "../name-use.sc"
+    (lambda (p) (let loop () (let ((x (read p)))
+                               (cond ((eof-object? x) #f)
+                                     ((and (pair? x) (eq? (car x) 'library))
+                                      (cdr (find (lambda (f) (and (pair? f) (eq? (car f) 'import))) x)))
+                                     (else (loop))))))))
+(want "U24b the library imports exactly these names"
+      library-imports
+      '((rnrs)
+        (only (theourgia rpc) dispatch-helper)
+        (only (theourgia arguments) argument-option)
+        (only (theourgia reduce) state-read state-block-ids)
+        (only (theourgia store) library-locator)
+        (only (theourgia project) subtree-ids)
+        (only (theourgia datum-code) datum-names)
+        (only (theourgia languages) language-for-name language-property)
+        (only (theourgia regex) regex-compile regex-match-at)
+        (only (theourgia extensions) names-usage uses-usage)))
 (want "U24b CONTROL: the spy reads the library (it finds the walk and the verbs)"
       (list (and (memq 'walk-body library-symbols) #t) (and (memq 'uses-verb library-symbols) #t))
       '(#t #t))
@@ -443,15 +493,17 @@
 
 ;; ---- the pins, after the last write and before the routes ----------------------------
 
-(define (log-bytes)
-  (let ((f (string-append root "/size.txt")))
-    (system (string-append "find '" store "' -name '*.sexp' -path '*writers*' -exec cat {} + | wc -c | tr -d ' ' > '" f "'"))
+;; Every file of the store with its digest, and every name: byte identical
+;; means the same files holding the same bytes.
+(define (file-digests)
+  (let ((f (string-append root "/digests.txt")))
+    (system (string-append "cd '" store "' && find . -type f | LC_ALL=C sort | while read x; do echo \"$(md5 -q \"$x\") $x\"; done > '" f "'"))
     (file-text f)))
 (define (file-list)
   (let ((f (string-append root "/files.txt")))
     (system (string-append "cd '" store "' && find . | LC_ALL=C sort > '" f "'"))
     (file-text f)))
-(define pins-before (list (log-bytes) (file-list)))
+(define pins-before (list (file-digests) (file-list)))
 
 ;; ---- U25: three routes, one answer ---------------------------------------------------
 
@@ -583,8 +635,11 @@
       '((ok #f) (ok #t) (ok #f) (ok #t) (ok #f) (ok #t)))
 (stop-daemons!)
 
-(define pins-after (list (log-bytes) (file-list)))
-(want "U24 every route above wrote nothing: the log's length and the store's files are what they were"
+(define pins-after (list (file-digests) (file-list)))
+(want "U24 CONTROL: the digest listing read the store's files"
+      (> (string-length (car pins-before)) 100)
+      #t)
+(want "U24 every route above wrote nothing: every file of the store holds the bytes it held, and no file came or went"
       (map equal? pins-before pins-after)
       '(#t #t))
 
