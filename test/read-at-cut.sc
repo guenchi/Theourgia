@@ -279,14 +279,23 @@
 
 ;; =============================================================================
 (printf "== RC-4: what a cut read combines with ==\n")
+;; The document's own stored bytes are front, heading-src and src: all three
+;; are set before the cut and again after it, so --md at the cut has to give
+;; each one's earlier value. The answers read live at the cut are kept and the
+;; cut reads compared with them whole.
 (let* ((c (fresh-store!)) (st (car c)) (w (cadr c))
        (id (new-id (ask st 'insert "--under" "root" "--title" "Doc" "--text" "body-zero")))
+       (_ (ask st 'set id "heading-src" "# Heading-zero\n"))
+       (_ (ask st 'set id "front" "front-zero\n"))
        (child (new-id (ask st 'insert "--under" id "--title" "Child" "--text" "child-zero")))
-       (cut2 (entry-clause (entry-for st (cons w 2)) 'cut))
+       (cut4 (entry-clause (entry-for st (cons w 4)) 'cut))
+       (live-recursive (ask st 'read id "--recursive"))
+       (live-plain (ask st 'read id))
        (_ (ask st 'set id "src" "body-one"))
        (_ (ask st 'set child "src" "child-one"))
-       (_ (ask st 'set id "title" "Doc renamed"))
-       (cut (cut-text cut2)))
+       (_ (ask st 'set id "heading-src" "# Heading-one\n"))
+       (_ (ask st 'set id "front" "front-one\n"))
+       (cut (cut-text cut4)))
   (want "RC-4 --working, --working-info, --writer and --signature with --cut are refused incompatible-cut-options"
         (list (ask st 'read id "--cut" cut "--working")
               (ask st 'read id "--cut" cut "--working-info")
@@ -301,19 +310,22 @@
         (let ((t (text-of (ask st 'read id "--recursive" "--md" "--cut" cut))))
           (list (has-substring? t "child-zero") (has-substring? t "child-one") (has-substring? t "body-one")))
         '(#t #f #f))
-  (want "RC-4 --md at a cut gives that time's heading: the title set later is not in it, and is now"
-        (list (has-substring? (text-of (ask st 'read id "--md" "--cut" cut)) "Doc renamed")
-              (has-substring? (text-of (ask st 'read id "--md")) "Doc renamed"))
-        '(#f #t))
-  (want "RC-4 --recursive without --md at a cut answers that time's records, and their versions are not the present ones"
-        (let ((then (ask st 'read id "--recursive" "--cut" cut)) (now (ask st 'read id "--recursive")))
-          (list (head-of then) (mentions? then "child-zero") (mentions? then "child-one")
-                (equal? (clause-of then 'versions) (clause-of now 'versions))))
-        '(ok #t #f #f))
-  (want "RC-4 a plain read at a cut answers the block with the version AT the cut, not the present one"
-        (let ((then (ask st 'read id "--cut" cut)) (now (ask st 'read id)))
-          (list (head-of then) (equal? (clause-of then 'version) (clause-of now 'version))))
-        '(ok #f)))
+  (want "RC-4 --md at a cut gives that time's front and heading bytes, and now gives the later ones"
+        (let ((then (text-of (ask st 'read id "--md" "--cut" cut))) (now (text-of (ask st 'read id "--md"))))
+          (list (has-substring? then "front-zero") (has-substring? then "Heading-zero")
+                (has-substring? then "front-one") (has-substring? then "Heading-one")
+                (has-substring? now "front-one") (has-substring? now "Heading-one")))
+        '(#t #t #f #f #t #t))
+  (want "RC-4 --recursive without --md at a cut answers exactly what it answered live then: the records and their versions"
+        (list (equal? (ask st 'read id "--recursive" "--cut" cut) live-recursive)
+              (equal? (ask st 'read id "--recursive") live-recursive)
+              (and (clause-of live-recursive 'versions) #t))
+        '(#t #f #t))
+  (want "RC-4 a plain read at a cut answers exactly what it answered live then, its version included"
+        (list (equal? (ask st 'read id "--cut" cut) live-plain)
+              (equal? (ask st 'read id) live-plain)
+              (and (clause-of live-plain 'version) #t))
+        '(#t #f #t)))
 
 ;; =============================================================================
 (printf "== RC-D2: an unreadable writer outside the cut is still said ==\n")
@@ -449,8 +461,14 @@
 ;; fourth and has no row here.
 (let* ((s (daemon-store!)) (st (car s)) (b1 (caddr s))
        (_ (client traced "outline" "--store" st))
-       (payload (lambda (r) (and (pair? r) (eq? (car r) 'answer) (pair? (cdr r)) (bytevector? (cadr r))
-                                 (guard (e (#t 'UNREADABLE)) (read (open-string-input-port (utf8->string (cadr r))))))))
+       ;; THE ANSWER ENVELOPE, (answer (stdout "...") (stderr ...) (exit ...)
+       ;; (origin ...)), read from the bytes; the refusal is the datum its
+       ;; stdout holds.
+       (payload (lambda (r)
+                  (guard (e (#t 'UNREADABLE))
+                    (let* ((env (read (open-string-input-port (utf8->string (cadr r)))))
+                           (out (assq 'stdout (cdr env))))
+                      (read (open-string-input-port (cadr out)))))))
        (shape (call! (socket-path st) (request-frame st 'read (list b1 "--cut") '()) 5000))
        (other (call! (socket-path st) (request-frame root 'read (list b1) '()) 5000))
        (garbage (call! (socket-path st) (string->utf8 "(((\n") 5000))

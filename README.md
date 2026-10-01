@@ -226,8 +226,10 @@ twice, or an event without its premises `(error cut-unavailable (cut cut) (reaso
 not-received|duplicate-writer|not-closed))`. Each such read replays the log from
 its beginning to the cut. Through the daemon, a cut naming an event another
 process wrote after the daemon last read the store is answered: the daemon
-reads the store again first. An event written after that check is a cut it
-has not seen yet (`not-received`), and asking again answers it. `--working`, `--working-info`, `--writer` and
+reads the store again first. An event written after that check may not be
+seen by this request (`not-received`); it is answered once the daemon has read
+the store again. If that reading fails, the daemon keeps answering from what it
+had read before. `--working`, `--working-info`, `--writer` and
 `--signature` ask about a writer's draft or an editor's present facts and are
 refused with it: `(error bad-request incompatible-cut-options)`. The version is the
 block's version AT the cut; given to `--if-unchanged` it is refused unless the
