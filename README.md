@@ -141,7 +141,7 @@ differences — and is never an error.
 ### `read`
 
     (read <id> ("--md") ("--recursive") ("--writer" <name>)
-          ("--working") ("--working-info") ("--signature"))
+          ("--working") ("--working-info") ("--signature") ("--cut" <cut>))
 
 It answers:
 
@@ -210,6 +210,25 @@ without it the writer is the one this caller was given. A block with no
 draft still reads as committed in the same answer -- the overlay replaces
 the blocks it covers, not the view. `--working-info` adds what the view
 is made of rather than changing what is read. `--working` or `--working-info` with `--md` or `--recursive` is refused with `(error bad-request incompatible-working-options)`.
+
+**`--cut` reads the block as it was at a causal cut**: a tag name or a cut written
+out as `(("writer" . 12) ...)`, as `diff` takes them -- typically an entry's `cut`
+from `log`, which is the store right after that event. The answer is the one a
+read gives without `--cut`, over the state at that cut, `--md` and `--recursive`
+included; a block that did not exist yet answers `unknown-id`, and at the empty cut
+`()` every block does. A causal cut holds an event's premises and nothing else, so
+a writer the event did not depend on is absent from it whatever its clock said.
+The cut is judged as `diff` judges it: a name no tag has answers `unknown-tag`, an
+unsettled tag `tag-unsettled`, and a cut naming an event not yet received, a writer
+twice, or an event without its premises `(error cut-unavailable (cut cut) (reason
+not-received|duplicate-writer|not-closed))`. Each such read replays the log from
+its beginning to the cut. `--working`, `--working-info`, `--writer` and
+`--signature` ask about a writer's draft or an editor's present facts and are
+refused with it: `(error bad-request incompatible-cut-options)`. The version is the
+block's version AT the cut; given to `--if-unchanged` it is refused unless the
+block has not changed since. When a writer cannot be read, the answer's
+`incomplete` clause names it as every read's does, even when that writer is not in
+the cut.
 
 ### `refs`
 
@@ -425,9 +444,14 @@ then those containing the query, then those within a couple of typing errors.
 
 It answers:
 
-    (entry (event <writer> <seq>) (ts <ms>) (actor "<name>") (verb <verb>))
+    (entry (event <writer> <seq>) (ts <ms>) (actor "<name>") (verb <verb>)
+           (cut ((<writer> . <seq>) ...)) (past ((<writer> . <seq>) ...)))
 
-What this store has applied, in the order it was delivered. Given an id, only the
+What this store has applied, in the order it was delivered. `cut` is the causal cut
+right after the event and `past` the one right before it: the event's premises,
+each with its own premises, and nothing a writer did without depending on it.
+`read <id> --cut <cut>` gives a block as the event left it, and `diff <past> <cut>`
+what the event changed. Given an id, only the
 records that **named** that block: a record whose premises mention it has not touched
 it, and neither has one whose text mentions it.
 

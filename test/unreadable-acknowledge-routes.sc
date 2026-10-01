@@ -231,6 +231,7 @@
     ("store.sc" "store-refs" "open-and-reduce" 1 request)
     ("store.sc" "store-search" "open-and-reduce" 1 request)
     ("store.sc" "store-snapshot!" "log-begin" 1 request)
+    ("store.sc" "store-state-at-cut" "obtain-state" 1 unsealer)
     ("store.sc" "store-tags" "open-and-reduce" 1 request)
     ("store.sc" "with-store-write" "log-begin" 1 request)
     ("working.sc" "committed-parent" "open-and-reduce" 1 request)

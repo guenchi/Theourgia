@@ -996,6 +996,35 @@
       (hold-point! 'reload-before-publish)
       (publish! store state snapshot)))
 
+  ;; Somebody outside changed the store. Fold it again, under the lock, and
+  ;; publish what came back.
+  ;; A FOLD THAT FAILS keeps the previous publication and says so by
+  ;; name: the table's answer for the condition, or its text.
+  ;; `reload-raise` makes it fail.
+  (define (reload-or-say-why! store)
+    (guard (e (#t (trace-event! 'reload-failed
+                                (or (classify-failure e '()) (condition-text e))
+                                #f)))
+      (when (eq? (theourgia-fault) 'reload-raise)
+        (raise (make-message-condition "injected reload raise")))
+      (refold-and-publish! store)))
+
+  ;; A READ AT A CUT NAMES EVENTS THE PUBLICATION MAY NOT HAVE FOLDED YET: a
+  ;; cut taken from a `log` answered a moment ago can name a commit another
+  ;; process made since the last fold. Judged against that publication it
+  ;; would be refused `not-received` for an event that is on the disk. So
+  ;; the store process -- the one that folds -- compares the published
+  ;; snapshot with the disk and, when they differ, folds and publishes
+  ;; before it answers. Reads at the connection are untouched: they never
+  ;; wait for a fold. A fold that fails keeps the previous publication, as
+  ;; `(reload)` does, and the cut is judged against it.
+  ;; NOTE: THE SNAPSHOT TAKEN HERE IS ONLY COMPARED: the publication keeps
+  ;; the one its own fold sampled (see publish!).
+  (define (refresh-if-behind! store)
+    (let ((now (guard (e (#t #f)) (store-state-snapshot store))))
+      (unless (and now (equal? now (published-snapshot)))
+        (reload-or-say-why! store))))
+
   (define (published-state) (and published (vector-ref published 0)))
   (define (published-snapshot) (and published (vector-ref published 2)))
 
@@ -1131,12 +1160,7 @@
         ;; name (F77c, ruling 4): the table's answer for the condition, or
         ;; its text. `reload-raise` makes it fail.
         (`(reload)
-         (guard (e (#t (trace-event! 'reload-failed
-                                     (or (classify-failure e '()) (condition-text e))
-                                     #f)))
-           (when (eq? (theourgia-fault) 'reload-raise)
-             (raise (make-message-condition "injected reload raise")))
-           (refold-and-publish! store))
+         (reload-or-say-why! store)
          (loop))
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
@@ -1155,7 +1179,15 @@
          ;; fold made before the lock was taken is how two writers
          ;; come to disagree about what was there.
          (if (may-execute? main-pid ticket)
-             (let ((answer (answer-for store parsed actor #f writer piped cwd)))
+             (let ((answer (if (cut-read? parsed)
+                               ;; A READ AT A CUT IS JUDGED AGAINST THE
+                               ;; PUBLICATION, made current first when the
+                               ;; disk has moved past it, and reached the one
+                               ;; way the published state is read.
+                               (begin
+                                 (refresh-if-behind! store)
+                                 (answer-published store self parsed actor writer piped cwd))
+                               (answer-for store parsed actor #f writer piped cwd))))
                (executed! main-pid ticket)
                (send from (list 'answer seq answer 'core)))
              (send from (list 'answer seq draining-answer 'transport)))
@@ -1380,7 +1412,21 @@
            (and (list? nodes)
                 (not (and (pair? nodes) (eq? 'error (car nodes))))
                 (not (argument-option nodes "--working"))
-                (not (argument-option nodes "--working-info"))))))
+                (not (argument-option nodes "--working-info"))
+                ;; A READ AT A CUT REPLAYS THE LOG, which only the store
+                ;; process may open.
+                (not (argument-option nodes "--cut"))))))
+
+  ;; A read at a causal cut. -> #t or #f
+  (define (cut-read? request)
+    (and (pair? request)
+         (eq? (car request) 'read)
+         (for-all string? (cdr request))
+         (let ((nodes (parse-arguments (car request) (cdr request))))
+           (and (list? nodes)
+                (not (and (pair? nodes) (eq? 'error (car nodes))))
+                (argument-option nodes "--cut")
+                #t))))
 
   ;; NEVER: THE ENVELOPE'S WRITER NAMES A WRITER TOO, and it is asked here,
   ;; inside the same gate. While the writer was spliced into the
@@ -1404,7 +1450,12 @@
                 (let ((name (or (argument-option nodes "--writer") default-writer)))
                   (and (string? name)
                        (or (memq (car request) writer-local-verbs)
+                           ;; A READ AT A CUT GOES TO THE STORE PROCESS whatever
+                           ;; else it carries: an option that asks about a
+                           ;; writer's draft is refused there, in one place,
+                           ;; and never inside a writer process.
                            (and (eq? (car request) 'read)
+                                (not (argument-option nodes "--cut"))
                                 (or (argument-option nodes "--working")
                                     (argument-option nodes "--working-info"))))
                        name))))))
@@ -1584,11 +1635,24 @@
            (let ((nodes (parse-arguments (car request) (cdr request))))
              (and (pair? nodes) (eq? 'error (car nodes)) nodes)))))
 
+  ;; WHERE A FRAME WAS ANSWERED, ONE TRACE LINE PER FRAME:
+  ;;   (trace routed <verb> connection|store|writer)
+  ;; connection for every refusal made before a request is handed on and for
+  ;; the reads this process answers itself; store or writer for the process
+  ;; it was sent to. A frame whose verb cannot be read says `unknown`. It
+  ;; changes nothing; the rows read it to tell the routes apart.
+  (define (routed! parsed route)
+    (trace-event! 'routed
+                  (let ((request (and (pair? parsed) (guard (e (#t #f)) (frame-field 'request parsed)))))
+                    (if (and (pair? request) (symbol? (car request))) (car request) 'unknown))
+                  route))
+
   (define (dispatch-frame ctx seq line rest draining?)
     (let ((ref (ctx-ref ctx))
           (parsed (parse-frame line)))
       (cond
         ((symbol? parsed)
+         (routed! parsed 'connection)
          (answer-and-close ref (list 'error 'bad-request (list 'reason parsed))))
         ;; NEVER: WELL-FORMED FIRST, AND THAT INCLUDES THE VERB'S ARGUMENTS
         ;; (§7.6.50's four layers: well-formed, then whose store, then
@@ -1597,7 +1661,7 @@
         ;; sent to the wrong daemon -- which tells the caller to go and
         ;; find another daemon for a request no daemon would accept.
         ((request-shape-error (frame-field 'request parsed))
-         => (lambda (err) (answer-and-close ref err)))
+         => (lambda (err) (routed! parsed 'connection) (answer-and-close ref err)))
         ;; NEVER: A REQUEST FOR ANOTHER STORE IS REFUSED, NOT EXECUTED. This
         ;; daemon serves one store; running somebody else's verb against
         ;; it would write to the wrong library, silently.
@@ -1611,7 +1675,7 @@
                (list 'error 'transport-store-mismatch
                      (list 'serving (ctx-store ctx))
                      (list 'asked (frame-field 'store parsed)))))
-         => (lambda (refusal) (answer-and-close ref refusal)))
+         => (lambda (refusal) (routed! parsed 'connection) (answer-and-close ref refusal)))
         ;; NEVER: WELL-FORMED BEFORE DRAINING, on this side too (§7.6.50's
         ;; four layers). A request whose arguments do not parse used to be
         ;; answered `draining` while the daemon was going -- telling the
@@ -1622,7 +1686,7 @@
         ;; NOTE: HERE, AFTER THE FRAME AND THE STORE HAVE BEEN JUDGED: this
         ;; request is well-formed and for this store, and is being refused
         ;; because the daemon is going.
-        (draining? (answer-and-close ref draining-answer))
+        (draining? (routed! parsed 'connection) (answer-and-close ref draining-answer))
         (else
          (let ((actor (frame-field 'actor parsed))
                (mode (frame-field 'mode parsed))
@@ -1656,6 +1720,7 @@
            ;; exchange cannot be written out as the answer to this one.
            (if (conn-local-read? request)
                (begin
+                 (routed! parsed 'connection)
                  ;; NEVER: A WAY TO BE INSIDE A CONNECTION-LOCAL READ WHILE
                  ;; SOMETHING ELSE HAPPENS. These reads are answered by
                  ;; this process without asking main, so the claim that a
@@ -1682,6 +1747,7 @@
                                rest mode 'core))
            (let ((target (target-for ctx request (frame-field 'writer parsed)))
                  (ticket (fresh-ticket)))
+             (routed! parsed (if (eqv? target (ctx-store-pid ctx)) 'store 'writer))
              (send target (list 'request self seq ticket (ctx-main ctx) request actor
                                 (frame-field 'writer parsed)
                                 (frame-field 'stdin parsed)
