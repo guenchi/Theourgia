@@ -2,9 +2,11 @@
 # from source. The tree it tests is the commit named in
 # .github/intel-suite.ref, not this branch's own; igropyr is pinned beside
 # it. Chez Scheme 10.4.1 is built from its release source, so the machine
-# type is ta6osx. A second job runs one reading on the base named in
-# .github/intel-suite.base: init, then insert, which there fails on the
-# legacy struct stat. Nothing is written back; no secrets are used.
+# type is ta6osx. Two more jobs run one reading (init, insert, outline):
+# on the base (.github/intel-suite.base), which refuses Darwin x86_64 for
+# want of a row, and on a control (.github/intel-suite.rowonly) that adds
+# the row without the $INODE64 symbols, where the legacy struct stat is
+# read with the row's offsets. Nothing is written back; no secrets.
 name: intel-suite
 
 on:
@@ -24,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        which: [ref, base]
+        which: [ref, base, rowonly]
     runs-on: macos-15-intel
     timeout-minutes: 240
     defaults:
