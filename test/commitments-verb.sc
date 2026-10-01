@@ -631,25 +631,27 @@
 
 (define local-wire
   (sh-out "local" (string-append (env "THEOURGIA_LOCAL=1") "scheme --script ../core.sc commitments --all --store '" store "' --wire")))
+;; The daemon's own trace lines saying it dispatched a request, counted
+;; just before and just after the client's commitments call, so the
+;; difference is that call's.
+(define (served-count)
+  (let ((f (string-append root "/served.txt")))
+    (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c 'daemon-dispatch' > '" f "' || true"))
+    (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
 ;; THE DAEMON'S OWN STATE, read through other verbs before and after it
 ;; answers commitments: the pins below read the disk and this process's
 ;; reduction, and cannot see the daemon's memory.
 (define (daemon-says tag . verb)
   (sh-out tag (string-append (env "") "scheme --script ../theourgia.sc " (apply string-append verb) " --store '" store "' --wire")))
 (define daemon-before (list (daemon-says "d-outline-1" "outline") (daemon-says "d-read-1" "read " d1)))
+(define served-before-client (served-count))
 (define client-wire
   (sh-out "client" (string-append (env "") "scheme --script ../theourgia.sc commitments --all --store '" store "' --wire")))
-(define daemon-after (list (daemon-says "d-outline-2" "outline") (daemon-says "d-read-2" "read " d1)))
-(want "C7 the daemon answers outline and read as it did before it answered commitments, and both answered"
-      (list (equal? daemon-before daemon-after) (map (lambda (t) (> (string-length t) 0)) daemon-before))
-      '(#t (#t #t)))
-;; The daemon's own trace lines saying it dispatched a request. Before the
-;; client's call no daemon exists, so any is the client's.
-(define (served-count)
-  (let ((f (string-append root "/served.txt")))
-    (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c 'daemon-dispatch' > '" f "' || true"))
-    (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
 (define served-after-client (served-count))
+(define daemon-after (list (daemon-says "d-outline-2" "outline") (daemon-says "d-read-2" "read " d1)))
+(want "C7 the daemon answers outline and read as it did before it answered commitments, and both answered ok"
+      (list (equal? daemon-before daemon-after) (map (lambda (t) (car (first-datum t))) daemon-before))
+      '(#t (ok ok)))
 
 (define mcp-out
   (let ((in (string-append root "/mcp-in.jsonl")))
@@ -682,14 +684,14 @@
                    (else (loop (+ i 1) (cons (string-ref mcp-out i) acc))))))))
 
 (want "C8 the local route answers exactly the decision rows worked out from the records, in order, then the skipped row"
-      (let ((a (first-datum local-wire))) (list (car a) (decisions-of a) (skipped-of a)))
-      (list 'ok (list expected-d1 expected-d2 expected-d3) (list (list forged-id 'kind-not-a-symbol))))
+      (let ((a (first-datum local-wire))) (list (car a) (items-of a)))
+      (list 'ok (list expected-d1 expected-d2 expected-d3 (list 'skipped forged-id 'kind-not-a-symbol))))
 (want "C8 the thin client's answer, through the daemon, equals the local one byte for byte"
       (if (string=? client-wire local-wire) 'identical (list 'client client-wire 'local local-wire))
       'identical)
-(want "C8 and the daemon served it"
-      (> served-after-client 0)
-      #t)
+(want "C8 and the daemon served it: one more dispatch than before the client's call"
+      (- served-after-client served-before-client)
+      1)
 (want "C8 the MCP shell's text decodes to the same datum"
       (if mcp-text (equal? (first-datum mcp-text) (first-datum local-wire)) (list 'NO-TEXT mcp-out))
       #t)
