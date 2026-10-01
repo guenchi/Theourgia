@@ -2120,6 +2120,10 @@
   ;; block's id is derived from the put that created it (block-id), so this
   ;; is what tells a block that has a creating put from one that a set,
   ;; move or delete materialised under an id no put made.
+  ;;
+  ;; NEVER: APPLIED IS NOT ENOUGH. A malformed put advances its writer's
+  ;; applied cursor like any record, but `interpret!` notes it and makes no
+  ;; block; `payload-reason` is the same question `interpret!` asks.
   (define (state-put-events r)
     (let loop ((recs (reverse (reduction-history r))) (out '()))
       (if (null? recs)
@@ -2127,6 +2131,7 @@
           (let* ((rec (car recs)) (event (cons (rec-writer rec) (rec-seq rec))))
             (loop (cdr recs)
                   (if (and (pair? (rec-payload rec)) (eq? 'put (car (rec-payload rec)))
+                           (not (payload-reason (rec-payload rec)))
                            (event-applied? r event))
                       (cons event out)
                       out))))))

@@ -30,7 +30,7 @@
 (import (chezscheme) (theourgia rpc) (theourgia ffi)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia commitments) commitments-answer)
-        (only (theourgia reduce) reduce-empty reduce-apply! state-datum state-read
+        (only (theourgia reduce) reduce-empty reduce-apply! state-datum state-read state-event-cut
               cut-covers? state-put-events state-field-events state-link-events state-block-ids)
         (only (theourgia store) open-and-reduce)
         (only (theourgia render) render-human render-wire)
@@ -206,6 +206,13 @@
             (clause (q c1 'all) "a.n" 'status)
             (clause (q c1 'all) "a.n" 'implemented-by))
       '(1 (done) (("a.3" (("a" . 25))))))
+(define c1a
+  (state-of `("a" 1 () ,(decision "status is the symbol absent"))
+            '("a" 2 () (set "a.1" status absent))
+            `("a" 3 () ,(decision "no status"))))
+(want "C1 a status whose value is the symbol absent is unreadable, not missing; a missing one is absent"
+      (list (clause (q c1a) "a.1" 'status) (clause (q c1a) "a.3" 'status))
+      '((unreadable "absent") (absent)))
 (want "C1 the whole row of an open decision"
       (row (q c1) "a.1")
       '(decision "a.1" (title "open") (status absent) (origin (("a" . 1))) (implemented-by)))
@@ -321,11 +328,18 @@
             '("b" 4 () (link "b.3" implements "a.2"))
             '("b" 5 () (set "b.3" src "changed"))))
 (define c3e-before (list (ids (q c3e 'all 'drifted)) (clause (q c3e 'all) "a.2" 'drifted)))
+;; One edge at each end SURVIVES, so that a reading that took a surviving edge
+;; for a change of either end has something to take; the third is linked and
+;; unlinked.
 (feed! c3e
        '("a" 3 (("b" . 5)) (link "b.1" ref "a.1"))
-       '("a" 4 () (unlink "b.1" ref "a.1"))
-       '("a" 5 () (link "b.3" ref "a.2"))
-       '("a" 6 () (unlink "b.3" ref "a.2")))
+       '("a" 4 () (link "b.3" ref "a.2"))
+       '("a" 5 () (link "b.1" ref "a.2"))
+       '("a" 6 () (unlink "b.1" ref "a.2")))
+(want "C3 CONTROL: the two ref edges are there after the queries' edges were written"
+      (list (state-link-events c3e "b.1" 'ref "a.1") (state-link-events c3e "b.3" 'ref "a.2")
+            (state-link-events c3e "b.1" 'ref "a.2"))
+      '((("a" . 3)) (("a" . 4)) ()))
 (want "C3 CONTROL: before the edges, d2 has drifted and d1 has not"
       c3e-before
       '(("a.2") (("b.3" (("a" . 2) ("b" . 5))))))
@@ -463,6 +477,25 @@
              '("(skipped \"a.1\" kind-not-a-symbol)" "(skipped \"q.9\" no-origin)")))
       '(#t #t))
 
+;; A PUT THE REDUCER REFUSED MAKES NO ORIGIN. Its writer's cursor still moves
+;; past it, so "applied" alone would take it for the block's creation.
+(define c6m
+  (state-of '("a" 1 () (put broken))
+            '("a" 2 () (set "a.1" kind decision))
+            '("a" 3 () (set "a.1" title "D"))))
+(want "C6 a decision whose put was malformed is a no-origin skipped row, and not in the put events"
+      (list (skipped-of (q c6m 'all)) (ids (q c6m 'all)) (state-put-events c6m))
+      '((("a.1" no-origin)) () ()))
+
+;; A STORED VALUE WITH THE HEAD `conflict` AND NOT THE SHAPE the reducer gives
+;; one: it came from a record, and reading it must not stop the query.
+(define c6c
+  (state-of '("a" 1 () (put ((kind . (conflict)) (title . "legacy"))))
+            `("a" 2 () ,(decision "readable"))))
+(want "C6 a stored kind shaped (conflict) is not a decision and does not stop the answer"
+      (let ((a (q c6c 'all))) (list (car a) (ids a) (skipped-of a)))
+      '(ok ("a.2") ()))
+
 ;; ---- the real store: C6 from a forged log, C7, C8 ---------------------------------------
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
@@ -482,22 +515,66 @@
               (and f (equal? (cdr f) title))))
           (state-block-ids s))))
 
+;; ALL THE WRITES COME FIRST. Every query below runs after the pins are taken
+;; and before they are taken again, so "nothing was written" is asked of
+;; every query in this half, on every route.
 (run 'init)
 (run 'insert "--under" "root" "--title" "Adopt the ledger")
 (run 'insert "--under" "root" "--title" "Keep the wire in UTF-8")
+(run 'insert "--under" "root" "--title" "Already done")
 (run 'insert "--under" "root" "--title" "The ledger, implemented")
 (define d1 (id-by-title "Adopt the ledger"))
 (define d2 (id-by-title "Keep the wire in UTF-8"))
+(define d3 (id-by-title "Already done"))
 (define impl (id-by-title "The ledger, implemented"))
 (run 'set d1 "kind" "decision")
 (run 'set d2 "kind" "decision")
-(run 'link impl "implements" d1)
+(run 'set d3 "kind" "decision")
+(run 'set d3 "status" "done")
+;; The event the link was written at, from the link's own answer.
+(define (first-event answer)
+  (let find ((x answer))
+    (cond ((and (pair? x) (eq? (car x) 'events) (pair? (cdr x)) (pair? (cadr x)) (pair? (car (cadr x))))
+           (car (cadr x)))
+          ((pair? x) (or (find (car x)) (find (cdr x))))
+          (else #f))))
+(define link-event (first-event (run 'link impl "implements" d1)))
+;; A DRAFT IS NOT A CHANGE: written and never committed.
+(define draft (run 'write impl "a new body" "--writer" "drafter"))
+;; C6 FROM A LOG THE FIXTURE WROTE: below the caller's checks, as a record
+;; from another build arrives. The store's own writer is read from an id it
+;; made: the draft made a second writer directory, and the first entry of a
+;; listing may be that one.
+(define writer (let loop ((i (- (string-length d1) 1)))
+                 (if (char=? (string-ref d1 i) #\.) (substring d1 0 i) (loop (- i 1)))))
+(define forged-seq (forge-record-as! store writer "(put ((kind . \"decision\") (title . \"legacy\")))"))
+(define forged-id (string-append writer "." (string-downcase (number->string forged-seq 36))))
 
-(want "C1 CONTROL: the store was built (three ids found)"
-      (list (string? d1) (string? d2) (string? impl))
-      '(#t #t #t))
+(want "C1 CONTROL: the store was built (four ids, the link's event, the draft)"
+      (list (string? d1) (string? d2) (string? d3) (string? impl) (pair? link-event) (car draft))
+      '(#t #t #t #t #t ok))
 
-;; THE PINS, before any query on the real store and again after the last.
+;; THE EXPECTED ROWS, from the ids and the link's event alone: an id is its
+;; creating put's writer and base-36 sequence number, and the cut after an
+;; event is the reduction's `state-event-cut`, which this query did not add.
+(define (event-of-id id)
+  (let loop ((i (- (string-length id) 1)))
+    (if (char=? (string-ref id i) #\.)
+        (cons (substring id 0 i) (string->number (substring id (+ i 1) (string-length id)) 36))
+        (loop (- i 1)))))
+(define built (open-and-reduce store))
+(define (cut-after event) (state-event-cut built event))
+(define expected-d1
+  (list 'decision d1 '(title "Adopt the ledger") '(status absent) (list 'origin (cut-after (event-of-id d1)))
+        (list 'implemented-by (list impl (cut-after link-event)))))
+(define expected-d2
+  (list 'decision d2 '(title "Keep the wire in UTF-8") '(status absent) (list 'origin (cut-after (event-of-id d2)))
+        '(implemented-by)))
+(define expected-d3
+  (list 'decision d3 '(title "Already done") '(status done) (list 'origin (cut-after (event-of-id d3)))
+        '(implemented-by)))
+
+;; THE PINS, after the last write and before the first query.
 (define (log-bytes)
   (let ((f (string-append root "/size.txt")))
     (system (string-append "find '" store "' -name '*.sexp' -path '*writers*' -exec cat {} + | wc -c | tr -d ' ' > '" f "'"))
@@ -509,41 +586,24 @@
 (define published (open-and-reduce store))
 (define pins-before (list (log-bytes) (file-list) (state-datum published)))
 
-(want "C7 a populated query precedes the pins"
+(want "C7 a populated query precedes the pins' second reading"
       (let ((a (rpc-dispatch store (list 'commitments "--all") "test" published)))
         (list (car a) (ids a)))
-      (list 'ok (list d1 d2)))
+      (list 'ok (list d1 d2 d3)))
 (want "C1 status done written by the command line is a string, and discharges"
-      (begin (run 'set d2 "status" "done")
-             (list (ids (run 'commitments)) (clause (run 'commitments "--all") d2 'status)))
-      '(() (done)))
-(run 'set d2 "status" "open")
-
-;; A DRAFT IS NOT A CHANGE; its commit is.
-(define draft (run 'write impl "a new body" "--writer" "drafter"))
+      (list (ids (run 'commitments)) (clause (run 'commitments "--all") d3 'status))
+      (list (list d2) '(done)))
 (want "C3 a draft written and not committed does not make drift"
-      (list (car draft) (ids (run 'commitments "--all" "--drifted")))
-      '(ok ()))
-
-;; The origin as the answer gave it, written back as text.
-(define d1-origin (car (clause (run 'commitments "--all") d1 'origin)))
+      (ids (run 'commitments "--all" "--drifted"))
+      '())
 (want "C5 --since reads a cut written as text"
       (ids (run 'commitments "--all" "--since"
-                (call-with-string-output-port (lambda (p) (write d1-origin p)))))
-      (list d2))
+                (call-with-string-output-port (lambda (p) (write (cut-after (event-of-id d1)) p)))))
+      (list d2 d3))
 (want "C4 --under with an empty id is a usage answer, as are --open and --all together"
       (list (car (run 'commitments "--under" "")) (car (run 'commitments "--open" "--all"))
             (car (run 'commitments "--since" "not a cut")) (car (run 'commitments "extra")))
       '(usage usage usage usage))
-
-;; C6 FROM A LOG THE FIXTURE WROTE: below the caller's checks, as a record
-;; from another build arrives.
-;; The store's own writer, read from an id it made: the draft above made a
-;; second writer directory, and the first entry of a listing may be that one.
-(define writer (let loop ((i (- (string-length d1) 1)))
-                 (if (char=? (string-ref d1 i) #\.) (substring d1 0 i) (loop (- i 1)))))
-(define forged-seq (forge-record-as! store writer "(put ((kind . \"decision\") (title . \"legacy\")))"))
-(define forged-id (string-append writer "." (string-downcase (number->string forged-seq 36))))
 (want "C6 a kind spelt as a string, from the log: skipped in the wire answer and in human output"
       (let ((a (run 'commitments)))
         (list (and (member (list forged-id 'kind-not-a-symbol) (skipped-of a)) #t)
@@ -611,10 +671,9 @@
                    ((char=? (string-ref mcp-out i) #\") (list->string (reverse acc)))
                    (else (loop (+ i 1) (cons (string-ref mcp-out i) acc))))))))
 
-(define expected-ids (list d1 d2))
-(want "C8 the local route answers with the decisions"
-      (let ((a (first-datum local-wire))) (list (car a) (ids a) (clause a d1 'implemented-by)))
-      (list 'ok expected-ids (clause (run 'commitments "--all") d1 'implemented-by)))
+(want "C8 the local route answers each decision row as worked out from the records"
+      (let ((a (first-datum local-wire))) (list (car a) (row a d1) (row a d2) (row a d3)))
+      (list 'ok expected-d1 expected-d2 expected-d3))
 (want "C8 the thin client's answer, through the daemon, equals the local one byte for byte"
       (if (string=? client-wire local-wire) 'identical (list 'client client-wire 'local local-wire))
       'identical)
@@ -629,21 +688,17 @@
 
 ;; ---- C7: nothing was written ---------------------------------------------------------
 ;;
-;; The writes this half made itself (the sets, the draft, the forged
-;; record) are undone from the comparison by taking the pins again here and
-;; comparing against a reading taken after them, around the queries alone.
-(define published-2 (open-and-reduce store))
-(define pins-mid (list (log-bytes) (file-list) (state-datum published-2)))
-(for-each (lambda (args) (rpc-dispatch store (cons 'commitments args) "test" published-2))
+;; Every query above -- in this process with and without the published
+;; reduction, and through core.sc, the daemon and the MCP shell -- ran between
+;; the two readings. A few more in-process ones, on the published reduction,
+;; close the bracket.
+(for-each (lambda (args) (rpc-dispatch store (cons 'commitments args) "test" published))
           '(() ("--all") ("--all" "--drifted") ("--since" "()") ("--under" "root")))
-(define pins-after (list (log-bytes) (file-list) (state-datum published-2)))
-(want "C7 CONTROL: the store was written between the first pins and the second"
-      (equal? pins-before pins-mid)
-      #f)
+(define pins-after (list (log-bytes) (file-list) (state-datum published)))
 (want "C7 the log's length, the store's files and the published reduction are what they were"
-      (map equal? pins-mid pins-after)
+      (map equal? pins-before pins-after)
       '(#t #t #t))
 
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
-(printf "\n~a failures\nrows: ~a\ncommitments complete\n" bad rows)
+(printf "\n~a failures\nrows: ~a\ncommitments-verb complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

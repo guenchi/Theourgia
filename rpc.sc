@@ -965,17 +965,23 @@
   ;;
   ;; NEVER: A BATCH IS CHECKED WHOLE BEFORE ANYTHING IS PUBLISHED. A name
   ;; that is a built-in verb, a name given twice in the batch or already
-  ;; registered, a route outside daemon / local / child, or an entry of
-  ;; another shape refuses the whole batch, by name, and leaves the
-  ;; registry as it was: a half-registered batch would answer for some of
-  ;; its verbs and not others.
+  ;; registered, a route other than daemon, or an entry of another shape
+  ;; refuses the whole batch, by name, and leaves the registry as it was: a
+  ;; half-registered batch would answer for some of its verbs and not others.
+  ;;
+  ;; NEVER: DAEMON ONLY, AND NOT BECAUSE THE CATALOGUE HAS NO OTHERS. The
+  ;; carriers of the other two do not read this registry: the client decides
+  ;; what it runs locally from a list of its own, and the MCP shell's child
+  ;; route always runs `eval`. A registered local or child verb would be sent
+  ;; where it cannot be answered, so it is refused until a carrier reads the
+  ;; registry.
   (define extensions '())
 
   (define (extension-catalogue)
     (map (lambda (e) (list (list-ref e 0) (list-ref e 1) (list-ref e 2) (list-ref e 3) (list-ref e 4)))
          extensions))
 
-  (define extension-routes '(daemon local child))
+  (define extension-routes '(daemon))
 
   (define (option-names? x)
     (and (list? x)
@@ -989,7 +995,7 @@
           ((not (pair? (list-ref e 1))) "the usage is not a form")
           ((not (string? (list-ref e 2))) "the description is not a string")
           ((not (boolean? (list-ref e 3))) "the protocol mark is not a boolean")
-          ((not (memq (list-ref e 4) extension-routes)) "the route is not daemon, local or child")
+          ((not (memq (list-ref e 4) extension-routes)) "a registered verb's route is daemon")
           ((not (option-names? (list-ref e 5))) "the value options are not option names")
           ((not (option-names? (list-ref e 6))) "the flag options are not option names")
           ((not (let ((h (list-ref e 7))) (and (pair? h) (list? (car h)) (pair? (car h)) (symbol? (cdr h)))))

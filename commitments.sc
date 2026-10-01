@@ -67,13 +67,23 @@
 
   ;; ---- reading one field ----------------------------------------------------
 
+  ;; NEVER: A MISSING FIELD IS NOT A VALUE A FIELD CAN HOLD. It is this
+  ;; object, which no record can contain; a symbol here would read a status
+  ;; field whose value is that symbol as no field at all.
+  (define missing (list 'missing))
+
   (define (field-of row name)
-    (let ((e (assq name (cdr (assq 'fields row))))) (if e (cdr e) 'absent)))
+    (let ((e (assq name (cdr (assq 'fields row))))) (if e (cdr e) missing)))
 
   (define (conflict-form? v) (and (pair? v) (eq? (car v) 'conflict)))
 
-  ;; The values a conflict form holds, each as written.
-  (define (conflict-values v) (map car (cadr v)))
+  ;; The values a conflict form holds, each as written. A stored value can
+  ;; have the head `conflict` without the shape the reducer gives one (a
+  ;; record from elsewhere wrote it), and it holds no values then.
+  (define (conflict-values v)
+    (if (and (pair? (cdr v)) (list? (cadr v)))
+        (map car (filter pair? (cadr v)))
+        '()))
 
   ;; WHAT KIND OF ROW A BLOCK IS FOR THIS QUERY: decision, a skip reason,
   ;; or #f for a block that is not a decision at all.
@@ -96,7 +106,7 @@
   ;; STATUS IS READ LENIENTLY: the symbol or the string spelling of open,
   ;; done or dropped. Anything else is open, and the answer says which.
   (define (status-reading v)
-    (cond ((eq? v 'absent) 'absent)
+    (cond ((eq? v missing) 'absent)
           ((conflict-form? v) 'conflict)
           ((and (symbol? v) (memq v '(open done dropped))) v)
           ((and (string? v) (member v '("open" "done" "dropped"))) (string->symbol v))

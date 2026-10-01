@@ -209,8 +209,10 @@
 ;; probe sweeps; it is read from the table because the table is where a
 ;; spelling is introduced, and every answer about it is then taken from
 ;; the parser.
+;; NOTE: AND THE OPTIONS OF THE VERBS REGISTERED FROM OUTSIDE THE CORE
+;; TABLE, which are introduced in extensions.sc and nowhere in arguments.sc.
 (define all-spellings
-  (let loop ((xs (strings-in arguments-data)) (out '()))
+  (let loop ((xs (append (strings-in arguments-data) (filter dashed? (strings-in extension-data)))) (out '()))
     (cond ((null? xs) out)
           ((member (car xs) out) (loop (cdr xs) out))
           (else (loop (cdr xs) (cons (car xs) out))))))
@@ -613,9 +615,21 @@
                              "--timeout-ms" "--memory-bytes" "--output-bytes")))
                (options-read-in cli-text 0 (string-length cli-text)))))
 
+;; THE HANDLERS OF THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE live in
+;; a library of their own, named by the entry, and every option read there
+;; belongs to that verb.
+(define extension-reads
+  (apply append
+    (map (lambda (e)
+           (let* ((lib (car (list-ref e 7)))
+                  (text (call-with-input-file
+                          (string-append "../" (symbol->string (cadr lib)) ".sc") get-string-all)))
+             (map (lambda (o) (list (car e) o)) (options-read-in text 0 (string-length text)))))
+         extension-verbs)))
+
 (define read-but-refused
   (filter (lambda (p) (not (accepted? (car p) (cadr p))))
-          (append handler-reads cli-reads)))
+          (append handler-reads cli-reads extension-reads)))
 
 (want "GATE-B3 every option a handler reads is one the parser accepts"
       read-but-refused '())
@@ -629,6 +643,11 @@
 ;; handler and is not swept. A control row names examples so that an empty
 ;; sweep cannot pass, so it needs examples that exist -- and when the code
 ;; moves, the examples move with it rather than the row being deleted.
+(want "GATE-B3 the sweep of the registered verbs' handlers found commitments reading its options"
+      (map (lambda (o) (and (member (list 'commitments o) extension-reads) #t))
+           '("--open" "--all" "--drifted" "--since" "--under"))
+      '(#t #t #t #t #t))
+
 (want "GATE-B3 the sweep found handlers reading options"
       (list (> (length (append handler-reads cli-reads)) 20)
             (and (member '(read "--working-info") handler-reads) #t)

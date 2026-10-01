@@ -31,6 +31,11 @@
 
 (define bad 0)
 (define rows 0)
+;; THE VALUES A ROW READS ARE TAKEN IN THE ORDER THEY ARE WRITTEN.
+(define-syntax in-order
+  (syntax-rules ()
+    ((_) '())
+    ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
 (define (want-1 name got expected)
   (set! rows (+ rows 1))
   (if (equal? got expected)
@@ -139,10 +144,23 @@
 
 ;; ---- V2 and the route: a refused batch leaves the registry as it was --------------
 
-(define (entry name route) (list name (list name) "x" #f route '() '() '((fixture probe) . probe-verb)))
+;; Each synthetic entry has a value option of its own, so that a batch
+;; published in part would show in the parser as well as in the verb list.
+(define (entry name route)
+  (list name (list name '["--fresh" <x>]) "x" #f route '("--fresh") '() '((fixture probe) . probe-verb)))
+(define (catalogue-now) (cdr (assq 'verbs (cdr (run 'describe)))))
+(define catalogue-registered (catalogue-now))
+(define (fresh-parse) (parse-arguments 'fresh-one '("--fresh" "x")))
+;; THE THREE PROJECTIONS A BATCH PUBLISHES -- the verb list (dispatch), the
+;; catalogue (describe) and the option tables (the parser) -- each compared
+;; with what it was before the refused batch.
 (define (refusal batch)
   (let ((r (raised-message (lambda () (register-verbs! batch)))))
-    (list r (equal? (rpc-verbs) verbs-registered) (car (run 'fresh-one)))))
+    (list r
+          (and (equal? (rpc-verbs) verbs-registered)
+               (equal? (catalogue-now) catalogue-registered)
+               (equal? (fresh-parse) '((pos "--fresh") (pos "x"))))
+          (car (run 'fresh-one)))))
 
 (want "V2 a batch naming a built-in verb is refused by name, its valid entry not installed"
       (refusal (list (entry 'fresh-one 'daemon) (entry 'read 'daemon)))
@@ -153,12 +171,21 @@
 (want "V2 a name an earlier batch registered is refused"
       (refusal (list (entry 'fresh-one 'daemon) (entry 'commitments 'daemon)))
       '((RAISED "the name is already registered" (commitments)) #t error))
-(want "V2 a route other than daemon, local or child is refused at registration"
-      (car (car (refusal (list (entry 'fresh-one 'remote)))))
-      'RAISED)
-(want "V2 and says which"
-      (cadr (car (refusal (list (entry 'fresh-one 'remote)))))
-      "the route is not daemon, local or child")
+(want "V2 a registered verb's route is daemon: local, child and another route are each refused, by name"
+      (map (lambda (route) (let ((r (refusal (list (entry 'fresh-one route)))))
+                             (list (car (car r)) (cadr (car r)) (cadr r) (caddr r))))
+           '(local child remote))
+      '((RAISED "a registered verb's route is daemon" #t error)
+        (RAISED "a registered verb's route is daemon" #t error)
+        (RAISED "a registered verb's route is daemon" #t error)))
+
+(want "V2 CONTROL: a valid batch with the same entry does change all three"
+      (begin (register-verbs! (list (entry 'fresh-one 'daemon)))
+             (list (and (memq 'fresh-one (rpc-verbs)) #t)
+                   (and (assq 'fresh-one (catalogue-now)) #t)
+                   (fresh-parse)
+                   (car (run 'fresh-one))))
+      '(#t #t ((option "--fresh" "x")) ok))
 
 ;; ---- V3: the options, by node type ------------------------------------------------
 
@@ -261,6 +288,76 @@
       (let ((t (sh-out "ondemand" (string-append (env "") "scheme --script '" child "'"))))
         (guard (e (#t (list 'UNREADABLE t))) (read (open-string-input-port t))))
       '(#f #t))
+
+;; THE REAL ENTRY POINTS, read statically: no library either program imports,
+;; directly or through another, is (theourgia commitments).
+(define (import-specs form)
+  (cond ((and (pair? form) (eq? (car form) 'import)) (cdr form))
+        ((and (pair? form) (eq? (car form) 'library))
+         (let ((i (find (lambda (x) (and (pair? x) (eq? (car x) 'import))) (cddr form))))
+           (if i (cdr i) '())))
+        (else '())))
+(define (spec-library spec)
+  (cond ((and (pair? spec) (memq (car spec) '(only except prefix rename)) (pair? (cdr spec))) (spec-library (cadr spec)))
+        ((and (pair? spec) (eq? (car spec) 'theourgia) (pair? (cdr spec))) (cadr spec))
+        (else #f)))
+(define (theourgia-imports path)
+  (guard (e (#t '()))
+    (call-with-input-file path
+      (lambda (p)
+        (let loop ((acc '()))
+          (let ((x (read p)))
+            (if (eof-object? x) acc
+                (loop (append acc (filter values (map spec-library (import-specs x))))))))))))
+(define (closure-of path)
+  (let walk ((todo (list path)) (seen '()))
+    (cond ((null? todo) seen)
+          ((member (car todo) seen) (walk (cdr todo) seen))
+          (else (walk (append (cdr todo)
+                              (map (lambda (n) (string-append "../" (symbol->string n) ".sc"))
+                                   (theourgia-imports (car todo))))
+                      (cons (car todo) seen))))))
+(define core-closure (closure-of "../core.sc"))
+(define daemon-closure (closure-of "../theourgiad.sc"))
+(want "A1 neither program's static closure holds the commitments library; both hold the registry's data"
+      (map (lambda (c) (list (and (member "../commitments.sc" c) #t) (and (member "../extensions.sc" c) #t)
+                             (> (length c) 3)))
+           (list core-closure daemon-closure))
+      '((#f #t #t) (#f #t #t)))
+
+;; AND AT RUN TIME, through the programs themselves: a copy of the library
+;; that writes a file when its body runs, first on the library path. An
+;; import alone does not run a library's body; a handler entered on dispatch
+;; does, and so would a registration that entered it.
+(define marklib (string-append root "/marklib"))
+(define marker (string-append root "/marker"))
+(system (string-append "mkdir -p '" marklib "/theourgia'"))
+(let* ((text (file-text "../commitments.sc"))
+       (anchor "  (define (commitments-verb ")
+       (at (let find ((i 0)) (cond ((> (+ i (string-length anchor)) (string-length text)) #f)
+                                   ((string=? (substring text i (+ i (string-length anchor))) anchor) i)
+                                   (else (find (+ i 1)))))))
+  (write-file! (string-append marklib "/theourgia/commitments.sc")
+               (string-append (substring text 0 at)
+                              "  (define marker-written (let ((p (open-file-output-port \"" marker
+                              "\" (file-options no-fail)))) (close-port p) #t))\n"
+                              (substring text at (string-length text)))))
+(define (env-marked extra)
+  (string-append "CHEZSCHEMELIBDIRS=" marklib ":" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_HOME=" root "/home "
+                 "THEOURGIA_RUN=" sock-root "/run " extra " "))
+;; No daemon left from an earlier section may answer the thin client: one
+;; started with the unmarked library path would make the control row lie.
+(system (string-append "pkill -f 'serve " store "' 2>/dev/null; sleep 1"))
+(define (marked? program verb extra)
+  (system (string-append "rm -f '" marker "'"))
+  (sh-out "marked" (string-append (env-marked extra) "scheme --script ../" program " " verb " --store '" store "' --wire"))
+  (file-exists? marker))
+(want "A1 core.sc and the thin client answering outline do not run the commitments library; answering commitments does"
+      (in-order (marked? "core.sc" "outline" "THEOURGIA_LOCAL=1")
+                (marked? "core.sc" "commitments" "THEOURGIA_LOCAL=1")
+                (marked? "theourgia.sc" "outline" "")
+                (marked? "theourgia.sc" "commitments" ""))
+      '(#f #t #f #t))
 
 (system (string-append "pkill -f 'serve " store "' 2>/dev/null"))
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
