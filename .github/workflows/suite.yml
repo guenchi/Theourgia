@@ -19,6 +19,9 @@ env:
 
 jobs:
   suite:
+    # A push that is not a request (a change to the harness itself) runs
+    # nothing, rather than failing.
+    if: startsWith(github.event.head_commit.message, 'suite ')
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +32,9 @@ jobs:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
       # THE COMMIT UNDER TEST comes from the pushed commit's first line. It
       # is taken through the environment and must be a bare hex id, so the
       # message is never interpreted by the shell.
@@ -104,7 +110,28 @@ jobs:
           # THE SUITE MUST HAVE RUN TO ITS END: a run that stopped before its
           # summary has no RED lines to rerun and would otherwise read clean.
           grep -q 'fixtures run:' suite.log || { echo "the suite printed no summary: it did not run to its end"; exit 1; }
-          [ "$(cat suite.rc)" = 0 ] || { echo "suite rc $(cat suite.rc): not green, see RED lines and reruns"; exit 1; }
+          # THE VERDICT: a not-green fixture is KNOWN when every hard line of
+          # its suite output matches its line in harness/known-red.txt; any
+          # other not-green fixture, or a known one with another hard line,
+          # is the tree's. Known rows are judged on the development machine.
+          unexpected=0; : > verdict.txt
+          for fx in $(grep '^RED ' suite.log | awk '{print $2}'); do
+            pat=$(awk -F'\t' -v f="$fx" '$1==f {print $2}' harness/known-red.txt)
+            hard=$(grep -E '^FAIL|MISMATCH|Exception' "out/$fx.out" || true)
+            if [ -z "$pat" ]; then
+              echo "UNEXPECTED $fx: not in known-red.txt" >> verdict.txt; unexpected=$((unexpected+1))
+            elif [ -z "$hard" ]; then
+              echo "UNEXPECTED $fx: red with no hard line (rc, sentinel or counters)" >> verdict.txt; unexpected=$((unexpected+1))
+            elif printf '%s\n' "$hard" | grep -v -E "$pat" > /dev/null; then
+              echo "UNEXPECTED $fx: a hard line outside its known class:" >> verdict.txt
+              printf '%s\n' "$hard" | grep -v -E "$pat" | cut -c1-200 >> verdict.txt; unexpected=$((unexpected+1))
+            else
+              echo "known $fx: $(printf '%s\n' "$hard" | wc -l | tr -d ' ') hard line(s), all in its class; judge it on the development machine" >> verdict.txt
+            fi
+          done
+          echo "fixtures not green: $(grep -c '^RED ' suite.log); unexpected: $unexpected" >> verdict.txt
+          cat verdict.txt
+          [ "$unexpected" = 0 ] || exit 1
       - name: keep the readings
         if: always()
         uses: actions/upload-artifact@v4
@@ -114,4 +141,5 @@ jobs:
             out
             suite.log
             suite.rc
+            verdict.txt
             rerun

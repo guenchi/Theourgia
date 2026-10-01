@@ -1,0 +1,19 @@
+# Rows that are red on GitHub's macos-latest runner on a tree that is green on
+# the development machine. One line: <fixture> <TAB> <extended regex matching
+# the whole class of that fixture's hard lines>. A fixture is "known red" only
+# when EVERY hard line of its output matches its regex.
+#
+# Baselines, both on master e65e9f9, 2026-10-01:
+#   run 36869518726 (suite 64 min): cli2, client-program, f0-ondemand,
+#     mcp-shell, startup-ratio
+#   run 36870111438 (suite 49 min): client-program, f0-ondemand, startup-ratio
+# Always red there: client-program P-17 (the runner has no terminal),
+# f0-ondemand F0-2 (a start costs about twice the budget), startup-ratio
+# (its calibration is this machine's). Red on a slow runner: cli2's CONTROL
+# and mcp-shell X15 (both are timings). These rows are judged on the
+# development machine instead; every other red row is the tree's.
+client-program	^FAIL P-17 
+f0-ondemand	^FAIL F0-2 
+startup-ratio	^FAIL C[13] 
+cli2	^FAIL CONTROL: with the product's lock removed
+mcp-shell	^FAIL X15 
