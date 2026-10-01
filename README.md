@@ -514,9 +514,10 @@ tool list from this, so a tool description and the verb it describes cannot
 drift apart.
 
 It reads a table and runs nothing. NEVER: It does not open the store, take a lock
-or write a byte. When the store has a template, the daemon, which already holds the store's state,
-adds `(template (roots ...) (relations ...))`; the in-process route does not open a store to
-describe it.
+or write a byte. When the store has a template, the daemon adds `(template (roots ...)
+(relations ...))` from the state it publishes; there describe is a read like any other, which may
+check the store's files for a change made from outside and reload, and never writes. The in-process
+route does not open a store to describe it.
 
 NOTE: **The table needs no store; asking a daemon for it does.** Answered in
 process — which is what `theourgia describe` does when it runs the server
@@ -658,7 +659,9 @@ Creates a store in the directory named by `--store`, and answers with the
 store's id and the writer the caller was given. With `--template` (a built-in: `project` or
 `memory`) or `--template-file`, it then applies that template, as `template apply` does, and the
 answer also carries `(template <name>)` and `(created (<slug> <id>) ...)`. A template that cannot be
-used is refused before any store is made. It also writes
+used is refused before any store is made. A filesystem failure while the template is applied is
+answered like any other, and the new store may exist; a refusal of the template's roots carries
+`(store-created)`. It also writes
 `<store>/.gitignore`; see [A store in git](#a-store-in-git).
 The answer is `(ok (store <id>) (writer <writer>))`. A directory that already holds a store is refused `(error already-initialised (store <dir>))`, and one holding another instance's writer is refused `(error foreign-writer (writer <w>) (remedy adopt))`.
 

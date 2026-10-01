@@ -1072,10 +1072,16 @@
   ;; does not load a store to describe it. A handed state that could not read
   ;; every writer adds nothing either: a template read from part of a store is
   ;; not the store's template.
+  ;; A SEALED STATE'S NOTES ARE ALL OF ITS NOTES -- the reduction's own and
+  ;; what the daemon's probe found since -- so a sealed state is asked for
+  ;; those, and a bare one for its own.
   (define (describe-template state)
     (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
                        (else state)))
-           (t (and view (reduction? view) (null? (unreadable-behind view)) (store-template view))))
+           (complete (cond ((sealed-state? state) (null? (sealed-state-notes state)))
+                           (view (null? (unreadable-behind view)))
+                           (else #f)))
+           (t (and view complete (reduction? view) (store-template view))))
       (and t (list 'template (cons 'roots (template-roots t)) (cons 'relations (template-relations t))))))
 
   ;; The catalogue as an answer. NEVER: The protocol is carried ONCE, beside

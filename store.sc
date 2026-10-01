@@ -18,7 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
-          obtain-state seal-state sealed-state? sealed-state-state sealed-state-unsealed? store-withhold-hook!
+          obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? store-withhold-hook!
           state-incomplete-notes
           ;; The interface pinned at dispatch (F77c; cells v3e look these up
           ;; in this library): re-exported from (theourgia incomplete).

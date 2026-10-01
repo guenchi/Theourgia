@@ -298,13 +298,20 @@
 ;; and all: a done decision outside design is not an open row, and is counted only
 ;; by the request that lists done ones.
 (define done-outside (make! s1 "root" "A done decision outside design" "kind" "decision" "status" "done"))
+;; AND A SKIPPED ROW OUTSIDE: a kind spelt as a string, written below the
+;; caller's checks as a record from elsewhere arrives. It is a row of every
+;; commitments answer that can see it, whatever the filters.
+(define s1-writer (let ((id design)) (let loop ((i (- (string-length id) 1))) (if (char=? (string-ref id i) #\.) (substring id 0 i) (loop (- i 1))))))
+(forge-record-as! s1 s1-writer "(put ((kind . \"decision\") (title . \"legacy outside design\")))")
 (define (outside-of a) (let ((sc (scope-of a))) (and sc (cadr (cadr sc)))))
+;; Every row but the scope item: decision, task and skipped rows alike.
+(define (rows-of a) (filter (lambda (x) (and (pair? x) (not (eq? (car x) 'scope)))) (items-of a)))
 (define (difference . args)
-  (- (length (ids-of (apply run s1 (append args '("--under" "root"))))) (length (ids-of (apply run s1 args)))))
-(want "SCOPE commitments: --open does not count the done decision outside, --all does; each equals rows(--under root) minus rows"
+  (- (length (rows-of (apply run s1 (append args '("--under" "root"))))) (length (rows-of (apply run s1 args)))))
+(want "SCOPE commitments: --open does not count the done decision outside, --all does, both count the skipped row; each equals rows(--under root) minus rows"
       (list (outside-of (run s1 'commitments)) (difference 'commitments)
             (outside-of (run s1 'commitments "--all")) (difference 'commitments "--all"))
-      '(1 1 2 2))
+      '(2 2 3 3))
 (run s1 'set elsewhere "status" "todo")
 (want "SCOPE tasks with a filter: outside counts only the rows the filter keeps"
       (list (outside-of (run s1 'tasks "--status" "todo")) (difference 'tasks "--status" "todo")
@@ -335,7 +342,12 @@
       #t)
 
 (define s4 (store-with))
-(make! s4 "root" "Reader guide" "kind" "doc" "path" "docs/x.md")
+(define guide (make! s4 "root" "Reader guide" "kind" "doc" "path" "docs/x.md"))
+(make! s4 guide "Reading the store" "kind" "section")
+(define lib-src (string-append root "/lib-src"))
+(system (string-append "mkdir -p '" lib-src "/code'"))
+(write-file! (string-append lib-src "/code/tools.sc") "(library (tools) (export gnarlwick) (import (rnrs)) (define gnarlwick 1))\n")
+(run s4 'import-code lib-src "--datum")
 (define code-src (string-append root "/code-src"))
 (system (string-append "mkdir -p '" code-src "/code'"))
 (write-file! (string-append code-src "/code/a.js") "function alpha() {\n  return 1;\n}\n")
@@ -375,10 +387,13 @@
 (run s4 'set a-code "src" "function alpha() {\n  return 3;\n}\n")
 (system (string-append "mkdir -p '" out4 "/code2'"))
 (define export2 (run s4 'export-code (string-append out4 "/code2")))
-(want "T4 a document under docs/ is written at docs/x.md, and code files at code/"
-      (list (file-exists? (string-append out4 "/md/docs/x.md"))
-            (file-exists? (string-append out4 "/code/code/a.js")) (file-exists? (string-append out4 "/code/code/b.js")))
-      '(#t #t #t))
+(system (string-append "mkdir -p '" out4 "/datum'"))
+(run s4 'export-code (string-append out4 "/datum") "--datum")
+(want "T4 a document under docs/ is written at docs/x.md with its section, code files and a datum library at code/"
+      (list (has-line? (file-text (string-append out4 "/md/docs/x.md")) "# Reading the store")
+            (file-exists? (string-append out4 "/code/code/a.js")) (file-exists? (string-append out4 "/code/code/b.js"))
+            (string-contains? (file-text (string-append out4 "/datum/code/tools.sc")) "(library (tools)"))
+      '(#t #t #t #t))
 (want "T4 changing one code block changes its file's body and no other file's; every header moves with the cut"
       (list (string? a-code) export2
             (equal? (body-of (string-append out4 "/code2/code/a.js")) a-before)
@@ -602,7 +617,7 @@
 (client s1 "conflicts")
 (define acts-2 (daemon-acts))
 (system (string-append "pkill -f 'serve " s1 "' 2>/dev/null; sleep 1"))
-(want "D through the daemon describe carries the template clause and adds no store act of its own"
+(want "D through the daemon describe carries the template clause and adds no traced load, lock or write of its own (the probe's file-size reads are not traced)"
       (list (and (clause-of via-daemon 'template) #t) (- acts-1 acts-0))
       '(#t 0))
 (want "D CONTROL: the same count sees a verb that does touch the store"
@@ -628,9 +643,36 @@
 (corrupt! unfoldable)
 (define via-daemon-unfoldable (client unfoldable "describe"))
 (system (string-append "pkill -f 'serve " unfoldable "' 2>/dev/null; sleep 1"))
-(want "D through the client, a store that cannot be folded: describe answers the catalogue without a clause"
+(want "D through the client, a store whose publication is incomplete: describe answers the catalogue without a clause"
       (list (and (pair? via-daemon-unfoldable) (car via-daemon-unfoldable)) (equal? via-daemon-unfoldable bare))
       '(ok #t))
+;; A FOLD THAT FAILS: no daemon starts, and describe is refused as every verb is.
+(define unstartable (store-with))
+(system (string-append "chmod 000 '" unstartable "/meta.sexp'"))
+(define refused-describe (client unstartable "describe"))
+(define refused-outline (client unstartable "outline"))
+(system (string-append "chmod 644 '" unstartable "/meta.sexp'; pkill -f 'serve " unstartable "' 2>/dev/null"))
+(want "D a store whose fold fails: no daemon starts, and describe is refused as outline is"
+      (list (and (pair? refused-describe) (car refused-describe)) (and (pair? refused-outline) (car refused-outline))
+            (and (pair? refused-describe) (pair? refused-outline) (equal? (cadr refused-describe) (cadr refused-outline))))
+      '(error error #t))
+;; WHY THE DAEMON'S DESCRIBE IS A READ OF THE PUBLICATION: a template applied
+;; from outside the daemon -- in this process -- reaches its describe as it
+;; reaches every read there. The probe that notices the outside write starts the
+;; reload and the read it ran for is answered from the publication it had
+;; (measured: the first describe after the write is the old one, the next has
+;; the clause), so the row asks within a few describes, not the next one.
+(define outside (store-with))
+(define outside-before (client outside "describe"))
+(define outside-apply (run outside 'template "apply" "project"))
+(define outside-after
+  (let loop ((i 0))
+    (let ((a (client outside "describe")))
+      (if (or (clause-of a 'template) (= i 9)) a (loop (+ i 1))))))
+(system (string-append "pkill -f 'serve " outside "' 2>/dev/null; sleep 1"))
+(want "D a template applied from outside the daemon reaches the daemon's describe within a few reads"
+      (list (clause-of outside-before 'template) (car outside-apply) (and (clause-of outside-after 'template) #t))
+      '(#f ok #t))
 
 ;; ---- D1: README and the MCP tools ------------------------------------------------------
 
