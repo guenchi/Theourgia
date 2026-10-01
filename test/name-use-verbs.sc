@@ -44,14 +44,19 @@
   (if (equal? got expected)
       (printf "ok   ~a\n" name)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
+;; A ROW THAT RAISES IS A FAILED ROW, not the end of the file: `caught`
+;; turns a raise into a RAISED value, and `want` is built on it (the runner
+;; recognises the pair).
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+                                     (condition-message e) e))))
+       e0))))
 (define-syntax want
   (syntax-rules ()
     ((_ name got expected)
-     (want-1 name
-             (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
-                                             (condition-message e) e))))
-               got)
-             expected))))
+     (want-1 name (caught got) expected))))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
@@ -134,6 +139,43 @@
                 (datum-uses '(quote x y))
                 (datum-uses '(case k (x y))))
       '((define f x) (define-values g x) (quote x y) (case k x y)))
+(want "U8 arity: a define, define-syntax or define-values with too many or too few parts falls back, in a body too"
+      (in-order (datum-uses '(define x a b))
+                (datum-uses '(define-syntax m))
+                (datum-uses '(define-values (x) a b))
+                (datum-uses '(lambda () (define x a b) x)))
+      '((a b define x) (define-syntax m) (a b define-values x) (a b define x)))
+(want "U8 a binding without an initialiser, a missing body, an empty do test: each falls back"
+      (in-order (datum-uses '(let ((x)) x))
+                (datum-uses '(letrec* ((x)) x))
+                (datum-uses '(lambda (x)))
+                (datum-uses '(case-lambda ((x))))
+                (datum-uses '(let ((x a))))
+                (datum-uses '(let loop ((x a))))
+                (datum-uses '(let*-values (((x) a))))
+                (datum-uses '(guard (e (#t e))))
+                (datum-uses '(parameterize ((p v))))
+                (datum-uses '(do ((x a)) () x)))
+      '((let x) (letrec* x) (lambda x) (case-lambda x) (a let x) (a let loop x) (a let*-values x)
+        (e guard) (p parameterize v) (a do x)))
+(want "U8 if, when, unless, cond, case and guard of the wrong shape fall back"
+      (in-order (datum-uses '(if a))
+                (datum-uses '(if a b c d))
+                (datum-uses '(when a))
+                (datum-uses '(unless))
+                (datum-uses '(cond))
+                (datum-uses '(cond (else) (a b)))
+                (datum-uses '(cond (a => b c)))
+                (datum-uses '(case k ((a))))
+                (datum-uses '(case k (else 1) ((a) 2)))
+                (datum-uses '(guard (e) 1)))
+      '((a if) (a b c d if) (a when) (unless) (cond) (a b cond else) (=> a b c cond) (a case k) (a case else k)
+        (e guard)))
+(want "U10 a record definition with a malformed name or an unknown clause falls back, and binds nothing in a body"
+      (in-order (datum-uses '(define-record-type (r bad) (protocol p)))
+                (datum-uses '(define-record-type r (bogus x)))
+                (datum-uses '(lambda () (define-record-type r (bogus x)) (r? 1))))
+      '((bad define-record-type p protocol r) (bogus define-record-type r x) (bogus define-record-type r r? x)))
 (want "U5 every begin in a body is spliced: nested, mixed with expressions, empty"
       (in-order (datum-uses '(lambda () (begin (begin (define x y))) x))
                 (datum-uses '(lambda () (begin (define x y) (f x))))
@@ -356,12 +398,32 @@
 (define L3 (library 'root '(c) '((rnrs))))
 (define D10 (datum L3 '(define (twice) 2)))
 (define D12 (datum L3 '(define (u3) (twice))))
-(define DU (datum L3 '(lambda () (define-record-type r (fields . 5)) (car 1))))
+;; DU's body is a REAL CONFLICT: this writer sets it, and a mirror writer
+;; that had seen only DU's creation sets it too. The stored field is then the
+;; reducer's conflict value, which the walk cannot read.
+(define DU (datum L3 '(define (q) (car 1))))
+(define (id-writer id) (let loop ((i (- (string-length id) 1)))
+                         (if (char=? (string-ref id i) #\.) (substring id 0 i) (loop (- i 1)))))
+(define (id-seq id) (let loop ((i (- (string-length id) 1)))
+                      (if (char=? (string-ref id i) #\.) (string->number (substring id (+ i 1) (string-length id)) 36)
+                          (loop (- i 1)))))
+(with-store-write store (lambda (s v) (list (list 'set DU 'body '(define (q) (car 2))))) "test")
+(define conflict-file (string-append root "/conflict.bin"))
+(call-with-port (open-file-output-port conflict-file (file-options no-fail))
+  (lambda (p)
+    (put-bytevector p (encode-record 1 1789000000002 "peer" (list (cons (id-writer DU) (id-seq DU)))
+                                     (storable-encode (list 'set DU 'body '(define (q) (car 3))))))))
+(define published-conflict (run 'publish "mirrorzx" "1" conflict-file))
 (define T2 (text 'root 'javascript "function target() {}\n"))
 (define S1 (insert! 'root '((kind . section) (title . "A section"))))
 (run 'del L2)
 (run 'del D7)
 
+(want "U21b CONTROL: DU's body is the reducer's conflict value, two candidates"
+      (in-order (car published-conflict)
+                (let ((b (assq 'body (cdr (assq 'fields (state-read (open-and-reduce store) DU))))))
+                  (and b (pair? (cdr b)) (eq? (cadr b) 'conflict) (length (caddr b)))))
+      '(ok 2))
 (want "U18 CONTROL: the store was built (every insert made exactly one block)"
       (for-all string? (list L1 P1 D1 D2 D3 T1 D4 D5 D9 D11 TN L2 D6 D7 L3 D10 D12 DU T2 S1))
       #t)

@@ -123,12 +123,27 @@
   (define (definition? f env)
     (and (pair? f) (symbol? (car f)) (not (bound? (car f) env)) (memq (car f) defining-heads)
          (list? f) (pair? (cdr f))
-         (let ((target (cadr f)))
+         (let ((target (cadr f)) (n (length f)))
            (case (car f)
-             ((define) (or (symbol? target) (and (pair? target) (symbol? (car target)) (formals? (cdr target)))))
-             ((define-syntax) (symbol? target))
-             ((define-values) (formals? target))
-             (else #t)))))
+             ((define) (if (symbol? target)
+                           (<= n 3)
+                           (and (pair? target) (symbol? (car target)) (formals? (cdr target)) (>= n 3))))
+             ((define-syntax) (and (symbol? target) (= n 3)))
+             ((define-values) (and (formals? target) (= n 3)))
+             ((define-record-type) (record-definition-shape? f))
+             (else #f)))))
+
+  ;; (define-record-type <name spec> <clause> ...): the name spec a symbol or
+  ;; three symbols, each clause a list headed by one of R6RS's record clause
+  ;; words.
+  (define (record-definition-shape? f)
+    (let ((spec (cadr f)))
+      (and (or (symbol? spec)
+               (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
+           (for-all (lambda (c)
+                      (and (pair? c) (list? c)
+                           (memq (car c) '(fields parent protocol sealed opaque nongenerative parent-rtd))))
+                    (cddr f)))))
 
   ;; The names a definition defines. define-values' formals are its names;
   ;; the others are datum-names', the one reading of a definition's names.
@@ -201,7 +216,8 @@
       (assertion-violation 'register-name-use-form! "a symbol and a procedure" head rule))
     (hashtable-set! known-forms head rule))
 
-  (define (binding? b) (and (pair? b) (symbol? (car b)) (list? b) (<= (length b) 2)))
+  ;; A let-family binding: (name init), exactly.
+  (define (binding? b) (and (pair? b) (symbol? (car b)) (list? b) (= (length b) 2)))
   (define (bindings? bs) (and (list? bs) (for-all binding? bs)))
   (define (binding-inits bs env) (apply append (map (lambda (b) (walk-all (cdr b) env)) bs)))
 
@@ -229,6 +245,34 @@
 
   (define (lists? xs) (and (list? xs) (for-all (lambda (c) (and (pair? c) (list? c))) xs)))
 
+  ;; The clauses of a cond or a guard, as R6RS shapes them: at least one;
+  ;; an else clause last and with an expression; an arrow clause exactly
+  ;; (test => receiver).
+  (define (cond-clauses-shape? clauses env)
+    (and (lists? clauses) (pair? clauses)
+         (let loop ((cs clauses))
+           (or (null? cs)
+               (let* ((c (car cs))
+                      (else? (and (eq? (car c) 'else) (not (bound? 'else env))))
+                      (arrow? (and (pair? (cdr c)) (eq? (cadr c) '=>) (not (bound? '=> env)))))
+                 (and (cond (else? (and (null? (cdr cs)) (>= (length c) 2)))
+                            (arrow? (= (length c) 3))
+                            (else #t))
+                      (loop (cdr cs))))))))
+
+  ;; The clauses of a case: at least one, each (<datums> <expression> ...)
+  ;; with a list of datums, or an else clause, last.
+  (define (case-clauses-shape? clauses env)
+    (and (lists? clauses) (pair? clauses)
+         (let loop ((cs clauses))
+           (or (null? cs)
+               (let ((c (car cs)))
+                 (and (>= (length c) 2)
+                      (if (and (eq? (car c) 'else) (not (bound? 'else env)))
+                          (null? (cdr cs))
+                          (list? (car c)))
+                      (loop (cdr cs))))))))
+
   ;; A definition rather than a bare expression: a library body's
   ;; definitions may not follow an expression.
   (define built-in-forms-registered
@@ -241,27 +285,27 @@
               (and (= (length x) 2) (template (cadr x) 1 env))))
       (cons 'lambda
             (lambda (x env walk body)
-              (and (>= (length x) 2) (formals? (cadr x))
+              (and (>= (length x) 3) (formals? (cadr x))
                    (body (cddr x) (append (formals-names (cadr x)) env)))))
       (cons 'case-lambda
             (lambda (x env walk body)
-              (and (lists? (cdr x)) (for-all (lambda (c) (formals? (car c))) (cdr x))
+              (and (lists? (cdr x)) (for-all (lambda (c) (and (formals? (car c)) (>= (length c) 2))) (cdr x))
                    (apply append (map (lambda (c) (body (cdr c) (append (formals-names (car c)) env)))
                                       (cdr x))))))
       (cons 'let
             (lambda (x env walk body)
               (cond
-                ((and (>= (length x) 3) (symbol? (cadr x)) (bindings? (caddr x)))
+                ((and (>= (length x) 4) (symbol? (cadr x)) (bindings? (caddr x)))
                  (let ((bs (caddr x)))
                    (append (binding-inits bs env)
                            (body (cdddr x) (append (list (cadr x)) (map car bs) env)))))
-                ((and (>= (length x) 2) (bindings? (cadr x)))
+                ((and (>= (length x) 3) (bindings? (cadr x)))
                  (let ((bs (cadr x)))
                    (append (binding-inits bs env) (body (cddr x) (append (map car bs) env)))))
                 (else #f))))
       (cons 'let*
             (lambda (x env walk body)
-              (and (>= (length x) 2) (bindings? (cadr x))
+              (and (>= (length x) 3) (bindings? (cadr x))
                    (let loop ((bs (cadr x)) (env env) (out '()))
                      (if (null? bs)
                          (append out (body (cddr x) env))
@@ -269,24 +313,24 @@
                                (append out (walk-all (cdr (car bs)) env))))))))
       (cons 'letrec
             (lambda (x env walk body)
-              (and (>= (length x) 2) (bindings? (cadr x))
+              (and (>= (length x) 3) (bindings? (cadr x))
                    (let ((env2 (append (map car (cadr x)) env)))
                      (append (binding-inits (cadr x) env2) (body (cddr x) env2))))))
       (cons 'letrec*
             (lambda (x env walk body)
-              (and (>= (length x) 2) (bindings? (cadr x))
+              (and (>= (length x) 3) (bindings? (cadr x))
                    (let ((env2 (append (map car (cadr x)) env)))
                      (append (binding-inits (cadr x) env2) (body (cddr x) env2))))))
       (cons 'let-values
             (lambda (x env walk body)
-              (and (>= (length x) 2) (lists? (cadr x))
+              (and (>= (length x) 3) (lists? (cadr x))
                    (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
                    (append (apply append (map (lambda (b) (walk (cadr b) env)) (cadr x)))
                            (body (cddr x) (append (apply append (map (lambda (b) (formals-names (car b))) (cadr x)))
                                                   env))))))
       (cons 'let*-values
             (lambda (x env walk body)
-              (and (>= (length x) 2) (lists? (cadr x))
+              (and (>= (length x) 3) (lists? (cadr x))
                    (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
                    (let loop ((bs (cadr x)) (env env) (out '()))
                      (if (null? bs)
@@ -295,43 +339,45 @@
                                (append out (walk (cadr (car bs)) env))))))))
       (cons 'do
             (lambda (x env walk body)
-              (and (>= (length x) 3) (lists? (cadr x)) (list? (caddr x))
+              (and (>= (length x) 3) (lists? (cadr x)) (list? (caddr x)) (pair? (caddr x))
                    (for-all (lambda (s) (and (symbol? (car s)) (<= 2 (length s) 3))) (cadr x))
                    (let* ((specs (cadr x)) (env2 (append (map car specs) env)))
                      (append (apply append (map (lambda (s) (walk (cadr s) env)) specs))
                              (apply append (map (lambda (s) (walk-all (cddr s) env2)) specs))
                              (walk-all (caddr x) env2)
                              (body (cdddr x) env2))))))
-      (cons 'begin (lambda (x env walk body) (walk-all (cdr x) env)))
-      (cons 'if (lambda (x env walk body) (walk-all (cdr x) env)))
+      ;; begin as an expression holds at least one (a body's begins are
+      ;; spliced before this is reached); if has a test, a consequent and at
+      ;; most an alternative; when and unless a test and an expression.
+      (cons 'begin (lambda (x env walk body) (and (>= (length x) 2) (walk-all (cdr x) env))))
+      (cons 'if (lambda (x env walk body) (and (<= 3 (length x) 4) (walk-all (cdr x) env))))
       (cons 'and (lambda (x env walk body) (walk-all (cdr x) env)))
       (cons 'or (lambda (x env walk body) (walk-all (cdr x) env)))
-      (cons 'when (lambda (x env walk body) (walk-all (cdr x) env)))
-      (cons 'unless (lambda (x env walk body) (walk-all (cdr x) env)))
+      (cons 'when (lambda (x env walk body) (and (>= (length x) 3) (walk-all (cdr x) env))))
+      (cons 'unless (lambda (x env walk body) (and (>= (length x) 3) (walk-all (cdr x) env))))
       (cons 'set!
             (lambda (x env walk body)
               (and (= (length x) 3) (symbol? (cadr x)) (walk-all (cdr x) env))))
       (cons 'cond
             (lambda (x env walk body)
-              (and (lists? (cdr x))
+              (and (cond-clauses-shape? (cdr x) env)
                    (apply append (map (lambda (c) (cond-clause c env)) (cdr x))))))
       (cons 'case
             (lambda (x env walk body)
-              (and (>= (length x) 2) (lists? (cddr x))
-                   (for-all (lambda (c) (or (list? (car c)) (and (eq? (car c) 'else) (not (bound? 'else env)))))
-                            (cddr x))
+              (and (>= (length x) 3) (case-clauses-shape? (cddr x) env)
                    (append (walk (cadr x) env)
                            (apply append
                                   (map (lambda (c) (walk-all (cdr c) env)) (cddr x)))))))
       (cons 'guard
             (lambda (x env walk body)
-              (and (>= (length x) 2) (pair? (cadr x)) (symbol? (car (cadr x))) (lists? (cdr (cadr x)))
+              (and (>= (length x) 3) (pair? (cadr x)) (symbol? (car (cadr x))) (list? (cadr x))
+                   (cond-clauses-shape? (cdr (cadr x)) (cons (car (cadr x)) env))
                    (let ((env2 (cons (car (cadr x)) env)))
                      (append (apply append (map (lambda (c) (cond-clause c env2)) (cdr (cadr x))))
                              (body (cddr x) env))))))
       (cons 'parameterize
             (lambda (x env walk body)
-              (and (>= (length x) 2) (lists? (cadr x)) (for-all (lambda (b) (= (length b) 2)) (cadr x))
+              (and (>= (length x) 3) (lists? (cadr x)) (for-all (lambda (b) (= (length b) 2)) (cadr x))
                    (append (apply append (map (lambda (b) (walk-all b env)) (cadr x)))
                            (body (cddr x) env)))))
       (cons 'rec
