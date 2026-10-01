@@ -1,7 +1,7 @@
 {
   "name": "theourgia",
   "version": "1.0.0",
-  "description": "Agent-and-human shared block-graph knowledge base, with its daemon and MCP shell.",
+  "description": "A block-graph store for LLM agents and the people working with them, with its daemon and MCP shell.",
   "license": "Apache-2.0",
   "author": "guenchi",
   "homepage": "https://theourgia.dev",
