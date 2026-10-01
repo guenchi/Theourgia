@@ -968,6 +968,11 @@
     (cons 'commitments (seeded (lambda (st x s)
                                  (census-ask st 'set (census-get s 'B) "kind" "decision")
                                  (census-ask st 'commitments))))
+    ;; B is made a task first, so the answer has an item to classify.
+    (cons 'tasks (seeded (lambda (st x s)
+                           (census-ask st 'set (census-get s 'B) "kind" "task")
+                           (census-ask st 'tasks))))
+    (cons 'template (seeded (lambda (st x s) (census-ask st 'template "apply" "project"))))
     ;; init is given a directory nothing has initialised
     (cons 'init (lambda (st x) (census-ask st 'init)))
     (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))

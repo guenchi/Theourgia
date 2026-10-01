@@ -85,6 +85,8 @@
         ;; `--attempt` is the client's token for this start (F100b item 3),
         ;; echoed in every startup report; a value, like the log.
         ((serve) '("--log" "--attempt"))
+        ;; A store can start from a template: a built-in by name, or a file.
+        ((init) '("--template" "--template-file"))
         ;; NEVER: DECLARING AN OPTION IN THE USAGE FORM IS NOT DECLARING IT
         ;; HERE. A token is only read as an option if it appears in this list
         ;; or in `flag-options`; anything else becomes a positional. `grep`

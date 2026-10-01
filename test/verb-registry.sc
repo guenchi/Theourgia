@@ -128,16 +128,25 @@
 (want "V1 a second registered verb answers too, its flag parsed as a flag"
       (list (run 'probe) (run 'probe "--loud"))
       '((ok (items (probe quiet ()))) (ok (items (probe loud ())))))
-(want "V1 every built-in verb's describe entry is the base's, byte for byte"
-      (let ((now (filter (lambda (e) (not (memq (car e) '(commitments probe))))
-                         (cdr (assq 'verbs (cdr (run 'describe)))))))
-        (if (equal? now (base-of 'describe-entries)) 'identical
-            (list 'differs (filter (lambda (e) (not (member e (base-of 'describe-entries)))) now))))
+;; The registered verbs, read from the registry's own data, and the one built-in
+;; whose entry has changed since the base reading: init took a template.
+(define registered (append (map car extension-verbs) '(probe)))
+(define changed-since-base '(init))
+(want "V1 every built-in verb's describe entry is the base's, byte for byte, except init's"
+      (let ((now (filter (lambda (e) (not (memq (car e) (append registered changed-since-base))))
+                         (cdr (assq 'verbs (cdr (run 'describe))))))
+            (base (filter (lambda (e) (not (memq (car e) changed-since-base))) (base-of 'describe-entries))))
+        (if (equal? now base) 'identical
+            (list 'differs (filter (lambda (e) (not (member e base))) now))))
       'identical)
+(want "V1 init's entry is the base's with the two template options, and still local"
+      (let ((e (assq 'init (cdr (assq 'verbs (cdr (run 'describe)))))))
+        (list (cadr (assq 'usage (cdr e))) (cadr (assq 'route (cdr e)))))
+      '((init ["--template" <name>] ["--template-file" <template-file>]) local))
 (want "V1 three representative built-ins answer as on the base"
       (map (lambda (form) (equal? (answer-of form)
                                   (if (equal? form '(describe-verbs))
-                                      (append (base-of 'describe-verbs) '(commitments probe))
+                                      (append (base-of 'describe-verbs) registered)
                                       (cadr (assoc form (base-of 'answers))))))
            representative)
       '(#t #t #t))
@@ -187,6 +196,14 @@
                    (fresh-parse)
                    (car (run 'fresh-one))))
       '(#t #t ((option "--fresh" "x")) ok))
+
+(want "V2 the declaration is an optional ninth field: eight fields register, a ninth of refuse or (refuse <action>) registers, any other ninth is refused"
+      (list (car (car (refusal (list (append (entry 'fresh-two 'daemon) '(maybe))))))
+            (begin (register-verbs! (list (append (entry 'fresh-three 'daemon) '(refuse))
+                                          (append (entry 'fresh-four 'daemon) '((refuse "apply")))))
+                   (and (memq 'fresh-three (rpc-verbs)) (memq 'fresh-four (rpc-verbs)) #t))
+            (= 8 (length (assq 'commitments extension-verbs))))
+      '(RAISED #t #t))
 
 ;; ---- V3: the options, by node type ------------------------------------------------
 

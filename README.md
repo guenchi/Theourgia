@@ -80,6 +80,27 @@ the programs directly:
 NEVER: **The products do not belong in the source tree.** A stale `.so` beside a `.sc` is resolved in
 preference to it, so a tree holding both can be running code nobody has edited for a week.
 
+## Quick start
+
+    theourgia init --template project
+
+One store is one project. The `project` template gives it four roots and four relations, and records
+them in the store as its template block (`template export` prints it):
+
+- `design` — the document `design.md`; record each decision as a block of kind `decision` under it.
+- `tasks` — the document `tasks.md`; record each task as a block of kind `task` under it, with a
+  `status` of todo, doing, done or dropped.
+- `docs/` — documents for readers are top-level docs whose path starts with `docs/`.
+- `code/` — code is imported so that the paths of its files start with `code/`.
+
+The relations are `implements` (a task or code → the decision it carries out), `guards` (a test →
+the code it checks), `documents` (a doc → the code or decision it explains) and `supersedes` (a
+decision → the one it replaces). Any other relation name still links; these are the ones the
+template names. `describe` lists the store's roots and relations, and the MCP tools that write carry
+the roots' sentences after the writing protocol.
+
+`theourgia init` without a template is the advanced form: the store has no shape until you give it one.
+
 ## Two ways to run
 
 **Standalone.** Every verb opens the store, answers, and exits. Nothing
@@ -566,7 +587,11 @@ linking again, attests anew. A draft that is not committed is not a change.
 By default it lists the open decisions; `--all` lists every decision. `--drifted`
 keeps those with at least one drifted implementation, `--since <cut>` those whose
 origin the cut does not cover, and `--under <id>` those in that block's subtree, the
-block included (an unknown id answers `unknown-id`). Oldest origin first: decisions
+block included (an unknown id answers `unknown-id`). In a store with a template, the
+decisions listed by default are those under the root the template names for commitments
+(`design` in the project template), and the answer ends with `(scope <root-id> (outside <n>))`,
+n being the live decisions it left out; `--under root` lists the whole store. In a store without
+a template nothing is narrowed and no scope item is added. Oldest origin first: decisions
 whose origins are not ordered against each other are listed in a fixed order and say
 so under `concurrent-with`. It answers:
 
@@ -582,6 +607,24 @@ every option, for example a kind spelt as the string `"decision"`
 (`kind-not-a-symbol`) or a block that a `set` or `move` named but nothing created (`no-origin`). The verb writes
 nothing.
 
+### `tasks`
+
+    (tasks ["--status" <status>] ["--batch" <batch>] ["--under" <id>])
+
+Lists the blocks of kind `task`: by default those under the root the store's template names for
+tasks, with `--under <id>` that block's subtree, and with `--under root` or in a store without a
+template, every task. When the template chose the scope, the last item is
+`(scope <root-id> (outside <n>))`, n being the live tasks left out. It answers
+
+    (task <id> (title "<t>") (status <s>) (batch <text>|absent) (implements (<id> live|tombstoned) ...)
+      [(unlinked)])
+
+`status` is read like a decision's: todo, doing, done or dropped as a symbol or a string; anything
+else is printed as `(status unreadable "<text>")`. `(unlinked)` means the task implements no live
+decision: an edge to a deleted block, or of another relation, does not link it. `--status` takes one
+of the four words, and `--batch` matches the `batch` field's text exactly. An `implements` edge from
+a task discharges its decision only once the task's status is done.
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.
@@ -590,12 +633,38 @@ across two verbs.
 
 ### `init`
 
-    (init)
+    (init ["--template" <name>] ["--template-file" <template-file>])
 
 Creates a store in the directory named by `--store`, and answers with the
-store's id and the writer the caller was given. It also writes
+store's id and the writer the caller was given. With `--template` (a built-in: `project` or
+`memory`) or `--template-file`, it then applies that template, as `template apply` does, and the
+answer also carries `(template <name>)` and `(created (<slug> <id>) ...)`. A template that cannot be
+used is refused before any store is made. It also writes
 `<store>/.gitignore`; see [A store in git](#a-store-in-git).
 The answer is `(ok (store <id>) (writer <writer>))`. A directory that already holds a store is refused `(error already-initialised (store <dir>))`, and one holding another instance's writer is refused `(error foreign-writer (writer <w>) (remedy adopt))`.
+
+### `template`
+
+    (template <action> [<name>] ["--file" <template-file>])
+
+`template apply <name>` (a built-in) or `template apply --file <template-file>` gives an existing
+store a template: it creates the template block and each document root the store does not have,
+and answers `(ok (created (<slug> <id>) ...))`. It never changes a block that exists. A root is
+found by its `slug` field and its path: exactly one live top-level document with the root's slug at
+the root's path is the root, and is kept. Anything else refuses and creates nothing:
+`template-present`, `slug-conflict` (two live blocks with the slug), `template-mismatch` (the block
+with the slug is not a top-level document at that path) or `path-occupied` (a top-level document
+without the slug holds the path). Deleted blocks do not count. A name is only ever a built-in's
+name; a file is named with `--file`.
+
+`template export` prints the store's template block. The template is data in that block: change it
+with `write` and `commit` like any block, and insert a new root's document; nothing else needs to
+change. A template block that cannot be read (it is not one datum `(template 1 ...)`, it has no
+roots, or there are two template blocks) is listed by `conflicts` as `(template <reason>)`, and
+every verb behaves as in a store without one.
+
+Importing a document does not make decisions or tasks: a heading re-imported into `design.md` that
+matches an existing decision keeps it a decision, and a new heading becomes a section.
 
 ### `insert`
 
