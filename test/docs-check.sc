@@ -683,6 +683,31 @@
 (want "DOC-P the README's sentence listing the rows names exactly the table's (system machine) pairs"
       (and rows-sentence (named-pairs rows-sentence))
       (sorted-pairs row-pairs))
+;; -> every word that follows "on " in a sentence: in the rows sentence each
+;; one is a machine, so a machine the table has no row for is caught even
+;; though named-pairs, which looks only for the rows' own machines, would
+;; not see it.
+(define (words-after-on sentence)
+  (let loop ((i 0) (out '()))
+    (let ((at (index-of sentence "on " i)))
+      (if (not at)
+          (reverse out)
+          (let* ((from (+ at 3))
+                 (to (let scan ((j from))
+                       (if (or (= j (string-length sentence))
+                               (memv (string-ref sentence j) '(#\space #\, #\.)))
+                           j
+                           (scan (+ j 1))))))
+            (loop to (if (and (or (= at 0) (char=? (string-ref sentence (- at 1)) #\space)) (< from to))
+                         (cons (substring sentence from to) out)
+                         out)))))))
+(want "DOC-P every machine the README's rows sentence names has a row"
+      (and rows-sentence (filter (lambda (w) (not (member w row-machines))) (words-after-on rows-sentence)))
+      '())
+(want "DOC-P CONTROL: a machine without a row in the rows sentence is named"
+      (filter (lambda (w) (not (member w row-machines)))
+              (words-after-on "The rows: macOS on arm64 and on i386, Linux on x86_64 and on aarch64 with glibc, and FreeBSD 15 on amd64."))
+      '("i386"))
 (want "DOC-P the README's list of refused platforms names no platform the table has a row for"
       (and refused-sentence (filter (lambda (p) (member p row-pairs)) (named-pairs refused-sentence)))
       '())
