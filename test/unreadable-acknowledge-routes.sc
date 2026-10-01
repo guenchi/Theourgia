@@ -205,7 +205,8 @@
     ("code-project.sc" "export-code" "open-and-reduce" 1 request)
     ("core.sc" "eval-view" "open-and-reduce" 1 request)
     ("daemon.sc" "answer-published" "published-state" 1 published)
-    ("daemon.sc" "store-loop" "obtain-state" 2 daemon)
+    ("daemon.sc" "refold-and-publish!" "obtain-state" 1 daemon)
+    ("daemon.sc" "store-loop" "obtain-state" 1 daemon)
     ("datum-project.sc" "current" "open-and-reduce" 1 request)
     ("datum-project.sc" "def-datum" "open-and-reduce" 1 request)
     ("datum-project.sc" "export-datum" "open-and-reduce" 1 request)
@@ -1020,6 +1021,38 @@
           (list (exists (lambda (l) (has-substring? l "injected probe raise")) (trace-lines-with st "probe-failed"))
                 (car r) (head-of (cadr r)))
           '(#t 0 ok))))
+;; THE SNAPSHOT IS NO NEWER THAN ITS STATE. An outside commit makes the
+;; next read probe and ask for a fold; the fold is held between itself and
+;; its publication (reload-before-publish) while a SECOND outside commit is
+;; made. A snapshot sampled after the hold would include the second commit
+;; with a state that lacks it, every later probe would find the disk equal
+;; to it, and the daemon would answer without "Second" for good. Sampled
+;; before the fold, the next read's probe finds the change, asks for one more
+;; fold, and a read after that publication answers with it.
+(let* ((c (daemon-store!)) (st (car c))
+       (rel (string-append root "/snap.release"))
+       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=reload-before-publish:" rel)))
+  (client env "outline" "--store" st)
+  (outside-commit! st)
+  (client env "outline" "--store" st)
+  (let* ((held (wait-until-file (string-append rel ".held") 20000))
+         (_ (ask st 'insert "--under" "root" "--title" "Second"))
+         (_ (touch! rel))
+         (two (let loop ((k 0))
+                (cond ((>= (length (trace-lines-with st "published ")) 2) #t)
+                      ((>= k 100) #f)
+                      (else (sh "sleep 0.1") (loop (+ k 1))))))
+         (probing (client env "outline" "--store" st))
+         (three (let loop ((k 0))
+                  (cond ((>= (length (trace-lines-with st "published ")) 3) #t)
+                        ((>= k 100) #f)
+                        (else (sh "sleep 0.1") (loop (+ k 1))))))
+         (after (client env "outline" "--store" st)))
+    (stop-daemon! st)
+    (want "SNAP a commit made while a refold waits to publish is read after the next probe: the snapshot is the fold's, not the publication's"
+          (list held two (mentions-outside? (cadr probing)) three
+                (has-substring? (format "~s" (cadr after)) "Second"))
+          '(#t #t #t #t #t))))
 ;; D-publish and D-publish-readable (design reviews r4 and r5; plan amendment
 ;; A3; MR-31, MR-21, MR-23): a batch whose session's INITIAL load is held
 ;; after the delivery barrier while an older segment of the mirror is made
