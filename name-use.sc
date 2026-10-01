@@ -511,7 +511,12 @@
 
   (define (uses-answer view name scope)
     (let* ((table (name-use-table view))
-           (in-scope? (lambda (id) (or (not scope) (member id scope))))
+           ;; The scope as a set, built once: every hit and every skipped
+           ;; block is asked about it.
+           (scope-set (and scope (let ((h (make-hashtable string-hash string=?)))
+                                   (for-each (lambda (id) (hashtable-set! h id #t)) scope)
+                                   h)))
+           (in-scope? (lambda (id) (or (not scope-set) (hashtable-ref scope-set id #f))))
            (library-of (library-locator view (live-kind view)))
            (ids (list-sort string<? (filter in-scope? (hashtable-ref (vector-ref table 0) name '()))))
            (skipped (let-values (((ks vs) (hashtable-entries (vector-ref table 2))))

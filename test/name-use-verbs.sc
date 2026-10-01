@@ -202,6 +202,25 @@
          length list list? map memq not pair? string->symbol string-append
          symbol->string symbol?)))
 
+;; K10b: EVERY FORM OF TWO WHOLE PRODUCT FILES, walked with no catch taken.
+;; datum-uses is called directly, outside the provider's catch-all, so a
+;; rule of ours that raised on real code would read here as RAISED rather
+;; than hide as (reason unreadable-code).
+(define (library-body-forms path)
+  (call-with-input-file path
+    (lambda (p)
+      (let loop ()
+        (let ((x (read p)))
+          (cond ((eof-object? x) '())
+                ((and (pair? x) (eq? (car x) 'library))
+                 (filter (lambda (f) (not (and (pair? f) (memq (car f) '(export import))))) (cddr x)))
+                (else (loop))))))))
+(define k10b-forms (append (library-body-forms "../datum-code.sc") (library-body-forms "../working.sc")))
+(want "K10b every form of datum-code.sc and working.sc is walked to a set of symbols, none raising"
+      (let ((sets (map datum-uses k10b-forms)))
+        (list (> (length k10b-forms) 40) (for-all (lambda (s) (and (list? s) (for-all symbol? s))) sets)))
+      '(#t #t))
+
 (want "K11 CONTROL: an unregistered binder falls back"
       (datum-uses '(my-binder q (f q)))
       '(f my-binder q))
@@ -606,5 +625,5 @@
       '(#t #t #t #t #t #t #t))
 
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
-(printf "\n~a failures\nrows: ~a\nname-use complete\n" bad rows)
+(printf "\n~a failures\nrows: ~a\nname-use-verbs complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
