@@ -48,7 +48,7 @@
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
-          state-structure state-refs state-tags state-event-cut cut-usable? cut-id
+          state-structure state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
           cut-covers? state-put-events state-field-events state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -2164,6 +2164,14 @@
   (define (state-event-cut state event)
     (let ((past (assoc event (reduction-pasts state))))
       (and past (past-sorted (past-join (cdr past) (list event))))))
+
+  ;; Return the causal cut immediately BEFORE this applied event: its
+  ;; stored past, transitively closed (compute-past joins each premise's own
+  ;; past), without the event itself. () for a writer's first event with no
+  ;; dependencies; #f for an event this state has not applied.
+  (define (state-event-past state event)
+    (let ((past (assoc event (reduction-pasts state))))
+      (and past (past-sorted (cdr past)))))
 
   ;; THE CANONICAL IDENTITY OF A CUT (design 9.3): writers in order, one
   ;; agreed spelling, sha256 of that text. Anything that uses a cut as a
