@@ -1,6 +1,6 @@
 # theourgia
 
-A block-graph store that agents and people write into together: the `theourgia` command,
+A block-graph store where agents and people write together: the `theourgia` command,
 its daemon, and an MCP shell, packaged for npm. Licensed under the Apache
 License, Version 2.0 (see LICENSE); the igropyr library it ships with is
 under the same license (vendor/igropyr/LICENSE).
