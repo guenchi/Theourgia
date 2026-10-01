@@ -631,8 +631,18 @@
 
 (define local-wire
   (sh-out "local" (string-append (env "THEOURGIA_LOCAL=1") "scheme --script ../core.sc commitments --all --store '" store "' --wire")))
+;; THE DAEMON'S OWN STATE, read through other verbs before and after it
+;; answers commitments: the pins below read the disk and this process's
+;; reduction, and cannot see the daemon's memory.
+(define (daemon-says tag . verb)
+  (sh-out tag (string-append (env "") "scheme --script ../theourgia.sc " (apply string-append verb) " --store '" store "' --wire")))
+(define daemon-before (list (daemon-says "d-outline-1" "outline") (daemon-says "d-read-1" "read " d1)))
 (define client-wire
   (sh-out "client" (string-append (env "") "scheme --script ../theourgia.sc commitments --all --store '" store "' --wire")))
+(define daemon-after (list (daemon-says "d-outline-2" "outline") (daemon-says "d-read-2" "read " d1)))
+(want "C7 the daemon answers outline and read as it did before it answered commitments, and both answered"
+      (list (equal? daemon-before daemon-after) (map (lambda (t) (> (string-length t) 0)) daemon-before))
+      '(#t (#t #t)))
 ;; The daemon's own trace lines saying it dispatched a request. Before the
 ;; client's call no daemon exists, so any is the client's.
 (define (served-count)
@@ -671,9 +681,9 @@
                    ((char=? (string-ref mcp-out i) #\") (list->string (reverse acc)))
                    (else (loop (+ i 1) (cons (string-ref mcp-out i) acc))))))))
 
-(want "C8 the local route answers each decision row as worked out from the records"
-      (let ((a (first-datum local-wire))) (list (car a) (row a d1) (row a d2) (row a d3)))
-      (list 'ok expected-d1 expected-d2 expected-d3))
+(want "C8 the local route answers exactly the decision rows worked out from the records, in order, then the skipped row"
+      (let ((a (first-datum local-wire))) (list (car a) (decisions-of a) (skipped-of a)))
+      (list 'ok (list expected-d1 expected-d2 expected-d3) (list (list forged-id 'kind-not-a-symbol))))
 (want "C8 the thin client's answer, through the daemon, equals the local one byte for byte"
       (if (string=? client-wire local-wire) 'identical (list 'client client-wire 'local local-wire))
       'identical)

@@ -173,11 +173,12 @@
       '((RAISED "the name is already registered" (commitments)) #t error))
 (want "V2 a registered verb's route is daemon: local, child and another route are each refused, by name"
       (map (lambda (route) (let ((r (refusal (list (entry 'fresh-one route)))))
-                             (list (car (car r)) (cadr (car r)) (cadr r) (caddr r))))
+                             (list (car (car r)) (cadr (car r)) (equal? (caddr (car r)) (list (entry 'fresh-one route)))
+                                   (cadr r) (caddr r))))
            '(local child remote))
-      '((RAISED "a registered verb's route is daemon" #t error)
-        (RAISED "a registered verb's route is daemon" #t error)
-        (RAISED "a registered verb's route is daemon" #t error)))
+      '((RAISED "a registered verb's route is daemon" #t #t error)
+        (RAISED "a registered verb's route is daemon" #t #t error)
+        (RAISED "a registered verb's route is daemon" #t #t error)))
 
 (want "V2 CONTROL: a valid batch with the same entry does change all three"
       (begin (register-verbs! (list (entry 'fresh-one 'daemon)))
@@ -319,11 +320,12 @@
                       (cons (car todo) seen))))))
 (define core-closure (closure-of "../core.sc"))
 (define daemon-closure (closure-of "../theourgiad.sc"))
-(want "A1 neither program's static closure holds the commitments library; both hold the registry's data"
+(define client-closure (closure-of "../theourgia.sc"))
+(want "A1 no program's static closure holds the commitments library; the two that register hold the registry's data"
       (map (lambda (c) (list (and (member "../commitments.sc" c) #t) (and (member "../extensions.sc" c) #t)
                              (> (length c) 3)))
-           (list core-closure daemon-closure))
-      '((#f #t #t) (#f #t #t)))
+           (list core-closure daemon-closure client-closure))
+      '((#f #t #t) (#f #t #t) (#f #f #t)))
 
 ;; AND AT RUN TIME, through the programs themselves: a copy of the library
 ;; that writes a file when its body runs, first on the library path. An
@@ -348,16 +350,19 @@
 ;; No daemon left from an earlier section may answer the thin client: one
 ;; started with the unmarked library path would make the control row lie.
 (system (string-append "pkill -f 'serve " store "' 2>/dev/null; sleep 1"))
+;; -> (answer-head marker-written?): an answer that was not ok would say nothing
+;; about what answering the verb loads.
 (define (marked? program verb extra)
   (system (string-append "rm -f '" marker "'"))
-  (sh-out "marked" (string-append (env-marked extra) "scheme --script ../" program " " verb " --store '" store "' --wire"))
-  (file-exists? marker))
+  (let ((t (sh-out "marked" (string-append (env-marked extra) "scheme --script ../" program " " verb " --store '" store "' --wire"))))
+    (list (guard (e (#t 'UNREADABLE)) (car (read (open-string-input-port t))))
+          (file-exists? marker))))
 (want "A1 core.sc and the thin client answering outline do not run the commitments library; answering commitments does"
       (in-order (marked? "core.sc" "outline" "THEOURGIA_LOCAL=1")
                 (marked? "core.sc" "commitments" "THEOURGIA_LOCAL=1")
                 (marked? "theourgia.sc" "outline" "")
                 (marked? "theourgia.sc" "commitments" ""))
-      '(#f #t #f #t))
+      '((ok #f) (ok #t) (ok #f) (ok #t)))
 
 (system (string-append "pkill -f 'serve " store "' 2>/dev/null"))
 (system (string-append "rm -rf '" root "' '" sock-root "'"))

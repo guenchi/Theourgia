@@ -34,7 +34,7 @@
   (define extension-verbs
     (list
       (list 'commitments commitments-usage
-            "List the decisions still owed: by default those neither implemented (an incoming implements edge) nor marked done or dropped; with --all every decision. --drifted keeps those with an implementation that changed after it was linked to the decision, unless the decision was edited since by a writer who had seen the change."
+            "List the decisions still owed: by default those neither implemented (an incoming implements edge) nor marked done or dropped; with --all every decision. --drifted keeps those with an implementation whose latest change was seen neither by its implements link nor by the decision's latest edit."
             #f 'daemon
             '("--since" "--under") '("--open" "--all" "--drifted")
             '((theourgia commitments) . commitments-verb)))))
