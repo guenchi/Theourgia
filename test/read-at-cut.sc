@@ -478,9 +478,11 @@
   (want "RC-R5 refused before being handed on, each answered and traced connection: arguments that do not parse, another store, no datum"
         (list (payload shape) (payload other) (payload garbage) routes)
         (list '(error bad-request missing-option-value "--cut")
-              ;; Both paths travel by their resolved spelling (a root such as
-              ;; /tmp/ or one under a symlinked directory is not that spelling).
-              (list 'error 'transport-store-mismatch (list 'serving (real-path st)) (list 'asked (real-path root)))
+              ;; `serving` is the store as the daemon was started with it,
+              ;; verbatim; `asked` is the request frame's store, which travels
+              ;; by its resolved spelling (a root such as /tmp/ or one under a
+              ;; symlinked directory is not that spelling).
+              (list 'error 'transport-store-mismatch (list 'serving st) (list 'asked (real-path root)))
               '(error bad-request (reason not-a-datum))
               '("(trace routed read connection)" "(trace routed read connection)" "(trace routed unknown connection)"))))
 
