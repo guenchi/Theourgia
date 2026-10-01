@@ -203,9 +203,12 @@
 
   (define (lists? xs) (and (list? xs) (for-all (lambda (c) (and (pair? c) (list? c))) xs)))
 
-  (for-each
-    (lambda (entry) (register-name-use-form! (car entry) (cdr entry)))
-    (list
+  ;; A definition rather than a bare expression: a library body's
+  ;; definitions may not follow an expression.
+  (define built-in-forms-registered
+    (for-each
+     (lambda (entry) (register-name-use-form! (car entry) (cdr entry)))
+     (list
       (cons 'quote (lambda (x env walk body) '()))
       (cons 'quasiquote
             (lambda (x env walk body)
@@ -317,7 +320,7 @@
       (cons 'foreign-procedure
             (lambda (x env walk body)
               (and (>= (length x) 4)
-                   (walk (list-ref x (- (length x) 3)) env))))))
+                   (walk (list-ref x (- (length x) 3)) env)))))))
 
   ;; ---- text code: the identifier tokens -------------------------------------------
   ;;

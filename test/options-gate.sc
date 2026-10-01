@@ -616,15 +616,24 @@
                (options-read-in cli-text 0 (string-length cli-text)))))
 
 ;; THE HANDLERS OF THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE live in
-;; a library of their own, named by the entry, and every option read there
-;; belongs to that verb.
+;; a library named by the entry, and an option read inside the handler's
+;; own definition belongs to that verb: from `(define (<handler> ` to the
+;; library's next top-level definition. Not the whole file: one library
+;; may hold the handlers of two verbs, and an option one of them reads is
+;; not the other's.
 (define extension-reads
   (apply append
     (map (lambda (e)
            (let* ((lib (car (list-ref e 7)))
+                  (handler (cdr (list-ref e 7)))
                   (text (call-with-input-file
-                          (string-append "../" (symbol->string (cadr lib)) ".sc") get-string-all)))
-             (map (lambda (o) (list (car e) o)) (options-read-in text 0 (string-length text)))))
+                          (string-append "../" (symbol->string (cadr lib)) ".sc") get-string-all))
+                  (from (find-from text (string-append "(define (" (symbol->string handler) " ") 0))
+                  (next (and from (find-from text "\n  (define " (+ from 1))))
+                  (to (or next (string-length text))))
+             (if from
+                 (map (lambda (o) (list (car e) o)) (options-read-in text from to))
+                 (list (list (car e) 'NO-HANDLER-DEFINITION)))))
          extension-verbs)))
 
 (define read-but-refused
@@ -1295,7 +1304,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 40 40))
+      (list 42 42))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
