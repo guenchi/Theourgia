@@ -13,6 +13,11 @@
 # The runner's speed varies from run to run, and a slow one turns more timing
 # rows red on the same tree: three runs gave 5, 3 and 7. A timing row that
 # appears here for the first time is added only after it is read.
+# mcp-shell X13 CONTROL is not a timing row: it checks the descriptor
+# instrument itself (lsof sees the one extra file), and reads (lsof 0)
+# now and then on the development machine too (three sightings by
+# 2026-10-01, run 36902886005 the third). The instrument is to be made
+# reliable; until then the row is run again on the development machine.
 # Always red there: client-program P-17 (the runner has no terminal),
 # f0-ondemand F0-2 (a start costs about twice the budget), startup-ratio
 # (its calibration is this machine's). Red on a slow runner: cli2's CONTROL
@@ -22,6 +27,6 @@ client-program	^FAIL P-17
 f0-ondemand	^FAIL F0-2 
 startup-ratio	^FAIL C[13] 
 cli2	^FAIL CONTROL: with the product's lock removed
-mcp-shell	^FAIL X15 
+mcp-shell	^FAIL X1(5 |3 CONTROL: the descriptor instrument)
 eval-lang	^FAIL L15 
 facade-record	^FAIL H8 
