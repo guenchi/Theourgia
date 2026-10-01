@@ -96,8 +96,8 @@ them in the store as its template block (`template export` prints it):
 The relations are `implements` (a task or code → the decision it carries out), `guards` (a test →
 the code it checks), `documents` (a doc → the code or decision it explains) and `supersedes` (a
 decision → the one it replaces). Any other relation name still links; these are the ones the
-template names. `describe` lists the store's roots and relations, and the MCP tools that write carry
-the roots' sentences after the writing protocol.
+template names. `describe`, answered by the daemon, lists the store's roots and relations, and the
+MCP tools that write carry the roots' sentences after the writing protocol.
 
 `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
 
@@ -514,7 +514,9 @@ tool list from this, so a tool description and the verb it describes cannot
 drift apart.
 
 It reads a table and runs nothing. NEVER: It does not open the store, take a lock
-or write a byte.
+or write a byte. When the store has a template, the daemon, which already holds the store's state,
+adds `(template (roots ...) (relations ...))`; the in-process route does not open a store to
+describe it.
 
 NOTE: **The table needs no store; asking a daemon for it does.** Answered in
 process — which is what `theourgia describe` does when it runs the server
@@ -534,6 +536,21 @@ store there would otherwise be nothing to send to; `eval` is `child`.
 The `protocol` flag on an entry says that verb's description carries the
 writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 "this verb changes the store" — `set` does that and is not marked.
+
+### Verbs added as data
+
+`commitments`, `tasks` and `template` are not in the core's own table: each is an entry in
+`(theourgia extensions)`, registered by `theourgia` and the daemon before a request is parsed, and
+its library is loaded only when the verb is called. An entry is
+
+    (verb usage description protocol? daemon value-options flag-options (library . name) [declaration])
+
+and a registered verb's route is always `daemon`. The optional last field says what the verb does
+with a load that could not read a writer: `accept` (the default: it answers and its answer carries
+`(incomplete ...)`), `refuse` (it refuses such a load, as `export-md` and the other verbs that write
+from what they read do), or `(refuse <action> ...)` (it refuses only when its first argument is one
+of those actions: `template` declares `(refuse "apply")`). Any other value, for example `maybe`, is
+refused when the entry is registered.
 
 ### `conflicts`
 
@@ -590,7 +607,8 @@ origin the cut does not cover, and `--under <id>` those in that block's subtree,
 block included (an unknown id answers `unknown-id`). In a store with a template, the
 decisions listed by default are those under the root the template names for commitments
 (`design` in the project template), and the answer ends with `(scope <root-id> (outside <n>))`,
-n being the live decisions it left out; `--under root` lists the whole store. In a store without
+n being how many rows the same request would list with `--under root` that this answer does not;
+`--under root` lists the whole store. In a store without
 a template nothing is narrowed and no scope item is added. Oldest origin first: decisions
 whose origins are not ordered against each other are listed in a fixed order and say
 so under `concurrent-with`. It answers:
@@ -614,7 +632,8 @@ nothing.
 Lists the blocks of kind `task`: by default those under the root the store's template names for
 tasks, with `--under <id>` that block's subtree, and with `--under root` or in a store without a
 template, every task. When the template chose the scope, the last item is
-`(scope <root-id> (outside <n>))`, n being the live tasks left out. It answers
+`(scope <root-id> (outside <n>))`, n being how many rows the same request (filters included)
+would list with `--under root` that this answer does not. It answers
 
     (task <id> (title "<t>") (status <s>) (batch <text>|absent) (implements (<id> live|tombstoned) ...)
       [(unlinked)])
@@ -661,7 +680,9 @@ name; a file is named with `--file`.
 with `write` and `commit` like any block, and insert a new root's document; nothing else needs to
 change. A template block that cannot be read (it is not one datum `(template 1 ...)`, it has no
 roots, or there are two template blocks) is listed by `conflicts` as `(template <reason>)`, and
-every verb behaves as in a store without one.
+every verb behaves as in a store without one. Only a TOP-LEVEL block of kind `template` is the
+store's template; one under another block is not read. A template whose roots repeat a slug or a
+path, or name a root `template`, does not read either.
 
 Importing a document does not make decisions or tasks: a heading re-imported into `design.md` that
 matches an existing decision keeps it a decision, and a new heading becomes a section.

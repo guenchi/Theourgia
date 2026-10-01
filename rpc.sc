@@ -629,12 +629,13 @@
 
   ;; A new store, then the template applied to it in this process. The
   ;; answer is init's with what was applied and what it made; plain init's
-  ;; answer is not touched.
+  ;; answer is not touched. NEVER: AN APPLY THAT FAILS AFTER THE STORE WAS
+  ;; MADE SAYS SO: the store stays, and the error carries (store-created).
   (define (init-with-template store actor req init-answer datum named)
     (let ((r ((template-entry 'template-apply!) store actor req datum)))
       (if (eq? (car r) 'ok)
           (append init-answer (list (list 'template named)) (cdr r))
-          r)))
+          (append r (list '(store-created))))))
   (define (derived-tables? store kind)
     (let ((dir (string-append store "/derived")) (prefix (string-append (symbol->string kind) "-")))
       (and (eq? (entry-type dir) 'directory)
@@ -1062,25 +1063,20 @@
                      (apply (eval (cdr h) (environment (car h))) arguments)))))))
 
   ;; THE STORE'S TEMPLATE, AS DESCRIBE ADDS IT: its roots and its relations,
-  ;; or #f. Only a store that is there and loads, with a template that reads,
-  ;; adds the clause; anything else -- no store at the path, a load that
-  ;; fails, no template, one that does not read -- leaves describe's answer
-  ;; exactly what it is without a store.
+  ;; or #f.
   ;;
-  ;; NEVER: AND IT LOADS QUIETLY. Through the request's own load a store that
-  ;; could not be read in full would hang an `incomplete` clause on describe,
-  ;; which is a different answer for a verb that did not ask about the store.
-  ;; So the daemon's published reduction is taken as it is, a local load goes
-  ;; through a copy of the path that no listener hears, and a load missing a
-  ;; writer adds nothing: a template read from part of a store is not the
-  ;; store's template.
-  (define (describe-template store state)
-    (guard (e (#t #f))
-      (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
-                         (state state)
-                         (else (open-and-reduce (string-copy store)))))
-             (t (and (reduction? view) (null? (unreadable-behind view)) (store-template view))))
-        (and t (list 'template (cons 'roots (template-roots t)) (cons 'relations (template-relations t)))))))
+  ;; NEVER: DESCRIBE DOES NOT OPEN THE STORE, take a lock or write a byte, on any
+  ;; route (test/describe.sc DS-2c). So the clause comes only from a state the
+  ;; verb is HANDED -- the daemon's published reduction, which the daemon
+  ;; already holds -- and with none there is no clause: the in-process route
+  ;; does not load a store to describe it. A handed state that could not read
+  ;; every writer adds nothing either: a template read from part of a store is
+  ;; not the store's template.
+  (define (describe-template state)
+    (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
+                       (else state)))
+           (t (and view (reduction? view) (null? (unreadable-behind view)) (store-template view))))
+      (and t (list 'template (cons 'roots (template-roots t)) (cons 'relations (template-relations t))))))
 
   ;; The catalogue as an answer. NEVER: The protocol is carried ONCE, beside
   ;; the verbs, rather than repeated into each entry that needs it: the
@@ -1173,7 +1169,7 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(describe))
-                  (let ((t (describe-template store state)))
+                  (let ((t (describe-template state)))
                     (if t (append (describe-answer) (list t)) (describe-answer))))))
       (cons 'init
             (lambda (store actor args req options state writer cwd)

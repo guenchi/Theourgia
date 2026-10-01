@@ -23,7 +23,7 @@
 ;;; anything else, which is unreadable and printed as it was written.
 (library (theourgia field-reading)
   (export field-of field-missing? conflict-form? conflict-values lenient-status written-text
-          decision-statuses task-statuses)
+          decision-statuses task-statuses rows-left-out)
   (import (rnrs))
 
   ;; NEVER: A MISSING FIELD IS NOT A VALUE A FIELD CAN HOLD. It is this
@@ -47,7 +47,15 @@
         (map car (filter pair? (cadr v)))
         '()))
 
-;; THE WORDS A STATUS MAY SAY, per kind of block, each spelt once here.
+;; WHAT A NARROWED ANSWER LEFT OUT: how many rows of the whole store's answer
+  ;; to the same request are not among the scoped answer's rows, a row being
+  ;; known by its head and its id. The one count behind every
+  ;; (scope <root> (outside <n>)) item.
+  (define (rows-left-out scoped whole)
+    (let ((keys (map (lambda (r) (list (car r) (cadr r))) scoped)))
+      (length (filter (lambda (r) (not (member (list (car r) (cadr r)) keys))) whole))))
+
+  ;; THE WORDS A STATUS MAY SAY, per kind of block, each spelt once here.
   (define decision-statuses '(open done dropped))
   (define task-statuses '(todo doing done dropped))
 

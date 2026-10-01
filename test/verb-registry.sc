@@ -128,16 +128,17 @@
 (want "V1 a second registered verb answers too, its flag parsed as a flag"
       (list (run 'probe) (run 'probe "--loud"))
       '((ok (items (probe quiet ()))) (ok (items (probe loud ())))))
-;; The registered verbs, read from the registry's own data, and the one built-in
-;; whose entry has changed since the base reading: init took a template.
+;; The registered verbs, read from the registry's own data: they are not
+;; built-ins and are not in the base. NEVER: NO BUILT-IN IS EXCLUDED. The base
+;; file is the catalogue as it was last changed on purpose: an item that
+;; changes a built-in's entry replaces that entry in the file, taken from the
+;; tree's describe, in the same commit.
 (define registered (append (map car extension-verbs) '(probe)))
-(define changed-since-base '(init))
-(want "V1 every built-in verb's describe entry is the base's, byte for byte, except init's"
-      (let ((now (filter (lambda (e) (not (memq (car e) (append registered changed-since-base))))
-                         (cdr (assq 'verbs (cdr (run 'describe))))))
-            (base (filter (lambda (e) (not (memq (car e) changed-since-base))) (base-of 'describe-entries))))
-        (if (equal? now base) 'identical
-            (list 'differs (filter (lambda (e) (not (member e base))) now))))
+(want "V1 every built-in verb's describe entry is the base's, byte for byte"
+      (let ((now (filter (lambda (e) (not (memq (car e) registered)))
+                         (cdr (assq 'verbs (cdr (run 'describe)))))))
+        (if (equal? now (base-of 'describe-entries)) 'identical
+            (list 'differs (filter (lambda (e) (not (member e (base-of 'describe-entries)))) now))))
       'identical)
 (want "V1 init's entry is the base's with the two template options, and still local"
       (let ((e (assq 'init (cdr (assq 'verbs (cdr (run 'describe)))))))

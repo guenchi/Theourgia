@@ -33,16 +33,19 @@
   (export store-template template-problem template-block-ids
           template-roots template-relations template-query
           root-slug root-kind root-path root-sentence parse-template-text
-          slug-block-ids query-scope-root)
+          slug-block-ids query-scope-root root-insert-payload)
   (import (rnrs)
-          (only (theourgia reduce) state-read state-block-ids)
+          (only (theourgia reduce) state-read state-block-ids caller-payload-reason)
           (only (theourgia field-reading) field-of))
 
-  ;; The live blocks of kind template, in the reduction's order.
+  ;; THE TEMPLATE BLOCKS: live, of kind template, and at the TOP LEVEL. A block
+  ;; of that kind under another block is nothing to the reader, to apply's
+  ;; template-present or to export: it is not where a store keeps its template.
   (define (template-block-ids state)
     (filter (lambda (id)
               (let ((row (state-read state id)))
-                (and row (eq? (field-of row 'kind) 'template))))
+                (and row (eq? (field-of row 'kind) 'template)
+                     (let ((p (cdr (assq 'position row)))) (and (pair? p) (eq? (car p) 'root))))))
             (state-block-ids state)))
 
   ;; -> (ok <datum>) | (problem <reason>) | #f when there is no template block.
@@ -74,19 +77,46 @@
              ((not (and (list? d) (>= (length d) 2) (eq? (car d) 'template) (eqv? (cadr d) 1)))
               (list 'problem 'not-a-template-datum))
              ((not (clause d 'roots)) (list 'problem 'roots-absent))
-             ((not (for-all root? (cdr (clause d 'roots)))) (list 'problem 'roots-unreadable))
-             ((not (for-all relation? (cdr (or (clause d 'relations) '(relations)))))
+             ((not (and (clause-items (clause d 'roots)) (for-all root? (cdr (clause d 'roots)))))
+              (list 'problem 'roots-unreadable))
+             ;; TWO ROOTS WITH ONE SLUG OR ONE PATH, or a root slugged like
+             ;; the template block itself, would be created as two blocks
+             ;; answering to one name.
+             ((roots-repeated? (cdr (clause d 'roots))) (list 'problem 'roots-repeated))
+             ((not (let ((c (clause d 'relations))) (or (not c) (and (clause-items c) (for-all relation? (cdr c))))))
               (list 'problem 'relations-unreadable))
-             ((not (for-all query? (cdr (or (clause d 'queries) '(queries)))))
+             ((not (let ((c (clause d 'queries))) (or (not c) (and (clause-items c) (for-all query? (cdr c))))))
               (list 'problem 'queries-unreadable))
              (else (list 'ok d))))))))
 
+;; The clause with this head, or #f. A clause with the head and not a proper
+  ;; list is found, so that the reader can call it unreadable rather than absent.
   (define (clause d name)
-    (find (lambda (c) (and (pair? c) (eq? (car c) name) (list? c))) (cddr d)))
+    (find (lambda (c) (and (pair? c) (eq? (car c) name))) (cddr d)))
+  (define (clause-items c) (if (list? c) (cdr c) #f))
 
+  (define (roots-repeated? roots)
+    (let loop ((rs roots) (slugs '(template)) (paths '()))
+      (cond ((null? rs) #f)
+            ((memq (car (car rs)) slugs) #t)
+            ((member (caddr (car rs)) paths) #t)
+            (else (loop (cdr rs) (cons (car (car rs)) slugs) (cons (caddr (car rs)) paths))))))
+
+  ;; A DOCUMENT ROOT IS CREATED AS IT IS WRITTEN HERE, so it reads only if the
+  ;; store would take the insert apply makes for it: the store's own rule for
+  ;; a caller's put is asked (a slug with a line terminator becomes a title the
+  ;; store refuses), not restated. A template apply would get halfway through
+  ;; is not a template. A path is never empty.
   (define (root? r)
     (and (list? r) (= 4 (length r)) (symbol? (car r)) (memq (cadr r) '(doc path))
-         (string? (caddr r)) (string? (cadddr r))))
+         (string? (caddr r)) (string? (cadddr r)) (> (string-length (caddr r)) 0)
+         (or (eq? (cadr r) 'path)
+             (not (caller-payload-reason (root-insert-payload r))))))
+
+  ;; The put apply makes for a document root.
+  (define (root-insert-payload r)
+    (let ((slug (symbol->string (car r))))
+      (list 'put (list (cons 'kind 'doc) (cons 'title slug) (cons 'path (caddr r)) (cons 'slug slug)))))
   (define (relation? r)
     (and (list? r) (= 3 (length r)) (symbol? (car r)) (string? (cadr r)) (string? (caddr r))))
   (define (query? q)

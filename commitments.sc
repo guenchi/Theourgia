@@ -50,7 +50,7 @@
           (only (theourgia extensions) commitments-usage)
           (only (theourgia template-read) query-scope-root)
           (only (theourgia field-reading) field-of conflict-form? conflict-values lenient-status
-                decision-statuses task-statuses))
+                decision-statuses task-statuses rows-left-out))
 
   ;; The handler, with the eight arguments every verb's handler takes.
   (define (commitments-verb store actor args req options state writer cwd)
@@ -135,10 +135,12 @@
   ;; commitments, when it has a readable one and exactly one block carries
   ;; that root's slug; otherwise the whole store.
   ;;
-  ;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
-  ;; it, the last item is (scope <root-id> (outside <n>)), n being the live
-  ;; decisions outside it: a narrowed ledger of obligations never reads as the
-  ;; whole one. An item, not a clause, because the human rendering prints items.
+;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
+  ;; it, the last item is (scope <root-id> (outside <n>)): n is the number of
+  ;; rows this same request would list with --under root that this answer does
+  ;; not (rows-left-out, field-reading.sc), so a narrowed ledger of obligations
+  ;; never reads as the whole one, and the count obeys the same filters. An
+  ;; item, not a clause, because the human rendering prints items.
   (define (commitments-answer view which drifted-only since under)
     (let* ((root (and (not under) (query-scope-root view 'commitments)))
            (scope (cond ((equal? under "root") #f)
@@ -147,50 +149,51 @@
                         (else #f))))
       (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) view under)
-          (let ((origins (make-hashtable string-hash string=?)))
-            (for-each (lambda (event)
-                        (hashtable-set! origins (block-id (car event) (cdr event)) event))
-                      (state-put-events view))
-            (let loop ((ids (state-block-ids view)) (decisions '()) (skipped '()))
-              (if (null? ids)
-                  ((dispatch-helper 'items)
-                   (append (listing (filter (lambda (d) (wanted? d which drifted-only since))
-                                            decisions))
-                           (map (lambda (s) (list 'skipped (car s) (cdr s)))
-                                (list-sort (lambda (x y) (string<? (car x) (car y))) skipped))
-                           (if (and root scope)
-                               (list (list 'scope root (list 'outside (decisions-outside view scope))))
-                               '())))
-                  (let* ((id (car ids))
-                         (row (and (or (not scope) (member id scope)) (state-read view id)))
-                         (kind (and row (row-kind row))))
-                    (cond
-                      ((not kind) (loop (cdr ids) decisions skipped))
-                      ((not (eq? kind 'decision))
-                       (loop (cdr ids) decisions (cons (cons id kind) skipped)))
-                      ((not (string? (field-of row 'title)))
-                       (loop (cdr ids) decisions (cons (cons id 'unreadable-block) skipped)))
-                      ((not (hashtable-ref origins id #f))
-                       (loop (cdr ids) decisions (cons (cons id 'no-origin) skipped)))
-                      (else
-                       (loop (cdr ids)
-                             (cons (read-decision view id row (hashtable-ref origins id #f))
-                                   decisions)
-                             skipped))))))))))
+          (let ((rows (commitment-rows view which drifted-only since scope)))
+            ((dispatch-helper 'items)
+             (if (and root scope)
+                 (append rows
+                         (list (list 'scope root
+                                     (list 'outside (rows-left-out
+                                                      rows
+                                                      (commitment-rows view which drifted-only since #f))))))
+                 rows))))))
+
+  ;; The decision rows and the skipped rows for one scope (#f: the whole
+  ;; store), with the request's filters.
+  (define (commitment-rows view which drifted-only since scope)
+    (let ((origins (make-hashtable string-hash string=?)))
+      (for-each (lambda (event)
+                  (hashtable-set! origins (block-id (car event) (cdr event)) event))
+                (state-put-events view))
+      (let loop ((ids (state-block-ids view)) (decisions '()) (skipped '()))
+        (if (null? ids)
+            (append (listing (filter (lambda (d) (wanted? d which drifted-only since))
+                                     decisions))
+                    (map (lambda (s) (list 'skipped (car s) (cdr s)))
+                         (list-sort (lambda (x y) (string<? (car x) (car y))) skipped)))
+            (let* ((id (car ids))
+                   (row (and (or (not scope) (member id scope)) (state-read view id)))
+                   (kind (and row (row-kind row))))
+              (cond
+                ((not kind) (loop (cdr ids) decisions skipped))
+                ((not (eq? kind 'decision))
+                 (loop (cdr ids) decisions (cons (cons id kind) skipped)))
+                ((not (string? (field-of row 'title)))
+                 (loop (cdr ids) decisions (cons (cons id 'unreadable-block) skipped)))
+                ((not (hashtable-ref origins id #f))
+                 (loop (cdr ids) decisions (cons (cons id 'no-origin) skipped)))
+                (else
+                 (loop (cdr ids)
+                       (cons (read-decision view id row (hashtable-ref origins id #f))
+                             decisions)
+                       skipped))))))))
 
   ;; A DELETED SOURCE DOES NOT DISCHARGE AND IS NOT LISTED AS AN
   ;; IMPLEMENTER; it is named apart, so a decision a deletion reopened says
   ;; why. Each live implementer is listed with the cut at which it was said
   ;; to implement (its links' join, without the decision), and a drifted
   ;; one with its change cut.
-  ;; The live blocks of kind decision that a scope leaves out.
-  (define (decisions-outside view scope)
-    (length (filter (lambda (id)
-                      (and (not (member id scope))
-                           (let ((row (state-read view id)))
-                             (and row (eq? (row-kind row) 'decision)))))
-                    (state-block-ids view))))
-
   (define (read-decision view id row event)
     (let* ((origin (event-cut view event))
            (front (frontier view id origin))

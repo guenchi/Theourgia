@@ -35,7 +35,7 @@
           (only (theourgia reduce) state-read state-block-ids)
           (only (theourgia project) subtree-ids)
           (only (theourgia field-reading) field-of field-missing? lenient-status task-statuses
-                written-text)
+                written-text rows-left-out)
           (only (theourgia template-read) query-scope-root)
           (only (theourgia extensions) tasks-usage))
 
@@ -87,11 +87,12 @@
                            (cons 'implements implements))
                      (if linked '() (list '(unlinked))))))))
 
-  ;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
-  ;; the scope, the last item is (scope <root-id> (outside <n>)), n being the
-  ;; live tasks it left out, so a narrowed listing never reads as a whole one.
-  ;; An item and not a clause beside the items: the human rendering prints
-  ;; items and drops other clauses.
+;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
+  ;; the scope, the last item is (scope <root-id> (outside <n>)): n is the
+  ;; number of rows this same request would list with --under root that this
+  ;; answer does not, so a narrowed listing never reads as a whole one and the
+  ;; count obeys the same filters as the rows. An item and not a clause beside
+  ;; the items: the human rendering prints items and drops other clauses.
   (define (tasks-answer state status batch under)
     (let* ((root (and (not under) (query-scope-root state 'tasks)))
            (scope (cond ((and under (equal? under "root")) #f)
@@ -100,17 +101,17 @@
                         (else #f))))
       (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) state under)
-          ((dispatch-helper 'items)
-           (append
-             (filter (lambda (t)
-                       (and t
-                            (or (not status) (equal? (cdr (assq 'status (cddr t))) (list status)))
-                            (or (not batch) (equal? (cdr (assq 'batch (cddr t))) (list batch)))))
-                     (map (lambda (id) (task-row state id))
-                          (or scope (state-block-ids state))))
+          (let ((rows (task-rows state scope status batch)))
+            ((dispatch-helper 'items)
              (if (and root scope)
-                 (list (list 'scope root
-                             (list 'outside
-                                   (length (filter (lambda (id) (and (not (member id scope)) (task-row state id)))
-                                                   (state-block-ids state))))))
-                 '())))))))
+                 (append rows (list (list 'scope root (list 'outside (rows-left-out rows (task-rows state #f status batch))))))
+                 rows))))))
+
+  ;; The rows for one scope (#f: the whole store), with the request's filters.
+  (define (task-rows state scope status batch)
+    (filter (lambda (t)
+              (and t
+                   (or (not status) (equal? (cdr (assq 'status (cddr t))) (list status)))
+                   (or (not batch) (equal? (cdr (assq 'batch (cddr t))) (list batch)))))
+            (map (lambda (id) (task-row state id))
+                 (or scope (state-block-ids state))))))

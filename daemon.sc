@@ -1335,7 +1335,13 @@
   ;; NOTE: `read --working` IS NOT THIS `read`. It asks about a writer's
   ;; draft, which belongs to that writer's process, so it is excluded
   ;; here and picked up by `writer-for-request`.
-  (define conn-local-read-verbs '(read outline search))
+  ;;
+  ;; `describe` IS ONE OF THEM, and is the one whose answer depends on the
+  ;; publication only through the store's template: it opens nothing, and the
+  ;; template it adds is read from the published state it is handed (rpc.sc
+  ;; describe-template). Sent to the store process it would be handed no state
+  ;; and add nothing.
+  (define conn-local-read-verbs '(read outline search describe))
 
   (define (conn-local-read? request)
     (and (pair? request)

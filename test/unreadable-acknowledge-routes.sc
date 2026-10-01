@@ -232,6 +232,7 @@
     ("store.sc" "store-snapshot!" "log-begin" 1 request)
     ("store.sc" "store-tags" "open-and-reduce" 1 request)
     ("store.sc" "with-store-write" "log-begin" 1 request)
+    ("template.sc" "template-apply!" "open-and-reduce" 1 request)
     ("working.sc" "committed-parent" "open-and-reduce" 1 request)
     ("working.sc" "overlay-drafts-rows" "rows->state" 1 notes)
     ("working.sc" "working-baseline" "obtain-state" 1 unsealer)

@@ -964,6 +964,11 @@
    unrelated a
    "store-check: load-commit! cleanup"
    (e (#t #f)))
+  ("template-read.sc" (parse-template-text) 1 guard
+   (#t)
+   unrelated a
+   "template text parse: the datum reader over a string, no filesystem; any raise is an unreadable template"
+   (e (#t (quote unreadable))))
   ("text-code.sc" (definition-name) 1 guard
    (#t)
    unrelated a

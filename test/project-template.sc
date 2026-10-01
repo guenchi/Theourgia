@@ -81,6 +81,9 @@
 (define (state-of store) (open-and-reduce store))
 (define (field row name) (let ((e (assq name (cdr (assq 'fields row))))) (and e (cdr e))))
 (define (row-of store id) (state-read (state-of store) id))
+;; describe as the daemon answers it: handed the store's published state. With
+;; no state handed, describe never opens a store (describe.sc DS-2c).
+(define (describe-of store) (rpc-dispatch store '(describe) "test" (open-and-reduce store)))
 (define (id-by-title store title)
   (let ((s (state-of store)))
     (find (lambda (id) (equal? (field (state-read s id) 'title) title)) (state-block-ids s))))
@@ -118,7 +121,7 @@
       (list (car plain-answer) (map car (cdr plain-answer)))
       '(ok (store writer)))
 (want "INIT a store made plainly has no template block, and describe adds no clause"
-      (list (store-template (state-of plain)) (clause-of (run plain 'describe) 'template))
+      (list (store-template (state-of plain)) (clause-of (describe-of plain) 'template))
       '(#f #f))
 
 ;; ---- T1: init --template project -------------------------------------------------
@@ -144,7 +147,7 @@
               (equal? (store-template s) (built-in-template "project"))))
       (list (list template-id) #t))
 (want "T1 describe carries the template's roots and relations"
-      (let ((t (clause-of (run s1 'describe) 'template)))
+      (let ((t (clause-of (describe-of s1) 'template)))
         (list (map car (cdr (assq 'roots t))) (map car (cdr (assq 'relations t)))))
       '((design tasks docs code) (implements guards documents supersedes)))
 (define dropped (make! s1 design "A dropped decision" "kind" "decision" "status" "dropped"))
@@ -291,6 +294,24 @@
 (want "SCOPE tasks likewise: named, the task at the top and the one under design counted outside"
       (list (scope-of (run s1 'tasks)) (scope-of (run s1 'tasks "--under" "root")))
       (list (list tasks-root '(outside 2)) #f))
+;; OUTSIDE COUNTS THE ROWS THE SAME REQUEST WOULD LIST WITH --under root, filters
+;; and all: a done decision outside design is not an open row, and is counted only
+;; by the request that lists done ones.
+(define done-outside (make! s1 "root" "A done decision outside design" "kind" "decision" "status" "done"))
+(define (outside-of a) (let ((sc (scope-of a))) (and sc (cadr (cadr sc)))))
+(define (difference . args)
+  (- (length (ids-of (apply run s1 (append args '("--under" "root"))))) (length (ids-of (apply run s1 args)))))
+(want "SCOPE commitments: --open does not count the done decision outside, --all does; each equals rows(--under root) minus rows"
+      (list (outside-of (run s1 'commitments)) (difference 'commitments)
+            (outside-of (run s1 'commitments "--all")) (difference 'commitments "--all"))
+      '(1 1 2 2))
+(run s1 'set elsewhere "status" "todo")
+(want "SCOPE tasks with a filter: outside counts only the rows the filter keeps"
+      (list (outside-of (run s1 'tasks "--status" "todo")) (difference 'tasks "--status" "todo")
+            (outside-of (run s1 'tasks "--status" "done")) (difference 'tasks "--status" "done"))
+      '(1 1 0 0))
+(run s1 'set elsewhere "status")
+(run s1 'del done-outside)
 (run s1 'del outside-d)
 
 ;; ---- T4: projection ---------------------------------------------------------------
@@ -299,9 +320,12 @@
 (system (string-append "mkdir -p '" out-md "'"))
 (define stray (task! s1 "root" "A stray task"))
 (define md-answer (run s1 'export-md out-md))
-(want "T4 export-md writes design.md and tasks.md, the decisions and tasks as sections"
-      (list (string-contains? (file-text (string-append out-md "/design.md")) "An open decision")
-            (string-contains? (file-text (string-append out-md "/tasks.md")) "Write the reader"))
+(define (has-line? text line)
+  (or (and (>= (string-length text) (string-length line)) (string=? (substring text 0 (string-length line)) line))
+      (string-contains? text (string-append "\n" line "\n"))))
+(want "T4 export-md writes design.md and tasks.md with the decisions and tasks as section headings"
+      (list (has-line? (file-text (string-append out-md "/design.md")) "# An open decision")
+            (has-line? (file-text (string-append out-md "/tasks.md")) "# Write the reader"))
       '(#t #t))
 (want "T4 a task outside every document is reported as not in any document"
       (let find ((x md-answer))
@@ -309,6 +333,59 @@
               ((pair? x) (or (find (car x)) (find (cdr x))))
               (else #f)))
       #t)
+
+(define s4 (store-with))
+(make! s4 "root" "Reader guide" "kind" "doc" "path" "docs/x.md")
+(define code-src (string-append root "/code-src"))
+(system (string-append "mkdir -p '" code-src "/code'"))
+(write-file! (string-append code-src "/code/a.js") "function alpha() {\n  return 1;\n}\n")
+(write-file! (string-append code-src "/code/b.js") "function beta() {\n  return 2;\n}\n")
+(run s4 'import-code code-src)
+(define out4 (string-append root "/out4"))
+(system (string-append "mkdir -p '" out4 "/md' '" out4 "/code'"))
+(run s4 'export-md (string-append out4 "/md"))
+(run s4 'export-code (string-append out4 "/code"))
+(define (md5-of path)
+  (let ((f (string-append root "/md5.txt")))
+    (system (string-append "md5 -q '" path "' > '" f "' 2>/dev/null"))
+    (file-text f)))
+;; EVERY EXPORTED FILE'S FIRST LINE IS ITS `// @file` HEADER, which carries the
+;; store's cut at the export, so it changes in every file when any block does.
+;; What one block's change must leave alone is the rest of the other files.
+(define (body-of path)
+  (let ((t (file-text path)))
+    (let loop ((i 0)) (cond ((>= i (string-length t)) "")
+                            ((char=? (string-ref t i) #\newline) (substring t (+ i 1) (string-length t)))
+                            (else (loop (+ i 1)))))))
+(define (header-of path)
+  (let ((t (file-text path)))
+    (let loop ((i 0)) (cond ((>= i (string-length t)) t)
+                            ((char=? (string-ref t i) #\newline) (substring t 0 i))
+                            (else (loop (+ i 1)))))))
+(define a-before (body-of (string-append out4 "/code/code/a.js")))
+(define b-before (body-of (string-append out4 "/code/code/b.js")))
+(define b-header-before (header-of (string-append out4 "/code/code/b.js")))
+;; The code block under the file block for code/a.js, as import made it.
+(define a-code
+  (let* ((st (state-of s4))
+         (file (find (lambda (id) (equal? (field (state-read st id) 'path) "code/a.js")) (state-block-ids st))))
+    (find (lambda (id) (let ((r (state-read st id)))
+                         (and (eq? (field r 'kind) 'code) (equal? (car (cdr (assq 'position r))) file))))
+          (state-block-ids st))))
+(run s4 'set a-code "src" "function alpha() {\n  return 3;\n}\n")
+(system (string-append "mkdir -p '" out4 "/code2'"))
+(define export2 (run s4 'export-code (string-append out4 "/code2")))
+(want "T4 a document under docs/ is written at docs/x.md, and code files at code/"
+      (list (file-exists? (string-append out4 "/md/docs/x.md"))
+            (file-exists? (string-append out4 "/code/code/a.js")) (file-exists? (string-append out4 "/code/code/b.js")))
+      '(#t #t #t))
+(want "T4 changing one code block changes its file's body and no other file's; every header moves with the cut"
+      (list (string? a-code) export2
+            (equal? (body-of (string-append out4 "/code2/code/a.js")) a-before)
+            (equal? (body-of (string-append out4 "/code2/code/b.js")) b-before)
+            (> (string-length b-before) 0)
+            (equal? (header-of (string-append out4 "/code2/code/b.js")) b-header-before))
+      '(#t (ok (files 2)) #f #t #t #f))
 
 ;; ---- T5: a task's part in discharging a decision ------------------------------------
 
@@ -383,7 +460,7 @@
 (run s1 'set template-id "src" fifth)
 (define notes (make! s1 "root" "notes" "kind" "doc" "path" "notes.md" "slug" "notes"))
 (want "T6 describe lists five roots; tasks' and commitments' scopes are unchanged"
-      (list (map car (cdr (assq 'roots (clause-of (run s1 'describe) 'template))))
+      (list (map car (cdr (assq 'roots (clause-of (describe-of s1) 'template))))
             (and (member ta (ids-of (run s1 'tasks))) #t)
             (ids-of (run s1 'commitments)))
       (list '(design tasks docs notes code) #t (list open-d)))
@@ -394,16 +471,23 @@
       #t)
 (run s1 'set template-id "src" (replace fifth "(guards " "(checks "))
 (want "T6 a relation renamed in the template is renamed in describe"
-      (map car (cdr (assq 'relations (clause-of (run s1 'describe) 'template))))
+      (map car (cdr (assq 'relations (clause-of (describe-of s1) 'template))))
       '(implements checks documents supersedes))
 (run s1 'set template-id "src" project-text)
 
 ;; ---- T7: the reader ----------------------------------------------------------------
 
+;; Each store has the project's design and tasks roots, one task and one
+;; decision in them, and one of each at the top: a readable template scopes
+;; to 1, and every unreadable one leaves the whole store's 2.
 (define (store-with-template-src . srcs)
   (let ((s (store-with)))
     (for-each (lambda (src i) (make! s "root" (string-append "template " (number->string i)) "kind" "template" "src" src))
               srcs (iota (length srcs)))
+    (let ((d (make! s "root" "design root" "kind" "doc" "path" "design.md" "slug" "design"))
+          (t (make! s "root" "tasks root" "kind" "doc" "path" "tasks.md" "slug" "tasks")))
+      (task! s t "A task in tasks")
+      (make! s d "A decision in design" "kind" "decision"))
     (task! s "root" "A task anywhere")
     (make! s "root" "A decision anywhere" "kind" "decision")
     s))
@@ -412,21 +496,55 @@
         (filter (lambda (x) (and (pair? x) (eq? (car x) 'template))) (items-of (run s 'conflicts)))
         (length (ids-of (run s 'tasks)))
         (length (ids-of (run s 'commitments)))))
-(want "T7 CONTROL: a valid datum is read with no conflict; with no block slugged tasks or design the scopes are the whole store"
+(want "T7 CONTROL: a valid datum is read with no conflict, and the scopes are its roots"
       (reader-reading (store-with-template-src project-text))
       '(#t () 1 1))
+(want "T7 CONTROL: so an unreadable template is seen by the counts as well as by conflicts"
+      (map (lambda (r) (list-tail r 2)) (list (reader-reading (store-with-template-src project-text))
+                                              (reader-reading (store-with-template-src "(template 1)"))))
+      '((1 1) (2 2)))
 (want "T7 two template blocks: not read, conflicts names it, the verbs answer for the whole store"
       (reader-reading (store-with-template-src project-text project-text))
-      '(#f ((template several-template-blocks)) 1 1))
+      '(#f ((template several-template-blocks)) 2 2))
 (want "T7 a src holding two datums"
       (reader-reading (store-with-template-src (string-append project-text " " project-text)))
-      '(#f ((template src-not-one-datum)) 1 1))
+      '(#f ((template src-not-one-datum)) 2 2))
 (want "T7 a src holding a string datum"
       (reader-reading (store-with-template-src (call-with-string-output-port (lambda (p) (write project-text p)))))
-      '(#f ((template not-a-template-datum)) 1 1))
+      '(#f ((template not-a-template-datum)) 2 2))
 (want "T7 a datum lacking roots"
       (reader-reading (store-with-template-src "(template 1 (relations) (queries))"))
-      '(#f ((template roots-absent)) 1 1))
+      '(#f ((template roots-absent)) 2 2))
+
+(want "T7 roots repeating a slug or a path, or a root slugged template, are not a template"
+      (map (lambda (src) (cadr (reader-reading (store-with-template-src src))))
+           '("(template 1 (roots (a doc \"a.md\" \"s\") (a doc \"b.md\" \"s\")))"
+             "(template 1 (roots (a doc \"a.md\" \"s\") (b doc \"a.md\" \"s\")))"
+             "(template 1 (roots (template doc \"t.md\" \"s\")))"))
+      '(((template roots-repeated)) ((template roots-repeated)) ((template roots-repeated))))
+
+(want "T7 a roots clause that is not a list is unreadable, not absent; export refuses an unreadable template"
+      (list (cadr (reader-reading (store-with-template-src "(template 1 (roots . broken))")))
+            (let ((a (run (store-with-template-src "1 2") 'template "export"))) (list (car a) (cadr a))))
+      '(((template roots-unreadable)) (error template-unreadable)))
+(define bad-slug (string-append root "/bad-slug.sexp"))
+(write-file! bad-slug "(template 1 (roots (design doc \"design.md\" \"s\") (|bad\nslug| doc \"x.md\" \"s\")))")
+(want "T7 a root slug the store would refuse as a title: init refuses before making a store, apply writes nothing"
+      (let ((a (fresh-store)))
+        (list (cadr (run a 'init "--template-file" bad-slug)) (file-exists? a)
+              (refusal-of (store-with) 'template "apply" "--file" bad-slug)))
+      '(template-unreadable #f (error template-unreadable #t)))
+
+;; A BLOCK OF KIND TEMPLATE THAT IS NOT AT THE TOP LEVEL is not the store's
+;; template: describe, apply and conflicts do not see it.
+(define sn (store-with))
+(define sn-holder (make! sn "root" "Holder" "kind" "section"))
+(make! sn sn-holder "Nested template" "kind" "template" "src" project-text)
+(want "M1 a nested block of kind template: no describe clause, no conflict, and apply succeeds"
+      (list (clause-of (describe-of sn) 'template)
+            (filter (lambda (x) (and (pair? x) (eq? (car x) 'template))) (items-of (run sn 'conflicts)))
+            (car (run sn 'template "apply" "project")))
+      '(#f () ok))
 
 ;; ---- describe without a template is what it was ---------------------------------------
 
@@ -438,12 +556,81 @@
       (lambda (o) (set-port-position! o 0) (put-bytevector o (string->utf8 "garbage that is not a record\n"))))))
 (define unreadable (store-with))
 (corrupt! unreadable)
-(want "D describe is the same answer with no store, an empty directory, an unreadable store and a store without a template"
+(want "D describe in process is the same answer with no store, an empty directory, an unreadable store, a store without a template and a templated one: it opens none of them"
       (list (equal? bare (run (begin (system (string-append "mkdir -p '" root "/empty'")) (string-append root "/empty")) 'describe))
             (equal? bare (run unreadable 'describe))
             (equal? bare (run plain 'describe))
+            (equal? bare (run s1 'describe))
             (clause-of bare 'template))
-      '(#t #t #t #f))
+      '(#t #t #t #t #f))
+
+;; A STATE HANDED TO DESCRIBE THAT MISSED A WRITER adds no clause: a template
+;; read from part of a store is not the store's template.
+(define (break-writer! store)
+  (forge-writer-record! store "zzbroken" "(put ((kind . section) (title . \"theirs\")))")
+  (call-with-port (open-file-output-port (string-append store "/writers/zzbroken/000001.sexp") (file-options no-fail no-truncate))
+    (lambda (o) (set-port-position! o 0) (put-bytevector o (string->utf8 "00000000")))))
+(define sh (store-with))
+(run sh 'template "apply" "project")
+(define sh-whole (and (clause-of (describe-of sh) 'template) #t))
+(break-writer! sh)
+(want "D a handed state with every writer read adds the clause; one that missed a writer adds none"
+      (list sh-whole (clause-of (describe-of sh) 'template))
+      '(#t #f))
+
+;; THROUGH THE DAEMON: describe answers the clause from the publication and opens
+;; nothing of its own. The daemon's trace lines are counted before and after,
+;; leaving out its own daemon-dispatch line for each request; `conflicts`, which
+;; the daemon answers by loading the store, is the control that the count does
+;; see a verb that touches the store. (`outline` would not be: the daemon
+;; answers it from the publication too.)
+(define (count-lines pattern)
+  (let ((f (string-append root "/acts.txt")))
+    (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c '" pattern "' > '" f "' || true"))
+    (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
+(define (daemon-acts) (- (count-lines "(trace ") (count-lines "daemon-dispatch")))
+(define (client store . verb)
+  (let ((out (string-append root "/client.out")))
+    (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_HOME=" root "/home "
+                           "THEOURGIA_RUN=" sock-root "/run THEOURGIA_TRACE=1 scheme --script ../theourgia.sc "
+                           (apply string-append verb) " --store '" store "' --wire > '" out "' 2>/dev/null < /dev/null"))
+    (let ((t (file-text out))) (guard (e (#t (list 'UNREADABLE t))) (read (open-string-input-port t))))))
+(client s1 "conflicts")
+(define acts-0 (daemon-acts))
+(define via-daemon (client s1 "describe"))
+(define acts-1 (daemon-acts))
+(client s1 "conflicts")
+(define acts-2 (daemon-acts))
+(system (string-append "pkill -f 'serve " s1 "' 2>/dev/null; sleep 1"))
+(want "D through the daemon describe carries the template clause and adds no store act of its own"
+      (list (and (clause-of via-daemon 'template) #t) (- acts-1 acts-0))
+      '(#t 0))
+(want "D CONTROL: the same count sees a verb that does touch the store"
+      (> acts-2 acts-1)
+      #t)
+(define (strip-template a) (if (pair? a) (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'template)))) a) a))
+(want "D the daemon's catalogue is the in-process one, registered verbs included, byte for byte"
+      (equal? (strip-template via-daemon) (run s1 'describe))
+      #t)
+;; A WRITER THE DAEMON COULD NOT READ: describe at the connection adds neither the
+;; template (read from part of a store) nor an incomplete clause (it did not ask
+;; about the store).
+(break-writer! s1)
+(define via-daemon-broken (client s1 "describe"))
+(system (string-append "pkill -f 'serve " s1 "' 2>/dev/null; sleep 1"))
+(system (string-append "rm -rf '" s1 "/writers/zzbroken'"))
+(want "D through the daemon, a store with an unreadable writer: describe is the answer with no store"
+      (equal? via-daemon-broken bare)
+      #t)
+;; A STORE THAT CANNOT BE FOLDED AT ALL: no publication; describe still answers
+;; the catalogue, without a clause.
+(define unfoldable (store-with))
+(corrupt! unfoldable)
+(define via-daemon-unfoldable (client unfoldable "describe"))
+(system (string-append "pkill -f 'serve " unfoldable "' 2>/dev/null; sleep 1"))
+(want "D through the client, a store that cannot be folded: describe answers the catalogue without a clause"
+      (list (and (pair? via-daemon-unfoldable) (car via-daemon-unfoldable)) (equal? via-daemon-unfoldable bare))
+      '(ok #t))
 
 ;; ---- D1: README and the MCP tools ------------------------------------------------------
 
@@ -473,11 +660,28 @@
     (system (string-append "pkill -f 'serve " store "' 2>/dev/null; sleep 1"))
     (file-text out)))
 (define sentences (map (lambda (r) (list-ref r 3)) (cdr (assq 'roots (cddr (built-in-template "project"))))))
-(define (sentences-in listing)
-  (map (lambda (s) (string-contains? listing s)) sentences))
-(want "D1 on a templated store the writing tools carry the four root sentences; on a plain store none"
-      (list (sentences-in (tools-list s1 "templated")) (sentences-in (tools-list plain "plain")))
-      '((#t #t #t #t) (#f #f #f #f)))
+;; One tool's description, out of the listing, by name.
+(define (description-in listing tool)
+  (let* ((key (string-append "\"name\":\"" tool "\",\"description\":\""))
+         (n (string-length key))
+         (at (let find ((i 0)) (cond ((> (+ i n) (string-length listing)) #f)
+                                     ((string=? (substring listing i (+ i n)) key) (+ i n))
+                                     (else (find (+ i 1)))))))
+    (and at (let loop ((i at) (acc '()))
+              (cond ((>= i (string-length listing)) #f)
+                    ((char=? (string-ref listing i) #\\)
+                     (let ((c (string-ref listing (+ i 1))))
+                       (loop (+ i 2) (cons (if (char=? c #\n) #\newline c) acc))))
+                    ((char=? (string-ref listing i) #\") (list->string (reverse acc)))
+                    (else (loop (+ i 1) (cons (string-ref listing i) acc))))))))
+(define (sentences-per-tool listing)
+  (map (lambda (tool)
+         (let ((d (description-in listing tool)))
+           (and d (map (lambda (s) (string-contains? d s)) sentences))))
+       '("theourgia_insert" "theourgia_write")))
+(want "D1 on a templated store each writing tool carries all four root sentences; on a plain store neither carries any"
+      (list (sentences-per-tool (tools-list s1 "templated")) (sentences-per-tool (tools-list plain "plain")))
+      '(((#t #t #t #t) (#t #t #t #t)) ((#f #f #f #f) (#f #f #f #f))))
 
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
 (printf "\n~a failures\nrows: ~a\nproject-template complete\n" bad rows)

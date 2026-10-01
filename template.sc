@@ -45,7 +45,7 @@
           (only (theourgia ffi) entry-bytes)
           (only (theourgia templates) built-in-template built-in-template-names)
           (only (theourgia template-read) parse-template-text template-block-ids template-roots
-                slug-block-ids root-slug root-kind root-path)
+                slug-block-ids root-slug root-kind root-path root-insert-payload template-problem)
           (only (theourgia extensions) template-usage))
 
   ;; `template apply <name>`, `template apply --file <template-file>`,
@@ -72,18 +72,21 @@
   (define (template-datum-for name file)
     (cond
       (file
-       (let ((text (guard (e (#t #f)) (utf8->string (entry-bytes file)))))
-         (if (not text)
-             (list 'error 'template-file-unreadable (list 'file file))
-             (let ((p (parse-template-text text)))
-               (if (eq? (car p) 'ok) p (list 'error 'template-unreadable (list 'file file) (list 'reason (cadr p))))))))
+       ;; A FILE THAT CANNOT BE READ IS THE FILESYSTEM'S ANSWER, raised to the
+       ;; dispatcher's table like every other verb's, not caught here.
+       (let ((p (parse-template-text (utf8->string (entry-bytes file)))))
+         (if (eq? (car p) 'ok) p (list 'error 'template-unreadable (list 'file file) (list 'reason (cadr p))))))
       ((built-in-template name) => (lambda (d) (list 'ok d)))
       (else (list 'error 'unknown-template (list 'name name) (cons 'known (built-in-template-names))))))
 
+  ;; A TEMPLATE THE READER CANNOT READ IS NOT EXPORTED AS IF IT WERE ONE: the
+  ;; answer names the reason, as conflicts does, and `read` still shows the
+  ;; block's src to whoever means to fix it.
   (define (template-export state)
     (let ((ids (template-block-ids state)))
       (cond ((null? ids) (list 'error 'no-template))
-            ((pair? (cdr ids)) (list 'error 'several-template-blocks (cons 'ids ids)))
+            ((template-problem state)
+             => (lambda (r) (list 'error 'template-unreadable (list 'reason r) (cons 'ids ids))))
             (else
              (let ((src (field-of (state-read state (car ids)) 'src)))
                (if (string? src)
@@ -133,9 +136,7 @@
                     ((pair? with-slug) (loop (cdr roots) creates))
                     (else
                      (loop (cdr roots)
-                           (cons (list (root-slug r)
-                                       (list (cons 'kind 'doc) (cons 'title slug) (cons 'path path)
-                                             (cons 'slug slug)))
+                           (cons (list (root-slug r) (cadr (root-insert-payload r)))
                                  creates))))))))))
 
   ;; NEVER: A REFUSAL WRITES NOTHING. The plan is made against the store as
