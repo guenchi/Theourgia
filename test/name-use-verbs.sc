@@ -702,45 +702,41 @@
       (in-order (cadr move-before) (cadddr move-before) (cadr move-after) (length (cddr move-after)))
       (list '(items) all-skipped (list 'items (row TN L1 'text)) 2))
 
-;; ---- U23 on the daemon: a commit the publication has not folded --------------------
+;; ---- U23 on the daemon: the store process answers ------------------------------------
 ;;
-;; An outside commit makes the daemon's next answer probe and ask for a
-;; fold; the fold is held between itself and its publication
-;; (reload-before-publish). The answer given meanwhile is from the previous
-;; publication and does not list the new block; released and published, the
-;; next answer does.
+;; names and uses are not among the daemon's connection-local reads: they
+;; are answered by the store process, which folds the store under its lock
+;; for every request and is never handed the publication. So a commit made
+;; outside the daemon is listed by the very next `uses`, and the request
+;; is traced as routed to the store. The route is pinned on purpose: an
+;; item that moves these verbs to the publication turns this row red.
 (putenv "THEOURGIA_RUN" (string-append sock-root "/run"))
 (stop-daemons!)
-(define hold-release (string-append root "/u23.release"))
-(define hold-env (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD_MS=120000 THEOURGIA_HOLD=reload-before-publish:" hold-release)))
-(define (held-uses name)
-  (first-datum (sh-out "u23" (string-append hold-env "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc uses '"
+(define traced-env (env "THEOURGIA_TRACE=1"))
+(define (traced-uses name)
+  (first-datum (sh-out "u23" (string-append traced-env "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc uses '"
                                             name "' --store '" store "' --wire"))))
-(define (publications)
-  (let* ((t (file-text (serve-log-path store))) (key "(trace published ") (k (string-length key)))
-    (let loop ((i 0) (n 0))
-      (let ((at (let find ((j i)) (cond ((> (+ j k) (string-length t)) #f)
-                                        ((string=? (substring t j (+ j k)) key) j)
-                                        (else (find (+ j 1)))))))
-        (if at (loop (+ at k) (+ n 1)) n)))))
-(define (wait-for test)
-  (let loop ((k 0)) (cond ((test) #t) ((>= k 200) #f) (else (system "sleep 0.1") (loop (+ k 1))))))
-(define gnu-before (held-uses "gnu"))
+;; The serve log's lines that start with PREFIX.
+(define (trace-lines prefix)
+  (let* ((t (file-text (serve-log-path store))) (n (string-length t)) (k (string-length prefix)))
+    (let loop ((i 0) (start 0) (out '()))
+      (cond ((>= i n) (reverse out))
+            ((char=? (string-ref t i) #\newline)
+             (loop (+ i 1) (+ i 1)
+                   (if (and (>= (- i start) k) (string=? (substring t start (+ start k)) prefix))
+                       (cons (substring t start i) out)
+                       out)))
+            (else (loop (+ i 1) start out))))))
+(define gnu-before (traced-uses "gnu"))
+(define routes-before (trace-lines "(trace routed uses "))
 (define DG (datum 'root '(define (g) (gnu 1))))
-(define gnu-held (held-uses "gnu"))
-(define fold-held (wait-for (lambda () (file-exists? (string-append hold-release ".held")))))
-;; ASKED AGAIN WHILE THE FOLD IS CONFIRMED HELD: the fold that has the new
-;; block exists and is not published, and this answer must not list it.
-(define gnu-during (held-uses "gnu"))
-(call-with-output-file hold-release (lambda (o) (write 'go o)) 'truncate)
-(define published-twice (wait-for (lambda () (>= (publications) 2))))
-(define gnu-after (held-uses "gnu"))
-(define hold-expired (string-contains? (file-text (serve-log-path store)) "hold-expired"))
+(define gnu-after (traced-uses "gnu"))
+(define routes-after (trace-lines "(trace routed uses "))
 (stop-daemons!)
-(want "U23 on the daemon: held out of the publication the new block is not listed; published, it is"
-      (in-order (cadr gnu-before) (cadr gnu-held) fold-held (cadr gnu-during) hold-expired published-twice
-                (map cadr (cdadr gnu-after)))
-      (list '(items) '(items) #t '(items) #f #t (list DG)))
+(want "U23 on the daemon: the next uses after an outside commit lists the new block, routed to the store process"
+      (in-order (cadr gnu-before) (map cadr (cdadr gnu-after))
+                (list-tail routes-after (length routes-before)) (length routes-before))
+      (list '(items) (list DG) '("(trace routed uses store)") 1))
 
 ;; ---- U27: the README -------------------------------------------------------------------
 

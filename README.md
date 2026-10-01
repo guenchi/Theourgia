@@ -678,7 +678,10 @@ unknown id answers `unknown-id`).
 name, and whichever library defines it; nothing is resolved. In a text block a
 definition is also a use -- `function target() {}` is listed by `uses target` -- the
 distinction between defining and using exists only for datum code. Each request reads
-every block of the state it answers from; nothing is kept between requests.
+every block of the state it answers from; nothing is kept between requests. Through
+the daemon, `names` and `uses` are answered by its store process from a fold of the
+store taken for the request, so a commit made outside the daemon is in the next
+answer.
 
 ## Making and changing blocks
 
