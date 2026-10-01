@@ -30,7 +30,8 @@
         (only (theourgia reduce) state-read state-block-ids reduce-applied-cut)
         (only (theourgia store) open-and-reduce with-store-write)
         (only (theourgia languages) language-table language-property register-language!)
-        (only (theourgia wire) string->sexpr-extended encode-record storable-encode))
+        (only (theourgia wire) string->sexpr-extended encode-record storable-encode)
+        (only (theourgia client) serve-log-path))
 
 (define-syntax in-order
   (syntax-rules ()
@@ -669,6 +670,41 @@
 (want "K12 a language registered after a request is read by the next one"
       (in-order (cadr move-before) (cadddr move-before) (cadr move-after) (length (cddr move-after)))
       (list '(items) all-skipped (list 'items (row TN L1 'text)) 2))
+
+;; ---- U23 on the daemon: a commit the publication has not folded --------------------
+;;
+;; An outside commit makes the daemon's next answer probe and ask for a
+;; fold; the fold is held between itself and its publication
+;; (reload-before-publish). The answer given meanwhile is from the previous
+;; publication and does not list the new block; released and published, the
+;; next answer does.
+(putenv "THEOURGIA_RUN" (string-append sock-root "/run"))
+(stop-daemons!)
+(define hold-release (string-append root "/u23.release"))
+(define hold-env (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=reload-before-publish:" hold-release)))
+(define (held-uses name)
+  (first-datum (sh-out "u23" (string-append hold-env "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc uses '"
+                                            name "' --store '" store "' --wire"))))
+(define (publications)
+  (let* ((t (file-text (serve-log-path store))) (key "(trace published ") (k (string-length key)))
+    (let loop ((i 0) (n 0))
+      (let ((at (let find ((j i)) (cond ((> (+ j k) (string-length t)) #f)
+                                        ((string=? (substring t j (+ j k)) key) j)
+                                        (else (find (+ j 1)))))))
+        (if at (loop (+ at k) (+ n 1)) n)))))
+(define (wait-for test)
+  (let loop ((k 0)) (cond ((test) #t) ((>= k 200) #f) (else (system "sleep 0.1") (loop (+ k 1))))))
+(define gnu-before (held-uses "gnu"))
+(define DG (datum 'root '(define (g) (gnu 1))))
+(define gnu-held (held-uses "gnu"))
+(define fold-held (wait-for (lambda () (file-exists? (string-append hold-release ".held")))))
+(call-with-output-file hold-release (lambda (o) (write 'go o)) 'truncate)
+(define published-twice (wait-for (lambda () (>= (publications) 2))))
+(define gnu-after (held-uses "gnu"))
+(stop-daemons!)
+(want "U23 on the daemon: held out of the publication the new block is not listed; published, it is"
+      (in-order (cadr gnu-before) (cadr gnu-held) fold-held published-twice (map cadr (cdadr gnu-after)))
+      (list '(items) '(items) #t #t (list DG)))
 
 ;; ---- U27: the README -------------------------------------------------------------------
 
