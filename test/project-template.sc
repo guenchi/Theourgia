@@ -608,7 +608,8 @@
 
 ;; THROUGH THE DAEMON: describe answers the clause from the publication and opens
 ;; nothing of its own. The daemon's trace lines are counted before and after,
-;; leaving out its own daemon-dispatch line for each request; `conflicts`, which
+;; leaving out its two bookkeeping lines for each request (daemon-dispatch, and
+;; routed, which names the route the request took); `conflicts`, which
 ;; the daemon answers by loading the store, is the control that the count does
 ;; see a verb that touches the store. (`outline` would not be: the daemon
 ;; answers it from the publication too.)
@@ -616,7 +617,7 @@
   (let ((f (string-append root "/acts.txt")))
     (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c '" pattern "' > '" f "' || true"))
     (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
-(define (daemon-acts) (- (count-lines "(trace ") (count-lines "daemon-dispatch")))
+(define (daemon-acts) (- (count-lines "(trace ") (count-lines "daemon-dispatch") (count-lines "(trace routed ")))
 (define (client store . verb)
   (let ((out (string-append root "/client.out")))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_HOME=" root "/home "
@@ -625,14 +626,16 @@
     (let ((t (file-text out))) (guard (e (#t (list 'UNREADABLE t))) (read (open-string-input-port t))))))
 (client s1 "conflicts")
 (define acts-0 (daemon-acts))
+(define routed-0 (count-lines "routed describe connection"))
 (define via-daemon (client s1 "describe"))
 (define acts-1 (daemon-acts))
+(define routed-1 (count-lines "routed describe connection"))
 (client s1 "conflicts")
 (define acts-2 (daemon-acts))
 (system (string-append "pkill -f 'serve " s1 "' 2>/dev/null; sleep 1"))
-(want "D through the daemon describe carries the template clause and adds no traced load, lock or write of its own (the probe's file-size reads are not traced)"
-      (list (and (clause-of via-daemon 'template) #t) (- acts-1 acts-0))
-      '(#t 0))
+(want "D through the daemon describe is answered at the connection, carries the template clause and adds no traced load, lock or write of its own (the probe's file-size reads are not traced)"
+      (list (and (clause-of via-daemon 'template) #t) (- acts-1 acts-0) (- routed-1 routed-0))
+      '(#t 0 1))
 (want "D CONTROL: the same count sees a verb that does touch the store"
       (> acts-2 acts-1)
       #t)
@@ -677,10 +680,10 @@
 (printf "   (fold failure: describe answered ~s)\n" refused-describe)
 (want "D a store whose fold fails: no daemon is running, and describe is refused with outline's error, not an internal one"
       (list (and (pair? refused-describe) (car refused-describe)) (and (pair? refused-outline) (car refused-outline))
+            (and (pair? refused-describe) (pair? (cdr refused-describe)) (cadr refused-describe))
             (and (pair? refused-describe) (pair? refused-outline) (equal? (cadr refused-describe) (cadr refused-outline)))
-            (and (pair? refused-describe) (pair? (cdr refused-describe)) (eq? (cadr refused-describe) 'internal))
             unstartable-daemons)
-      '(error error #t #f 0))
+      '(error error serve-start-failed #t 0))
 ;; WHY THE DAEMON'S DESCRIBE IS A READ OF THE PUBLICATION: a template applied
 ;; from outside the daemon -- in this process -- reaches its describe as it
 ;; reaches every read there. The probe that notices the outside write starts the
