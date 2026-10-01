@@ -46,8 +46,19 @@
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin argument-wants-stdin?
           argument-stdin-placeholder? working-id? parse-shell-arguments
-          transport-options)
+          transport-options set-extension-options!)
   (import (rnrs base) (rnrs lists))
+
+  ;; THE OPTIONS OF VERBS REGISTERED FROM OUTSIDE THE CORE, as
+  ;; ((<verb> (<value option> ...) (<flag option> ...)) ...). The verb
+  ;; registry in (theourgia rpc) is the one writer: it sets this after a
+  ;; batch has passed its checks, so the parser below reads the same
+  ;; tables for a registered verb as for a built-in one and gains no
+  ;; branch for it. This library does not import the registry.
+  (define extension-options '())
+  (define (set-extension-options! table) (set! extension-options table))
+  (define (extension-options-of verb pick)
+    (let ((e (assq verb extension-options))) (if e (pick (cdr e)) '())))
 
   ;; WARNING -- THESE TWO TABLES ARE A SECOND PLACE THAT KNOWS THE COMMAND LINE.
   ;; A verb that grows an option and is not added here does not fail --
@@ -117,7 +128,8 @@
         ;; The warning at the top of this file describes exactly that.
         ((eval) '("--cut" "--under" "--timeout-ms" "--memory-bytes"
                   "--output-bytes" "--writer" "--lang"))
-        (else '()))))
+        (else '()))
+      (extension-options-of verb car)))
 
   ;; THE OPTIONS THAT SAY WHERE A REQUEST GOES AND HOW ITS ANSWER TRAVELS,
   ;; and not what it asks. A request that reached a server has already been
@@ -139,7 +151,7 @@
     (case verb ((commit) '("--working-version")) (else '())))
 
   (define (flag-options verb)
-    (cons "--wire" (case verb
+    (cons "--wire" (append (case verb
       ;; NOTE: `--detach` CHANGES WHAT THE PROCESS DOES BEFORE IT SERVES, not
       ;; how it answers: it leaves the caller's session, drops the
       ;; caller's stdio and then behaves exactly like the foreground
@@ -169,7 +181,8 @@
       ((export-code) '("--raw" "--datum" "--working"))
       ((export-md) '("--with-ids" "--working"))
       ((supply) '("--clear"))
-      (else '()))))
+      (else '()))
+      (extension-options-of verb cadr))))
 
   ;; `--` ENDS THE OPTIONS AND NOTHING AFTER IT IS ONE. It is kept as a
   ;; node rather than dropped, because `argument-strings` has to hand

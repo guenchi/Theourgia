@@ -19,7 +19,7 @@
 ;; (the oracle strings here), with THEOURGIA_HOME and THEOURGIA_RUN fixed
 ;; per row so the per-run paths in the machine-home line are the same on
 ;; both sides. The old name is not spelled in this file: F46-6 greps for it.
-(import (chezscheme))
+(import (chezscheme) (only (theourgia extensions) extension-verbs))
 
 (define bad 0)
 (define rows 0)
@@ -98,8 +98,13 @@
 
 ;; ---- F46-8: core.sc answers as the old program did on a338bcd (oracle bytes) --
 (printf "== F46-8: core.sc, the oracle rows ==\n")
+;; The built-in verbs as the old program listed them, then the verbs registered
+;; from outside the core table, taken from their registry's own data.
 (define verbs-line
-  "(verbs describe init insert set move del link unlink write restore commit drafts diagnostics discard batch split-suggest import-code export-code supply def import-md export-md adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts)")
+  (string-append
+    "(verbs describe init insert set move del link unlink write restore commit drafts diagnostics discard batch split-suggest import-code export-code supply def import-md export-md adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts"
+    (apply string-append (map (lambda (e) (string-append " " (symbol->string (car e)))) extension-verbs))
+    ")"))
 (let ((d (row-dir!)))
   (want "F46-8 core.sc with an empty argv prints the usage line on stdout, the machine-home line on stderr, exit 1"
         (let ((r (run-in d "core.sc" "")))

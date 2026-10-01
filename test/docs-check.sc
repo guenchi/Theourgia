@@ -29,7 +29,12 @@
         (only (chezscheme) with-input-from-file call-with-input-file
               get-string-all directory-list file-exists? load)
         (only (theourgia arguments) parse-arguments)
-        (only (theourgia rpc) rpc-verbs write-protocol verb-catalogue))
+        (only (theourgia rpc) rpc-verbs write-protocol verb-catalogue register-verbs!)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
+;; register them: this census reads the registry itself, not a copy of it.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)

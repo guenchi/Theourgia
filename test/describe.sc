@@ -25,9 +25,14 @@
 ;; verb" is satisfied by a catalogue with one entry in it.
 
 (import (chezscheme)
-        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs verb-catalogue write-protocol)
+        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs verb-catalogue write-protocol register-verbs!)
         ;; DS-3b asks the parser itself rather than a copy of its tables.
-        (only (theourgia arguments) parse-arguments))
+        (only (theourgia arguments) parse-arguments)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc and the daemon
+;; register them: this census reads the registry itself, not a copy of it.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)

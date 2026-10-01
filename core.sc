@@ -38,6 +38,7 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
               verb-spelling-error)
+        (only (theourgia extensions) extension-verbs)
         (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record)
         (only (theourgia answers) classify-failure combine-report)
         (only (theourgia working) working-snapshot working-baseline)
@@ -95,6 +96,12 @@
 ;; this one.
 (define (later lib name)
   (eval name (environment lib)))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, once, before any
+;; request is parsed: their options have to be in the parser's tables
+;; before the parser runs, or they parse as positionals. The entries are
+;; data; no handler's library is loaded here (rpc.sc, register-verbs!).
+(register-verbs! extension-verbs)
 
 (define (say x) (write x (current-output-port)) (newline (current-output-port)))
 

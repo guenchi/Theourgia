@@ -260,6 +260,14 @@
 ;; <id> -` does and `write <id> text` does not -- and asking the parser
 ;; that owns the tables is the only way to ask it without keeping a
 ;; second copy of them here.
+;;
+;; NOTE: THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE ARE NOT IN THE
+;; TABLES THIS PROGRAM SEES: nothing here registers them, so their options
+;; parse as positionals in this one parse. That is harmless while none of
+;; them reads standard input, which is the only question asked here; the
+;; arguments go to the daemon unchanged, and it parses them with the
+;; registered tables. A registered verb that read standard input would have
+;; to be registered here too.
 (define (piped-input verb args)
   (let ((nodes (guard (e (#t #f)) (parse-arguments verb args))))
     ;; NOTE: AN EMPTY NODE LIST IS A PARSE, NOT A FAILURE. `batch` takes its

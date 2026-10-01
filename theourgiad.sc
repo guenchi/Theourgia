@@ -45,7 +45,8 @@
               with-mutation-record mutation-record theourgia-stage)
         ;; F100b point 8: the table for this program's own failures, and the
         ;; aggregation rule's named-outcome half for detach-failed.
-        (only (theourgia answers) classify-failure with-written))
+        (only (theourgia answers) classify-failure with-written)
+        (only (theourgia extensions) extension-verbs))
 
 (define (later lib name)
   (eval name (environment lib)))
@@ -168,6 +169,11 @@
                 ;; (actor.sc:459-469), and there is no other actor yet.
                 (parameterize ((theourgia-stage 'report))
                   (detach! (argument-option nodes "--log"))))
+              ;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, before the
+              ;; daemon serves its first request. Through `later` like the
+              ;; daemon itself: the registry is in (theourgia rpc), which the
+              ;; daemon loads anyway, and an argument refusal above must not.
+              ((later '(theourgia rpc) 'register-verbs!) extension-verbs)
               ;; Does not return: the daemon runs until it is told to go, or
               ;; until it finds a reason to leave and reports it.
               ((later '(theourgia daemon) 'serve) store socket attempt)

@@ -16,7 +16,12 @@
 ;; answer headed `error` leaves core.sc with exit 1 and `ok` with exit 0.
 ;; Measured before this: `insert` refused by the instance check exited 0
 ;; while `set` with the same answer exited 1.
-(import (chezscheme) (only (theourgia rpc) rpc-verbs))
+(import (chezscheme) (only (theourgia rpc) rpc-verbs register-verbs!)
+        (only (theourgia extensions) extension-verbs))
+
+;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE, as core.sc registers them:
+;; the programs this spawns answer them, so the population includes them.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)
