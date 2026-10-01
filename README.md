@@ -8,7 +8,7 @@ be pushed, on any branch):
     git fetch origin ci
     git worktree add /tmp/theourgia-ci origin/ci    # once
     cd /tmp/theourgia-ci && git checkout -B ci origin/ci
-    git commit --allow-empty -m "suite <commit>"
+    git commit --allow-empty -m "suite $(git -C <your tree> rev-parse <commit>)"
     git push origin ci        # rejected? git pull --rebase origin ci, push again
 
 Each pushed commit starts one run. Push one commit at a time: a push carrying
@@ -25,3 +25,6 @@ is not the whole gate: the fixtures named in known-red.txt, and the start-up alt
 still run on the development machine, alone, which takes minutes. A red job
 is read from verdict.txt: an UNEXPECTED fixture is run on the development
 machine before anything is concluded from it.
+
+The commit id must be the full 40 characters: the harness fetches it by id,
+and a short id matches nothing (the run then stops at its first step and says so).

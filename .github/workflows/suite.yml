@@ -43,8 +43,8 @@ jobs:
           MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           first=$(printf '%s\n' "$MESSAGE" | head -1)
-          ref=$(printf '%s\n' "$first" | sed -n -E 's/^suite ([0-9a-f]{7,40})( .*)?$/\1/p')
-          [ -n "$ref" ] || { echo "the commit's first line is not 'suite <commit>': nothing to run"; exit 1; }
+          ref=$(printf '%s\n' "$first" | sed -n -E 's/^suite ([0-9a-f]{40})( .*)?$/\1/p')
+          [ -n "$ref" ] || { echo "the commit's first line is not 'suite <full 40-character commit id>': a short id cannot be fetched; nothing to run"; exit 1; }
           echo "REF=$ref" >> "$GITHUB_ENV"; echo "under test: $ref"
       - uses: actions/checkout@v4
         with:
