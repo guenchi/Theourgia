@@ -18,9 +18,10 @@
 #   unit     per target: the unit suite against a real core, on that
 #            platform. The core is theourgia and igropyr at the revisions
 #            the suite is pinned to, checked out from GitHub, on Chez Scheme
-#            10.1.0 built from its release source on every system (one of
-#            the versions the core's datum printer accepts), with libuv and
-#            OpenSSL 3. The suite's full log is uploaded
+#            10.1.0 built from its release source (Homebrew's on Intel
+#            macOS, see the step), one of the versions the core's datum
+#            printer accepts, with libuv and OpenSSL 3. The suite's full
+#            log is uploaded
 #            whatever the suite's result, so a red is read and not only
 #            counted. A setup step that fails before the suite leaves no
 #            log, and the upload step then fails too, saying so.
@@ -187,14 +188,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libuv1-dev libssl-dev build-essential
-      # Chez Scheme ${CHEZ_VERSION} from its release source, on every system:
-      # the core's datum printer accepts only the versions it was measured
-      # on (10.1.0, 10.3.0 and 10.4.1; ffi.sc, `printer-measured-versions`),
-      # and a package manager ships whatever version is current. One version
-      # built the same way everywhere keeps the targets' readings comparable.
+      # Chez Scheme ${CHEZ_VERSION} from its release source, on every system
+      # but Intel macOS (see the NOTE below): the core's datum printer
+      # accepts only the versions it was measured on (10.1.0, 10.3.0 and
+      # 10.4.1; ffi.sc, `printer-measured-versions`), and a package manager
+      # ships whatever version is current. One version built the same way
+      # keeps the targets' readings comparable.
       # The release carries the boot files that build it on every
       # architecture; it installs `scheme`.
+      #
+      # NOTE: NOT ON INTEL macOS. On macos-15-intel the source build passed
+      # once (run 36622751061) and once stopped in Chez's own bootstrap with
+      # "invalid memory reference" compiling s/interpret.ss (run
+      # 36628536369), so a red there could be the toolchain's and not the
+      # suite's. Homebrew's chezscheme installed on that runner both times
+      # it was used; the next step takes it there instead.
       - name: Chez Scheme ${{ env.CHEZ_VERSION }}
+        if: matrix.target != 'darwin-x64'
         working-directory: ${{ runner.temp }}
         run: |
           curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
@@ -202,6 +212,23 @@ jobs:
           ./configure --threads --disable-x11 --disable-curses
           make -j"$(getconf _NPROCESSORS_ONLN)"
           sudo make install
+      # Homebrew installs the executable as `chez`, not `scheme`; the core
+      # and the real-core cells both take THEOURGIA_SCHEME. Its version is
+      # whatever Homebrew ships, so the step stops here, by name, when that
+      # is not one the core's datum printer accepts (ffi.sc,
+      # `printer-measured-versions`), rather than leaving every real-core
+      # cell to answer unsupported-printer-version.
+      - name: Chez Scheme from Homebrew (Intel macOS)
+        if: matrix.target == 'darwin-x64'
+        run: |
+          brew install chezscheme
+          chez="$(brew --prefix)/bin/chez"
+          version="$("$chez" --version 2>&1)"
+          case "$version" in
+            10.1.0|10.3.0|10.4.1) ;;
+            *) echo "Homebrew's Chez Scheme is $version, which the core's datum printer does not accept"; exit 1 ;;
+          esac
+          echo "THEOURGIA_SCHEME=$chez" >> "$GITHUB_ENV"
       # Readings, so a log says what it was taken on.
       - name: What this run is on
         run: |
