@@ -1701,8 +1701,8 @@ plan's frozen entries, putting what the plan inserts under the blocks its earlie
 members made. Before it writes anything, the retry checks that nobody else has
 written a block a missing member would write since the request was admitted, and,
 for a commit, that the block's hash is still the one the draft started from. If
-either fails it writes none of them and answers `stale-baseline` as a fresh commit
-does, with a `(completion (plan <event>) (present <index> ...) (of <n>))` clause
+either fails it writes none of them and answers `stale-baseline`, bare, as a fresh
+commit does, with a `(completion (plan <event>) (present <index> ...) (of <n>))` clause
 naming the members that are applied. The refusal is about the store as it is now:
 each retry is judged again, and completes once the other record has been taken
 back. A client that will not wait rebases the drafts the answer names and sends
@@ -1710,6 +1710,15 @@ them under a new request id. If a member the retry writes makes another record
 applied, the members still missing are checked again before the next one; and if
 the plan, or the member just written, is not applied, the retry stops with
 `(error unknown (not-applied <event>) (completion ...))`.
+
+Which envelope carries the refusal or the `unknown` depends on whether the retry
+has written a member yet. Before the first one, it is the whole answer, bare.
+Once the retry has written a member, the answer is a `batch`,
+`(batch (<answer> ...) (done <n>))`: the answers of the members this retry wrote,
+then, last, the refusal or the `unknown`, with `<n>` counting the `ok`s. That
+holds for a `stale-baseline` the retry reaches when it checks the missing
+members again after a write as much as for the `unknown`. Either way the command
+exits 1.
 
 ### `batch`
 
