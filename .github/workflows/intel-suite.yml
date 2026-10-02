@@ -19,13 +19,12 @@ permissions:
 
 env:
   CHEZ_VERSION: 10.4.1
-  # NO LIBUV PATH IS GIVEN BY HAND: igropyr 3ed1972 names libuv's
-  # candidate paths under both Homebrew prefixes (lib/ and opt/libuv/lib/
-  # under each), so this run reads whether the daemon starts on an Intel
-  # runner, whose Homebrew is under /usr/local, with nothing set for it.
-  # (The run before this one, 36900889224, put /usr/local/lib on dyld's
-  # fallback path to get past that and read the rest.)
-  IGROPYR_REV: 3ed197271303ef856115b706b0957c17825f3087
+  # NO LIBUV PATH IS GIVEN BY HAND: igropyr 1.8.2 (tag, 1ef294c) names
+  # libuv's candidate paths under both Homebrew prefixes, so this is an
+  # acceptance run on an Intel runner, whose Homebrew is under /usr/local,
+  # with nothing set for it. (Run 36900889224 put /usr/local/lib on dyld's
+  # fallback path; 37001139992 ran igropyr 3ed1972 with nothing set.)
+  IGROPYR_REV: 1ef294c261121e6f98c8e8f500c90ac2aae5edc9
 
 jobs:
   suite:
