@@ -340,6 +340,38 @@
 ;; under the user's real `$HOME/.theourgia/run`, and daemons still alive
 ;; minutes later.
 
+;; ---- MC-DEAD: every top-level definition of the shell is used -------------------
+;;
+;; A definition nothing refers to is dead, and three sat in the shell: one
+;; named a binding the shell never imports, which went unseen because
+;; nothing ever called it. The shell is a program and exports nothing, so a
+;; name it defines at top level has to occur in some OTHER top-level form.
+;; A mention inside quoted data counts; a definition used only by itself
+;; does not.
+(define (top-level-forms path)
+  (call-with-input-file path
+    (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
+(define (defined-name f)
+  (and (pair? f) (eq? (car f) 'define) (pair? (cdr f))
+       (cond ((symbol? (cadr f)) (cadr f))
+             ((and (pair? (cadr f)) (symbol? (car (cadr f)))) (car (cadr f)))
+             (else #f))))
+(define (mentions? x name)
+  (cond ((eq? x name) #t)
+        ((pair? x) (or (mentions? (car x) name) (mentions? (cdr x) name)))
+        ((vector? x) (exists (lambda (e) (mentions? e name)) (vector->list x)))
+        (else #f)))
+(define (unused-definitions forms)
+  (filter (lambda (name)
+            (not (exists (lambda (f) (and (not (eq? (defined-name f) name)) (mentions? f name))) forms)))
+          (filter (lambda (n) n) (map defined-name forms))))
+(want "MC-DEAD the census names a definition only its own form mentions, and passes one another form uses"
+      (unused-definitions '((define (a) (a)) (define (b) 1) (display (b))))
+      '(a))
+(want "MC-DEAD every top-level definition of the MCP shell is used by another top-level form"
+      (unused-definitions (top-level-forms shell))
+      '())
+
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
 (system "sleep 1")
 
