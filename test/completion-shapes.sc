@@ -51,10 +51,24 @@
 ;;
 ;; THE GENERATOR covers that bound: kind (insert, move) x parts after the
 ;; head (0 to 5) x wrapper (none; (expect h I); (expect h I extra);
-;; (expect h I) with I dotted; (expect h (expect h I))) x a marker at each
-;; position the entry has, or nowhere x the marker valid (names an earlier
-;; insert), naming no member, or naming an earlier member that is not an
-;; insert. And a few admitted shapes outside the two kinds.
+;; (expect h (expect h I))) x the intent ending properly or in a dotted tail
+;; (under a wrapper; a bare entry must end properly) x the markers: one at
+;; each place the entry has, or none, or one at each of the two reference
+;; positions together x each marker valid (names an earlier insert), naming
+;; no member, or naming an earlier member that is not an insert. And a few
+;; admitted shapes outside the two kinds, (expect) among them.
+;;
+;; WHY A FINITE GENERATOR COVERS AN UNBOUNDED DOMAIN. Whether a place is a
+;; reference depends only on: the kind; whether the intent is reached
+;; through exactly one wrapper; and the place's index against the two
+;; reference positions, start and start + 1 (start 1 for an insert, 2 for
+;; a move). Every part after start + 1, and every wrapper part other than
+;; the intent, is a non-reference whatever its index, and is read by
+;; neither rule. So the relations that matter are an entry ending before
+;; start, at start, at start + 1, and past it; 0 to 5 parts gives each of
+;; them for both kinds, with parts past start + 1 present (a move of 5
+;; parts has two). One extra wrapper part stands for any number, and a
+;; dotted tail is the same whether it follows the parent or a later part.
 ;;
 ;; THE PROPERTY, for each generated entry as the third member of a plan
 ;; whose first is a missing insert and whose second a missing set:
@@ -145,37 +159,53 @@
       (case p ((1) 'root) ((2) #f) ((3) section) (else 'extra))
       (case p ((1) M) ((2) 'root) ((3) #f) (else 'extra))))
 ;; A PLACE is (intent p), (wrapper q) for the outer wrapper's element q, or
-;; (inner 1) for the subject of a wrapper inside the wrapper; none is #f.
-(define (intent kind n dotted place value)
+;; (inner 1) for the subject of a wrapper inside the wrapper. MARKS is a
+;; list of (place . value).
+(define (at marks where other)
+  (let ((m (assoc where marks))) (if m (cdr m) other)))
+(define (intent kind n dotted marks)
   (let loop ((p n) (tail (if dotted 'tail '())))
     (if (= p 0)
         (cons kind tail)
-        (loop (- p 1) (cons (if (equal? place (list 'intent p)) value (filler kind p)) tail)))))
-(define (entry kind n wrapper place value)
-  (let ((at (lambda (where other) (if (equal? place where) value other))))
+        (loop (- p 1) (cons (at marks (list 'intent p) (filler kind p)) tail)))))
+(define (entry kind n wrapper dotted marks)
+  (let ((i (intent kind n dotted marks)))
     (case wrapper
-      ((none) (intent kind n #f place value))
-      ((w3) (list 'expect (at '(wrapper 1) "0000") (intent kind n #f place value)))
-      ((w4) (list 'expect (at '(wrapper 1) "0000") (intent kind n #f place value) (at '(wrapper 3) 'more)))
-      ((wd) (list 'expect (at '(wrapper 1) "0000") (intent kind n #t place value)))
-      ((wn) (list 'expect (at '(wrapper 1) "0000")
-                  (list 'expect (at '(inner 1) "0000") (intent kind n #f place value)))))))
+      ((none) i)
+      ((w3) (list 'expect (at marks '(wrapper 1) "0000") i))
+      ((w4) (list 'expect (at marks '(wrapper 1) "0000") i (at marks '(wrapper 3) 'more)))
+      ((wn) (list 'expect (at marks '(wrapper 1) "0000") (list 'expect (at marks '(inner 1) "0000") i))))))
 (define (places n wrapper)
   (append (let loop ((p n) (out '())) (if (= p 0) out (loop (- p 1) (cons (list 'intent p) out))))
           (case wrapper
             ((none) '())
-            ((w3 wd) '((wrapper 1)))
+            ((w3) '((wrapper 1)))
             ((w4) '((wrapper 1) (wrapper 3)))
             ((wn) '((wrapper 1) (inner 1))))))
-(define wrappers '(none w3 w4 wd wn))
+;; -> ((wrapper . dotted) ...): a bare entry ends properly.
+(define shapes '((none . #f) (w3 . #f) (w3 . #t) (w4 . #f) (w4 . #t) (wn . #f) (wn . #t)))
 
 ;; THE POSITIONS RULE, from how the entry was made.
+(define (start-of kind) (if (eq? kind 'insert) 1 2))
 (define (reference-place? kind wrapper place)
-  (and place (not (eq? wrapper 'wn)) (eq? (car place) 'intent)
-       (let ((start (if (eq? kind 'insert) 1 2)))
-         (<= start (cadr place) (+ start 1)))))
+  (and (not (eq? wrapper 'wn)) (eq? (car place) 'intent)
+       (<= (start-of kind) (cadr place) (+ (start-of kind) 1))))
 
-;; -> ((class entry expected-answer-or-run-entry) ...)
+;; -> (class entry expected): the class from the reference places among
+;; MARKS. A bad marker at a reference refuses, the parent's first; valid
+;; ones become (from 0); markers elsewhere leave the entry as it is.
+(define (judged kind n wrapper dotted marks)
+  (let* ((e (entry kind n wrapper dotted marks))
+         (refs (filter (lambda (m) (reference-place? kind wrapper (car m)))
+                       (list-sort (lambda (a b) (< (cadr (car a)) (cadr (car b))))
+                                  (filter (lambda (m) (eq? (car (car m)) 'intent)) marks))))
+         (bad (find (lambda (m) (not (equal? (cdr m) valid))) refs)))
+    (cond ((null? refs) (list 'no-marker-at-reference e e))
+          (bad (list 'bad-at-reference e (list (list 'error 'no-such-intent (cadr (cdr bad))))))
+          (else (list 'valid-at-reference e
+                      (entry kind n wrapper dotted
+                             (map (lambda (m) (if (memq m refs) (cons (car m) '(from 0)) m)) marks)))))))
+
 (define cases
   (let ((out '()))
     (define (add! c) (set! out (cons c out)))
@@ -183,24 +213,27 @@
       (lambda (kind)
         (do ((n 0 (+ n 1))) ((> n 5))
           (for-each
-            (lambda (wrapper)
-              (add! (list 'no-marker-at-reference (entry kind n wrapper #f #f) (entry kind n wrapper #f #f)))
-              (for-each
-                (lambda (place)
+            (lambda (shape)
+              (let ((wrapper (car shape)) (dotted (cdr shape)) (s (start-of kind)))
+                (add! (judged kind n wrapper dotted '()))
+                (for-each
+                  (lambda (place)
+                    (for-each (lambda (m) (add! (judged kind n wrapper dotted (list (cons place m))))) markers))
+                  (places n wrapper))
+                ;; BOTH REFERENCE POSITIONS MARKED, when the entry has both.
+                (when (>= n (+ s 1))
                   (for-each
-                    (lambda (m)
-                      (let ((e (entry kind n wrapper place m)))
-                        (cond ((not (reference-place? kind wrapper place))
-                               (add! (list 'no-marker-at-reference e e)))
-                              ((equal? m valid)
-                               (add! (list 'valid-at-reference e (entry kind n wrapper place '(from 0)))))
-                              (else
-                               (add! (list 'bad-at-reference e (list (list 'error 'no-such-intent (cadr m)))))))))
-                    markers))
-                (places n wrapper)))
-            wrappers)))
+                    (lambda (m1)
+                      (for-each
+                        (lambda (m2)
+                          (add! (judged kind n wrapper dotted
+                                        (list (cons (list 'intent s) m1) (cons (list 'intent (+ s 1)) m2)))))
+                        markers))
+                    markers))))
+            shapes)))
       '(insert move))
     ;; Admitted shapes outside the two kinds: no references at all.
+    (add! (list 'no-marker-at-reference '(expect) '(expect)))
     (for-each
       (lambda (m)
         (for-each (lambda (e) (add! (list 'no-marker-at-reference e e)))
@@ -210,13 +243,16 @@
     (reverse out)))
 
 ;; THE SIZE OF THE PRODUCT, counted by arithmetic rather than by the
-;; generator's loops: per kind and n, (1 + 3 places) entries for each
-;; wrapper, places being n, n+1, n+2, n+1, n+2; and 5 x 3 others.
+;; generator's loops. Per kind and n, each shape gives 1 + 3 places entries,
+;; places being n for none, n + 1 for w3 (twice: proper and dotted), n + 2
+;; for w4 and wn (twice each); so 7 + 3 (7n + 10) = 37 + 21n. Each shape
+;; whose entry has both reference positions (n >= start + 1) gives 9 more:
+;; 7 shapes x 9 x (n from 2 to 5 for an insert, 3 to 5 for a move, 4 + 3
+;; values). And 1 + 5 x 3 others.
 (define product
-  (+ (* 2 (let sum ((n 0) (acc 0))
-            (if (> n 5) acc
-                (sum (+ n 1) (+ acc (+ 1 (* 3 n)) (* 2 (+ 1 (* 3 (+ n 1)))) (* 2 (+ 1 (* 3 (+ n 2)))))))))
-     (* 5 3)))
+  (+ (* 2 (let sum ((n 0) (acc 0)) (if (> n 5) acc (sum (+ n 1) (+ acc 37 (* 21 n))))))
+     (* 7 9 (+ 4 3))
+     1 (* 5 3)))
 
 ;; ---- the property ----------------------------------------------------------
 
