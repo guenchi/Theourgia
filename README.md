@@ -2205,6 +2205,12 @@ store, or, with `--for <writer>`, of that writer's working view
 `(ok (supplied (facts <n>) (files <n>)))`: the facts kept, and the files
 named in `replaces`, a file whose facts were emptied included.
 
+NEVER: **`supply` is for text-mode code only.** Its facts are about the text
+projection `export-code` writes without `--datum`; a datum library is not
+projected as text, and the names in it are the store's own to resolve (`eval
+--under`, `whereis`). A listed path that only a datum library holds is refused
+`(error supply-not-text-mode (file <path>) (block <id>))`, naming the library.
+
 The file is one S-expression per line; an empty line is skipped, and a
 line is numbered as the file is. Line 1 is the header:
 
@@ -2234,6 +2240,7 @@ listed file against it before it keeps anything. What it refuses:
 | answer | when |
 |---|---|
 | `(error supply-stale (file <path>))` | a listed file's sha256 is not the store's projection of it: a draft written or a commit made since, or a buffer that was not the file |
+| `(error supply-not-text-mode (file <path>) (block <id>))` | the listed path is not in the text projection and a datum library holds it; checked with the digests, file by file |
 | `supply-malformed (line 1) (reason header)` | line 1 is not a header |
 | `supply-malformed (line 1) (reason kind-mismatch)` | the header's kind is not the command's |
 | `supply-malformed (line 1) (reason writer-mismatch)` | the header's writer is not `--for` (or `-` without it) |
