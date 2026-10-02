@@ -222,6 +222,54 @@
       (in-order (car unset) (field-of s2 h2 'src) (with-src-clauses (run s2 'check)))
       '(ok #f ()))
 
+;; ---- eval --working over a library whose view holds a draft on a datum block -----------
+;;
+;; `write` makes no such draft any more, so it is planted as working.sc writes
+;; one, the shape a store written before that refusal still holds.
+
+(define (quoted a)
+  (string-append "'" (apply string-append (map (lambda (c) (if (char=? c #\') "'\\''" (string c))) (string->list a))) "'"))
+(define (core-eval store . args)
+  (let ((out (string-append root "/eval.out")))
+    (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
+                           "THEOURGIA_HOME=" root "/home THEOURGIA_RUN=" sock-root "/run "
+                           "scheme --script ../core.sc eval "
+                           (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                           "--store '" store "' --wire > '" out "' 2>&1 < /dev/null"))
+    (let ((t (file-text out)))
+      (guard (e (#t (list 'UNREADABLE t)))
+        (string->sexpr-extended
+          (let loop ((i 0))
+            (cond ((>= i (string-length t)) t)
+                  ((char=? (string-ref t i) #\newline) (substring t 0 i))
+                  (else (loop (+ i 1))))))))))
+
+(define s4 (datum-store!))
+(define h4 (h-of s4))
+(define lib4 (library-of s4))
+(plant-draft! s4 "w5" h4 "(define (h) 'drafted)")
+(plant-draft! s4 "w7" lib4 "(library (dd) (export h) (import (rnrs)))")
+(define e-drafted (core-eval s4 "--working" "--writer" "w5" "--under" lib4 "(h)"))
+(define e-clean (core-eval s4 "--working" "--writer" "w6" "--under" lib4 "(h)"))
+(define e-raise (core-eval s4 "--working" "--writer" "w6" "--under" lib4 "(car '())"))
+(want "E1 eval --working over a library whose view holds a draft on a datum block is refused by name, naming the block"
+      (head-of e-drafted 4)
+      (list 'error 'eval-context '(reason draft-on-datum-unsupported) (list 'block h4)))
+(want "E2 a writer with no such draft evaluates as before: the committed body"
+      (in-order (and (pair? e-clean) (car e-clean)) (clause-of e-clean 'values))
+      '(ok ((committed))))
+(want "E3 the refusal is not the answer the source's own raise gets"
+      (in-order (and (pair? e-drafted) (pair? (cdr e-drafted)) (cadr e-drafted))
+                (and (pair? e-raise) (pair? (cdr e-raise)) (cadr e-raise)))
+      '(eval-context eval-exception))
+(want "E4 a draft on the library block itself is refused the same way, naming the library"
+      (head-of (core-eval s4 "--working" "--writer" "w7" "--under" lib4 "(h)") 4)
+      (list 'error 'eval-context '(reason draft-on-datum-unsupported) (list 'block lib4)))
+(want "E5 without --under nothing is spliced from the library, and the drafted writer evaluates"
+      (let ((a (core-eval s4 "--working" "--writer" "w5" "(+ 1 2)")))
+        (in-order (and (pair? a) (car a)) (clause-of a 'values)))
+      '(ok ((3))))
+
 ;; ---- the three routes ------------------------------------------------------------------
 
 (define s3 (datum-store!))

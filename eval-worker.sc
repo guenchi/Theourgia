@@ -330,6 +330,17 @@
                              (begin
                                (unless (and (eq? 'library (code-field state under 'kind)) (eq? 'datum (code-field state under 'mode)))
                                  (refuse! '(error eval-context (reason library-required))))
+                               ;; NEVER: A DRAFT ON A DATUM BLOCK IS REFUSED BY NAME, NOT
+                               ;; EVALUATED. A draft is text and a datum block's body is a
+                               ;; form, so the draft spliced below failed the whole library
+                               ;; as eval-exception, the answer a source's own raise gets.
+                               ;; The library block and its children are asked; a view
+                               ;; with no such draft evaluates as before.
+                               (let ((drafted (find (lambda (id) (and (overlay-for id) (eq? 'datum (code-field state id 'mode))))
+                                                    (cons under (code-children state under)))))
+                                 (when drafted
+                                   (refuse! (list 'error 'eval-context '(reason draft-on-datum-unsupported)
+                                                  (list 'block drafted)))))
                                (unless (for-all (lambda (spec) (or (equal? spec '(rnrs)) (member spec allowed-libraries)))
                                                 (code-field state under 'imports))
                                  (refuse! '(error eval-denied (operation library-import))))
