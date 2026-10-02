@@ -36,6 +36,7 @@
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
           (only (theourgia template-read) template-problem)
+          (only (rnrs eval) eval environment)
           (theourgia request)
           (theourgia evidence-index)
           (only (theourgia wire) decode-line storable-decode)
@@ -3612,6 +3613,19 @@
                       block
                       (loop (cdr es))))))))))
 
+  ;; ---- completing a plan -------------------------------------------------
+  ;;
+  ;; A RETRY FINISHES A PERSISTED PLAN FROM THE PLAN, and the frozen entries
+  ;; are not a licence to write over what others wrote since: the
+  ;; judgement (the plan's markers, the stale targets, the checks after each
+  ;; member) is the completion library's, (theourgia completion). It is
+  ;; entered here, when a completion is reached, and not imported: the
+  ;; store is loaded at every start of the command line, and a command that
+  ;; never completes a plan should not pay for loading the judgement.
+  ;;
+  ;; The frozen text is checked against the version its consumes item names
+  ;; first, here, as before; the library is given the run, which stays the
+  ;; store's.
   (define (complete-plan! s state req verdict)
     (let* ((present (cadr verdict))
            (plan-event (caddr verdict))
@@ -3622,11 +3636,13 @@
            (bad (consumes-mismatch missing consumes)))
       (if bad
           (list (list 'error 'consumes-version-mismatch (list 'block bad)))
-          (begin
-            (session-pending-count-set! s (length missing))
-            (run-intents! s state
-                          (lambda (n) (request-actor req (list-ref indices n) plan-event))
-                          (map cdr missing))))))
+          ((eval 'completion-run (environment '(theourgia completion)))
+           state plan-event entries missing indices consumes
+           (lambda (run after-each)
+             (session-pending-count-set! s (length missing))
+             (run-intents! s state
+                           (lambda (n) (request-actor req (list-ref indices n) plan-event))
+                           run after-each))))))
 
   ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
   ;; an existing text-mode block's src -- the case canonical-intent settles;
@@ -4145,7 +4161,11 @@
          (let ((u (unwrap raw)))
            (and (memq (car u) '(link unlink)) (memq (caddr u) reserved-relation-names) (caddr u)))))
 
-  (define (run-intents! s state actor-at intents)
+  ;; AFTER-EACH, when given, is called after every intent that answered ok,
+  ;; with its index and its answer; #f goes on, anything else is the answer
+  ;; that ends the run, after the ok. The table of blocks made stays here.
+  (define (run-intents! s state actor-at intents . rest)
+    (define after-each (and (pair? rest) (car rest)))
     (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
@@ -4192,8 +4212,12 @@
             ;; against a state this one was meant to produce; running them
             ;; anyway asks each to be judged against a history its author
             ;; did not have.
-            (if (eq? (car answer) 'error)
-                (reverse (cons answer out))
+            (cond
+              ((eq? (car answer) 'error)
+               (reverse (cons answer out)))
+              ((and after-each (after-each n answer))
+               => (lambda (stop) (reverse (cons stop (cons answer out)))))
+              (else
                 (loop (cdr is) (+ n 1)
                       ;; THE ID COMES FROM THE EVENT, NOT FROM THE REPORT.
                       ;; Which block an insert made is decided by the
@@ -4211,7 +4235,7 @@
                         (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
                             (cons (cons n (block-id (car (car ev)) (cdr (car ev)))) made)
                             made))
-                      (cons answer out)))))))
+                      (cons answer out))))))))
 
   (define (one-intent! s state actor intent)
     (let ((v (session-view s)))
