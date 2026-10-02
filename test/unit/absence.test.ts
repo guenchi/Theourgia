@@ -77,6 +77,10 @@ import {
  * silently covering something else.
  */
 const ANSWERING_IS_RIGHT: Record<string, string> = {
+  "hover.ts#describe: const answer = await client.request('read', [id]);":
+    'answers null for a referrer whose block could not be read, and null is not "nothing here": the hover ' +
+    'counts it under "N more" and never shows it as a bare id (the brief, H12), and the list command lists ' +
+    'it by its id with "could not be read".',
   'documents.ts#hasUncommittedWork: marker = files.readText(markerFor(file)).trim();':
     'answers TRUE -- "this file may hold work". A document with no marker was written by ' +
     'something this version does not know about, and the safe answer is the one that stops it ' +

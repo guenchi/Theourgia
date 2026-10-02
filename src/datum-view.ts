@@ -87,6 +87,14 @@ export function datumLanguageOf(block: Block): string {
 }
 
 /*
+ * A BLOCK'S LANG AS IT CARRIES IT, a symbol or a string; null when it has none.
+ */
+export function blockLang(block: Block): string | null {
+  const lang = block.fields.get('lang');
+  return isSym(lang) ? lang.name : typeof lang === 'string' && lang.length > 0 ? lang : null;
+}
+
+/*
  * THE LINE AND CHARACTER OF AN OFFSET IN A TEXT, as an editor counts them:
  * where a datum block's view is opened.
  */

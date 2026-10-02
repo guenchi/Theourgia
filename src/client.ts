@@ -250,7 +250,7 @@ export function mergeNotes(...lists: Array<Note[] | null | undefined>): Note[] |
   return out.length === 0 ? null : out;
 }
 
-const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff', 'whereis']);
+const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff', 'whereis', 'grep']);
 
 /*
  * THE CRITERION IS "APPENDS A RECORD", not "is a verb I thought of".
@@ -311,6 +311,11 @@ const KNOWN_VERBS = new Set([
   'outline',
   'read',
   'refs',
+  /*
+   * `grep` finds lines: one `(match <id> <line> "<text>")` per line, read by
+   * the hover for the name under the pointer (src/hover.ts).
+   */
+  'grep',
   'search',
   'log',
   'tag',

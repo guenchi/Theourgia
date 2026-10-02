@@ -165,7 +165,17 @@ export const SUPPLY_DIAGNOSTICS: CommandName = {
   title: 'Theourgia: Supply Diagnostics'
 };
 
+/*
+ * EVERYTHING A HOVER FOUND ABOUT A NAME, when there was more than it shows.
+ * See `src/hover.ts`; it is run from the hover's last line.
+ */
+export const HOVER_MORE: CommandName = {
+  id: 'theourgia.hoverMore',
+  title: 'Theourgia: List What the Store Holds About a Name'
+};
+
 export const COMMANDS: CommandName[] = [
+  HOVER_MORE,
   SUPPLY_SIGNATURES,
   SUPPLY_CALLS,
   SUPPLY_DIAGNOSTICS,

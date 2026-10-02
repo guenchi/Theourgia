@@ -86,6 +86,12 @@ export interface Sidecar {
    */
   mode?: BlockMode;
   /*
+   * THE BLOCK'S LANG, as the read that made the file found it: a hint for
+   * cutting the name under the pointer in a tab restored after a reload
+   * (src/hover.ts). It gates nothing, so it needs no invalidation rule.
+   */
+  lang?: string;
+  /*
    * THE RECORD SAYS WHICH SHAPE IT IS. A queue written without a version
    * field was the one shape the outbox could not tell from a corrupt
    * one, and a record on disk outlives the build that wrote it.
@@ -327,6 +333,11 @@ export interface PublishRequest {
    */
   mode?: BlockMode;
   /*
+   * THE BLOCK'S LANG, given by the caller that read the block; absent keeps
+   * the one the record it replaces had (a hint, which gates nothing).
+   */
+  lang?: string;
+  /*
    * HOW MANY NOT-TEXT READS OF THIS BLOCK THE CALLER HAD SEEN when it read
    * it (`invalidationsOf`, taken before the read). Text is recorded only if
    * none has happened since; otherwise the record gets no mode.
@@ -416,6 +427,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
      * has one shape on disk.
      */
     mode: sidecar.mode ?? null,
+    lang: sidecar.lang ?? null,
     /*
      * NOTE: WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
      * writes must be one this build can read back with the same meaning,
@@ -583,10 +595,12 @@ export function sidecarFromDisk(text: string): SidecarRead {
    * reads the block and records it again, rather than refusing the record.
    */
   const mode = record.mode === 'text' || record.mode === 'datum' ? record.mode : undefined;
+  const lang = typeof record.lang === 'string' && record.lang.length > 0 ? record.lang : undefined;
   return {
     read: true,
     sidecar: {
       ...(mode===undefined?{}:{mode}),
+      ...(lang===undefined?{}:{lang}),
       ...(projection===undefined?{}:{projection:projection as ProjectionSource}),
       ...(prior===undefined?{}:{prior}),
       format: 1,
@@ -1276,8 +1290,10 @@ export class Publisher {
     if (!this.takeIfUnowned(directory).may) return refuse('not-ours');
     const projection = what.projection ?? {id:randomUUID(),kind:baseline===null?'local':'committed',writer:this.ownership?.sessionId ?? 'local',version:randomUUID(),basedOn:null};
     const mode = this.textStillHolds(directory, what.mode, what.modeSeenAt);
+    const lang = what.lang ?? old?.lang;
     const record: Sidecar = {
       ...(mode === undefined ? {} : { mode }),
+      ...(lang === undefined ? {} : { lang }),
       ...UNNUMBERED,
       nextSeq:old?.nextSeq ?? 1, highWater:old?.highWater ?? 0, outstanding:old?.outstanding ?? [],
       writtenBy:old?.writtenBy ?? null, legacySend:old?.legacySend ?? false,

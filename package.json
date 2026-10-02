@@ -43,6 +43,10 @@
     },
     "commands": [
       {
+        "command": "theourgia.hoverMore",
+        "title": "Theourgia: List What the Store Holds About a Name"
+      },
+      {
         "command": "theourgia.openAsDocument",
         "title": "Theourgia: Open as Document"
       },
@@ -173,6 +177,10 @@
       "commandPalette": [
         {
           "command": "theourgia.openBlock",
+          "when": "false"
+        },
+        {
+          "command": "theourgia.hoverMore",
           "when": "false"
         },
         {

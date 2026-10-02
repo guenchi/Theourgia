@@ -84,6 +84,9 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
     'its waits ask that store\'s client for the datum export, into a scratch directory of its own that it removes, ' +
     'and show the text read-only, writing nothing to any record. A settings change meanwhile leaves a tab that names ' +
     'the store it came from, as openAsDocument does',
+  hoverMore:
+    'the store is the one the hover\'s link carries, compared with the configured one before its first wait; it ' +
+    'reads and lists, and the block chosen is opened through openBlock, which checks the store again',
   composeDatum:
     'it composes the text of a datum tab the editor restored, from the store the address names: DocumentTexts ' +
     'compared that store with the configured one before calling it, and nothing is written but its own scratch',

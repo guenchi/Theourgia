@@ -43,6 +43,8 @@ const decorations=[];const definitionProviders=[];
 // The content providers the extension registers, by scheme: what a read-only
 // document's tab is given, asked as the editor asks it.
 const contentProviders={};let commitSeq=0;
+// The hover providers the extension registers, with their selectors.
+const hoverProviders=[];
 // The mode under interleaving and failure: q.1 and r.1 answer the mode a
 // scenario sets; f.1's read is refused, g.1's request is rejected while
 // rejectG is set, n.1 is gone while goneN is set; commits are taken while
@@ -62,6 +64,7 @@ const DATUM_BLOCKS={
  'd.3':'((id . "d.3") (deleted . #f) (fields (body define beta 2) (doc . "") (kind . code) (lang . chez) (mode . datum) (name . beta) (names beta)) (position "d.1" . 1) (edges))',
  'o.1':'((id . "o.1") (deleted . #f) (fields (kind . code) (lang . chez) (mode . other) (src . "x")) (position root . 3) (edges))',
  'o.2':'((id . "o.2") (deleted . #f) (fields (kind . code) (lang . chez) (mode . other) (src . "y")) (position root . 5) (edges))',
+ 's.1':'((id . "s.1") (deleted . #f) (fields (kind . code) (lang . scheme) (mode . text) (src . "(set-car! x 1)")) (position root . 6) (edges))',
  't.5':'((id . "t.5") (deleted . #f) (fields (heading-src . "# T\\n") (src . "body\\n") (title . "T")) (position root . 4) (edges))'};
 const DATUM_FILE=`#!chezscheme\n;; @file ${Buffer.from('(code-projection 1 "s0000001" "d.1" (("w" . 2)) datum 0)').toString('hex')}\n(library (probe d)\n(export alpha)\n(import (rnrs))\n;; @block d.2\n(define alpha 1)\n)\n`;
 // Documents a scenario shows as the editor holds them (a dirty draft, a view):
@@ -102,7 +105,9 @@ const vs = {
  Range:class{constructor(a,b,c,d){if(typeof a==='object'){this.start=a;this.end=b;}else{this.start={line:a,character:b};this.end={line:c,character:d};}}},
  // The editor's definition dispatch: providers registered with their
  // selectors, and a document matched to them as VS Code matches one.
- languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language}),registerDefinitionProvider:(selector,provider)=>{definitionProviders.push({selector,provider});return disposable;}},
+ languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language}),registerDefinitionProvider:(selector,provider)=>{definitionProviders.push({selector,provider});return disposable;},
+  registerHoverProvider:(selector,provider)=>{hoverProviders.push({selector,provider});return disposable;}},
+ MarkdownString:class{constructor(value){this.value=value;}},Hover:class{constructor(contents){this.contents=contents;}},
  RelativePattern:class{constructor(base,pattern){this.base=base;this.pattern=pattern;}},
  Position:class{constructor(line,character){this.line=line;this.character=character;}},
  Location:class{constructor(uri,range){this.uri=uri;this.range=range;}},
@@ -223,6 +228,14 @@ Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',
  // written into the directory the extension names.
  if(process.argv[3].startsWith('datum-')){
   const ok=stdout=>({argv:[verb,...args],rc:0,stdout,stderr:''});
+  // The hover's stand-in store: nothing defines a name, one note links to
+  // every block, and no text matches.
+  if(process.argv[3]==='datum-hover'){
+   if(verb==='whereis')return {argv:[verb,...args],rc:1,stdout:`(error unknown-name ${args[0]} (nearest))\n`,stderr:''};
+   if(verb==='refs')return ok('(ref (from "n.1") (rel implements) (via link))\n');
+   if(verb==='grep')return ok('');
+   if(verb==='read'&&args.length===1&&args[0]==='n.1')return ok('(ok ((id . "n.1") (deleted . #f) (fields (kind . decision) (src . "Why. More.") (title . "Note")) (position root . 9) (edges)))\n');
+  }
   if(verb==='read'&&args.length===1&&DATUM_BLOCKS[args[0]])return ok(`(ok ${DATUM_BLOCKS[args[0]]})\n`);
   if(verb==='export-code'&&args.includes('--datum')){fs.mkdirSync(args[0],{recursive:true});fs.writeFileSync(path.join(args[0],'probe.sls'),DATUM_FILE);return ok('(ok (files 1))\n');}
  }
@@ -868,6 +881,56 @@ async function main(){
    return {mine,other,firstShown,modeBefore,second:{requests:log.slice(from),shown:secondShown},
     modeAfter:JSON.parse(fs.readFileSync(file+'.meta','utf8')).mode};
   }finally{realClient=null;store.dispose();fs.rmSync(copy,{recursive:true,force:true});}
+ }
+ // The hover in the window: one in each kind of document (a block's file, the
+ // subtree view, the datum view), one under another store's address, one on
+ // each kind of marker line, and the cache across a mode invalidation and a
+ // save. Each hover reports whether it showed and the verbs it sent.
+ if(scenario==='datum-hover'){
+  const hover=hoverProviders[0];
+  if(!hover)throw new Error('no hover provider was registered');
+  const docOf=(uri,text)=>{
+   const offsetAt=p=>{const lines=text.split('\n');let o=0;for(let i=0;i<p.line;i++)o+=lines[i].length+1;return o+p.character;};
+   const positionAt=o=>{const before=text.slice(0,o).split('\n');return new vs.Position(before.length-1,before[before.length-1].length);};
+   return {uri,languageId:'plaintext',isDirty:false,offsetAt,positionAt,
+    getText:range=>range?text.slice(offsetAt(range.start),offsetAt(range.end)):text,
+    getWordRangeAtPosition:p=>{const o=offsetAt(p);let a=o,b=o;while(a>0&&/[A-Za-z0-9_]/.test(text[a-1]))a--;while(b<text.length&&/[A-Za-z0-9_]/.test(text[b]))b++;return a===b?undefined:{start:positionAt(a),end:positionAt(b)};}};
+  };
+  const ask=async(doc,needle,shift=1)=>{const at=doc.getText().indexOf(needle);if(at<0)throw new Error(`no ${needle} in ${doc.getText()}`);
+   const from=requests.length;const got=await hover.provider.provideHover(doc,doc.positionAt(at+shift),{isCancellationRequested:false});
+   return {shown:got!==undefined&&got!==null,asked:requests.slice(from).map(r=>r.verb),names:requests.slice(from).filter(r=>r.verb==='whereis').map(r=>r.args[0])};};
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const fileDoc=docOf({scheme:'file',fsPath:a},fs.readFileSync(a,'utf8'));
+  const file=await ask(fileDoc,'body');
+  const subtreeUri=vs.Uri.from({scheme:'theourgia-document',path:'/alpha.md',query:require(path.join(out,'document-view.js')).documentQuery('/stores/A','a.1')});
+  const subtreeDoc=docOf(subtreeUri,await contentProviders['theourgia-document'].provideTextDocumentContent(subtreeUri));
+  // A name of its own, so that this hover is not answered from the one above.
+  const subtree=await ask(subtreeDoc,'Alpha');
+  const subtreeMarker=await ask(subtreeDoc,'<!-- theourgia block',3);
+  const opened=await commands.get('theourgia.openBlock')('d.2');
+  const datumText=await contentProviders['theourgia-document'].provideTextDocumentContent(opened.uri);
+  const datumDoc=docOf(opened.uri,datumText);
+  const datum=await ask(datumDoc,'alpha 1',1);
+  const blockMarker=await ask(datumDoc,';; @block',3);
+  const fileMarker=await ask(datumDoc,';; @file',3);
+  const otherUri=vs.Uri.from({scheme:'theourgia-document',path:'/probe.sls',query:require(path.join(out,'document-view.js')).documentQuery('/stores/B','d.2','datum')});
+  const otherStore=await ask(docOf(otherUri,datumText),'alpha 1',1);
+  core.publisher.recordModeOfBlock(path.dirname(a),null);
+  const afterInvalidation=await ask(fileDoc,'body');
+  const body='# Alpha\nbody again\n';fs.writeFileSync(a,body);
+  await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>body});
+  const afterSave=await ask(fileDoc,'body');
+  // A Scheme block's file restored after a reload, shown as plain text: the
+  // name is cut by the lang its record holds; with none, by the language id.
+  await commands.get('theourgia.openBlock')('s.1');
+  const s1=files(storage).find(p=>path.basename(path.dirname(p))==='s.1'&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+  const recordLang=JSON.parse(fs.readFileSync(s1+'.meta','utf8')).lang;
+  const restored=docOf({scheme:'file',fsPath:s1},'(set-car! x 1)\n');
+  const restoredScheme=await ask(restored,'car',1);
+  {const rec=JSON.parse(fs.readFileSync(s1+'.meta','utf8'));rec.lang=null;fs.writeFileSync(s1+'.meta',JSON.stringify(rec,null,2)+'\n');}
+  const noLang=await ask(restored,'car',1);
+  return {file,subtree,datum,otherStore,blockMarker,fileMarker,subtreeMarker,afterInvalidation,afterSave,recordLang,restoredScheme,noLang};
  }
  // The same open against the real core: a library imported with --datum,
  // opened as the library and as its definition. Every request the client

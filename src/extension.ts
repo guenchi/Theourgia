@@ -61,12 +61,14 @@ import {
 } from './directory-view';
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
-import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
-import { datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
+import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, readDocumentQuery, refusalOf } from './document-view';
+import { HOVER_COMMANDS, HoverPlace, HoverService, blockAt as hoverBlockAt, hoverMarkdown, isSchemeLang, listEntries, nameUnder, readsSchemeNames } from './hover';
+import { blockLang, datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
 import { projectionNameFor } from './projection-name';
 import { runSplit, splitRefusalNotice } from './split-symbols';
 import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
 import {
+  HOVER_MORE,
   SUGGEST_SPLIT,
   SUPPLY_CALLS,
   SUPPLY_DIAGNOSTICS,
@@ -297,8 +299,15 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
     this.refresh();
   }
 
+  /*
+   * CALLED ON EVERY REFRESH: the hover's cache is dropped with it, since a
+   * refresh is what this window does when it knows the store changed.
+   */
+  public onRefresh: (() => void) | null = null;
+
   public refresh(): void {
     this.changed.fire(undefined);
+    this.onRefresh?.();
   }
 
 
@@ -1160,6 +1169,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const channel = vscode.window.createOutputChannel('Theourgia');
   context.subscriptions.push(channel);
 
+  /*
+   * THE HOVER (src/hover.ts). It answers about the store the document came
+   * from, and only through that store's client: the configured store's, when
+   * the document came from it; none otherwise.
+   */
+  const hover = new HoverService({
+    clientFor: (store: string) => (client !== null && path.resolve(store) === storeIdentity() ? client : null),
+    log: (line: string) => channel.appendLine(line),
+    now: () => Date.now()
+  });
+  provider.onRefresh = () => hover.drop();
+
   function checkIntegrity(): void {
     if (model === null) {
       return;
@@ -1800,7 +1821,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const expected = publisher.revisionIn(directory);
       const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,prefix);
       shownPrefix = projection.prefix;
-      return publisher.publish({directory,storeId:store,blockId:id,mode:openedMode ?? undefined,modeSeenAt:seenBefore,prefix:projection.prefix,
+      return publisher.publish({directory,storeId:store,blockId:id,mode:openedMode ?? undefined,modeSeenAt:seenBefore,lang:blockLang(block) ?? undefined,prefix:projection.prefix,
         text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
     }).catch((e: unknown) => {
       /*
@@ -2009,6 +2030,104 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return locations;
     }
   };
+
+  /*
+   * WHERE A HOVER IS ASKED (D1), from the document's address or record: a
+   * composed document says its view and its store; a block's file says its
+   * store and block in its record. Anything else is not a place the hover
+   * answers about.
+   */
+  function hoverPlaceOf(document: vscode.TextDocument): HoverPlace | null {
+    if (document.uri.scheme === DOCUMENT_SCHEME) {
+      const asked = readDocumentQuery(document.uri.query);
+      if (asked === null) {
+        return null;
+      }
+      return asked.view === 'datum' ? { kind: 'datum', store: asked.store } : { kind: 'subtree', store: asked.store };
+    }
+    if (document.uri.scheme !== 'file') {
+      return null;
+    }
+    const sidecar = publisher.sidecarOf(document.uri.fsPath);
+    /*
+     * A RECORD THAT NAMES NO STORE PLACES NOTHING: an empty store id would
+     * resolve to the working directory and could match the configured store.
+     */
+    if (sidecar === null || sidecar.storeId.length === 0 || sidecar.blockId.length === 0) {
+      return null;
+    }
+    /*
+     * THE BLOCK'S LANG FROM ITS RECORD, written where the file was made; the
+     * editor's language id only for a record that has none.
+     */
+    const lang = sidecar.lang ?? document.languageId;
+    return { kind: 'block', store: sidecar.storeId, blockId: sidecar.blockId, scheme: isSchemeLang(lang) };
+  }
+
+  /*
+   * THE HOVER: T1 by the place, the name by the reader the place calls for
+   * (D2), and what the store holds about them (src/hover.ts). The links are
+   * the two commands HOVER_COMMANDS names, and no other.
+   */
+  const hovers: vscode.HoverProvider = {
+    provideHover: async (document: vscode.TextDocument, position: vscode.Position, token: vscode.CancellationToken) => {
+      const place = hoverPlaceOf(document);
+      if (place === null) {
+        return undefined;
+      }
+      const text = document.getText();
+      const t1 = hoverBlockAt(place, text, document.offsetAt(position));
+      if (t1 === null) {
+        return undefined;
+      }
+      const scheme = readsSchemeNames(place);
+      const name = nameUnder(place, text, position.line, position.character, () => {
+        const range = document.getWordRangeAtPosition(position);
+        return range === undefined ? null : document.getText(range);
+      });
+      if (name === null) {
+        return undefined;
+      }
+      const answer = await hover.answer(place.store, t1, name, scheme, token);
+      if (answer === undefined) {
+        return undefined;
+      }
+      const markdown = new vscode.MarkdownString(hoverMarkdown(answer, path.resolve(place.store), OPEN_BLOCK.id, HOVER_MORE.id, name));
+      markdown.isTrusted = { enabledCommands: [...HOVER_COMMANDS] };
+      return new vscode.Hover(markdown);
+    }
+  };
+
+  /*
+   * EVERYTHING A HOVER FOUND, run from its "N more" line: every candidate,
+   * read, in the hover's order, and the chosen one opened in the store it
+   * came from.
+   */
+  async function hoverMore(store?: string, name?: string, candidates?: unknown): Promise<void> {
+    if (typeof store !== 'string' || !Array.isArray(candidates)) {
+      vscode.window.showInformationMessage('Theourgia: hover a name first; this lists what its hover found.');
+      return;
+    }
+    const asking = client;
+    if (asking === null || store !== storeIdentity()) {
+      vscode.window.showWarningMessage(LISTED_ELSEWHERE);
+      return;
+    }
+    let entries;
+    try {
+      entries = await listEntries(asking, candidates);
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      entries.map((e) => ({ label: e.label, description: e.description, id: e.id })),
+      { placeHolder: `What the store holds about ${String(name ?? '')}` }
+    );
+    if (picked !== undefined) {
+      await openBlock(picked.id, store);
+    }
+  }
 
   /*
    * X1c: THE WAY OUT THE REFUSALS NAME.
@@ -2531,6 +2650,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
       outcome = await sending.submit(acceptance.record);
     } catch (e) {
+      hover.drop();
       reportFailure(e);
       /*
        * NOTE: A SAVE THAT REJECTED STILL SAYS WHAT ITS QUEUE WRITES COULD NOT
@@ -2540,6 +2660,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       paint();
       return;
     }
+    /*
+     * THIS WINDOW'S SAVE OR COMMIT: what the hover holds may be old now.
+     */
+    hover.drop();
     /*
      * NOTE: A NUMBER THAT WAS SPENT ON A SEND THAT NEVER LEFT IS GIVEN
      * BACK. (section 13.1, I7)
@@ -2631,6 +2755,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ],
       definitions
     ),
+    vscode.languages.registerHoverProvider(
+      [
+        { scheme: 'file', pattern: new vscode.RelativePattern(storage, '**') },
+        { scheme: DOCUMENT_SCHEME }
+      ],
+      hovers
+    ),
+    command(HOVER_MORE.id, hoverMore),
     vscode.workspace.registerTextDocumentContentProvider(DOCUMENT_SCHEME, views),
     vscode.workspace.onDidCloseTextDocument((closed) => {
       if (closed.uri.scheme === DOCUMENT_SCHEME) {
@@ -2755,6 +2887,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (e) {
         failure = e;
       }
+      hover.drop();
       if (asked !== generation) {
         return null;
       }
@@ -2780,6 +2913,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidSaveTextDocument(onSaved),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('theourgia')) {
+        hover.drop();
         /*
          * NOTE: A SETTINGS CHANGE IS THE ONE EVENT THAT CAN ANSWER A PARKED
          * ENTRY, so it is the one that releases them.

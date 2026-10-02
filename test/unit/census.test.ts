@@ -203,6 +203,14 @@ const AT_LEAST: Array<[string, number]> = [
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
   /*
+   * ADDED with the hover: twenty-four cells on what it shows, its requests,
+   * cache, deadline, name reader and the store it may ask, against a scripted
+   * client; four in the
+   * window (its three kinds of document, marker lines, the name in a restored
+   * tab, the cache across a mode invalidation and a save); two on a real store.
+   */
+  ['hover.test.ts', 30],
+  /*
    * ADDED with the supply commands: the reader of the projection's marker
    * lines, one cell per layout the core writes.
    */

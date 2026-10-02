@@ -568,6 +568,16 @@ their library and kind, or `export` for a library that exports the name, which o
 line. A name nobody defines is said, with the nearest names the store knows. The line search reads `;` and
 `#| |#` comments as comments; a `#;` datum comment is not recognised.
 
+**What the store holds about a name.** Resting the pointer on a name in a block's file, a composed
+document or a datum view adds, beside the language's own hover, what the store holds about it: blocks
+that link to the block under the pointer or to the block that defines the name (with the relation),
+blocks that refer to them in their text, and prose blocks (documents, sections, decisions, tasks) that
+mention the name as a whole word. Each line gives the title, the kind and the first sentence, and opens
+the block; past five lines, the last one lists them all. The hover only reads, and only from the store
+the document came from; in Scheme the name is read as a Scheme identifier, elsewhere as the editor's
+word. Answers are kept for fifteen seconds, or until this window saves, changes the tree or its
+settings.
+
 **Suggest a split of a source file.** On a source file on disk (not a block's own file), "Theourgia:
 Suggest a Split of This File" asks the core's `split-suggest` where the file could be divided into
 blocks, and opens the review file the core writes; nothing is recorded. The cuts come from the
