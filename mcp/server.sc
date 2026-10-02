@@ -280,8 +280,6 @@
 
 ;; ---- the JSON-RPC envelope ---------------------------------------------------
 
-(define (jstring text) text)
-
 (define (error-frame identity code message)
   (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (id-json identity)
                  ",\"error\":{\"code\":" (json-number code)
@@ -448,27 +446,6 @@
                  "\"items\":{\"type\":\"string\"}},"
                  "\"stdin\":{\"type\":\"string\"}},\"required\":[\"argv\"],"
                  "\"additionalProperties\":false}"))
-
-;; KEY: THE TWO TOOLS THAT WRITE CARRY THE PROTOCOL, and they carry the
-;; core's copy of it rather than a sentence written here. An agent
-;; choosing a tool from `tools/list` reads the description and nothing
-;; else; if the rules for writing live in a README it will not open,
-;; they are rules it will not follow.
-;;
-;; NOTE: EVERY OTHER TOOL KEEPS THE PLAIN SENTENCE. The protocol is about
-;; writing a block, and putting it on `read` or `search` would be noise
-;; in the place an agent is choosing from.
-;; NOTE: NO TEMPLATE SENTENCES HERE. This path is used without describe's
-;; answer, and the store's template arrives only through that answer; it
-;; carries the generic protocol alone.
-(define writing-verbs '(insert write))
-
-(define (description-for verb)
-  (let ((plain (string-append "Execute the core " (symbol->string verb)
-                              " command and return its exact S-expression answer.")))
-    (if (memq verb writing-verbs)
-        (string-append write-protocol "\n" plain)
-        plain)))
 
 (define (tools-json entries)
   (string-append
@@ -963,22 +940,11 @@
                  ",\"data\":{\"reason\":" (json->string reason)
                  ",\"diag\":" (if diag (json->string diag) "null") "}}"))
 
-;; NEVER: THE SERVER'S OWN WORDS, RENDERED AS TEXT. What `ensure-daemon!`
-;; hands back is the refusal the server wrote to its log --
-;; `(error serve-path-occupied (path ...))` and the like -- and that is
-;; the whole value of this path: "it did not start" is the one sentence a
-;; client can always produce and the one that helps least.
-;;
-;; NOTE: IT SAYS THE REQUEST DID NOT RUN, explicitly. The other -32603 in
-;; this file says the opposite, and a reader has to be able to tell the
-;; two apart without guessing which one they are looking at.
-(define (start-failure-message answer)
-  (string-append "The store's server could not be started, so the request was "
-                 "not carried out. The server said: "
-                 (rendered answer)))
-
-;; NOTE: A DIFFERENT SENTENCE FOR A DIFFERENT FACT. Both mean "this did not
-;; happen", and only one of them has a server's words behind it.
+;; NOTE: A REQUEST THAT WAS NOT SENT, said in this shell's words: nothing
+;; reached a server, so there are no server's words to give. A server that
+;; would not start reaches the agent carrying the server's own refusal --
+;; a tool result for tools/call, an error object for tools/list -- not as
+;; this message.
 (define (not-sent-message answer)
   (string-append "The request was not sent and was not carried out: "
                  (rendered answer)))
