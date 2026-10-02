@@ -16,7 +16,10 @@
 ;; WHAT THE SUITE SAYS ABOUT ITS OWN ROW BASELINE.
 ;;
 ;; `row-baseline-check.sh` compares three columns -- rows, lines, md5 --
-;; against `rows-baseline.txt`, and only the md5 refuses. Its output is the
+;; against `rows-baseline.txt`; the md5 and the row count refuse, the line
+;; count is a reading. (The row count once was a reading too, and the two
+;; fixtures named in the defect below were the two stale entries that stayed
+;; wrong because of it.) Its output is the
 ;; line a person quotes when they say a run was clean, and until this file
 ;; existed nothing measured what that line CLAIMED.
 ;;
@@ -177,7 +180,7 @@
     (list fx out)))
 
 ;; Runs the real script in that directory and answers
-;; (exit-code hash-line count-line other-lines).
+;; (exit-code hash-line count-line other-lines rows-line).
 (define (check dir-pair)
   (let* ((fx (car dir-pair)) (out (cadr dir-pair))
          (log (string-append fx "/log.txt"))
@@ -195,7 +198,8 @@
     (list code
           (pick "row baseline, hashes:")
           (pick "row baseline, counts:")
-          (filter (lambda (l) (not (holds? l "row baseline, "))) ls))))
+          (filter (lambda (l) (not (holds? l "row baseline, "))) ls)
+          (pick "row baseline, rows:"))))
 
 (printf "\n== a table that describes this directory ==\n")
 
@@ -215,21 +219,36 @@
       (cadddr clean)
       '())
 
-(printf "\n== a count that drifted: a reading, not a refusal ==\n")
+(printf "\n== a ROW count that differs on the same file: a refusal ==\n")
 
 ;; The recorded row count is 3 and the run printed 2. Nothing about the FILE
-;; changed, which is what makes this a count case and not a hash case.
+;; changed, which is what makes this a count case and not a hash case. A row
+;; is an assertion the file made; on the same file that number does not
+;; depend on the machine, so a difference is a stale table or rows that
+;; stopped running, and it refuses.
 (define drifted
   (check (build! (list (list "alpha" 2 3 "ok one\nok two\nrows: 2\n" "3" "4" #f)
                        (list "beta"  2 3 "ok one\nok two\nrows: 2\n" "2" "3" #f)))))
 
-(want "RB-4 a drifted count does not refuse"
+(want "RB-4 a row count that differs from the table, the hash unchanged, refuses"
       (car drifted)
-      0)
+      1)
 
-(want "RB-5 the count line names the fixture and both numbers"
-      (caddr drifted)
-      "row baseline, counts: these differ in this environment, which is a reading and not a refusal: alpha(3/4->2/3)")
+(want "RB-5 the rows line names the fixture and both row counts"
+      (list-ref drifted 4)
+      "row baseline, rows: these fixtures ran a different number of rows than the table records for the same file, which refuses: alpha(3->2)")
+
+(printf "\n== a LINE count that drifted: a reading, not a refusal ==\n")
+
+;; Same rows, one more line: output whose length depends on the machine.
+(define line-drift
+  (check (build! (list (list "alpha" 3 5 "ok one\nok two\nok three\na note\nrows: 3\n" "3" "4" #f)
+                       (list "beta"  2 3 "ok one\nok two\nrows: 2\n" "2" "3" #f)))))
+
+(want "RB-4b a line count that differs, the rows the same, does not refuse, and the count line names it"
+      (list (car line-drift) (caddr line-drift) (list-ref line-drift 4))
+      (list 0 "row baseline, counts: these differ in line count in this environment, which is a reading and not a refusal: alpha(3/4->3/5)"
+            "NO LINE BEGINNING row baseline, rows:"))
 
 ;; THE ROW THIS FILE EXISTS FOR.
 ;;
