@@ -92,6 +92,17 @@
   (let ((a (call 'drafts))) (and (rpc-ok? a) (cdr (assq 'items (cdr a))))))
 (define (of-kind k) (filter (lambda (d) (eq? k (car d))) (items)))
 
+;; A DATUM DEFINITION, for RR-06, imported now: once RR-01's two plans
+;; conflict, the store takes no further write.
+(define datum-dir (string-append root "/datum-src"))
+(mkdir-p! datum-dir)
+(call-with-output-file (string-append datum-dir "/dd.sc")
+  (lambda (p) (put-string p "(library (dd) (export h) (import (rnrs))\n(define (h) 'committed))\n")))
+(define datum-import (call 'import-code datum-dir "--datum"))
+(define D
+  (let ((s (state)))
+    (find (lambda (id) (datum-block? s id)) (filter (lambda (id) (not (equal? id A))) (state-block-ids s)))))
+
 ;; ---- a commit, and then a second record claiming its identity -------------
 
 (call 'write A "the text I wrote")
@@ -334,16 +345,9 @@
 ;; No route makes a draft on a block of mode datum any more, and restore is
 ;; one. A store written before that rule can hold such a consumption; it is
 ;; forged here as RR-05's is -- a plan claiming R1's identity, whose
-;; consumption names a datum definition -- and restore must refuse it by
-;; name without writing a draft file.
-(define datum-dir (string-append root "/datum-src"))
-(mkdir-p! datum-dir)
-(call-with-output-file (string-append datum-dir "/dd.sc")
-  (lambda (p) (put-string p "(library (dd) (export h) (import (rnrs))\n(define (h) 'committed))\n")))
-(call 'import-code datum-dir "--datum")
-(define D
-  (let ((s (state)))
-    (find (lambda (id) (datum-block? s id)) (filter (lambda (id) (not (equal? id A))) (state-block-ids s)))))
+;; consumption names a datum definition (D, imported at the start, while
+;; the store still takes writes) -- and restore must refuse it by name
+;; without writing a draft file.
 (define datum-version
   "1111111122222222333333334444444455555555666666667777777788888888a")
 (define datum-forged
@@ -357,10 +361,10 @@
                                            (list-ref (car (caddr real-consumes)) 2)
                                            (list-ref (car (caddr real-consumes)) 3))))))))
 (want "RR-06 setup: a datum definition, and a forged consumption of a draft on it that the store lists as revoked"
-      (list (string? D)
+      (list (and (string? D) (car datum-import))
             (car (log-publish! store "datumzzz" 1 datum-forged (segment-sha datum-forged)))
             (exists (lambda (r) (equal? datum-version (cadr (car r)))) (state-revoked (state) writer)))
-      '(#t published #t))
+      '(ok published #t))
 (define before-datum (draft-dir-state))
 (want "RR-06 restoring it is refused draft-on-datum-unsupported, naming the block, and no draft file is written"
       (list (call 'restore datum-version)
