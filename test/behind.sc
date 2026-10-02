@@ -113,6 +113,10 @@
 (define (version-of id)
   (list-ref (assq 'projection (cdr (call 'read id "--working-info"))) 4))
 (define (behind-of answer) (assq 'behind (cdr answer)))
+;; HOW FAR, IN RECORDS: the clause beside `behind`, each writer's current seq
+;; minus the one the drafts' joined baseline holds for it (0 when it holds
+;; none). Every `behind` row below is unchanged; each has a row for this one.
+(define (records-of answer) (assq 'behind-records (cdr answer)))
 
 (define A (insert "A"))
 (define B (insert "B"))
@@ -146,6 +150,8 @@
 
 (want "W11-behind the answer says who moved"
       (behind-of answer) '(behind (("movedzzz" . 1))))
+(want "W11-records a writer the baseline does not hold is behind by its whole count"
+      (records-of answer) '(behind-records (("movedzzz" . 1))))
 
 ;; ---- the twin: a baseline that is not behind gets no item ------------
 ;;
@@ -160,6 +166,8 @@
 (want "W11-behind TWIN: the fresh commit succeeds" (rpc-ok? fresh-answer) #t)
 (want "W11-behind TWIN: and carries no behind item at all"
       (behind-of fresh-answer) #f)
+(want "W11-records TWIN: nobody behind, and no behind-records item either"
+      (records-of fresh-answer) #f)
 
 ;; ---- the writer is not behind itself ---------------------------------
 ;;
@@ -187,6 +195,8 @@
 (want "W11-behind the commit after our own commit succeeds" (rpc-ok? self-answer) #t)
 (want "W11-behind TWIN: and our own records do not make us behind"
       (behind-of self-answer) #f)
+(want "W11-records TWIN: nor behind by any records"
+      (records-of self-answer) #f)
 
 ;; ---- two of them, named in a fixed order ------------------------------
 ;;
@@ -230,6 +240,8 @@
 (want "W11-behind the commit with two of them succeeds" (rpc-ok? two-answer) #t)
 (want "W11-behind both are named, in writer order"
       (behind-of two-answer) '(behind (("aaaamovd" . 1) ("movedzzz" . 2))))
+(want "W11-records in records: the baseline held movedzzz at 1, so it is 1 behind where behind says 2"
+      (records-of two-answer) '(behind-records (("aaaamovd" . 1) ("movedzzz" . 1))))
 
 ;; ---- the writer our own write releases --------------------------------
 ;;
@@ -324,6 +336,8 @@
 (want "W11-behind the two-draft commit succeeds" (rpc-ok? joined) #t)
 (want "W11-behind and the join covers the writer that moved between them"
       (behind-of joined) #f)
+(want "W11-records and no records are counted behind it either"
+      (records-of joined) #f)
 
 ;; THE OTHER HALF: the same old draft on its own does name it.
 (define H2 (insert "H2"))
@@ -372,5 +386,40 @@
       (cdr (assq 'items (cdr nothing-written))) '())
 (want "W11-behind and it still says who moved"
       (behind-of nothing-written) '(behind (("nowrtzzz" . 1))))
+(want "W11-records and how far, on the branch that writes nothing"
+      (records-of nothing-written) '(behind-records (("nowrtzzz" . 1))))
+
+;; ---- W11-records: the baseline at 8, the writer at 10 -----------------
+;;
+;; Two drafts on cuts that hold one writer at 6 and at 8; the writer is at
+;; 10 when they are committed together. `behind` says 10, the current seq;
+;; the count is 2, from the join (8), not 4 from the older draft's 6.
+(define (publish-run! w from to)
+  (let loop ((k from))
+    (when (<= k to)
+      (let ((r (encode-record k (+ 1789000000100 k) "someone-else"
+                              (if (= k 1) '() (list (cons w (- k 1))))
+                              (storable-encode (list 'set B 'src (string-append w " " (number->string k)))))))
+        (log-publish! store w k r (segment-sha r)))
+      (loop (+ k 1)))))
+(define M1 (insert "M1"))
+(define M2 (insert "M2"))
+(publish-run! "eightzzz" 1 6)
+(call 'write M1 "m1 text")
+(define m1-version (version-of M1))
+(publish-run! "eightzzz" 7 8)
+(call 'write M2 "m2 text")
+(define m2-version (version-of M2))
+(publish-run! "eightzzz" 9 10)
+(want "W11-records setup: the writer's records are applied up to seq 10"
+      (cdr (or (assoc "eightzzz" (reduce-applied-cut (state))) '(#f . 0))) 10)
+(define eight
+  (call 'commit M1 M2 "--req" "R9" "--cursor" (cursor-now)
+        "--working-version" (string-append M1 "=" m1-version)
+        "--working-version" (string-append M2 "=" m2-version)))
+(want "W11-records baselines at 6 and 8, the writer at 10: behind says 10, behind-records says 2, from the join"
+      (let* ((ok (rpc-ok? eight)) (b (behind-of eight)) (r (records-of eight)))
+        (list ok b r))
+      '(#t (behind (("eightzzz" . 10))) (behind-records (("eightzzz" . 2)))))
 
 (printf "rows: ~a\n~a failures\nbehind complete\n" rows bad)
