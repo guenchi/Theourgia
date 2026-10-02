@@ -22,11 +22,14 @@
 ;; before the first run, and the row is: the walk's rule fired if and only
 ;; if Chez accepts the form.
 ;;
-;; THE REFERENCE. (expand T env) in a fresh copy of the (chezscheme)
-;; environment per form. Before it, every symbol of T that is not bound as
-;; syntax there is defined as a fresh variable (an imported variable such as
-;; car is redefined too, so that set! of it is a question of shape, not of
-;; an immutable import); a name a record definition's (parent <name>) clause
+;; THE REFERENCE. (expand T env) in a fresh environment per form: a copy of
+;; the (chezscheme) environment holding only the syntax T names (a whole
+;; copy per form grows slower with every copy, measured: 500 copies took 6 s,
+;; the next 500 45 s). Every other symbol of T is defined in it as a fresh
+;; variable (an imported variable such as car too, so that set! of it is a
+;; question of shape, not of an immutable import). Which symbols are syntax
+;; is read from the environment's own symbol list: top-level-syntax?
+;; answers #t for an unbound symbol as well. A name a record definition's (parent <name>) clause
 ;; names is defined as a record type; and the right-hand side of a
 ;; define-syntax of three parts is replaced by (syntax-rules ()), because
 ;; expansion EVALUATES a transformer expression and its value is not the
@@ -286,26 +289,36 @@
           ((and in-record? (list? t) (= (length t) 2) (eq? (car t) 'parent) (symbol? (cadr t))) (list (cadr t)))
           (else (let ((in (or in-record? (eq? (car t) 'define-record-type))))
                   (append (walk (car t) in) (walk (cdr t) in)))))))
+(define base-environment (scheme-environment))
+(define base-symbols
+  (let ((h (make-eq-hashtable)))
+    (for-each (lambda (s) (hashtable-set! h s #t)) (environment-symbols base-environment))
+    h))
+(define (syntax-symbol? s) (and (hashtable-ref base-symbols s #f) (top-level-syntax? s base-environment)))
+;; -> #t, #f, or undecided when the expander did not answer within its budget.
 (define (accepted? x position)
   (let* ((d (prepared x))
          (t (if (eq? position 'body) (list 'lambda '() d 0) d))
-         (env (copy-environment (scheme-environment) #t)))
-    (guard (e (#t #f))
-      (when bind-free?
-        (for-each (lambda (s) (unless (top-level-syntax? s env) (define-top-level-value s 0 env)))
-                  (dedup (symbols-in t)))
-        (for-each (lambda (p) (eval (list 'define-record-type p) env)) (dedup (parent-names t))))
-      (expand t env)
-      #t)))
+         (symbols (dedup (cons 'define-record-type (symbols-in t))))
+         (env (copy-environment base-environment #t (filter syntax-symbol? symbols)))
+         (judge (make-engine
+                  (lambda ()
+                    (guard (e (#t #f))
+                      (when bind-free?
+                        (for-each (lambda (s) (unless (syntax-symbol? s) (define-top-level-value s 0 env))) symbols)
+                        (for-each (lambda (p) (eval (list 'define-record-type p) env)) (dedup (parent-names t))))
+                      (expand t env)
+                      #t)))))
+    (judge 20000000 (lambda (ticks v) v) (lambda (k) 'undecided))))
 
 ;; THE WALK: does its rule fire on the form? A raise is 'raised.
 (define (fired x) (guard (e (#t 'raised)) (name-use-rule-fires? x)))
 
 ;; ---- the rows ----------------------------------------------------------------------------
 
-(want "S0 CONTROL: the reference is asked: it accepts (lambda (x) x), refuses (lambda (x)) and (if)"
-      (map (lambda (x) (accepted? x 'top)) '((lambda (x) x) (lambda (x)) (if)))
-      '(#t #f #f))
+(want "S0 CONTROL: the reference is asked: it accepts (lambda (x) x), refuses (lambda (x)) and (if), and lets set! assign an imported name"
+      (map (lambda (x) (accepted? x 'top)) '((lambda (x) x) (lambda (x)) (if) (set! car 1)))
+      '(#t #f #f #t))
 (want "S1 CONTROL: every seed is accepted by the reference in each of its positions and fired by the walk"
       (filter (lambda (s) (not (and (for-all (lambda (p) (accepted? s p)) (positions-of s)) (eq? (fired s) #t)))) seeds)
       '())
@@ -316,7 +329,8 @@
                 (let ((f (fired x)))
                   (map (lambda (p) (list x p f (accepted? x p))) (positions-of x))))
               space)))
-(define (direction v) (cond ((eq? (caddr v) 'raised) 'raised) ((caddr v) 'looser) (else 'stricter)))
+(define (direction v)
+  (cond ((eq? (caddr v) 'raised) 'raised) ((eq? (cadddr v) 'undecided) 'undecided) ((caddr v) 'looser) (else 'stricter)))
 (define (exception-for v)
   (find (lambda (e) (and (equal? (car e) (car v)) (memq (cadr e) (list (cadr v) 'any)))) exceptions))
 (define disagreements
