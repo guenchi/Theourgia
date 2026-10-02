@@ -176,10 +176,26 @@ export function writerFor(config: CoreConfig): string {
   return config.writer.length > 0 ? config.writer : config.actor;
 }
 
+/*
+ * THE DIRECTORIES CHEZ LOOKS UP LIBRARIES IN: the core's directory, the
+ * user's, and last the one that holds the core's directory -- a library
+ * `(theourgia client)` is the file `theourgia/client.sc` under a library
+ * directory, so it is found under the core's parent. Each directory once,
+ * compared as the path it resolves to; the first spelling is kept.
+ *
+ * NOTE: THE PARENT WAS LEFT TO THE USER. A corePath pointing at a built
+ * directory loaded only once libDirs was set to its parent (the user's
+ * supply test).
+ *
+ * NEVER: THE PARENT BEFORE THE USER'S DIRECTORIES. Chez takes the first
+ * directory that holds a library, and a parent placed second would put
+ * whatever sits beside the core -- an `igropyr/` -- in front of the copy
+ * the user named on purpose. Last, it only finds what nothing else holds.
+ */
 export function libraryDirectories(config: CoreConfig): string[] {
-  const out = [config.corePath];
-  for (const dir of config.libDirs) {
-    if (dir.length > 0 && !out.includes(dir)) {
+  const out: string[] = [];
+  for (const dir of [config.corePath, ...config.libDirs, path.dirname(config.corePath)]) {
+    if (dir.length > 0 && !out.some((held) => path.resolve(held) === path.resolve(dir))) {
       out.push(dir);
     }
   }

@@ -19,6 +19,7 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 import { Client, appendsARecord } from '../../src/client';
 import {
@@ -30,12 +31,14 @@ import {
   clientPath,
   coreFormOf,
   environmentFor,
+  libraryDirectories,
   libraryExtensionsFor
 } from '../../src/config';
 import { CliTransport, GRACE_MS, TransportError } from '../../src/transport';
 import { readBlock, stringField } from '../../src/blocks';
 import { answerOf, initWire, isSym } from '../../src/wire';
 import { FakeCore, childrenStillRunning } from '../support/fake';
+import { RealStore } from '../support/real-core';
 
 describe('T1 an answer and a verdict are separate things', () => {
   let core: FakeCore;
@@ -298,7 +301,20 @@ describe('T4 the argument vector and the environment are what the core expects',
     const client = new Client(new CliTransport(config, core.env()));
     await client.request('check', []);
     const logged = core.calls().filter((c) => c.event === 'answer')[0];
-    assert.strictEqual(logged.env.CHEZSCHEMELIBDIRS, `${config.corePath}:${extra}`);
+    /*
+     * The core's parent comes last: `(theourgia client)` is found as
+     * `theourgia/client.sc` under it, and a copy the user named comes
+     * before it. A directory already there, however it is spelled, is not
+     * added again.
+     */
+    const parent = path.dirname(config.corePath);
+    assert.strictEqual(logged.env.CHEZSCHEMELIBDIRS, `${config.corePath}:${extra}:${parent}`);
+    assert.deepStrictEqual(libraryDirectories({ ...config, libDirs: [parent, extra] }), [config.corePath, parent, extra]);
+    assert.deepStrictEqual(
+      libraryDirectories({ ...config, libDirs: [`${parent}${path.sep}`, extra, `${extra}${path.sep}.`] }),
+      [config.corePath, `${parent}${path.sep}`, extra]
+    );
+    assert.deepStrictEqual(libraryDirectories({ ...config, corePath: path.sep, libDirs: [] }), [path.sep]);
     assert.strictEqual(logged.env.CHEZSCHEMELIBEXTS, LIBRARY_EXTENSIONS);
     assert.ok(
       !(logged.env.CHEZSCHEMELIBEXTS ?? '').includes('.so'),
@@ -626,5 +642,38 @@ describe('plugin-r2 two envelopes are not one answer', () => {
     const answer = await client.request('read', ['a.1', '--wire']);
     assert.strictEqual(answer.answers.length, 1);
     assert.ok(answer.envelope !== null, 'the envelope was not recorded');
+  });
+});
+
+describe('the real core found through the directory that holds it', function () {
+  this.timeout(240000);
+
+  it('makes and reads a store with that directory left out of libDirs', async () => {
+    /*
+     * The libraries of the core under test must be reachable only through
+     * the directory holding corePath, or this cell would pass without the
+     * extension adding it: no other directory on the path -- corePath
+     * itself included -- may hold a `theourgia/client` of any extension.
+     * The store is a second one, made through the reduced path, so that no
+     * daemon started with the full path answers for it.
+     */
+    const store = await RealStore.make('libdirs-parent');
+    try {
+      const parent = path.resolve(path.dirname(store.config.corePath));
+      const libDirs = store.config.libDirs.filter((d) => path.resolve(d) !== parent);
+      const elsewhere = [store.config.corePath, ...libDirs].filter((d) => {
+        const dir = path.join(d, 'theourgia');
+        return fs.existsSync(dir) && fs.readdirSync(dir).some((f) => f.startsWith('client.'));
+      });
+      assert.deepStrictEqual(elsewhere, [], 'another directory holds the core\'s libraries');
+      const config = { ...store.config, libDirs, store: path.join(store.root, 'reduced') };
+      const client = new Client(new CliTransport(config, store.env));
+      const made = await client.request('init', []);
+      assert.ok(made.ok, `${made.text} ${made.stderr}`);
+      const answer = await client.request('outline', []);
+      assert.ok(answer.ok, `${answer.text} ${answer.stderr}`);
+    } finally {
+      store.dispose();
+    }
   });
 });

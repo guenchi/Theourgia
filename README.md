@@ -11,8 +11,8 @@ The extension drives the theourgia core installed on this machine: it needs
 Chez Scheme and the theourgia programs, and asks the core through its own
 command line. Install the core first (from source today, `build.ss` into a
 directory of objects; a Homebrew tap arrives with the core's 1.0 release),
-then point the settings `theourgia.corePath` (the directory holding
-`theourgia/` and `igropyr/`, objects or sources) and `theourgia.scheme` (the
+then point the settings `theourgia.corePath` (the core's own `theourgia/`
+directory, objects or sources, the one holding `theourgia.sc`) and `theourgia.scheme` (the
 Chez executable: `scheme` by default, or `chez` on a Homebrew machine, whose
 formula installs it under that name) at it, and `theourgia.store` at a
 store made with `theourgia init`. One store is one machine's: the core
@@ -139,7 +139,7 @@ of them is a decision rather than an oversight:
 | Setting | What it is |
 |---|---|
 | `theourgia.corePath` | The directory holding the core. Required. Either form works -- see below. |
-| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here or the core exits before reading an argument. |
+| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here, unless it is the one holding `corePath`, or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
 | `theourgia.writer` | The draft space this window writes into. Defaults to the actor. See *One agent, one writer id*. |
@@ -601,11 +601,17 @@ working view. Each projects the store with `export-code` into a directory in thi
 storage, emptied first, opens the projected files without showing them, asks the editor's providers,
 and sends one `supply` per language with every projected file listed by its digest and every file of
 that language named as replaced, a file with no fact included (so its old facts clear).
-- A block's signature is its first top-level symbol's detail, else the first line of its hover, else
-  none; its keywords are the words of the names it declares (itself and its direct children), split at
-  case changes, underscores and digits. A call is an edge from the call hierarchy to a block of the
-  same projection; a call into anything else gives none. A diagnostic keeps its severity and its byte
-  range in the projected file.
+- A block's signature is the detail of its most representative top-level symbol -- a function, method
+  or constructor, then a type, then anything else, the first by position among equals -- else from
+  that symbol's hover: the editor's hovers are read one at a time and the first that gives a line
+  wins; a hover gives its first line of code (part by part, the first non-blank line inside the part's
+  first fence, or of a part the server marks with its language), else its first line that is not
+  blank, a fence or a rule, with heading marks and backticks taken off. Else none. A server that
+  writes its signature as plain text above a fenced example in the same hover gives the example. Its
+  keywords are the words of the names it declares (itself and its direct children), split at case
+  changes, underscores and digits. A call is an edge from the call hierarchy to another block of the
+  same projection; a call into the same block or into anything else gives none. A diagnostic keeps its
+  severity and its byte range in the projected file.
 - Which block a position is in is read off the projection's own marker lines. A fact depends on its
   own block and every other block of its file (a call on the target's file too), so the store drops it
   when any of them changes; the facts are as fresh as the last supply, and nothing supplies them on its

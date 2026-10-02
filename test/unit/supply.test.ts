@@ -51,6 +51,7 @@ import {
   declaredWords,
   diagnosticFacts,
   fileDepends,
+  hoverFirstLine,
   readSupplyAnswer,
   runSupply,
   signatureFacts,
@@ -189,6 +190,77 @@ describe('collecting facts from the providers', () => {
     assert.deepStrictEqual(asked, [4, 6], 'the hover was asked for a symbol whose detail was the signature');
   });
 
+  it('takes the declaration in a hover\'s fence for its signature, not the heading above it', async () => {
+    const x = projected('x.js', X_JS);
+    const hover = async (at: PositionLike): Promise<unknown> =>
+      at.line === 2 ? hoverOf('### variable `_server`\n\n---\n```cpp\nstatic int _server\n```') : hoverOf('### function `beta`');
+    const facts = await signatureFacts(x, declaredSymbols([sym('alpha', 11, 2, 9), sym('beta', 11, 4, 9)], x.uri), hover);
+    assert.deepStrictEqual(
+      facts.filter((f) => f.kind === 'signature').map((f) => (f as { text: string }).text),
+      ['static int _server', 'function beta']
+    );
+  });
+
+  it('reads a hover one at a time, a fence within its own part, and code before prose', () => {
+    const cases: Array<[string, unknown, string | null]> = [
+      [
+        'clangd: prose above the declaration fence',
+        hoverOf('### function `foo`\n\n---\n\u2192 `int`\nParameters:\n- `int x`\n\n---\n```cpp\nint foo(int x)\n```'),
+        'int foo(int x)'
+      ],
+      ['a plain hover, then a hover holding an example', [{ contents: 'int f(int x)' }, { contents: '```c\nf(1);\n```' }], 'int f(int x)'],
+      [
+        'an empty fence that never closes, then a hover with a heading',
+        [{ contents: '```c\n' }, { contents: '### function `g`\n```c\nint g(void)\n```' }],
+        'int g(void)'
+      ],
+      ['a fence that never closes', hoverOf('```c\nint h(void)'), 'int h(void)'],
+      ['an empty fence part, then a part with a heading', [{ contents: ['```c', '### function `i`\n```c\nint i(void)\n```'] }], 'int i(void)'],
+      ['rules above a plain line', hoverOf('---\n***\n___\nint k(void)'), 'int k(void)'],
+      ['rules only', hoverOf('---\n\n***'), null],
+      ['a part marked with its language, after prose', [{ contents: ['Doc first.', { language: 'c', value: '\nint m(void)' }] }], 'int m(void)'],
+      ['nothing', [{ contents: [] }, {}], null]
+    ];
+    for (const [label, answer, expected] of cases) {
+      assert.strictEqual(hoverFirstLine(answer), expected, label);
+    }
+  });
+
+  it('ranks a call before a type before anything else, and takes the first among equals', async () => {
+    const z = projected('z.js', Z_JS);
+    /*
+     * Kinds as VS Code numbers them: 4 class, 5 method, 8 constructor,
+     * 9 enum, 10 interface, 11 function, 12 variable, 13 constant,
+     * 22 struct. Each pair is declared in this order; the second wins
+     * unless it ranks no better.
+     */
+    const pairs: Array<[number, number, 'first' | 'second']> = [
+      [12, 4, 'second'],
+      [13, 22, 'second'],
+      [12, 9, 'second'],
+      [12, 10, 'second'],
+      [4, 5, 'second'],
+      [10, 8, 'second'],
+      [22, 11, 'second'],
+      [11, 4, 'first'],
+      [5, 8, 'first'],
+      [4, 22, 'first'],
+      [12, 13, 'first']
+    ];
+    for (const [a, b, expected] of pairs) {
+      const symbols = declaredSymbols([sym('first', a, 2, 9, 'first'), sym('second', b, 2, 29, 'second')], z.uri);
+      const facts = await signatureFacts(z, symbols, async () => []);
+      assert.strictEqual((facts[0] as { text: string }).text, expected, `${a} then ${b}`);
+    }
+  });
+
+  it('describes a block by its first function, not by a variable declared before it', async () => {
+    const z = projected('z.js', Z_JS);
+    const symbols = declaredSymbols([sym('first', 12, 2, 9, 'let first'), sym('second', 11, 2, 29, 'second()')], z.uri);
+    const facts = await signatureFacts(z, symbols, async () => []);
+    assert.deepStrictEqual(facts[0], { kind: 'signature', id: 'aa', text: 'second()', symbolKind: 'function', depends: ['aa'] });
+  });
+
   it('gives a block that declares two functions one signature, the first, and the words of both', async () => {
     /*
      * WHY ONE: the core keeps one signature per block, and a block's
@@ -300,6 +372,14 @@ describe('collecting facts from the providers', () => {
     const outgoing = async (): Promise<unknown> => [{ to: { uri: { toString: () => y.uri }, selectionRange: range(4, 9, 4, 10) } }];
     const facts = await callFacts(z, symbols, [z, y], prepare, outgoing);
     assert.deepStrictEqual(facts, [{ kind: 'calls', from: 'aa', to: 'ee', depends: ['aa', 'ee', 'dd'] }]);
+  });
+
+  it('records no call from a block to itself', async () => {
+    const z = projected('z.js', Z_JS);
+    const symbols = declaredSymbols([sym('first', 11, 2, 9), sym('second', 11, 2, 29)], z.uri);
+    const outgoing = async (): Promise<unknown> => [{ to: { uri: { toString: () => z.uri }, selectionRange: range(2, 29, 2, 30) } }];
+    const facts = await callFacts(z, symbols, [z], async () => [{ name: 'first' }], outgoing);
+    assert.deepStrictEqual(facts, []);
   });
 
   it('gives a language with no call hierarchy no calls and no error', async () => {

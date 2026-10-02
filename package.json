@@ -211,7 +211,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra directories to place on CHEZSCHEMELIBDIRS after corePath. The core imports (igropyr crypto), (igropyr platform) and (igropyr sexpr), so the directory holding igropyr belongs here."
+          "description": "Extra directories to place on CHEZSCHEMELIBDIRS after corePath; the directory holding corePath is searched after them. The core imports (igropyr crypto), (igropyr platform) and (igropyr sexpr), so the directory holding igropyr belongs here unless it is the one holding corePath."
         },
         "theourgia.store": {
           "type": "string",

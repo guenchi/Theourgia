@@ -368,7 +368,12 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED with the supply commands: collecting (13), the supply file (4), the
    * answers (5), the command's steps (40), and on a real core (3).
    */
-  ['supply.test.ts', 65],
+  /*
+   * RAISED with the supply test's findings, 65 -> 70: a hover's declaration
+   * in its fence, how a hover is read, the ranking of a block's symbols, a
+   * block described by its first function, no call from a block to itself.
+   */
+  ['supply.test.ts', 70],
   ['tombstones.test.ts', 11],
   /*
    * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket
@@ -384,7 +389,11 @@ const AT_LEAST: Array<[string, number]> = [
    * a platform the core has not measured is said as the core failing to
    * start, with the core's remedy.
    */
-  ['transport.test.ts', 27],
+  /*
+   * RAISED with the supply test's findings, 27 -> 28: the real core found
+   * through the directory holding corePath.
+   */
+  ['transport.test.ts', 28],
   ['tripwire.test.ts', 7],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]

@@ -224,8 +224,25 @@ export function declaredSymbols(answer: unknown, documentUri: string): DeclaredS
 }
 
 /*
- * THE FIRST LINE OF A HOVER'S TEXT: the first line of its contents that is
- * not blank and not a code fence. Null when the hover says nothing.
+ * THE SIGNATURE IN A HOVER'S TEXT, one hover at a time, the first that has
+ * one: the first line of code in it -- inside its first code fence, or a
+ * part a server marks with its language -- else its first line that is not
+ * blank, not a fence and not a rule, with a heading's marks and code spans'
+ * backticks taken off. Null when no hover says anything.
+ *
+ * NOTE: A HEADING IS NOT A SIGNATURE. A C/C++ server's hover begins
+ * "### variable `_server`" and gives the declaration in a fence below it;
+ * the first line alone was recorded as the signature, Markdown and all
+ * (measured in the user's supply test on a C store).
+ *
+ * NOTE: CODE WINS OVER PROSE EVEN WHEN THE PROSE COMES FIRST. The same
+ * server writes "Parameters:" and the return type above its declaration
+ * fence, so prose above a fence is no sign that the fence is an example. A
+ * hover that gives its signature as a plain line and then an example in a
+ * fence is described by the example; that is the cost of this choice.
+ *
+ * NOTE: A FENCE ENDS WITH ITS PART. Hovers and parts are read one by one, so
+ * a fence that never closes cannot take a line from the next hover.
  */
 export function hoverFirstLine(answer: unknown): string | null {
   if (!Array.isArray(answer)) {
@@ -233,18 +250,49 @@ export function hoverFirstLine(answer: unknown): string | null {
   }
   for (const hover of answer) {
     const contents = (hover as { contents?: unknown } | null)?.contents;
-    const parts = Array.isArray(contents) ? contents : [contents];
-    for (const part of parts) {
+    const parts: Array<{ lines: string[]; code: boolean }> = [];
+    for (const part of Array.isArray(contents) ? contents : [contents]) {
       const value = typeof part === 'string' ? part : (part as { value?: unknown } | null)?.value;
-      if (typeof value !== 'string') {
+      if (typeof value === 'string') {
+        const language = typeof part === 'string' ? undefined : (part as { language?: unknown }).language;
+        parts.push({ lines: value.split(/\r?\n/), code: typeof language === 'string' });
+      }
+    }
+    const code = parts.map(codeLineOf).find((line) => line !== null);
+    if (code !== undefined && code !== null) {
+      return code;
+    }
+    for (const line of parts.flatMap((p) => p.lines)) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0 || trimmed.startsWith('```') || /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
         continue;
       }
-      for (const line of value.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0 && !trimmed.startsWith('```')) {
-          return trimmed;
-        }
+      const plain = trimmed.replace(/^#{1,6}\s+/, '').replace(/`/g, '').trim();
+      if (plain.length > 0) {
+        return plain;
       }
+    }
+  }
+  return null;
+}
+
+/*
+ * THE FIRST LINE OF CODE IN ONE PART OF A HOVER: the first non-blank line of
+ * a part marked with its language, or the first inside the part's first
+ * fence, up to the fence's end or the part's. Null when there is none.
+ */
+function codeLineOf(part: { lines: string[]; code: boolean }): string | null {
+  const fence = part.code ? -1 : part.lines.findIndex((line) => line.trim().startsWith('```'));
+  if (!part.code && fence < 0) {
+    return null;
+  }
+  for (const line of part.lines.slice(fence + 1)) {
+    const trimmed = line.trim();
+    if (!part.code && trimmed.startsWith('```')) {
+      return null;
+    }
+    if (trimmed.length > 0) {
+      return trimmed;
     }
   }
   return null;
@@ -289,11 +337,30 @@ export function declaredWords(symbol: DeclaredSymbol): string[] {
 }
 
 /*
+ * HOW REPRESENTATIVE A SYMBOL IS OF ITS BLOCK, lower first: something that is
+ * called (a function, a method, a constructor), then a type (a class, a
+ * struct, an interface, an enum), then anything else (a variable, a constant,
+ * a field). The signature of a block is its most representative symbol's.
+ */
+function representative(kind: number): number {
+  const name = SYMBOL_KIND_NAMES[kind];
+  if (name === 'function' || name === 'method' || name === 'constructor') {
+    return 0;
+  }
+  if (name === 'class' || name === 'struct' || name === 'interface' || name === 'enum') {
+    return 1;
+  }
+  return 2;
+}
+
+/*
  * EACH BLOCK AND THE TOP-LEVEL SYMBOLS IT DECLARES: a symbol belongs to the
- * block whose own bytes hold the start of its name. `symbol` is the first of
- * them by that position, the one a signature is taken from (one signature
- * per block); `declared` is all of them, in order, the words and calls of a
- * block being every name it declares, not only its first.
+ * block whose own bytes hold the start of its name. `symbol` is the one a
+ * signature is taken from (one signature per block): the most representative
+ * of them, the first by position among equals -- a file block that opens
+ * with a variable is described by its first function, not by the variable
+ * (the user's supply test on a C store). `declared` is all of them, in
+ * order, the words and calls of a block being every name it declares.
  */
 export function subjects(
   file: ProjectedFile,
@@ -313,6 +380,9 @@ export function subjects(
       out.push({ id, symbol, declared: [symbol] });
     } else {
       held.declared.push(symbol);
+      if (representative(symbol.kind) < representative(held.symbol.kind)) {
+        held.symbol = symbol;
+      }
     }
   }
   return out;
@@ -398,7 +468,12 @@ export async function callFacts(
         const target = callTarget(call);
         const into = target === null ? undefined : files.find((f) => f.uri === target.uri);
         const to = into === undefined || target === null ? null : blockOfPosition(into, target.at);
-        if (into === undefined || to === null || out.some((f) => f.kind === 'calls' && f.from === id && f.to === to)) {
+        /*
+         * NEVER: A BLOCK CALLING ITSELF. A call between two functions of one
+         * block (a text file is one block) is no edge between blocks; it was
+         * recorded as one (membuf.h to itself, in the user's supply test).
+         */
+        if (into === undefined || to === null || to === id || out.some((f) => f.kind === 'calls' && f.from === id && f.to === to)) {
           continue;
         }
         const depends = fileDepends(file, id);
