@@ -123,7 +123,7 @@ ul.design li b{color:var(--fg);font-weight:600}
 .md-body blockquote{margin:18px 0;padding:12px 18px;border-left:3px solid var(--acc);background:var(--panel);border-radius:0 8px 8px 0}
 .md-body blockquote p{margin:0}
 .md-body pre{margin:14px 0}
-.md-body code{color:var(--acc)}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><img src="favicon.svg" alt="" width="24" height="24"> Theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="manual.html">Manual</a><a href="changelog.html">Changelog</a><a href="agents.html" class="on">Agents</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><h1>For agents, and for the people working beside them</h1><p class="tag">What an agent has to know to write into a store, what it costs, and two prompts meant to be copied as they are.</p></div></header><section id="protocol"><div class="wrap"><div class="kicker">01</div><h2>The write protocol</h2><p class="lead">One block answers one question on its own. Keep it under about 800 tokens; split a longer one into blocks that each stand alone. Give it a one-line title and three to eight keywords -- the words a future reader would actually type. Put it under the parent its subject puts it under. Do not rewrite the source bytes when you are moving something in: no polishing, no translating, no dropping sentences.</p></div></section><section id="shape"><div class="wrap"><div class="kicker">02</div><h2>One daemon, thin clients</h2><p class="lead">One store, one daemon. theourgia serve &lt;store&gt; holds the store's write lock and keeps the reduced state in memory. The client is thin: it knows the transport and nothing else, and it starts a daemon itself if it cannot reach one. Requests and answers are S-expression envelopes over a unix socket. The MCP shell is thin in the same way -- it asks the daemon for the tool list with describe rather than carrying its own copy.</p><p>Two sets of figures, because they were taken under different conditions. Over MCP with the shell resident and the store at 387 blocks, a tool call took 1 ms to read a block, 2 ms for an outline and 48-68 ms for a search; initialize took 39 ms and tools/list 121 ms, the latter including the describe round trip to the daemon. Measured separately, from a source-form client with four other agents writing into the same store at the time, an insert of a 3 KB body took 108 ms end to end, including the client process starting. A client process starts in 30-50 ms once it is running from compiled objects. search is a full scan and grows with the store.</p></div></section><section id="cost"><div class="wrap"><div class="kicker">03</div><h2>What it costs</h2><div class="grid2"><div class="card"><h3>What it costs to move a memory in</h3><p>import-md opens the files itself, so the bytes never enter the agent's context. Measured on 113 documents totalling 2,717,039 bytes: 0 tokens of context to convert, against roughly 1,082,000 if the same agent had read them first. This holds only while the split needs no judgement -- import-md cuts at headings. A corpus that needs a human decision about where to cut does not get the zero.</p></div><div class="card"><h3>Recall, measured against markdown</h3><p>Twenty real questions about a real agent memory, answered blind by two agents: one allowed only the store, one allowed only the markdown files. Both scored 20/20, and the answers were checked against each other question by question. The store route read 14% more bytes, all of it from search: its replies have no upper bound yet, and a broad query returns every hit with its full keyword list. That is a known open item, not a property of the model.</p></div></div></div></section><section id="migrate"><div class="wrap"><div class="kicker">04</div><h2>Prompt: move an existing markdown memory in</h2><p class="lead">Give this to an agent together with the list of files to migrate. One agent per group of files works, and several may write into one store at the same time, each under its own writer id.</p><pre><code>You are moving an existing markdown memory into a theourgia store through
+.md-body code{color:var(--acc)}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><img src="favicon.svg" alt="" width="24" height="24"> Theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="manual.html">Manual</a><a href="changelog.html">Changelog</a><a href="agents.html" class="on">Agents</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><h1>For agents, and for the people working beside them</h1><p class="tag">What an agent has to know to write into a store, what it costs, and two prompts meant to be copied as they are.</p></div></header><section id="protocol"><div class="wrap"><div class="kicker">01</div><h2>The write protocol</h2><p class="lead">One block answers one question on its own. Keep it under about 800 tokens; split a longer one into blocks that each stand alone. Give it a one-sentence title and three to eight keywords -- the words a future reader would actually type. Put it under the parent its subject puts it under. Do not rewrite the source bytes when you are moving something in: no polishing, no translating, no dropping sentences. Record a decision as a block of kind decision and link each block that implements it; open a session with commitments --open, which lists the decisions still owed.</p></div></section><section id="shape"><div class="wrap"><div class="kicker">02</div><h2>One daemon, thin clients</h2><p class="lead">One store, one daemon. theourgia serve &lt;store&gt; holds the store open and keeps the reduced state in memory. The client is thin: it builds a request from the command line, sends it to the daemon and prints the answer; init and eval it hands to a local program, core.sc, instead, and it starts a daemon itself if it cannot reach one. Requests and answers are S-expression envelopes over a unix socket. The MCP shell is thin in the same way -- it asks the daemon for the tool list with describe rather than carrying its own copy.</p><p>Two sets of figures, because they were taken under different conditions. Over MCP with the shell resident and the store at 387 blocks, a tool call took 1 ms to read a block, 2 ms for an outline and 48-68 ms for a search; initialize took 39 ms and tools/list 121 ms, the latter including the describe round trip to the daemon. Measured separately, from a source-form client with four other agents writing into the same store at the time, an insert of a 3 KB body took 108 ms end to end, including the client process starting. A client process starts in 30-50 ms once it is running from compiled objects. search is a full scan and grows with the store.</p></div></section><section id="cost"><div class="wrap"><div class="kicker">03</div><h2>What it costs</h2><div class="grid2"><div class="card"><h3>What it costs to move a memory in</h3><p>import-md opens the files itself, so the bytes never enter the agent's context. Measured on 113 documents totalling 2,717,039 bytes: 0 tokens of context to convert, against roughly 1,082,000 if the same agent had read them first. This holds only while the split needs no judgement -- import-md cuts at headings. A corpus that needs a human decision about where to cut does not get the zero. Nor does it lift the limit on one request: a directory large enough to outlast the client's 30-second wait answers transport-unknown while the daemon goes on and finishes the import, so a large memory goes in file by file.</p></div><div class="card"><h3>Recall, measured against markdown</h3><p>Twenty real questions about a real agent memory, answered blind by two agents: one allowed only the store, one allowed only the markdown files. Both scored 20/20, and the answers were checked against each other question by question. The store route read 14% more bytes, all of it from search, whose replies then had no upper bound: a broad query returned every hit with its full keyword list. search now returns the best ten hits unless --all is given, and says how many it left out.</p></div></div></div></section><div class="memdoc" data-fences="8" data-commit="3aad6fdcad76947985fc27b9a0ce2158d4eda277"><section id="migrate"><div class="wrap"><div class="kicker">04</div><h2>Prompt: move an existing markdown memory in</h2><p class="lead">Give this to an agent together with the files to migrate.</p><div><pre data-heading="## 1. Migrating an existing markdown memory" data-index="1"><code>You are moving an existing markdown memory into a theourgia store through
 its command-line client, following the store's write protocol. The store is
 the target of everything you write; the markdown files are read-only source.
 
@@ -131,7 +131,8 @@ Environment (every shell):
   export THEOURGIA_ACTOR=&lt;your-name&gt; THEOURGIA_WRITER=&lt;your-name&gt;
   STORE=&lt;path of the store&gt;
   theourgia &lt;verb&gt; --store $STORE ... --wire
-The first stderr line `(theourgia machine-home ...)` is a banner; ignore it.
+When THEOURGIA_HOME is set and not empty, the first stderr line is the
+banner `(theourgia machine-home ...)`; ignore it.
 
 Write protocol:
   - A block is the unit of writing: one block answers one question on its
@@ -145,14 +146,22 @@ Write protocol:
     the title, its name and type belong in the keywords.
   - A memory file is usually one block. A file holding several independent
     dated instances that together exceed the limit is split by instance,
-    each block titled with the file's name.
+    each block titled with the file's name and the instance's date; an
+    instance whose heading has no date is titled with the heading's text.
+    An instance larger than the limit stays one block: do not cut it in the
+    middle of what it argues.
 
-Per file:
-  theourgia insert --store $STORE --under &lt;parent-id&gt; --title &quot;&lt;title&gt;&quot; \
-    --keywords &quot;&lt;k1&gt;, &lt;k2&gt;, ...&quot; --text &quot;&lt;body verbatim&gt;&quot; --wire
-A success answers (ok (events ...) (state ((&lt;id&gt; . &lt;hash&gt;))) ...); record
-&lt;id&gt;. Record any other answer verbatim, with the command minus the body;
-retry at most once.
+Per file, one insert, run from a script as an argument list -- never through
+a shell, which would change a body holding a backtick or a $:
+  [&quot;theourgia&quot;, &quot;insert&quot;, &quot;--store&quot;, STORE, &quot;--under&quot;, &quot;&lt;parent-id&gt;&quot;,
+   &quot;--title&quot;, &quot;&lt;title&gt;&quot;, &quot;--keywords&quot;, &quot;&lt;k1&gt;, &lt;k2&gt;, ...&quot;,
+   &quot;--text&quot;, &quot;&lt;body verbatim&gt;&quot;, &quot;--wire&quot;]
+The body is one element of that list, whatever its size (a 9 KB body has
+gone through this way). A success answers
+  (ok (events ...) (state ((&quot;&lt;id&gt;&quot; . &quot;&lt;hash&gt;&quot;))) ...)
+with the id and the hash as strings; record &lt;id&gt; without the quotes. Record
+any other answer verbatim, with the command minus the body; retry at most
+once.
 
 Ledger (write it to &lt;ledger path&gt; as JSON):
   {&quot;group&quot;: ..., &quot;files&quot;: [{&quot;file&quot;: ..., &quot;chars&quot;: n,
@@ -165,7 +174,10 @@ Every id in the ledger comes from a real answer; never write a placeholder.
 
 Do not modify any source file. Do not touch git. Do not kill processes. Do
 nothing to the store except insert under the parents you were given. If the
-client fails more than three times in a row, stop, record, report.</code></pre></div></section><section id="memory"><div class="wrap"><div class="kicker">05</div><h2>Prompt: use a store as Claude Code's memory</h2><p class="lead">Three pieces. Turn the markdown memory off, put the store's outline into the session at startup, and tell the agent how to recall and how to write.</p><h3 style="margin-top:26px">The session hook</h3><pre><code>{
+client fails more than three times in a row, stop, record, report.
+</code></pre></div></div></section><section id="memory"><div class="wrap"><div class="kicker">05</div><h2>Prompt: use a store as Claude Code's memory</h2><p class="lead">Turn the markdown memory off, put the store's outline into each session, and tell the agent how to recall and how to write.</p><h3 style="margin-top:26px">Turn auto-memory off</h3><pre data-heading="### 2.1 Turn auto-memory off" data-index="1"><code>CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+</code></pre><pre data-heading="### 2.1 Turn auto-memory off" data-index="2"><code>{ &quot;autoMemoryEnabled&quot;: false }
+</code></pre><h3 style="margin-top:26px">Inject the outline at session start</h3><pre data-heading="### 2.2 Inject the outline at session start" data-index="1"><code>{
   &quot;hooks&quot;: {
     &quot;SessionStart&quot;: [
       {
@@ -179,7 +191,12 @@ client fails more than three times in a row, stop, record, report.</code></pre><
       }
     ]
   }
-}</code></pre><h3 style="margin-top:26px">What goes in CLAUDE.md</h3><pre><code>## Memory lives in theourgia, not in markdown files
+}
+</code></pre><pre data-heading="### 2.2 Inject the outline at session start" data-index="2"><code>{
+  &quot;type&quot;: &quot;command&quot;,
+  &quot;command&quot;: &quot;theourgia commitments --open --store /path/to/memory-store&quot;
+}
+</code></pre><h3 style="margin-top:26px">Tell the agent how to use it (CLAUDE.md)</h3><pre data-heading="### 2.3 Tell the agent how to use it (CLAUDE.md)" data-index="1"><code>## Memory lives in theourgia, not in markdown files
 
 The store at /path/to/memory-store is my memory. The markdown memory
 directory is retired: do not read it and do not write to it.
@@ -187,13 +204,22 @@ directory is retired: do not read it and do not write to it.
 Identity: export THEOURGIA_ACTOR=&lt;agent name&gt; and THEOURGIA_WRITER=&lt;agent
 name&gt; before the first call. One writer id is held by one live agent at a
 time; a later session may bind the same id and carry on with its drafts.
-Two agents that need to edit the same draft copy it (drafts --writer w1,
-restore &lt;version&gt; --writer w2) instead of sharing the id.
+Two agents that need to edit the same draft copy it instead of sharing the
+id, keeping its baseline:
+  theourgia read --store $STORE &lt;id&gt; --working-info --writer w1
+  theourgia write --store $STORE &lt;id&gt; &quot;&lt;text&gt;&quot; --writer w2 \
+    --based-on &lt;based-on&gt; --working-cut &lt;cut&gt;
+The read answers (projection working w1 &lt;id&gt; &lt;version&gt; &lt;based-on&gt; &lt;cut&gt;
+&quot;&lt;text&gt;&quot; ...); w2 must not hold a draft of that block already.
 
 Recall, before starting a task:
-  theourgia search --store $STORE &lt;two or three words from the task&gt;
-  theourgia read --store $STORE &lt;id&gt;          # the hits that look relevant
-  theourgia outline --store $STORE &lt;id&gt;       # to see what sits under a block
+  theourgia search --store $STORE &quot;&lt;two or three words from the task&gt;&quot;
+  theourgia read --store $STORE &lt;id&gt;              # a hit that looks relevant
+  theourgia read --store $STORE &lt;id&gt; --recursive  # a block and all under it
+search takes one query: quote the words, or it answers with its usage line.
+The first read ends with (cut ...), the state it read, and (versions ...),
+the block's version; read --recursive prints its blocks alone. Recall needs
+neither clause.
 Read what the search returns; do not page through the whole store. If a
 search finds nothing, try the other words a past self would have used, then
 stop: absence of a memory is an answer.
@@ -205,12 +231,27 @@ fact about the environment, a lesson):
     --text &quot;&lt;the fact, then Why: and How to apply:&gt;&quot;
 One block answers one question; keep it under about 800 tokens. Put it under
 the section it belongs to (the outline shows them). Before inserting, search
-for an existing block on the same fact and update that one with `write`
-followed by `commit --based-on` rather than adding a duplicate. Keep the
-markdown habits that still apply: say why, say how to apply, link related
-blocks by id in the text.
+for an existing block on the same fact and change that one instead of adding
+a duplicate: its text with a draft and a commit,
+  theourgia write --store $STORE &lt;id&gt; &quot;&lt;new text&gt;&quot;
+  theourgia commit --store $STORE &lt;id&gt;
+(the draft is based on the block as committed now), its title or keywords
+with
+  theourgia set --store $STORE &lt;id&gt; keywords &quot;&lt;words&gt;&quot;
+Keep the markdown habits that still apply: say why, say how to apply, link
+related blocks by id in the text.
 
 Do not put into the store what the repository already records (code
 structure, git history, CLAUDE.md itself), and nothing that only matters to
-the current conversation.</code></pre><h3 style="margin-top:26px">Over MCP instead of a shell</h3><pre><code>claude mcp add theourgia -- theourgia-mcp --store /path/to/memory-store \
-  --actor &lt;agent name&gt; --writer &lt;agent name&gt;</code></pre></div></section><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="manual.html">Manual</a><span>Apache-2.0</span><span class="sp">Every page here is rendered by <a href="https://goeteia.dev">Goeteia</a> from a Theourgia store.</span></div></footer></body></html>
+the current conversation.
+</code></pre><h3 style="margin-top:26px">The MCP route instead of the shell</h3><pre data-heading="### 2.4 The MCP route instead of the shell" data-index="1"><code>claude mcp add theourgia -- \
+  theourgia-mcp --store /path/to/memory-store --actor &lt;agent name&gt;
+</code></pre><pre data-heading="### 2.4 The MCP route instead of the shell" data-index="2"><code>{
+  &quot;mcpServers&quot;: {
+    &quot;theourgia&quot;: {
+      &quot;command&quot;: &quot;theourgia-mcp&quot;,
+      &quot;args&quot;: [&quot;--store&quot;, &quot;/path/to/memory-store&quot;, &quot;--actor&quot;, &quot;&lt;agent name&gt;&quot;]
+    }
+  }
+}
+</code></pre><p class="lead" style="margin-top:18px">Every block in sections 04 and 05 is copied byte for byte from <a href="https://github.com/guenchi/Theourgia/blob/3aad6fdcad76947985fc27b9a0ce2158d4eda277/docs/claude-code-memory.md">docs/claude-code-memory.md</a> at commit <code>3aad6fd</code>; the document says when and how to use each one.</p></div></section></div><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="manual.html">Manual</a><span>Apache-2.0</span><span class="sp">Every page here is rendered by <a href="https://goeteia.dev">Goeteia</a> from a Theourgia store.</span></div></footer></body></html>

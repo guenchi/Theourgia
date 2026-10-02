@@ -27,7 +27,7 @@ if [ ! -d "$STORE" ]; then
 fi
 STORE=$(cd "$STORE" && pwd)
 TMP=${TMPDIR:-/tmp}/theourgia-ws-$$
-trap 'rm -f "$TMP"' EXIT
+trap 'rm -f "$TMP" "$TMP.pin" "$TMP.doc"' EXIT
 
 # Asked twice on purpose. A read through a running daemon can answer from
 # the state it held a moment ago -- measured: the first read after a write
@@ -46,9 +46,10 @@ if [ -z "$LIB" ]; then
 fi
 echo "generator: $LIB"
 
-# render <procedure> <output file>
+# render <procedure> <output file> [<expression>]
+# The expression defaults to calling the procedure with no argument.
 render() {
-    "$THEOURGIA" eval --store "$STORE" --under "$LIB" "($1)" \
+    "$THEOURGIA" eval --store "$STORE" --under "$LIB" "${3:-($1)}" \
         --output-bytes 1048576 --timeout-ms 20000 --wire 2>/dev/null > "$TMP"
     printf '%s\n' "(let ((a (with-input-from-file \"$TMP\" read)))
        (if (and (pair? a) (eq? (car a) 'ok))
@@ -68,7 +69,24 @@ render page-index      index.html
 render page-why        why.html
 render page-manual     manual.html
 render manual-md       manual.md
-render page-agents     agents.html
+# The agents page shows the fences of docs/claude-code-memory.md as master
+# has them at one commit, which a block of the store names. The document is
+# passed to the page whole, and check-memory-fences.ss then reads it a second
+# time and refuses unless the page shows every fence byte for byte.
+render memory-pin "$TMP.pin" '(copy "Memory document commit")'
+PIN=$(cat "$TMP.pin")
+case "$PIN" in
+    *[!0-9a-f]*|"") echo "build.sh: the memory document commit is not a hash: $PIN" >&2; exit 1 ;;
+esac
+git cat-file -e "$PIN^{commit}" 2>/dev/null || git fetch -q origin
+if ! git cat-file -e "$PIN^{commit}" 2>/dev/null; then
+    echo "build.sh: commit $PIN is not in this clone, even after a fetch" >&2
+    exit 1
+fi
+git show "$PIN:docs/claude-code-memory.md" > "$TMP.doc" || exit 1
+DOC=$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' "$TMP.doc")
+render page-agents     agents.html "(page-agents \"$PIN\" \"$DOC\")"
+"$SCHEME" --script check-memory-fences.ss agents.html "$TMP.doc" "$PIN" || exit 1
 render page-changelog  changelog.html
 render changelog-md    changelog.md
 render favicon         favicon.svg
