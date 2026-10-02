@@ -48,6 +48,12 @@
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+;; A ROW WHOSE INSTRUMENT FAILED ITS OWN CONTROL IS NOT A READING OF THE
+;; PRODUCT. It is counted, so the file's row count does not move with the
+;; instrument, and it is printed VOID with the reason; it is not a failure.
+(define (void-row label why)
+  (set! rows (+ rows 1))
+  (printf "VOID ~a: ~a\n" label why))
 
 (define pid-text (number->string (get-process-id)))
 
@@ -2474,10 +2480,28 @@
                           (else (loop (cdr ls) acc))))))
       (else 'no-instrument))))
 
+;; The command a process is running now, by ps, which both platforms have.
+(define (command-of pid)
+  (let ((out (string-append here "/comm.txt")))
+    (system (string-append "ps -o comm= -p " (number->string pid) " > " out " 2>/dev/null"))
+    (let ((t (file-text out)))
+      (let trim ((e (string-length t)))
+        (if (and (> e 0) (char-whitespace? (string-ref t (- e 1)))) (trim (- e 1)) (substring t 0 e))))))
+(define (running-sleep? pid)
+  (let* ((c (command-of pid)) (n (string-length c)))
+    (and (>= n 5) (string=? (substring c (- n 5) n) "sleep"))))
+
 ;; THE INSTRUMENT SEES ONE MORE: two sleeping processes, one holding an extra
 ;; regular file open. Both live long enough for the reading and are stopped
 ;; after it; the row is red, not the file ended, if either did not start.
-(want "X13 CONTROL: the descriptor instrument (lsof or procstat) sees the one extra file a process holds"
+;;
+;; NEVER: READ ONLY ONCE BOTH ARE `sleep`. The pid is written by the shell
+;; just before it execs sleep, so a reading taken the moment the pid appears
+;; can land in the exec. This row read 0 where 1 was wanted, twice, inside
+;; the whole fixture; 200 readings of the same arrangement on its own, idle
+;; and with every core busy, all read 1 -- so which window it was is not
+;; measured, and this closes the exec one whatever it was.
+(define x13-control
       (let* ((pa (string-append here "/pa.pid")) (pb (string-append here "/pb.pid"))
              (_ (system (string-append "rm -f " pa " " pb)))
              ;; The pid is written only after the extra file is open, so a
@@ -2487,15 +2511,24 @@
              (ready (within 5000 (lambda () (and (> (string-length (file-text pa)) 1) (> (string-length (file-text pb)) 1)))))
              (pid-a (and ready (read (open-input-string (file-text pa)))))
              (pid-b (and ready (read (open-input-string (file-text pb)))))
-             (a (and (number? pid-a) (descriptors pid-a)))
-             (b (and (number? pid-b) (descriptors pid-b))))
+             (execed (and (number? pid-a) (number? pid-b)
+                          (within 5000 (lambda () (and (running-sleep? pid-a) (running-sleep? pid-b))))))
+             (a (and execed (descriptors pid-a)))
+             (b (and execed (descriptors pid-b))))
         (for-each (lambda (p) (when (number? p) (system (string-append "kill " (number->string p) " 2>/dev/null"))))
                   (list pid-a pid-b))
-        (list (descriptor-tool) (and (list? a) (list? b) (- (length b) (length a)))))
+        (list (descriptor-tool) (and (list? a) (list? b) (- (length b) (length a))))))
+(want "X13 CONTROL: the descriptor instrument (lsof or procstat) sees the one extra file a process holds"
+      x13-control
       (list (descriptor-tool) 1))
+(define x13-instrument-ok (equal? x13-control (list (descriptor-tool) 1)))
 
 ;; Six kinds of outcome, each answered as it should be, and afterwards no call
-;; directory and no descriptor left behind.
+;; directory and no descriptor left behind. VOID, not red, when the
+;; instrument did not see its own control above.
+(define x13-label "X13 after twenty-three outcomes of six kinds -- ok, signal 9, deadline, core-missing, answer-unreadable, not-utf8 -- no call directory is left and the shell's descriptors are those it had")
+(if (not x13-instrument-ok)
+    (void-row x13-label (format "the descriptor instrument did not see its own control: ~s" x13-control))
 (want "X13 after twenty-three outcomes of six kinds -- ok, signal 9, deadline, core-missing, answer-unreadable, not-utf8 -- no call directory is left and the shell's descriptors are those it had"
       (let* ((d (stub-dir! "x13" STUB-MODES))
              (s (stub-shell d "env THEOURGIA_MCP_PREPARATION_MS=1000 "))
@@ -2531,7 +2564,7 @@
                     (map (lambda (i) "core-missing") '(1 2))
                     (map (lambda (i) "answer-unreadable") '(1 2))
                     (list "not-utf8"))
-            '() #t (descriptor-tool)))
+            '() #t (descriptor-tool))))
 
 ;; ---- X14 a call in flight at EOF is answered, then the shell ends ---------------------------------
 (x-family "X14"
