@@ -68,6 +68,12 @@
 ;;     O8  make the list improper after it: its tail becomes the atom zz;
 ;;     O9  truncate the list after it (every shorter prefix, the outer head
 ;;         kept).
+;;     O10 a begin with an improper tail inside the seed's body, once in its
+;;         definition part (at the body's head) and once in its expression
+;;         part (at its end). ADDED AFTER A MEASUREMENT (s6e): no single
+;;         operator above makes a begin improper inside a body, and
+;;         (lambda () 1 (begin 2 . x)) and (lambda () (begin (define x 1) . y) x)
+;;         were walked as bodies while Chez refuses both.
 ;;   A STATED LIMIT: the operators walk lists only, never into a vector, so a
 ;;     vector template is examined only as its seeds write it.
 ;;   PINNED: forms asked the same question without being generated: the gaps
@@ -83,6 +89,14 @@
 ;; keywords begin, define, else, =>, unquote, unquote-splicing, quasiquote,
 ;; lambda and quote (fixed before the run). S5, S8 and the A-name pin are
 ;; regression checks, not proofs.
+;;
+;; WHAT THIS FIXTURE ASKS, AND WHAT IT DOES NOT: it compares whether the
+;; TOP form's own rule fires. A rule's checks on a nested form, and every
+;; check that reads the environment (a local binding of else, =>, define or
+;; a form's own head), change only the names the walk reports, never that
+;; answer; at the top the environment is empty. Names are name-use-verbs'
+;; to cover. The conjunct census runs both fixtures on every mutant, and is
+;; what ties the two: a check neither fixture sees is a missing row.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
@@ -186,7 +200,40 @@
     (define-record-type c (parent lambda) (fields z))
     (define-record-type r (protocol (lambda (parent) (parent p))))
     (lambda (a b . a) (f a b))
-    (define-values (a b . a) (g))))
+    (define-values (a b . a) (g))
+    ;; From the conjunct census: each a form only one check refuses, named
+    ;; by its census id and the row that turns red without the check. A
+    ;; definition after an expression, per head (S8: it becomes class K).
+    (let ((a 1)) 1 (define x 2))
+    (let* ((a 1)) 1 (define x 2))
+    (letrec ((a 1)) 1 (define x 2))
+    (letrec* ((a 1)) 1 (define x 2))
+    (let-values (((a) (g))) 1 (define x 2))
+    (let*-values (((a) (g))) 1 (define x 2))
+    (guard (e (else 0)) 1 (define x 2))
+    (parameterize ((p 1)) 1 (define x 2))
+    (define (f a) 1 (define x 2))
+    ;; C148: an else clause with no expression (S8); C149: an arrow clause
+    ;; with no receiver (S8).
+    (cond (a b) (else))
+    (cond (a b) ((p a) =>))
+    ;; C119: a convention twice after the first (S4); C126: an inexact
+    ;; __varargs_after count, which Chez refuses ("invalid foreign-procedure
+    ;; convention", measured in s6e, readings/measure) (S4).
+    (foreign-procedure __collect_safe #f #f "f" (int) int)
+    (foreign-procedure (__varargs_after 1.0) "f" (int) int)
+    ;; C225, C228: nongenerative with two operands (S4).
+    (define-record-type c (nongenerative u v))
+    ;; C181: an empty begin after an expression; C182: a begin holding a
+    ;; definition after an expression (S8).
+    (lambda () 1 (begin))
+    (lambda () 1 (begin (define x 2)))
+    ;; C180, C015 (s6e): a begin with an improper tail in a body, in the
+    ;; expression part and in the definition part. Chez refuses both
+    ;; ("invalid syntax", measured in s6e, readings/measure); the walk now
+    ;; does too (S4 without the body rule's check).
+    (lambda () 1 (begin 2 . x))
+    (lambda () (begin (define x 1) . y) x)))
 
 ;; (form position direction reason). position: top or body; direction:
 ;; stricter (Chez accepts, the walk falls back), looser (the walk fires,
@@ -296,7 +343,7 @@
 
 (define o3-replacements '(zz __zz 7 -1 1/2 1.5 "s" #t #\c () (zz) (zz . zy) #(zz) #vu8(1)))
 (define o4k-names '(begin define else => lambda quote))
-(define operators '(O1 O2 O3 O4 O4k O5 O6 O7 O8 O9))
+(define operators '(O1 O2 O3 O4 O4k O5 O6 O7 O8 O9 O10))
 
 ;; Each operator once at every position but the outer head.
 ;; -> (form operator place) triples. PLACE names the ONE operand the change
@@ -345,9 +392,23 @@
                                   (iota n))))))
                 (list-paths seed)))))
 
+;; O10: where a seed's body starts, for the heads that take one (a named let's
+;; one later, a define only with formals).
+(define (body-start seed)
+  (case (car seed)
+    ((lambda let* letrec letrec* let-values let*-values guard parameterize) 2)
+    ((let) (if (symbol? (cadr seed)) 3 2))
+    ((define) (and (pair? (cadr seed)) 2))
+    (else #f)))
+(define (improper-begins-of seed)
+  (let ((b (body-start seed)) (n (length seed)))
+    (if (not b)
+        '()
+        (list (list (insert-before seed b '(begin (define zz 0) . zy)) 'O10 (cons '() b))
+              (list (append seed '((begin zz . zy))) 'O10 (cons '() n))))))
 (define all-triples
   (filter (lambda (p) (and (pair? (car p)) (memq (car (car p)) (append known-heads defining-heads))))
-          (apply append (map mutants-of seeds))))
+          (append (apply append (map mutants-of seeds)) (apply append (map improper-begins-of seeds)))))
 ;; (form . operator), each form once, the first operator that made it kept.
 (define generated-pairs
   (let ((seen (make-hashtable equal-hash equal?)))
@@ -665,6 +726,9 @@
 (want "S8 CONTROL: no pinned known gap is classified as class K"
       (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-k? v))) verdicts)))
       '())
+(want "S10 name-use-rule-fires? answers #f for a non-pair, a non-list, a non-symbol head and an unknown head"
+      (map (lambda (x) (caught (name-use-rule-fires? x))) '(x 7 () (if a . b) (7 a) ((f) a) (frobnicate a b)))
+      '(#f #f #f #f #f #f #f))
 (want "S9 CONTROL: each control falls in its class (A, K, or none)"
       (map (lambda (c)
              (let ((vs (filter (lambda (v) (equal? (car v) (car c))) verdicts)))
