@@ -3000,7 +3000,7 @@ longer than 1048576 characters is refused `(error bad-source (reason input-limit
 
     (ok (values (<v> ...)) (working-view <writer> <cut> <drafts>)
         (stdout "...") (stderr "..."))
-    (error eval-limit (resource time|memory|output) (limit <n>) (stdout "..."))
+    (error eval-limit (resource time|memory|output) (limit <n>) (stdout "...") [(truncated #t)])
     (error eval-exception (kind raised) (message "..."))
     (error eval-exception (kind raised) (value <v>))
     (error eval-exception (kind raised) (reason unwritable-value) (type <t>))
@@ -3044,7 +3044,10 @@ itself is not sent.
 128..1 MiB (default 65536). For a Scheme evaluation the output quota counts
 the DECODED characters the user printed, across both streams -- what the
 user printed, not what the framing made of it. A `--lang` runner's quota
-counts bytes (below). NOTE: The memory budget is read by sampling the child's resident size
+counts bytes (below). When the output quota stops an evaluation, its
+`(stdout ...)` carries at most the limit in the quota's own unit -- characters
+for Scheme, bytes for a runner, cut on a character boundary -- and the answer
+ends with `(truncated #t)` when anything was cut. NOTE: The memory budget is read by sampling the child's resident size
 every 50ms, so it applies to an evaluation that lasts at least that long;
 one that finishes sooner has already ended.
 

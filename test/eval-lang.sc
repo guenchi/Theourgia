@@ -228,6 +228,17 @@
   (want "L3 output in bytes over both streams: 200 + 900 bytes stop at a 1024 quota; 200 + 700 do not"
         (list (head-of a) (clause-of a 'resource) (head-of b))
         (list '(error eval-limit) '(resource output) 'ok)))
+;; NEVER: WHAT A RUNNER'S OUTPUT LIMIT CARRIES IS AT MOST THE LIMIT IN BYTES,
+;; cut on a character boundary: 600 two-byte characters (1200 bytes) at a
+;; 1024 quota carry no more than 1024 bytes and say (truncated #t).
+(let* ((a (ask ON S (two-byte-chars 600 0) "--lang" "shell" "--output-bytes" "1024"))
+       (out (clause-of a 'stdout))
+       (text (and out (pair? (cdr out)) (string? (cadr out)) (cadr out))))
+  (want "L3 output cut: a runner's carried stdout is at most the quota in UTF-8 bytes, and the answer says (truncated #t)"
+        (list (head-of a) (clause-of a 'resource)
+              (and text (<= (bytevector-length (string->utf8 text)) 1024))
+              (clause-of a 'truncated))
+        (list '(error eval-limit) '(resource output) #t '(truncated #t))))
 (let* ((t0 (real-time))
        (a (ask ON S "head -c 5000 /dev/zero | tr '\\0' x; sleep 30\n" "--lang" "shell"
                "--output-bytes" "1024" "--timeout-ms" "20000"))
