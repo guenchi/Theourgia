@@ -2126,8 +2126,8 @@ the one named:
 
 An editor that has the store's source open computes facts the store does
 not: a declaration's signature, which function calls which, a compiler's
-diagnostics. `supply` keeps such facts beside the store, in
-`<store>/derived/`, and never in it: no record is written, the reducer and
+diagnostics. `supply` keeps such facts in the store's directory, under
+`<store>/derived/`, outside the event log: no record is written, the reducer and
 `check` never read them, and the store's `.gitignore` keeps them out of
 git. They are as fresh as their last supply.
 
