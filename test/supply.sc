@@ -32,7 +32,7 @@
         (only (theourgia render) render-human)
         (only (theourgia languages) register-language!)
         (only (theourgia derived) percent-encode)
-        (only (theourgia reduce) state-hash reduce-applied-cut)
+        (only (theourgia reduce) state-hash reduce-applied-cut state-block-ids)
         (only (theourgia evidence-index) index-checkpoint! index-forget-memory!)
         (only (theourgia wire) storable-decode storable-encode string->sexpr-extended sexpr->string-extended)
         (only (theourgia log) store-id-of)
@@ -1469,6 +1469,33 @@
               (let loop ((last #f))
                 (let ((x (read p))) (if (eof-object? x) last (loop x))))))))
       '(#f #t))
+
+;; ---- NT: a datum library's file is not a stale file ---------------------------------
+;;
+;; A store holding a datum library at dd.sc and nothing in text mode there. A
+;; supply listing dd.sc -- as an editor would after `export-code --datum` --
+;; was answered supply-stale; it is refused by name, naming the library. A
+;; path nobody holds is still supply-stale.
+(define nt (string-append root "/nt"))
+(define nt-src (fresh-dir! "nt-src"))
+(write! (string-append nt-src "/dd.sc") "(library (dd) (export h) (import (rnrs))\n(define (h) 'committed))\n")
+(ask nt 'init)
+(ask nt 'import-code nt-src "--datum")
+(define nt-library
+  (let ((s (open-and-reduce nt)))
+    (let ((ids (filter (lambda (id) (eq? 'library (code-field s id 'kind))) (state-block-ids s))))
+      (and (pair? ids) (null? (cdr ids)) (car ids)))))
+(define (nt-supply files)
+  (supply-in nt (header 'signatures "-" files (map car files)) "signatures"))
+(define nt-digest (make-string 64 #\a))
+(want "NT1 a supply listing a datum library's file is refused supply-not-text-mode, naming the file and the library, and nothing is written"
+      (in-order (string? nt-library)
+                (nt-supply (list (list "dd.sc" nt-digest)))
+                (file-exists? (string-append nt "/derived")))
+      (list #t (list 'error 'supply-not-text-mode '(file "dd.sc") (list 'block nt-library)) #f))
+(want "NT2 TWIN: a path no block holds is still supply-stale"
+      (nt-supply (list (list "nowhere.sc" nt-digest)))
+      '(error supply-stale (file "nowhere.sc")))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsupply complete\n" bad rows)
