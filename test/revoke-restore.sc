@@ -329,4 +329,43 @@
 (want "RR-05 TWIN: nothing was written before the refusal"
       (equal? (draft-dir-state) before-mismatch) #t)
 
+;; ---- RR-06 a revoked draft on a datum block is not restored -------------------
+;;
+;; No route makes a draft on a block of mode datum any more, and restore is
+;; one. A store written before that rule can hold such a consumption; it is
+;; forged here as RR-05's is -- a plan claiming R1's identity, whose
+;; consumption names a datum definition -- and restore must refuse it by
+;; name without writing a draft file.
+(define datum-dir (string-append root "/datum-src"))
+(mkdir-p! datum-dir)
+(call-with-output-file (string-append datum-dir "/dd.sc")
+  (lambda (p) (put-string p "(library (dd) (export h) (import (rnrs))\n(define (h) 'committed))\n")))
+(call 'import-code datum-dir "--datum")
+(define D
+  (let ((s (state)))
+    (find (lambda (id) (datum-block? s id)) (filter (lambda (id) (not (equal? id A))) (state-block-ids s)))))
+(define datum-version
+  "1111111122222222333333334444444455555555666666667777777788888888a")
+(define datum-forged
+  (encode-record 1 1789000000003 (ev-actor plan-ev) '()
+                 (storable-encode
+                   (list 'plan (list-ref (ev-payload plan-ev) 1) (list-ref (ev-payload plan-ev) 2)
+                         (list-ref (ev-payload plan-ev) 3)
+                         (list (list 0 'set D 'src "(define (h) 'drafted)"))
+                         (list 'consumes (cadr real-consumes)
+                               (list (list D datum-version
+                                           (list-ref (car (caddr real-consumes)) 2)
+                                           (list-ref (car (caddr real-consumes)) 3))))))))
+(want "RR-06 setup: a datum definition, and a forged consumption of a draft on it that the store lists as revoked"
+      (list (string? D)
+            (car (log-publish! store "datumzzz" 1 datum-forged (segment-sha datum-forged)))
+            (exists (lambda (r) (equal? datum-version (cadr (car r)))) (state-revoked (state) writer)))
+      '(#t published #t))
+(define before-datum (draft-dir-state))
+(want "RR-06 restoring it is refused draft-on-datum-unsupported, naming the block, and no draft file is written"
+      (list (call 'restore datum-version)
+            (equal? (draft-dir-state) before-datum)
+            (file-exists? (string-append (writer-directory store writer) "/working/" D)))
+      (list (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block D) '(use def)) #t #f))
+
 (printf "rows: ~a\n~a failures\nrevoke-restore complete\n" rows bad)

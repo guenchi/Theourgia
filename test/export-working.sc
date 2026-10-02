@@ -29,7 +29,13 @@
 ;; others; W11-export-working uses two draft EDITS, a Markdown section's
 ;; text and a code block's source.
 
-(import (chezscheme))
+(import (chezscheme)
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia reduce) block-hash reduce-applied-cut draft-version)
+        (only (theourgia log) writer-directory)
+        (only (theourgia wire) sexpr->string-extended storable-encode))
+
+(include "plant-draft.ss")
 
 (define bad 0)
 (define rows 0)
@@ -370,7 +376,11 @@
 ;; NEVER: A DATUM BLOCK'S DRAFT IS READ AS ITS BODY (design 7.5.21), not left out of
 ;; the view. It stores no src, so an overlay that replaced only src would
 ;; write the committed body under --working and say nothing.
-(cli "write" "--writer" "w5" h-id "(define (h) 'datumdraft)")
+;;
+;; `write` refuses a draft on a datum block now; one written before that
+;; refusal is still on disk in older stores, so the draft is planted as
+;; working.sc writes one (plant-draft.ss).
+(plant-draft! store "w5" h-id "(define (h) 'datumdraft)")
 (define datum-work (fresh-dir "datum-work"))
 (define datum-plain (fresh-dir "datum-plain"))
 (define datum-work-answer (cli "export-code" datum-work "--datum" "--working" "--writer" "w5"))
@@ -389,7 +399,7 @@
 
 ;; NEVER: A DRAFT THAT DOES NOT READ AS ONE FORM IS REFUSED BY NAME, with the
 ;; block and the reader's reason, and nothing is written.
-(cli "write" "--writer" "w6" h-id "(define (h) 'broken")
+(plant-draft! store "w6" h-id "(define (h) 'broken")
 (define datum-broken (fresh-dir "datum-broken"))
 (want "F17-07 an unreadable datum draft is refused as working-draft-unreadable, naming the block"
       (let* ((answer (cli "export-code" datum-broken "--datum" "--working" "--writer" "w6"))
