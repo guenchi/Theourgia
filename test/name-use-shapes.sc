@@ -28,8 +28,8 @@
 ;; the next 500 45 s). Every other symbol of T is defined in it as a fresh
 ;; variable (an imported variable such as car too, so that set! of it is a
 ;; question of shape, not of an immutable import). Which symbols are syntax
-;; is read from the environment's own symbol list: top-level-syntax?
-;; answers #t for an unbound symbol as well. A name a record definition's (parent <name>) clause
+;; is read from the environment's own symbol list and top-level-bound?:
+;; top-level-syntax? answers #t for an unbound symbol and for a variable. A name a record definition's (parent <name>) clause
 ;; names is defined as a record type; and the right-hand side of a
 ;; define-syntax of three parts is replaced by (syntax-rules ()), because
 ;; expansion EVALUATES a transformer expression and its value is not the
@@ -294,7 +294,9 @@
   (let ((h (make-eq-hashtable)))
     (for-each (lambda (s) (hashtable-set! h s #t)) (environment-symbols base-environment))
     h))
-(define (syntax-symbol? s) (and (hashtable-ref base-symbols s #f) (top-level-syntax? s base-environment)))
+;; A symbol is syntax when the environment lists it and it is not a variable
+;; there: top-level-syntax? answers #t for variables such as car as well.
+(define (syntax-symbol? s) (and (hashtable-ref base-symbols s #f) (not (top-level-bound? s base-environment))))
 ;; -> #t, #f, or undecided when the expander did not answer within its budget.
 (define (accepted? x position)
   (let* ((d (prepared x))
