@@ -1207,7 +1207,7 @@
       (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])
             "Write the store's source back out to a directory." #f 'daemon)
       (list 'def '(def <name> ["--under" <library>] <source> ["--premises" <datum>])
-            "Define or replace one named definition." #f 'daemon)
+            "Define one named definition in a datum library, after its last child. A name one of the library's children already defines is refused (name-exists); def does not replace a definition." #f 'daemon)
       (list 'import-md '(import-md <dir> ["--allow-delete"] ["--premises" <datum>])
             "Read a directory of markdown into the store." #f 'daemon)
       (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])

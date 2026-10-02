@@ -270,6 +270,26 @@
         (in-order (and (pair? a) (car a)) (clause-of a 'values)))
       '(ok ((3))))
 
+;; ---- def's catalogue sentence, against def ---------------------------------------------
+;;
+;; A second def of a name the library already defines is refused, and the
+;; sentence describe gives for def names that refusal and does not offer to
+;; replace.
+(define s5 (datum-store!))
+(define def-answer (run s5 'def "h" "(define (h) 'again)"))
+(define def-sentence
+  (let* ((a (run s5 'describe))
+         (e (and (pair? a) (assq 'verbs (cdr a)) (assq 'def (cdr (assq 'verbs (cdr a))))))
+         (d (and e (assq 'description (cdr e)))))
+    (and d (cadr d))))
+(want "DEF a def of a name the library defines is refused, and describe's def sentence names that refusal and offers no replacing"
+      (in-order (and (pair? def-answer) (car def-answer))
+                (and (pair? def-answer) (pair? (cdr def-answer)) (cadr def-answer))
+                (and (string? def-sentence) (pair? def-answer) (pair? (cdr def-answer))
+                     (string-contains? def-sentence (symbol->string (cadr def-answer))))
+                (and (string? def-sentence) (string-contains? def-sentence "or replace")))
+      '(error name-exists #t #f))
+
 ;; ---- the three routes ------------------------------------------------------------------
 
 (define s3 (datum-store!))
