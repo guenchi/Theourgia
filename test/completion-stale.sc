@@ -59,6 +59,16 @@
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+;; A CELL THAT RAISES IS A FAILED ROW, NOT THE END OF THE FILE: a cell run
+;; on a tree that answers otherwise (the base, a mutant) may meet a shape
+;; it did not build for, and the cells after it must still be asked.
+(define-syntax cell
+  (syntax-rules ()
+    ((_ where body ...)
+     (guard (e (#t (want-1 (string-append "cell at " where " ran to its end")
+                           (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))
+                           'done)))
+       body ...))))
 
 (define script-dir
   (let* ((self (car (command-line)))
@@ -180,7 +190,8 @@
 
 ;; ---- K1 (control): a crash after member 0; a new draft; the retry ---------------
 
-(let* ((st (fresh-store "k1"))
+(cell "line 183"
+  (let* ((st (fresh-store "k1"))
        (A (new-block st "A" "old A")) (B (new-block st "B" "old B")))
   (call st 'write A "frozen A") (call st 'write B "frozen B")
   (let-values (((barriers args) (crash-commit! st (list A B) "R1" 3)))
@@ -195,7 +206,7 @@
         (want "K1 it completes member 1" (subs st "R1") '(plan 0 1))
         (want "K1 exactly one record is written" (- (last-seq st) n0) 1)
         (want "K1 from the plan's frozen text" (src st second) (if (equal? second B) "frozen B" "frozen A"))
-        (want "K1 the newer draft is still a draft" (call st 'read second "--working") '(ok (text "a newer draft")))))))
+        (want "K1 the newer draft is still a draft" (call st 'read second "--working") '(ok (text "a newer draft"))))))))
 
 ;; ---- K2: another request sets C after the plan ---------------------------------
 
@@ -218,7 +229,8 @@
              (retry (cli-run args)))
         (list st ids barriers args e C ev before retry)))))
 
-(let* ((r (k2-like "k2" (lambda (st C ids) (event-of (call st 'set C "src" "theirs")))))
+(cell "line 221"
+  (let* ((r (k2-like "k2" (lambda (st C ids) (event-of (call st 'set C "src" "theirs")))))
        (st (list-ref r 0)) (ids (list-ref r 1)) (e (list-ref r 4)) (C (list-ref r 5)) (ev (list-ref r 6))
        (retry (list-ref r 8)))
   (want "K2 the child stopped at the second append" (list-ref r 2) 2)
@@ -242,11 +254,12 @@
                       (append ids (list "--req" "R7" "--cursor" (cursor-of st))
                               (apply append (map (lambda (id) (list "--working-version" (string-append id "=" (version st id)))) ids))))))
     (want "K7 the rebased drafts land whole under a new request id" (car fresh) 'ok)
-    (want "K7 every block has the new text" (map (lambda (id) (src st id)) ids) '("new A" "new B" "new C" "new D"))))
+    (want "K7 every block has the new text" (map (lambda (id) (src st id)) ids) '("new A" "new B" "new C" "new D")))))
 
 ;; ---- K3: deleting C, moving C, linking from C ----------------------------------
 
-(for-each
+(cell "line 249"
+  (for-each
   (lambda (case-name other!)
     (let* ((r (k2-like "k3" other!)) (st (list-ref r 0)) (C (list-ref r 5)) (retry (list-ref r 8)))
       (want (string-append "K3 " case-name ": the retry writes nothing") (log-bytes st) (list-ref r 7))
@@ -258,11 +271,12 @@
   '("delete" "move" "link")
   (list (lambda (st C ids) (event-of (call st 'del C)))
         (lambda (st C ids) (event-of (call st 'move C (find (lambda (x) (not (equal? x C))) ids))))
-        (lambda (st C ids) (event-of (call st 'link C "cites" (find (lambda (x) (not (equal? x C))) ids))))))
+        (lambda (st C ids) (event-of (call st 'link C "cites" (find (lambda (x) (not (equal? x C))) ids)))))))
 
 ;; ---- K4: two blocks written by others ------------------------------------------
 
-(let* ((st (fresh-store "k4")) (ids (four st)))
+(cell "line 265"
+  (let* ((st (fresh-store "k4")) (ids (four st)))
   (let-values (((barriers args) (crash-commit! st ids "R4" 2)))
     (let* ((C (member-block st "R4" 2)) (D (member-block st "R4" 3)) (e (plan-event st "R4")))
       (call st 'set C "src" "theirs C") (call st 'set D "src" "theirs D")
@@ -271,11 +285,12 @@
         (want "K4 one answer naming both blocks"
               (list (head2 retry) (map (lambda (b) (cadr (assq 'block (filter pair? b)))) (cdr (clause 'blocks retry))))
               (list '(error stale-baseline) (list C D)))
-        (want "K4 with the completion clause" (clause 'completion retry) (list 'completion (list 'plan e) '(present) '(of 4)))))))
+        (want "K4 with the completion clause" (clause 'completion retry) (list 'completion (list 'plan e) '(present) '(of 4))))))))
 
 ;; ---- K5: a crash prefix --------------------------------------------------------
 
-(let* ((st (fresh-store "k5")) (ids (four st)))
+(cell "line 278"
+  (let* ((st (fresh-store "k5")) (ids (four st)))
   (let-values (((barriers args) (crash-commit! st ids "R5" 3)))
     (want "K5 the child stopped at the third append" barriers 3)
     (let* ((C (member-block st "R5" 2)) (A (member-block st "R5" 0)) (e (plan-event st "R5")))
@@ -284,20 +299,22 @@
         (want "K5 the retry writes nothing more" (log-bytes st) before)
         (want "K5 present is member 0" (clause 'completion retry) (list 'completion (list 'plan e) '(present 0) '(of 4)))
         (want "K5 member 0's block has the frozen text" (src st A)
-              (list-ref '("new A" "new B" "new C" "new D") (let loop ((is ids) (k 0)) (if (equal? (car is) A) k (loop (cdr is) (+ k 1))))))))))
+              (list-ref '("new A" "new B" "new C" "new D") (let loop ((is ids) (k 0)) (if (equal? (car is) A) k (loop (cdr is) (+ k 1)))))))))))
 
 ;; ---- K6 (control): writes the plan does not touch ------------------------------
 
-(let* ((st (fresh-store "k6")) (ids (four st)) (E (new-block st "E" "old E")))
+(cell "line 291"
+  (let* ((st (fresh-store "k6")) (ids (four st)) (E (new-block st "E" "old E")))
   (let-values (((barriers args) (crash-commit! st ids "R6" 2)))
     (call st 'set E "src" "theirs E")
     (call st 'insert "--title" "child" "--under" (member-block st "R6" 0))
     (let ((retry (cli-run args)))
-      (want "K6 the retry completes whole" (list (car retry) (subs st "R6")) '(ok (plan 0 1 2 3))))))
+      (want "K6 the retry completes whole" (list (car retry) (subs st "R6")) '(ok (plan 0 1 2 3)))))))
 
 ;; ---- K8 (control): a record in the plan's past is taken back --------------------
 
-(let* ((st (fresh-store "k8")) (ids (four st)))
+(cell "line 300"
+  (let* ((st (fresh-store "k8")) (ids (four st)))
   (call st 'insert "--title" "T" "--req" "R0" "--cursor" (cursor-of st))
   (let-values (((barriers args) (crash-commit! st ids "R8" 2)))
     (let* ((t (find (lambda (e) (eq? 'single (actor-sub (ev-actor e)))) (evidence st "R0")))
@@ -305,11 +322,12 @@
       (log-publish! (car st) "rivalzzz" 1 rival (segment-sha rival))
       (let* ((before (log-bytes st)) (retry (cli-run args)))
         (want "K8 the retry answers unknown" (head2 retry) '(error unknown))
-        (want "K8 and writes nothing" (log-bytes st) before)))))
+        (want "K8 and writes nothing" (log-bytes st) before))))))
 
 ;; ---- K11: two attempts ---------------------------------------------------------
 
-(let* ((st (fresh-store "k11")) (ids (four st)))
+(cell "line 312"
+  (let* ((st (fresh-store "k11")) (ids (four st)))
   (let-values (((barriers args) (crash-commit! st ids "R11" 2)))
     (let ((second (car (crash-at 2 root home cli args))))
       (want "K11 the second attempt stopped after member 0" (list second (subs st "R11")) '(2 (plan 0)))
@@ -318,13 +336,14 @@
         (let* ((before (log-bytes st)) (retry (cli-run args)))
           (want "K11 the third attempt writes nothing" (log-bytes st) before)
           (want "K11 and names C" (list (head2 retry) (clause 'block retry)) (list '(error stale-baseline) (list 'block C)))
-          (want "K11 present is member 0" (clause 'completion retry) (list 'completion (list 'plan e) '(present 0) '(of 4))))))))
-(let* ((st (fresh-store "k11b")) (ids (four st)))
+          (want "K11 present is member 0" (clause 'completion retry) (list 'completion (list 'plan e) '(present 0) '(of 4)))))))))
+(cell "line 322"
+  (let* ((st (fresh-store "k11b")) (ids (four st)))
   (let-values (((barriers args) (crash-commit! st ids "R11" 2)))
     (call st 'set (member-block st "R11" 2) "src" "theirs")
     (let* ((before (log-bytes st)) (retry (cli-run args)))
       (want "K11 with the other's write before the second attempt, it writes nothing at all" (log-bytes st) before)
-      (want "K11 and only the plan is on disk" (subs st "R11") '(plan)))))
+      (want "K11 and only the plan is on disk" (subs st "R11") '(plan))))))
 
 ;; ---- K9, K10, K12, K14: the imports ---------------------------------------------
 
@@ -372,8 +391,10 @@
         (want (string-append "K9 " tag ": the retry writes nothing") (log-bytes st) before)
         (want (string-append "K9 " tag ": and names the block") (list (head2 retry) (clause 'block retry))
               (list '(error stale-baseline) (list 'block target)))))))
-(k9 "k9set" (lambda (ids) (list-ref ids 1)))
-(k9 "k9del" (lambda (ids) (list-ref ids 3)))
+(cell "line 375"
+  (k9 "k9set" (lambda (ids) (list-ref ids 1))))
+(cell "line 376"
+  (k9 "k9del" (lambda (ids) (list-ref ids 3))))
 
 ;; K9 for import-code --datum: a library of four definitions.
 (define (datum-case tag text)
@@ -395,7 +416,8 @@
              (string-append (utf8->string (marker-line scm (string-append "@block " (car row)))) (datum-print (cadr row))))
            rows))
     ")\n"))
-(let* ((c (datum-case "k9d" "(library (a) (export w x y z) (import (rnrs))\n(define w 1)\n(define x 2)\n(define y 3)\n(define z 4))\n"))
+(cell "line 398"
+  (let* ((c (datum-case "k9d" "(library (a) (export w x y z) (import (rnrs))\n(define w 1)\n(define x 2)\n(define y 3)\n(define z 4))\n"))
        (st (car c)) (edit (cadr c)) (lib (library-id st '(a))) (ids (children st lib)))
   (write-file! (string-append edit "/a.sc")
                (b (render-datum st lib (list (list (list-ref ids 0) '(define w 10)) (list (list-ref ids 1) '(define x 20))
@@ -408,11 +430,12 @@
     (let* ((before (log-bytes st)) (retry (cli-run args)))
       (want "K9 datum: the child stopped after the plan" barriers 2)
       (want "K9 datum: the retry writes nothing" (log-bytes st) before)
-      (want "K9 datum: and names the block" (list (head2 retry) (clause 'block retry)) (list '(error stale-baseline) (list 'block target))))))
+      (want "K9 datum: and names the block" (list (head2 retry) (clause 'block retry)) (list '(error stale-baseline) (list 'block target)))))))
 
 ;; K10: own progress is not foreign. An import that changes an entry AND
 ;; moves it (two members on one block), stopped after the first of them.
-(let* ((c (import-case "k10" (list (cons "a.py" (projection-encode py #f (list (list "new" e1) (list "new" e2) (list "new" e3)))))))
+(cell "line 415"
+  (let* ((c (import-case "k10" (list (cons "a.py" (projection-encode py #f (list (list "new" e1) (list "new" e2) (list "new" e3)))))))
        (st (car c)) (edit (cadr c)) (a (file-id st "a.py")) (ids (children st a)))
   (write-file! (string-append edit "/a.py")
                (projection-encode py (header st a) (list (list (list-ref ids 1) e2) (list (list-ref ids 2) e3) (list (list-ref ids 0) (changed 1)))))
@@ -426,7 +449,7 @@
     (let ((retry (cli-run args)))
       (want "K10 the retry completes whole" (car retry) 'ok)
       (want "K10 the entry has its new text, last" (list (csrc st (list-ref ids 0)) (car (reverse (children st a))))
-            (list (utf8->string (changed 1)) (list-ref ids 0))))))
+            (list (utf8->string (changed 1)) (list-ref ids 0)))))))
 
 ;; K14: a NEW file of two entries, interrupted three ways, against a twin.
 (define (tree-of st)
@@ -444,7 +467,8 @@
   (let* ((c (new-file-case "k14twin")) (st (car c)))
     (rpc-dispatch (car st) (list 'import-code (cadr c)) "test")
     (tree-of st)))
-(for-each
+(cell "line 447"
+  (for-each
   (lambda (n)
     (let* ((c (new-file-case "k14")) (st (car c)) (args (import-args st (cadr c) "R14"))
            (barriers (car (crash-at n root home cli args))))
@@ -452,7 +476,7 @@
       (let ((retry (cli-run args)))
         (want (string-append "K14 code, stopped at append " (number->string n) ": the retry completes whole") (car retry) 'ok)
         (want (string-append "K14 code, stopped at append " (number->string n) ": the same tree as the twin") (tree-of st) twin))))
-  '(2 3 4))
+  '(2 3 4)))
 
 ;; The same for import-code --datum: a new library of several forms.
 (define (datum-tree st)
@@ -470,7 +494,8 @@
   (let* ((c (new-library-case "k14dtwin")) (st (car c)))
     (rpc-dispatch (car st) (list 'import-code (cadr c) "--datum") "test")
     (datum-tree st)))
-(for-each
+(cell "line 473"
+  (for-each
   (lambda (n)
     (let* ((c (new-library-case "k14d")) (st (car c))
            (args (append (list "import-code" (cadr c) "--datum") (list "--req" "R14d" "--cursor" (cursor-of st) "--store" (car st))))
@@ -479,7 +504,7 @@
       (let ((retry (cli-run args)))
         (want (string-append "K14 datum, stopped at append " (number->string n) ": the retry completes whole") (car retry) 'ok)
         (want (string-append "K14 datum, stopped at append " (number->string n) ": the same tree as the twin") (datum-tree st) datum-twin))))
-  '(2 3 4))
+  '(2 3 4)))
 
 ;; K14's data row: the marker-shaped list inside a member's VALUE is data.
 ;; The uninterrupted import appends the same record; the reducer gates it
@@ -494,7 +519,8 @@
   (let* ((c (data-row-case "k14dt")) (st (car c))
          (a (rpc-dispatch (car st) (list 'import-code (cadr c) "--datum" "--req" "RD" "--cursor" (cursor-of st)) "test")))
     (list (car a) (cddr (ev-payload (find (lambda (e) (eqv? 0 (actor-sub (ev-actor e)))) (evidence st "RD")))))))
-(let* ((c (data-row-case "k14d")) (st (car c))
+(cell "line 497"
+  (let* ((c (data-row-case "k14d")) (st (car c))
        (args (append (list "import-code" (cadr c) "--datum") (list "--req" "RD" "--cursor" (cursor-of st) "--store" (car st))))
        (barriers (car (crash-at 2 root home cli args)))
        (e (plan-event st "RD"))
@@ -508,7 +534,7 @@
         (list 'batch '(ok error) '(error unknown) (list 'not-applied (ev-event member))))
   (want "K14 data row: present is empty, of 1, done 1"
         (list (clause 'completion (last-answer retry)) (clause 'done retry))
-        (list (list 'completion (list 'plan e) '(present) '(of 1)) '(done 1))))
+        (list (list 'completion (list 'plan e) '(present) '(of 1)) '(done 1)))))
 
 ;; K12 (limit 1, pinned as it is): the parent and the sibling a member
 ;; names are not judged.
@@ -520,7 +546,8 @@
                                    (cons "p.py" (projection-encode py #f (list (list "new" e4)))))))
          (st (car c)) (edit (cadr c)) (a (file-id st "a.py")) (P (file-id st "p.py")) (ids (children st a)))
     (list st edit a P ids)))
-(for-each
+(cell "line 523"
+  (for-each
   (lambda (label other! expect)
     (let* ((k (k12-case "k12")) (st (car k)) (edit (cadr k)) (a (caddr k)) (P (cadddr k)) (ids (list-ref k 4)))
       ;; a set of A in a.py; an insertion into the empty P of p.py
@@ -543,19 +570,20 @@
         (lambda (st P) (call st 'del P)))
   (list (lambda (retry P) (eq? (car retry) 'ok))
         (lambda (retry P) (equal? (list (car retry) (map car (answers retry)) (last-answer retry) (clause 'done retry))
-                                  (list 'batch '(ok ok error) (list 'error 'deleted P) '(done 2))))))
+                                  (list 'batch '(ok ok error) (list 'error 'deleted P) '(done 2)))))))
 ;; A MOVE UNDER A DELETED PARENT IS WRITTEN. An import cannot move an
 ;; entry into another file (that is refused as foreign-file), so the moves
 ;; here reorder a.py's entries, and another request deletes a.py's file
 ;; block, the parent the moves name.
-(let* ((k (k12-case "k12m")) (st (car k)) (edit (cadr k)) (a (caddr k)) (ids (list-ref k 4)))
+(cell "line 551"
+  (let* ((k (k12-case "k12m")) (st (car k)) (edit (cadr k)) (a (caddr k)) (ids (list-ref k 4)))
   (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (cadr ids) e2) (list (car ids) e1))))
   (let* ((args (import-args st edit "R12m")) (barriers (car (crash-at 2 root home cli args))))
     (printf "observe K12 move: plan entries ~s\n" (plan-entries st "R12m"))
     (call st 'del a)
     (let ((retry (cli-run args)))
       (printf "observe K12 move: retry ~s\n" retry)
-      (want "K12 a move under a deleted parent is written, as on the base" (car retry) 'ok))))
+      (want "K12 a move under a deleted parent is written, as on the base" (car retry) 'ok)))))
 ;; ---- forged plans: K14's fabricated plans, K19 ------------------------------------
 ;;
 ;; A PLAN NO PRODUCER WRITES, published under the identity a later
@@ -586,7 +614,8 @@
                      (make-write-request "test" 'commit (list (list-ref f 1)) "MM" (list-ref f 5))
                      (list (list-ref f 4)))))
 (define section '((kind . section) (title . "N")))
-(for-each
+(cell "line 589"
+  (for-each
   (lambda (label entries expected other?)
     (let* ((f (forged-store "k14f")) (st (car f)) (M (cadr f)))
       (publish-plan! f (entries M) #f)
@@ -600,7 +629,7 @@
         (lambda (M) (list (cons 0 (list 'insert '("#%new" 1) #f section)) (cons 1 (list 'insert 'root #f section))))
         (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section)))))
   '(0 5 1 0)
-  '(#f #f #f #t))
+  '(#f #f #f #t)))
 
 ;; K12's sibling case. AN IMPORT CANNOT NAME A SIBLING WITHOUT TARGETING
 ;; IT: it restates every entry's order with a move, so the sibling is a
@@ -609,19 +638,21 @@
 ;; entry after S" carries a move of S). The limit is about a member that
 ;; names S only as its sibling, so the plan is forged: a set, then an
 ;; insert after S.
-(let* ((f (forged-store "k12s")) (st (car f)) (M (cadr f)) (S (new-block st "S" "s")))
+(cell "line 612"
+  (let* ((f (forged-store "k12s")) (st (car f)) (M (cadr f)) (S (new-block st "S" "s")))
   (set-car! (list-tail f 5) (or (assoc (cdr st) (reduce-applied-cut (state st))) (cons (cdr st) 0)))
   (publish-plan! f (list (cons 0 (list 'set M 'src "the text")) (cons 1 (list 'insert 'root S section))) #f)
   (call st 'del S)
   (let ((a (forged-retry f)))
     (want "K12 a member to follow a deleted sibling: the members before it, then unknown-sibling"
           (list (car a) (map car (answers a)) (last-answer a) (clause 'done a))
-          (list 'batch '(ok error) (list 'error 'unknown-sibling S) '(done 1)))))
+          (list 'batch '(ok error) (list 'error 'unknown-sibling S) '(done 1))))))
 
 ;; K19: the hash check, alone. The consumes item names a based-on that is
 ;; not the block's hash, and its version is computed from that based-on,
 ;; so consumes-mismatch passes; nobody else writes.
-(let* ((f (forged-store "k19")) (st (car f)) (M (cadr f)) (cut (list-ref f 3))
+(cell "line 624"
+  (let* ((f (forged-store "k19")) (st (car f)) (M (cadr f)) (cut (list-ref f 3))
        (fake (make-string 64 #\0))
        (named (draft-version (string->utf8 "the text") fake cut))
        (e (publish-plan! f (list (cons 0 (list 'set M 'src "the text"))) (list 'consumes (cdr st) (list (list M named fake cut))))))
@@ -632,7 +663,7 @@
           (list (list 'block M) (list 'based-on fake) '(since) '(reason candidate-set-changed)))
     (want "K19 and the completion clause" (clause 'completion a) (list 'completion (list 'plan e) '(present) '(of 1)))
     (want "K19 and writes nothing" (log-bytes st) before)
-    (want "K19 the block keeps its text" (src st M) "old")))
+    (want "K19 the block keeps its text" (src st M) "old"))))
 
 ;; ---- mirrored records: K15, K16, K18, K20 -----------------------------------------
 ;;
@@ -660,7 +691,8 @@
 (define (other-single who req)
   (let ((after (cons who 0)))
     (list "review" (cons who req) 'single (request-fingerprint "review" 'set '("x") after) #f after)))
-(for-each
+(cell "line 663"
+  (for-each
   (lambda (label arrange)
     (let* ((r (k15 "k15" arrange)) (st (list-ref r 0)) (e (list-ref r 1)) (X (list-ref r 2)) (Y (list-ref r 3))
            (mirrored (list-ref r 4)) (retry (list-ref r 5)))
@@ -679,11 +711,12 @@
         (lambda (st Y next)
           (publish! st "mirrorcd" (list (list 1 (list next) '(put ((kind . section) (title . "U") (parent . root) (ord . 9))) "peer")))
           (publish! st "mirrorab" (list (list 1 (list (cons "mirrorcd" 1)) (list 'set Y 'src "q") (other-single "mirrorab" "other"))))
-          (cons "mirrorab" 1))))
+          (cons "mirrorab" 1)))))
 
 ;; K16 (control): delivered unapplied records this completion does not
 ;; release do not hold it.
-(let* ((st (fresh-store "k16")) (ids (two st)))
+(cell "line 686"
+  (let* ((st (fresh-store "k16")) (ids (two st)))
   (let-values (((barriers args) (crash-commit! st ids "R16" 2)))
     (let ((Y (member-block st "R16" 1)))
       ;; waits for a THIRD writer's record, which the completion does not write
@@ -694,8 +727,9 @@
       (publish! st "thirdzzz" (list (list 1 '() '(put ((kind . section) (title . "Third") (parent . root) (ord . 7))) "peer")))
       (want "K16 the mirrored set is then applied beside the commit: B has two candidates"
             (let ((v (src st Y))) (and (pair? v) (eq? (car v) 'conflict) (length (cadr v))))
-            2))))
-(let* ((st (fresh-store "k16b")) (ids (two st)))
+            2)))))
+(cell "line 698"
+  (let* ((st (fresh-store "k16b")) (ids (two st)))
   (let-values (((barriers args) (crash-commit! st ids "R16" 2)))
     (let* ((Y (member-block st "R16" 1))
            (after (cons "forgezzz" 0))
@@ -706,7 +740,7 @@
       (publish! st "forgezzz" (list (list 1 '() (list 'plan "other" fp after (list (cons 0 (list 'set Y 'src "declared")))) (actor 'plan #f))
                                     (list 2 '() (list 'set Y 'src "different") (actor 0 (cons "forgezzz" 1)))))
       (let ((retry (cli-run args)))
-        (want "K16 a gated forged member of another plan does not hold the retry" (list (car retry) (subs st "R16")) '(ok (plan 0 1)))))))
+        (want "K16 a gated forged member of another plan does not hold the retry" (list (car retry) (subs st "R16")) '(ok (plan 0 1))))))))
 
 ;; K18, K20: a premise taken back by what the write released.
 (define (contest tag tag-before-plan?)
@@ -722,20 +756,22 @@
             (publish! st "rivalzzz" (list (list 1 (list next) (ev-payload t) (ev-actor t))))
             (let* ((n0 (record-count st)) (retry (cli-run args)))
               (list st e retry (- (record-count st) n0) barriers))))))))
-(let* ((r (contest "k18" #t)) (st (car r)) (e (cadr r)) (retry (caddr r)))
+(cell "line 725"
+  (let* ((r (contest "k18" #t)) (st (car r)) (e (cadr r)) (retry (caddr r)))
   (want "K18 the completion stops with unknown, the plan not applied"
         (list (head2 (last-answer retry)) (clause 'not-applied (last-answer retry)))
         (list '(error unknown) (list 'not-applied e)))
   (want "K18 and its completion clause" (clause 'completion (last-answer retry)) (list 'completion (list 'plan e) '(present) '(of 2)))
-  (want "K18 nothing is appended after member 0" (list-ref r 3) 1))
-(let* ((r (contest "k20" #f)) (st (car r)) (e (cadr r)) (retry (caddr r)))
+  (want "K18 nothing is appended after member 0" (list-ref r 3) 1)))
+(cell "line 731"
+  (let* ((r (contest "k20" #f)) (st (car r)) (e (cadr r)) (retry (caddr r)))
   (want "K20 a batch of member 0's ok and unknown for member 0's own record"
         (list (car retry) (map car (answers retry)) (head2 (last-answer retry)))
         (list 'batch '(ok error) '(error unknown)))
   (want "K20 naming member 0's event, and nothing applied"
         (list (clause 'not-applied (last-answer retry)) (clause 'completion (last-answer retry)) (clause 'done retry))
         (list (list 'not-applied (event-of (car (answers retry)))) (list 'completion (list 'plan e) '(present) '(of 2)) '(done 1)))
-  (want "K20 one record appended" (list-ref r 3) 1))
+  (want "K20 one record appended" (list-ref r 3) 1)))
 
 ;; ---- K17: baseline-refusal answers what it answered before -------------------------
 ;;
@@ -777,7 +813,8 @@
                          (cons 'since (map entry-of ordered)))
                    (if (null? ordered) (list '(reason candidate-set-changed) (list 'conflicts id)) '())
                    (if omitted? (list '(truncated #t) (list 'retrieve (list 'log id) (list 'read id))) '()))))))
-(let* ((st (fresh-store "k17")) (A (new-block st "A" "a0")) (h0 (block-hash (state st) A))
+(cell "line 780"
+  (let* ((st (fresh-store "k17")) (A (new-block st "A" "a0")) (h0 (block-hash (state st) A))
        (cut0 (reduce-applied-cut (state st))))
   (let loop ((k 1))
     (when (<= k 10)
@@ -793,6 +830,6 @@
     (want "K17 a long body is elided, as the base"
           (begin (call st 'set A "src" (make-string 2000 #\x))
                  (let ((s (state st))) (equal? (baseline-refusal s A h0 cut0) (reference-refusal s A h0 cut0))))
-          #t)))
+          #t))))
 
 (printf "rows: ~a\n~a failures\ncompletion-stale complete\n" rows bad)
