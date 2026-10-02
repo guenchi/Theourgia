@@ -3009,6 +3009,7 @@ longer than 1048576 characters is refused `(error bad-source (reason input-limit
     (error eval-value (kind <t>) (index <i>))
     (error bad-source (reason input-limit|expected-one-form|expected-one-cut))
     (error eval-context (reason unavailable-cut|library-required))
+    (error eval-context (reason draft-on-datum-unsupported) (block <id>))
     (error eval-denied (operation library-import))
     (error eval-worker-exit (status <n>|unknown))
     (error eval-worker-unavailable (reason ...))
@@ -3018,6 +3019,12 @@ longer than 1048576 characters is refused `(error bad-source (reason input-limit
 `procedure`, `port`, `cycle`, `size` or `unsupported` -- the kinds of
 `unwritable-value` below, except that a value too large is `size` here and
 `too-large` there. `<i>` is its position among the values.
+
+`draft-on-datum-unsupported` is a `--working` view in which the library named
+by `--under`, or one of its definitions, holds a draft: a datum block's text
+is its body, and a draft is not read as one. `<id>` is the block holding it.
+A writer whose view holds no such draft evaluates as before. `write` refuses
+to make such a draft; a store written before that can still hold one.
 
 NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
