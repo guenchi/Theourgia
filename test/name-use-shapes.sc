@@ -172,7 +172,11 @@
   '(((syntax-rules) any not-a-seed "a transformer is a macro of its own; the walk walks it whole by design")
     ((syntax-case) any not-a-seed "as syntax-rules")
     ((let-syntax) any not-a-seed "a macro scope; walked whole by design")
-    ((letrec-syntax) any not-a-seed "as let-syntax")))
+    ((letrec-syntax) any not-a-seed "as let-syntax")
+    ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) top looser
+     "the reference's own artifact: it replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined")
+    ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) body looser
+     "as at the top form")))
 
 ;; ---- the generator ----------------------------------------------------------------------
 
@@ -223,13 +227,17 @@
 (define o4k-names '(begin define else => lambda quote))
 (define operators '(O1 O2 O3 O4 O4k O5 O6 O7 O8 O9))
 
-;; Each operator once at every position but the outer head. -> (form . operator) pairs.
+;; Each operator once at every position but the outer head.
+;; -> (form operator place) triples, place being (path . index) for a
+;; replacement of one operand and #f otherwise.
 (define (mutants-of seed)
   (let ((names (dedup (filter (lambda (s) (not (eq? s (car seed)))) (symbols-in (cdr seed))))))
     (apply append
            (map (lambda (path)
                   (let* ((l (get seed path)) (n (length l)) (outer? (null? path)))
-                    (define (at f op) (cons (update seed path f) op))
+                    (define (at f op) (list (update seed path f) op #f))
+                    ;; A replacement keeps its place: the list's path and the index.
+                    (define (at-place f op i) (list (update seed path f) op (cons path i)))
                     (append
                       (list (at (lambda (l) (append l '((begin)))) 'O6)
                             (at (lambda (l) (append l '((define zz 0)))) 'O7))
@@ -241,12 +249,12 @@
                                           (append
                                             (list (at (lambda (l) (splice l i '())) 'O1)
                                                   (at (lambda (l) (splice l i (list e e))) 'O2))
-                                            (map (lambda (r) (at (lambda (l) (splice l i (list r))) 'O3)) o3-replacements)
+                                            (map (lambda (r) (at-place (lambda (l) (splice l i (list r))) 'O3 i)) o3-replacements)
                                             (if (symbol? e)
                                                 (append
-                                                  (map (lambda (s) (at (lambda (l) (splice l i (list s))) 'O4))
+                                                  (map (lambda (s) (at-place (lambda (l) (splice l i (list s))) 'O4 i))
                                                        (filter (lambda (s) (not (eq? s e))) names))
-                                                  (map (lambda (s) (at (lambda (l) (splice l i (list s))) 'O4k))
+                                                  (map (lambda (s) (at-place (lambda (l) (splice l i (list s))) 'O4k i))
                                                        (filter (lambda (s) (not (eq? s e))) o4k-names)))
                                                 '())
                                             (if (< (+ i 1) n)
@@ -261,15 +269,22 @@
                                   (iota n))))))
                 (list-paths seed)))))
 
+(define all-triples
+  (filter (lambda (p) (and (pair? (car p)) (memq (car (car p)) (append known-heads defining-heads))))
+          (apply append (map mutants-of seeds))))
 ;; (form . operator), each form once, the first operator that made it kept.
 (define generated-pairs
   (let ((seen (make-hashtable equal-hash equal?)))
-    (filter (lambda (p)
-              (and (pair? (car p)) (memq (car (car p)) (append known-heads defining-heads))
-                   (not (hashtable-ref seen (car p) #f))
-                   (begin (hashtable-set! seen (car p) #t) #t)))
-            (apply append (map mutants-of seeds)))))
+    (filter (lambda (p) (and (not (hashtable-ref seen (car p) #f)) (begin (hashtable-set! seen (car p) #t) #t)))
+            (map (lambda (t) (cons (car t) (cadr t))) all-triples))))
 (define generated (map car generated-pairs))
+;; Every replacement that made a form: form -> ((operator . place) ...).
+(define replacements
+  (let ((h (make-hashtable equal-hash equal?)))
+    (for-each (lambda (t) (when (caddr t)
+                            (hashtable-set! h (car t) (cons (cons (cadr t) (caddr t)) (hashtable-ref h (car t) '())))))
+              all-triples)
+    h))
 (define space (dedup (append seeds generated pinned)))
 (define (positions-of x) (if (memq (car x) defining-heads) '(top body) '(top)))
 
@@ -316,6 +331,25 @@
 ;; THE WALK: does its rule fire on the form? A raise is 'raised.
 (define (fired x) (guard (e (#t 'raised)) (name-use-rule-fires? x)))
 
+;; ---- class A: the operand, not the shape ---------------------------------------------
+;;
+;; A STATED LIMIT OF THE RULE (main's ruling): what stands in an expression
+;; slot is judged where the walk meets it, not by the enclosing form's rule.
+;; A disagreement is class A when the rule fired, Chez refused, the form was
+;; made by replacing ONE operand (O3, O4, O4k; O8 and O9 change the list's
+;; length or spine, never one operand), and a fresh variable in that one
+;; place gives a form on which the rule still fires and which Chez accepts:
+;; the fault is then in the operand. Recognised by this predicate, never by
+;; a list.
+(define (with-fresh-variable form place)
+  (update form (car place) (lambda (l) (splice l (cdr place) (list 'zfresh)))))
+(define (class-a? v)
+  (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
+       (exists (lambda (r)
+                 (let ((f2 (with-fresh-variable (car v) (cdr r))))
+                   (and (eq? (fired f2) #t) (eq? (accepted? f2 (cadr v)) #t))))
+               (hashtable-ref replacements (car v) '()))))
+
 ;; ---- the rows ----------------------------------------------------------------------------
 
 (want "S0 CONTROL: the reference is asked: it accepts (lambda (x) x), refuses (lambda (x)) and (if), and lets set! assign an imported name"
@@ -337,12 +371,22 @@
   (find (lambda (e) (and (equal? (car e) (car v)) (memq (cadr e) (list (cadr v) 'any)))) exceptions))
 (define disagreements
   (filter (lambda (v) (not (eq? (caddr v) (cadddr v)))) verdicts))
+(define excepted
+  (filter (lambda (v) (let ((e (exception-for v))) (and e (eq? (caddr e) (direction v))))) disagreements))
+(define class-a (filter (lambda (v) (and (not (member v excepted)) (class-a? v))) disagreements))
 (define unexplained
-  (filter (lambda (v) (let ((e (exception-for v))) (not (and e (eq? (caddr e) (direction v))))))
-          disagreements))
-(printf "   space: ~a forms (seeds ~a, generated ~a, pinned ~a), ~a verdicts; disagreements ~a, unexplained ~a\n"
+  (filter (lambda (v) (not (or (member v excepted) (member v class-a)))) disagreements))
+(printf "   space: ~a forms (seeds ~a, generated ~a, pinned ~a), ~a verdicts; disagreements ~a: class A ~a, excepted ~a, unexplained ~a\n"
         (length space) (length seeds) (length generated) (length pinned) (length verdicts)
-        (length disagreements) (length unexplained))
+        (length disagreements) (length class-a) (length excepted) (length unexplained))
+(define (count-by key vs)
+  (let ((h (make-hashtable equal-hash equal?)))
+    (for-each (lambda (v) (hashtable-update! h (key v) (lambda (n) (+ n 1)) 0)) vs)
+    (let-values (((ks ns) (hashtable-entries h)))
+      (list-sort (lambda (a b) (string<? (format "~a" (car a)) (format "~a" (car b)))) (map cons (vector->list ks) (vector->list ns))))))
+(printf "   class A by head: ~s\n" (count-by (lambda (v) (car (car v))) class-a))
+(printf "   class A by operator: ~s\n"
+        (count-by (lambda (v) (let ((r (hashtable-ref replacements (car v) '()))) (if (pair? r) (car (car r)) 'none))) class-a))
 (for-each (lambda (op) (printf "   operator ~a: ~a forms\n" op (length (filter (lambda (p) (eq? (cdr p) op)) generated-pairs))))
           operators)
 (for-each (lambda (v) (printf "   DISAGREE ~a ~a ~s\n" (direction v) (cadr v) (car v))) unexplained)
@@ -357,7 +401,7 @@
 (want "S1 CONTROL: coverage -- every pinned form has its verdicts"
       (filter (lambda (x) (not (assoc x verdicts))) pinned)
       '())
-(want "S2 over the whole space, the walk's rule fires if and only if Chez accepts, but for the exception table"
+(want "S2 over the whole space, the walk's rule fires if and only if Chez accepts, but for class A and the exception table"
       (length unexplained)
       0)
 (want "S3 every exception whose form is in the space still disagrees as it says"
@@ -369,6 +413,10 @@
       '())
 (want "S4 every pinned gap agrees, or is in the exception table with its reason"
       (dedup (map car (filter (lambda (v) (member (car v) pinned)) unexplained)))
+      '())
+
+(want "S5 CONTROL: no pinned known gap is classified as class A"
+      (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-a? v))) verdicts)))
       '())
 
 (printf "\n~a failures\nrows: ~a\nname-use-shapes complete\n" bad rows)
