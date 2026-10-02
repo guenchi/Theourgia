@@ -376,24 +376,28 @@
 (want "EV-14 --output-bytes: 0, abc and 127 are refused naming the option and the reason"
       (limit-readings "--output-bytes" "127")
       (limit-wants "--output-bytes" 128 1048576))
-;; THE BOUNDS THEMSELVES: lo-1 is refused, lo and hi are taken (the
-;; evaluation answers ok), hi+1 is out-of-range naming the range.
+;; THE BOUNDS THEMSELVES: lo-1 is refused, lo and hi are taken -- the
+;; limit is accepted, whatever the evaluation then answers (a 1 ms timeout
+;; may well stop it on time) -- and hi+1 is out-of-range naming the range.
+(define (taken-or-refused out)
+  (let ((r (option-clause out)))
+    (if (equal? (cadr r) '(reason eval-arguments)) (list 'refused (caddr r)) 'taken)))
 (define (bound-readings name lo hi)
   (list (caddr (option-clause (evaluate "(+ 1 2)" name (number->string (- lo 1)))))
-        (car (option-clause (evaluate "(+ 1 2)" name (number->string lo))))
-        (car (option-clause (evaluate "(+ 1 2)" name (number->string hi))))
+        (taken-or-refused (evaluate "(+ 1 2)" name (number->string lo)))
+        (taken-or-refused (evaluate "(+ 1 2)" name (number->string hi)))
         (caddr (option-clause (evaluate "(+ 1 2)" name (number->string (+ hi 1)))))))
 (want "EV-14 --timeout-ms at its bounds: 0 not-positive, 1 and 60000 taken, 60001 out of range"
       (bound-readings "--timeout-ms" 1 60000)
-      (list '(option "--timeout-ms" (reason not-positive)) 'ok 'ok
+      (list '(option "--timeout-ms" (reason not-positive)) 'taken 'taken
             '(option "--timeout-ms" (reason out-of-range) (range 1 60000))))
 (want "EV-14 --memory-bytes at its bounds: 1048575 out of range, 1048576 and 2147483648 taken, 2147483649 out of range"
       (bound-readings "--memory-bytes" 1048576 2147483648)
-      (list '(option "--memory-bytes" (reason out-of-range) (range 1048576 2147483648)) 'ok 'ok
+      (list '(option "--memory-bytes" (reason out-of-range) (range 1048576 2147483648)) 'taken 'taken
             '(option "--memory-bytes" (reason out-of-range) (range 1048576 2147483648))))
 (want "EV-14 --output-bytes at its bounds: 127 out of range, 128 and 1048576 taken, 1048577 out of range"
       (bound-readings "--output-bytes" 128 1048576)
-      (list '(option "--output-bytes" (reason out-of-range) (range 128 1048576)) 'ok 'ok
+      (list '(option "--output-bytes" (reason out-of-range) (range 128 1048576)) 'taken 'taken
             '(option "--output-bytes" (reason out-of-range) (range 128 1048576))))
 (want "EV-14 a count is a whole number: 1.5 is not-a-number"
       (caddr (option-clause (evaluate "(+ 1 2)" "--timeout-ms" "1.5")))
