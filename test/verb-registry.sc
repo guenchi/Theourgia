@@ -88,6 +88,16 @@
 
 (rpc-dispatch store '(init) "test")
 (define (run . args) (rpc-dispatch store args "test"))
+;; THE RECEIPT A READ NOW ENDS WITH -- a trailing (versions ...), then a
+;; trailing (cut ...) -- is read-receipt.sc's to check; these rows compare
+;; what the answer said before it, so they read the answer without it.
+(define (without-receipt a)
+  (let* ((drop (lambda (a head)
+                 (if (and (pair? a) (list? a) (pair? (cdr a))
+                          (let ((l (list-ref a (- (length a) 1)))) (and (pair? l) (eq? (car l) head))))
+                     (list-head a (- (length a) 1))
+                     a))))
+    (drop (drop a 'versions) 'cut)))
 (define representative '((conflicts) (search "no such text anywhere") (describe-verbs)))
 (define (answer-of form)
   (if (equal? form '(describe-verbs))
@@ -145,7 +155,7 @@
         (list (cadr (assq 'usage (cdr e))) (cadr (assq 'route (cdr e)))))
       '((init ["--template" <name>] ["--template-file" <template-file>]) local))
 (want "V1 three representative built-ins answer as on the base"
-      (map (lambda (form) (equal? (answer-of form)
+      (map (lambda (form) (equal? (without-receipt (answer-of form))
                                   (if (equal? form '(describe-verbs))
                                       (append (base-of 'describe-verbs) registered)
                                       (cadr (assoc form (base-of 'answers))))))

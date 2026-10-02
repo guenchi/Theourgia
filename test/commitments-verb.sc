@@ -92,7 +92,19 @@
 (define (code title) `(put ((kind . code) (title . ,title))))
 
 ;; (q r) is the default, `--open`; options as keywords after it.
+;; THE RECEIPT A READ NOW ENDS WITH -- a trailing (versions ...), then a
+;; trailing (cut ...) -- is read-receipt.sc's to check; these rows compare
+;; what the answer said before it, so they read the answer without it.
+(define (without-receipt a)
+  (let* ((drop (lambda (a head)
+                 (if (and (pair? a) (list? a) (pair? (cdr a))
+                          (let ((l (list-ref a (- (length a) 1)))) (and (pair? l) (eq? (car l) head))))
+                     (list-head a (- (length a) 1))
+                     a))))
+    (drop (drop a 'versions) 'cut)))
 (define (q r . opts)
+  (without-receipt (q-with-receipt r opts)))
+(define (q-with-receipt r opts)
   (commitments-answer r
                       (if (memq 'all opts) 'all 'open)
                       (and (memq 'drifted opts) #t)
@@ -267,6 +279,20 @@
 (want "C2 concurrent-with names every listed decision the origin is not ordered against"
       (map (lambda (id) (clause (q c2w) id 'concurrent-with)) '("m.2" "z.3" "a.1"))
       '(("z.3" "a.1") ("m.2") ("m.2")))
+
+;; THE RECEIPT LISTS BLOCKS IN THE ORDER THE ANSWER FIRST NAMES THEM. A is
+;; listed first, B (after A) second, C (concurrent with both) last; A's row
+;; names C under concurrent-with, so C appears before B.
+(define c2r
+  (state-of `("a" 1 () ,(decision "A"))
+            `("a" 2 () ,(decision "B"))
+            `("c" 1 () ,(decision "C"))))
+(want "C2 the receipt's versions follow first appearance: the listing is A B C and A's row names C"
+      (let ((a (q-with-receipt c2r '())))
+        (list (ids (without-receipt a))
+              (clause (without-receipt a) "a.1" 'concurrent-with)
+              (map car (cadr (assq 'versions (cdr a))))))
+      '(("a.1" "a.2" "c.1") ("c.1") ("a.1" "c.1" "a.2")))
 
 ;; ---- C3: drift ----------------------------------------------------------------------
 

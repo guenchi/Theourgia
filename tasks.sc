@@ -102,10 +102,13 @@
       (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) state under)
           (let ((rows (task-rows state scope status batch)))
-            ((dispatch-helper 'items)
-             (if (and root scope)
-                 (append rows (list (list 'scope root (list 'outside (rows-left-out rows (task-rows state #f status batch))))))
-                 rows))))))
+            (append
+              ((dispatch-helper 'items)
+               (if (and root scope)
+                   (append rows (list (list 'scope root (list 'outside (rows-left-out rows (task-rows state #f status batch))))))
+                   rows))
+              ;; Each task listed; the scope item names a root, not a result.
+              ((dispatch-helper 'receipt) state (map cadr rows)))))))
 
   ;; The rows for one scope (#f: the whole store), with the request's filters.
   (define (task-rows state scope status batch)

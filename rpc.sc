@@ -203,6 +203,46 @@
            (guard (e (#t (list 'unavailable (list 'reason (failure-text e)))))
              (block-hash state id)))))
 
+  ;; NEVER: WHAT A READER WAS GIVEN IS SAID IN THE ANSWER, BY ONE PROCEDURE. A
+  ;; receipt is `(cut <alist>)`, the applied cut of the state the answer was
+  ;; read from, and `(versions ((<id> . <hash>) ...))`, one pair for every
+  ;; block whose content the answer shows or whose id it lists as a result,
+  ;; in order of first appearance and each id once -- the token
+  ;; `--if-unchanged` compares, by `read-version`, so a block that cannot be
+  ;; hashed is `(<id> unavailable (reason ...))` and a deleted one is left
+  ;; out, as `read --recursive` already answered. A handler appends what it
+  ;; asks for AFTER its own clauses and inserts nothing before or between
+  ;; them; `parts` names the clauses wanted, both by default, so a verb that
+  ;; already says its cut asks for the versions only. With `ids` #f there
+  ;; are no versions: the verb lists no block as a result. A second part is
+  ;; an alist of versions the handler already read, so a block is hashed
+  ;; once per answer.
+  (define (receipt state ids . parts)
+    (let ((want (if (pair? parts) (car parts) '(cut versions)))
+          (known (if (and (pair? parts) (pair? (cdr parts))) (cadr parts) '())))
+      (append
+        (if (memq 'cut want) (list (list 'cut (reduce-applied-cut state))) '())
+        (if (and ids (memq 'versions want))
+            (list (list 'versions (receipt-versions state ids known)))
+            '()))))
+
+  (define (receipt-versions state ids known)
+    (let ((seen (make-hashtable string-hash string=?)))
+      (let loop ((ids ids) (out '()))
+        (cond
+          ((null? ids) (reverse out))
+          ((or (not (string? (car ids))) (hashtable-ref seen (car ids) #f)) (loop (cdr ids) out))
+          (else
+           (hashtable-set! seen (car ids) #t)
+           (let ((v (let ((k (assoc (car ids) known))) (if k (cdr k) (read-version state (car ids))))))
+             (loop (cdr ids) (if v (cons (cons (car ids) v) out) out))))))))
+
+  ;; A CLAUSE THE DISPATCHER ADDS AFTER THE HANDLER HAS ANSWERED -- today
+  ;; `(incomplete ...)` -- FOLLOWS THE RECEIPT: the order is the handler's
+  ;; clauses, the receipt, the dispatcher's clauses. The handler cannot append
+  ;; after what is added once it has returned, and nothing reorders them; an
+  ;; answer with the receipt removed is still the answer it was.
+
   ;; THE CLAUSES A MACHINE READS, AND WHY THE CORE DOES NOT GATE THEM.
   ;;
   ;; These appear only under `--wire`, and that is the RENDERER's doing, not
@@ -654,7 +694,7 @@
     (case name
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((count-argument) count-argument)
-      ((usage) usage)
+      ((usage) usage) ((receipt) receipt)
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
   (define (one-write store actor intent req . check)
@@ -1406,11 +1446,12 @@
                      (guarded (lambda ()
                                 (let ((st (reduction-for store state)))
                                   (if (not (and with-signatures (derived-tables? store 'signatures)))
-                                      (text (outline-text st (and depth (count-argument depth)) with-keywords))
+                                      (append (text (outline-text st (and depth (count-argument depth)) with-keywords))
+                                              (receipt st #f))
                                       (let-values (((signature-of finish) ((derived 'outline-signatures) store st)))
                                         (let ((listing (outline-text st (and depth (count-argument depth))
                                                                      with-keywords signature-of)))
-                                          (append (text listing) (finish))))))))))))))
+                                          (append (text listing) (finish) (receipt st #f))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections
@@ -1472,7 +1513,8 @@
                                   (b (state-read state (car rest))))
                              (cond
                                ((not b) (unknown-id state (car rest)))
-                               (deep? (text (block-text state (car rest) #f)))
+                               (deep? (append (text (block-text state (car rest) #f))
+                                              (receipt state (subtree-ids state (car rest)))))
                                (else
                                 ;; ONE BLOCK'S OWN BYTES, which is not the
                                 ;; same question and is answered from the
@@ -1504,7 +1546,8 @@
                                        (front (str 'front))
                                        (head (str 'heading-src))
                                        (body (str 'src)))
-                                  (text (string-append front head body)))))))))
+                                  (append (text (string-append front head body))
+                                          (receipt state (list (car rest)))))))))))
                       (deep?
                        (guarded
                          (lambda ()
@@ -1519,7 +1562,8 @@
                                  (append (items (map (lambda (id) (view-read state id)) ids))
                                          (list (list 'versions
                                                      (filter cdr (map (lambda (id) (cons id (read-version state id)))
-                                                                      ids))))))))))
+                                                                      ids))))
+                                         (receipt state #f '(cut))))))))
                       (else
                        (guarded
                          (lambda ()
@@ -1527,8 +1571,10 @@
                                   (b (view-read state (car rest)))
                                   (v (and b (read-version state (car rest)))))
                              (cond ((not b) (unknown-id state (car rest)))
-                                   (v (list 'ok b (cons 'version (if (string? v) (list v) v))))
-                                   (else (list 'ok b))))))))))
+                                   (v (append (list 'ok b (cons 'version (if (string? v) (list v) v)))
+                                              (receipt state (list (car rest)) '(cut versions)
+                                                       (list (cons (car rest) v)))))
+                                   (else (append (list 'ok b) (receipt state (list (car rest)))))))))))))
                 (cond
                   ((not (= 1 (length args))) (usage read-usage-form))
                   ((not at) (read-from store args options state writer))
@@ -1546,14 +1592,19 @@
                   (usage '(refs <id>))
                   (guarded
                     (lambda ()
-                      (let ((a (store-refs store (car args))))
+                      ;; ONE STATE FOR THE ROWS, THE SUPPLIED EDGES AND THE
+                      ;; RECEIPT: `store-refs` used to fold its own, so the
+                      ;; cut the answer says would not have been the one its
+                      ;; rows were read from.
+                      (let* ((st (reduction-for store state))
+                             (a (store-refs store (car args) st)))
                         (if (eq? (car a) 'ok)
                             ;; AN EDITOR'S CALLS EDGES INTO THIS BLOCK FOLLOW
                             ;; THE STORE'S OWN ROWS, their via the provenance
                             ;; that supplied them rather than a symbol.
                             (let-values (((rows clauses)
                                           (if (derived-tables? store 'calls)
-                                              ((derived 'refs-supplied) store (reduction-for store state) (car args))
+                                              ((derived 'refs-supplied) store st (car args))
                                               (values '() '()))))
                               (append
                                 (items (map (lambda (r)
@@ -1561,7 +1612,8 @@
                                                     (list 'rel (cadr r))
                                                     (list 'via (caddr r))))
                                             (append (cadr a) rows)))
-                                clauses))
+                                clauses
+                                (receipt st (cons (car args) (map car (append (cadr a) rows))))))
                             a)))))))
       ;; OVER THE EDGES AN EDITOR SUPPLIED ONLY: an edge a writer linked by
       ;; hand is `refs`' to show, and a relation no supply produces is
@@ -1629,7 +1681,8 @@
                                       ;; covers are the live ones.
                                       (cons 'scanned-blocks (length (state-outline state)))
                                       (cons 'fields '(names exports)))
-                                #f)))))))))
+                                #f)
+                              (receipt state (map cadr (append defs exports)) '(versions))))))))))
       (cons 'search
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
@@ -1672,7 +1725,10 @@
                                        (scan-clauses r (null? hits))
                                        (let ((tables (assq 'derived-tables r)) (via (assq 'derived-via r))
                                              (stale (assq 'derived-stale r)))
-                                         (if tables ((derived 'derived-clauses) (cdr tables) (cdr via) (cdr stale)) '())))))))))
+                                         (if tables ((derived 'derived-clauses) (cdr tables) (cdr via) (cdr stale)) '()))
+                                       ;; THE VERSIONS FROM THE STATE THE HITS CAME
+                                       ;; FROM, which the report carries.
+                                       (receipt (cdr (assq 'state r)) (map car hits) '(versions)))))))))
       ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
       ;; THING THAT SAYS SO. A grep line and a search hit have the same
       ;; arity and the same types in the same places -- an id, an integer, a
@@ -1716,7 +1772,8 @@
                                ;; the tag is in it.
                                (answer (items (map (lambda (m) (cons 'match m)) lines))))
                           (if (and (= omitted 0) (= unseen 0))
-                              (append answer (scan-clauses r (null? lines)))
+                              (append answer (scan-clauses r (null? lines))
+                                      (receipt (field 'state) (map car lines) '(versions)))
                               ;; THE TRUNCATION CARRIES BOTH DIMENSIONS, and
                               ;; each is named. A bare integer after a clause
                               ;; name means whatever the verb decides it
@@ -1730,7 +1787,8 @@
                                       (list (list 'truncated
                                                   (list 'lines omitted)
                                                   (list 'blocks unseen)))
-                                      (scan-clauses r (null? lines)))))))))))
+                                      (scan-clauses r (null? lines))
+                                      (receipt (field 'state) (map car lines) '(versions)))))))))))
       (cons 'log
             (lambda (store actor args req options state writer cwd)
               (if (not (or (null? args) (= 1 (length args))))

@@ -473,7 +473,17 @@
 (define js-a "// @block new\nfunction alpha() {\n  return 1;\n}\n// @block new\nfunction beta() {\n  return 2;\n}\n")
 (define js-b "function gamma() {\n  return alpha();\n}\n")
 (define js-c "function delta() {\n  return 4;\n}\n")
-(define (ask st . args) (rpc-dispatch st args "test"))
+;; THE RECEIPT A READ NOW ENDS WITH -- a trailing (versions ...), then a
+;; trailing (cut ...) -- is read-receipt.sc's to check; these rows compare
+;; what the answer said before it, so they read the answer without it.
+(define (without-receipt a)
+  (let* ((drop (lambda (a head)
+                 (if (and (pair? a) (list? a) (pair? (cdr a))
+                          (let ((l (list-ref a (- (length a) 1)))) (and (pair? l) (eq? (car l) head))))
+                     (list-head a (- (length a) 1))
+                     a))))
+    (drop (drop a 'versions) 'cut)))
+(define (ask st . args) (without-receipt (rpc-dispatch st args "test")))
 (define (src-bytes st id) (src-bytes-of (ask st 'read id)))
 ;; EACH SCENARIO STORE'S OWN WRITER, by name, as the one directory under
 ;; writers/ when the store is made. A record is forged for that writer by

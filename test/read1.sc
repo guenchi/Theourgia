@@ -289,7 +289,7 @@
 ;; and the one clause after it is the version --if-unchanged compares.
 (want "and without --md it is still one block"
       (let ((a (answer doc1)))
-        (list (length (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'version)))) (cdr a)))
+        (list (length (filter (lambda (x) (not (and (pair? x) (memq (car x) '(version cut versions))))) (cdr a)))
               (and (pair? (cadr a)) (assq 'id (cadr a)) #t)))
       '(1 #t))
 

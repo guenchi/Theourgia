@@ -1453,6 +1453,9 @@
                     (quote (title keywords derived-keywords src names doc body))
                     (quote (title keywords src names doc body))))
           (cons (quote cut) (reduce-applied-cut state))
+          ;; THE STATE ITSELF, so the answer's receipt hashes its hits in the
+          ;; state they were found in, not in a second fold.
+          (cons (quote state) state)
           ;; HOW MANY NAMES THE INDEX HOLDS, not whether it exists.
           ;;
           ;; NEVER: THE OLD ANSWER HAD A VALUE NOTHING COULD PRODUCE.
@@ -1886,7 +1889,8 @@
               (cons (quote scanned-blocks) scanned)
               (cons (quote unreadable-blocks) unreadable)
               (cons (quote fields) (quote (src doc body)))
-              (cons (quote cut) (reduce-applied-cut state))))
+              (cons (quote cut) (reduce-applied-cut state))
+              (cons (quote state) state)))
       (if (= 0 (string-length q))
           (report (quote ()) 0 0 0 0)
           (let loop ((l ids) (out (quote ())) (shown 0) (omitted 0) (unseen 0) (scanned 0)
@@ -2406,8 +2410,10 @@
                       (cons from out)
                       out))))))
 
-  (define (store-refs store id)
-    (let ((state (open-and-reduce store)))
+  ;; The state may be handed in, so a caller that says which state it read
+  ;; (a receipt) reads its rows from that same state.
+  (define (store-refs store id . given)
+    (let ((state (if (pair? given) (car given) (open-and-reduce store))))
       (if (not (known? state id))
           (list (quote error) (quote unknown-id) id
                 (list (quote nearest) (nearest-ids state id)))

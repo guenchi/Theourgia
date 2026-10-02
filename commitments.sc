@@ -152,14 +152,33 @@
       (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) view under)
           (let ((rows (commitment-rows view which drifted-only since scope)))
-            ((dispatch-helper 'items)
-             (if (and root scope)
-                 (append rows
-                         (list (list 'scope root
-                                     (list 'outside (rows-left-out
-                                                      rows
-                                                      (commitment-rows view which drifted-only since #f))))))
-                 rows))))))
+            (append
+              ((dispatch-helper 'items)
+               (if (and root scope)
+                   (append rows
+                           (list (list 'scope root
+                                       (list 'outside (rows-left-out
+                                                        rows
+                                                        (commitment-rows view which drifted-only since #f))))))
+                   rows))
+              ((dispatch-helper 'receipt) view (listed-ids rows)))))))
+
+  ;; THE BLOCKS THIS ANSWER LISTS, in order of first appearance: each
+  ;; decision, then the implementers its row names (a drifted one is among
+  ;; them), then the decisions it names as concurrent with it, and each
+  ;; skipped row's block. A deleted implementer has no version and the
+  ;; receipt leaves it out; the scope item names a root, not a result.
+  (define (listed-ids rows)
+    (apply append
+           (map (lambda (r)
+                  (cond
+                    ((and (pair? r) (eq? (car r) 'decision))
+                     (cons (cadr r)
+                           (append (map car (cdr (assq 'implemented-by (cddr r))))
+                                   (let ((c (assq 'concurrent-with (cddr r)))) (if c (cdr c) '())))))
+                    ((and (pair? r) (eq? (car r) 'skipped)) (list (cadr r)))
+                    (else '())))
+                rows)))
 
   ;; The decision rows and the skipped rows for one scope (#f: the whole
   ;; store), with the request's filters.

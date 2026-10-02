@@ -34,13 +34,20 @@
        (and (state-read state b) (state-read state c)
             (equal? (cdr (assq 'position (state-read state b))) (cons a 0))
             (equal? (cdr (assq 'position (state-read state c))) (cons b 0))))
+;; THE RECEIPT AN OUTLINE NOW ENDS WITH -- a trailing (cut ...) -- is
+;; read-receipt.sc's to check; these rows compare the text before it.
+(define (without-receipt answer)
+  (if (and (list? answer) (pair? (cdr answer))
+           (let ((l (list-ref answer (- (length answer) 1)))) (and (pair? l) (eq? (car l) 'cut))))
+      (list-head answer (- (length answer) 1))
+      answer))
 (when (string=? mode "outline")
   (check 'delete-parent (rpc-ok? (rpc-dispatch d (list 'del a) "review")))
-  (let ((answer (rpc-dispatch d '(outline) "review")))
+  (let ((answer (without-receipt (rpc-dispatch d '(outline) "review"))))
     (check 'orphan-subtree-visible
       (equal? answer (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n  - " c "  C\n"))))))
   (check 'depth-limit-on-orphan-subtree
-    (equal? (rpc-dispatch d '(outline "--depth" "1") "review")
+    (equal? (without-receipt (rpc-dispatch d '(outline "--depth" "1") "review"))
             (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n"))))))
 (write (list 'failures bad)) (newline)
 (exit (if (= bad 0) 0 1))

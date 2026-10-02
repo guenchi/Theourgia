@@ -634,7 +634,8 @@
                           (append (map (lambda (n) (list 'name n)) (cdr (assq 'names u)))
                                   (map (lambda (l) (list 'import l)) (cdr (assq 'imports u)))
                                   (map (lambda (d) (list 'import-unreadable d)) (cdr (assq 'import-unreadable u)))))
-                         (list (cons 'name-use (cdr (assq 'contract u)))))))))))
+                         (list (cons 'name-use (cdr (assq 'contract u))))
+                         ((dispatch-helper 'receipt) view (list (car args))))))))))
 
   (define (uses-verb store actor args req options state writer cwd)
     (let ((under (argument-option options "--under")))
@@ -672,4 +673,6 @@
                             (list 'mode (hashtable-ref (vector-ref table 1) id 'text))))
                     ids))
               (list '(name-use syntactic))
-              (if (null? counts) '() (list (cons 'skipped counts)))))))
+              (if (null? counts) '() (list (cons 'skipped counts)))
+              ;; Each block listed as a use.
+              ((dispatch-helper 'receipt) view ids)))))

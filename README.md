@@ -171,9 +171,9 @@ differences — and is never an error.
 
 It answers:
 
-    (ok <block> (version "<hash>"))
-    (ok (items <block> ...) (versions ((<id> . "<hash>") ...)))
-    (ok (text "<markdown>"))
+    (ok <block> (version "<hash>") (cut <cut>) (versions ((<id> . "<hash>"))))
+    (ok (items <block> ...) (versions ((<id> . "<hash>") ...)) (cut <cut>))
+    (ok (text "<markdown>") (cut <cut>) (versions ((<id> . "<hash>") ...)))
 
 What a block says. Without options it is one block as data; `--md` gives its own
 bytes — the heading line it was written with, then its body.
@@ -182,8 +182,28 @@ bytes — the heading line it was written with, then its body.
 state that was read, so a caller that read a block can write it back only if
 its block hash still matches the one it read. It comes after the block, so a reader of the block
 reads what it read before. `--recursive` gives one pair per block in item order,
-after the items. A deleted block has no version, read alone or in a subtree, and
-`--md` and `--working` answer as they did. A block whose value is nested too
+after the items. A deleted block has no version, read alone or in a subtree.
+`--working` answers as it did.
+
+**The receipt: which state was read, and which version of each block.** A read of
+the committed store ends with `(cut <cut>)`, the applied cut of the state it read
+(for `--cut`, the state at that cut), and `(versions ((<id> . "<hash>") ...))`,
+one pair for every block whose content the answer shows or whose id it lists as a
+result, in order of first appearance and each once; a block that cannot be hashed
+is `(<id> unavailable (reason ...))` and a deleted one is left out. Both come after
+the answer's own clauses, so a reader of what came before reads what it read
+before. `read` (plain, `--md`, `--recursive`), `refs`, `commitments`, `tasks`,
+`names` and `uses` carry both; `search`, `grep` and `whereis`, which already said
+their cut, add the versions; `outline` and `reach` answer structure and carry the
+cut only. The receipt names the state the rows were read from: a request handed
+a state (the daemon hands each request its published one) is answered from it,
+except `search` and `grep`, which read the store themselves and answer what a
+fresh read of it gives -- rows and receipt alike. A clause added after the verb
+has answered, `(incomplete ...)` today, follows the receipt.
+A working read, a draft listing, `log`, `diff`, `conflicts`, `check`,
+`diagnostics`, `describe` and the exports carry none. The human output of every
+verb is unchanged except for the two printed whole, plain `read` and `reach`,
+whose human output shows their clauses. A block whose value is nested too
 deeply to hash is still read; its version is `(version unavailable (reason ...))`,
 as a write's state section says when it cannot describe a block.
 

@@ -407,6 +407,17 @@
 (define store (string-append root "/store"))
 
 (define (run . args) (rpc-dispatch store args "test"))
+;; THE RECEIPT A READ NOW ENDS WITH -- a trailing (versions ...), then a
+;; trailing (cut ...) -- is read-receipt.sc's to check; these rows compare
+;; what the answer said before it, so they read the answer without it.
+(define (without-receipt a)
+  (let* ((drop (lambda (a head)
+                 (if (and (pair? a) (list? a) (pair? (cdr a))
+                          (let ((l (list-ref a (- (length a) 1)))) (and (pair? l) (eq? (car l) head))))
+                     (list-head a (- (length a) 1))
+                     a))))
+    (drop (drop a 'versions) 'cut)))
+(define (read-run . args) (without-receipt (apply run args)))
 (run 'init)
 ;; -> the id the one insert made: the store's ids after it, less those before.
 (define (insert! parent fields)
@@ -476,23 +487,23 @@
       #t)
 
 (want "U18 names: a datum block, a text block, a library block, exact answers"
-      (in-order (run 'names D1) (run 'names T1) (run 'names L1))
+      (in-order (read-run 'names D1) (read-run 'names T1) (read-run 'names L1))
       (list '(ok (items (name car) (name x)) (name-use syntactic))
             '(ok (items (name again) (name car) (name x) (name y)) (name-use syntactic (lexing whole-text)))
             '(ok (items (import (rnrs)) (import (foo bar)) (import-unreadable 42)) (name-use syntactic))))
 (want "U17 a program block answers its imports as a library block does"
-      (run 'names P1)
+      (read-run 'names P1)
       '(ok (items (import (rnrs base)) (import (zed))) (name-use syntactic)))
 (want "U18 names: each none reason, a whole datum"
-      (in-order (run 'names D7) (run 'names S1) (run 'names DU) (run 'names TN))
+      (in-order (read-run 'names D7) (read-run 'names S1) (read-run 'names DU) (read-run 'names TN))
       '((ok (items) (name-use none (reason deleted)))
         (ok (items) (name-use none (reason not-code)))
         (ok (items) (name-use none (reason unreadable-code)))
         (ok (items) (name-use none (reason no-language)))))
 (want "U18 names: an unknown id refuses as read does; no id or two is a usage answer"
-      (in-order (let ((a (run 'names "zz.zz"))) (list (car a) (cadr a)))
+      (in-order (let ((a (read-run 'names "zz.zz"))) (list (car a) (cadr a)))
                 (let ((a (run 'read "zz.zz"))) (list (car a) (cadr a)))
-                (car (run 'names)) (car (run 'names D1 D2)))
+                (car (read-run 'names)) (car (read-run 'names D1 D2)))
       '((error unknown-id) (error unknown-id) usage usage))
 
 ;; Unscoped, the store holds one block with no language (TN) and one whose
@@ -501,35 +512,35 @@
 (define (row id lib mode) (list 'use id (list 'library lib) (list 'mode mode)))
 (define (sorted-rows . rs) (list-sort (lambda (a b) (string<? (cadr a) (cadr b))) rs))
 (want "U19 uses: datum and text listed with library and mode; a definition, a local binding, cart and CAR are not; a deleted library is none; a deleted block is absent; by id"
-      (run 'uses "car")
+      (read-run 'uses "car")
       (list 'ok (cons 'items (sorted-rows (row D1 L1 'datum) (row T1 L1 'text) (row D6 'none 'datum)))
             '(name-use syntactic) all-skipped))
 (want "U19 uses: case matters, and a name nothing uses answers ok with no items"
-      (in-order (run 'uses "CAR") (run 'uses "nothing-uses-this"))
+      (in-order (read-run 'uses "CAR") (read-run 'uses "nothing-uses-this"))
       (list (list 'ok (list 'items (row D5 L1 'datum)) '(name-use syntactic) all-skipped)
             (list 'ok '(items) '(name-use syntactic) all-skipped)))
 (want "U19 the library column skips ancestors that are not libraries: under a section at the root none, under a section in L1 L1"
-      (run 'uses "sxname")
+      (read-run 'uses "sxname")
       (list 'ok (cons 'items (sorted-rows (row DX 'none 'datum) (row DY L1 'datum))) '(name-use syntactic) all-skipped))
 (want "U19b a text block that defines a name lists it"
-      (run 'uses "target")
+      (read-run 'uses "target")
       (list 'ok (list 'items (row T2 'none 'text)) '(name-use syntactic) all-skipped))
 (want "U20 no resolution: a name nothing defines is listed; a name two libraries define lists both users"
-      (in-order (run 'uses "undefined-thing") (run 'uses "twice"))
+      (in-order (read-run 'uses "undefined-thing") (read-run 'uses "twice"))
       (list (list 'ok (list 'items (row D11 L1 'datum)) '(name-use syntactic) all-skipped)
             (list 'ok (cons 'items (sorted-rows (row D11 L1 'datum) (row D12 L3 'datum)))
                   '(name-use syntactic) all-skipped)))
 (want "U21 --under: two scopes and none give their own items and skipped counts"
-      (in-order (run 'uses "twice" "--under" L1) (run 'uses "twice" "--under" L3) (run 'uses "twice" "--under" T2))
+      (in-order (read-run 'uses "twice" "--under" L1) (read-run 'uses "twice" "--under" L3) (read-run 'uses "twice" "--under" T2))
       (list (list 'ok (list 'items (row D11 L1 'datum)) '(name-use syntactic) '(skipped (no-language 1)))
             (list 'ok (list 'items (row D12 L3 'datum)) '(name-use syntactic) '(skipped (unreadable-code 1)))
             '(ok (items) (name-use syntactic))))
 (want "U21 --under an unknown id refuses; an empty name or --under is a usage answer"
-      (in-order (let ((a (run 'uses "twice" "--under" "zz.zz"))) (list (car a) (cadr a)))
-                (car (run 'uses "")) (car (run 'uses "twice" "--under" "")) (car (run 'uses)))
+      (in-order (let ((a (read-run 'uses "twice" "--under" "zz.zz"))) (list (car a) (cadr a)))
+                (car (read-run 'uses "")) (car (read-run 'uses "twice" "--under" "")) (car (read-run 'uses)))
       '((error unknown-id) usage usage usage))
 (want "U21b a block the walk cannot read is counted, and the healthy block beside it is listed"
-      (run 'uses "twice" "--under" L3)
+      (read-run 'uses "twice" "--under" L3)
       (list 'ok (list 'items (row D12 L3 'datum)) '(name-use syntactic) '(skipped (unreadable-code 1))))
 (want "U21b CONTROL: the unreadable block's body does use car, so a walk that read it would list it"
       (datum-uses '(car 1))
@@ -537,7 +548,7 @@
 
 ;; U15: the no-language block is counted only in the scope that holds it.
 (want "U15 no language entry: counted under skipped within --under only"
-      (in-order (cddr (run 'uses "car" "--under" L1)) (cddr (run 'uses "car" "--under" L3)))
+      (in-order (cddr (read-run 'uses "car" "--under" L1)) (cddr (read-run 'uses "car" "--under" L3)))
       '(((name-use syntactic) (skipped (no-language 1))) ((name-use syntactic) (skipped (unreadable-code 1)))))
 
 (want "V4 the table is the provider's answers: every live code block that reads is in it once"
@@ -554,10 +565,10 @@
 ;; reducer's conflict value.
 (define DC (datum 'root '(conflict x)))
 (want "U18 a body that is an application of conflict is walked"
-      (run 'names DC)
+      (read-run 'names DC)
       '(ok (items (name conflict) (name x)) (name-use syntactic)))
 (want "U24b a symbol that needs bars and a string holding a parenthesis: the stored datum's names"
-      (run 'names DB)
+      (read-run 'names DB)
       (list 'ok (list 'items (list 'name (string->symbol "a b"))) '(name-use syntactic)))
 ;; THE SPY IS THE LIBRARY'S OWN TEXT: no procedure that prints, reads or
 ;; evaluates is named anywhere in it, read as data.
@@ -607,8 +618,8 @@
 (define DZ (datum 'root '(define (z) (zebra 1))))
 (with-store-write store (lambda (s v) (list (list 'set D1 'body '(define (h) (cdr x))))) "test")
 (want "U23 a state given to the dispatch is the one answered: a later write is not seen in it, and is seen in a fresh one"
-      (in-order (rpc-dispatch store '(uses "zebra") "test" published)
-                (run 'uses "zebra"))
+      (in-order (without-receipt (rpc-dispatch store '(uses "zebra") "test" published))
+                (read-run 'uses "zebra"))
       (list (list 'ok '(items) '(name-use syntactic) all-skipped)
             (list 'ok (list 'items (row DZ 'none 'datum)) '(name-use syntactic) all-skipped)))
 (want "U23 at a cut before the edit, the old code's names are answered; now, the new code's"
@@ -808,9 +819,9 @@
       (in-order (car published-mirror) (cadr yak-before) (map cadr (cdadr yak-after)))
       '(ok (items) ("mirrorzy.1")))
 
-(define move-before (run 'uses "MOVE"))
+(define move-before (read-run 'uses "MOVE"))
 (register-language! '((lang "cobol") (extensions ("cob")) (def-heads ()) (identifier "[A-Z]+")))
-(define move-after (run 'uses "MOVE"))
+(define move-after (read-run 'uses "MOVE"))
 (want "K12 a language registered after a request is read by the next one"
       (in-order (cadr move-before) (cadddr move-before) (cadr move-after) (length (cddr move-after)))
       (list '(items) all-skipped (list 'items (row TN L1 'text)) 2))

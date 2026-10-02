@@ -169,10 +169,11 @@
        (pair? (cdr (caddr a))) (cadr (caddr a))))
 
 (let ((a (plain-read code-id)))
-  (want "VR-10 a plain read answers the record, then (version <block-hash>) as the third element"
+  (want "VR-10 a plain read answers the record, then (version <block-hash>) as the third element, then the receipt's (cut ...) and (versions ...)"
         (list (length a) (cdr (assq 'id (cadr a))) (car (caddr a))
-              (equal? (cadr (caddr a)) (block-hash (open-and-reduce store) code-id)))
-        (list 3 code-id 'version #t))
+              (equal? (cadr (caddr a)) (block-hash (open-and-reduce store) code-id))
+              (map car (cdddr a)))
+        (list 5 code-id 'version #t '(cut versions)))
   (want "VR-10 the version is a string of 64 hex digits"
         (let ((v (cadr (caddr a))))
           (and (string? v) (= 64 (string-length v))
@@ -196,10 +197,11 @@
         '(error changed ok)))
 
 (let ((a (rpc-dispatch store (list 'read file-id "--recursive") "t")))
-  (want "VR-12 read --recursive keeps its items, each the record a plain read of that block gives, and gains one trailing (versions ...) clause"
+  (want "VR-12 read --recursive keeps its items, each the record a plain read of that block gives, then its (versions ...) clause, then the receipt's (cut ...)"
         (list (length a) (car (cadr a)) (car (caddr a))
-              (for-all (lambda (r) (equal? r (cadr (plain-read (cdr (assq 'id r)))))) (cdr (cadr a))))
-        '(3 items versions #t))
+              (for-all (lambda (r) (equal? r (cadr (plain-read (cdr (assq 'id r)))))) (cdr (cadr a)))
+              (car (cadddr a)))
+        '(4 items versions #t cut))
   (want "VR-12 one pair per item, in item order, each the version a plain read of that block gives"
         (let ((pairs (cadr (caddr a)))
               (item-ids (map (lambda (r) (cdr (assq 'id r))) (cdr (cadr a)))))
@@ -209,9 +211,9 @@
 
 (want "VR-13 del is accepted" (car (rpc-dispatch store (list 'del datum-id) "t")) 'ok)
 (let ((a (plain-read datum-id)))
-  (want "VR-13 a deleted block is read as before: the record alone, with no version"
-        (list (car a) (length a) (cdr (assq 'deleted (cadr a))))
-        '(ok 2 #t)))
+  (want "VR-13 a deleted block is read as before: the record, with no version, then the receipt, whose versions leave it out"
+        (list (car a) (length a) (cdr (assq 'deleted (cadr a))) (map car (cddr a)) (cadr (cadddr a)))
+        '(ok 4 #t (cut versions) ())))
 (let ((a (plain-read "nosuch.1")))
   (want "VR-14 an absent id is still refused, with no version clause"
         (list (car a) (and (list? a) (assq 'version (filter pair? (cdr a)))))
@@ -235,7 +237,7 @@
 (let ((a (plain-read (or deep-id "nosuch.2"))))
   (want "VR-15 a block too deep to hash is read as before, with (version unavailable (reason ...))"
         (list (car a) (length a) (cdr (assq 'id (cadr a))) (car (caddr a)) (cadr (caddr a))
-              (car (caddr (caddr a))))
-        (list 'ok 3 deep-id 'version 'unavailable 'reason)))
+              (car (caddr (caddr a))) (map car (cdddr a)))
+        (list 'ok 5 deep-id 'version 'unavailable 'reason '(cut versions))))
 
 (printf "rows: ~a\n~a failures\nview-rpc complete\n" rows bad)

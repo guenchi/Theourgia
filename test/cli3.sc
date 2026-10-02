@@ -2451,7 +2451,7 @@
       (let ((empty (map car (store-search-report d8 "" search-hit-limit)))
             (hits  (map car (store-search-report d8 "quilvane" search-hit-limit))))
         (list empty (equal? empty hits)))
-      (list '(items omitted-hits scanned-blocks unreadable-blocks fields cut defs-names) #t))
+      (list '(items omitted-hits scanned-blocks unreadable-blocks fields cut state defs-names) #t))
 
 (want "N9 and the empty one says it left nothing out and looked at nothing"
       (let ((r (store-search-report d8 "" search-hit-limit)))

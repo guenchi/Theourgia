@@ -790,8 +790,12 @@
          (let ((view ((h 'reduction-for) store state)) (id (car args)))
            (if (not (state-read view id))
                ((h 'unknown-id) view id)
-               (reach-answer store view id (string->symbol (or rel "calls"))
-                             (if depth (count-argument depth) 1))))))))
+               ;; THE CUT OF THE STATE THE WALK READ; reach lists no versions.
+               (let ((a (reach-answer store view id (string->symbol (or rel "calls"))
+                                      (if depth (count-argument depth) 1))))
+                 (if (and (pair? a) (eq? (car a) 'ok))
+                     (append a ((h 'receipt) view #f))
+                     a))))))))
 
   ;; `diagnostics [--writer <name>]`, its arguments already checked by the
   ;; dispatcher.
