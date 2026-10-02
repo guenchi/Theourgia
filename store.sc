@@ -3790,15 +3790,18 @@
                                  ;; and write-outcome->answer never answers ok. A
                                  ;; member that answered ok with no event would be
                                  ;; a record this completion cannot see applied,
-                                 ;; which is C3 (a)'s case.
+                                 ;; which is C3 (a)'s case: the plan is named if
+                                 ;; it is the one not applied, and otherwise the
+                                 ;; member, by its index, since its event is what
+                                 ;; is missing.
                                  (let ((ev (let ((e (assq 'events (cdr answer))))
                                              (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
                                        (cut (reduce-applied-cut state)))
                                    (cond
-                                     ((not ev)
-                                      (finish (list 'error 'unknown (list 'not-applied plan-event))))
                                      ((not (applied-in? cut plan-event))
                                       (finish (list 'error 'unknown (list 'not-applied plan-event))))
+                                     ((not ev)
+                                      (finish (list 'error 'unknown (list 'not-applied (list 'member (list-ref indices n))))))
                                      ((not (applied-in? cut ev))
                                       (finish (list 'error 'unknown (list 'not-applied ev))))
                                      ((and (< (+ n 1) (length run))

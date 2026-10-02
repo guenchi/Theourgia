@@ -683,9 +683,12 @@
   (let* ((f (forged-store "k1b")) (st (car f)) (M (cadr f)))
     (publish-plan! f (list (cons 0 (list 'set M 'src "old"))) #f)
     (let* ((n0 (record-count st)) (a (forged-retry f)) (items (cdr (or (assq 'items (cdr a)) '(items)))))
-      (want "K1b a set of the value the block holds: the completion answers ok, its item naming its record"
-            (list (car a) (map car items) (and (pair? items) (let ((e (assq 'events (cdr (car items))))) (and e (pair? (cadr e)) #t))))
-            '(ok (ok) #t))
+      (want "K1b a set of the value the block holds: the completion answers ok, its item naming the member's record"
+            (list (car a) (map car items)
+                  (and (pair? items) (let ((e (assq 'events (cdr (car items))))) (and e (pair? (cadr e)) (car (cadr e))))))
+            (list 'ok '(ok)
+                  (let ((m (find (lambda (x) (eqv? 0 (actor-sub (ev-actor x)))) (store-evidence (car st) (cons (cdr st) "MM")))))
+                    (and m (ev-event m)))))
       (want "K1b one record appended, and the block still holds the value" (list (- (record-count st) n0) (src st M)) '(1 "old")))))
 
 ;; K19: the hash check, alone. The consumes item names a based-on that is
