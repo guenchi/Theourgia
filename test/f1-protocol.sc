@@ -348,6 +348,75 @@
 ;; under the user's real `$HOME/.theourgia/run`, and daemons still alive
 ;; minutes later.
 
+;; ---- MC-DEAD: every top-level definition of the shell is used -------------------
+;;
+;; A definition nothing refers to is dead, and three sat in the shell: one
+;; named a binding the shell never imports, which went unseen because
+;; nothing ever called it. The shell is a program and exports nothing, so a
+;; name it defines at top level has to occur in some OTHER top-level form.
+;; A mention inside quoted data counts; a definition used only by itself
+;; does not.
+(define (top-level-forms path)
+  (call-with-input-file path
+    (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
+(define (defined-name f)
+  (and (pair? f) (eq? (car f) 'define) (pair? (cdr f))
+       (cond ((symbol? (cadr f)) (cadr f))
+             ((and (pair? (cadr f)) (symbol? (car (cadr f)))) (car (cadr f)))
+             (else #f))))
+(define (mentions? x name)
+  (cond ((eq? x name) #t)
+        ((pair? x) (or (mentions? (car x) name) (mentions? (cdr x) name)))
+        ((vector? x) (exists (lambda (e) (mentions? e name)) (vector->list x)))
+        (else #f)))
+(define (unused-definitions forms)
+  (filter (lambda (name)
+            (not (exists (lambda (f) (and (not (eq? (defined-name f) name)) (mentions? f name))) forms)))
+          (filter (lambda (n) n) (map defined-name forms))))
+(want "MC-DEAD the census names a definition only its own form mentions, and passes one another form uses"
+      (unused-definitions '((define (a) (a)) (define (b) 1) (display (b))))
+      '(a))
+;; AND EVERY OTHER CONSUMER IN THE TREE. Nothing imports a program's
+;; definitions, but a fixture or a tool can read one by name as data; a
+;; name another .sc or .ss file in the tree spells as a whole symbol is
+;; used. (The vscode branch is not in this tree; its census is a reading
+;; in the batch's notes.)
+(define (tree-files dir)
+  (apply append
+         (map (lambda (n)
+                (let ((p (string-append dir "/" n)))
+                  (cond ((member n '(".git" "node_modules")) '())
+                        ((file-directory? p) (tree-files p))
+                        ((let ((k (string-length n)))
+                           (and (> k 3) (member (substring n (- k 3) k) '(".sc" ".ss"))))
+                         (list p))
+                        (else '()))))
+              (directory-list dir))))
+(define (symbol-char? c) (or (char-alphabetic? c) (char-numeric? c) (memv c (string->list "!$%&*/:<=>?^_~+-.@"))))
+(define (names-symbol? text name)
+  (let ((n (string-length name)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((and (string=? (substring text i (+ i n)) name)
+                  (or (= i 0) (not (symbol-char? (string-ref text (- i 1)))))
+                  (or (= (+ i n) m) (not (symbol-char? (string-ref text (+ i n))))))
+             #t)
+            (else (loop (+ i 1)))))))
+(define consumer-texts
+  (map file-text (filter (lambda (p) (not (equal? p "../mcp/server.sc"))) (tree-files ".."))))
+(define (unused-anywhere forms)
+  (filter (lambda (name)
+            (not (exists (lambda (t) (names-symbol? t (symbol->string name))) consumer-texts)))
+          (unused-definitions forms)))
+(want "MC-DEAD the census reads the tree's other files: it finds more than a hundred, the shell not among them"
+      (let* ((many (> (length consumer-texts) 100))
+             (shell-seen (and (member "../mcp/server.sc" (tree-files "..")) #t)))
+        (list many shell-seen))
+      '(#t #t))
+(want "MC-DEAD every top-level definition of the MCP shell is used, by another of its forms or by a file in the tree"
+      (unused-anywhere (top-level-forms shell))
+      '())
+
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
 (system "sleep 1")
 
