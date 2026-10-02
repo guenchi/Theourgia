@@ -78,7 +78,10 @@
 ;;
 ;; CLASS A, the disagreements whose defect is one operand, is recognised by a
 ;; predicate (below), with two sub-classes; the row S2 asks that everything
-;; else agrees or is in the exception table. S5 and the A-name pin are
+;; else agrees or is in the exception table. CLASS K, a keyword standing in
+;; an expression position, is recognised by a second predicate, over the
+;; keywords begin, define, else, =>, unquote, unquote-splicing, quasiquote,
+;; lambda and quote (fixed before the run). S5, S8 and the A-name pin are
 ;; regression checks, not proofs.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
@@ -180,7 +183,6 @@
     (define-record-type (p mk p))
     (foreign-procedure __collect_safe __collect_safe entry (int) int)
     (foreign-procedure #f entry (int) int)
-    (quasiquote (unquote (unquote b)))
     (define-record-type c (parent lambda) (fields z))
     (define-record-type r (protocol (lambda (parent) (parent p))))
     (lambda (a b . a) (f a b))
@@ -197,41 +199,23 @@
     ((letrec-syntax) any not-a-seed "as let-syntax")
     ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) top looser
      "a reference artifact: the fixture replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined; the form also fails direct top-level expansion, so the refusal is not the replacement's alone")
-    ;; A keyword moved into an expression position by deletion, duplication
-    ;; or a swap. Chez refuses the keyword there; the walk judges what
-    ;; stands in an expression position where it meets it (class A's
-    ;; limit), but the change is not to one operand that a substitute could
-    ;; stand for, so each form is listed (main's ruling).
-    ((quasiquote (a (unquote unquote b))) top looser
-     "duplication makes unquote an operand of unquote, a keyword in an expression position of the template")
-    ((quasiquote (a (unquote-splicing unquote-splicing b))) top looser
-     "duplication makes unquote-splicing an operand of unquote-splicing, a keyword in an expression position")
-    ((lambda (a) (define b a) (c define a) (f b c)) top looser
-     "a swap makes define an operand of an application, a keyword in an expression position")
-    ((lambda (a) (b define a) (b)) top looser
-     "a swap makes define an operand of an application, a keyword in an expression position")
-    ((cond ((p a) b) (=> f) (else c)) top looser
-     "deleting the test leaves => as a clause's test, a keyword in an expression position")
-    ((cond ((p a) b) ((q a) (q a) => f) (else c)) top looser
-     "duplicating the test leaves => in the clause's body, a keyword in an expression position")
-    ((cond ((p a) b) (=> (q a) f) (else c)) top looser
-     "a swap puts => in the test position, a keyword in an expression position")
-    ((cond ((p a) b) ((q a) f =>) (else c)) top looser
-     "a swap leaves => last in the clause's body, a keyword in an expression position")
-    ((cond ((p a) b) ((q a) => f) (else else c)) top looser
-     "duplication puts else in the else clause's body, a keyword in an expression position")
-    ((cond ((p a) b) ((q a) => f) (c else)) top looser
-     "a swap puts else in a clause's body, a keyword in an expression position")
-    ((case k ((a b) c) (else else d)) top looser
-     "duplication puts else in the else clause's body, a keyword in an expression position")
-    ((case k ((a b) c) (d else)) top looser
-     "a swap puts else in a clause's body, a keyword in an expression position")
-    ((guard (e ((p e) e) (else 0)) (e ((p e) e) (else 0)) (f)) top looser
-     "duplicating the clause list makes it a body expression, whose (else 0) puts else in an expression position")
-    ((guard (e ((p e) e) (else else 0)) (f)) top looser
-     "duplication puts else in the else clause's body, a keyword in an expression position")
-    ((guard (e ((p e) e) (0 else)) (f)) top looser
-     "a swap puts else in a clause's body, a keyword in an expression position")))
+    ;; The record name used as an expression inside its own definition:
+    ;; Chez binds it as the record's name over the clauses and refuses it as
+    ;; a variable reference there. The walk cannot fall back on it: the
+    ;; record name is valid in a clause expression in other forms, as in
+    ;; (record-type-descriptor g), and the walk reports g there too.
+    ((define-record-type (g mk p?) (fields (immutable x px) (mutable y py set-py!)) (protocol (g)) (sealed #t)) top looser
+     "the record name g is called in its own protocol clause")
+    ((define-record-type (g mk p?) (fields (immutable x px) (mutable y py set-py!)) (protocol (g)) (sealed #t)) body looser
+     "as at the top form")
+    ((define-record-type prtd (parent-rtd prtd pcd) (fields z)) top looser
+     "the record name prtd is a parent-rtd expression of its own definition")
+    ((define-record-type prtd (parent-rtd prtd pcd) (fields z)) body looser
+     "as at the top form")
+    ((define-record-type pcd (parent-rtd prtd pcd) (fields z)) top looser
+     "the record name pcd is a parent-rtd expression of its own definition")
+    ((define-record-type pcd (parent-rtd prtd pcd) (fields z)) body looser
+     "as at the top form")))
 
 ;; ---- the generator ----------------------------------------------------------------------
 
@@ -345,7 +329,12 @@
                             (hashtable-set! h (car t) (cons (cons (cadr t) (caddr t)) (hashtable-ref h (car t) '())))))
               all-triples)
     h))
-(define space (dedup (append seeds generated pinned)))
+;; Forms pinned with the class they must fall in, a control of the
+;; predicates: the walk does not reach the changed place of the first, so it
+;; is not class A, and the keyword in it makes it class K.
+(define controls
+  '(((quasiquote (unquote (unquote b))) K)))
+(define space (dedup (append seeds generated pinned (map car controls))))
 (define (positions-of x) (if (memq (car x) defining-heads) '(top body) '(top)))
 
 ;; ---- the two judges --------------------------------------------------------------------
@@ -378,7 +367,7 @@
         ((and (eq? (car t) 'foreign-procedure) (list? t))
          (dedup (filter symbol?
                         (map (lambda (y) (and (list? y) (= (length y) 2) (memq (car y) '(* &)) (cadr y)))
-                             (apply append (map (lambda (e) (if (list? e) e (list e))) (cdr t)))))))
+                             (apply append (map (lambda (e) (if (list? e) (cons e e) (list e))) (cdr t)))))))
         (else (append (ftype-names (car t)) (ftype-names (cdr t))))))
 ;; The body wrapper: (lambda () D 0), or, when the form names lambda (a
 ;; record parent called lambda would capture it), (let () D 0), or, when it
@@ -474,9 +463,53 @@
         answer)))
 (define (class-a? v) (and (operand-class v) #t))
 
+;; ---- class K: a keyword where an expression stands ---------------------------------------
+;;
+;; CLASS A'S LIMIT STATED FOR THE KEYWORD (main's ruling): a disagreement is
+;; class K when the rule fired, Chez refused, and replacing ONE occurrence
+;; of a keyword symbol from the list below (not the form's own head) by a
+;; fresh variable gives a form that both judges accept and in which the
+;; walk reaches that variable (datum-uses reports it). The keyword stood in
+;; an expression position, which the walk judges where it meets it.
+;; THE KEYWORD LIST, fixed before the run; a keyword added later is said in
+;; NOTES.
+(define k-keywords '(begin define else => unquote unquote-splicing quasiquote lambda quote))
+(define k-reach? #t)
+;; Every occurrence of a keyword in X's lists, as (path . index), but X's head.
+(define (keyword-places x)
+  (let walk ((x x) (path '()))
+    (if (not (and (pair? x) (list? x)))
+        '()
+        (let loop ((l x) (i 0) (out '()))
+          (if (null? l)
+              out
+              (loop (cdr l) (+ i 1)
+                    (append out
+                            (if (and (symbol? (car l)) (memq (car l) k-keywords) (not (and (null? path) (= i 0))))
+                                (list (cons (reverse path) i))
+                                '())
+                            (walk (car l) (cons i path)))))))))
+(define keyword-classes (make-hashtable equal-hash equal?))
+;; -> (K keyword place) or #f.
+(define (keyword-class v)
+  (or (hashtable-ref keyword-classes v #f)
+      (let ((answer
+              (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
+                   (let* ((position (cadr v))
+                          (place (find (lambda (place)
+                                         (let ((f2 (with-substitute (car v) place 'zfresh)))
+                                           (and (eq? (fired-at f2 position) #t) (eq? (accepted? f2 position) #t)
+                                                (or (not k-reach?) (reached? f2 position)))))
+                                       (keyword-places (car v)))))
+                     (and place (list 'K (list-ref (get (car v) (car place)) (cdr place)) place))))))
+        (hashtable-set! keyword-classes v answer)
+        answer)))
+(define (class-k? v) (and (keyword-class v) #t))
+
 ;; The A-name (head position place) set this tree expects; place is the
 ;; operand's index path in the form.
-(define a-name-expected '(UNPINNED))
+(define a-name-expected
+  '((define-record-type body (2 1)) (define-record-type top (2 1)) (set! top (1))))
 
 ;; ---- the rows ----------------------------------------------------------------------------
 
@@ -500,11 +533,12 @@
 (define excepted
   (filter (lambda (v) (let ((e (exception-for v))) (and e (eq? (caddr e) (direction v))))) disagreements))
 (define class-a (filter (lambda (v) (and (not (member v excepted)) (class-a? v))) disagreements))
+(define class-k (filter (lambda (v) (and (not (member v excepted)) (not (member v class-a)) (class-k? v))) disagreements))
 (define unexplained
-  (filter (lambda (v) (not (or (member v excepted) (member v class-a)))) disagreements))
-(printf "   space: ~a forms (seeds ~a, generated ~a, pinned ~a), ~a verdicts; disagreements ~a: class A ~a, excepted ~a, unexplained ~a\n"
-        (length space) (length seeds) (length generated) (length pinned) (length verdicts)
-        (length disagreements) (length class-a) (length excepted) (length unexplained))
+  (filter (lambda (v) (not (or (member v excepted) (member v class-a) (member v class-k)))) disagreements))
+(printf "   space: ~a forms (seeds ~a, generated ~a, pinned ~a, controls ~a), ~a verdicts; disagreements ~a: class A ~a, class K ~a, excepted ~a, unexplained ~a\n"
+        (length space) (length seeds) (length generated) (length pinned) (length controls) (length verdicts)
+        (length disagreements) (length class-a) (length class-k) (length excepted) (length unexplained))
 (define (count-by key vs)
   (let ((h (make-hashtable equal-hash equal?)))
     (for-each (lambda (v) (hashtable-update! h (key v) (lambda (n) (+ n 1)) 0)) vs)
@@ -519,6 +553,21 @@
 (printf "   class A: A-expression ~a, A-name ~a\n" (length a-expression) (length a-name))
 (printf "   A-name set: ~s\n" a-name-set)
 (printf "   class A by head: ~s\n" (count-by (lambda (v) (car (car v))) class-a))
+(printf "   class K by head: ~s\n" (count-by (lambda (v) (car (car v))) class-k))
+(printf "   class K by keyword: ~s\n" (count-by (lambda (v) (cadr (keyword-class v))) class-k))
+(for-each (lambda (v) (printf "   A-NAME ~a ~s\n" (cadr v) (car v))) a-name)
+;; The excepted and unexplained disagreements that the keyword substitution
+;; would take in without the reach condition: the candidates for the reach
+;; control.
+(for-each (lambda (v) (printf "   K-UNREACHED ~a ~s\n" (cadr v) (car v)))
+          (filter (lambda (v)
+                    (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
+                         (exists (lambda (place)
+                                   (let ((f2 (with-substitute (car v) place 'zfresh)))
+                                     (and (eq? (fired-at f2 (cadr v)) #t) (eq? (accepted? f2 (cadr v)) #t)
+                                          (not (reached? f2 (cadr v))))))
+                                 (keyword-places (car v)))))
+                  (append excepted unexplained)))
 (printf "   class A by operator: ~s\n"
         (count-by (lambda (v) (let ((r (hashtable-ref replacements (car v) '()))) (if (pair? r) (car (car r)) 'none))) class-a))
 (for-each (lambda (op) (printf "   operator ~a: ~a forms\n" op (length (filter (lambda (p) (eq? (cdr p) op)) generated-pairs))))
@@ -532,10 +581,10 @@
       (list (filter (lambda (h) (not (exists (lambda (x) (eq? (car x) h)) generated))) (append known-heads defining-heads))
             (filter (lambda (op) (not (exists (lambda (p) (eq? (cdr p) op)) generated-pairs))) operators))
       '(() ()))
-(want "S1 CONTROL: coverage -- every pinned form has its verdicts"
-      (filter (lambda (x) (not (assoc x verdicts))) pinned)
+(want "S1 CONTROL: coverage -- every pinned form and every control has its verdicts"
+      (filter (lambda (x) (not (assoc x verdicts))) (append pinned (map car controls)))
       '())
-(want "S2 over the whole space, the walk's rule fires if and only if Chez accepts, but for class A and the exception table"
+(want "S2 over the whole space, the walk's rule fires if and only if Chez accepts, but for classes A and K and the exception table"
       (length unexplained)
       0)
 (want "S3 every exception whose form is in the space still disagrees as it says"
@@ -555,6 +604,41 @@
 (want "S6 CONTROL: the A-name set, places that take a name, is the pinned one"
       a-name-set
       a-name-expected)
+(want "S8 CONTROL: no pinned known gap is classified as class K"
+      (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-k? v))) verdicts)))
+      '())
+(want "S9 CONTROL: each control falls in its class (A, K, or none)"
+      (map (lambda (c)
+             (let ((vs (filter (lambda (v) (equal? (car v) (car c))) verdicts)))
+               (list (car c)
+                     (map (lambda (v) (cond ((member v excepted) 'excepted) ((member v class-a) 'A) ((member v class-k) 'K)
+                                            ((member v unexplained) 'unexplained) (else 'agrees)))
+                          vs))))
+           controls)
+      (map (lambda (c) (list (car c) (list (cadr c)))) controls))
+
+;; The foreign-procedure conventions, one row per clause of the rule, each
+;; form asked of both judges and answered as the varargs probe answered it
+;; (probes/varargs.ss in the freeze).
+(define (both x) (list (fired x) (accepted? x 'top)))
+(want "S7 conventions: (__varargs_after n) needs 1 <= n <= the parameter count"
+      (map both '((foreign-procedure (__varargs_after 0) "f" (int) int) (foreign-procedure (__varargs_after 1) "f" (int) int)
+                  (foreign-procedure (__varargs_after 2) "f" (int int) int) (foreign-procedure (__varargs_after 3) "f" (int int) int)))
+      '((#f #f) (#t #t) (#t #t) (#f #f)))
+(want "S7 conventions: __varargs needs a parameter"
+      (map both '((foreign-procedure __varargs "f" () int) (foreign-procedure __varargs "f" (int) int)))
+      '((#f #f) (#t #t)))
+(want "S7 conventions: at most one of __varargs and (__varargs_after n)"
+      (map both '((foreign-procedure __varargs (__varargs_after 1) "f" (int int) int)
+                  (foreign-procedure (__varargs_after 1) (__varargs_after 2) "f" (int int int) int)))
+      '((#f #f) (#f #f)))
+(want "S7 conventions: no convention twice, #f #f included"
+      (map both '((foreign-procedure __collect_safe __collect_safe "f" (int) int) (foreign-procedure #f #f "f" (int) int)))
+      '((#f #f) (#f #f)))
+(want "S7 conventions: #f and __collect_safe go with any other"
+      (map both '((foreign-procedure #f __collect_safe "f" (int) int) (foreign-procedure #f (__varargs_after 1) "f" (int int) int)
+                  (foreign-procedure __collect_safe __varargs "f" (int int) int) (foreign-procedure (__varargs_after 1) __collect_safe "f" (int int) int)))
+      '((#t #t) (#t #t) (#t #t) (#t #t)))
 
 (printf "\n~a failures\nrows: ~a\nname-use-shapes complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
