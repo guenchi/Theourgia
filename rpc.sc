@@ -1194,7 +1194,7 @@
       (list 'drafts '(drafts ["--writer" <name>])
             "List the drafts a writer is holding." #f 'daemon)
       (list 'diagnostics '(diagnostics ["--writer" <name>])
-            "List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src." #f 'daemon)
+            "List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src; one whose range cannot be mapped onto a single block's src is listed with (at unmappable)." #f 'daemon)
       (list 'discard '(discard <block> ["--writer" <name>])
             "Throw away a writer's draft of a block." #f 'daemon)
       (list 'batch '(batch <intents> ["--premises" <datum>])
@@ -1213,7 +1213,7 @@
       (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])
             "Write the store out as markdown." #f 'daemon)
       (list 'supply supply-usage
-            "Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- beside the store, never in it. The file's header names the projection it was made from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed."
+            "Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- in the store's directory under derived/, outside the event log. The header carries the digests of the projected files it was computed from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed."
             #f 'daemon)
       (list 'adopt '(adopt)
             "Take in records that are on disk but not yet in the log." #f 'daemon)

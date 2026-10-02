@@ -14,7 +14,7 @@
 ;; limitations under the License.
 
 ;; `supply`: facts an editor computed from an export-code projection, kept
-;; beside the store in <store>/derived/ and never in it.
+;; in the store's directory under <store>/derived/, outside the event log.
 ;;
 ;; Every digest a supply file carries here is the sha256 of a file a real
 ;; `export-code` wrote, of the committed store or of a writer's working
@@ -209,6 +209,20 @@
   (want "D2 a.js listed with another file's digest: supply-stale naming a.js, and no derived directory is made"
         (in-order a (file-exists? derived))
         (list '(error supply-stale (file "a.js")) #f)))
+
+;; ---- CAT: the catalogue's sentences, each beside the row that measures it --------------
+;;
+;; NEVER: A ROW HERE HOLDS NO COPY OF A SENTENCE. The sentence is read from
+;; describe's answer, and what it is checked for is a value a row beside it
+;; MEASURED: the directory the table is in, the clause an unmappable entry
+;; is listed with. The exact wording of every built-in entry is pinned once,
+;; in verb-registry's base file.
+(define (description-of verb)
+  (let* ((a (rpc-dispatch store '(describe) "test"))
+         (verbs (and (pair? a) (assq 'verbs (cdr a))))
+         (e (and verbs (assq verb (cdr verbs))))
+         (d (and e (assq 'description (cdr e)))))
+    (and d (cadr d))))
 
 ;; ---- A1: an accepted supply -----------------------------------------------------------
 (define a1-text (string-append (header 'signatures "-" (files-of "a.js" "b.js") '("a.js" "b.js"))
@@ -411,6 +425,15 @@
 (delete-file ignore)
 (supply a1-text "signatures")
 (want "G3 with no .gitignore, supply makes one holding the line" (text-of ignore) "/derived/\n")
+;; The directory the table measurably is in, relative to the store.
+(define table-dir
+  (let* ((rel (substring js-table (+ 1 (string-length store)) (string-length js-table)))
+         (cut (let loop ((i 0)) (cond ((= i (string-length rel)) i) ((char=? (string-ref rel i) #\/) i) (else (loop (+ i 1)))))))
+    (substring rel 0 cut)))
+(want "CAT2 the table is in the store's directory, and describe's supply sentence names that directory"
+      (in-order (file-exists? js-table)
+                (contains? (description-of 'supply) (string-append "under " table-dir "/")))
+      '(#t #t))
 (write! ignore ignore-init)
 
 ;; ---- D11: nothing a supply does reaches the log ----------------------------------------
@@ -1207,10 +1230,16 @@
             (list kept (item b2 (list 'at (+ r 2) (+ r 3))))))
 (want "D18 (4) b1's body to its end (b2's marker start): b1 from the prefix's size to its length"
       (map-case b1 p1 m2) (list kept (item b1 (list 'at k len1))))
+(define d18-5 (map-case b1 (+ p1 1) (+ p2 1)))
 (want "D18 (5) from b1's body into b2's: unmappable on b1"
-      (map-case b1 (+ p1 1) (+ p2 1)) (list kept (item b1 '(at unmappable))))
+      d18-5 (list kept (item b1 '(at unmappable))))
 (want "D18 (6) inside b2's @block line: unmappable on b2"
       (map-case b2 (+ m2 1) (+ m2 3)) (list kept (item b2 '(at unmappable))))
+(want "CAT3 describe's diagnostics sentence names the clause D18 (5) measured for an unmappable entry"
+      (let* ((items (cadr d18-5))
+             (at (and (pair? items) (pair? (car items)) (list-ref (car items) 4))))
+        (and at (contains? (description-of 'diagnostics) (format "~s" at))))
+      #t)
 (want "D18 (7) empty at b1's end (b2's marker start): b1 at its length; empty at EOF: b2 at its length"
       (in-order (map-case b1 m2 m2) (map-case b2 (bytevector-length P) (bytevector-length P)))
       (list (list kept (item b1 (list 'at len1 len1))) (list kept (item b2 (list 'at len2 len2)))))
