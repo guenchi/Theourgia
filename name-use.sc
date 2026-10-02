@@ -173,7 +173,13 @@
                (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
            (for-all clause? clauses)
            (distinct? (map car clauses))
-           (distinct? (datum-names f))
+           ;; The constructor, the predicate, the accessors and the mutators,
+           ;; defaults derived, are distinct, as Chez requires of one record
+           ;; definition at the top level; the record name and the field
+           ;; names may equal any of them. In a body the body rule refuses
+           ;; any name defined twice, the record name included.
+           (let ((names (datum-names f)))
+             (or (null? names) (distinct? (cdr names))))
            (not (and (assq 'parent clauses) (assq 'parent-rtd clauses))))))
 
   ;; The names a definition defines. define-values' formals are its names;
@@ -473,7 +479,8 @@
       ;; (foreign-procedure <convention> ... <entry> (<parameter type> ...)
       ;; <result type>): the types are data, the entry is walked. A
       ;; convention is one Chez knows (__collect_safe, __varargs, or
-      ;; (__varargs_after <n>) with n a non-negative exact integer); a type is
+      ;; (__varargs_after <n>) with n a non-negative exact integer), none given
+      ;; twice; a type is
       ;; one of Chez's foreign type names, or (* <name>) or (& <name>) for an
       ;; ftype, whose name the walk cannot check; void only as the result.
       (cons 'foreign-procedure
@@ -483,6 +490,8 @@
                      (let ((params (list-ref x (- n 2))))
                        (and (list? params) (for-all foreign-type? params)))
                      (or (eq? (list-ref x (- n 1)) 'void) (foreign-type? (list-ref x (- n 1))))
+                     (let distinct-conventions ((cs (first-n (cdr x) (- n 4))))
+                       (or (null? cs) (and (not (member (car cs) (cdr cs))) (distinct-conventions (cdr cs)))))
                      (for-all (lambda (c)
                                 (or (memq c '(__collect_safe __varargs))
                                     (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after)
