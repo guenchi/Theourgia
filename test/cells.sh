@@ -425,14 +425,17 @@ if has P4; then
   X=$W/p4; : > "$R/P4.txt"
   gate_case() {
     local c=$1 D=$X/$1
+    # A cell's HOME is a scratch one, with no git identity: the commits
+    # name their author here, or they fail and leave the tree dirty.
+    local commit="git -C $D -c user.name=cells -c user.email=cells@localhost commit"
     git clone -q "$here" "$D"; git -C "$D" config submodule.theourgia.url "$here/theourgia"
     [ "$c" = not-checked-out ] || git -C "$D" -c protocol.file.allow=always submodule update --init -q > /dev/null 2>&1
     case $c in
       moved) git -C "$D/theourgia" checkout -q HEAD~1 ;;
       submodule-dirty) echo x >> "$D/theourgia/README.md" ;;
       branch-dirty) echo x >> "$D/README.md" ;;
-      object) touch "$D/lib/stale.so"; git -C "$D" add lib/stale.so; git -C "$D" commit -qm "a committed object" ;;
-      list) echo "theourgia/extra.sc" >> "$D/test/expected-files.txt"; git -C "$D" commit -qam "a list that differs" ;;
+      object) touch "$D/lib/stale.so"; git -C "$D" add lib/stale.so; $commit -qm "a committed object" ;;
+      list) echo "theourgia/extra.sc" >> "$D/test/expected-files.txt"; $commit -qam "a list that differs" ;;
     esac
     (cd "$D" && PATH=$(dirname "$NODE"):$(dirname "$NPM"):$BASEPATH node scripts/prepublish.js > "$R/P4-$c.out" 2> "$R/P4-$c.err"); echo "$c rc $? $(head -1 "$R/P4-$c.err")" >> "$R/P4.txt"
   }
