@@ -473,12 +473,14 @@
 
 ;; K14: a NEW file of two entries, interrupted three ways, against a twin.
 ;; The tree in outline order: each block's kind, path and text, the file
-;; blocks in the order the outline gives them, each with its children.
+;; blocks in the order the outline gives root's children (code-files and
+;; state-datum list them by block id), each with its children.
+(define (top-level s ids) (filter (lambda (id) (member id ids)) (code-children s 'root)))
 (define (block-props s id) (list (code-field s id 'kind) (code-field s id 'path) (text (code-field s id 'src))))
 (define (tree-of st)
   (let ((s (state st)))
     (map (lambda (f) (list (block-props s f) (map (lambda (k) (block-props s k)) (code-children s f))))
-         (code-files s))))
+         (top-level s (code-files s)))))
 (define (new-file-case tag)
   (let* ((c (import-case tag (list (cons "a.py" (projection-encode py #f (list (list "new" e1)))))))
          (st (car c)) (edit (cadr c)))
@@ -506,7 +508,7 @@
 (define (datum-tree st)
   (let ((s (state st)))
     (map (lambda (l) (list (datum-props s l) (map (lambda (k) (datum-props s k)) (code-children s l))))
-         (map cadr (state-datum s)))))
+         (top-level s (map cadr (state-datum s))))))
 (define (new-library-case tag)
   (let* ((c (datum-case tag "(library (a) (export w) (import (rnrs))\n(define w 1))\n")) (st (car c)) (edit (cadr c)))
     (write-file! (string-append edit "/n.sc") (b "(library (n) (export p q) (import (rnrs))\n(define p 1)\n(define q 2))\n"))
