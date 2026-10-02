@@ -180,7 +180,7 @@
     (list fx out)))
 
 ;; Runs the real script in that directory and answers
-;; (exit-code hash-line count-line other-lines rows-line).
+;; (exit-code hash-line count-line other-lines rows-line all-lines).
 (define (check dir-pair)
   (let* ((fx (car dir-pair)) (out (cadr dir-pair))
          (log (string-append fx "/log.txt"))
@@ -199,7 +199,8 @@
           (pick "row baseline, hashes:")
           (pick "row baseline, counts:")
           (filter (lambda (l) (not (holds? l "row baseline, "))) ls)
-          (pick "row baseline, rows:"))))
+          (pick "row baseline, rows:")
+          ls)))
 
 (printf "\n== a table that describes this directory ==\n")
 
@@ -237,6 +238,34 @@
 (want "RB-5 the rows line names the fixture and both row counts"
       (list-ref drifted 4)
       "row baseline, rows: these fixtures ran a different number of rows than the table records for the same file, which refuses: alpha(3->2)")
+
+(printf "\n== a row count that differs for a fixture listed as KNOWN RED: a reading ==\n")
+
+;; alpha is listed in a known-red file named by THEOURGIA_KNOWN_RED; beta is
+;; not, and both ran fewer rows than the table records.
+(define (with-known-red names thunk)
+  (let ((f (string-append here "/known-red.txt")))
+    (put! f (apply string-append "# a comment line\n"
+                   (map (lambda (n) (string-append n "\t^FAIL x\n")) names)))
+    (putenv "THEOURGIA_KNOWN_RED" f)
+    (let ((v (thunk))) (putenv "THEOURGIA_KNOWN_RED" "") v)))
+(define known-only
+  (with-known-red '("alpha")
+    (lambda () (check (build! (list (list "alpha" 2 3 "ok one\nok two\nrows: 2\n" "3" "4" #f)
+                                    (list "beta"  2 3 "ok one\nok two\nrows: 2\n" "2" "3" #f)))))))
+(define known-and-not
+  (with-known-red '("alpha")
+    (lambda () (check (build! (list (list "alpha" 2 3 "ok one\nok two\nrows: 2\n" "3" "4" #f)
+                                    (list "beta"  1 2 "ok one\nrows: 1\n" "2" "3" #f)))))))
+(define (line-of run prefix)
+  (let ((l (find (lambda (x) (holds? x prefix)) (list-ref run 5)))) (or l (string-append "NO LINE " prefix))))
+(want "RB-4c a known-red fixture whose row count differs does not refuse, and its own line says it is a reading"
+      (list (car known-only) (line-of known-only "row baseline, rows of known-red fixtures:") (list-ref known-only 4))
+      (list 0 "row baseline, rows of known-red fixtures: these differ, which is a reading and not a refusal (they are known not to finish here): alpha(3->2)"
+            "NO LINE BEGINNING row baseline, rows:"))
+(want "RB-4c TWIN: in the same run a fixture NOT listed still refuses on its row count"
+      (list (car known-and-not) (list-ref known-and-not 4))
+      (list 1 "row baseline, rows: these fixtures ran a different number of rows than the table records for the same file, which refuses: beta(2->1)"))
 
 (printf "\n== a LINE count that drifted: a reading, not a refusal ==\n")
 
