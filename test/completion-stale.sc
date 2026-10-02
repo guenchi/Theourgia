@@ -664,15 +664,21 @@
         (want (string-append "K14 fabricated: " label) (list (car a) (cadr a) (caddr a)) (list 'error 'no-such-intent expected))
         (want (string-append "K14 fabricated: " label ", and nothing is written") (log-bytes st) before))))
   '("a marker naming a set" "a marker naming no index" "a marker naming a later member" "a marker naming a set, the set's block written by another (the marker check comes first)"
-    "a marker naming no index, in an insert longer than four parts" "a marker naming no index, in an insert of three parts")
+    "a marker naming no index, in an insert longer than four parts" "a marker naming no index, in an insert of three parts"
+    "a marker naming no index, in an insert that ends after its parent" "a marker naming no index, in a move that ends after its parent"
+    "a marker naming no index, in a wrapped insert that ends after its parent" "a marker naming no index, in a wrapped insert dotted after its parent")
   (list (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section))))
         (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 5) #f section))))
         (lambda (M) (list (cons 0 (list 'insert '("#%new" 1) #f section)) (cons 1 (list 'insert 'root #f section))))
         (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section))))
         (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9) #f section 'extra))))
-        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9) #f)))))
-  '(0 5 1 0 9 9)
-  '(#f #f #f #t #f #f))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9) #f))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9)))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'move M '("#%new" 9)))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'expect "0000" (list 'insert '("#%new" 9))))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'expect "0000" (cons 'insert (cons '("#%new" 9) 'tail)))))))
+  '(0 5 1 0 9 9 9 9 9 9)
+  '(#f #f #f #t #f #f #f #f #f #f)))
 ;; AN ENTRY LONGER THAN FOUR PARTS WITH NO MARKER is run as declared: the
 ;; completion has nothing to bind in it, and the run answers for it what a
 ;; fresh run of the same intent answers.
@@ -690,12 +696,16 @@
 ;; judges the entry as it judges any, and never answers that the marker is
 ;; not an id.
 (cell "K14 fabricated long"
-  (let* ((f (forged-store "k14fl")) (st (car f)) (M (cadr f)))
-    (publish-plan! f (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 0) #f section 'extra))) #f)
-    (let* ((a (forged-retry f)) (l (last-answer (if (eq? (car a) 'ok) (cons 'batch (list (cdr (assq 'items (cdr a))))) a))))
-      (want "K14 fabricated: a valid marker in an insert longer than four parts is bound, never read as not an id"
-            (and (pair? l) (eq? (car l) 'error) (pair? (cddr l)) (pair? (caddr l)) (eq? (car (caddr l)) 'not-an-id))
-            #f)))))
+  (for-each
+    (lambda (label entry)
+      (let* ((f (forged-store "k14fl")) (st (car f)) (M (cadr f)))
+        (publish-plan! f (list (cons 0 (list 'insert 'root #f section)) (cons 1 entry)) #f)
+        (let* ((a (forged-retry f)) (l (last-answer (if (eq? (car a) 'ok) (cons 'batch (list (cdr (assq 'items (cdr a))))) a))))
+          (want (string-append "K14 fabricated: a valid marker in " label " is bound, never read as not an id")
+                (and (pair? l) (eq? (car l) 'error) (pair? (cddr l)) (pair? (caddr l)) (eq? (car (caddr l)) 'not-an-id))
+                #f))))
+    '("an insert longer than four parts" "an insert that ends after its parent")
+    (list (list 'insert '("#%new" 0) #f section 'extra) (list 'insert '("#%new" 0)))))
 
 ;; K12's sibling case. AN IMPORT CANNOT NAME A SIBLING WITHOUT TARGETING
 ;; IT: it restates every entry's order with a move, so the sibling is a

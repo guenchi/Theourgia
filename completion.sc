@@ -64,33 +64,38 @@
     (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
   (define (declared-kind e)
     (let ((u (declared-intent e))) (and (pair? u) (symbol? (car u)) (car u))))
-  ;; -> (parent sibling): an insert's elements 1 and 2, a move's 2 and 3,
-  ;; read through the pairs that reach them whatever follows, or () when
-  ;; the entry does not reach them. A plan the reducer admits can declare an
-  ;; insert or a move shorter or longer than the four parts the store
-  ;; writes; a marker in it is still a marker, and is still checked.
+  ;; Where an entry's references start: an insert's parent is its element
+  ;; 1, a move's its element 2; the sibling follows the parent.
+  (define (refs-start e)
+    (case (declared-kind e) ((insert) 1) ((move) 2) (else #f)))
+  ;; -> the references the entry has: its parent, then its sibling, each
+  ;; read on its own through the pairs that reach it, so an entry that
+  ;; ends after its parent has one and an entry that ends before it has
+  ;; none. A plan the reducer admits can declare an insert or a move
+  ;; shorter or longer than the four parts the store writes; a marker in
+  ;; any reference it has is still a marker, and is still checked.
   (define (declared-refs e)
-    (let ((u (declared-intent e)))
-      (cond ((not (and (pair? u) (pair? (cdr u)) (pair? (cddr u)))) '())
-            ((eq? (car u) 'insert) (list (cadr u) (caddr u)))
-            ((and (eq? (car u) 'move) (pair? (cdddr u))) (list (caddr u) (cadddr u)))
-            (else '()))))
-  ;; L with its elements at K1 and K2 replaced by A and B, the rest of its
-  ;; pairs and its tail as they were.
-  (define (with-elements l k1 a k2 b)
-    (let loop ((l l) (k 0))
-      (if (pair? l)
-          (cons (cond ((= k k1) a) ((= k k2) b) (else (car l))) (loop (cdr l) (+ k 1)))
-          l)))
-  ;; The entry with its parent and sibling replaced in place: the rest of
-  ;; the entry, and its wrapper, are kept as declared, and the run judges
-  ;; them as it judges any entry.
-  (define (declared-with-refs e parent after)
+    (let ((k (refs-start e)))
+      (if (not k)
+          '()
+          (let take ((l (declared-intent e)) (i 0) (out '()))
+            (cond ((or (not (pair? l)) (= i (+ k 2))) (reverse out))
+                  ((>= i k) (take (cdr l) (+ i 1) (cons (car l) out)))
+                  (else (take (cdr l) (+ i 1) out)))))))
+  ;; L with its elements from K on replaced by VS, as many as VS has, the
+  ;; rest of its pairs and its tail as they were.
+  (define (with-elements l k vs)
+    (let loop ((l l) (i 0) (vs vs))
+      (cond ((not (pair? l)) l)
+            ((and (>= i k) (pair? vs)) (cons (car vs) (loop (cdr l) (+ i 1) (cdr vs))))
+            (else (cons (car l) (loop (cdr l) (+ i 1) vs))))))
+  ;; The entry with its references replaced in place by VS, one for each
+  ;; reference declared-refs read: the rest of the entry, and its wrapper,
+  ;; are kept as declared, and the run judges them as it judges any entry.
+  (define (declared-with-refs e vs)
     (let* ((u (declared-intent e))
-           (r (if (eq? (car u) 'insert)
-                  (with-elements u 1 parent 2 after)
-                  (with-elements u 2 parent 3 after))))
-      (if (eq? u e) r (with-elements e 2 r -1 #f))))
+           (r (with-elements u (refs-start e) vs)))
+      (if (eq? u e) r (with-elements e 2 (list r)))))
 
   ;; A member of this plan: a record whose actor names this plan event with
   ;; an integer index. A record that claims the request's identity without
@@ -154,7 +159,7 @@
                                                       ((eqv? (car is) (cadr x)) j)
                                                       (else (index (cdr is) (+ j 1))))))))
                             x))))
-            (declared-with-refs e (bind (car rs)) (bind (cadr rs)))))))
+            (declared-with-refs e (map bind rs))))))
 
   (define (member-target e)
     (let ((u (declared-intent e)))
