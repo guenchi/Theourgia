@@ -3322,6 +3322,11 @@
   ;; record. The optional progress procedure is called with the running
   ;; total before each failure can escape, so the count comes from the
   ;; loop that did the writing.
+  ;;
+  ;; NEVER: EAGAIN IS RAISED, NOT RETRIED. No descriptor the product writes
+  ;; through here is non-blocking; the one that can answer EAGAIN is the
+  ;; client's socket, which is blocking with a send timeout, and there
+  ;; EAGAIN is that timeout ending -- retrying would make it unbounded.
   (define (write-all! fd bv . opts)
     (unless (bytevector? bv)
       (assertion-violation 'write-all! "not a bytevector" bv))
