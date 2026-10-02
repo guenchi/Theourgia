@@ -286,12 +286,14 @@
   (define (binding-inits bs env) (apply append (map (lambda (b) (walk-all (cdr b) env)) bs)))
 
   ;; quasiquote's template, at a depth: unquote and unquote-splicing at depth 1
-  ;; walk their expression; a nested quasiquote raises the depth.
+  ;; walk their expression; a nested quasiquote raises the depth. Each of the
+  ;; three is template syntax only where it is not bound: under
+  ;; (let ((unquote list)) ...) an (unquote x) in a template is data.
   (define (template x depth env)
     (cond
-      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (list? x) (pair? (cdr x)))
+      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x) (pair? (cdr x)))
        (if (= depth 1) (walk-all (cdr x) env) (template (cdr x) (- depth 1) env)))
-      ((and (pair? x) (eq? (car x) 'quasiquote) (pair? (cdr x)) (null? (cddr x)))
+      ((and (pair? x) (eq? (car x) 'quasiquote) (not (bound? 'quasiquote env)) (pair? (cdr x)) (null? (cddr x)))
        (template (cadr x) (+ depth 1) env))
       ((pair? x) (append (template (car x) depth env) (template (cdr x) depth env)))
       ((vector? x) (apply append (map (lambda (e) (template e depth env)) (vector->list x))))
