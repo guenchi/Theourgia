@@ -157,7 +157,7 @@
             (and (pair? s) (list? s) (for-all symbol? s)
                  (case (car s)
                    ((immutable) (<= 2 (length s) 3))
-                   ((mutable) (<= 2 (length s) 4))
+                   ((mutable) (memv (length s) '(2 4)))
                    (else #f)))))
       (define (clause? c)
         (and (pair? c) (list? c)
@@ -173,6 +173,7 @@
                (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
            (for-all clause? clauses)
            (distinct? (map car clauses))
+           (distinct? (datum-names f))
            (not (and (assq 'parent clauses) (assq 'parent-rtd clauses))))))
 
   ;; The names a definition defines. define-values' formals are its names;
@@ -209,44 +210,57 @@
   ;; Every begin in the body is spliced first, nested and empty ones too, as
   ;; the expander splices them; a begin among the expressions walks to the
   ;; same names spliced or not.
-  (define (splice-begins forms env)
-    (if (not (list? forms))
-        forms
-        (apply append
-               (map (lambda (f)
-                      (if (and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)) (list? f))
-                          (splice-begins (cdr f) env)
-                          (list f)))
-                    forms))))
-
-  ;; The definitions at the head of a body, collected in order: a name a
-  ;; collected definition binds is bound for the forms after it, so after
-  ;; (define define list) a define is an application. -> (defs . rest)
-  (define (head-definitions forms env)
-    (let collect ((fs (splice-begins forms env)) (defs '()) (env env))
-      (if (and (pair? fs) (definition? (car fs) env))
-          (collect (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env))
-          (cons (reverse defs) fs))))
-
-  ;; A BODY as R6RS shapes it: its definitions, then at least one expression.
-  (define (body-shape? forms env)
+  ;; A BODY AS CHEZ SHAPES IT: definitions, then at least one expression.
+  ;; In the definition part a begin splices (its forms are taken in its
+  ;; place, an empty one is nothing), and a name a definition binds is bound
+  ;; for the forms after it, so after (define begin list) a begin is an
+  ;; application. From the first form that is not a definition on, every
+  ;; form is an expression: a definition there, or a begin that is empty or
+  ;; holds one, makes the body malformed, and so does a name defined twice.
+  ;; -> (definitions . expressions), or #f.
+  (define (body-split forms env)
     (and (list? forms)
-         (let ((rest (cdr (head-definitions forms env))))
-           (and (list? rest) (pair? rest)))))
+         (let loop ((fs forms) (defs '()) (env env))
+           (cond
+             ((null? fs) #f)
+             ((and (pair? (car fs)) (eq? (car (car fs)) 'begin) (not (bound? 'begin env)) (list? (car fs)))
+              (loop (append (cdr (car fs)) (cdr fs)) defs env))
+             ((definition? (car fs) env)
+              (loop (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env)))
+             (else
+              (let ((defs (reverse defs)))
+                (and (distinct? (apply append (map defined-names defs)))
+                     (for-all (lambda (f) (expression-form? f env)) fs)
+                     (cons defs fs))))))))
+
+  ;; A form in an expression position of a body or a command sequence: not a
+  ;; definition, and not a begin that is empty or holds a definition.
+  (define (expression-form? f env)
+    (cond
+      ((and (pair? f) (symbol? (car f)) (not (bound? (car f) env)) (memq (car f) defining-heads)) #f)
+      ((and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)) (list? f))
+       (and (pair? (cdr f)) (for-all (lambda (g) (expression-form? g env)) (cdr f))))
+      (else #t)))
+
+  (define (body-shape? forms env) (and (body-split forms env) #t))
 
   (define (walk-body forms env)
-    (let* ((split (head-definitions forms env))
-           (defs (car split))
-           (fs (cdr split))
-           (env2 (append (apply append (map defined-names defs)) env)))
-      (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
-              (if (list? fs) (walk-all fs env2) (walk-elements fs env2)))))
+    (let ((split (body-split forms env)))
+      (if (not split)
+          (if (list? forms) (walk-all forms env) (walk-elements forms env))
+          (let* ((defs (car split))
+                 (env2 (append (apply append (map defined-names defs)) env)))
+            (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
+                    (walk-all (cdr split) env2))))))
 
-  ;; A block's top form may be an empty begin, which splices to nothing.
-  (define (datum-uses body)
-    (symbol-set (cond ((definition? body '()) (walk-definition body '()))
-                      ((equal? body '(begin)) '())
-                      (else (walk body '())))))
+  ;; A BLOCK'S TOP FORM: a definition, a begin, which splices (its forms are
+  ;; top forms, an empty one is nothing), or an expression.
+  (define (top-begin? body) (and (pair? body) (eq? (car body) 'begin) (list? body)))
+  (define (top-uses body)
+    (cond ((definition? body '()) (walk-definition body '()))
+          ((top-begin? body) (apply append (map top-uses (cdr body))))
+          (else (walk body '()))))
+  (define (datum-uses body) (symbol-set (top-uses body)))
 
   ;; ---- the known forms ----------------------------------------------------------
   ;;
@@ -287,6 +301,19 @@
               (if (pair? (cdr c)) (if arrow? '() (walk (cadr c) env)) '())
               (if (pair? (cdr c)) (walk-all (cddr c) env) '()))))
 
+  ;; Chez's foreign type names, as its User's Guide lists them for
+  ;; foreign-procedure, and the two ftype forms.
+  (define foreign-type-names
+    '(integer-8 unsigned-8 integer-16 unsigned-16 integer-24 unsigned-24 integer-32 unsigned-32
+      integer-40 unsigned-40 integer-48 unsigned-48 integer-56 unsigned-56 integer-64 unsigned-64
+      short unsigned-short int unsigned unsigned-int long unsigned-long long-long unsigned-long-long
+      char wchar_t wchar float double single-float double-float size_t ssize_t ptrdiff_t
+      iptr uptr void* boolean fixnum string wstring utf-8 utf-16 utf-16le utf-16be
+      utf-32 utf-32le utf-32be u8* u16* u32* scheme-object))
+  (define (foreign-type? t)
+    (or (and (symbol? t) (memq t foreign-type-names) #t)
+        (and (list? t) (= (length t) 2) (memq (car t) '(* &)) (symbol? (cadr t)))))
+
   ;; -> the first K elements of the list L.
   (define (first-n l k) (if (= k 0) '() (cons (car l) (first-n (cdr l) (- k 1)))))
 
@@ -308,16 +335,14 @@
                       (loop (cdr cs))))))))
 
   ;; The clauses of a case: at least one, each (<datums> <expression> ...),
-  ;; the datums a list or, as Chez accepts, one datum; an else clause last.
+  ;; the datums a list or, as Chez accepts, one datum; an else clause where
+  ;; Chez accepts one, anywhere, clauses after it included.
   (define (case-clauses-shape? clauses env)
     (and (lists? clauses) (pair? clauses)
          (let loop ((cs clauses))
            (or (null? cs)
                (let ((c (car cs)))
                  (and (>= (length c) 2)
-                      (if (and (eq? (car c) 'else) (not (bound? 'else env)))
-                          (null? (cdr cs))
-                          #t)
                       (loop (cdr cs))))))))
 
   ;; A definition rather than a bare expression: a library body's
@@ -400,11 +425,12 @@
               (and (>= (length x) 3) (lists? (cadr x)) (list? (caddr x)) (pair? (caddr x))
                    (for-all (lambda (s) (and (symbol? (car s)) (<= 2 (length s) 3))) (cadr x))
                    (distinct? (map car (cadr x)))
+                   (for-all (lambda (f) (expression-form? f (append (map car (cadr x)) env))) (cdddr x))
                    (let* ((specs (cadr x)) (env2 (append (map car specs) env)))
                      (append (apply append (map (lambda (s) (walk (cadr s) env)) specs))
                              (apply append (map (lambda (s) (walk-all (cddr s) env2)) specs))
                              (walk-all (caddr x) env2)
-                             (body (cdddr x) env2))))))
+                             (walk-all (cdddr x) env2))))))
       ;; begin as an expression holds at least one (a body's begins are
       ;; spliced before this is reached); if has a test, a consequent and at
       ;; most an alternative; when and unless a test and an expression.
@@ -445,18 +471,22 @@
             (lambda (x env walk body)
               (and (= (length x) 3) (symbol? (cadr x)) (walk (caddr x) (cons (cadr x) env)))))
       ;; (foreign-procedure <convention> ... <entry> (<parameter type> ...)
-      ;; <result type>): the types are data, the entry is walked, and a
-      ;; convention is #f, a __-named symbol or (__varargs_after <n>), data too.
+      ;; <result type>): the types are data, the entry is walked. A
+      ;; convention is one Chez knows (__collect_safe, __varargs, or
+      ;; (__varargs_after <n>) with n a non-negative exact integer); a type is
+      ;; one of Chez's foreign type names, or (* <name>) or (& <name>) for an
+      ;; ftype, whose name the walk cannot check; void only as the result.
       (cons 'foreign-procedure
             (lambda (x env walk body)
               (let ((n (length x)))
                 (and (>= n 4)
-                     (list? (list-ref x (- n 2)))
+                     (let ((params (list-ref x (- n 2))))
+                       (and (list? params) (for-all foreign-type? params)))
+                     (or (eq? (list-ref x (- n 1)) 'void) (foreign-type? (list-ref x (- n 1))))
                      (for-all (lambda (c)
-                                (or (not c)
-                                    (and (symbol? c) (let ((t (symbol->string c)))
-                                                       (and (> (string-length t) 2) (string=? (substring t 0 2) "__"))))
-                                    (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after))))
+                                (or (memq c '(__collect_safe __varargs))
+                                    (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after)
+                                         (integer? (cadr c)) (exact? (cadr c)) (>= (cadr c) 0))))
                               (first-n (cdr x) (- n 4)))
                      (walk (list-ref x (- n 3)) env))))))))
 
@@ -469,7 +499,7 @@
     (cond
       ((not (and (pair? form) (symbol? (car form)) (list? form))) #f)
       ((memq (car form) defining-heads) (and (definition? form '()) #t))
-      ((equal? form '(begin)) #t)
+      ((top-begin? form) #t)
       (else (let ((rule (hashtable-ref known-forms (car form) #f)))
               (and rule (rule form '() walk walk-body) #t)))))
 
