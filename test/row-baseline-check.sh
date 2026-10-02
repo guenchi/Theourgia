@@ -18,9 +18,17 @@
 #
 # WHAT REFUSES AND WHAT DOES NOT. The md5 column is a fact about a file, so
 # a changed hash means the recorded counts describe a file that no longer
-# exists, and that refuses. The row and line columns are readings of a RUN,
-# and this suite has fixtures whose output length depends on the machine --
-# so a changed count is printed for a person and does not refuse.
+# exists, and that refuses. The line column is a reading of a RUN, and this
+# suite has fixtures whose output length depends on the machine -- so a line
+# count that differs is printed for a person and does not refuse.
+#
+# THE ROW COLUMN REFUSES. A row is one assertion the file made, and on an
+# unchanged file the number it makes does not depend on the machine: the
+# suite on a second machine differed in lines for four fixtures and in rows
+# only where the table was stale. A row count that differs on an unchanged
+# hash is a table nobody corrected, or rows that stopped running -- and when
+# both counts were readings, two entries stayed wrong for days with every
+# gate green.
 #
 # EACH LINE SAYS WHICH COLUMN IT IS ABOUT. Both lines begin `row baseline,
 # hashes:` or `row baseline, counts:` so that neither can be read as
@@ -61,7 +69,7 @@ done
 # with two unnamed fixtures stopped before any md5 was compared, so sixteen
 # fixtures whose contents had changed were never looked at. A missing NAME
 # hid every stale HASH behind it.
-stale=""; drift=""; matched=0
+stale=""; drift=""; rowsbad=""; matched=0
 # `|| [ -n "$name" ]` KEEPS THE LAST LINE when the file does not end in a
 # newline: `read` returns non-zero there although it has filled the
 # variables, so the final record was silently skipped -- by the hash check,
@@ -75,7 +83,9 @@ while read -r name rows lines digest || [ -n "$name" ]; do
   r=$(grep "^rows: " "$out/$name.out" | tail -1 | sed "s/^rows: //")
   [ -n "$r" ] || r="-"
   l=$(wc -l < "$out/$name.out" | tr -d " ")
-  if [ "$r" = "$rows" ] && [ "$l" = "$lines" ]; then
+  if [ "$r" != "$rows" ]; then
+    rowsbad="$rowsbad $name($rows->$r)"
+  elif [ "$l" = "$lines" ]; then
     matched=$((matched+1))
   else
     drift="$drift $name($rows/$lines->$r/$l)"
@@ -102,11 +112,16 @@ fi
 # line said "and counts" whether or not any count had been compared. A
 # check that is silent when it passes cannot be told from one that did not
 # run, and that silence is what let the wrong claim stand.
+if [ -n "$rowsbad" ]; then
+  echo "row baseline, rows: these fixtures ran a different number of rows than the table records for the same file, which refuses:$rowsbad"
+fi
 if [ -n "$drift" ]; then
-  echo "row baseline, counts: these differ in this environment, which is a reading and not a refusal:$drift"
+  echo "row baseline, counts: these differ in line count in this environment, which is a reading and not a refusal:$drift"
+elif [ -n "$rowsbad" ]; then
+  echo "row baseline, counts: no other difference; $matched compared fixture(s) match their recorded row and line counts"
 else
   echo "row baseline, counts: all $matched compared fixture(s) match their recorded row and line counts"
 fi
 
-if [ -n "$stale" ] || [ -n "$missing" ]; then exit 1; fi
+if [ -n "$stale" ] || [ -n "$missing" ] || [ -n "$rowsbad" ]; then exit 1; fi
 exit 0
