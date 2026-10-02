@@ -31,13 +31,13 @@ import * as path from 'path';
 import { performance } from 'perf_hooks';
 import * as vscode from 'vscode';
 import { Block, documentFor, languageModeOf, prefixOf } from './blocks';
-import {DatumBlockRefused, ModeNotKnown, Working, requireText} from './working';
+import {DatumBlockRefused, ModeNotKnown, Working, requireText, windowWriter} from './working';
 import {MIGRATE_BLOCK} from './commands';
 import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
 import { Client, Note } from './client';
-import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith, writerFor } from './config';
+import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { ChildListing, Node, StoreModel } from './model';
 import {
   DirectoryEntry,
@@ -1360,7 +1360,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     const store = storeIdentity();
-    const writer = kind === 'diagnostics' ? writerFor(config) : null;
+    /*
+     * NEVER: ANOTHER WRITER'S VIEW. The diagnostics are of what this window
+     * is editing, which is in its own draft space; `theourgia.writer` names
+     * a space none of its drafts are in.
+     */
+    const writer = kind === 'diagnostics' ? windowWriter(sessionId) : null;
     const directory = path.join(storage, 'projection', storeHash(config.store), writer === null ? '-' : encodeURIComponent(writer));
     const supplyDirectory = path.join(storage, 'supply');
     let changes = 0;
@@ -1819,7 +1824,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * record moved while the working copy was read.
        */
       const expected = publisher.revisionIn(directory);
-      const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,prefix);
+      const projection = await new Working(reading, windowWriter(sessionId)).read(id,prefix);
       shownPrefix = projection.prefix;
       return publisher.publish({directory,storeId:store,blockId:id,mode:openedMode ?? undefined,modeSeenAt:seenBefore,lang:blockLang(block) ?? undefined,prefix:projection.prefix,
         text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
@@ -2259,7 +2264,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const text=files.readText(file);
         if (heldRecord?.projection) {
           try {
-            const note=await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
+            const note=await new Working(reconciling,windowWriter(sessionId))
               .write(heldRecord.blockId,text.slice(heldRecord.prefix.length),heldRecord.prefix,false,heldRecord.projection,'text');
             if (!publisher.recordWorking(file,note.source,digestOfBytes(text),heldRecord.projection.id,held,'text',seenAtRead)) throw new Error('Projection changed');
           } catch (error) {
@@ -2334,7 +2339,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          * note.
          */
         try {
-          projection=(await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
+          projection=(await new Working(reconciling,windowWriter(sessionId))
             .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',outcome.heldProjection,'text')).source;
         } catch (error) {reportFailure(error);return {done:false,file,because:'working-unavailable'};}
       }
@@ -2382,7 +2387,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const directory=path.dirname(file),reading=client;
     const sourceSession=path.basename(path.dirname(path.dirname(directory)));
-    const writer=`window-${sourceSession.toLowerCase()}`;
+    const writer=windowWriter(sourceSession);
     const confirmed=await vscode.window.showWarningMessage('Verified legacy files will move to a one-time recovery archive. Unprotected drafts and pending sends will stay in place.',{modal:true},'Migrate');
     if (confirmed!=='Migrate') return;
     const result=await chain.run(directory,()=>migrateLegacy({files,publisher,directory,storeId:sidecar.storeId,blockId:sidecar.blockId,
@@ -2554,7 +2559,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const capturedSidecar = currentSidecar;
         const source = currentSidecar.projection;
         try {
-          const working = await new Working(writing,`window-${sessionId.toLowerCase()}`)
+          const working = await new Working(writing,windowWriter(sessionId))
             .write(capturedSidecar.blockId,decision.src,capturedSidecar.prefix,false,source,capturedSidecar.mode ?? null);
           if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id,capturedSidecar.revision,working.mode,seenAtSave)) {
             throw new Error('The file or its projection changed while the working note was being saved');

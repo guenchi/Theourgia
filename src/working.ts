@@ -28,6 +28,15 @@ export interface WorkingProjection {
   prefix: string;
 }
 
+/*
+ * THE DRAFT SPACE OF A WINDOW, from its session id: every draft a window
+ * writes, every working read of its own drafts and every view of them it
+ * analyses take the name from here, so no two places can spell it apart.
+ */
+export function windowWriter(sessionId: string): string {
+  return `window-${sessionId.toLowerCase()}`;
+}
+
 // This is a working namespace, not an allocation of a physical log writer.
 export class Working {
   constructor(private readonly client: Client, public readonly writer: string) {}

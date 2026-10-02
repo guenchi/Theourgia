@@ -143,7 +143,7 @@ of them is a decision rather than an oversight:
 | `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here, unless it is the one holding `corePath`, or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
-| `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, the draft space a verb sent without `--writer` uses. Defaults to the actor. This window's own edits do not go there: they use a draft space of the window's own. See *Each window, its own draft space*. |
+| `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, the draft space a verb sent without `--writer` uses. Defaults to the actor. Nothing this extension sends uses it: every request that takes a writer names one -- this window's own, or, when recovering or migrating another session's work, that session's (a migration also reads the committed text under a fresh `migration-<uuid>` name). See *Each window, its own draft space*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`; Homebrew installs it as `chez`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
 
@@ -173,8 +173,12 @@ separate drafts, and a window's unsent work is reached from another only through
 together with `THEOURGIA_ACTOR`: the draft space a verb sent without `--writer` uses. It
 is deliberately not spliced into the argument vector: the verbs that do not take a
 `--writer` option refuse one, and a client that added it everywhere would turn ordinary
-requests into usage lines. Supply Diagnostics reads this setting's draft space today, not
-the window's (see *Supplying what the editor knows*).
+requests into usage lines. Nothing this extension sends uses it: the working reads and
+writes, `commit` and the diagnostics' export carry `--writer`, and `supply` its `--for`,
+always with a name -- this window's own, or, when it recovers or migrates another
+session's work, that session's (a take-over commits under the name the other window
+recorded, and a migration also reads the committed text under a fresh
+`migration-<uuid>` name).
 
 ## How a request is made
 
@@ -584,8 +588,8 @@ editor merges them.
 **Supplying what the editor knows.** Three commands hand the store facts the editor's language
 support computes, which the core keeps beside the store and never in its log (the core's README,
 "Derived data from an editor"): "Theourgia: Supply Signatures and Keywords" and "Theourgia: Supply
-Calls" for the committed store, and "Theourgia: Supply Diagnostics" for this window's writer, from its
-working view. Each projects the store with `export-code` into a directory in this extension's own
+Calls" for the committed store, and "Theourgia: Supply Diagnostics" for this window, from its own draft
+space's working view, so the diagnostics are of what the window is editing. Each projects the store with `export-code` into a directory in this extension's own
 storage, emptied first, opens the projected files without showing them, asks the editor's providers,
 and sends one `supply` per language with every projected file listed by its digest and every file of
 that language named as replaced, a file with no fact included (so its old facts clear).

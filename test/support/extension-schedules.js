@@ -106,7 +106,9 @@ const vs = {
  // The editor's definition dispatch: providers registered with their
  // selectors, and a document matched to them as VS Code matches one.
  languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language}),registerDefinitionProvider:(selector,provider)=>{definitionProviders.push({selector,provider});return disposable;},
-  registerHoverProvider:(selector,provider)=>{hoverProviders.push({selector,provider});return disposable;}},
+  registerHoverProvider:(selector,provider)=>{hoverProviders.push({selector,provider});return disposable;},
+  // What the supply commands ask of the editor's diagnostics: none here.
+  onDidChangeDiagnostics:()=>disposable,getDiagnostics:()=>[]},
  MarkdownString:class{constructor(value){this.value=value;}},Hover:class{constructor(contents){this.contents=contents;}},
  RelativePattern:class{constructor(base,pattern){this.base=base;this.pattern=pattern;}},
  Position:class{constructor(line,character){this.line=line;this.character=character;}},
@@ -881,6 +883,59 @@ async function main(){
    return {mine,other,firstShown,modeBefore,second:{requests:log.slice(from),shown:secondShown},
     modeAfter:JSON.parse(fs.readFileSync(file+'.meta','utf8')).mode};
   }finally{realClient=null;store.dispose();fs.rmSync(copy,{recursive:true,force:true});}
+ }
+ // Supply Diagnostics on a real core, with a draft this window wrote and did not
+ // commit: which writer's working view the command exports and supplies for,
+ // and whether the exported file holds the draft's text.
+ if(scenario==='diagnostics-draft-real'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const store=await real.RealStore.make('diagnostics-draft');
+  try{
+   const from=path.join(store.root,'src');fs.mkdirSync(from,{recursive:true});
+   fs.writeFileSync(path.join(from,'lib.js'),'function alpha() {\n  return 1;\n}\n');
+   const imported=store.cli(['import-code',from,'--store',store.store]);
+   if(!imported.startsWith('(ok'))throw new Error(`the source was not imported: ${imported}`);
+   const transport=store.transport();
+   const outline=(await transport.send('outline',[])).stdout;
+   const ids=[...outline.matchAll(/^\s*- (\S+)  /gm)].map(m=>m[1]);
+   const draftText='function alpha() {\n  return DRAFT_ONLY_IN_THIS_WINDOW;\n}\n';
+   const windowName=`window-${core.sessionId.toLowerCase()}`;
+   // The draft goes to a block whose text the export projects: one with a
+   // src, not the file block above it, which holds none.
+   let drafted=null;
+   for(const id of ids){
+    if(!/\(src \. /.test((await transport.send('read',[id])).stdout))continue;
+    const wrote=store.cli(['write',id,draftText,'--store',store.store,'--writer',windowName]);
+    if(/\(version "/.test(wrote)){drafted=id;break;}
+   }
+   if(drafted===null)throw new Error(`no block of ${ids.join(', ')} with a src took a draft`);
+   // Each request sent, and each supply's file header and answer, read before
+   // the file is removed.
+   const client=new Client(transport),sent=[],supplies=[],request=client.request.bind(client);
+   client.request=async(verb,args,input)=>{sent.push([verb,...(args||[])]);
+    const header=verb==='supply'&&args[1]&&fs.existsSync(args[1])?fs.readFileSync(args[1],'utf8').split('\n')[0]:null;
+    let answer;
+    try{answer=await request(verb,args,input);}
+    catch(e){if(verb==='supply')supplies.push({header,ok:false,threw:String(e&&e.message||e).slice(0,300)});throw e;}
+    if(verb==='supply')supplies.push({header,ok:answer.ok,text:String(answer.text).slice(0,300)});
+    return answer;};
+   realClient=client;change(store.store);
+   // The editor as the supply command meets it, in this scenario only: file
+   // URIs that print themselves and parse back, a version, and the projected
+   // files with a language and a version as an editor holds them.
+   const saved={file:vs.Uri.file,parse:vs.Uri.parse,version:vs.version,opening:vs.workspace.openTextDocument};
+   const fileUri=p=>({fsPath:p,scheme:'file',toString(){return `file://${p}`;}});
+   vs.Uri.file=fileUri;vs.Uri.parse=t=>fileUri(String(t).replace(/^file:\/\//,''));vs.version='1.138.0';
+   vs.workspace.openTextDocument=async uri=>{const d=await saved.opening(uri);return Object.assign(d,{uri:fileUri(uri.fsPath),languageId:/\.js$/.test(uri.fsPath||'')?'javascript':'plaintext',version:1});};
+   try{await commands.get('theourgia.supplyDiagnostics')();}
+   finally{vs.Uri.file=saved.file;vs.Uri.parse=saved.parse;vs.version=saved.version;vs.workspace.openTextDocument=saved.opening;}
+   const exported=sent.find(r=>r[0]==='export-code');
+   const supplied=sent.filter(r=>r[0]==='supply');
+   const directory=exported?exported[1]:null;
+   const texts=directory===null?[]:files(directory).map(p=>fs.readFileSync(p,'utf8'));
+   return {window:windowName,drafted,exportArgs:exported?exported.slice(2):null,supplyFor:supplied.map(r=>r[r.indexOf('--for')+1]??null),supplies,
+    holdsDraft:texts.some(t=>t.includes('DRAFT_ONLY_IN_THIS_WINDOW')),exportedFiles:texts.length,shown:shown.slice()};
+  }finally{realClient=null;store.dispose();}
  }
  // The hover in the window: one in each kind of document (a block's file, the
  // subtree view, the datum view), one under another store's address, one on

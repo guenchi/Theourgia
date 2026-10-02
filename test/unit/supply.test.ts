@@ -33,6 +33,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { Answer, Client } from '../../src/client';
 import { emptyDirectory, filesUnder, insideDirectory } from '../../src/fsops';
@@ -1520,6 +1521,40 @@ describe('on a real core the supply is taken, read back, made stale and cleared'
     const listed = store.cli(['diagnostics', '--writer', writer, '--wire', '--store', store.store]);
     for (const part of [`"${alpha}"`, '"beta is odd"', '(at 28 32)']) {
       assert.ok(listed.includes(part), `${part} is not in ${listed}`);
+    }
+  });
+});
+
+/*
+ * SUPPLY DIAGNOSTICS READS WHAT THIS WINDOW IS EDITING. A window writes its
+ * drafts under a name of its own, and the diagnostics are taken from that
+ * working view; the command once exported the view of `theourgia.writer`,
+ * which holds none of the window's drafts, and analysed text the window was
+ * not editing. The harness is the compiled extension against a stand-in
+ * editor, on a real core: a draft is written under the window's name and
+ * left uncommitted, and the command is run.
+ */
+describe('Supply Diagnostics reads the working view this window writes its drafts into', function () {
+  this.timeout(180000);
+
+  it('exports and supplies for the window\'s own draft space, which holds the draft', () => {
+    const run = spawnSync(process.execPath, [path.join(__dirname, '../support/extension-schedules.js'), '', 'diagnostics-draft-real'], {
+      encoding: 'utf8',
+      timeout: 150000
+    });
+    assert.strictEqual(run.status, 0, run.stdout + run.stderr);
+    const done = JSON.parse(run.stdout.trim().split('\n').pop() as string);
+    assert.strictEqual(done.complete, true);
+    const r = done.result;
+    assert.ok(typeof r.drafted === 'string', 'no block took the draft');
+    assert.deepStrictEqual(r.exportArgs, ['--working', '--writer', r.window], `the export read another writer's view: ${JSON.stringify(r)}`);
+    assert.ok(r.holdsDraft, `the exported files do not hold the window's draft: ${JSON.stringify(r)}`);
+    assert.ok(r.supplyFor.length > 0, `nothing was supplied: ${JSON.stringify(r)}`);
+    assert.deepStrictEqual([...new Set(r.supplyFor)], [r.window], `a supply was sent for another writer: ${JSON.stringify(r)}`);
+    assert.strictEqual(r.supplies.length, r.supplyFor.length, `a supply sent has no answer recorded: ${JSON.stringify(r)}`);
+    for (const supply of r.supplies) {
+      assert.ok(supply.ok, `the core refused a supply: ${JSON.stringify(supply)}`);
+      assert.ok(String(supply.header).includes(`(writer "${r.window}")`), `a supply file names another writer: ${JSON.stringify(supply)}`);
     }
   });
 });

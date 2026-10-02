@@ -389,7 +389,11 @@ const AT_LEAST: Array<[string, number]> = [
    * in its fence, how a hover is read, the ranking of a block's symbols, a
    * block described by its first function, no call from a block to itself.
    */
-  ['supply.test.ts', 70],
+  /*
+   * RAISED 70 -> 71: Supply Diagnostics reads the working view this window
+   * writes its drafts into.
+   */
+  ['supply.test.ts', 71],
   ['tombstones.test.ts', 11],
   /*
    * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket
