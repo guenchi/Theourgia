@@ -1732,13 +1732,13 @@
                                  (substring f (+ i 1) (string-length f)))
                                 (else (loop (- i 1))))))
                       source-file-list))
-      '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
+      '("admission.sc" "answers.sc" "arguments.sc" "attest.sc" "baseline.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "field-reading.sc" "incomplete.sc" "json.sc"
-        "languages.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
+        "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "proc.sc" "project.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"

@@ -164,10 +164,12 @@
       ((serve) '("--detach"))
       ((outline) '("--with-keywords" "--with-signatures"))
       ;; `--all` releases grep's two caps; `--under` takes a block id and is
-      ;; therefore not here.
-      ((grep) '("--all"))
+      ;; therefore not here. `--all-validity` keeps the superseded and
+      ;; refuted blocks a search leaves out by default.
+      ((grep) '("--all" "--all-validity"))
       ;; `search` answers its best ten unless asked for everything.
-      ((search) '("--all"))
+      ((search) '("--all" "--all-validity"))
+      ((whereis) '("--all-validity"))
       ((read) '("--md" "--recursive" "--working" "--working-info" "--signature"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.

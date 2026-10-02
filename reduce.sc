@@ -43,7 +43,8 @@
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
           reduce-empty reduce-apply! reduce-pending reduce-noted
           reduce-applied-cut reduce-trace reduce-gates
-          known-kinds kind-known?
+          known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
+          vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
@@ -1252,20 +1253,37 @@
   ;; The tree already had this lesson written down, one screen up: a refusal
   ;; about an unwritable datum was unreadable whenever it was right. Same
   ;; answer here, and the two routes' answers become the same shape as well.
-  (define (kind-not-known-reason v)
-    (list 'kind-not-known (list 'kind (datum-spelling v)) (list 'known known-kinds)))
+  ;; THE FIELDS WHOSE VALUE IS A WORD FROM A FIXED LIST, in one table: the
+  ;; field and the list. The caller's path refuses a value outside it by one
+  ;; rule, whose detail is `(<field>-not-known (<field> "<spelling>") (known
+  ;; (...)))`; a record already in a log keeps whatever it holds (replay
+  ;; tolerance). `class` says what kind of statement a block is: an
+  ;; observation, an inference, a ruling, a verification, or external
+  ;; material.
+  (define known-classes '(observation inference ruling verification external))
+  (define vocabulary-fields (list (cons 'kind known-kinds) (cons 'class known-classes)))
+  (define (vocabulary-known? field v)
+    (let ((e (assq field vocabulary-fields))) (and e (symbol? v) (memq v (cdr e)) #t)))
+  (define (vocabulary-not-known-reason field v)
+    (list (string->symbol (string-append (symbol->string field) "-not-known"))
+          (list field (datum-spelling v))
+          (list 'known (cdr (assq field vocabulary-fields)))))
 
-  (define (kind-field-reason payload)
-    (define (bad-kind? v) (not (kind-known? v)))
+  (define (vocabulary-field-reason payload)
+    (define (bad? field v) (not (vocabulary-known? field v)))
     (and (pair? payload)
          (case (car payload)
-           ((put) (let ((e (assq 'kind (car (cdr payload)))))
-                    (and e (bad-kind? (cdr e)) (kind-not-known-reason (cdr e)))))
+           ((put) (let loop ((fs vocabulary-fields))
+                    (and (pair? fs)
+                         (let ((e (assq (car (car fs)) (car (cdr payload)))))
+                           (if (and e (bad? (car (car fs)) (cdr e)))
+                               (vocabulary-not-known-reason (car (car fs)) (cdr e))
+                               (loop (cdr fs)))))))
            ((set) (let ((args (cdr payload)))
-                    (and (pair? (cdr args)) (eq? (car (cdr args)) 'kind)
+                    (and (pair? (cdr args)) (assq (car (cdr args)) vocabulary-fields)
                          (pair? (cdr (cdr args)))
-                         (bad-kind? (car (cdr (cdr args))))
-                         (kind-not-known-reason (car (cdr (cdr args)))))))
+                         (bad? (car (cdr args)) (car (cdr (cdr args))))
+                         (vocabulary-not-known-reason (car (cdr args)) (car (cdr (cdr args)))))))
            (else #f))))
 
   ;; THE TEXT-FIELD TYPE RULE RUNS BEFORE THE TITLE'S OWN RULE, and that
@@ -1278,7 +1296,7 @@
   (define (caller-payload-reason payload)
     (or (payload-reason payload)
         (symbol-field-reason payload)
-        (kind-field-reason payload)
+        (vocabulary-field-reason payload)
         (and (pair? payload)
              (case (car payload)
                ((put) (let ((alist (car (cdr payload))))
@@ -1663,6 +1681,23 @@
                         (cdr e))))
            (reduction-tags r))))
 
+  ;; EVERY SURVIVING EDGE, ONCE, WITH ITS SURVIVING LINK EVENTS: (<from> <rel>
+  ;; <to> <event> ...), however many link events made it, in the order the
+  ;; edges first appear. One pass, so a reader asking about every edge does
+  ;; not filter every link once per edge.
+  (define (state-edges r)
+    (let ((by (make-hashtable equal-hash equal?)))
+      (let loop ((ls (reduction-links r)) (order '()))
+        (if (null? ls)
+            (map (lambda (e) (append e (reverse (hashtable-ref by e '())))) (reverse order))
+            (let* ((l (car ls)) (e (list (car l) (cadr l) (caddr l))) (seen (hashtable-ref by e #f)))
+              (hashtable-set! by e (cons (cadddr l) (or seen '())))
+              (loop (cdr ls) (if seen order (cons e order))))))))
+
+  ;; Whether any surviving edge carries an effect-bearing relation.
+  (define (state-effect-relation? r)
+    (exists (lambda (l) (memq (cadr l) effect-relation-names)) (reduction-links r)))
+
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
                       (filter (lambda (l) (equal? (caddr l) id)) (reduction-links r)))))
@@ -1910,6 +1945,13 @@
   ;; itself applies such a record as it always has; history is not
   ;; rewritten by a later rule.
   (define reserved-relation-names '(ref uses calls guards))
+
+  ;; THE RELATIONS WITH AN EFFECT on a block's validity or a decision's
+  ;; state, BY NAME ONLY; what each does is the lifecycle library's table,
+  ;; checked against this list when that library loads. The list is here so
+  ;; a reader can ask whether a state has any such link without loading the
+  ;; library: a store that links none of them takes the fast path.
+  (define effect-relation-names '(supersedes refutes depends-on implements verifies conflicts-with))
 
   ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
   ;; records were accepted, for every APPLIED link or unlink record whose

@@ -174,7 +174,11 @@
       "Change a block with write and then commit, through a draft, rather than replacing it.\n"
       "Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.\n"
       "Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.\n"
-      "Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.\n"))
+      "Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.\n"
+      "Set class with set <id> class inference for what you concluded and did not verify, and with set <id> class external for material from outside; neither is ever treated as a ruling.\n"
+      "To replace a ruling, write the new one and link <new> supersedes <old>; to record that something is wrong, link <evidence> refutes <claim>.\n"
+      "Say what your work rests on with link <work> depends-on <premise>: when the premise changes, the work is marked for review.\n"
+      "After checking that an implementation still carries out its decision, link <impl> implements <decision> again: linking again is how you say you checked.\n"))
 
   (define (usage form) (list 'usage form))
 
@@ -667,6 +671,28 @@
   ;; before tables existed, and loads nothing for them.
   (define (derived name) (eval name (environment '(theourgia derived))))
 
+  ;; ---- validity: the lifecycle provider, loaded on use --------------------------
+  ;;
+  ;; NEVER: THIS LIBRARY DOES NOT IMPORT (theourgia lifecycle), for the reason
+  ;; above, and holds none of its code: what a read or a search says about
+  ;; validity is built there. Whether a state links any relation with an
+  ;; effect is the reducer's to answer, without the provider; a store that
+  ;; links none reads, searches and greps as it did before, by the byte, and
+  ;; loads nothing for it.
+  (define (lifecycle-entry name) (eval name (environment '(theourgia lifecycle))))
+  (define (lifecycle-of st) (and (state-effect-relation? st) ((lifecycle-entry 'lifecycle) st)))
+  ;; The clauses the provider named builds, or none without a provider.
+  (define (validity-clauses L name . args)
+    (if L (apply (lifecycle-entry name) L args) '()))
+  ;; THE FILTER THE SEARCH VERBS HAND THE STORE LIBRARY, a procedure of the
+  ;; state it folds, so a hit and its validity come from one fold; `keep` is
+  ;; handed the provider for the answer's clauses.
+  (define (validity-hook keep all?)
+    (lambda (st)
+      (let ((L (lifecycle-of st)))
+        (keep L)
+        (and L ((lifecycle-entry 'search-filter) L all?)))))
+
   ;; NEVER: APPLYING A TEMPLATE IS ENTERED ON USE, as (theourgia derived) is
   ;; above: init answers every start that names no template without it.
   (define (template-entry name) (eval name (environment '(theourgia template))))
@@ -743,9 +769,13 @@
                          ;; -- silently: the block simply never behaved like a
                          ;; doc. The conversion happens here, and an unknown
                          ;; spelling is refused BY NAME rather than stored.
-                         ((string=? (cadr rest) "kind")
-                          (let ((k (string->symbol (caddr rest))))
-                            (if (kind-known? k)
+                         ;; `class` IS THE SAME KIND OF FIELD (a word from a
+                         ;; fixed list) AND IS CONVERTED AND REFUSED BY THE
+                         ;; SAME RULE, over the reducer's one table of them.
+                         ((assq (string->symbol (cadr rest)) vocabulary-fields)
+                          (let ((field (string->symbol (cadr rest)))
+                                (k (string->symbol (caddr rest))))
+                            (if (vocabulary-known? field k)
                                 k
                                 ;; NEVER: THE SAME CONDITION GETS THE SAME NAME
                                 ;; ON BOTH ROUTES. This said `unknown-kind`
@@ -755,9 +785,10 @@
                                 ;; reader ends up believing they are two
                                 ;; things. The envelope differs because the
                                 ;; layers differ; the condition does not.
-                                (raise (list 'error 'bad-request 'kind-not-known
-                                             (list 'kind (caddr rest))
-                                             (list 'known known-kinds))))))
+                                (raise (list 'error 'bad-request
+                                             (string->symbol (string-append (cadr rest) "-not-known"))
+                                             (list field (caddr rest))
+                                             (list 'known (cdr (assq field vocabulary-fields))))))))
                          ((and (string=? (cadr rest) "body")
                                (eq? (code-field (reduction-for store state) (car rest) 'mode) 'datum))
                           (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
@@ -990,11 +1021,11 @@
             "List the relations a block takes part in." #f 'daemon)
       (list 'reach '(reach <id> ["--rel" <rel>] ["--depth" <n>])
             "List the blocks a block reaches over the edges an editor supplied (calls, by default), outward, up to --depth hops (1 by default); the block itself is at depth 0." #f 'daemon)
-      (list 'search '(search <query> ["--all"])
+      (list 'search '(search <query> ["--all"] ["--all-validity"])
             "Find blocks whose title, keywords or text match every word given." #f 'daemon)
-      (list 'grep '(grep <pattern> ["--under" <id>] ["--all"])
+      (list 'grep '(grep <pattern> ["--under" <id>] ["--all"] ["--all-validity"])
             "List the lines that contain a pattern, literally." #f 'daemon)
-      (list 'whereis '(whereis <name>)
+      (list 'whereis '(whereis <name> ["--all-validity"])
             "Say where a name is defined, and which libraries carry it." #f 'daemon)
       (list 'log '(log [<id>])
             "Show the changes recorded, for the store or for one block." #f 'daemon)
@@ -1563,6 +1594,7 @@
                                          (list (list 'versions
                                                      (filter cdr (map (lambda (id) (cons id (read-version state id)))
                                                                       ids))))
+                                         (validity-clauses (lifecycle-of state) 'listed-validity-clause ids)
                                          (receipt state #f '(cut))))))))
                       (else
                        (guarded
@@ -1572,9 +1604,12 @@
                                   (v (and b (read-version state (car rest)))))
                              (cond ((not b) (unknown-id state (car rest)))
                                    (v (append (list 'ok b (cons 'version (if (string? v) (list v) v)))
+                                              (validity-clauses (lifecycle-of state) 'read-validity-clause (car rest))
                                               (receipt state (list (car rest)) '(cut versions)
                                                        (list (cons (car rest) v)))))
-                                   (else (append (list 'ok b) (receipt state (list (car rest)))))))))))))
+                                   (else (append (list 'ok b)
+                                                 (validity-clauses (lifecycle-of state) 'read-validity-clause (car rest))
+                                                 (receipt state (list (car rest)))))))))))))
                 (cond
                   ((not (= 1 (length args))) (usage read-usage-form))
                   ((not at) (read-from store args options state writer))
@@ -1637,7 +1672,7 @@
       (cons 'whereis
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(whereis <name>))
+                  (usage '(whereis <name> ["--all-validity"]))
                   (guarded
                     (lambda ()
                       (let* ((wanted (car args))
@@ -1646,7 +1681,16 @@
                              ;; turns that into a reduction to read.
                              (state (reduction-for store state))
                              (index (defs-index state))
-                             (found (hashtable-ref index wanted '()))
+                             (all-found (hashtable-ref index wanted '()))
+                             ;; THE FILTER IS APPLIED TO THE RECORDS AFTER THE
+                             ;; NAME WAS FOUND: a name whose every record is
+                             ;; left out answers no items and says so, not
+                             ;; unknown-name. whereis has no cap.
+                             (L (lifecycle-of state))
+                             (found (if L
+                                        ((lifecycle-entry 'whereis-split) L all-found
+                                                                          (argument-option options "--all-validity"))
+                                        all-found))
                              (defs (filter (lambda (r) (eq? (car r) 'def)) found))
                              (exports (filter (lambda (r) (eq? (car r) 'export)) found)))
                         ;; NEVER: `whereis` HAS NO EMPTY ANSWER, so there is
@@ -1666,7 +1710,7 @@
                         ;; This is written down because "all three verbs get
                         ;; the same three clauses" is the obvious reading of
                         ;; the rule, and it is not what the verbs can do.
-                        (if (null? found)
+                        (if (null? all-found)
                             (list 'error 'unknown-name (string->symbol wanted)
                                   (cons 'nearest (nearest-names index wanted)))
                             (append
@@ -1682,11 +1726,12 @@
                                       (cons 'scanned-blocks (length (state-outline state)))
                                       (cons 'fields '(names exports)))
                                 #f)
+                              (validity-clauses L 'search-clauses (map cadr (append defs exports)))
                               (receipt state (map cadr (append defs exports)) '(versions))))))))))
       (cons 'search
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(search <query> ["--all"]))
+                  (usage '(search <query> ["--all"] ["--all-validity"]))
                   (guarded (lambda ()
                              ;; THE CAP IS NAMED AT THE CALL, NOT CHOSEN BY
                              ;; THE CALLEE. `#f` is every hit; the number is
@@ -1694,7 +1739,9 @@
                              ;; reasoning for it in `store.sc` so that the
                              ;; verb names one value rather than a second
                              ;; copy of it.
-                             (let* ((r (store-search-report
+                             (let* ((held #f)
+                                    (all-validity (argument-option options "--all-validity"))
+                                    (r (store-search-report
                                          store (car args)
                                          (if (argument-option options "--all")
                                              #f
@@ -1706,7 +1753,8 @@
                                          ;; as before; #f when no table exists
                                          (lambda (st)
                                            (and (derived-tables? store 'signatures)
-                                                ((derived 'keyword-hook) store st)))))
+                                                ((derived 'keyword-hook) store st)))
+                                         (validity-hook (lambda (L) (set! held L)) all-validity)))
                                     (hits (cdr (assq 'items r)))
                                     (omitted (cdr (assq 'omitted-hits r))))
                                (append (items (map (lambda (hit) (cons 'hit hit)) hits))
@@ -1726,6 +1774,7 @@
                                        (let ((tables (assq 'derived-tables r)) (via (assq 'derived-via r))
                                              (stale (assq 'derived-stale r)))
                                          (if tables ((derived 'derived-clauses) (cdr tables) (cdr via) (cdr stale)) '()))
+                                       (validity-clauses held 'search-clauses (map car hits))
                                        ;; THE VERSIONS FROM THE STATE THE HITS CAME
                                        ;; FROM, which the report carries.
                                        (receipt (cdr (assq 'state r)) (map car hits) '(versions)))))))))
@@ -1752,12 +1801,15 @@
       (cons 'grep
             (lambda (store actor args req options state writer cwd)
               (let ((under (argument-option options "--under"))
-                    (all? (and (argument-option options "--all") #t)))
+                    (all? (and (argument-option options "--all") #t))
+                    (held #f))
                 (if (not (= 1 (length args)))
-                    (usage '(grep <pattern> ["--under" <id>] ["--all"]))
+                    (usage '(grep <pattern> ["--under" <id>] ["--all"] ["--all-validity"]))
                     (guarded
                       (lambda ()
-                        (let* ((r (store-grep store (car args) under all?))
+                        (let* ((r (store-grep store (car args) under all?
+                                              (validity-hook (lambda (L) (set! held L))
+                                                             (argument-option options "--all-validity"))))
                                (field (lambda (k) (cdr (assq k r))))
                                (lines (field 'items))
                                (omitted (field 'omitted-lines))
@@ -1770,9 +1822,11 @@
                                ;; verb was missing from the table of which
                                ;; verb answers with which tag. One call, and
                                ;; the tag is in it.
-                               (answer (items (map (lambda (m) (cons 'match m)) lines))))
+                               (answer (items (map (lambda (m) (cons 'match m)) lines)))
+                               (validity (validity-clauses held 'search-clauses (map car lines))))
                           (if (and (= omitted 0) (= unseen 0))
                               (append answer (scan-clauses r (null? lines))
+                                      validity
                                       (receipt (field 'state) (map car lines) '(versions)))
                               ;; THE TRUNCATION CARRIES BOTH DIMENSIONS, and
                               ;; each is named. A bare integer after a clause
@@ -1788,6 +1842,7 @@
                                                   (list 'lines omitted)
                                                   (list 'blocks unseen)))
                                       (scan-clauses r (null? lines))
+                                      validity
                                       (receipt (field 'state) (map car lines) '(versions)))))))))))
       (cons 'log
             (lambda (store actor args req options state writer cwd)

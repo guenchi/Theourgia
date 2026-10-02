@@ -1567,7 +1567,13 @@
            ;; blocks use an editor's words, and how, is the hook's.
            (derived-words (if derived (car derived) (lambda (id kws score) #f)))
            ;; id -> the provenances of the derived words a hit was found by
-           (derived-used (make-hashtable string-hash string=?)))
+           (derived-used (make-hashtable string-hash string=?))
+           ;; THE CALLER'S FILTER, a procedure of the state folded here: given
+           ;; a block id it answers whether to leave the block out, and a
+           ;; block it names is skipped before it can be a hit, so it cannot
+           ;; use up the cap or count as omitted. The caller keeps the count.
+           (skip? (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest)) (caddr rest) (pair? tokens)
+                       ((caddr rest) state))))
       (if (null? tokens)
           (let ((none (prepared-end! (quote ()))))
             (if (pair? rest)
@@ -1699,7 +1705,7 @@
                                  (when (and alive every-token dk-tier)
                                    (hashtable-set! derived-used id (caddr dk)))))
                           (loop (cdr ds)
-                                (if (and alive every-token)
+                                (if (and alive every-token (not (and skip? (skip? id))))
                                     (cons (list id
                                                 (+ (tier-score 'title title-tier)
                                                    (tier-score 'src src-tier)
@@ -1858,7 +1864,10 @@
   ;; An item is `(id line-number text)`. A block that matched but shows no
   ;; line at all is counted in `unseen-blocks`, which is the dimension a
   ;; count of lines cannot carry.
-  (define (store-grep store pattern under all?)
+  ;; `hooks`, optional: the caller's filter, as store-search takes it. A
+  ;; block it names among those with a matching line is skipped before the
+  ;; caps; it is still scanned.
+  (define (store-grep store pattern under all? . hooks)
     (let* ((state (open-and-reduce store))
            (rows (state-outline state))
            (live (let ((t (make-hashtable string-hash string=?)))
@@ -1876,7 +1885,8 @@
                           (for-each (lambda (x) (hashtable-set! t x #t))
                                     (outline-subtree rows under))
                           t)))
-           (q (fold-preserving (prepare pattern))))
+           (q (fold-preserving (prepare pattern)))
+           (skip? (and (pair? hooks) (car hooks) (> (string-length q) 0) ((car hooks) state))))
       ;; `unreadable` MEANS HERE WHAT IT MEANS IN A SEARCH ANSWER: how many
       ;; of the blocks THIS scan looked at had text it could not read,
       ;; counted once per block. `grep` reads `src` through the same
@@ -1916,6 +1926,7 @@
                              ((substring-at? (fold-preserving (prepare (car ls))) q)
                               (scan (cdr ls) (+ n 1) (cons (list id n (car ls)) acc)))
                              (else (scan (cdr ls) (+ n 1) acc)))))
+                       (matching (if (and skip? (pair? matching) (skip? id)) (quote ()) matching))
                        (count (length matching))
                        (room (if all? count (max 0 (- grep-line-limit shown))))
                        (take-n (if all? count (min count grep-block-limit room)))
