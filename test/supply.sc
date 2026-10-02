@@ -14,7 +14,7 @@
 ;; limitations under the License.
 
 ;; `supply`: facts an editor computed from an export-code projection, kept
-;; beside the store in <store>/derived/ and never in it.
+;; in the store's directory under <store>/derived/, outside the event log.
 ;;
 ;; Every digest a supply file carries here is the sha256 of a file a real
 ;; `export-code` wrote, of the committed store or of a writer's working
@@ -208,6 +208,14 @@
   (want "D2 a.js listed with another file's digest: supply-stale naming a.js, and no derived directory is made"
         (in-order a (file-exists? derived))
         (list '(error supply-stale (file "a.js")) #f)))
+
+;; ---- CAT: the catalogue's sentences, each beside the row that measures it --------------
+(define (description-of verb)
+  (let ((e (assq verb (verb-catalogue)))) (and e (caddr e))))
+(want "CAT1 supply's catalogue sentence says the header carries the digests of the files (D2 refuses a wrong one), not that it names a projection"
+      (in-order (contains? (description-of 'supply) "The header carries the digests of the projected files it was computed from")
+                (contains? (description-of 'supply) "names the projection"))
+      '(#t #f))
 
 ;; ---- A1: an accepted supply -----------------------------------------------------------
 (define a1-text (string-append (header 'signatures "-" (files-of "a.js" "b.js") '("a.js" "b.js"))
@@ -410,6 +418,11 @@
 (delete-file ignore)
 (supply a1-text "signatures")
 (want "G3 with no .gitignore, supply makes one holding the line" (text-of ignore) "/derived/\n")
+(want "CAT2 supply's catalogue sentence puts its tables in the store's directory under derived/, outside the event log, and the table is there"
+      (in-order (contains? (description-of 'supply) "in the store's directory under derived/, outside the event log")
+                (contains? (description-of 'supply) "never in it")
+                (file-exists? js-table))
+      '(#t #f #t))
 (write! ignore ignore-init)
 
 ;; ---- D11: nothing a supply does reaches the log ----------------------------------------
@@ -1200,6 +1213,9 @@
       (map-case b1 (+ p1 1) (+ p2 1)) (list kept (item b1 '(at unmappable))))
 (want "D18 (6) inside b2's @block line: unmappable on b2"
       (map-case b2 (+ m2 1) (+ m2 3)) (list kept (item b2 '(at unmappable))))
+(want "CAT3 diagnostics' catalogue sentence says an entry D18 (5) and (6) list as unmappable is listed with (at unmappable)"
+      (contains? (description-of 'diagnostics) "is listed with (at unmappable)")
+      #t)
 (want "D18 (7) empty at b1's end (b2's marker start): b1 at its length; empty at EOF: b2 at its length"
       (in-order (map-case b1 m2 m2) (map-case b2 (bytevector-length P) (bytevector-length P)))
       (list (list kept (item b1 (list 'at len1 len1))) (list kept (item b2 (list 'at len2 len2)))))

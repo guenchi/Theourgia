@@ -14,7 +14,7 @@
 ;; limitations under the License.
 
 ;;; (theourgia derived) -- facts an editor computed from a projection, kept
-;;; beside the store and never in it.
+;;; in the store's directory under derived/, outside the event log.
 ;;;
 ;;; A SUPPLIED FACT IS NEVER A RECORD. `supply` writes a table under
 ;;; <store>/derived/, one per kind, writer and language; the reducer never
