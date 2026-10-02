@@ -137,8 +137,29 @@
       (in-order (datum-uses '(define (f (x)) x))
                 (datum-uses '(lambda () (define-values ((x)) (g)) x))
                 (datum-uses '(quote x y))
-                (datum-uses '(case k (x y))))
-      '((define f x) (define-values g x) (quote x y) (case k x y)))
+                (datum-uses '(case k (x))))
+      '((define f x) (define-values g x) (quote x y) (case k x)))
+(want "U8 what Chez accepts is not refused: a case clause with one datum, an empty begin as the block's form, unquote with several operands"
+      (in-order (datum-uses '(case k (x y)))
+                (datum-uses '(begin))
+                (datum-uses '(quasiquote ((unquote a b))))
+                (datum-uses '(quasiquote ((unquote-splicing a b)))))
+      '((k y) () (a b) (a b)))
+(want "U8 no name twice in formals or bindings, let* excepted: lambda, let, let-values and do fall back"
+      (in-order (datum-uses '(lambda (x x) x))
+                (datum-uses '(let ((x 1) (x 2)) x))
+                (datum-uses '(let-values (((x x) p)) x))
+                (datum-uses '(do ((x 0) (x 1)) (#t x)))
+                (datum-uses '(let* ((x 1) (x x)) x)))
+      '((lambda x) (let x) (let-values p x) (do x) ()))
+(want "U8 a body holds an expression after its definitions: one with none falls back"
+      (in-order (datum-uses '(lambda () (define x 1)))
+                (datum-uses '(lambda () (begin)))
+                (datum-uses '(define (f x) (define y x))))
+      '((define lambda x) (begin lambda) (define f x y)))
+(want "U5 a body's definitions are collected in order: after (define define list) a define is an application"
+      (datum-uses '(lambda () (define define list) (define x y) x))
+      '(list x y))
 (want "U8 arity: a define, define-syntax or define-values with too many or too few parts falls back, in a body too"
       (in-order (datum-uses '(define x a b))
                 (datum-uses '(define-syntax m))
@@ -176,6 +197,18 @@
                 (datum-uses '(define-record-type r (bogus x)))
                 (datum-uses '(lambda () (define-record-type r (bogus x)) (r? 1))))
       '((bad define-record-type p protocol r) (bogus define-record-type r x) (bogus define-record-type r r? x)))
+(want "U10 every record clause has its R6RS shape: a non-boolean sealed or an improper field spec falls back, a full definition does not"
+      (in-order (datum-uses '(define-record-type r (sealed maybe)))
+                (datum-uses '(lambda () (define-record-type r (sealed maybe)) (r? z)))
+                (datum-uses '(lambda () (define-record-type r (fields (mutable x . y))) (r? z)))
+                (datum-uses '(define-record-type (p make-p p?) (fields (immutable x px) (mutable y py py!))
+                               (nongenerative) (sealed #t) (opaque #f) (protocol (lambda (n) n)))))
+      '((define-record-type maybe r sealed) (define-record-type maybe r r? sealed z)
+        (define-record-type fields mutable r r? x y z) ()))
+(want "K8 foreign-procedure: a parameter list that is not a list, or a convention Chez does not know, falls back"
+      (in-order (datum-uses '(foreign-procedure entry bad-args result))
+                (datum-uses '(foreign-procedure bogus entry (int) int)))
+      '((bad-args entry foreign-procedure result) (bogus entry foreign-procedure int)))
 (want "U5 every begin in a body is spliced: nested, mixed with expressions, empty"
       (in-order (datum-uses '(lambda () (begin (begin (define x y))) x))
                 (datum-uses '(lambda () (begin (define x y) (f x))))

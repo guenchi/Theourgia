@@ -78,13 +78,20 @@
 
   (define (bound? s env) (memq s env))
 
-  ;; A formals list: a list or an improper list of symbols, or one symbol.
-  ;; Anything else makes the form malformed, and it falls back.
+  ;; A formals list: a list or an improper list of symbols, or one symbol,
+  ;; no name twice. Anything else makes the form malformed, and it falls back.
   (define (formals? f)
-    (cond ((symbol? f) #t)
-          ((null? f) #t)
-          ((pair? f) (and (symbol? (car f)) (formals? (cdr f))))
-          (else #f)))
+    (and (let shape ((f f))
+           (cond ((symbol? f) #t)
+                 ((null? f) #t)
+                 ((pair? f) (and (symbol? (car f)) (shape (cdr f))))
+                 (else #f)))
+         (distinct? (formals-names f))))
+
+  ;; -> #t when no symbol occurs twice in NAMES.
+  (define (distinct? names)
+    (let ((seen (make-eq-hashtable)))
+      (for-all (lambda (n) (and (not (hashtable-ref seen n #f)) (begin (hashtable-set! seen n #t) #t))) names)))
 
   ;; The names a formals list binds: a list, an improper list or one symbol.
   (define (formals-names f)
@@ -127,23 +134,44 @@
            (case (car f)
              ((define) (if (symbol? target)
                            (<= n 3)
-                           (and (pair? target) (symbol? (car target)) (formals? (cdr target)) (>= n 3))))
+                           (and (pair? target) (symbol? (car target)) (formals? (cdr target)) (>= n 3)
+                                (body-shape? (cddr f) (append (formals-names (cdr target)) env)))))
              ((define-syntax) (and (symbol? target) (= n 3)))
              ((define-values) (and (formals? target) (= n 3)))
              ((define-record-type) (record-definition-shape? f))
              (else #f)))))
 
-  ;; (define-record-type <name spec> <clause> ...): the name spec a symbol or
-  ;; three symbols, each clause a list headed by one of R6RS's record clause
-  ;; words.
+  ;; (define-record-type <name spec> <clause> ...) as R6RS shapes it: the
+  ;; name spec a symbol or three symbols; each clause one of R6RS's, each
+  ;; kind at most once, parent and parent-rtd not both:
+  ;;   (fields <field spec> ...)   a symbol, (immutable n [accessor]) or
+  ;;                               (mutable n [accessor [mutator]])
+  ;;   (parent <name>)  (protocol <expression>)  (sealed <boolean>)
+  ;;   (opaque <boolean>)  (nongenerative [<uid>])  (parent-rtd <e> <e>)
   (define (record-definition-shape? f)
-    (let ((spec (cadr f)))
+    (let ((spec (cadr f)) (clauses (cddr f)))
+      (define (field-spec? s)
+        (or (symbol? s)
+            (and (list? s) (for-all symbol? s)
+                 (case (car s)
+                   ((immutable) (<= 2 (length s) 3))
+                   ((mutable) (<= 2 (length s) 4))
+                   (else #f)))))
+      (define (clause? c)
+        (and (pair? c) (list? c)
+             (case (car c)
+               ((fields) (for-all field-spec? (cdr c)))
+               ((parent) (and (= (length c) 2) (symbol? (cadr c))))
+               ((protocol) (= (length c) 2))
+               ((sealed opaque) (and (= (length c) 2) (boolean? (cadr c))))
+               ((nongenerative) (or (= (length c) 1) (and (= (length c) 2) (symbol? (cadr c)))))
+               ((parent-rtd) (= (length c) 3))
+               (else #f))))
       (and (or (symbol? spec)
                (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
-           (for-all (lambda (c)
-                      (and (pair? c) (list? c)
-                           (memq (car c) '(fields parent protocol sealed opaque nongenerative parent-rtd))))
-                    (cddr f)))))
+           (for-all clause? clauses)
+           (distinct? (map car clauses))
+           (not (and (assq 'parent clauses) (assq 'parent-rtd clauses))))))
 
   ;; The names a definition defines. define-values' formals are its names;
   ;; the others are datum-names', the one reading of a definition's names.
@@ -189,20 +217,34 @@
                           (list f)))
                     forms))))
 
-  (define (walk-body forms env)
-    (let collect ((fs (splice-begins forms env)) (defs '()))
-      (cond
-        ((and (pair? fs) (definition? (car fs) env))
-         (collect (cdr fs) (cons (car fs) defs)))
-        (else
-         (let* ((defs (reverse defs))
-                (env2 (append (apply append (map defined-names defs)) env)))
-           (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
-                   (if (list? fs) (walk-all fs env2) (walk-elements fs env2))))))))
+  ;; The definitions at the head of a body, collected in order: a name a
+  ;; collected definition binds is bound for the forms after it, so after
+  ;; (define define list) a define is an application. -> (defs . rest)
+  (define (head-definitions forms env)
+    (let collect ((fs (splice-begins forms env)) (defs '()) (env env))
+      (if (and (pair? fs) (definition? (car fs) env))
+          (collect (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env))
+          (cons (reverse defs) fs))))
 
-  ;; -> the names a datum block's stored body uses, a sorted set.
+  ;; A BODY as R6RS shapes it: its definitions, then at least one expression.
+  (define (body-shape? forms env)
+    (and (list? forms)
+         (let ((rest (cdr (head-definitions forms env))))
+           (and (list? rest) (pair? rest)))))
+
+  (define (walk-body forms env)
+    (let* ((split (head-definitions forms env))
+           (defs (car split))
+           (fs (cdr split))
+           (env2 (append (apply append (map defined-names defs)) env)))
+      (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
+              (if (list? fs) (walk-all fs env2) (walk-elements fs env2)))))
+
+  ;; A block's top form may be an empty begin, which splices to nothing.
   (define (datum-uses body)
-    (symbol-set (if (definition? body '()) (walk-definition body '()) (walk body '()))))
+    (symbol-set (cond ((definition? body '()) (walk-definition body '()))
+                      ((equal? body '(begin)) '())
+                      (else (walk body '())))))
 
   ;; ---- the known forms ----------------------------------------------------------
   ;;
@@ -225,8 +267,8 @@
   ;; walk their expression; a nested quasiquote raises the depth.
   (define (template x depth env)
     (cond
-      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (pair? (cdr x)) (null? (cddr x)))
-       (if (= depth 1) (walk (cadr x) env) (template (cadr x) (- depth 1) env)))
+      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (list? x) (pair? (cdr x)))
+       (if (= depth 1) (walk-all (cdr x) env) (template (cdr x) (- depth 1) env)))
       ((and (pair? x) (eq? (car x) 'quasiquote) (pair? (cdr x)) (null? (cddr x)))
        (template (cadr x) (+ depth 1) env))
       ((pair? x) (append (template (car x) depth env) (template (cdr x) depth env)))
@@ -242,6 +284,9 @@
       (append (if else? '() (walk (car c) env))
               (if (pair? (cdr c)) (if arrow? '() (walk (cadr c) env)) '())
               (if (pair? (cdr c)) (walk-all (cddr c) env) '()))))
+
+  ;; -> the first K elements of the list L.
+  (define (first-n l k) (if (= k 0) '() (cons (car l) (first-n (cdr l) (- k 1)))))
 
   (define (lists? xs) (and (list? xs) (for-all (lambda (c) (and (pair? c) (list? c))) xs)))
 
@@ -260,8 +305,8 @@
                             (else #t))
                       (loop (cdr cs))))))))
 
-  ;; The clauses of a case: at least one, each (<datums> <expression> ...)
-  ;; with a list of datums, or an else clause, last.
+  ;; The clauses of a case: at least one, each (<datums> <expression> ...),
+  ;; the datums a list or, as Chez accepts, one datum; an else clause last.
   (define (case-clauses-shape? clauses env)
     (and (lists? clauses) (pair? clauses)
          (let loop ((cs clauses))
@@ -270,7 +315,7 @@
                  (and (>= (length c) 2)
                       (if (and (eq? (car c) 'else) (not (bound? 'else env)))
                           (null? (cdr cs))
-                          (list? (car c)))
+                          #t)
                       (loop (cdr cs))))))))
 
   ;; A definition rather than a bare expression: a library body's
@@ -286,26 +331,32 @@
       (cons 'lambda
             (lambda (x env walk body)
               (and (>= (length x) 3) (formals? (cadr x))
+                   (body-shape? (cddr x) (append (formals-names (cadr x)) env))
                    (body (cddr x) (append (formals-names (cadr x)) env)))))
       (cons 'case-lambda
             (lambda (x env walk body)
-              (and (lists? (cdr x)) (for-all (lambda (c) (and (formals? (car c)) (>= (length c) 2))) (cdr x))
+              (and (lists? (cdr x))
+                   (for-all (lambda (c) (and (formals? (car c)) (body-shape? (cdr c) (append (formals-names (car c)) env))))
+                            (cdr x))
                    (apply append (map (lambda (c) (body (cdr c) (append (formals-names (car c)) env)))
                                       (cdr x))))))
       (cons 'let
             (lambda (x env walk body)
               (cond
-                ((and (>= (length x) 4) (symbol? (cadr x)) (bindings? (caddr x)))
+                ((and (>= (length x) 4) (symbol? (cadr x)) (bindings? (caddr x)) (distinct? (map car (caddr x)))
+                      (body-shape? (cdddr x) (append (list (cadr x)) (map car (caddr x)) env)))
                  (let ((bs (caddr x)))
                    (append (binding-inits bs env)
                            (body (cdddr x) (append (list (cadr x)) (map car bs) env)))))
-                ((and (>= (length x) 3) (bindings? (cadr x)))
+                ((and (>= (length x) 3) (bindings? (cadr x)) (distinct? (map car (cadr x)))
+                      (body-shape? (cddr x) (append (map car (cadr x)) env)))
                  (let ((bs (cadr x)))
                    (append (binding-inits bs env) (body (cddr x) (append (map car bs) env)))))
                 (else #f))))
       (cons 'let*
             (lambda (x env walk body)
               (and (>= (length x) 3) (bindings? (cadr x))
+                   (body-shape? (cddr x) (append (reverse (map car (cadr x))) env))
                    (let loop ((bs (cadr x)) (env env) (out '()))
                      (if (null? bs)
                          (append out (body (cddr x) env))
@@ -313,18 +364,22 @@
                                (append out (walk-all (cdr (car bs)) env))))))))
       (cons 'letrec
             (lambda (x env walk body)
-              (and (>= (length x) 3) (bindings? (cadr x))
+              (and (>= (length x) 3) (bindings? (cadr x)) (distinct? (map car (cadr x)))
+                   (body-shape? (cddr x) (append (map car (cadr x)) env))
                    (let ((env2 (append (map car (cadr x)) env)))
                      (append (binding-inits (cadr x) env2) (body (cddr x) env2))))))
       (cons 'letrec*
             (lambda (x env walk body)
-              (and (>= (length x) 3) (bindings? (cadr x))
+              (and (>= (length x) 3) (bindings? (cadr x)) (distinct? (map car (cadr x)))
+                   (body-shape? (cddr x) (append (map car (cadr x)) env))
                    (let ((env2 (append (map car (cadr x)) env)))
                      (append (binding-inits (cadr x) env2) (body (cddr x) env2))))))
       (cons 'let-values
             (lambda (x env walk body)
               (and (>= (length x) 3) (lists? (cadr x))
                    (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
+                   (distinct? (apply append (map (lambda (b) (formals-names (car b))) (cadr x))))
+                   (body-shape? (cddr x) (append (apply append (map (lambda (b) (formals-names (car b))) (cadr x))) env))
                    (append (apply append (map (lambda (b) (walk (cadr b) env)) (cadr x)))
                            (body (cddr x) (append (apply append (map (lambda (b) (formals-names (car b))) (cadr x)))
                                                   env))))))
@@ -332,6 +387,7 @@
             (lambda (x env walk body)
               (and (>= (length x) 3) (lists? (cadr x))
                    (for-all (lambda (b) (and (= (length b) 2) (formals? (car b)))) (cadr x))
+                   (body-shape? (cddr x) (append (apply append (map (lambda (b) (formals-names (car b))) (cadr x))) env))
                    (let loop ((bs (cadr x)) (env env) (out '()))
                      (if (null? bs)
                          (append out (body (cddr x) env))
@@ -341,6 +397,7 @@
             (lambda (x env walk body)
               (and (>= (length x) 3) (lists? (cadr x)) (list? (caddr x)) (pair? (caddr x))
                    (for-all (lambda (s) (and (symbol? (car s)) (<= 2 (length s) 3))) (cadr x))
+                   (distinct? (map car (cadr x)))
                    (let* ((specs (cadr x)) (env2 (append (map car specs) env)))
                      (append (apply append (map (lambda (s) (walk (cadr s) env)) specs))
                              (apply append (map (lambda (s) (walk-all (cddr s) env2)) specs))
@@ -372,24 +429,34 @@
             (lambda (x env walk body)
               (and (>= (length x) 3) (pair? (cadr x)) (symbol? (car (cadr x))) (list? (cadr x))
                    (cond-clauses-shape? (cdr (cadr x)) (cons (car (cadr x)) env))
+                   (body-shape? (cddr x) env)
                    (let ((env2 (cons (car (cadr x)) env)))
                      (append (apply append (map (lambda (c) (cond-clause c env2)) (cdr (cadr x))))
                              (body (cddr x) env))))))
       (cons 'parameterize
             (lambda (x env walk body)
               (and (>= (length x) 3) (lists? (cadr x)) (for-all (lambda (b) (= (length b) 2)) (cadr x))
+                   (body-shape? (cddr x) env)
                    (append (apply append (map (lambda (b) (walk-all b env)) (cadr x)))
                            (body (cddr x) env)))))
       (cons 'rec
             (lambda (x env walk body)
               (and (= (length x) 3) (symbol? (cadr x)) (walk (caddr x) (cons (cadr x) env)))))
-      ;; The last two operands, the parameter types and the result type, are
-      ;; data; the one before them, the entry, is walked; any operand before
-      ;; the entry is a calling convention, data too.
+      ;; (foreign-procedure <convention> ... <entry> (<parameter type> ...)
+      ;; <result type>): the types are data, the entry is walked, and a
+      ;; convention is #f, a __-named symbol or (__varargs_after <n>), data too.
       (cons 'foreign-procedure
             (lambda (x env walk body)
-              (and (>= (length x) 4)
-                   (walk (list-ref x (- (length x) 3)) env)))))))
+              (let ((n (length x)))
+                (and (>= n 4)
+                     (list? (list-ref x (- n 2)))
+                     (for-all (lambda (c)
+                                (or (not c)
+                                    (and (symbol? c) (let ((t (symbol->string c)))
+                                                       (and (> (string-length t) 2) (string=? (substring t 0 2) "__"))))
+                                    (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after))))
+                              (first-n (cdr x) (- n 4)))
+                     (walk (list-ref x (- n 3)) env))))))))
 
   ;; ---- text code: the identifier tokens -------------------------------------------
   ;;
