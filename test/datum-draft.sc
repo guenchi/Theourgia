@@ -221,6 +221,16 @@
 (want "K2 check lists a datum block that holds a src, once, and its verdict is the clean store's"
       (in-order (with-src-clauses seeded-check) (equal? (clause-of seeded-check 'verdict) (clause-of clean-check 'verdict)))
       (list (list (list 'datum-block-with-src h2)) #t))
+;; AN UNCHANGED DRAFT ON A DATUM BLOCK: one whose text is the src a store
+;; written before the rule holds. Its commit would write nothing and retire
+;; the draft with ok; it is refused like any other, and the draft stays.
+(plant-draft! s2 "w8" h2 "(define (h) 'forged)")
+(define unchanged-path (string-append s2 "/writers/w8/working/" h2))
+(define unchanged-bytes (file-bytes unchanged-path))
+(define unchanged-commit (run s2 'commit h2 "--writer" "w8"))
+(want "C4 commit of an UNCHANGED draft on a datum block is refused by name too, and the draft is left as it is"
+      (in-order (head-of unchanged-commit 5) (equal? (file-bytes unchanged-path) unchanged-bytes))
+      (list (refusal h2) #t))
 (define unset (run s2 'set h2 "src"))
 (want "K3 set <datum> src with no value takes the src away, and check is silent again"
       (in-order (car unset) (field-of s2 h2 'src) (with-src-clauses (run s2 'check)))
