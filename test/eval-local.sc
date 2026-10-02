@@ -320,6 +320,34 @@
               (if (= (count-lines out) 1) 'one-line 'TORN)))
       '(quota named-the-limit one-line))
 
+;; NEVER: THE TEXT AN OUTPUT LIMIT CARRIES IS NOT LONGER THAN THE LIMIT. A
+;; Scheme evaluation's quota counts decoded characters; the chunk that
+;; crossed it used to be carried whole (a limit of 65536 carried 65555).
+;; Each row reads the answer's head, the length of what (stdout ...)
+;; carries against the limit, and whether it says (truncated #t).
+(define (answer-of out) (guard (e (#t (list 'UNREADABLE out))) (read (open-input-string out))))
+(define (quota-reading source)
+  (let* ((a (answer-of (evaluate source "--output-bytes" "128" "--timeout-ms" "8000")))
+         (clauses (if (pair? a) (cdr a) '()))
+         (stdout (let ((c (assq 'stdout clauses))) (and c (string? (cadr c)) (cadr c)))))
+    (list (and (pair? a) (car a))
+          (and (assq 'resource clauses) (cadr (assq 'resource clauses)))
+          (and stdout (string-length stdout))
+          (and (assq 'truncated clauses) #t))))
+(want "EV-09b one under the limit: ok, all 127 characters carried, nothing truncated"
+      (quota-reading "(begin (display (make-string 127 #\\x)) 0)")
+      '(ok #f 127 #f))
+(want "EV-09b at the limit: ok, all 128 characters carried, nothing truncated"
+      (quota-reading "(begin (display (make-string 128 #\\x)) 0)")
+      '(ok #f 128 #f))
+(want "EV-09b one over the limit: stopped, 128 characters carried, (truncated #t)"
+      (quota-reading "(begin (display (make-string 129 #\\x)) 0)")
+      '(error output 128 #t))
+(want "EV-09b far over the limit: stopped, at most 128 characters carried, (truncated #t)"
+      (let ((r (quota-reading "(let loop () (display \"0123456789\") (loop))")))
+        (list (car r) (cadr r) (and (caddr r) (<= (caddr r) 128)) (cadddr r)))
+      '(error output #t #t))
+
 ;; ---- EV-03 the memory budget --------------------------------------------------
 ;;
 ;; KEY: THE SILENT ONE IS THE ROW THAT MATTERS, and it is the row the
