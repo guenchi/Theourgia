@@ -138,7 +138,7 @@ scope-model 13 19 a7da5877e1ad94d1d9e2dba5b164c040
 since-contract 57 60 91ce1beae4b89bb5813e66102b1f4f7d
 smoke-crc32 - 9 7995b0255470cdef541c5e2aef31e412
 smoke-shortwrite - 4 f00f08055256b64c8ef4117ccdb07b56
-smoke-shortwrite-nb - 5 09331872dc98ba279b59231d263bda07
+smoke-shortwrite-nb 2 8 54c3d25eda5ce1649fe1608a877f3f45
 smoke-wire - 24 9d129dbffacf937198c9f06f051245bf
 smoke-wire-fuzz - 5 d2f81d74fdad6c838e079be6a1e05d51
 smoke-wire-trace - 6 41b0a4d9dda05cea5ab8de0a6cb1771d
