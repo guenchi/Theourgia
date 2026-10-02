@@ -62,9 +62,9 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
 import { Outbox, OutboxWriteError } from '../../src/outbox';
-import { RETRYABLE_REFUSALS, RETRY_CAP, SETTINGS_REFUSALS, Saver, Settle } from '../../src/saver';
+import { RETRYABLE_REFUSALS, RETRY_CAP, SETTINGS_REFUSALS, Saver, Settle, classifyRefusal } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
-import { initWire, isSym } from '../../src/wire';
+import { initWire, isSym, parseAnswers } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
@@ -399,6 +399,47 @@ describe('S6 an answer is sorted by what it says about the store', () => {
     assert.strictEqual(outcome.status, 'pending', `an incomplete answer was settled: ${outcome.message}`);
     assert.strictEqual(outbox.pendingCount, 1);
     assert.strictEqual(outbox.entries[0].req, outcome.req, 'the save would go again under a new id');
+  });
+
+  /*
+   * A RETRY THAT FINISHES AN INTERRUPTED PLAN (theourgia 3aad6fd, README
+   * "A request of several sub-operations"): the core checks before it
+   * writes, and two answers gained a `completion` clause. Both are read
+   * here by their names alone, and the clause changes neither reading:
+   *
+   *   - `(error unknown (not-applied <event>) (completion ...))`: a member
+   *     or the plan was not applied, so whether the request ran is not
+   *     said. Kept, under the same request id, as every `unknown` is; the
+   *     core judges each retry again. This is the bare form, answered when
+   *     the plan cannot be seen applied before anything is written
+   *     (completion.sc:235); after a written member the stop comes inside a
+   *     `batch`, and that is a commit's, in sending.test.ts.
+   *   - `(error stale-baseline ... (completion (plan <event>) (present
+   *     <index> ...) (of <n>)))`: another record touched a block a missing
+   *     member would write, and nothing was written. A refusal, as a fresh
+   *     commit's is: the bytes stay a draft. This client commits one block
+   *     per request, so its plan has one member, and none of it can be
+   *     present when the rest is refused.
+   */
+  it('keeps a completion that stopped unknown, under its request id', async () => {
+    const { outcome, outbox } = await outcomeOf(
+      '(error unknown (not-applied ("w" . 8)) (completion (plan ("w" . 7)) (present) (of 1)))\n',
+      1
+    );
+    assert.strictEqual(outcome.status, 'pending', `a completion that stopped unknown was settled: ${outcome.message}`);
+    assert.strictEqual(outbox.pendingCount, 1);
+    assert.strictEqual(outbox.entries[0].req, outcome.req, 'the save would go again under a new id');
+  });
+
+  it('settles a completion refused as stale-baseline as a refusal, without a mark', async () => {
+    const answer =
+      '(error stale-baseline (block "a.2") (based-on "h1") (now "h2") (since) (reason candidate-set-changed) ' +
+      '(conflicts "a.2") (completion (plan ("w" . 7)) (present) (of 1)))\n';
+    const { outcome, outbox } = await outcomeOf(answer, 1);
+    assert.strictEqual(outcome.status, 'refused', `a completion's stale-baseline was not a refusal: ${outcome.message}`);
+    assert.match(outcome.message, /stale-baseline/, 'the refusal lost the name the core gave it');
+    assert.strictEqual(outbox.pendingCount, 0);
+    assert.deepStrictEqual(classifyRefusal(parseAnswers(answer)[0]), { verdict: 'refused' }, 'the name was read as one this build does not know');
   });
 
   /*
@@ -1829,7 +1870,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
     /*
      * AND IT SAYS THE REMEDY IT WAS GIVEN, not one it knows: 877f0da's
      * `remedy-for` names another one for a registry inside the store
-     * (store.sc:2733).
+     * (store.sc:2734).
      */
     const other = rig([
       {
@@ -1849,7 +1890,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
    * name disappears, and this is the case where the first version broke it.
    *
    * NOTE: `(remedy #f)` TOO (queue item 20). 877f0da's remedies are all
-   * names (`remedy-for`, store.sc:2728, and the other places that build
+   * names (`remedy-for`, store.sc:2729, and the other places that build
    * one), never a boolean; the cell pins the client's rule -- what can be
    * said is said, what cannot is printed as written -- for an answer to
    * come, not today's shape. A boolean taken as sayable (measured on
@@ -1872,7 +1913,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
   /*
    * KEY: THE ONE SENTENCE WRITTEN FOR A NAME CARRIES THE REST AS WELL.
    * `(error changed (current ...))` is what store.sc makes of a stale
-   * expectation (store.sc:2507).
+   * expectation (store.sc:2508).
    *
    * NOTE: AND EVERY CLAUSE, NOT ONLY THE FIRST (queue item 20). 877f0da's
    * `changed` has exactly one clause, `(current <hash>)`; the second answer
@@ -2062,7 +2103,7 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
    * local is what could not be read, not the listing. Limiting that sentence
    * to stores with more than one writer (measured on 87f7115: survived this
    * file) gave the others the listing's sentence. 877f0da never sends
-   * `(local-writer #f)` -- store.sc:4667-4668 leave the clause out when there is
+   * `(local-writer #f)` -- store.sc:4691-4692 leave the clause out when there is
    * no local writer -- so these answers pin the client's rule for an answer
    * to come, not today's shape.
    */

@@ -758,7 +758,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * valid UTF-8 puts the block in the store, and none of its text is
    * visible to `search` or `grep` (core F61, not fixed). The only signal is
    * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
-   * grep answer (store.sc:1445 `search-report`, store.sc:1885 `report`).
+   * grep answer (store.sc:1446 `search-report`, store.sc:1886 `report`).
    * This extension sends neither import verb today, so the symptom is out of
    * its reach. The day it grows a command that imports a file or a
    * directory, that command ships with a reading of that count -- the user
@@ -835,8 +835,8 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
 /*
  * QUEUE ITEM 12: TWO WORDS THAT BOTH SAY "UNREADABLE", ABOUT DIFFERENT
  * THINGS. The core's `(scanned ... (unreadable-blocks m))` counts the blocks
- * of one search or grep answer whose text is not valid UTF-8 (store.sc:1445
- * `search-report`, store.sc:1885 `report`). This client's
+ * of one search or grep answer whose text is not valid UTF-8 (store.sc:1446
+ * `search-report`, store.sc:1886 `report`). This client's
  * `TransportError('unreadable', ...)` (the `TransportFailure` union in
  * transport.ts) means that this client could not read the SHAPE of an
  * answer. The core named its clause with a unit, `-blocks`, so that the two

@@ -312,6 +312,38 @@ export interface SaverOptions {
  * (`refused-before-reserve`, `(refused writer-unreadable ...)`) and are
  * not this one.
  */
+/*
+ * THE ITEM A STOPPED COMPLETION ENDS ON, when a commit is answered with a
+ * `batch`; otherwise null.
+ *
+ * A retry that finishes an interrupted commit writes the plan's missing
+ * member, then asks whether the plan and the record it just wrote are
+ * applied. When one is not, the run stops with `(error unknown
+ * (not-applied ...) (completion ...))` AFTER the member's `ok`
+ * (completion.sc:256-261, the stop at store.sc:4218-4219), and a commit
+ * answered twice is printed as one `batch` (working.sc:1344): `(batch ((ok
+ * ...) (error unknown ...)) (done 1))`. The batch says nothing a settlement
+ * can read; the item the run stopped on does.
+ *
+ * NOTE: ONLY THE LAST ITEM, AND ONLY `unknown`. The run appends its stop
+ * after everything it wrote, so the last item is the verdict and the ones
+ * before it are writes the verdict is about. A commit of one block has one
+ * member, so the stop that can follow a written member is `unknown` -- whose
+ * reading, keep the request under its id, is right whatever was written. A
+ * refusal after a written member (a `stale-baseline` judged again before a
+ * second member, completion.sc:262) would settle a commit part of which
+ * is in the store; this extension's commit cannot produce one, and such a
+ * batch is left to the classifier, which throws on it, rather than read.
+ */
+function stoppedCompletionItem(datum: Datum | null): Datum | null {
+  if (datum === null || answerOf(datum, 'batch') === null || !isList(datum) || datum.length < 2 || !isList(datum[1])) {
+    return null;
+  }
+  const items = datum[1];
+  const last = items.length > 0 ? items[items.length - 1] : null;
+  return last !== null && answerOf(last, 'error', { at: 1, is: 'unknown' }) !== null ? last : null;
+}
+
 function saysNobodyKnows(datum: Datum): boolean {
   return (
     answerOf(datum, 'error') !== null &&
@@ -763,7 +795,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
   'bad-request': 'refused',
   /*
    * A COMMIT THAT NAMED VERSIONS THE DRAFTS NO LONGER HAVE. `complete-plan!`
-   * (store.sc:3615) recomputes each named version before it runs anything and
+   * (store.sc:3629) recomputes each named version before it runs anything and
    * answers this when one disagrees; `working-restore!` (working.sc:436) makes
    * the same name for the same reason. The extension issues `commit`
    * (saver.ts, extension.ts), so a save can be answered with it: the write
@@ -805,7 +837,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
    * NOTE: THREE ANSWERS NO RETRY CAN SETTLE, kept for a person as
    * `req-mismatch` is (first read on 9f806bb, when the census learned the
    * consed and the log-condition constructors). `incomplete-request`,
-   * store.sc:3800 `request-answer`: the store holds this request partly
+   * store.sc:3816 `request-answer`: the store holds this request partly
    * carried out, a plan whose members are not all written, and this client
    * finishes no plan. `registry-malformed`, log.sc:3140 and 3144
    * `registry-as-read`: the machine's registry does not parse, so the store
@@ -819,7 +851,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia 59e69f3; re-read row by row at
+ * is made in the pinned core (theourgia 3aad6fd; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
@@ -835,7 +867,8 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
  * relocation-f34d84f.md with checks-resolved.txt, and from f34d84f to
  * ad0bd47 in archive/theourgia-vsc-repin-ad0bd47-2026-10-02/
  * relocation-ad0bd47.md with checks-resolved.txt, and from ad0bd47 to
- * 59e69f3 the same way, by each cited line's text). The
+ * 59e69f3 the same way, and from 59e69f3 to 3aad6fd the same way, by each
+ * cited line's text). The
  * reason is the provenance, not a guess about intent: if the grep does
  * not find it, the row says so rather than inventing a story.
  *
@@ -901,11 +934,11 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'eval-denied': 'eval-worker.sc:335: local evaluator capability refusal',
   'launcher-unavailable': 'ffi.sc:500 (execvp) and ffi.sc:526 (execve): local executable launch',
   'transport-store-mismatch': 'daemon.sc:1693: rejected socket envelope before dispatch',
-  'unknown-tag': 'resolve-cut, store.sc:2162: historical query cut lookup',
-  'tag-unsettled': 'resolve-cut, store.sc:2164: historical query cut lookup',
-  'cut-unavailable': 'store-diff, store.sc:2202: historical query cut validation',
-  'already-initialised': 'store-init!, store.sc:4363 -- initialising a store, not writing to one',
-  'foreign-writer': 'store-init!, store.sc:4366 -- as above',
+  'unknown-tag': 'resolve-cut, store.sc:2163: historical query cut lookup',
+  'tag-unsettled': 'resolve-cut, store.sc:2165: historical query cut lookup',
+  'cut-unavailable': 'store-diff, store.sc:2203: historical query cut validation',
+  'already-initialised': 'store-init!, store.sc:4387 -- initialising a store, not writing to one',
+  'foreign-writer': 'store-init!, store.sc:4390 -- as above',
   'ambiguous-identity': 'match-by-signature, project.sc:1326 -- the markdown import path',
   'position-mismatch': 'match-sections, project.sc:1208 -- the markdown import path',
   'would-delete': 'import-md, project.sc:712 -- the markdown import path',
@@ -941,15 +974,16 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * rows below).
    */
   'would-cycle':
-    "store.sc:2702, `resolve`'s `move` arm -- `(error would-cycle (id ...) (parent ...) (through ...))`; " +
+    "store.sc:2703, `resolve`'s `move` arm -- `(error would-cycle (id ...) (parent ...) (through ...))`; " +
     'this extension sends no move, and no batch of its holds one',
   'runners-disabled': 'core.sc:477 -- `eval` with a language runner while runners are off; this extension does not send eval',
   'projection-failed':
     'eval-runner.sc:414 -- the projection an `eval` runs against could not be made; this extension does not send eval',
   'no-such-intent':
-    'resolve-from, store.sc:3875, from run-items! (store.sc:3491-3492) and run-intents! (store.sc:4157-4158) -- ' +
-    'a batch intent\'s `(from n)` naming an intent the batch does not have; this extension\'s one batch is a ' +
-    'single insert at the root, with no back-reference',
+    'resolve-from, store.sc:3891, from run-items! (store.sc:3492-3493) and run-intents! (store.sc:4177-4178) -- ' +
+    'a batch intent\'s `(from n)` naming an intent the batch does not have; and marker-refusal, completion.sc:135 ' +
+    '-- a retry completing a plan, whose missing member names a block no earlier insert of the plan made; this ' +
+    'extension\'s one batch is a single insert at the root, with no back-reference, and its commit carries no marker',
   /*
    * NOTE: FIRST READ FROM THE W DELIVERY
    * (archive/theourgia-code-delivery-w-2026-09-17-r1), when the pinned core
@@ -1034,13 +1068,13 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'opened for a reason the answers table does not classify, before it signals ready; the ' +
     'client relays it as the kind of `serve-start-failed`, never as this head',
   unknown:
-    'write-outcome->answer, store.sc:2770 -- it IS a write answer, and it is handled before ' +
+    'write-outcome->answer, store.sc:2771 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
     'retried rather than settled at all',
   /*
    * NOTE: THREE LOG CONDITIONS OF THE WRITE SESSION (first read on 9f806bb,
    * when the census learned `make-log-error`). Once a write has started, a
-   * failure escaping it is answered `unknown` instead (store.sc:3225-3231,
+   * failure escaping it is answered `unknown` instead (store.sc:3226-3232,
    * the write guard), so these heads arrive for a request whose write had
    * not started; `writer-stopped` is raised before the append. They are
    * still taken as nobody-knows, the conservative reading, by ruling:
@@ -1049,13 +1083,13 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    */
   'reset-pending':
     'log.sc:2327, `session-applied!` -- a session reset is pending when an applied frontier is reported; ' +
-    'after the write started the store answers `unknown` instead (store.sc:3225-3231). `saysNobodyKnows` ' +
+    'after the write started the store answers `unknown` instead (store.sc:3226-3232). `saysNobodyKnows` ' +
     'takes it before settlement: pending, same request id, sent again; a resend under the same id replays ' +
     'if anything landed',
   'stale-epoch':
     'log.sc:2330, 2829 and 2847, `session-applied!`, `session-reset-done!` and `session-reject!` -- the ' +
     'session epoch moved under the report; after the write started the store answers `unknown` instead ' +
-    '(store.sc:3225-3231). `saysNobodyKnows` takes it before settlement: pending, same request id, sent ' +
+    '(store.sc:3226-3232). `saysNobodyKnows` takes it before settlement: pending, same request id, sent ' +
     'again; a resend under the same id replays if anything landed',
   'writer-stopped':
     'log.sc:5550, `session-append!` -- the session was stopped by an earlier failure and refuses this ' +
@@ -1096,7 +1130,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    */
   'owner-unreadable':
     'log.sc:2941, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1386); a write refused ' +
-    'for it answers `(error refused owner-unreadable ...)` (store.sc:2762), whose head is `refused`. This ' +
+    'for it answers `(error refused owner-unreadable ...)` (store.sc:2763), whose head is `refused`. This ' +
     'extension sends no `adopt`',
   'registry-unreadable':
     'log.sc:5176, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1386); this ' +
@@ -1127,7 +1161,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'supply-malformed':
     'derived.sc:100 -- a supply file line the core does not take; the answer to `supply`, never a save',
   'reserved-relation':
-    'store.sc:3508 (run-items!) and store.sc:4167 (run-intents!), both from store.sc:4143 -- a `link` or ' +
+    'store.sc:3509 (run-items!) and store.sc:4187 (run-intents!), both from store.sc:4159 -- a `link` or ' +
     '`unlink` intent naming ref, uses, calls or guards; this extension sends no link or unlink, and its batches ' +
     'hold insert intents only',
   'reserved-writer':
@@ -2520,6 +2554,12 @@ export class Saver {
       }
       answer = opened.answer;
       what = { ...what, id: opened.id ?? '' };
+    }
+    if (verb === 'commit' && !answer.ok && answer.answers.length === 1) {
+      const stopped = stoppedCompletionItem(answer.answers[0]);
+      if (stopped !== null) {
+        answer = { ...answer, answers: [stopped] };
+      }
     }
 
     const datum = answer.answers.length > 0 ? answer.answers[0] : null;

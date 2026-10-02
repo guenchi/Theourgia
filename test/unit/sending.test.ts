@@ -362,6 +362,43 @@ function sentCalls(core: FakeCore): string[][] {
   return core.requests().filter((r) => r[0] === 'set');
 }
 
+/*
+ * A COMMIT A RETRY COMPLETED AND COULD NOT SEE APPLIED. On theourgia
+ * 3aad6fd a retry that finishes an interrupted commit writes the missing
+ * member, then stops with `(error unknown (not-applied ...) (completion
+ * ...))` when the member or the plan is not applied; the core prints the
+ * member's `ok` and the stop together as one `batch`. Whether the request
+ * ran is not said, so the save is kept under the same request id, as every
+ * `unknown` is -- and before the saver read the batch's last item, the
+ * classifier threw on the batch head instead.
+ */
+describe('a commit whose completion stopped unknown is kept, not thrown on', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('keeps the commit under its request id', async () => {
+    const stopped =
+      `(batch (${wroteAnswer(9).trim()} ` +
+      '(error unknown (not-applied ("w" . 9)) (completion (plan ("w" . 8)) (present) (of 1)))) (done 1))\n';
+    const r = rig([{ match: ['commit'], stdout: stopped, rc: 1 }]);
+    core = r.core;
+    const record = recordFor(
+      parts({ intent: { verb: 'commit', field: 'src', expectation: JSON.stringify({ writer: 'window-a', version: 'v1' }), body: 'body2\n' } })
+    );
+    const outcome = await r.saver.submit(record);
+    assert.ok(
+      core.requests().some((q) => q[0] === 'commit'),
+      `no commit was sent, so this measured nothing: ${JSON.stringify(core.requests())}`
+    );
+    assert.strictEqual(outcome.status, 'pending', `a stopped completion was not kept: ${outcome.message}`);
+    assert.strictEqual(r.outbox.pendingCount, 1, 'the commit left the queue');
+    assert.strictEqual(r.outbox.entries[0].req, record.req, 'the commit would go again under a new id');
+  });
+});
+
 describe('R2 the record is the queue entry', () => {
   let core: FakeCore;
   before(async () => {

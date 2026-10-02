@@ -346,7 +346,12 @@ const AT_LEAST: Array<[string, number]> = [
    * settings refusal name became one cell per name (22 names, plus a cell
    * that the two families are not empty).
    */
-  ['saver.test.ts', 94],
+  /*
+   * RAISED 94 -> 96 with the re-pin to theourgia 3aad6fd: a completion
+   * that stopped `unknown` is kept, and one refused `stale-baseline` is a
+   * refusal, both read by name with their `completion` clause.
+   */
+  ['saver.test.ts', 96],
   ['saving.test.ts', 34],
   /*
    * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five
@@ -360,7 +365,11 @@ const AT_LEAST: Array<[string, number]> = [
    * closing review, D3f. 47 -> 48 in queue item 46: E2; 48 -> 53 folded from
    * its review, E3, E4, E5 and E6 through submit and save.
    */
-  ['sending.test.ts', 53],
+  /*
+   * RAISED 53 -> 54 with the re-pin to theourgia 3aad6fd: a commit whose
+   * completion stopped `unknown`, answered as a batch, is kept.
+   */
+  ['sending.test.ts', 54],
   /*
    * UNCHANGED at fifteen by queue item 25, one in and one out: the cell that
    * lands a save while a publication is being prepared, and C12 retired (a
