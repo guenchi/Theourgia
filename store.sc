@@ -18,7 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
-          obtain-state seal-state sealed-state? sealed-state-unsealed? store-withhold-hook!
+          obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? store-withhold-hook!
           state-incomplete-notes
           ;; The interface pinned at dispatch (F77c; cells v3e look these up
           ;; in this library): re-exported from (theourgia incomplete).
@@ -34,6 +34,7 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
+          (only (theourgia template-read) template-problem)
           (theourgia request)
           (theourgia evidence-index)
           (only (theourgia wire) decode-line storable-decode)
@@ -2027,6 +2028,10 @@
         ;; show the way its own rules say it should, which is exactly
         ;; what this verb is for.
         (map (lambda (id) (list (quote nested-document) id)) nested)
+        ;; A TEMPLATE BLOCK THAT CANNOT BE READ: every verb that consults
+        ;; the template behaves as if there were none, and this says why.
+        (let ((problem (template-problem state)))
+          (if problem (list (list (quote template) problem)) (quote ())))
         ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
         ;; alive text files, that an export would write to the same file.
         (state-duplicated-paths state)

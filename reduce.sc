@@ -1208,16 +1208,18 @@
   ;; placeholder a test picked is not a kind, and listing it here would make
   ;; it one.
   ;;
-  ;; `decision` is the sixth and nothing writes one yet: it is named by the
-  ;; brief that this table was cut out of, and the verb that reads it comes
-  ;; next. THAT IS THE ONLY WAY AN ENTRY GETS IN -- measured in the tree, or
+  ;; `decision` is the sixth, read by `commitments`. `task` and `template`
+  ;; are the seventh and eighth: a task is read by `tasks` and by the rule
+  ;; that discharges a decision, and the one template block of a store is
+  ;; read by the template reader. THAT IS THE ONLY WAY AN ENTRY GETS IN --
+  ;; measured in the tree, or
   ;; decided somewhere a reader can go and check. An earlier draft of this
   ;; line also carried `verification`, which was neither: nothing wrote it,
   ;; nothing read it, and admitting it would have been the fixture mistake
   ;; made one line higher up. `datum` is not here either, and looks like an
   ;; omission: it is a MODE (`(mode . datum)` beside `(kind . code)`), and
   ;; the two were only ever confusable from a distance.
-  (define known-kinds '(code section file doc library decision))
+  (define known-kinds '(code section file doc library decision task template))
 
   (define (kind-known? k) (and (symbol? k) (memq k known-kinds) #t))
 
@@ -2154,11 +2156,13 @@
   ;; included: what the block itself says and who said it last. Its
   ;; position and its edges are not among them -- moving a block or
   ;; linking to it is not an edit of the block. '() for an unknown id.
-  (define (state-field-events r id)
-    (let ((b (find-block r id)))
+  ;; The optional list names fields whose events are left out.
+  (define (state-field-events r id . except)
+    (let ((b (find-block r id)) (skip (if (pair? except) (car except) '())))
       (if (not b)
           '()
-          (apply append (map (lambda (f) (map cdr (cdr f))) (blk-fields b))))))
+          (apply append (map (lambda (f) (map cdr (cdr f)))
+                             (filter (lambda (f) (not (memq (car f) skip))) (blk-fields b)))))))
 
   ;; Return the causal cut immediately after this applied event.
   (define (state-event-cut state event)

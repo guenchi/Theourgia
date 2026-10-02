@@ -189,7 +189,25 @@
                     (protocol (assq 'protocol (cdr datum))))
                 (if (not (and verbs protocol (string? (cadr protocol))))
                     (list 'unavailable)
-                    (list 'ok (tools-from (cdr verbs) (cadr protocol)))))))))))
+                    (list 'ok (tools-from (cdr verbs)
+                                          (string-append (cadr protocol)
+                                                         (template-sentences (assq 'template (cdr datum))))))))))))))
+
+;; THE STORE'S OWN RULES FOLLOW THE GENERIC ONES. When describe carries the
+;; store's template, each root's sentence -- where a decision, a task, a
+;; document or code goes in THIS store -- is added after the protocol, one
+;; line each, so the tools that write read both. With no template clause
+;; this adds nothing, and the descriptions are the protocol alone.
+(define (template-sentences clause)
+  (let ((roots (and (pair? clause) (assq 'roots (cdr clause)))))
+    (if (not roots)
+        ""
+        (apply string-append
+               (map (lambda (r)
+                      (if (and (list? r) (= 4 (length r)) (string? (list-ref r 3)))
+                          (string-append (list-ref r 3) "\n")
+                          ""))
+                    (cdr roots))))))
 
 ;; `(error <symbol> ...)`, the shape of every refusal datum.
 (define (refusal-datum? d)
@@ -427,6 +445,9 @@
 ;; NOTE: EVERY OTHER TOOL KEEPS THE PLAIN SENTENCE. The protocol is about
 ;; writing a block, and putting it on `read` or `search` would be noise
 ;; in the place an agent is choosing from.
+;; NOTE: NO TEMPLATE SENTENCES HERE. This path is used without describe's
+;; answer, and the store's template arrives only through that answer; it
+;; carries the generic protocol alone.
 (define writing-verbs '(insert write))
 
 (define (description-for verb)
