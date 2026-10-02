@@ -15,7 +15,7 @@ permissions:
 
 env:
   CHEZ_VERSION: 10.4.1
-  IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
+  IGROPYR_REV: 1ef294c261121e6f98c8e8f500c90ac2aae5edc9
 
 jobs:
   suite:
