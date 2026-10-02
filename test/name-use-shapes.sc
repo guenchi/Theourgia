@@ -199,6 +199,38 @@
     ((letrec-syntax) any not-a-seed "as let-syntax")
     ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) top looser
      "a reference artifact: the fixture replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined; the form also fails direct top-level expansion, so the refusal is not the replacement's alone")
+    ;; ONE CHANGE, TWO DEFECTS: an insertion or duplication that leaves two
+    ;; things Chez refuses, so no single substitute (class A or K) repairs
+    ;; either alone. Listed by name (main's ruling: no two-place
+    ;; substitution for them).
+    ((lambda (a) (define b a) ((begin) define c a) (f b c)) top looser
+     "two defects: the inserted (begin) heads an application whose operand is the keyword define")
+    ((lambda (a) (define b a) ((define zz 0) define c a) (f b c)) top looser
+     "two defects: the inserted definition heads an application whose operand is the keyword define")
+    ((lambda (a) ((begin) define b a) (b)) top looser
+     "two defects: the inserted (begin) heads an application whose operand is the keyword define")
+    ((lambda (a) ((define zz 0) define b a) (b)) top looser
+     "two defects: the inserted definition heads an application whose operand is the keyword define")
+    ((cond ((p a) b) ((begin) (q a) => f) (else c)) top looser
+     "two defects: the inserted (begin) is the clause's test, and => is no longer its second element")
+    ((cond ((p a) b) ((define zz 0) (q a) => f) (else c)) top looser
+     "two defects: the inserted definition is the clause's test, and => is no longer its second element")
+    ((cond ((p a) b) ((q a) (begin) => f) (else c)) top looser
+     "two defects: the inserted (begin) is an expression of the clause, and => is no longer its second element")
+    ((cond ((p a) b) ((q a) (define zz 0) => f) (else c)) top looser
+     "two defects: the inserted definition is an expression of the clause, and => is no longer its second element")
+    ((cond ((p a) b) ((q a) => f) ((begin) else c)) top looser
+     "two defects: the inserted (begin) is the clause's test, and else is an expression of its body")
+    ((cond ((p a) b) ((q a) => f) ((define zz 0) else c)) top looser
+     "two defects: the inserted definition is the clause's test, and else is an expression of its body")
+    ((guard (e ((p e) e) ((begin) else 0)) (f)) top looser
+     "two defects: the inserted (begin) is the clause's test, and else is an expression of its body")
+    ((guard (e ((p e) e) ((define zz 0) else 0)) (f)) top looser
+     "two defects: the inserted definition is the clause's test, and else is an expression of its body")
+    ((quasiquote (a (unquote (b (unquote (unquote c)))))) top looser
+     "two defects: the unquote leaves the template, so both inner unquotes stand in expression positions")
+    ((quasiquote (a (quasiquote (b (unquote (unquote c))) (b (unquote (unquote c)))))) top looser
+     "two defects: the duplicated operand ends the nesting, so the two inner unquotes stand in expression positions")
     ;; The record name used as an expression inside its own definition:
     ;; Chez binds it as the record's name over the clauses and refuses it as
     ;; a variable reference there. The walk cannot fall back on it: the
@@ -475,13 +507,14 @@
 ;; NOTES.
 (define k-keywords '(begin define else => unquote unquote-splicing quasiquote lambda quote))
 (define k-reach? #t)
-;; Every occurrence of a keyword in X's lists, as (path . index), but X's head.
+;; Every occurrence of a keyword in X's lists, as (path . index), but X's
+;; head; an improper list is entered through its pairs.
 (define (keyword-places x)
   (let walk ((x x) (path '()))
-    (if (not (and (pair? x) (list? x)))
+    (if (not (pair? x))
         '()
         (let loop ((l x) (i 0) (out '()))
-          (if (null? l)
+          (if (not (pair? l))
               out
               (loop (cdr l) (+ i 1)
                     (append out
@@ -554,7 +587,7 @@
 (printf "   A-name set: ~s\n" a-name-set)
 (printf "   class A by head: ~s\n" (count-by (lambda (v) (car (car v))) class-a))
 (printf "   class K by head: ~s\n" (count-by (lambda (v) (car (car v))) class-k))
-(printf "   class K by keyword: ~s\n" (count-by (lambda (v) (cadr (keyword-class v))) class-k))
+(printf "   class K by keyword: ~s\n" (count-by (lambda (v) (let ((k (keyword-class v))) (if k (cadr k) 'none))) class-k))
 (for-each (lambda (v) (printf "   A-NAME ~a ~s\n" (cadr v) (car v))) a-name)
 ;; The excepted and unexplained disagreements that the keyword substitution
 ;; would take in without the reach condition: the candidates for the reach
