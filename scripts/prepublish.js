@@ -24,15 +24,17 @@ function refuse(name, detail) {
   process.exit(1);
 }
 
+// -> { status, out, err, raw }: out trimmed, raw as git printed it (the
+// submodule status line's first character is its mark, a space when clean).
 function git(args, cwd) {
   const r = spawnSync('git', args, { cwd: cwd || root, encoding: 'utf8' });
-  return { status: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
+  return { status: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim(), raw: r.stdout || '' };
 }
 
 // The submodule's line in `git submodule status`: '-' not initialised, '+'
 // at a commit other than the recorded one, 'U' in conflict, ' ' as recorded.
 const status = git(['submodule', 'status', '--', 'theourgia']);
-const mark = status.out.length > 0 ? status.out[0] : '-';
+const mark = status.raw.length > 0 ? status.raw[0] : '-';
 if (status.status !== 0 || mark === '-' || !fs.existsSync(path.join(root, 'theourgia', 'theourgia.sc'))) {
   refuse('submodule-not-checked-out', 'theourgia/ holds no checkout; run git submodule update --init');
 }

@@ -129,7 +129,7 @@ if has N1b; then
   tar -xzf "$TGZ" -C "$X/pkg"
   recorded=$(git -C "$here" ls-tree HEAD theourgia | awk '{print $3}')
   git -C "$here/theourgia" archive "$recorded" | tar -x -C "$X/t"
-  (cd "$X/t" && find . -type f | sed 's#^\./##' | grep -v -E '^[^/]+\.sc$|^build\.ss$|^LICENSE$|^mcp/' | while read -r f; do rm -f "$f"; done)
+  (cd "$X/t" && find . -type f | sed 's#^\./##' | grep -v -E '^[^/]+\.sc$|^build\.ss$|^LICENSE$|^README\.md$|^mcp/' | while read -r f; do rm -f "$f"; done)
   find "$X/t" -type d -empty -delete
   sums() { (cd "$1" && find . -type f | LC_ALL=C sort | while read -r f; do echo "$(node -e 'process.stdout.write(require("crypto").createHash("md5").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$f") $f"; done); }
   sums "$X/pkg/package/theourgia" > "$R/N1b-packed.md5"; sums "$X/t" > "$R/N1b-archive.md5"
@@ -305,8 +305,10 @@ if has N5b; then
    for i in $(seq 1 400); do
      if ls -a "$XDG_CACHE_HOME/theourgia" 2>/dev/null | grep -q '^\.build-'; then
        # matched on the scratch directory's name: Node resolves the
-       # package's path, so on macOS the builder's argv says /private/tmp
-       b=$(pgrep -f "build.ss .*/$(basename "$W")/n5b/prefix/" | head -1)
+       # package's path, so on macOS the builder's argv says /private/tmp.
+       # The match is on build.ss's own path, inside the package: its first
+       # argument is the temporary library root in the cache.
+       b=$(pgrep -f "/$(basename "$W")/n5b/prefix/.*build\.ss" | head -1)
        if [ -n "$b" ]; then kill -9 "$b" "$wrapper"; seen=yes; break; fi
      fi
      sleep 0.02

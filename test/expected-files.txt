@@ -8,6 +8,7 @@ package.json
 scripts/postinstall.js
 source.json
 theourgia/LICENSE
+theourgia/README.md
 theourgia/admission.sc
 theourgia/answers.sc
 theourgia/arguments.sc
