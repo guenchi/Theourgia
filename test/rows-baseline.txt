@@ -16,6 +16,7 @@ closures 16 24 08586a2542467b64fc727f26dccba5dd
 commit-consumes 25 28 e0dcd80c1c849b3472c9c4b64586da33
 commit-text-mode 8 12 90c58bd868d654b4a0108a43887ba954
 commitments-verb 64 68 a7e974639c1f925ca4e15f76920d82c4
+completion-shapes 6 10 30bb4793dff5874e18de7d075698d66c
 completion-stale 228 231 1f4bf7dca172f3e31295318bbca2dbc4
 condition-render 11 18 6549c1743dcfc74b31d1956acde62b42
 consumption-index 64 67 a503ece2d8e27fe674a2b5630aeb7d29
