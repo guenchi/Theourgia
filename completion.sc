@@ -72,6 +72,12 @@
             ((eq? (car u) 'move) (list (caddr u) (cadddr u)))
             (else '()))))
   ;; The entry with its parent and sibling replaced, the wrapper kept.
+  ;; A WRAPPED ENTRY HAS THREE PARTS: one with references was written, at
+  ;; plan time, by the store's own rewriting of references, which writes
+  ;; exactly (expect <subject> <intent>). Its member is gated on the first
+  ;; attempt already, since the reducer holds a member to its plan's entry
+  ;; and compares no expect; so this branch only meets a plan whose
+  ;; members can never be applied, and it rebuilds what was written.
   (define (declared-with-refs e parent after)
     (let* ((u (declared-intent e))
            (r (if (eq? (car u) 'insert)
@@ -129,6 +135,13 @@
                             (let ((p (assv (cadr x) made-ids)))
                               (if p
                                   (cdr p)
+                                  ;; NOT REACHED WITH -1: the marker check has
+                                  ;; made k an earlier insert of the plan, and
+                                  ;; the members missing are a suffix of it, so
+                                  ;; member k is applied (above) or in this
+                                  ;; run. Were it reached, (from -1) is refused
+                                  ;; by the run as not an index, never read
+                                  ;; as a position.
                                   (list 'from (let index ((is run-indices) (j 0))
                                                 (cond ((null? is) -1)
                                                       ((eqv? (car is) (cadr x)) j)
@@ -201,7 +214,8 @@
                 ;; that is waiting, the plan included (request.sc, rule 1,
                 ;; find-unknown). If it ever were not, the plan's cut would
                 ;; be unknown and every touching record would look foreign;
-                ;; that is C3 (a)'s case, and it is answered as (a) answers.
+                ;; a plan this completion cannot see applied is answered
+                ;; unknown with not-applied, as after a write.
                 (plan-cut (state-event-cut state plan-event))
                 (refused (and plan-cut (stale-judgement state plan-event plan-cut consumes run))))
            (cond
@@ -219,10 +233,10 @@
                                  ;; and write-outcome->answer never answers ok. A
                                  ;; member that answered ok with no event would be
                                  ;; a record this completion cannot see applied,
-                                 ;; which is C3 (a)'s case: the plan is named if
-                                 ;; it is the one not applied, and otherwise the
-                                 ;; member, by its index, since its event is what
-                                 ;; is missing.
+                                 ;; and that is answered unknown with not-applied:
+                                 ;; naming the plan if it is the one not applied,
+                                 ;; and otherwise the member, by its index, since
+                                 ;; its event is what is missing.
                                  (let ((ev (let ((e (assq 'events (cdr answer))))
                                              (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
                                        (cut (reduce-applied-cut state)))

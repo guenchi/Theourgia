@@ -21,7 +21,7 @@
 ;; it must not do is write a missing member over a block that another
 ;; request wrote after this one was admitted.
 ;;
-;; THE RULE (the brief's C1 to C9): before anything is written, the
+;; THE RULE: before anything is written, the
 ;; frozen text against its version, then the plan's markers, then every
 ;; missing member's target -- stale when an applied record that touches
 ;; it lies outside the plan's causal cut and is not one of the plan's own
@@ -35,7 +35,7 @@
 ;; child and kills it at the n-th append. Each crash row first asserts
 ;; where the child stopped.
 ;;
-;; Rows are named by the brief's cells, K1 to K20.
+;; The rows are numbered K1 to K20, by the case each asks about.
 
 (import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce)
         (theourgia request) (theourgia ffi) (theourgia wire) (theourgia working)
@@ -184,8 +184,8 @@
 (define (since-events a) (map car (cdr (or (clause 'since a) '(since)))))
 
 ;; A crash of a commit of IDS at its N-th append. -> barriers.
-;; A crash at the N-th append, ASSERTED (the brief: each crash row first
-;; asserts where the child stopped and what the log holds): the child
+;; A crash at the N-th append, ASSERTED (each crash row first asserts where
+;; the child stopped and what the log holds): the child
 ;; printed N barrier lines, and the request's evidence is its plan and the
 ;; members before that append, or EXPECT when given. -> barriers.
 (define (crashed! label st req n args . expect)
@@ -533,7 +533,8 @@
 
 ;; K14's data row: the marker-shaped list inside a member's VALUE is data.
 ;; The uninterrupted import appends the same record; the reducer gates it
-;; in both stores (ledger F219).
+;; in both stores (the reducer reads the list as a marker there too, a
+;; defect of its own, not this one's).
 (define (data-row-case tag)
   (let* ((c (datum-case tag "(library (a) (export x) (import (rnrs))\n(define x 1))\n")) (st (car c)) (edit (cadr c))
          (lib (library-id st '(a))))
@@ -612,6 +613,17 @@
     (call st 'del a)
     (let ((retry (cli-run args)))
       (want "K12 a move under a deleted parent is written, as on the base" (list (car retry) (subs st "R12m")) '(ok (plan 0 1)))))))
+;; ---- the judgement is loaded when a completion is reached, and once --------------
+;;
+;; THE STORE ENTERS (theourgia completion) WHEN A COMPLETION IS REACHED, and
+;; not at start: every completion above ran in a child process, so this
+;; process has not loaded it yet. The forged plans below complete in this
+;; process, several times; Chez instantiates a library once per process, and
+;; the row at the end of this file asks that it is listed once.
+(define (judgement-loaded) (length (filter (lambda (l) (equal? l '(theourgia completion))) (library-list))))
+(want "L1 the judgement's library is not loaded before a completion is reached in this process"
+      (judgement-loaded) 0)
+
 ;; ---- forged plans: K14's fabricated plans, K19 ------------------------------------
 ;;
 ;; A PLAN NO PRODUCER WRITES, published under the identity a later
@@ -651,7 +663,7 @@
       (let* ((before (log-bytes st)) (a (forged-retry f)))
         (want (string-append "K14 fabricated: " label) (list (car a) (cadr a) (caddr a)) (list 'error 'no-such-intent expected))
         (want (string-append "K14 fabricated: " label ", and nothing is written") (log-bytes st) before))))
-  '("a marker naming a set" "a marker naming no index" "a marker naming a later member" "a marker naming a set, the set's block written by another (C9)")
+  '("a marker naming a set" "a marker naming no index" "a marker naming a later member" "a marker naming a set, the set's block written by another (the marker check comes first)")
   (list (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section))))
         (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 5) #f section))))
         (lambda (M) (list (cons 0 (list 'insert '("#%new" 1) #f section)) (cons 1 (list 'insert 'root #f section))))
@@ -678,7 +690,7 @@
 
 ;; A MEMBER THAT WRITES THE VALUE ITS BLOCK ALREADY HOLDS still appends a
 ;; record and answers ok with that record's event; the completion reads the
-;; event and goes on (main's reading of the after-each, r6).
+;; event and goes on.
 (cell "K1b"
   (let* ((f (forged-store "k1b")) (st (car f)) (M (cadr f)))
     (publish-plan! f (list (cons 0 (list 'set M 'src "old"))) #f)
@@ -874,5 +886,8 @@
           (begin (call st 'set A "src" (make-string 2000 #\x))
                  (let ((s (state st))) (equal? (baseline-refusal s A h0 cut0) (reference-refusal s A h0 cut0))))
           #t))))
+
+(want "L1 after the completions in this process, the judgement's library is loaded, once"
+      (judgement-loaded) 1)
 
 (printf "rows: ~a\n~a failures\ncompletion-stale complete\n" rows bad)
