@@ -52,7 +52,8 @@
 ;;; registry); the entries that name it are data in (theourgia extensions).
 (library (theourgia name-use)
   (export names-verb uses-verb block-name-use name-use-table datum-uses text-uses
-          import-library-name register-name-use-form! default-identifier-pattern)
+          import-library-name register-name-use-form! default-identifier-pattern
+          name-use-rule-fires?)
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
@@ -458,6 +459,19 @@
                                     (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after))))
                               (first-n (cdr x) (- n 4)))
                      (walk (list-ref x (- n 3)) env))))))))
+
+  ;; DOES THE WALK KNOW THIS FORM'S SHAPE: #t when, at a block's top form, the
+  ;; known form's rule fires on FORM, or FORM is a definition; #f when the walk
+  ;; would fall back. It decides nothing new: it asks the rule the walk asks,
+  ;; in the empty environment of a block's top form, and is exported for the
+  ;; fixture that compares the walk's shapes with Chez's expander.
+  (define (name-use-rule-fires? form)
+    (cond
+      ((not (and (pair? form) (symbol? (car form)) (list? form))) #f)
+      ((memq (car form) defining-heads) (and (definition? form '()) #t))
+      ((equal? form '(begin)) #t)
+      (else (let ((rule (hashtable-ref known-forms (car form) #f)))
+              (and rule (rule form '() walk walk-body) #t)))))
 
   ;; ---- text code: the identifier tokens -------------------------------------------
   ;;
