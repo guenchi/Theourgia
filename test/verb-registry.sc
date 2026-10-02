@@ -46,9 +46,13 @@
                       (if (and (condition? e) (irritants-condition? e)) (condition-irritants e) '()))))
     (thunk)
     'NOT-RAISED))
+;; A ROW THAT RAISES IS A FAIL LINE, and the rows after it still run.
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0) (guard (e (#t (list 'RAISED e))) e0))))
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (guard (e (#t (list 'RAISED e))) got) expected))))
+    ((_ name got expected) (want-1 name (caught got) expected))))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
