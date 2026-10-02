@@ -223,14 +223,15 @@
   ;; application. From the first form that is not a definition on, every
   ;; form is an expression: a definition there, or a begin that is empty or
   ;; holds one, makes the body malformed, and so does a name defined twice.
+  ;; A begin with an improper tail makes it malformed in either part.
   ;; -> (definitions . expressions), or #f.
   (define (body-split forms env)
     (and (list? forms)
          (let loop ((fs forms) (defs '()) (env env))
            (cond
              ((null? fs) #f)
-             ((and (pair? (car fs)) (eq? (car (car fs)) 'begin) (not (bound? 'begin env)) (list? (car fs)))
-              (loop (append (cdr (car fs)) (cdr fs)) defs env))
+             ((and (pair? (car fs)) (eq? (car (car fs)) 'begin) (not (bound? 'begin env)))
+              (and (list? (car fs)) (loop (append (cdr (car fs)) (cdr fs)) defs env)))
              ((definition? (car fs) env)
               (loop (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env)))
              (else
@@ -240,12 +241,13 @@
                      (cons defs fs))))))))
 
   ;; A form in an expression position of a body or a command sequence: not a
-  ;; definition, and not a begin that is empty or holds a definition.
+  ;; definition, and not a begin that is empty, improper, or holds a
+  ;; definition.
   (define (expression-form? f env)
     (cond
       ((and (pair? f) (symbol? (car f)) (not (bound? (car f) env)) (memq (car f) defining-heads)) #f)
-      ((and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)) (list? f))
-       (and (pair? (cdr f)) (for-all (lambda (g) (expression-form? g env)) (cdr f))))
+      ((and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)))
+       (and (list? f) (pair? (cdr f)) (for-all (lambda (g) (expression-form? g env)) (cdr f))))
       (else #t)))
 
   (define (body-shape? forms env) (and (body-split forms env) #t))

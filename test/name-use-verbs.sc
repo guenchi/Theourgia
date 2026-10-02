@@ -139,6 +139,15 @@
                 (datum-uses '(quote x y))
                 (datum-uses '(case k (x))))
       '((define f x) (define-values g lambda x) (quote x y) (case k x)))
+(want "U9 a check that decides names, not firing: a local else, => or define is a name; a bound head is an application; an improper or empty known form falls back"
+      (in-order (datum-uses '(lambda (else) (cond (else 1) (a 2))))
+                (datum-uses '(lambda (=>) (cond (a => b c))))
+                (datum-uses '(lambda (define) (define x 2) x))
+                (datum-uses '(lambda (quote) (quote x)))
+                (datum-uses '(f (if a . b)))
+                (datum-uses '(f (begin)))
+                (caught (datum-uses '(begin 1 . 2))))
+      '((a) (a b c) (x) (x) (a b f if) (begin f) (begin)))
 (want "U8 a bound unquote or unquote-splicing is no template syntax: the operand is data, not a use"
       (in-order (datum-uses '(let ((unquote list)) (quasiquote (unquote x))))
                 (datum-uses '(let ((unquote-splicing list)) (quasiquote ((unquote-splicing x))))))
