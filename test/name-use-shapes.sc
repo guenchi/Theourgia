@@ -41,11 +41,12 @@
 ;; THE POSITIONS. A known form is judged as a block's top form: expanded at
 ;; the top level, and asked of the walk with name-use-rule-fires?. A
 ;; defining form is judged twice: as a top form, and at the head of a body,
-;; where the reference expands (lambda () D 0).
+;; where both judges are asked (lambda () D 0).
 ;;
 ;; WHAT "THE RULE FIRED" MEANS: (name-use-rule-fires? form), the walk's own
-;; answer for the form's own rule. A raise there is its own outcome, never a
-;; firing: it is a disagreement on every form.
+;; answer for the form's own rule (in a body, for the lambda around it). A
+;; raise there is its own outcome, never a firing: it is a disagreement on
+;; every form.
 ;;
 ;; THE SPACE, stated before the first run (its first statement, s1, was
 ;; widened after codex reviewed the space and before any run; NOTES says so):
@@ -72,6 +73,10 @@
 ;; The row prints how many forms the space holds, and the coverage rows ask
 ;; that every head and every operator produced forms and that every form of
 ;; the space has a verdict.
+;;
+;; CLASS A, the disagreements whose defect is one operand, is recognised by a
+;; predicate (below), with two sub-classes; the row S2 asks that everything
+;; else agrees or is in the exception table.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
@@ -162,7 +167,9 @@
     (lambda () (define x 1) (define x 2) x)
     (do () (#t) (define x 1) x)
     (begin (begin))
-    (define-record-type c (parent p) (parent-rtd a b))))
+    (define-record-type c (parent p) (parent-rtd a b))
+    (define-record-type (p mk p))
+    (foreign-procedure __collect_safe __collect_safe entry (int) int)))
 
 ;; (form position direction reason). position: top or body; direction:
 ;; stricter (Chez accepts, the walk falls back), looser (the walk fires,
@@ -175,8 +182,41 @@
     ((letrec-syntax) any not-a-seed "as let-syntax")
     ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) top looser
      "the reference's own artifact: it replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined")
-    ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) body looser
-     "as at the top form")))
+    ;; A keyword moved into an expression position by deletion, duplication
+    ;; or a swap. Chez refuses the keyword there; the walk judges what
+    ;; stands in an expression position where it meets it (class A's
+    ;; limit), but the change is not to one operand that a substitute could
+    ;; stand for, so each form is listed (main's ruling).
+    ((quasiquote (a (unquote unquote b))) top looser
+     "duplication makes unquote an operand of unquote, a keyword in an expression position of the template")
+    ((quasiquote (a (unquote-splicing unquote-splicing b))) top looser
+     "duplication makes unquote-splicing an operand of unquote-splicing, a keyword in an expression position")
+    ((lambda (a) (define b a) (c define a) (f b c)) top looser
+     "a swap makes define an operand of an application, a keyword in an expression position")
+    ((lambda (a) (b define a) (b)) top looser
+     "a swap makes define an operand of an application, a keyword in an expression position")
+    ((cond ((p a) b) (=> f) (else c)) top looser
+     "deleting the test leaves => as a clause's test, a keyword in an expression position")
+    ((cond ((p a) b) ((q a) (q a) => f) (else c)) top looser
+     "duplicating the test leaves => in the clause's body, a keyword in an expression position")
+    ((cond ((p a) b) (=> (q a) f) (else c)) top looser
+     "a swap puts => in the test position, a keyword in an expression position")
+    ((cond ((p a) b) ((q a) f =>) (else c)) top looser
+     "a swap leaves => last in the clause's body, a keyword in an expression position")
+    ((cond ((p a) b) ((q a) => f) (else else c)) top looser
+     "duplication puts else in the else clause's body, a keyword in an expression position")
+    ((cond ((p a) b) ((q a) => f) (c else)) top looser
+     "a swap puts else in a clause's body, a keyword in an expression position")
+    ((case k ((a b) c) (else else d)) top looser
+     "duplication puts else in the else clause's body, a keyword in an expression position")
+    ((case k ((a b) c) (d else)) top looser
+     "a swap puts else in a clause's body, a keyword in an expression position")
+    ((guard (e ((p e) e) (else 0)) (e ((p e) e) (else 0)) (f)) top looser
+     "duplicating the clause list makes it a body expression, whose (else 0) puts else in an expression position")
+    ((guard (e ((p e) e) (else else 0)) (f)) top looser
+     "duplication puts else in the else clause's body, a keyword in an expression position")
+    ((guard (e ((p e) e) (0 else)) (f)) top looser
+     "a swap puts else in a clause's body, a keyword in an expression position")))
 
 ;; ---- the generator ----------------------------------------------------------------------
 
@@ -228,44 +268,49 @@
 (define operators '(O1 O2 O3 O4 O4k O5 O6 O7 O8 O9))
 
 ;; Each operator once at every position but the outer head.
-;; -> (form operator place) triples, place being (path . index) for a
-;; replacement of one operand and #f otherwise.
+;; -> (form operator place) triples. PLACE names the ONE operand the change
+;; made, as (path . index): the operand replaced or inserted (O3, O4, O4k,
+;; O6, O7, at any path), or, for an operator that changes a list's length or
+;; spine (O1, O2, O5, O8, O9), the list itself when it is an operand of an
+;; enclosing list, that is when its path is not the outer form's. #f when
+;; no single operand is what changed.
+(define (last-of l) (if (null? (cdr l)) (car l) (last-of (cdr l))))
+(define (but-last l) (if (null? (cdr l)) '() (cons (car l) (but-last (cdr l)))))
 (define (mutants-of seed)
   (let ((names (dedup (filter (lambda (s) (not (eq? s (car seed)))) (symbols-in (cdr seed))))))
     (apply append
            (map (lambda (path)
-                  (let* ((l (get seed path)) (n (length l)) (outer? (null? path)))
-                    (define (at f op) (list (update seed path f) op #f))
-                    ;; A replacement keeps its place: the list's path and the index.
-                    (define (at-place f op i) (list (update seed path f) op (cons path i)))
+                  (let* ((l (get seed path)) (n (length l)) (outer? (null? path))
+                         (whole (if outer? #f (cons (but-last path) (last-of path)))))
+                    (define (at f op place) (list (update seed path f) op place))
                     (append
-                      (list (at (lambda (l) (append l '((begin)))) 'O6)
-                            (at (lambda (l) (append l '((define zz 0)))) 'O7))
+                      (list (at (lambda (l) (append l '((begin)))) 'O6 (cons path n))
+                            (at (lambda (l) (append l '((define zz 0)))) 'O7 (cons path n)))
                       (apply append
                              (map (lambda (i)
                                     (if (and outer? (= i 0))
                                         '()
                                         (let ((e (list-ref l i)))
                                           (append
-                                            (list (at (lambda (l) (splice l i '())) 'O1)
-                                                  (at (lambda (l) (splice l i (list e e))) 'O2))
-                                            (map (lambda (r) (at-place (lambda (l) (splice l i (list r))) 'O3 i)) o3-replacements)
+                                            (list (at (lambda (l) (splice l i '())) 'O1 whole)
+                                                  (at (lambda (l) (splice l i (list e e))) 'O2 whole))
+                                            (map (lambda (r) (at (lambda (l) (splice l i (list r))) 'O3 (cons path i))) o3-replacements)
                                             (if (symbol? e)
                                                 (append
-                                                  (map (lambda (s) (at-place (lambda (l) (splice l i (list s))) 'O4 i))
+                                                  (map (lambda (s) (at (lambda (l) (splice l i (list s))) 'O4 (cons path i)))
                                                        (filter (lambda (s) (not (eq? s e))) names))
-                                                  (map (lambda (s) (at-place (lambda (l) (splice l i (list s))) 'O4k i))
+                                                  (map (lambda (s) (at (lambda (l) (splice l i (list s))) 'O4k (cons path i)))
                                                        (filter (lambda (s) (not (eq? s e))) o4k-names)))
                                                 '())
                                             (if (< (+ i 1) n)
                                                 (list (at (lambda (l) (splice (splice l i (list (list-ref l (+ i 1))))
                                                                               (+ i 1) (list e)))
-                                                          'O5))
+                                                          'O5 whole))
                                                 '())
-                                            (list (at (lambda (l) (insert-before l i '(begin))) 'O6)
-                                                  (at (lambda (l) (insert-before l i '(define zz 0))) 'O7)
-                                                  (at (lambda (l) (improper-after l i)) 'O8)
-                                                  (at (lambda (l) (prefix l i)) 'O9))))))
+                                            (list (at (lambda (l) (insert-before l i '(begin))) 'O6 (cons path i))
+                                                  (at (lambda (l) (insert-before l i '(define zz 0))) 'O7 (cons path i))
+                                                  (at (lambda (l) (improper-after l i)) 'O8 whole)
+                                                  (at (lambda (l) (prefix l i)) 'O9 whole))))))
                                   (iota n))))))
                 (list-paths seed)))))
 
@@ -278,7 +323,7 @@
     (filter (lambda (p) (and (not (hashtable-ref seen (car p) #f)) (begin (hashtable-set! seen (car p) #t) #t)))
             (map (lambda (t) (cons (car t) (cadr t))) all-triples))))
 (define generated (map car generated-pairs))
-;; Every replacement that made a form: form -> ((operator . place) ...).
+;; Every one-operand change that made a form: form -> ((operator . place) ...).
 (define replacements
   (let ((h (make-hashtable equal-hash equal?)))
     (for-each (lambda (t) (when (caddr t)
@@ -328,27 +373,55 @@
                       #t)))))
     (judge 20000000 (lambda (ticks v) v) (lambda (k) 'undecided))))
 
-;; THE WALK: does its rule fire on the form? A raise is 'raised.
+;; THE WALK: does its rule fire on the form? A raise is 'raised. In the
+;; body position it is asked what the reference is asked, the form inside
+;; (lambda () D 0): a definition that fits alone can still make a body
+;; malformed (a name defined twice).
 (define (fired x) (guard (e (#t 'raised)) (name-use-rule-fires? x)))
+(define (fired-at x position) (fired (if (eq? position 'body) (list 'lambda '() x 0) x)))
 
 ;; ---- class A: the operand, not the shape ---------------------------------------------
 ;;
 ;; A STATED LIMIT OF THE RULE (main's ruling): what stands in an expression
 ;; slot is judged where the walk meets it, not by the enclosing form's rule.
-;; A disagreement is class A when the rule fired, Chez refused, the form was
-;; made by replacing ONE operand (O3, O4, O4k; O8 and O9 change the list's
-;; length or spine, never one operand), and a fresh variable in that one
-;; place gives a form on which the rule still fires and which Chez accepts:
-;; the fault is then in the operand. Recognised by this predicate, never by
-;; a list.
-(define (with-fresh-variable form place)
-  (update form (car place) (lambda (l) (splice l (cdr place) (list 'zfresh)))))
-(define (class-a? v)
-  (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
-       (exists (lambda (r)
-                 (let ((f2 (with-fresh-variable (car v) (cdr r))))
-                   (and (eq? (fired f2) #t) (eq? (accepted? f2 (cadr v)) #t))))
-               (hashtable-ref replacements (car v) '()))))
+;; A disagreement is class A when the rule fired, Chez refused, the
+;; generator changed exactly ONE operand of one enclosing list (replaced
+;; it, inserted it, or changed it at a nested path: the PLACE of the
+;; generator above), and a substitute at that place gives a form on which
+;; the rule still fires and which Chez accepts: the defect is then in the
+;; operand. Recognised by this predicate, never by a list. Two substitutes,
+;; two sub-classes:
+;;   A-expression  a constant (0) is accepted by both: an expression slot;
+;;   A-name        only a fresh variable is: the slot takes a name (a set!
+;;                 target, say). A-name is small and its (head position
+;;                 place) set is PINNED (S6), so a binder slot that some
+;;                 rule fails to check turns S6 red instead of joining A.
+(define (with-substitute form place v)
+  (update form (car place) (lambda (l) (splice l (cdr place) (list v)))))
+(define operand-classes (make-hashtable equal-hash equal?))
+;; -> (A-expression place), (A-name place), or #f.
+(define (operand-class v)
+  (or (hashtable-ref operand-classes v #f)
+      (let ((answer
+              (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
+                   (let ((places (map cdr (hashtable-ref replacements (car v) '()))))
+                     (define (place-taking value)
+                       (find (lambda (place)
+                               (let ((f2 (with-substitute (car v) place value)))
+                                 (and (eq? (fired-at f2 (cadr v)) #t) (eq? (accepted? f2 (cadr v)) #t))))
+                             places))
+                     (let ((e (place-taking 0)))
+                       (if e
+                           (list 'A-expression e)
+                           (let ((n (place-taking 'zfresh)))
+                             (and n (list 'A-name n)))))))))
+        (hashtable-set! operand-classes v answer)
+        answer)))
+(define (class-a? v) (and (operand-class v) #t))
+
+;; The A-name (head position place) set this tree expects; place is the
+;; operand's index path in the form.
+(define a-name-expected '(UNPINNED))
 
 ;; ---- the rows ----------------------------------------------------------------------------
 
@@ -356,14 +429,12 @@
       (map (lambda (x) (accepted? x 'top)) '((lambda (x) x) (lambda (x)) (if) (set! car 1)))
       '(#t #f #f #t))
 (want "S1 CONTROL: every seed is accepted by the reference in each of its positions and fired by the walk"
-      (filter (lambda (s) (not (and (for-all (lambda (p) (accepted? s p)) (positions-of s)) (eq? (fired s) #t)))) seeds)
+      (filter (lambda (s) (not (for-all (lambda (p) (and (accepted? s p) (eq? (fired-at s p) #t))) (positions-of s)))) seeds)
       '())
 
 (define verdicts
   (apply append
-         (map (lambda (x)
-                (let ((f (fired x)))
-                  (map (lambda (p) (list x p f (accepted? x p))) (positions-of x))))
+         (map (lambda (x) (map (lambda (p) (list x p (fired-at x p) (accepted? x p))) (positions-of x)))
               space)))
 (define (direction v)
   (cond ((eq? (caddr v) 'raised) 'raised) ((eq? (cadddr v) 'undecided) 'undecided) ((caddr v) 'looser) (else 'stricter)))
@@ -384,6 +455,14 @@
     (for-each (lambda (v) (hashtable-update! h (key v) (lambda (n) (+ n 1)) 0)) vs)
     (let-values (((ks ns) (hashtable-entries h)))
       (list-sort (lambda (a b) (string<? (format "~a" (car a)) (format "~a" (car b)))) (map cons (vector->list ks) (vector->list ns))))))
+(define a-expression (filter (lambda (v) (eq? (car (operand-class v)) 'A-expression)) (filter operand-class class-a)))
+(define a-name (filter (lambda (v) (eq? (car (operand-class v)) 'A-name)) (filter operand-class class-a)))
+(define (index-path place) (append (car place) (list (cdr place))))
+(define a-name-set
+  (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
+             (dedup (map (lambda (v) (list (car (car v)) (cadr v) (index-path (cadr (operand-class v))))) a-name))))
+(printf "   class A: A-expression ~a, A-name ~a\n" (length a-expression) (length a-name))
+(printf "   A-name set: ~s\n" a-name-set)
 (printf "   class A by head: ~s\n" (count-by (lambda (v) (car (car v))) class-a))
 (printf "   class A by operator: ~s\n"
         (count-by (lambda (v) (let ((r (hashtable-ref replacements (car v) '()))) (if (pair? r) (car (car r)) 'none))) class-a))
@@ -418,6 +497,9 @@
 (want "S5 CONTROL: no pinned known gap is classified as class A"
       (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-a? v))) verdicts)))
       '())
+(want "S6 CONTROL: the A-name set, places that take a name, is the pinned one"
+      a-name-set
+      a-name-expected)
 
 (printf "\n~a failures\nrows: ~a\nname-use-shapes complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
