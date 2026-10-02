@@ -1736,8 +1736,12 @@ A draft is text, and a datum block's code is its body, not a src: `write` on a
 block whose mode is `datum` is refused `(error bad-request
 draft-on-datum-unsupported (block <id>) (use def))`, and `commit` refuses a draft
 whose block has become a datum block the same way, naming the first such block
-and writing nothing. The refusal points to `def`, the verb that writes a datum
-definition.
+and writing nothing. `set <id> src <text>` on a datum block, and a `batch`
+holding such a `set`, are refused the same way before anything is written, the
+batch whole (`set <id> src` with no value still runs and takes away a src
+written before the rule); `restore` of a revoked draft on a datum block is
+refused the same way and writes no draft. The refusal points to `def`, the verb
+that writes a datum definition.
 
 ### `restore`
 
