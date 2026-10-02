@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia baseline)
-  (export baseline-refusal)
+  (export baseline-refusal baseline-touching baseline-stale-answer baseline-combine)
   (import (rnrs) (theourgia reduce) (theourgia wire))
 
   (define (encoded-size value)
@@ -138,35 +138,63 @@
       (list (event-of r) (list-ref r 4)
             (if (> n content-limit) (list 'content 'elided n) content))))
 
+  ;; ---- the three parts, for a fresh request and for a completion ------------
+  ;;
+  ;; THE TOUCHING RECORDS OUTSIDE A CUT THAT A CALLER'S FILTER KEEPS:
+  ;; (baseline-touching state id cut keep?) -> (records omitted?), the
+  ;; records selected and ordered as `since` is: the newest eight by causal
+  ;; rank, then the winner first and the others oldest first; OMITTED? says
+  ;; whether any were left out. A fresh commit keeps every record; a
+  ;; completion keeps the records that are not its plan's own members.
+  (define (baseline-touching state id cut keep?)
+    (let* ((rows (state->rows state))
+           (history (cadr (assq 'request-history rows)))
+           (all (filter (lambda (r) (and (eligible? r id cut) (keep? r))) history))
+           ;; NEWEST FIRST, so "the most recent eight" is a prefix.
+           (ranked (list-sort (lambda (a b) (later? state a b)) all))
+           (kept (if (> (length ranked) entry-limit)
+                     (let loop ((xs ranked) (n 0) (out '()))
+                       (if (or (null? xs) (= n entry-limit)) (reverse out)
+                           (loop (cdr xs) (+ n 1) (cons (car xs) out))))
+                     ranked))
+           (omitted? (> (length ranked) (length kept)))
+           ;; THE WINNER FIRST, THEN THE REST OLDEST-FIRST. The winner is
+           ;; the newest of the kept; the others are given in the order a
+           ;; reader would apply them.
+           (ordered (if (null? kept) '()
+                        (cons (car kept)
+                              (list-sort (lambda (a b) (later? state b a)) (cdr kept))))))
+      (list ordered omitted?)))
+
+  ;; THE WORDING OF A STALE BASELINE from what baseline-touching chose:
+  ;; `based-on` is the hash the writer started from (or `unknown`), `now`
+  ;; the block's hash; with no record, the reason and a place to look; with
+  ;; records left out, the truncated tail.
+  (define (baseline-stale-answer id based-on now records omitted?)
+    (append (list 'error 'stale-baseline (list 'block id)
+                  (list 'based-on based-on) (list 'now now)
+                  (cons 'since (map entry-of records)))
+            (if (null? records)
+                (list '(reason candidate-set-changed)
+                      (list 'conflicts id))
+                '())
+            (if omitted?
+                (list '(truncated #t) (list 'retrieve (list 'log id) (list 'read id)))
+                '())))
+
+  ;; SEVERAL BLOCKS' REFUSALS AS ONE ANSWER: none -> #f, one -> itself,
+  ;; more -> (error stale-baseline (blocks <each refusal's clauses> ...)).
+  (define (baseline-combine refusals)
+    (cond ((null? refusals) #f)
+          ((null? (cdr refusals)) (car refusals))
+          (else (list 'error 'stale-baseline (cons 'blocks (map cddr refusals))))))
+
+  ;; A FRESH REQUEST'S CHECK: silent when the block's hash is the one the
+  ;; writer started from; otherwise every touching record outside the cut.
   (define (baseline-refusal state id wanted . rest)
-    (let* ((now (block-hash state id))
-           (cut (if (pair? rest) (car rest) '()))
-           (rows (state->rows state))
-           (history (cadr (assq 'request-history rows))))
+    (let ((now (block-hash state id))
+          (cut (if (pair? rest) (car rest) '())))
       (and (not (equal? wanted now))
-        (let* ((all (filter (lambda (r) (eligible? r id cut)) history))
-               ;; NEWEST FIRST, so "the most recent eight" is a prefix.
-               (ranked (list-sort (lambda (a b) (later? state a b)) all))
-               (kept (if (> (length ranked) entry-limit)
-                         (let loop ((xs ranked) (n 0) (out '()))
-                           (if (or (null? xs) (= n entry-limit)) (reverse out)
-                               (loop (cdr xs) (+ n 1) (cons (car xs) out))))
-                         ranked))
-               (omitted? (> (length ranked) (length kept)))
-               ;; THE WINNER FIRST, THEN THE REST OLDEST-FIRST. The
-               ;; winner is the newest of the kept; the others are given
-               ;; in the order a reader would apply them.
-               (ordered (if (null? kept) '()
-                            (cons (car kept)
-                                  (list-sort (lambda (a b) (later? state b a)) (cdr kept))))))
-          (append (list 'error 'stale-baseline (list 'block id)
-                        (list 'based-on wanted) (list 'now now)
-                        (cons 'since (map entry-of ordered)))
-                  (if (null? ordered)
-                      (list '(reason candidate-set-changed)
-                            (list 'conflicts id))
-                      '())
-                  (if omitted?
-                      (list '(truncated #t) (list 'retrieve (list 'log id) (list 'read id)))
-                      '()))))))
+           (let ((chosen (baseline-touching state id cut (lambda (r) #t))))
+             (baseline-stale-answer id wanted now (car chosen) (cadr chosen))))))
 )

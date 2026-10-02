@@ -28,7 +28,8 @@
 ;; THE CRASH IS REAL, NOT SIMULATED. A child process commits with a
 ;; barrier armed on every append; the first append -- the plan -- is
 ;; released, and the child is killed while it waits at the second. The
-;; store is left exactly as a crash would leave it.
+;; store is left exactly as a crash would leave it. The dance is the
+;; helper crash-at.ss, which other fixtures share.
 ;;
 ;; NOTE: EVERY WAIT HERE IS BOUNDED. A fifo write with no reader blocks
 ;; forever, and this suite has already lost fifteen minutes a fixture to
@@ -119,42 +120,13 @@
 
 ;; ---- the crash ------------------------------------------------------------
 
-(define fifo (string-append root "/gate"))
-(define trace (string-append root "/child.trace"))
-(define report (string-append root "/report.txt"))
-(define runner (string-append root "/run.sh"))
-(call-with-port (open-file-output-port runner (file-options no-fail) 'block (native-transcoder))
-  (lambda (p)
-    (put-string p
-      (string-append
-        "#!/bin/sh\n"
-        "rm -f '" fifo "' '" trace "'\n"
-        "mkfifo '" fifo "'\n"
-        "child=\n"
-        "trap 'test -n \"$child\" && kill -9 $child 2>/dev/null' EXIT\n"
-        "THEOURGIA_HOME='" home "' THEOURGIA_INJECT=on "
-        "THEOURGIA_BARRIER=before-append:'" fifo "' THEOURGIA_TRACE=1 "
-        "scheme --script '" cli "' commit '" A "' --req R1 --cursor '" cursor "' "
-        "--working-version '" v1 "' --writer '" writer "' "
-        "--store '" store "' > /dev/null 2> '" trace "' &\n"
-        "child=$!\n"
-        "i=0\n"
-        "while [ $i -lt 400000 ] && ! grep -q barrier '" trace "' 2>/dev/null; do i=$((i+1)); done\n"
-        "printf x > '" fifo "'\n"
-        "j=0\n"
-        "while [ $j -lt 400000 ] && [ \"$(grep -c barrier '" trace "' 2>/dev/null)\" -lt 2 ]; do j=$((j+1)); done\n"
-        "kill -9 $child 2>/dev/null\n"
-        "wait $child 2>/dev/null\n"
-        "child=\n"
-        "grep -c barrier '" trace "' > '" report "'\n"))))
-(system (string-append "chmod +x '" runner "'"))
-(system (string-append "perl -e 'alarm 120; exec @ARGV' sh '" runner "' > /dev/null 2>&1"))
-
+(include "crash-at.ss")
+;; The child commits; its first append (the plan) is released and it is
+;; killed while it waits at the second (the member).
 (define barriers
-  (guard (e (#t 'no-report))
-    (call-with-input-file report
-      (lambda (p) (let ((line (get-line p)))
-                    (if (eof-object? line) 'empty (string->number line)))))))
+  (car (crash-at 2 root home cli
+                 (list "commit" A "--req" "R1" "--cursor" cursor "--working-version" v1
+                       "--writer" writer "--store" store))))
 
 ;; KEY: THE FIXTURE ASSERTS THAT THE CRASH HAPPENED WHERE IT MEANT TO.
 ;; Two barriers observed means the plan's append was released and the
