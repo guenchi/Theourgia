@@ -312,7 +312,7 @@
                 (and (memq (cadr e) '(stricter looser))
                      (let ((v (assoc (car e) verdicts)))
                        (and v (or (eq? (cadr v) (caddr v))
-                                  (not (eq? (cadr e) (if (cadr v) 'looser 'stricter)))))))))
+                                  (not (eq? (cadr e) (if (cadr v) 'looser 'stricter))))))))
               exceptions)
       '())
 (want "S4 every pinned gap agrees, or is in the exception table with its reason"
