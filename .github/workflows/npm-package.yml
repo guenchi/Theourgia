@@ -52,7 +52,7 @@ jobs:
         run: |
           uname -a; node --version; npm --version
           npm pack
-          CELLS="N2 N2b N6 N10 P1 P2 P3 P4 P5" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
+          CELLS="N1 N2 N2b N6 N10 P1 P2 P3 P4 P5" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
             bash test/cells.sh "$PWD/theourgia-1.0.0.tgz"
       - name: keep the readings
         if: always()

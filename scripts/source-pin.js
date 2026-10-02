@@ -4,7 +4,10 @@
 // the theourgia submodule the package is made from. An installed package
 // has no git, and the compile cache's key needs to know which sources the
 // objects were built from. It refuses, by name, when the submodule is not
-// checked out; it writes nothing else.
+// checked out or has changes of its own (the commit would not describe the
+// files packed); it writes nothing else. The file is written beside and
+// renamed into place, so a symbolic link already at that name is replaced,
+// never written through.
 
 const fs = require('fs');
 const path = require('path');
@@ -20,5 +23,15 @@ if (rev.status !== 0 || !/^[0-9a-f]{40}$/.test(commit) ||
     'run git submodule update --init\n');
   process.exit(1);
 }
-fs.writeFileSync(path.join(root, 'source.json'), JSON.stringify({ theourgia: commit }) + '\n');
+const dirty = spawnSync('git', ['-C', path.join(root, 'theourgia'), 'status', '--porcelain', '--untracked-files=all'],
+  { encoding: 'utf8' });
+if (dirty.status !== 0 || (dirty.stdout || '').trim().length > 0) {
+  process.stderr.write('source-pin: refused: submodule-dirty: theourgia/ has changes; the commit would not describe ' +
+    'the files packed\n');
+  process.exit(1);
+}
+const target = path.join(root, 'source.json');
+const tmp = target + '.' + process.pid + '.tmp';
+fs.writeFileSync(tmp, JSON.stringify({ theourgia: commit }) + '\n');
+fs.renameSync(tmp, target);
 process.stderr.write('source-pin: theourgia ' + commit + '\n');

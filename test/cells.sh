@@ -166,10 +166,12 @@ if has P2; then
   ver=$(node -e 'const m = require.resolve("igropyr/package.json", { paths: [process.argv[1]] }); process.stdout.write(require(m).version + " " + m)' "$P/lib/node_modules/theourgia" 2>/dev/null)
   (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
    "$P/bin/theourgia" init --store "$T/s" > "$R/P2-first.out" 2> "$R/P2-first.err"; echo $? > "$R/P2-first.rc"
-   "$P/bin/theourgia" outline --store "$T/s" > "$R/P2-second.out" 2> "$R/P2-second.err"; echo $? > "$R/P2-second.rc")
+   "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/P2-second.out" 2> "$R/P2-second.err"; echo $? > "$R/P2-second.rc")
   b2=$(grep -c 'compiling once' "$R/P2-second.err")
-  [ $irc = 0 ] && [ "${ver%% *}" = 1.8.1 ] && [ "$(cat "$R/P2-first.rc")" = 0 ] && [ "$(cat "$R/P2-second.rc")" = 0 ] && [ "$b2" = 0 ]; v=$?
-  verdict $v "P2 install: rc $irc; igropyr $ver; init rc $(cat "$R/P2-first.rc"), outline rc $(cat "$R/P2-second.rc"), builds on the second run $b2"
+  a1=$(grep -c '(ok (store' "$R/P2-first.out"); a2=$(grep -c '^(ok' "$R/P2-second.out")
+  [ $irc = 0 ] && [ "${ver%% *}" = 1.8.1 ] && [ "$(cat "$R/P2-first.rc")" = 0 ] && [ "$(cat "$R/P2-second.rc")" = 0 ] && [ "$b2" = 0 ] &&
+    [ "$a1" = 1 ] && [ "$a2" = 1 ]; v=$?
+  verdict $v "P2 install: rc $irc; igropyr $ver; init rc $(cat "$R/P2-first.rc") answered $a1, outline rc $(cat "$R/P2-second.rc") answered $a2, builds on the second run $b2"
   stop_daemons
 fi
 
@@ -222,6 +224,8 @@ if has P3; then
     stop_daemons
   done
   [ "$(cat "$R/P3-hoisted.rc")" = 0 ] && [ "$(cat "$R/P3-nested.rc")" = 0 ] &&
+    [ "$(grep -c '(ok (store' "$R/P3-hoisted.out")" = 1 ] && [ "$(grep -c '(ok (store' "$R/P3-nested.out")" = 1 ] &&
+    [ "$(grep -c 'compiling once' "$R/P3-hoisted.err")" = 1 ] && [ "$(grep -c 'compiling once' "$R/P3-nested.err")" = 1 ] &&
     grep -q '^hoisted .*igropyr at node_modules/igropyr/package.json ' "$R/P3.txt" &&
     grep -q '^nested .*igropyr at node_modules/theourgia/node_modules/igropyr/package.json ' "$R/P3.txt"; v=$?
   verdict $v "P3 layouts: $(tr '\n' ';' < "$R/P3.txt")"
@@ -436,17 +440,29 @@ if has P4; then
       branch-dirty) echo x >> "$D/README.md" ;;
       object) touch "$D/lib/stale.so"; git -C "$D" add lib/stale.so; $commit -qm "a committed object" ;;
       list) echo "theourgia/extra.sc" >> "$D/test/expected-files.txt"; $commit -qam "a list that differs" ;;
+      source-json) ln -s README.md "$D/source.json" ;;
     esac
     (cd "$D" && PATH=$(dirname "$NODE"):$(dirname "$NPM"):$BASEPATH node scripts/prepublish.js > "$R/P4-$c.out" 2> "$R/P4-$c.err"); echo "$c rc $? $(head -1 "$R/P4-$c.err")" >> "$R/P4.txt"
   }
-  for c in clean not-checked-out moved submodule-dirty branch-dirty object list; do gate_case $c; done
+  for c in clean not-checked-out moved submodule-dirty branch-dirty object list source-json; do gate_case $c; done
+  # AND npm publish RUNS THE GATE: a dry run of the publish in a clone whose
+  # submodule is moved stops with the gate's refusal (a dry run runs the
+  # lifecycle scripts and sends nothing).
+  D=$X/publish; git clone -q "$here" "$D"; git -C "$D" config submodule.theourgia.url "$here/theourgia"
+  git -C "$D" -c protocol.file.allow=always submodule update --init -q > /dev/null 2>&1
+  git -C "$D/theourgia" checkout -q HEAD~1
+  (cd "$D" && PATH=$(dirname "$NODE"):$(dirname "$NPM"):$BASEPATH "$NPM" publish --dry-run > "$R/P4-publish.out" 2> "$R/P4-publish.err"); prc=$?
+  grep -q 'prepublish: refused: submodule-moved:' "$R/P4-publish.err" "$R/P4-publish.out"; pg=$?
+  echo "publish-dry-run rc $prc gate $( [ $pg = 0 ] && echo refused || echo NOT-RUN)" >> "$R/P4.txt"
   v=0
   for pair in "not-checked-out submodule-not-checked-out" "moved submodule-moved" "submodule-dirty submodule-dirty" \
-              "branch-dirty branch-dirty" "object compiled-object" "list file-list-differs"; do
+              "branch-dirty branch-dirty" "object compiled-object" "list file-list-differs" \
+              "source-json source-json-not-a-file"; do
     set -- $pair
     grep -q "^$1 rc 1 prepublish: refused: $2:" "$R/P4.txt" || v=1
   done
   grep -q '^clean rc 0 ' "$R/P4.txt" || v=1
+  grep -q '^publish-dry-run rc [1-9][0-9]* gate refused$' "$R/P4.txt" || v=1
   verdict $v "P4 prepublish gate: $(cut -d' ' -f1-3,6 "$R/P4.txt" | tr '\n' ';')"
 fi
 
@@ -473,7 +489,13 @@ fi
 if has P5; then
   scratch p5; P=$T/prefix; install_into "$P" --ignore-scripts
   M=$(node -e 'process.stdout.write(require.resolve("igropyr/package.json", { paths: [process.argv[1]] }))' "$P/lib/node_modules/theourgia")
-  run5() { (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH; "$P/bin/theourgia" init --store "$T/$1" > "$R/P5-$1.out" 2> "$R/P5-$1.err"; echo $? > "$R/P5-$1.rc"); }
+  # THE BUILDER IS COUNTED, not only the announcement: Chez is a shim that
+  # logs its argv, and a run that compiled started build.ss once.
+  shim "$T/chez" "$T/chez.log"
+  run5() { : > "$T/chez.log"
+           (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
+            "$P/bin/theourgia" init --store "$T/$1" > "$R/P5-$1.out" 2> "$R/P5-$1.err"; echo $? > "$R/P5-$1.rc")
+           grep -c '/build\.ss\]$' "$T/chez.log" > "$R/P5-$1.builds"; }
   dirs() { ls "$XDG_CACHE_HOME/theourgia" | grep -v '^\.' | wc -l | tr -d ' '; }
   run5 a; d1=$(dirs)
   node -e 'const f = process.argv[1]; const p = require(f); p.version = "1.8.1-p5"; require("fs").writeFileSync(f, JSON.stringify(p))' "$M"
@@ -481,8 +503,9 @@ if has P5; then
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ theourgia: "0".repeat(40) }))' "$P/lib/node_modules/theourgia/source.json"
   run5 c; d3=$(dirs)
   built="$(grep -c 'compiling once' "$R/P5-a.err") $(grep -c 'compiling once' "$R/P5-b.err") $(grep -c 'compiling once' "$R/P5-c.err")"
-  [ "$built" = "1 1 1" ] && [ "$d1 $d2 $d3" = "1 2 3" ] && [ "$(cat "$R/P5-a.rc")$(cat "$R/P5-b.rc")$(cat "$R/P5-c.rc")" = 000 ]; v=$?
-  verdict $v "P5 key: builds announced $built; cache directories $d1 $d2 $d3; rc $(cat "$R/P5-a.rc") $(cat "$R/P5-b.rc") $(cat "$R/P5-c.rc")"
+  ran="$(cat "$R/P5-a.builds") $(cat "$R/P5-b.builds") $(cat "$R/P5-c.builds")"
+  [ "$built" = "1 1 1" ] && [ "$ran" = "1 1 1" ] && [ "$d1 $d2 $d3" = "1 2 3" ] && [ "$(cat "$R/P5-a.rc")$(cat "$R/P5-b.rc")$(cat "$R/P5-c.rc")" = 000 ]; v=$?
+  verdict $v "P5 key: builds announced $built, build.ss started $ran; cache directories $d1 $d2 $d3; rc $(cat "$R/P5-a.rc") $(cat "$R/P5-b.rc") $(cat "$R/P5-c.rc")"
   stop_daemons
 fi
 

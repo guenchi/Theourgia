@@ -9,6 +9,9 @@
 //                              this branch records for it
 //   submodule-dirty            theourgia/ has changes or untracked files
 //   branch-dirty               this branch has changes or untracked files
+//   source-json-not-a-file     source.json exists and is not a regular file
+//                              (npm would not pack a link, and prepack
+//                              writes beside it and renames)
 //   compiled-object            a .so is somewhere in the package's tree
 //   file-list-differs          the list npm would pack is not
 //                              test/expected-files.txt
@@ -43,13 +46,23 @@ if (mark !== ' ') {
   const actual = git(['rev-parse', 'HEAD'], path.join(root, 'theourgia')).out || '?';
   refuse('submodule-moved', 'theourgia/ is at ' + actual + ', the branch records ' + recorded);
 }
-const subDirty = git(['status', '--porcelain'], path.join(root, 'theourgia'));
+// UNTRACKED FILES ARE ASKED FOR BY NAME: a publisher's status.showUntrackedFiles
+// must not decide what the gate sees.
+const subDirty = git(['status', '--porcelain', '--untracked-files=all'], path.join(root, 'theourgia'));
 if (subDirty.status !== 0 || subDirty.out.length > 0) {
   refuse('submodule-dirty', (subDirty.out.split('\n')[0] || subDirty.err) + (subDirty.out.includes('\n') ? ' ...' : ''));
 }
-const dirty = git(['status', '--porcelain', '--ignore-submodules=none']);
+const dirty = git(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
 if (dirty.status !== 0 || dirty.out.length > 0) {
   refuse('branch-dirty', (dirty.out.split('\n')[0] || dirty.err) + (dirty.out.includes('\n') ? ' ...' : ''));
+}
+
+try {
+  if (!fs.lstatSync(path.join(root, 'source.json')).isFile()) {
+    refuse('source-json-not-a-file', 'source.json is not a regular file; remove it, prepack writes it');
+  }
+} catch (e) {
+  if (e.code !== 'ENOENT') throw e;
 }
 
 function findObjects(dir, rel, out) {
