@@ -602,7 +602,7 @@
   ;; current committed state: a writer with nothing in progress has
   ;; nothing to be pinned to.
   ;;
-  ;; NEVER: THE ENTRY LAYOUT STAYS IN THIS FILE. `behind-item` folds the same
+  ;; NEVER: THE ENTRY LAYOUT STAYS IN THIS FILE. `behind-clauses` folds the same
   ;; field of the same entries; a caller doing it would be a second
   ;; place that knows an envelope's sixth element is its cut.
   (define (working-baseline store state supplied)
@@ -923,17 +923,36 @@
   ;; rebuilds the applied cut -- is not named, because it did not move
   ;; after the baseline; it moved back. The field answers "who landed
   ;; after you", not "is your baseline still comparable".
-  (define (behind-item cut writer entries)
-    (guard (e (#t #f))
+  ;;
+  ;; NEVER: HOW FAR, IN RECORDS, IS SAID BY THE CORE, ONCE. `behind` gives each
+  ;; moved writer's CURRENT seq, which is not a count: a client that showed
+  ;; it as one reported 10 records where 2 had landed. The baseline is the
+  ;; join of the consumed drafts' cuts, which only the core holds, so the
+  ;; subtraction is here: `(behind-records ((<writer> . <n>) ...))`, n the
+  ;; writer's current seq minus the seq the baseline holds for it (0 when it
+  ;; holds none), beside `behind` and over the same writers. `behind` is as
+  ;; it was, so a client that reads only it is unaffected.
+  ;;
+  ;; -> the clauses (behind ...) and (behind-records ...), or () when
+  ;; nothing moved.
+  (define (behind-clauses cut writer entries)
+    (guard (e (#t '()))
       (let* ((baseline (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
                                   '() entries))
-             (moved (filter (lambda (p)
-                              (and (not (string=? (car p) writer))
-                                   (let ((mine (assoc (car p) baseline)))
-                                     (or (not mine) (< (cdr mine) (cdr p))))))
-                            cut)))
-        (and (pair? moved)
-             (list 'behind (list-sort (lambda (a b) (string<? (car a) (car b))) moved))))))
+             (moved (list-sort (lambda (a b) (string<? (car a) (car b)))
+                               (filter (lambda (p)
+                                         (and (not (string=? (car p) writer))
+                                              (let ((mine (assoc (car p) baseline)))
+                                                (or (not mine) (< (cdr mine) (cdr p))))))
+                                       cut))))
+        (if (null? moved)
+            '()
+            (list (list 'behind moved)
+                  (list 'behind-records
+                        (map (lambda (p)
+                               (let ((mine (assoc (car p) baseline)))
+                                 (cons (car p) (- (cdr p) (if mine (cdr mine) 0)))))
+                             moved)))))))
 
   (define (retire! store writer entries versions landed?)
     ;; KEY: A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
@@ -1325,8 +1344,8 @@
                      ;; appended, so the cut this verb opened with is the
                      ;; current one.
                      (let* ((failed (retire! store writer entries pairs #f))
-                            (behind (behind-item (reduce-applied-cut state) writer entries)))
-                       (finish (with-cleanup (if behind (list 'ok '(items) behind) '(ok (items))) failed))))
+                            (behind (behind-clauses (reduce-applied-cut state) writer entries)))
+                       (finish (with-cleanup (append (list 'ok '(items)) behind) failed))))
                     ((and (not supplied-req) read-failure) read-failure)
                     (else
                      ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
@@ -1389,14 +1408,12 @@
                                ;; later one hides the movement that did happen.
                                ;; Neither is "who moved under this commit", and the
                                ;; commit it repeats already answered that question.
-                               (let ((behind (and (not replay?)
-                                                  live
-                                                  (behind-item (reduce-applied-cut live)
-                                                               writer entries))))
+                               (let ((behind (if (and (not replay?) live)
+                                                 (behind-clauses (reduce-applied-cut live)
+                                                                 writer entries)
+                                                 '())))
                                  (with-cleanup
-                                   (if behind
-                                       (list 'ok (cons 'items answers) behind)
-                                       (list 'ok (cons 'items answers)))
+                                   (append (list 'ok (cons 'items answers)) behind)
                                    failed)))))
                            (if (= (length answers) 1) (car answers) (batch-answer answers)))))))))))))))))))))
 )

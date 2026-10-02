@@ -1726,6 +1726,12 @@ writers who landed after this writer's drafts were taken. It is
 informational, and it is **absent** when nothing moved rather than
 present and empty: a field that is always there says nothing.
 
+Beside it, over the same writers, `(behind-records ((<writer> . <n>) ...))`
+says how far: `<n>` is that writer's records since the baseline -- its
+current `<seq>` minus the one the join of the committed drafts' cuts holds
+for it, or the whole of `<seq>` when the baseline holds none. `<seq>` in
+`behind` is a position, not a count; read `behind-records` for a count.
+
 PREMISES: **what a reader was given is checked when its result is accepted.**
 Every committed write -- `insert`, `set`, `move`, `del`, `link`, `unlink`,
 `tag`, `batch`, `commit`, `import-code`, `import-md`, `def` and `template
