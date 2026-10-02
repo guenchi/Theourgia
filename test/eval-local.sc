@@ -326,14 +326,18 @@
 ;; Each row reads the answer's head, the length of what (stdout ...)
 ;; carries against the limit, and whether it says (truncated #t).
 (define (answer-of out) (guard (e (#t (list 'UNREADABLE out))) (read (open-input-string out))))
+;; The clause headed `name` among an answer's elements, or #f. Not assq: an
+;; error answer holds its name, a symbol, beside its clauses.
+(define (clause-in elements name)
+  (and (list? elements) (find (lambda (x) (and (pair? x) (eq? (car x) name))) elements)))
 (define (quota-reading source)
   (let* ((a (answer-of (evaluate source "--output-bytes" "128" "--timeout-ms" "8000")))
          (clauses (if (pair? a) (cdr a) '()))
-         (stdout (let ((c (assq 'stdout clauses))) (and c (string? (cadr c)) (cadr c)))))
+         (stdout (let ((c (clause-in clauses 'stdout))) (and c (string? (cadr c)) (cadr c)))))
     (list (and (pair? a) (car a))
-          (and (assq 'resource clauses) (cadr (assq 'resource clauses)))
+          (and (clause-in clauses 'resource) (cadr (clause-in clauses 'resource)))
           (and stdout (string-length stdout))
-          (and (assq 'truncated clauses) #t))))
+          (and (clause-in clauses 'truncated) #t))))
 (want "EV-09b one under the limit: ok, all 127 characters carried, nothing truncated"
       (quota-reading "(begin (display (make-string 127 #\\x)) 0)")
       '(ok #f 127 #f))
@@ -355,8 +359,8 @@
 (define (option-clause out)
   (let ((a (answer-of out)))
     (list (and (pair? a) (car a))
-          (and (pair? a) (assq 'reason (cdr a)))
-          (and (pair? a) (assq 'option (cdr a))))))
+          (and (pair? a) (clause-in (cdr a) 'reason))
+          (and (pair? a) (clause-in (cdr a) 'option)))))
 (define (limit-readings name out-of-range)
   (map (lambda (v) (option-clause (evaluate "(+ 1 2)" name v))) (list "0" "abc" out-of-range)))
 (define (limit-wants name low high)
@@ -415,12 +419,12 @@
       '(usage #t))
 (want "EV-15 TWIN: a positional that holds no form is still a source, judged as one"
       (let ((a (answer-of (cli-no-input "eval" " "))))
-        (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a)) (and (pair? a) (assq 'reason (cdr a)))))
+        (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a)) (and (pair? a) (clause-in (cdr a) 'reason))))
       '(error bad-source (reason expected-one-form)))
 (want "EV-15 the catalogue's eval form says --under takes a library id, and a refusal carries the same form"
       (let ((a (answer-of (evaluate "(+ 1 2)" "--timeout-ms" "0"))))
         (list (and catalogue-usage (member '("--under" <library-id>) catalogue-usage) #t)
-              (and (pair? a) (equal? (assq 'usage (cdr a)) (list 'usage catalogue-usage)))))
+              (and (pair? a) (equal? (clause-in (cdr a) 'usage) (list 'usage catalogue-usage)))))
       '(#t #t))
 
 ;; ---- EV-03 the memory budget --------------------------------------------------
