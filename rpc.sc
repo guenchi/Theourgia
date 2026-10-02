@@ -1069,7 +1069,7 @@
   ;; verb by the common part of the table, and listing them in one usage
   ;; form would suggest they are special to it.
   (define eval-usage
-    '(eval ["--lang" <language>] ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
+    '(eval ["--lang" <language>] ["--cut" <cut>] ["--under" <library-id>] ["--working"] ["--latest"]
            ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
            ["--output-bytes" <n>] <source>))
 
