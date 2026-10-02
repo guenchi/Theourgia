@@ -757,7 +757,8 @@
               (car healthy) (cadr healthy))
         (list 1 '(error bad-request) 'no-clause 0 #t
               #t
-              1 (list 'error 'bad-request '(reason eval-arguments) (list 'usage eval-usage-form)))))
+              1 (list 'error 'bad-request '(reason eval-arguments) '(option "--timeout-ms" (reason not-positive))
+                      (list 'usage eval-usage-form)))))
 (let* ((c (fresh-store!)) (st (car c)) (w (cadr c))
        (big (string-append root "/big-source.ss"))
        (_ (call-with-output-file big (lambda (o) (put-string o (make-string 1048577 #\space))) 'truncate))
