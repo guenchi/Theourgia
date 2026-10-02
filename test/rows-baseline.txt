@@ -16,6 +16,7 @@ closures 16 24 08586a2542467b64fc727f26dccba5dd
 commit-consumes 25 28 e0dcd80c1c849b3472c9c4b64586da33
 commit-text-mode 8 12 90c58bd868d654b4a0108a43887ba954
 commitments-verb 64 68 a7e974639c1f925ca4e15f76920d82c4
+completion-stale 219 222 2167ecd14a7a45bd67c6fcb66525c848
 condition-render 11 18 6549c1743dcfc74b31d1956acde62b42
 consumption-index 64 67 a503ece2d8e27fe674a2b5630aeb7d29
 crash 15 19 77b2faae06e845a259e7a62cd9c4df32
@@ -86,10 +87,10 @@ move-and-edges 11 17 afff5fb12f630959cefda34ae86c33d1
 name-use-verbs 96 100 bac8f4773b1e40e21071507eeadcc1fe
 nesting-depth 9 12 898b0fe2614ef03fbf5d58f1b4a9e649
 one-subtree 10 20 09c1fa2a354e693e88559f1ff8966500
-options-gate 33 37 e3d3fd0005c5c4da988fc3fb893e7afe
+options-gate 33 37 40b0d951e0eb12a0471ef2d6e0ff5c09
 pin-store 8 14 200d5a359ac50896d1a77bd7a8792f13
 plan-completion 13 16 31a089685e6c33994375aaef442fd628
-platform-rows 40 44 9ebb631f132ebd82fe9e87152c10cabd
+platform-rows 40 44 b16eecc9ce8bb561bc79adbfa7448319
 project-template 73 78 2b22c0992f5722d61290297df98a140d
 q1 48 58 d8ebc85e05d56cfc6c8bb21e7cb452c9
 q10 6 15 b81fec4ec5717997ac34d567cefd5545
@@ -146,7 +147,7 @@ verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9
 view-fields 11 14 77a8b65cacbf1e2d15f35411a3f2655e
 view-rpc 24 27 3fe6367ac668d02893d4cf44221b48f0
-w4-plan-crash 13 17 14588a6047823acfaebc778f4b15989b
+w4-plan-crash 13 17 a3517fc3a8e8c24d7b5efc3206a3808f
 working-projection - 16 357c228fc02ff7b062ebc4e4d1031be0
 working-version 39 42 1a7f294647ff4ca54d030fda6ad5dc21
 working1 - 39 d8fce423970b9fb33ee20579fce8b66a

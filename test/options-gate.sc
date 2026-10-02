@@ -1718,6 +1718,7 @@
 ;; refusal.sc since F100b M3a (L); incomplete.sc since F77c (L). NOTE: a named list like this is what F64
 ;; replaced elsewhere; that this one should come from the tree is queued.
 ;; eval-runner.sc and eval-runner-exec.sc: the runner path of eval --lang (L).
+;; completion.sc: the judgement of a plan's completion, entered by the store when one is reached (L).
 (want "GATE-C the scanned source files, named"
       ;; Compared as sorted BASENAMES, so the expectation does not depend on
       ;; which directory a source sits in: `mcp/server.sc` sorts among the
@@ -1732,7 +1733,7 @@
                                 (else (loop (- i 1))))))
                       source-file-list))
       '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
-        "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "core.sc" "crc32.sc"
+        "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
