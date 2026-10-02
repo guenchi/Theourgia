@@ -25,11 +25,19 @@
 ;;; An entry is (verb usage description protocol? route value-options
 ;;; flag-options (library . name)).
 (library (theourgia extensions)
-  (export extension-verbs commitments-usage)
+  (export extension-verbs commitments-usage tasks-usage template-usage)
   (import (rnrs base))
 
   (define commitments-usage
     '(commitments ["--open"] ["--all"] ["--drifted"] ["--since" <cut>] ["--under" <id>]))
+
+;; `template apply <name>`, `template apply --file <template-file>` and
+  ;; `template export`: the action is the first positional.
+  (define template-usage
+    '(template <action> [<name>] ["--file" <template-file>]))
+
+  (define tasks-usage
+    '(tasks ["--status" <status>] ["--batch" <batch>] ["--under" <id>]))
 
   (define extension-verbs
     (list
@@ -37,4 +45,18 @@
             "List the decisions still owed: by default those neither implemented (an incoming implements edge) nor marked done or dropped; with --all every decision. --drifted keeps those with an implementation whose latest change was seen neither by its implements link nor by the decision's latest edit."
             #f 'daemon
             '("--since" "--under") '("--open" "--all" "--drifted")
-            '((theourgia commitments) . commitments-verb)))))
+            '((theourgia commitments) . commitments-verb))
+      (list 'tasks tasks-usage
+            "List the tasks: by default those under the root the store's template names for tasks, else every task; each with its status (todo, doing, done or dropped), its batch, what it implements, and (unlinked) when it implements no live decision."
+            #f 'daemon
+            '("--status" "--batch" "--under") '()
+            '((theourgia tasks) . tasks-verb))
+      (list 'template template-usage
+            "Apply a template to this store (apply <name>, or apply --file <template-file>): create the template block and each document root the store lacks, changing nothing that exists. Or print the store's template (export)."
+            #f 'daemon
+;; APPLY WRITES FROM THE REDUCTION -- what exists decides what is
+            ;; created -- so it refuses a load that could not read a writer;
+            ;; export only prints.
+            '("--file") '()
+            '((theourgia template) . template-verb)
+            '(refuse "apply")))))
