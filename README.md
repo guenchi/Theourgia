@@ -142,7 +142,7 @@ of them is a decision rather than an oversight:
 | `theourgia.corePath` | The core's own `theourgia/` directory, the one holding `theourgia.sc`. Required. Either form works -- see below. |
 | `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here, unless it is the one holding `corePath`, or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
-| `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
+| `theourgia.actor` | The name recorded with every change committed to the store; a draft is not attributed until it is committed. Defaults to the OS user name. |
 | `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, the draft space a verb sent without `--writer` uses. Defaults to the actor. Nothing this extension sends uses it: every request that takes a writer names one -- this window's own, or, when recovering or migrating another session's work, that session's (a migration also reads the committed text under a fresh `migration-<uuid>` name). See *Each window, its own draft space*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`; Homebrew installs it as `chez`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |

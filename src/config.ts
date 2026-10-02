@@ -162,15 +162,18 @@ export function clientPath(config: CoreConfig): string {
 }
 
 /*
- * WHO THIS WINDOW IS WHEN IT WRITES. (design 7.6.50 v247/v254)
+ * THE WRITER PASSED TO THE CORE AS `THEOURGIA_WRITER`: `theourgia.writer`,
+ * else the actor. The core takes it as the draft space of a request sent
+ * without `--writer`.
  *
- * NOTE: THE CORE REFUSES AN UNBOUND WRITER AND THIS EXTENSION STILL HAS A
- * DEFAULT, and the two are not in conflict: the core's refusal exists so
- * that two agents given only an actor cannot silently share one draft
- * space. A VS Code window is one agent. Its default is the actor's own
- * name, so a user who has never heard of draft spaces has one; two
- * windows that want separate spaces set `theourgia.writer` to two
- * names.
+ * NOTE: NOTHING THIS EXTENSION SENDS USES IT. Each window writes its drafts
+ * under a name of its own (`windowWriter`, src/working.ts), and every
+ * request whose handler takes a writer names one: the window's, or, when
+ * recovering or migrating another session's work, that session's (and a
+ * migration reads the committed text under a fresh `migration-<uuid>`). So two
+ * windows keep separate drafts whatever this setting says. It is still
+ * passed, so that a request that one day leaves out `--writer` meets a
+ * named space rather than the core's refusal of an unbound one.
  */
 export function writerFor(config: CoreConfig): string {
   return config.writer.length > 0 ? config.writer : config.actor;
