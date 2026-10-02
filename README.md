@@ -823,9 +823,14 @@ say so with `(excluded (blocks (superseded <n>) (refuted <n>)))`, counted in blo
 on a block that needs review is returned and named in `(validity ((<id> needs-review
 (<why> <block>) ...) ...))`; `--all-validity` leaves nothing out and names every hit that
 is not valid. Their human output shows the hits in force and nothing else: to see the
-superseded and refuted ones, ask with `--all-validity`. These clauses come before the
-receipt. A store that links none of the six relations answers every read and search
-exactly as before.
+superseded and refuted ones, ask with `--all-validity`. It gives no count of what it left
+out, and when everything was left out it prints nothing -- only an `(incomplete ...)`
+line, if the store missed a writer -- and exits 0: so for a `whereis` of a name whose
+every record is in a superseded or refuted block (a name the store does not know is
+`unknown-name` instead), and for a `search` or a `grep` whose every hit was left out.
+The `excluded` and `validity` clauses are in the `--wire` answer only. These clauses come
+before the receipt. A store that links none of the six relations answers every read and
+search exactly as before.
 
 ## Making and changing blocks
 
