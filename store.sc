@@ -36,7 +36,7 @@
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
           (only (theourgia template-read) template-problem)
-          (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine)
+          (only (rnrs eval) eval environment)
           (theourgia request)
           (theourgia evidence-index)
           (only (theourgia wire) decode-line storable-decode)
@@ -3609,208 +3609,34 @@
 
   ;; ---- completing a plan -------------------------------------------------
   ;;
-  ;; A RETRY FINISHES A PERSISTED PLAN FROM THE PLAN, and the plan's frozen
-  ;; entries are not a licence to write over what others wrote since. The
-  ;; request's premises were checked once, at admission; a completion
-  ;; checks again, against the plan's own causal cut, which never moves
-  ;; however many attempts the completion takes.
+  ;; A RETRY FINISHES A PERSISTED PLAN FROM THE PLAN, and the frozen entries
+  ;; are not a licence to write over what others wrote since: the
+  ;; judgement (the plan's markers, the stale targets, the checks after each
+  ;; member) is the completion library's, (theourgia completion). It is
+  ;; entered here, when a completion is reached, and not imported: the
+  ;; store is loaded at every start of the command line, and a command that
+  ;; never completes a plan should not pay for loading the judgement.
   ;;
-  ;; IN THIS ORDER, before anything is written, and the first that refuses
-  ;; is the whole answer: the frozen text against the version its consumes
-  ;; item names; the markers (each names an earlier insert of the plan);
-  ;; then every missing member's target. A TARGET is the block a set, move,
-  ;; del, link or unlink names (an insert makes a block and overwrites
-  ;; nothing). It is STALE when an APPLIED record that touches it lies
-  ;; outside the plan's cut and is not one of this plan's members, or, for
-  ;; a commit member, when the block's hash is not the based-on its
-  ;; consumes item froze. One stale target and nothing is written.
-  ;;
-  ;; AND AFTER EACH MEMBER IT WRITES: the plan and the record just written
-  ;; must be applied, or the completion stops with `unknown`; and if
-  ;; anything else became applied or was taken back because of the write,
-  ;; the members still missing are judged again, as at first. Nothing is
-  ;; predicted: a record that merely waits holds nothing up.
-
-  ;; A marker is a position, the parent or the sibling of an insert or a
-  ;; move, holding ("#%new" k): the block member k of the plan makes. The
-  ;; same list in a member's value is data.
-  (define (plan-marker? x)
-    (and (pair? x) (equal? (car x) "#%new") (pair? (cdr x)) (null? (cddr x))))
-
-  ;; NEVER: malformed-intent? DOES NOT GATE THESE. It reads a marker in a
-  ;; parent position as not an id, which is what a plan's declared entry
-  ;; holds until the completion binds it. A declared entry is read here
-  ;; with a guard instead: a shape that does not read has no references.
-  (define (declared-refs e) (guard (x (#t '())) (intent-refs e)))
-  (define (declared-kind e) (guard (x (#t #f)) (car (unwrap e))))
-
-  ;; A member of this plan: a record whose actor names this plan event with
-  ;; an integer index. A record that claims the request's identity without
-  ;; that is foreign.
-  (define (plan-member-index actor plan-event)
-    (and (list? actor) (= (length actor) 6)
-         (let ((k (list-ref actor 2)))
-           (and (integer? k) (exact? k) (equal? (list-ref actor 4) plan-event) k))))
-
-  ;; -> ((index . record) ...), the plan's members that are applied now,
-  ;; read from the state's history (never counted from answers).
-  (define (plan-members-applied state plan-event)
-    (let loop ((rs (cadr (assq 'request-history (state->rows state)))) (out '()))
-      (if (null? rs)
-          (reverse out)
-          (let ((k (plan-member-index (list-ref (car rs) 4) plan-event)))
-            (loop (cdr rs) (if k (cons (cons k (car rs)) out) out))))))
-
-  (define (completion-clause state plan-event of)
-    (list 'completion (list 'plan plan-event)
-          (cons 'present (list-sort < (map car (plan-members-applied state plan-event))))
-          (list 'of of)))
-
-  ;; -> (error no-such-intent k) for the first marker of a missing member
-  ;; that does not name an earlier insert of the plan, or #f.
-  (define (marker-refusal entries missing)
-    (let loop ((ms missing))
-      (if (null? ms)
-          #f
-          (let* ((m (caar ms)) (e (cdar ms))
-                 (bad (find (lambda (x)
-                              (and (plan-marker? x)
-                                   (let* ((k (cadr x))
-                                          (made (and (integer? k) (exact? k) (assv k entries))))
-                                     (not (and made (< k m) (eq? 'insert (declared-kind (cdr made))))))))
-                            (declared-refs e))))
-            (if bad (list 'error 'no-such-intent (cadr bad)) (loop (cdr ms)))))))
-
-  ;; THE INVERSE OF as-marker: a marker naming a PRESENT member becomes the
-  ;; id of the block that member's applied record made; one naming a member
-  ;; this run makes becomes the run's own back-reference (from j), j being
-  ;; its place among the missing members.
-  (define (bind-markers e made-ids run-indices)
-    (let ((rs (declared-refs e)))
-      (if (or (null? rs) (not (exists plan-marker? rs)))
-          e
-          (let ((bind (lambda (x)
-                        (if (plan-marker? x)
-                            (let ((p (assv (cadr x) made-ids)))
-                              (if p
-                                  (cdr p)
-                                  (list 'from (let index ((is run-indices) (j 0))
-                                                (cond ((null? is) -1)
-                                                      ((eqv? (car is) (cadr x)) j)
-                                                      (else (index (cdr is) (+ j 1))))))))
-                            x))))
-            (intent-with-refs e (bind (car rs)) (bind (cadr rs)))))))
-
-  (define (member-target e)
-    (and (memq (declared-kind e) '(set move del link unlink))
-         (guard (x (#t #f)) (cadr (unwrap e)))))
-
-  ;; -> the refusal for the stale targets among INTENTS, or #f.
-  (define (stale-judgement state plan-event plan-cut consumes intents)
-    (let* ((items (if consumes (caddr consumes) '()))
-           (targets (let loop ((is intents) (out '()))
-                      (if (null? is)
-                          (reverse out)
-                          (let ((t (member-target (car is))))
-                            (loop (cdr is) (if (and t (not (member t out))) (cons t out) out))))))
-           (refusals
-             (let loop ((ts targets) (out '()))
-               (if (null? ts)
-                   (reverse out)
-                   (let* ((t (car ts))
-                          (item (assoc t items))
-                          (based-on (if item (caddr item) 'unknown))
-                          (now (block-hash state t))
-                          (chosen (baseline-touching state t plan-cut
-                                                     (lambda (r) (not (plan-member-index (list-ref r 4) plan-event))))))
-                     (loop (cdr ts)
-                           (if (or (pair? (car chosen)) (and item (not (equal? based-on now))))
-                               (cons (baseline-stale-answer t based-on now (car chosen) (cadr chosen)) out)
-                               out)))))))
-      (baseline-combine refusals)))
-
-  (define (applied-in? cut event)
-    (let ((e (assoc (car event) cut)))
-      (and e (>= (cdr e) (cdr event)))))
-
-  (define (cut-advanced cut event)
-    (cons (cons (car event) (cdr event))
-          (filter (lambda (p) (not (equal? (car p) (car event)))) cut)))
-
-  (define (same-cut? a b)
-    (and (= (length a) (length b))
-         (for-all (lambda (p) (equal? (assoc (car p) b) p)) a)))
-
+  ;; The frozen text is checked against the version its consumes item names
+  ;; first, here, as before; the library is given the run, which stays the
+  ;; store's.
   (define (complete-plan! s state req verdict)
     (let* ((present (cadr verdict))
            (plan-event (caddr verdict))
            (entries (list-ref verdict 3))
            (consumes (and (>= (length verdict) 5) (list-ref verdict 4)))
-           (of (length entries))
            (missing (filter (lambda (e) (not (memv (car e) present))) entries))
            (indices (map car missing))
-           (bad (consumes-mismatch missing consumes))
-           (finish (lambda (answer) (append answer (list (completion-clause state plan-event of))))))
-      (cond
-        (bad (list (list 'error 'consumes-version-mismatch (list 'block bad))))
-        ((marker-refusal entries missing) => list)
-        (else
-         (let* ((made-ids (let loop ((ms (plan-members-applied state plan-event)) (out '()))
-                            (if (null? ms)
-                                out
-                                (let ((p (list-ref (cdar ms) 3)))
-                                  (loop (cdr ms)
-                                        (if (and (pair? p) (eq? (car p) 'put))
-                                            (cons (cons (caar ms) (block-id (car (cdar ms)) (cadr (cdar ms)))) out)
-                                            out))))))
-                (run (map (lambda (e) (bind-markers (cdr e) made-ids indices)) missing))
-                ;; THE PLAN IS APPLIED HERE: the verdict that sends a request
-                ;; to its completion answers unknown for any of its records
-                ;; that is waiting, the plan included (request.sc, rule 1,
-                ;; find-unknown). If it ever were not, the plan's cut would
-                ;; be unknown and every touching record would look foreign;
-                ;; that is C3 (a)'s case, and it is answered as (a) answers.
-                (plan-cut (state-event-cut state plan-event))
-                (refused (and plan-cut (stale-judgement state plan-event plan-cut consumes run))))
-           (cond
-             ((not plan-cut)
-              (list (finish (list 'error 'unknown (list 'not-applied plan-event)))))
-             (refused
-               (list (finish refused)))
-             (else
-               (let ((cut-before (reduce-applied-cut state)))
-                 (session-pending-count-set! s (length missing))
-                 (run-intents! s state
-                               (lambda (n) (request-actor req (list-ref indices n) plan-event))
-                               run
-                               (lambda (n answer)
-                                 ;; EVERY OK ANSWER OF A MEMBER NAMES ITS RECORD:
-                                 ;; one-intent! answers ok only once the record is
-                                 ;; committed, with (events ((<writer> . <seq>))),
-                                 ;; and write-outcome->answer never answers ok. A
-                                 ;; member that answered ok with no event would be
-                                 ;; a record this completion cannot see applied,
-                                 ;; which is C3 (a)'s case: the plan is named if
-                                 ;; it is the one not applied, and otherwise the
-                                 ;; member, by its index, since its event is what
-                                 ;; is missing.
-                                 (let ((ev (let ((e (assq 'events (cdr answer))))
-                                             (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
-                                       (cut (reduce-applied-cut state)))
-                                   (cond
-                                     ((not (applied-in? cut plan-event))
-                                      (finish (list 'error 'unknown (list 'not-applied plan-event))))
-                                     ((not ev)
-                                      (finish (list 'error 'unknown (list 'not-applied (list 'member (list-ref indices n))))))
-                                     ((not (applied-in? cut ev))
-                                      (finish (list 'error 'unknown (list 'not-applied ev))))
-                                     ((and (< (+ n 1) (length run))
-                                           (not (same-cut? cut (cut-advanced cut-before ev))))
-                                      (let ((again (stale-judgement state plan-event plan-cut consumes
-                                                                    (list-tail run (+ n 1)))))
-                                        (set! cut-before cut)
-                                        (and again (finish again))))
-                                     (else (set! cut-before cut) #f)))))))))))))
+           (bad (consumes-mismatch missing consumes)))
+      (if bad
+          (list (list 'error 'consumes-version-mismatch (list 'block bad)))
+          ((eval 'completion-run (environment '(theourgia completion)))
+           state plan-event entries missing indices consumes
+           (lambda (run after-each)
+             (session-pending-count-set! s (length missing))
+             (run-intents! s state
+                           (lambda (n) (request-actor req (list-ref indices n) plan-event))
+                           run after-each))))))
 
   ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
   ;; an existing text-mode block's src -- the case canonical-intent settles;

@@ -87,10 +87,10 @@ move-and-edges 11 17 afff5fb12f630959cefda34ae86c33d1
 name-use-verbs 96 100 c972cf90b39a251c6c06f642af0cbd4b
 nesting-depth 9 12 898b0fe2614ef03fbf5d58f1b4a9e649
 one-subtree 10 20 09c1fa2a354e693e88559f1ff8966500
-options-gate 33 37 e3d3fd0005c5c4da988fc3fb893e7afe
+options-gate 33 37 40b0d951e0eb12a0471ef2d6e0ff5c09
 pin-store 8 14 200d5a359ac50896d1a77bd7a8792f13
 plan-completion 13 16 31a089685e6c33994375aaef442fd628
-platform-rows 40 44 9ebb631f132ebd82fe9e87152c10cabd
+platform-rows 40 44 b16eecc9ce8bb561bc79adbfa7448319
 project-template 73 78 2b22c0992f5722d61290297df98a140d
 q1 48 58 d8ebc85e05d56cfc6c8bb21e7cb452c9
 q10 6 15 b81fec4ec5717997ac34d567cefd5545
