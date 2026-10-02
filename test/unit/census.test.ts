@@ -320,7 +320,12 @@ const AT_LEAST: Array<[string, number]> = [
    * 65 -> 67 in its review r1, one true sentence for each thing that could
    * not be read.
    */
-  ['saver.test.ts', 72],
+  /*
+   * RAISED 72 -> 94 when the cell that looped over every retryable and
+   * settings refusal name became one cell per name (22 names, plus a cell
+   * that the two families are not empty).
+   */
+  ['saver.test.ts', 94],
   ['saving.test.ts', 34],
   /*
    * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five

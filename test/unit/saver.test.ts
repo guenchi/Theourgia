@@ -64,7 +64,7 @@ import { Client } from '../../src/client';
 import { Outbox, OutboxWriteError } from '../../src/outbox';
 import { RETRYABLE_REFUSALS, RETRY_CAP, SETTINGS_REFUSALS, Saver, Settle } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
-import { initWire } from '../../src/wire';
+import { initWire, isSym } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
@@ -1679,19 +1679,36 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
     assert.doesNotMatch(r.outbox.entries[0].lastError ?? '', /attempt \d+ of/, 'its attempts were counted as a retryable one');
   });
 
-  it('lets no name in either family settle the entry', async () => {
-    for (const kind of [...RETRYABLE_REFUSALS, ...Object.keys(SETTINGS_REFUSALS)]) {
+  /*
+   * ONE CELL PER NAME. This was one cell looping over every name, a fake
+   * core each, and it took 1766 and 1771 ms of mocha's 2000 ms in the last
+   * two full runs; the next name added to either family would have turned
+   * it red for the time it took, not for anything it found. A cell per
+   * name costs one core and says which name settled the entry.
+   */
+  it('has names in both families to try', () => {
+    assert.ok(RETRYABLE_REFUSALS.length > 0, 'no retryable names: the cells below try nothing of that family');
+    assert.ok(Object.keys(SETTINGS_REFUSALS).length > 0, 'no settings names: the cells below try nothing of that family');
+  });
+
+  for (const kind of [...RETRYABLE_REFUSALS, ...Object.keys(SETTINGS_REFUSALS)]) {
+    it(`does not let ${kind} settle the entry`, async () => {
       const r = rig([{ match: ['set'], stdout: `(error ${kind} (detail "x"))\n`, rc: 75 }]);
       core = r.core;
-      await r.saver.save('a.2', 'src', 'body2\n');
+      const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+      /*
+       * The refusal was read: a transport failure also keeps the entry, and
+       * answers null.
+       */
+      const answer = outcome.answer;
+      assert.ok(Array.isArray(answer) && isSym(answer[1], kind), `${kind} was not the answer read: ${outcome.message}`);
       assert.strictEqual(
         r.outbox.entries.length,
         1,
         `${kind} settled the entry; it is classified as a refusal and must be intercepted first`
       );
-      core.dispose();
-    }
-  });
+    });
+  }
 });
 
 /*

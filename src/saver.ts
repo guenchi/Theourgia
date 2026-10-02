@@ -1203,11 +1203,12 @@ export function classifyRefusal(datum: Datum): Settlement {
    * NEVER: THAT IS NOT THE SAME AS THEM BEING SETTLED AS REFUSALS. Nothing
    * in the running extension reaches this line with one of them: the
    * retryable family is intercepted before, and so is the settings
-   * family. What keeps that true is not this comment but a cell --
-   * `plugin-r2 nothing in either family settles the entry` -- which
-   * drives a real Saver with each name in both tables and asserts the
-   * entry is still in the queue afterwards. Delete an interception and
-   * that cell reddens; it is the guard, this is the census's answer.
+   * family. What keeps that true is not this comment but the cells
+   * `does not let <name> settle the entry` (saver.test, one per name in
+   * both tables), each of which drives a real Saver with its name and
+   * asserts the entry is still in the queue afterwards. Delete an
+   * interception and those cells redden; they are the guard, this is the
+   * census's answer.
    */
   if (RETRYABLE_REFUSALS.includes(name as (typeof RETRYABLE_REFUSALS)[number])) {
     return { verdict: 'refused' };

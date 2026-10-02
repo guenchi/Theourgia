@@ -458,7 +458,14 @@ function outside(origins: Origin[]): Array<{ at: string; use: Use }> {
     .flatMap((origin) => origin.uses.filter((use) => use.kind !== 'read').map((use) => ({ at: origin.at, use })));
 }
 
-describe('queue item 43 every write of a record goes through writeSidecar (source census)', () => {
+describe('queue item 43 every write of a record goes through writeSidecar (source census)', function () {
+  /*
+   * NOTE: EACH CELL BUILDS A TYPE-CHECKED PROGRAM OF src, which takes seconds,
+   * and more on a slower machine: two of these cells ran out mocha's 2000 ms
+   * on the Intel macOS runner (GitHub Actions run 36622751061).
+   */
+  this.timeout(60000);
+
   it('follows every path sidecarPathOf makes, and only the one made in writeSidecar is written', () => {
     const { origins, asValues } = census(checkedSources());
     assert.deepStrictEqual(asValues, [], 'sidecarPathOf is used where this census cannot follow it');
