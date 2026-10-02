@@ -30,6 +30,11 @@
 # both counts were readings, two entries stayed wrong for days with every
 # gate green.
 #
+# EXCEPT FOR A FIXTURE LISTED AS KNOWN RED. THEOURGIA_KNOWN_RED may name a
+# file in known-red.txt's form (<fixture> TAB <regex>, # comments); a
+# fixture listed there is known not to finish on that machine, so its row
+# count is a reading, printed on its own line, and does not refuse.
+#
 # EACH LINE SAYS WHICH COLUMN IT IS ABOUT. Both lines begin `row baseline,
 # hashes:` or `row baseline, counts:` so that neither can be read as
 # covering the other. The line that refuses is the one about hashes, and it
@@ -69,7 +74,11 @@ done
 # with two unnamed fixtures stopped before any md5 was compared, so sixteen
 # fixtures whose contents had changed were never looked at. A missing NAME
 # hid every stale HASH behind it.
-stale=""; drift=""; rowsbad=""; matched=0
+stale=""; drift=""; rowsbad=""; rowsknown=""; matched=0
+known_red() {
+  [ -n "${THEOURGIA_KNOWN_RED:-}" ] && [ -r "$THEOURGIA_KNOWN_RED" ] &&
+    grep -v '^#' "$THEOURGIA_KNOWN_RED" | cut -f1 | grep -qx "$1"
+}
 # `|| [ -n "$name" ]` KEEPS THE LAST LINE when the file does not end in a
 # newline: `read` returns non-zero there although it has filled the
 # variables, so the final record was silently skipped -- by the hash check,
@@ -83,7 +92,9 @@ while read -r name rows lines digest || [ -n "$name" ]; do
   r=$(grep "^rows: " "$out/$name.out" | tail -1 | sed "s/^rows: //")
   [ -n "$r" ] || r="-"
   l=$(wc -l < "$out/$name.out" | tr -d " ")
-  if [ "$r" != "$rows" ]; then
+  if [ "$r" != "$rows" ] && known_red "$name"; then
+    rowsknown="$rowsknown $name($rows->$r)"
+  elif [ "$r" != "$rows" ]; then
     rowsbad="$rowsbad $name($rows->$r)"
   elif [ "$l" = "$lines" ]; then
     matched=$((matched+1))
@@ -114,6 +125,9 @@ fi
 # run, and that silence is what let the wrong claim stand.
 if [ -n "$rowsbad" ]; then
   echo "row baseline, rows: these fixtures ran a different number of rows than the table records for the same file, which refuses:$rowsbad"
+fi
+if [ -n "$rowsknown" ]; then
+  echo "row baseline, rows of known-red fixtures: these differ, which is a reading and not a refusal (they are known not to finish here):$rowsknown"
 fi
 if [ -n "$drift" ]; then
   echo "row baseline, counts: these differ in line count in this environment, which is a reading and not a refusal:$drift"

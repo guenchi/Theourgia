@@ -1006,6 +1006,17 @@ nprobes=$(echo $probes | wc -w | tr -d " ")
 # as the number of reds that were python: "3 are python" of three reds
 # that were all .sc.
 echo "fixtures run: $ran   not-green: $bad   (python among them: $pyred)"
+# VOID IS NOT GREEN. A row whose instrument failed its own control prints
+# "VOID <row>: <reason>" and is not a failure; counted here by fixture, so a
+# row that is void on every run -- a row that tests nothing -- is seen in
+# the summary rather than read as passing. Always printed, 0 included.
+nvoid=0; voids=""
+for vf in "$out"/*.out; do
+  [ -f "$vf" ] || continue
+  vn=$(grep -c "^VOID " "$vf")
+  if [ "$vn" -gt 0 ]; then nvoid=$((nvoid+vn)); voids="$voids $(basename "$vf" .out)($vn)"; fi
+done
+echo "void rows: $nvoid${voids:+ in:$voids}"
 echo "python fixtures run: $pyran"
 echo "libraries ($nlibs):$libs"
 echo "probes, printed a usage line ($nprobes):$probes"
@@ -1047,8 +1058,16 @@ fi
 # `$out/<name>.out` from this directory and prints two lines, one about the
 # hashes and one about the counts; only the hash line refuses. The reason it
 # is a separate file is written at the top of it.
-sh row-baseline-check.sh "$out"
-baseline_rc=$?
+# NOT UNDER AN EXPLICIT THEOURGIA_FIXTURE_LIMIT. A run that cuts its fixtures
+# short has no rows to judge against the table: every cut fixture would read
+# as a row count that differs. One line says the step did not run.
+if [ -n "${THEOURGIA_FIXTURE_LIMIT:-}" ]; then
+  echo "row baseline: not checked: THEOURGIA_FIXTURE_LIMIT=$fixture_limit cuts fixtures short, so their rows are not judged"
+  baseline_rc=0
+else
+  sh row-baseline-check.sh "$out"
+  baseline_rc=$?
+fi
 if [ "$baseline_rc" = 2 ]; then
   echo "ROW BASELINE CHECK WAS CALLED WRONG -- it needs the output directory"
   early_refuse "the row baseline check was called wrong" 1
