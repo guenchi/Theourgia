@@ -96,7 +96,11 @@
 (define (state-of store) (open-and-reduce store))
 (define (fields-of store id) (let ((row (state-read (state-of store) id))) (if row (cdr (assq 'fields row)) '())))
 (define (field-of store id name) (let ((e (assq name (fields-of store id)))) (and e (cdr e))))
-(define (clause-of answer name) (let ((c (and (pair? answer) (assq name (cdr answer))))) (and c (cdr c))))
+;; Not assq: an error answer holds symbols beside its clauses.
+(define (clause-of answer name)
+  (let ((c (and (pair? answer) (list? answer)
+                (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr answer)))))
+    (and c (cdr c))))
 ;; The first n elements of a list, or the list when it is shorter.
 (define (head-of x n) (if (or (= n 0) (not (pair? x))) '() (cons (car x) (head-of (cdr x) (- n 1)))))
 
@@ -235,7 +239,7 @@
                            "THEOURGIA_HOME=" root "/home THEOURGIA_RUN=" sock-root "/run "
                            "scheme --script ../core.sc eval "
                            (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
-                           "--store '" store "' --wire > '" out "' 2>&1 < /dev/null"))
+                           "--store '" store "' --wire > '" out "' 2> '" out ".err' < /dev/null"))
     (let ((t (file-text out)))
       (guard (e (#t (list 'UNREADABLE t)))
         (string->sexpr-extended
