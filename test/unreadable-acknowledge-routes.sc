@@ -573,6 +573,28 @@
     (want "N readable damage after the barrier keeps the base's answer: internal (F125 will name it)"
           (list (car r) (cadr r) (head-of (caddr r)))
           '(#t 1 (error internal)))))
+;; A SNAPSHOT INSTALLED IN THIS STORE, read from the trace: a create, write,
+;; rename or link of a path under <st>/snap/. Matched on the store's own
+;; prefix: matched on "/snap/" alone, a test root whose path held a
+;; directory named snap made every traced path of the store an install.
+(define (snapshot-installs st lines)
+  (let ((under (string-append st "/snap/")))
+    (length (filter (lambda (l) (and (has-substring? l under)
+                                     (exists (lambda (op) (prefix? (string-append "(trace " op " ") l))
+                                             '("create" "write" "rename" "link"))))
+                    lines))))
+(want "D-snapshot the install count reads the store's own snap/, not a root that holds a directory named snap"
+      (list (snapshot-installs "/r/snap/s1/store" '("(trace create \"/r/snap/s1/store/writers/w/000002.sexp\")"))
+            (snapshot-installs "/r/snap/s1/store" '("(trace create \"/r/snap/s1/store/snap/000001.sexp\")")))
+      '(0 1))
+;; CONTROL: the same count over a snapshot that is installed is not zero, so
+;; the two rows below read 0 because nothing was installed, not because the
+;; trace spells the store's path some other way.
+(let* ((c (fresh-store!)) (st (car c))
+       (r (held-run "after-barrier" local "../core.sc" (list "snapshot" "--store" st) (lambda () #f))))
+  (want "D-snapshot CONTROL: a healthy snapshot's trace counts at least one install under the store's snap/"
+        (list (car r) (cadr r) (> (snapshot-installs st (lines-of-text (cadddr r))) 0))
+        '(#t 0 #t)))
 ;; D-snapshot (design review r5, finding 3; MR-25): a snapshot whose session
 ;; delivery aborts installs nothing, and its answer names the entry.
 (let* ((c (fresh-store!)) (st (car c)) (seg (older-segment st)) (snap (string-append st "/snap")))
@@ -580,10 +602,7 @@
          (r (held-run "after-barrier" local "../core.sc" (list "snapshot" "--store" st)
                       (lambda () (chmod! "000" seg))))
          (names-after (if (file-directory? snap) (list-sort string<? (directory-list snap)) '()))
-         (installs (length (filter (lambda (l) (and (has-substring? l "/snap/")
-                                                    (exists (lambda (op) (prefix? (string-append "(trace " op " ") l))
-                                                            '("create" "write" "rename" "link"))))
-                                   (lines-of-text (cadddr r))))))
+         (installs (snapshot-installs st (lines-of-text (cadddr r)))))
     (chmod! "600" seg)
     (want "D-snapshot a snapshot whose delivery meets an unreadable older segment installs nothing and names it"
           (list (car r) (caddr r) installs (equal? names-before names-after))
@@ -597,10 +616,7 @@
          (r (held-run "after-barrier" local "../core.sc" (list "snapshot" "--store" st)
                       (lambda () (set! saved (damage! seg)))))
          (names-after (if (file-directory? snap) (list-sort string<? (directory-list snap)) '()))
-         (installs (length (filter (lambda (l) (and (has-substring? l "/snap/")
-                                                    (exists (lambda (op) (prefix? (string-append "(trace " op " ") l))
-                                                            '("create" "write" "rename" "link"))))
-                                   (lines-of-text (cadddr r))))))
+         (installs (snapshot-installs st (lines-of-text (cadddr r)))))
     (undamage! seg saved)
     (want "D-snapshot-readable a snapshot whose delivery meets a damaged older segment is refused not-delivered and installs nothing"
           (list (car r) (head-of (caddr r)) installs (equal? names-before names-after))
