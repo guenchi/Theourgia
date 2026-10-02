@@ -375,15 +375,21 @@
 ;; is the reference with an environment binding nothing, for the mutant that
 ;; shows the reference is asked.
 (define bind-free? #t)
+;; Every define-syntax of three parts outside quoted data, the form's own
+;; and any internal one, gets (syntax-rules ()) as its right-hand side.
+(define (quoted-data? x) (and (pair? x) (memq (car x) '(quote quasiquote)) #t))
 (define (prepared x)
-  (if (and (pair? x) (eq? (car x) 'define-syntax) (list? x) (= (length x) 3))
-      (list 'define-syntax (cadr x) '(syntax-rules ()))
-      x))
+  (cond ((not (pair? x)) x)
+        ((quoted-data? x) x)
+        ((and (eq? (car x) 'define-syntax) (list? x) (= (length x) 3))
+         (list 'define-syntax (cadr x) '(syntax-rules ())))
+        (else (cons (prepared (car x)) (prepared (cdr x))))))
 ;; The (parent <name>) names of every record definition in T, read from
 ;; each definition's own clauses only: (parent p) inside a protocol
 ;; expression is an application.
 (define (parent-names t)
   (cond ((not (pair? t)) '())
+        ((quoted-data? t) '())
         ((and (eq? (car t) 'define-record-type) (list? t) (pair? (cdr t)))
          (append (apply append
                         (map (lambda (c) (if (and (list? c) (= (length c) 2) (eq? (car c) 'parent) (symbol? (cadr c)))
@@ -392,24 +398,28 @@
                              (cddr t)))
                  (apply append (map parent-names (cddr t)))))
         (else (append (parent-names (car t)) (parent-names (cdr t))))))
-;; The ftype names a foreign-procedure's types name, (* t) or (& t): defined
-;; as ftypes, not variables.
+;; The ftype names a foreign-procedure's types name, (* t) or (& t), in its
+;; parameter list and its result only (never its entry): defined as ftypes,
+;; not variables.
 (define (ftype-names t)
+  (define (named y) (and (list? y) (= (length y) 2) (memq (car y) '(* &)) (symbol? (cadr y)) (cadr y)))
   (cond ((not (pair? t)) '())
-        ((and (eq? (car t) 'foreign-procedure) (list? t))
-         (dedup (filter symbol?
-                        (map (lambda (y) (and (list? y) (= (length y) 2) (memq (car y) '(* &)) (cadr y)))
-                             (apply append (map (lambda (e) (if (list? e) (cons e e) (list e))) (cdr t)))))))
+        ((quoted-data? t) '())
+        ((and (eq? (car t) 'foreign-procedure) (list? t) (>= (length t) 4))
+         (let* ((n (length t)) (params (list-ref t (- n 2))) (result (list-ref t (- n 1))))
+           (dedup (filter symbol? (cons (named result) (if (list? params) (map named params) '()))))))
         (else (append (ftype-names (car t)) (ftype-names (cdr t))))))
 ;; The body wrapper: (lambda () D 0), or, when the form names lambda (a
 ;; record parent called lambda would capture it), (let () D 0), or, when it
-;; names let too, (letrec () D 0). A form naming all three gets the lambda
-;; wrapper and is excepted by name. Both judges are asked the same form.
+;; names let too, (letrec () D 0), or, when it names letrec too,
+;; (let-values () D 0). A form naming all four gets the lambda wrapper and
+;; is excepted by name. Both judges are asked the same form.
 (define (body-wrapper x)
   (let ((names (symbols-in x)))
     (cond ((not (memq 'lambda names)) 'lambda)
           ((not (memq 'let names)) 'let)
           ((not (memq 'letrec names)) 'letrec)
+          ((not (memq 'let-values names)) 'let-values)
           (else 'lambda))))
 (define (positioned x position)
   (if (eq? position 'body) (list (body-wrapper x) '() x 0) x))
@@ -541,8 +551,20 @@
 
 ;; The A-name (head position place) set this tree expects; place is the
 ;; operand's index path in the form.
+;; THE A-NAME FORMS this tree expects, (position form): a set of places
+;; cannot see a new form arriving at a known place (a set! whose target
+;; check is lost adds (set! 7 b) at the set! target), a set of forms can.
 (define a-name-expected
-  '((define-record-type body (2 1)) (define-record-type top (2 1)) (set! top (1))))
+  '((body (define-record-type c (parent fields) (fields z)))
+    (body (define-record-type c (parent parent) (fields z)))
+    (top (define-record-type c (parent fields) (fields z)))
+    (top (define-record-type c (parent parent) (fields z)))
+    (top (set! => b))
+    (top (set! begin b))
+    (top (set! define b))
+    (top (set! else b))
+    (top (set! lambda b))
+    (top (set! quote b))))
 
 ;; ---- the rows ----------------------------------------------------------------------------
 
@@ -583,6 +605,9 @@
 (define a-name-set
   (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
              (dedup (map (lambda (v) (list (car (car v)) (cadr v) (index-path (cadr (operand-class v))))) a-name))))
+(define a-name-forms
+  (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
+             (dedup (map (lambda (v) (list (cadr v) (car v))) a-name))))
 (printf "   class A: A-expression ~a, A-name ~a\n" (length a-expression) (length a-name))
 (printf "   A-name set: ~s\n" a-name-set)
 (printf "   class A by head: ~s\n" (count-by (lambda (v) (car (car v))) class-a))
@@ -634,8 +659,8 @@
 (want "S5 CONTROL: no pinned known gap is classified as class A"
       (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-a? v))) verdicts)))
       '())
-(want "S6 CONTROL: the A-name set, places that take a name, is the pinned one"
-      a-name-set
+(want "S6 CONTROL: the A-name forms, places that take a name, are the pinned ones"
+      a-name-forms
       a-name-expected)
 (want "S8 CONTROL: no pinned known gap is classified as class K"
       (dedup (map car (filter (lambda (v) (and (member (car v) pinned) (class-k? v))) verdicts)))

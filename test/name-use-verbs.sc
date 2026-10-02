@@ -139,6 +139,10 @@
                 (datum-uses '(quote x y))
                 (datum-uses '(case k (x))))
       '((define f x) (define-values g lambda x) (quote x y) (case k x)))
+(want "U8 a bound unquote or unquote-splicing is no template syntax: the operand is data, not a use"
+      (in-order (datum-uses '(let ((unquote list)) (quasiquote (unquote x))))
+                (datum-uses '(let ((unquote-splicing list)) (quasiquote ((unquote-splicing x))))))
+      '((list) (list)))
 (want "U8 what Chez accepts is not refused: a case clause with one datum, an else that is not last, a begin as the block's form (empty, nested), unquote with several operands"
       (in-order (datum-uses '(case k (x y)))
                 (datum-uses '(case k (else 1) ((a) 2)))
