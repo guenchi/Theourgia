@@ -181,6 +181,10 @@
     ;; tells a probe from a fixture. It is not a python fixture that ran.
     (cons "probepy.py" "import sys\nprint(\"usage: probepy <input>\")\nsys.exit(2)\n")
     (scheme-fixture "green" "")
+    ;; A ROW THAT COULD NOT BE ESTABLISHED: one VOID line, no failure.
+    (scheme-fixture "void" "(printf \"VOID somerow: the instrument did not see its own control~%\")\n")
+    ;; A FIXTURE THAT COUNTS ROWS, which the empty table does not list.
+    (scheme-fixture "rowsy" "(printf \"ok one~%rows: 1~%\")\n")
     (cons "red.sc" "(import (chezscheme))\n(printf \"1 failures~%red complete~%\")\n")
     ;; What the runner handed its fixtures, read from the fixture's own
     ;; environment; and a marker file written into each root, so "removed"
@@ -786,6 +790,42 @@
                 (and (line-with c "python fixtures run: 2") #t))
           '(#t #f))))
 
+
+(printf "== RS-V: void rows are counted by fixture in the summary ==\n")
+(let ((c (inner! '("ok.py" "green.sc" "void.sc"))))
+  (start! c)
+  (let ((done (finished? c 120)))
+    (want "RS-V a fixture that printed one VOID row is named in the summary's void line, and a green one is not"
+          (list done (and (line-with c "void rows: 1 in: void(1)") #t) (and (line-with c "void rows:" "green") #t))
+          '(#t #t #f))))
+(let ((c (inner! '("ok.py" "green.sc"))))
+  (start! c)
+  (let ((done (finished? c 120)))
+    (want "RS-V TWIN: with no VOID row the summary says so, with the number"
+          (list done (and (line-with c "void rows: 0") #t))
+          '(#t #t))))
+
+(printf "== RS-L: under THEOURGIA_FIXTURE_LIMIT the row baseline is not judged ==\n")
+;; The variable is set and cleared around each start here, and the outer
+;; value restored: this file may itself run under a limit.
+(define outer-limit (or (getenv "THEOURGIA_FIXTURE_LIMIT") ""))
+(let ((c (inner! '("ok.py" "rowsy.sc"))))
+  (putenv "THEOURGIA_FIXTURE_LIMIT" "")
+  (start! c)
+  (putenv "THEOURGIA_FIXTURE_LIMIT" outer-limit)
+  (let ((done (finished? c 120)))
+    (want "RS-L CONTROL: without the limit, a fixture whose rows the table does not list refuses the run"
+          (list done (and (line-with c "NO ROW BASELINE" "rowsy") #t) (and (line-with c "REFUSING: the row baseline") #t))
+          '(#t #t #t))))
+(let ((c (inner! '("ok.py" "rowsy.sc"))))
+  (putenv "THEOURGIA_FIXTURE_LIMIT" "60")
+  (start! c)
+  (putenv "THEOURGIA_FIXTURE_LIMIT" outer-limit)
+  (let ((done (finished? c 120)))
+    (want "RS-L under the limit the step prints one line saying it did not run, and the baseline does not refuse"
+          (list done (and (line-with c "row baseline: not checked: THEOURGIA_FIXTURE_LIMIT=60") #t)
+                (and (line-with c "NO ROW BASELINE") #t) (and (line-with c "REFUSING: the row baseline") #t))
+          '(#t #t #f #f))))
 
 (printf "== RS-8: the token matcher, on synthetic snapshots (codex r1 A2, A3) ==\n")
 ;; THE MATCHER IS TAKEN OUT OF THE RUNNER AS IT IS, not copied: the lines
