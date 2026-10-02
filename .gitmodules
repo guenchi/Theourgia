@@ -1,0 +1,3 @@
+[submodule "theourgia"]
+	path = theourgia
+	url = https://github.com/guenchi/Theourgia

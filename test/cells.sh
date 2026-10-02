@@ -9,11 +9,12 @@
 #   CELLS_OUT   where the readings go (default: ./readings)
 #   CELLS_CHEZ  the real Chez binary (default: the first of scheme, chez,
 #               chezscheme on PATH)
-#   THEOURGIA_REPO, IGROPYR_REPO  clones for N1b and N9 (as assemble.sh)
+#   The package's sources are the submodule theourgia/ (a checkout of the
+#   commit this branch records); igropyr comes from npm as a dependency.
 set -u
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-CELLS=${CELLS:-"N1 N1b N2 N2b N3 N3bc N4 N4b N5 N5b N5c N6 N7 N7b N8 N9 N10 N11 N12 N13 N15"}
+CELLS=${CELLS:-"P1 N1 N1b P2 N2 N2b P3 N3 N3bc N4 N4b N5 N5b N5c N6 N7 N7b N8 P4 N10 P5 N11 N12 N13 N15"}
 R=${CELLS_OUT:-$here/readings}
 # NEVER UNDER $TMPDIR: on macOS it is a long path under /var/folders, and a
 # store's socket under a scratch HOME there passes the 104-byte limit of a
@@ -106,7 +107,10 @@ if has N1; then
     want(p.bin.theourgia === "bin/theourgia.js" && p.bin["theourgia-mcp"] === "bin/theourgia-mcp.js" &&
       p.bin.theourgiad === "bin/theourgiad.js", "bin names");
     want(p.scripts && p.scripts.postinstall === "node scripts/postinstall.js", "scripts.postinstall");
-    for (const k of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+    want(p.scripts && p.scripts.prepublishOnly === "node scripts/prepublish.js", "scripts.prepublishOnly");
+    want(p.scripts && p.scripts.prepack === "node scripts/source-pin.js", "scripts.prepack");
+    want(JSON.stringify(p.dependencies) === JSON.stringify({ igropyr: "1.8.1" }), "dependencies: igropyr 1.8.1, exactly");
+    for (const k of ["devDependencies", "optionalDependencies", "peerDependencies",
       "bundleDependencies", "bundledDependencies"]) want(!(k in p), "no " + k);
     want(files.includes("README.md") && files.includes("LICENSE"), "README.md and LICENSE at the root");
     want(p.homepage === "https://theourgia.dev", "homepage");
@@ -117,24 +121,56 @@ if has N1; then
   verdict $((d + j)) "N1 inventory: $(wc -l < "$R/N1-files.txt" | tr -d ' ') files, list diff $(wc -l < "$R/N1-diff.txt" | tr -d ' ') lines; package.json $( [ $j = 0 ] && echo as specified || cat "$R/N1-package.txt" | tr '\n' ' '); tarball $(wc -c < "$TGZ" | tr -d ' ') bytes"
 fi
 
-# ---- N1b vendor contents: md5 for md5 against a fresh git archive of each pin
+# ---- N1b the packed sources: md5 for md5 against a git archive of the commit the
+# branch records for theourgia/, filtered as `files` filters it; source.json
+# names that commit; and no igropyr is carried.
 if has N1b; then
-  X=$W/n1b; mkdir -p "$X/pkg" "$X/t" "$X/i"
+  X=$W/n1b; mkdir -p "$X/pkg" "$X/t"
   tar -xzf "$TGZ" -C "$X/pkg"
-  git -C "${THEOURGIA_REPO:-$here}" archive f50525f8e343ad072b57aeea5986af9c51d78a99 | tar -x -C "$X/t"
-  igr=${IGROPYR_REPO:-https://github.com/guenchi/Igropyr}
-  case "$igr" in http*) git clone -q "$igr" "$X/igr" && igr=$X/igr;; esac
-  git -C "$igr" archive 56ca0db9c8bb1c32bafa1e1472852a6186ada31b | tar -x -C "$X/i"
-  rm -rf "$X/t/test" "$X/i/test"; find "$X/t" "$X/i" \( -name '*.so' -o -name .gitignore \) -type f -exec rm -f {} +
+  recorded=$(git -C "$here" ls-tree HEAD theourgia | awk '{print $3}')
+  git -C "$here/theourgia" archive "$recorded" | tar -x -C "$X/t"
+  (cd "$X/t" && find . -type f | sed 's#^\./##' | grep -v -E '^[^/]+\.sc$|^build\.ss$|^LICENSE$|^mcp/' | while read -r f; do rm -f "$f"; done)
+  find "$X/t" -type d -empty -delete
   sums() { (cd "$1" && find . -type f | LC_ALL=C sort | while read -r f; do echo "$(node -e 'process.stdout.write(require("crypto").createHash("md5").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$f") $f"; done); }
-  sums "$X/pkg/package/vendor/theourgia" > "$R/N1b-vendor-theourgia.md5"; sums "$X/t" > "$R/N1b-archive-theourgia.md5"
-  sums "$X/pkg/package/vendor/igropyr" > "$R/N1b-vendor-igropyr.md5"; sums "$X/i" > "$R/N1b-archive-igropyr.md5"
-  diff "$R/N1b-archive-theourgia.md5" "$R/N1b-vendor-theourgia.md5" > "$R/N1b-diff-theourgia.txt"; a=$?
-  diff "$R/N1b-archive-igropyr.md5" "$R/N1b-vendor-igropyr.md5" > "$R/N1b-diff-igropyr.txt"; b=$?
-  extra=$(ls "$X/pkg/package/vendor" | LC_ALL=C sort | tr '\n' ' ')
-  bad=$(cat "$R/N1b-vendor-theourgia.md5" "$R/N1b-archive-theourgia.md5" "$R/N1b-vendor-igropyr.md5" "$R/N1b-archive-igropyr.md5" | grep -cv '^[0-9a-f]\{32\} ')
-  [ "$bad" = 0 ] && [ -s "$R/N1b-vendor-theourgia.md5" ] && [ -s "$R/N1b-vendor-igropyr.md5" ]; c=$?
-  verdict $((a + b + c)) "N1b vendor: theourgia $(wc -l < "$R/N1b-vendor-theourgia.md5" | tr -d ' ') files vs archive $(wc -l < "$R/N1b-archive-theourgia.md5" | tr -d ' '), igropyr $(wc -l < "$R/N1b-vendor-igropyr.md5" | tr -d ' ') vs $(wc -l < "$R/N1b-archive-igropyr.md5" | tr -d ' '); vendor/ holds: $extra"
+  sums "$X/pkg/package/theourgia" > "$R/N1b-packed.md5"; sums "$X/t" > "$R/N1b-archive.md5"
+  diff "$R/N1b-archive.md5" "$R/N1b-packed.md5" > "$R/N1b-diff.txt"; a=$?
+  pinned=$(node -e 'process.stdout.write(String(require(process.argv[1]).theourgia))' "$X/pkg/package/source.json" 2>/dev/null)
+  [ "$pinned" = "$recorded" ]; b=$?
+  igr=$(find "$X/pkg/package" -name 'crypto.sc' -path '*igropyr*' | wc -l | tr -d ' ')
+  bad=$(cat "$R/N1b-packed.md5" "$R/N1b-archive.md5" | grep -cv '^[0-9a-f]\{32\} ')
+  [ "$bad" = 0 ] && [ -s "$R/N1b-packed.md5" ] && [ "$igr" = 0 ] && [ ${#recorded} = 40 ]; c=$?
+  verdict $((a + b + c)) "N1b packed sources: theourgia/ $(wc -l < "$R/N1b-packed.md5" | tr -d ' ') files vs the archive of $recorded $(wc -l < "$R/N1b-archive.md5" | tr -d ' '), diff $(wc -l < "$R/N1b-diff.txt" | tr -d ' ') lines; source.json names ${pinned:-nothing}; igropyr files carried $igr"
+fi
+
+# ---- P1 a fresh clone of the branch, its submodule initialised: npm pack --dry-run
+# lists test/expected-files.txt exactly (source.json is written by prepack),
+# with no test/, no vendor/ and no .so -- and the submodule's files at all.
+if has P1; then
+  X=$W/p1; git clone -q "$here" "$X/clone"
+  git -C "$X/clone" config submodule.theourgia.url "$here/theourgia"
+  git -C "$X/clone" -c protocol.file.allow=always submodule update --init -q > "$R/P1-submodule.out" 2>&1
+  (cd "$X/clone" && "$NPM" pack --dry-run --json > "$R/P1-pack.json" 2> "$R/P1-pack.err"); prc=$?
+  node -e 'for (const f of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[0].files) console.log(f.path)' "$R/P1-pack.json" | LC_ALL=C sort > "$R/P1-files.txt"
+  diff "$here/test/expected-files.txt" "$R/P1-files.txt" > "$R/P1-diff.txt"; d=$?
+  sub=$(grep -c '^theourgia/' "$R/P1-files.txt"); forbidden=$(grep -c -E '(^|/)test/|^vendor/|\.so$' "$R/P1-files.txt")
+  [ $prc = 0 ] && [ $d = 0 ] && [ "$sub" -gt 50 ] && [ "$forbidden" = 0 ]; v=$?
+  verdict $v "P1 pack from a fresh clone: rc $prc, $(wc -l < "$R/P1-files.txt" | tr -d ' ') files, list diff $(wc -l < "$R/P1-diff.txt" | tr -d ' ') lines; theourgia/ files $sub; test/, vendor/ or .so $forbidden"
+fi
+
+# ---- P2 an install into an empty prefix pulls igropyr 1.8.1 from npm, found from
+# the package as require finds it, and a store answers; the second run
+# compiles nothing (N4 reads the cache's mtimes in full).
+if has P2; then
+  scratch p2; P=$T/prefix
+  (export PATH=$(dirname "$NODE"):$PKGBIN_DIR:$BASEPATH; install_into "$P"); irc=$?
+  ver=$(node -e 'const m = require.resolve("igropyr/package.json", { paths: [process.argv[1]] }); process.stdout.write(require(m).version + " " + m)' "$P/lib/node_modules/theourgia" 2>/dev/null)
+  (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
+   "$P/bin/theourgia" init --store "$T/s" > "$R/P2-first.out" 2> "$R/P2-first.err"; echo $? > "$R/P2-first.rc"
+   "$P/bin/theourgia" outline --store "$T/s" > "$R/P2-second.out" 2> "$R/P2-second.err"; echo $? > "$R/P2-second.rc")
+  b2=$(grep -c 'compiling once' "$R/P2-second.err")
+  [ $irc = 0 ] && [ "${ver%% *}" = 1.8.1 ] && [ "$(cat "$R/P2-first.rc")" = 0 ] && [ "$(cat "$R/P2-second.rc")" = 0 ] && [ "$b2" = 0 ]; v=$?
+  verdict $v "P2 install: rc $irc; igropyr $ver; init rc $(cat "$R/P2-first.rc"), outline rc $(cat "$R/P2-second.rc"), builds on the second run $b2"
+  stop_daemons
 fi
 
 # ---- N2 install and use, and N2b the daemon program, with a PATH of the prefix and Chez only
@@ -165,6 +201,30 @@ if has N2 || has N2b; then
     verdict $v "N2b theourgiad: outline rc $(cat "$R/N2b-outline.rc") through it; daemons for the store $n, pid $dpid, the theourgiad wrapper's child $cpid, the wrapper still running $alive; ps: $(head -1 "$R/N2b-ps.txt" | sed 's/^ *[0-9]* //' | cut -c1-140)"
     stop_daemons
   fi
+fi
+
+# ---- P3 nested and hoisted: a local install leaves igropyr hoisted beside the
+# package; moved under the package's own node_modules it is nested. Each
+# layout, with its own cache, builds and answers -- and the hoisted copy is
+# gone in the nested run, so the build cannot have read it.
+if has P3; then
+  for layout in hoisted nested; do
+    scratch p3-$layout; D=$T/project; mkdir -p "$D"
+    (cd "$D" && export PATH=$(dirname "$NODE"):$PKGBIN_DIR:$BASEPATH && "$NPM" install --ignore-scripts "$TGZ" > "$T/install.out" 2> "$T/install.err"); echo $? > "$R/P3-$layout-install.rc"
+    if [ $layout = nested ]; then
+      mkdir -p "$D/node_modules/theourgia/node_modules"
+      mv "$D/node_modules/igropyr" "$D/node_modules/theourgia/node_modules/igropyr"
+    fi
+    where=$(cd "$D" && find node_modules -name package.json -path '*igropyr/package.json' -not -path '*/igropyr/*/*' | tr '\n' ' ')
+    (export PATH=$D/node_modules/.bin:$PKGBIN_DIR:$BASEPATH
+     "$D/node_modules/.bin/theourgia" init --store "$T/s" > "$R/P3-$layout.out" 2> "$R/P3-$layout.err"; echo $? > "$R/P3-$layout.rc")
+    echo "$layout install rc $(cat "$R/P3-$layout-install.rc"), igropyr at $where, init rc $(cat "$R/P3-$layout.rc"), built $(grep -c 'compiling once' "$R/P3-$layout.err")" >> "$R/P3.txt"
+    stop_daemons
+  done
+  [ "$(cat "$R/P3-hoisted.rc")" = 0 ] && [ "$(cat "$R/P3-nested.rc")" = 0 ] &&
+    grep -q '^hoisted .*igropyr at node_modules/igropyr/package.json ' "$R/P3.txt" &&
+    grep -q '^nested .*igropyr at node_modules/theourgia/node_modules/igropyr/package.json ' "$R/P3.txt"; v=$?
+  verdict $v "P3 layouts: $(tr '\n' ';' < "$R/P3.txt")"
 fi
 
 # ---- N3 no Chez: exit 69, the exact sentence, stdout empty; postinstall exit 0, same stderr
@@ -229,7 +289,7 @@ if has N5; then
    "$P4/bin/theourgia" init --store "$T/a" > "$R/N5-a.out" 2> "$R/N5-a.err" & pa=$!
    "$P4/bin/theourgia" init --store "$T/b" > "$R/N5-b.out" 2> "$R/N5-b.err" & pb=$!
    wait $pa; echo $? > "$R/N5-a.rc"; wait $pb; echo $? > "$R/N5-b.rc")
-  dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' '); tmps=$(ls -a "$XDG_CACHE_HOME/theourgia" | grep -c '^\.build-')
+  dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' '); tmps=$(ls -a "$XDG_CACHE_HOME/theourgia" | grep -c -E '^\.(build|lib)-')
   oka=$(grep -c '(ok' "$R/N5-a.out"); okb=$(grep -c '(ok' "$R/N5-b.out")
   [ "$(cat "$R/N5-a.rc")" = 0 ] && [ "$(cat "$R/N5-b.rc")" = 0 ] && [ "$oka" = 1 ] && [ "$okb" = 1 ] && [ "$dirs" = 1 ] && [ "$tmps" = 0 ]; v=$?
   verdict $v "N5 two first runs: rc $(cat "$R/N5-a.rc") and $(cat "$R/N5-b.rc"), answers ok $oka and $okb; builds announced $(cat "$R/N5-a.err" "$R/N5-b.err" | grep -c 'compiling once'); cache directories $dirs; temporary left $tmps"
@@ -357,37 +417,67 @@ if has N8; then
   stop_daemons
 fi
 
-# ---- N9 pins by commit: a tag moved to another commit, a wrong igropyr revision
-if has N9; then
-  X=$W/n9; mkdir -p "$X"
-  git clone -q --no-local "${THEOURGIA_REPO:-$here}" "$X/clone"
-  other=$(git -C "$X/clone" rev-parse 'v1.0.0^{commit}~1')
-  git -C "$X/clone" tag -f v1.0.0 "$other" > /dev/null
-  for c in tag rev; do
-    D=$X/$c; mkdir -p "$D/vendor"; cp -R "$here/scripts" "$D/"; touch "$D/vendor/stale"
-    if [ $c = tag ]; then THEOURGIA_REPO=$X/clone sh "$D/scripts/assemble.sh" > "$R/N9-$c.out" 2> "$R/N9-$c.err"
-    else THEOURGIA_REPO=${THEOURGIA_REPO:-$here} IGROPYR_REV=8db79ad78fedcc4accac7435b582e478418dafc8 sh "$D/scripts/assemble.sh" > "$R/N9-$c.out" 2> "$R/N9-$c.err"; fi
-    echo "$? $( [ -e "$D/vendor" ] && echo present || echo absent)" > "$R/N9-$c.rc"
+# ---- P4 the prepublish gate refuses each case by name, in a clone of the branch
+# with its submodule initialised; the clean clone passes it.
+if has P4; then
+  X=$W/p4; : > "$R/P4.txt"
+  gate_case() {
+    local c=$1 D=$X/$1
+    git clone -q "$here" "$D"; git -C "$D" config submodule.theourgia.url "$here/theourgia"
+    [ "$c" = not-checked-out ] || git -C "$D" -c protocol.file.allow=always submodule update --init -q > /dev/null 2>&1
+    case $c in
+      moved) git -C "$D/theourgia" checkout -q HEAD~1 ;;
+      submodule-dirty) echo x >> "$D/theourgia/README.md" ;;
+      branch-dirty) echo x >> "$D/README.md" ;;
+      object) touch "$D/lib/stale.so"; git -C "$D" add lib/stale.so; git -C "$D" commit -qm "a committed object" ;;
+      list) echo "theourgia/extra.sc" >> "$D/test/expected-files.txt"; git -C "$D" commit -qam "a list that differs" ;;
+    esac
+    (cd "$D" && PATH=$(dirname "$NODE"):$(dirname "$NPM"):$BASEPATH node scripts/prepublish.js > "$R/P4-$c.out" 2> "$R/P4-$c.err"); echo "$c rc $? $(head -1 "$R/P4-$c.err")" >> "$R/P4.txt"
+  }
+  for c in clean not-checked-out moved submodule-dirty branch-dirty object list; do gate_case $c; done
+  v=0
+  for pair in "not-checked-out submodule-not-checked-out" "moved submodule-moved" "submodule-dirty submodule-dirty" \
+              "branch-dirty branch-dirty" "object compiled-object" "list file-list-differs"; do
+    set -- $pair
+    grep -q "^$1 rc 1 prepublish: refused: $2:" "$R/P4.txt" || v=1
   done
-  read -r rt vt < "$R/N9-tag.rc"; read -r rr vr < "$R/N9-rev.rc"
-  [ "$rt" != 0 ] && [ "$vt" = absent ] && [ "$rr" != 0 ] && [ "$vr" = absent ]; v=$?
-  verdict $v "N9 pins: moved tag rc $rt vendor $vt ($(head -1 "$R/N9-tag.err" | cut -c1-110)); wrong igropyr rc $rr vendor $vr"
+  grep -q '^clean rc 0 ' "$R/P4.txt" || v=1
+  verdict $v "P4 prepublish gate: $(cut -d' ' -f1-3,6 "$R/P4.txt" | tr '\n' ';')"
 fi
 
-# ---- N10 objects, not source: every .sc under the installed vendor/ removed
+# ---- N10 objects, not source: every .sc of the installed package's theourgia/ and of igropyr removed
 if has N10; then
   scratch n10; P=$T/prefix
   (export PATH=$(dirname "$NODE"):$PKGBIN_DIR:$BASEPATH; install_into "$P")
   (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH
    "$P/bin/theourgia" init --store "$T/s" > /dev/null 2>&1
-   n=$(find "$P/lib/node_modules/theourgia/vendor" -name '*.sc' | wc -l | tr -d ' ')
-   find "$P/lib/node_modules/theourgia/vendor" -name '*.sc' -exec rm -f {} +
-   echo "$n $(find "$P/lib/node_modules/theourgia/vendor" -name '*.sc' | wc -l | tr -d ' ')" > "$R/N10-removed.txt"
+   n=$(find "$P/lib/node_modules" -name '*.sc' | wc -l | tr -d ' ')
+   find "$P/lib/node_modules" -name '*.sc' -exec rm -f {} +
+   echo "$n $(find "$P/lib/node_modules" -name '*.sc' | wc -l | tr -d ' ')" > "$R/N10-removed.txt"
    "$P/bin/theourgia" insert --title N10-MARKER --store "$T/s" > "$R/N10-insert.out" 2> "$R/N10-insert.err"
    "$P/bin/theourgia" outline --store "$T/s" > "$R/N10-outline.out" 2> "$R/N10-outline.err"; echo $? > "$R/N10.rc")
   read -r was now < "$R/N10-removed.txt"
   [ "$now" = 0 ] && [ "$was" -gt 0 ] && [ "$(cat "$R/N10.rc")" = 0 ] && grep -q N10-MARKER "$R/N10-outline.out"; v=$?
   verdict $v "N10 objects, not source: removed $was .sc files (left $now); insert then outline rc $(cat "$R/N10.rc"), the block $(grep -c N10-MARKER "$R/N10-outline.out")"
+  stop_daemons
+fi
+
+# ---- P5 the key covers igropyr's version and the theourgia commit: each changed
+# in the installed package makes the next run build once more, into a
+# directory of its own.
+if has P5; then
+  scratch p5; P=$T/prefix; install_into "$P" --ignore-scripts
+  M=$(node -e 'process.stdout.write(require.resolve("igropyr/package.json", { paths: [process.argv[1]] }))' "$P/lib/node_modules/theourgia")
+  run5() { (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH; "$P/bin/theourgia" init --store "$T/$1" > "$R/P5-$1.out" 2> "$R/P5-$1.err"; echo $? > "$R/P5-$1.rc"); }
+  dirs() { ls "$XDG_CACHE_HOME/theourgia" | grep -v '^\.' | wc -l | tr -d ' '; }
+  run5 a; d1=$(dirs)
+  node -e 'const f = process.argv[1]; const p = require(f); p.version = "1.8.1-p5"; require("fs").writeFileSync(f, JSON.stringify(p))' "$M"
+  run5 b; d2=$(dirs)
+  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ theourgia: "0".repeat(40) }))' "$P/lib/node_modules/theourgia/source.json"
+  run5 c; d3=$(dirs)
+  built="$(grep -c 'compiling once' "$R/P5-a.err") $(grep -c 'compiling once' "$R/P5-b.err") $(grep -c 'compiling once' "$R/P5-c.err")"
+  [ "$built" = "1 1 1" ] && [ "$d1 $d2 $d3" = "1 2 3" ] && [ "$(cat "$R/P5-a.rc")$(cat "$R/P5-b.rc")$(cat "$R/P5-c.rc")" = 000 ]; v=$?
+  verdict $v "P5 key: builds announced $built; cache directories $d1 $d2 $d3; rc $(cat "$R/P5-a.rc") $(cat "$R/P5-b.rc") $(cat "$R/P5-c.rc")"
   stop_daemons
 fi
 

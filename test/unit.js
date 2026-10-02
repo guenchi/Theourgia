@@ -33,8 +33,10 @@ want('N3b no os-release at all: the generic sentence', lib.installLineFor('linux
 
 const refusal = lib.platformRefusal('darwin', 'x64');
 want('N3c darwin/x64 is refused with exit 75', refusal && refusal.code, 75);
-want('N3c and the line is the core\'s datum', refusal && refusal.lines, [
+want('N3c (P7) the core\'s datum, then the sentence naming the open item', refusal && refusal.lines, [
   '(error platform-unmeasured (system "Darwin") (machine "x86_64") (remedy "run test/probe/layout.c and add its row"))',
+  'theourgia: macOS on x86_64 waits for an open item: igropyr looks for libuv only under Homebrew\'s arm64 ' +
+    'prefix (/opt/homebrew), not under /usr/local; until that lands, use an arm64 Mac or Linux.',
 ]);
 for (const [p, a] of [['darwin', 'arm64'], ['linux', 'x64'], ['linux', 'arm64']]) {
   want('N3c ' + p + '/' + a + ' is accepted', lib.platformRefusal(p, a), null);

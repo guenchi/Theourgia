@@ -2,8 +2,8 @@
 
 A block-graph store where agents and people write together: the `theourgia` command,
 its daemon, and an MCP shell, packaged for npm. Licensed under the Apache
-License, Version 2.0 (see LICENSE); the igropyr library it ships with is
-under the same license (vendor/igropyr/LICENSE).
+License, Version 2.0 (see LICENSE). It depends on the igropyr package,
+under the same license.
 
 ## What it installs
 
@@ -13,8 +13,9 @@ under the same license (vendor/igropyr/LICENSE).
   input and output.
 - `theourgiad`: the daemon program, started by the other two.
 
-The package carries the sources of Theourgia 1.0.0 and of the igropyr
-revision it was released with. It does not carry Chez Scheme or libuv.
+The package carries the sources of Theourgia 1.0.0, and installs igropyr
+1.8.1 from npm as its one dependency. It does not carry Chez Scheme or
+libuv.
 
 ## Requirements
 
@@ -32,13 +33,14 @@ The programs look for Chez as `THEOURGIA_SCHEME` if it is set, and
 otherwise as `scheme`, `chez` (Homebrew's name) or `chezscheme` on `PATH`.
 Whichever is found is the one the daemon and every evaluation run under.
 
-Node 18 or later runs the three small wrappers; there are no npm
-dependencies.
+Node 18 or later runs the three small wrappers. The one npm dependency is
+igropyr, the library the core is written on.
 
 ## Platforms
 
 macOS on arm64, and Linux on x86_64 and aarch64 with glibc. macOS on Intel
-(or under Rosetta) is refused by name. FreeBSD has a measured row in the
+(or under Rosetta) is refused by name, with a sentence naming the open item:
+igropyr looks for libuv only under Homebrew's arm64 prefix. FreeBSD has a measured row in the
 core, but its daemon does not start there yet; it is expected in a later
 release.
 
@@ -61,13 +63,30 @@ so on standard error and prints nothing on standard output. They live in
 
     ${XDG_CACHE_HOME:-$HOME/.cache}/theourgia/<version>-<machine type>-<key>/
 
-and removing that directory is safe: the next run builds it again.
+where the key covers the theourgia commit, igropyr's version and the Chez
+binary, so a change to any of them builds again. Removing that directory is
+safe: the next run builds it again.
 `npm install --ignore-scripts` works the same way, leaving the build to
 the first run.
 
 ## Building this package
 
-The package's sources live on the `npm` branch of the Theourgia
-repository. `vendor/` is not committed; `sh scripts/assemble.sh` fills it
-from the release tag and the pinned igropyr revision, and refuses if
-either does not resolve to the expected commit. Then `npm pack`.
+The package's own files live on the `npm` branch of the Theourgia
+repository, and the sources it carries are not copied there: `theourgia/`
+is a git submodule, a pointer to a commit of the same repository (GitHub
+shows it as `theourgia @ <commit>`). After a fresh clone:
+
+    git submodule update --init
+
+A release takes three steps:
+
+    git -C theourgia checkout <tag>        # move the pointer
+    git add theourgia && git commit        # record it on the branch
+    npm version <new version> && npm publish
+
+`npm publish` first runs a gate that refuses, each by name, a submodule
+that is not checked out, one at a commit other than the one the branch
+records, a dirty submodule or branch, a compiled object anywhere, and a
+packed file list that differs from `test/expected-files.txt`. It fixes
+nothing. Packing writes `source.json`, the submodule's commit, which the
+installed package reads for its compile cache.

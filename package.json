@@ -20,13 +20,21 @@
     "bin/",
     "lib/",
     "scripts/postinstall.js",
-    "vendor/",
+    "theourgia/*.sc",
+    "theourgia/build.ss",
+    "theourgia/mcp/",
+    "theourgia/LICENSE",
+    "source.json",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "prepack": "node -e \"require('fs').statSync('vendor/PINS')\" || (echo 'run sh scripts/assemble.sh first' >&2; exit 1)",
+    "prepublishOnly": "node scripts/prepublish.js",
+    "prepack": "node scripts/source-pin.js",
     "postinstall": "node scripts/postinstall.js"
+  },
+  "dependencies": {
+    "igropyr": "1.8.1"
   },
   "os": ["darwin", "linux"],
   "cpu": ["arm64", "x64"],

@@ -1,14 +1,15 @@
 # The npm package's cells N2, N2b, N6 and N10 (test/cells.sh), where it
 # will be published for: Linux on x86_64 and aarch64 under Node 18 (Chez
 # 10.4.1 built from its release source, since distribution packages are
-# older) and macOS on arm64 (Homebrew's chezscheme). Each job assembles
-# vendor/, packs, and runs the cells against the tarball. It publishes
-# nothing and uses no secrets.
+# older) and macOS on arm64 (Homebrew's chezscheme). Each job checks out
+# the branch with its theourgia submodule, packs, and runs the cells against
+# the tarball, whose install fetches igropyr from npm. It publishes nothing
+# and uses no secrets.
 name: npm-package
 
 on:
   push:
-    branches: [npm, npm-check-*]
+    branches: [npm, npm-next, npm-check-*]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: true
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ runner.os == 'Linux' && '18' || '20' }}
@@ -46,10 +48,9 @@ jobs:
         run: |
           brew install chezscheme libuv
           command -v chez scheme chezscheme || true
-      - name: assemble, pack, and the cells
+      - name: pack, and the cells
         run: |
           uname -a; node --version; npm --version
-          sh scripts/assemble.sh
           npm pack
           CELLS="N2 N2b N6 N10" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
             bash test/cells.sh "$PWD/theourgia-1.0.0.tgz"
