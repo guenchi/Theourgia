@@ -108,7 +108,7 @@
   (let* ((b (state-read (state st) id)) (p (and b (assq 'src (cdr (assq 'fields b))))))
     (and p (text (cdr p)))))
 (define (tomb? st id)
-  (let ((b (state-read (state st) id))) (and b (cdr (assq 'tomb b)) #t)))
+  (let ((b (state-read (state st) id))) (and b (cdr (assq 'deleted b)) #t)))
 (define (event-of answer) (car (cadr (assq 'events (cdr answer)))))
 (define (new-block st title body)
   (let ((ev (event-of (call st 'insert "--title" title "--text" body))))
@@ -121,6 +121,11 @@
 (define (last-seq st)
   (let ((p (assoc (cdr st) (reduce-applied-cut (state st))))) (if p (cdr p) 0)))
 
+;; How many records the completing writer's segments hold: what was
+;; APPENDED, which the applied cut is not (a record taken back leaves the
+;; applied cut shorter while it stays on disk).
+(define (record-count st)
+  (apply + (map (lambda (f) (length (filter (lambda (b) (= b 10)) (bytevector->u8-list (cdr f))))) (log-bytes st))))
 ;; The bytes of the completing writer's segments: "writes nothing" is
 ;; these, before and after.
 (define (log-bytes st)
@@ -200,6 +205,7 @@
     (for-each (lambda (id t) (call st 'write id t)) (list A B C D) '("new A" "new B" "new C" "new D"))
     (list A B C D)))
 
+(define (new-text id ids) (list-ref '("new A" "new B" "new C" "new D") (let loop ((is ids) (k 0)) (if (equal? (car is) id) k (loop (cdr is) (+ k 1))))))
 (define (old-text st id ids) (list-ref '("old A" "old B" "old C" "old D") (let loop ((is ids) (k 0)) (if (equal? (car is) id) k (loop (cdr is) (+ k 1))))))
 
 (define (k2-like tag other!)
@@ -231,7 +237,7 @@
   (let ((again (cli-run (list-ref r 3))))
     (want "K7 a second retry is refused the same way" again retry))
   (call st 'discard C)
-  (call st 'write C "new C")
+  (call st 'write C (new-text C ids))
   (let ((fresh (apply call st 'commit
                       (append ids (list "--req" "R7" "--cursor" (cursor-of st))
                               (apply append (map (lambda (id) (list "--working-version" (string-append id "=" (version st id)))) ids))))))
@@ -414,6 +420,7 @@
          (barriers (car (crash-at 3 root home cli args)))
          (on-one (let ((targets (map (lambda (e) (cadr (cdr e))) (plan-entries st "R10"))))
                    (exists (lambda (t) (> (length (filter (lambda (u) (equal? u t)) targets)) 1)) targets))))
+    (printf "observe K10 plan entries ~s\n" (plan-entries st "R10"))
     (want "K10 the plan has two members on one block" on-one #t)
     (want "K10 the child stopped after the first member" barriers 3)
     (let ((retry (cli-run args)))
@@ -506,9 +513,11 @@
 ;; K12 (limit 1, pinned as it is): the parent and the sibling a member
 ;; names are not judged.
 (define (k12-case tag)
-  ;; a.py with A, and p.py empty: P is its file block
+  ;; a.py with A, and p.py with one entry: P is its file block. (An empty
+  ;; p.py is not an empty parent: its import makes one child, so an edit
+  ;; that lists none deletes it and is refused.)
   (let* ((c (import-case tag (list (cons "a.py" (projection-encode py #f (list (list "new" e1) (list "new" e2))))
-                                   (cons "p.py" (projection-encode py #f '())))))
+                                   (cons "p.py" (projection-encode py #f (list (list "new" e4)))))))
          (st (car c)) (edit (cadr c)) (a (file-id st "a.py")) (P (file-id st "p.py")) (ids (children st a)))
     (list st edit a P ids)))
 (for-each
@@ -516,36 +525,37 @@
     (let* ((k (k12-case "k12")) (st (car k)) (edit (cadr k)) (a (caddr k)) (P (cadddr k)) (ids (list-ref k 4)))
       ;; a set of A in a.py; an insertion into the empty P of p.py
       (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (car ids) (changed 1)) (list (cadr ids) e2))))
-      (write-file! (string-append edit "/p.py") (projection-encode py (header st P) (list (list "new" e3))))
+      (write-file! (string-append edit "/p.py") (projection-encode py (header st P) (list (list (car (children st P)) e4) (list "new" e3))))
       (let* ((args (import-args st edit "R12")) (barriers (car (crash-at 2 root home cli args))))
+        (printf "observe K12 ~a: P ~s, plan entries ~s\n" label P (plan-entries st "R12"))
         (other! st P)
         (let ((retry (cli-run args)))
+          (printf "observe K12 ~a: retry ~s\n" label retry)
           (want (string-append "K12 " label) (expect retry P) #t)))))
+  ;; THE PLAN IS a set of A, a move of P's existing child (the import
+  ;; restates its order) and the insert under P: a projection cannot make
+  ;; an empty parent. So with P deleted the set and the move are written
+  ;; (a move under a deleted parent is, F-n) and the insert answers
+  ;; deleted: done 2.
   '("another inserts a child under P: the retry completes whole"
-    "another deletes P: the retry writes the set and answers deleted P, done 1")
+    "another deletes P: the retry writes the members before the insert and answers deleted P, done 2")
   (list (lambda (st P) (call st 'insert "--title" "theirs" "--under" P))
         (lambda (st P) (call st 'del P)))
   (list (lambda (retry P) (eq? (car retry) 'ok))
-        (lambda (retry P) (equal? (list (car retry) (map car (answers retry)) (head2 (last-answer retry)) (clause 'done retry))
-                                  (list 'batch '(ok error) '(error deleted) '(done 1))))))
-(let* ((k (k12-case "k12m")) (st (car k)) (edit (cadr k)) (a (caddr k)) (P (cadddr k)) (ids (list-ref k 4)))
-  ;; A moves from a.py into P
-  (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (cadr ids) e2))))
-  (write-file! (string-append edit "/p.py") (projection-encode py (header st P) (list (list (car ids) e1))))
+        (lambda (retry P) (equal? (list (car retry) (map car (answers retry)) (last-answer retry) (clause 'done retry))
+                                  (list 'batch '(ok ok error) (list 'error 'deleted P) '(done 2))))))
+;; A MOVE UNDER A DELETED PARENT IS WRITTEN. An import cannot move an
+;; entry into another file (that is refused as foreign-file), so the moves
+;; here reorder a.py's entries, and another request deletes a.py's file
+;; block, the parent the moves name.
+(let* ((k (k12-case "k12m")) (st (car k)) (edit (cadr k)) (a (caddr k)) (ids (list-ref k 4)))
+  (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (cadr ids) e2) (list (car ids) e1))))
   (let* ((args (import-args st edit "R12m")) (barriers (car (crash-at 2 root home cli args))))
-    (call st 'del P)
+    (printf "observe K12 move: plan entries ~s\n" (plan-entries st "R12m"))
+    (call st 'del a)
     (let ((retry (cli-run args)))
-      (want "K12 a move under a deleted P is written, as on the base" (car retry) 'ok))))
-(let* ((k (k12-case "k12s")) (st (car k)) (edit (cadr k)) (a (caddr k)) (ids (list-ref k 4)) (S (cadr ids)))
-  ;; a set of the first entry, and a new entry to follow S
-  (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (car ids) (changed 1)) (list S e2) (list "new" e3))))
-  (let* ((args (import-args st edit "R12s")) (barriers (car (crash-at 2 root home cli args))))
-    (call st 'del S)
-    (let ((retry (cli-run args)))
-      (want "K12 a member to follow a deleted sibling: the members before it, then unknown-sibling"
-            (list (car retry) (head2 (last-answer retry)))
-            (list 'batch '(error unknown-sibling))))))
-
+      (printf "observe K12 move: retry ~s\n" retry)
+      (want "K12 a move under a deleted parent is written, as on the base" (car retry) 'ok))))
 ;; ---- forged plans: K14's fabricated plans, K19 ------------------------------------
 ;;
 ;; A PLAN NO PRODUCER WRITES, published under the identity a later
@@ -591,6 +601,22 @@
         (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section)))))
   '(0 5 1 0)
   '(#f #f #f #t))
+
+;; K12's sibling case. AN IMPORT CANNOT NAME A SIBLING WITHOUT TARGETING
+;; IT: it restates every entry's order with a move, so the sibling is a
+;; target, and its deletion by another request is a foreign record that
+;; makes the completion stale (measured: the import's plan for "a new
+;; entry after S" carries a move of S). The limit is about a member that
+;; names S only as its sibling, so the plan is forged: a set, then an
+;; insert after S.
+(let* ((f (forged-store "k12s")) (st (car f)) (M (cadr f)) (S (new-block st "S" "s")))
+  (set-car! (list-tail f 5) (or (assoc (cdr st) (reduce-applied-cut (state st))) (cons (cdr st) 0)))
+  (publish-plan! f (list (cons 0 (list 'set M 'src "the text")) (cons 1 (list 'insert 'root S section))) #f)
+  (call st 'del S)
+  (let ((a (forged-retry f)))
+    (want "K12 a member to follow a deleted sibling: the members before it, then unknown-sibling"
+          (list (car a) (map car (answers a)) (last-answer a) (clause 'done a))
+          (list 'batch '(ok error) (list 'error 'unknown-sibling S) '(done 1)))))
 
 ;; K19: the hash check, alone. The consumes item names a based-on that is
 ;; not the block's hash, and its version is computed from that based-on,
@@ -667,7 +693,8 @@
       ;; the third writer's record arrives, concurrent with the completion
       (publish! st "thirdzzz" (list (list 1 '() '(put ((kind . section) (title . "Third") (parent . root) (ord . 7))) "peer")))
       (want "K16 the mirrored set is then applied beside the commit: B has two candidates"
-            (mentions? (call st 'conflicts) Y) #t))))
+            (let ((v (src st Y))) (and (pair? v) (eq? (car v) 'conflict) (length (cadr v))))
+            2))))
 (let* ((st (fresh-store "k16b")) (ids (two st)))
   (let-values (((barriers args) (crash-commit! st ids "R16" 2)))
     (let* ((Y (member-block st "R16" 1))
@@ -693,8 +720,8 @@
             ;; a mirrored record claiming the same single identity, whose
             ;; premise is the completing writer's next record
             (publish! st "rivalzzz" (list (list 1 (list next) (ev-payload t) (ev-actor t))))
-            (let* ((n0 (last-seq st)) (retry (cli-run args)))
-              (list st e retry (- (last-seq st) n0) barriers))))))))
+            (let* ((n0 (record-count st)) (retry (cli-run args)))
+              (list st e retry (- (record-count st) n0) barriers))))))))
 (let* ((r (contest "k18" #t)) (st (car r)) (e (cadr r)) (retry (caddr r)))
   (want "K18 the completion stops with unknown, the plan not applied"
         (list (head2 (last-answer retry)) (clause 'not-applied (last-answer retry)))

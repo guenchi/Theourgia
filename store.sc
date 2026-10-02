@@ -3637,6 +3637,13 @@
   (define (plan-marker? x)
     (and (pair? x) (equal? (car x) "#%new") (pair? (cdr x)) (null? (cddr x))))
 
+  ;; NEVER: malformed-intent? DOES NOT GATE THESE. It reads a marker in a
+  ;; parent position as not an id, which is what a plan's declared entry
+  ;; holds until the completion binds it. A declared entry is read here
+  ;; with a guard instead: a shape that does not read has no references.
+  (define (declared-refs e) (guard (x (#t '())) (intent-refs e)))
+  (define (declared-kind e) (guard (x (#t #f)) (car (unwrap e))))
+
   ;; A member of this plan: a record whose actor names this plan event with
   ;; an integer index. A record that claims the request's identity without
   ;; that is foreign.
@@ -3670,10 +3677,8 @@
                               (and (plan-marker? x)
                                    (let* ((k (cadr x))
                                           (made (and (integer? k) (exact? k) (assv k entries))))
-                                     (not (and made (< k m)
-                                               (not (malformed-intent? (cdr made)))
-                                               (eq? 'insert (car (unwrap (cdr made)))))))))
-                            (if (malformed-intent? e) '() (intent-refs e)))))
+                                     (not (and made (< k m) (eq? 'insert (declared-kind (cdr made))))))))
+                            (declared-refs e))))
             (if bad (list 'error 'no-such-intent (cadr bad)) (loop (cdr ms)))))))
 
   ;; THE INVERSE OF as-marker: a marker naming a PRESENT member becomes the
@@ -3681,7 +3686,7 @@
   ;; this run makes becomes the run's own back-reference (from j), j being
   ;; its place among the missing members.
   (define (bind-markers e made-ids run-indices)
-    (let ((rs (if (malformed-intent? e) '() (intent-refs e))))
+    (let ((rs (declared-refs e)))
       (if (or (null? rs) (not (exists plan-marker? rs)))
           e
           (let ((bind (lambda (x)
@@ -3697,9 +3702,8 @@
             (intent-with-refs e (bind (car rs)) (bind (cadr rs)))))))
 
   (define (member-target e)
-    (and (not (malformed-intent? e))
-         (let ((u (unwrap e)))
-           (and (memq (car u) '(set move del link unlink)) (pair? (cdr u)) (cadr u)))))
+    (and (memq (declared-kind e) '(set move del link unlink))
+         (guard (x (#t #f)) (cadr (unwrap e)))))
 
   ;; -> the refusal for the stale targets among INTENTS, or #f.
   (define (stale-judgement state plan-event plan-cut consumes intents)

@@ -237,7 +237,11 @@
              ;; carries -- the record may sit in any writer's stream.
              ;; Publishing it into this store's own stream, where it
              ;; already has records, is refused as unverifiable.
-             (frame (encode-record 1 1789000000005 actor '() (storable-encode plan))))
+;; ITS PREMISES ARE THE STORE'S APPLIED CUT, as a real plan's are
+             ;; (every record names the whole applied cut). With none, the
+             ;; plan's causal cut is empty and every record of the store lies
+             ;; outside it, which a completion reads as written since.
+             (frame (encode-record 1 1789000000005 actor (reduce-applied-cut (open-and-reduce d)) (storable-encode plan))))
         (log-publish! d "forged00" 1 frame (segment-sha frame))
         (list d block w after real)))))
 
