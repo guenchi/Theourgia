@@ -1,4 +1,4 @@
-# The npm package's cells N2, N2b, N6 and N10 (test/cells.sh), where it
+# The npm package's cells N2, N2b, N6, N10 and P1-P5 (test/cells.sh), where it
 # will be published for: Linux on x86_64 and aarch64 under Node 18 (Chez
 # 10.4.1 built from its release source, since distribution packages are
 # older) and macOS on arm64 (Homebrew's chezscheme). Each job checks out
@@ -52,7 +52,7 @@ jobs:
         run: |
           uname -a; node --version; npm --version
           npm pack
-          CELLS="N2 N2b N6 N10" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
+          CELLS="N2 N2b N6 N10 P1 P2 P3 P4 P5" CELLS_OUT="$RUNNER_TEMP/readings" CELLS_CHEZ="$(command -v scheme || command -v chez)" \
             bash test/cells.sh "$PWD/theourgia-1.0.0.tgz"
       - name: keep the readings
         if: always()
