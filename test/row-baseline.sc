@@ -245,6 +245,7 @@
 ;; not, and both ran fewer rows than the table records.
 (define (with-known-red names thunk)
   (let ((f (string-append here "/known-red.txt")))
+    (when (file-exists? f) (delete-file f))
     (put! f (apply string-append "# a comment line\n"
                    (map (lambda (n) (string-append n "\t^FAIL x\n")) names)))
     (putenv "THEOURGIA_KNOWN_RED" f)
