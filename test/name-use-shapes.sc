@@ -206,6 +206,10 @@
     ;; definition after an expression, per head (S8: it becomes class K).
     (let ((a 1)) 1 (define x 2))
     (let lp ((a 1)) 1 (define x 2))
+    ;; case-lambda's clause body (s6g's closing review: weakening the
+    ;; clause's body check to "has a body" made a malformed clause body
+    ;; class A, every row passing) (S5).
+    (case-lambda ((a) 1 (define x 2)) ((a b) b))
     (let* ((a 1)) 1 (define x 2))
     (letrec ((a 1)) 1 (define x 2))
     (letrec* ((a 1)) 1 (define x 2))
