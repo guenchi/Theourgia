@@ -205,6 +205,7 @@
     ;; by its census id and the row that turns red without the check. A
     ;; definition after an expression, per head (S8: it becomes class K).
     (let ((a 1)) 1 (define x 2))
+    (let lp ((a 1)) 1 (define x 2))
     (let* ((a 1)) 1 (define x 2))
     (letrec ((a 1)) 1 (define x 2))
     (letrec* ((a 1)) 1 (define x 2))
