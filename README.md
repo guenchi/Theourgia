@@ -80,6 +80,30 @@ the programs directly:
 NEVER: **The products do not belong in the source tree.** A stale `.so` beside a `.sc` is resolved in
 preference to it, so a tree holding both can be running code nobody has edited for a week.
 
+## Quick start
+
+    theourgia init --template project
+
+One store is one project. The `project` template gives it four roots and four relations, and records
+them in the store as its template block (`template export` prints it):
+
+- `design` — the document `design.md`; record each decision as a block of kind `decision` under it.
+- `tasks` — the document `tasks.md`; record each task as a block of kind `task` under it, with a
+  `status` of todo, doing, done or dropped.
+- `docs/` — documents for readers are top-level docs whose path starts with `docs/`.
+- `code/` — code is imported so that the paths of its files start with `code/`.
+
+The relations are `implements` (a task or code → the decision it carries out), `depends-on` (a
+task or code → one it needs first), `supersedes` (a decision → the one it replaces), `refutes` (a
+decision or doc → one it shows is wrong), `verifies` (a test → the code or decision it checks),
+`conflicts-with` (two decisions that cannot both hold) and `documents` (a doc → the code or
+decision it explains). Each is a name `link` accepts; the reserved names (`ref`, `uses`, `calls`,
+`guards`) are not among them. Any other relation name still links; these are the ones the template
+names. `describe`, answered by the daemon, lists the store's roots and relations, and the
+MCP tools that write carry the roots' sentences after the writing protocol.
+
+`theourgia init` without a template is the advanced form: the store has no shape until you give it one.
+
 ## Two ways to run
 
 **Standalone.** Every verb opens the store, answers, and exits. Nothing
@@ -523,8 +547,11 @@ for something that has to ask rather than be told: the MCP shell builds its
 tool list from this, so a tool description and the verb it describes cannot
 drift apart.
 
-It reads a table and runs nothing. NEVER: It does not open the store, take a lock
-or write a byte.
+It reads a table and runs nothing. NEVER: In process it does not open the store, take a lock
+or write a byte. When the store has a template, the daemon adds `(template (roots ...)
+(relations ...))` from the state it publishes; there describe is a read like any other, which may
+check the store's files for a change made from outside and reload, and never writes. The in-process
+route does not open a store to describe it.
 
 NOTE: **The table needs no store; asking a daemon for it does.** Answered in
 process — which is what `theourgia describe` does when it runs the server
@@ -544,6 +571,21 @@ store there would otherwise be nothing to send to; `eval` is `child`.
 The `protocol` flag on an entry says that verb's description carries the
 writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 "this verb changes the store" — `set` does that and is not marked.
+
+### Verbs added as data
+
+`commitments`, `tasks` and `template` are not in the core's own table: each is an entry in
+`(theourgia extensions)`, registered by `theourgia` and the daemon before a request is parsed, and
+its library is loaded only when the verb is called. An entry is
+
+    (verb usage description protocol? daemon value-options flag-options (library . name) [declaration])
+
+and a registered verb's route is always `daemon`. The optional last field says what the verb does
+with a load that could not read a writer: `accept` (the default: it answers and its answer carries
+`(incomplete ...)`), `refuse` (it refuses such a load, as `export-md` and the other verbs that write
+from what they read do), or `(refuse <action> ...)` (it refuses only when its first argument is one
+of those actions: `template` declares `(refuse "apply")`). Any other value, for example `maybe`, is
+refused when the entry is registered.
 
 ### `conflicts`
 
@@ -587,7 +629,10 @@ source block was deleted: the answer names that source under `implementer-delete
 
 Time is a cut, never a sequence number. A decision's **origin** is the cut just after
 the write that created the block, and its **frontier** is the join of the cuts of its own
-field values, origin included; moving a block or linking to it does not change it. An
+content field values, origin included; moving a block or linking to it does not change it,
+and neither does a write to a bookkeeping field -- `status`, `batch`, `keywords`, `class` or
+`slug` -- which says where a block stands, not what it says: a task set to done after it was
+linked has not drifted. An
 implementation is **attested** at the join of the decision's frontier and the cuts of
 its `implements` links to the decision, and it has **drifted** when its own fields
 changed at a cut that attestation does not cover: it was edited after it was linked,
@@ -597,7 +642,12 @@ linking again, attests anew. A draft that is not committed is not a change.
 By default it lists the open decisions; `--all` lists every decision. `--drifted`
 keeps those with at least one drifted implementation, `--since <cut>` those whose
 origin the cut does not cover, and `--under <id>` those in that block's subtree, the
-block included (an unknown id answers `unknown-id`). Oldest origin first: decisions
+block included (an unknown id answers `unknown-id`). In a store with a template, the
+decisions listed by default are those under the root the template names for commitments
+(`design` in the project template), and the answer ends with `(scope <root-id> (outside <n>))`,
+n being how many rows the same request would list with `--under root` that this answer does not;
+`--under root` lists the whole store. In a store without
+a template nothing is narrowed and no scope item is added. Oldest origin first: decisions
 whose origins are not ordered against each other are listed in a fixed order and say
 so under `concurrent-with`. It answers:
 
@@ -613,6 +663,25 @@ every option, for example a kind spelt as the string `"decision"`
 (`kind-not-a-symbol`) or a block that a `set` or `move` named but nothing created (`no-origin`). The verb writes
 nothing.
 
+### `tasks`
+
+    (tasks ["--status" <status>] ["--batch" <batch>] ["--under" <id>])
+
+Lists the blocks of kind `task`: by default those under the root the store's template names for
+tasks, with `--under <id>` that block's subtree, and with `--under root` or in a store without a
+template, every task. When the template chose the scope, the last item is
+`(scope <root-id> (outside <n>))`, n being how many rows the same request (filters included)
+would list with `--under root` that this answer does not. It answers
+
+    (task <id> (title "<t>") (status <s>) (batch <text>|absent) (implements (<id> live|tombstoned) ...)
+      [(unlinked)])
+
+`status` is read like a decision's: todo, doing, done or dropped as a symbol or a string; anything
+else is printed as `(status unreadable "<text>")`. `(unlinked)` means the task implements no live
+decision: an edge to a deleted block, or of another relation, does not link it. `--status` takes one
+of the four words, and `--batch` matches the `batch` field's text exactly. An `implements` edge from
+a task discharges its decision only once the task's status is done.
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.
@@ -621,12 +690,42 @@ across two verbs.
 
 ### `init`
 
-    (init)
+    (init ["--template" <name>] ["--template-file" <template-file>])
 
 Creates a store in the directory named by `--store`, and answers with the
-store's id and the writer the caller was given. It also writes
+store's id and the writer the caller was given. With `--template` (a built-in: `project` or
+`memory`) or `--template-file`, it then applies that template, as `template apply` does, and the
+answer also carries `(template <name>)` and `(created (<slug> <id>) ...)`. A template that cannot be
+used is refused before any store is made. A filesystem failure while the template is applied is
+answered like any other, and the new store may exist; a refusal of the template's roots carries
+`(store-created)`. It also writes
 `<store>/.gitignore`; see [A store in git](#a-store-in-git).
 The answer is `(ok (store <id>) (writer <writer>))`. A directory that already holds a store is refused `(error already-initialised (store <dir>))`, and one holding another instance's writer is refused `(error foreign-writer (writer <w>) (remedy adopt))`.
+
+### `template`
+
+    (template <action> [<name>] ["--file" <template-file>])
+
+`template apply <name>` (a built-in) or `template apply --file <template-file>` gives an existing
+store a template: it creates the template block and each document root the store does not have,
+and answers `(ok (created (<slug> <id>) ...))`. It never changes a block that exists. A root is
+found by its `slug` field and its path: exactly one live top-level document with the root's slug at
+the root's path is the root, and is kept. Anything else refuses and creates nothing:
+`template-present`, `slug-conflict` (two live blocks with the slug), `template-mismatch` (the block
+with the slug is not a top-level document at that path) or `path-occupied` (a top-level document
+without the slug holds the path). Deleted blocks do not count. A name is only ever a built-in's
+name; a file is named with `--file`.
+
+`template export` prints the store's template block. The template is data in that block: change it
+with `write` and `commit` like any block, and insert a new root's document; nothing else needs to
+change. A template block that cannot be read (it is not one datum `(template 1 ...)`, it has no
+roots, or there are two template blocks) is listed by `conflicts` as `(template <reason>)`, and
+every verb behaves as in a store without one. Only a TOP-LEVEL block of kind `template` is the
+store's template; one under another block is not read. A template whose roots repeat a slug or a
+path, or name a root `template`, does not read either.
+
+Importing a document does not make decisions or tasks: a heading re-imported into `design.md` that
+matches an existing decision keeps it a decision, and a new heading becomes a section.
 
 ### `insert`
 
@@ -656,7 +755,8 @@ what happened in between.
 A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
-fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision` -- and a
+fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision`, `task`,
+`template` -- and a
 spelling outside that set is refused, with the legal set in the answer, rather
 than stored. A kind stored as text would match nothing and the block would
 simply stop behaving like what it said it was. The same set applies to a kind

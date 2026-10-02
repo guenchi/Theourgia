@@ -968,6 +968,11 @@
     (cons 'commitments (seeded (lambda (st x s)
                                  (census-ask st 'set (census-get s 'B) "kind" "decision")
                                  (census-ask st 'commitments))))
+    ;; B is made a task first, so the answer has an item to classify.
+    (cons 'tasks (seeded (lambda (st x s)
+                           (census-ask st 'set (census-get s 'B) "kind" "task")
+                           (census-ask st 'tasks))))
+    (cons 'template (seeded (lambda (st x s) (census-ask st 'template "apply" "project"))))
     ;; init is given a directory nothing has initialised
     (cons 'init (lambda (st x) (census-ask st 'init)))
     (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))
@@ -1207,14 +1212,14 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit commitments conflicts def diagnostics diff drafts grep import-code log refs search tag whereis))
+      '(commit commitments conflicts def diagnostics diff drafts grep import-code log refs search tag tasks whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check del describe discard export-code export-md import-md init insert
-        link move outline publish reach restore set snapshot split-suggest supply unlink write))
+        link move outline publish reach restore set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt))
@@ -1227,13 +1232,13 @@
       '((commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
         (import-code (ok) . 0) (log (entry) . 0) (refs (ref) . 0) (search (hit) . 0)
-        (tag (tag) . 0) (whereis (def export) . 0)))
+        (tag (tag) . 0) (tasks (task) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)
       '((batch . batch) (check . check) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
         (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (restore . ok) (set . ok)
-        (snapshot . ok) (split-suggest . ok) (supply . ok) (unlink . ok) (write . ok)))
+        (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))
 
 ;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A
 ;; refusal is accepted only with the line saying why it is the verb's correct

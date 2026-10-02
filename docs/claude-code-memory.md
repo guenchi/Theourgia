@@ -4,7 +4,9 @@ Two prompts, both meant to be copied as they are. The first migrates an
 existing markdown memory into a store. The second makes Claude Code (or any
 agent with a shell or MCP) use the store as its memory instead of markdown
 files. Both assume the `theourgia` client is on `PATH` and a store exists
-(`theourgia init` in the store directory, once).
+(`theourgia init` in the store directory, once). `theourgia init --template memory`
+makes it with three roots, `lessons`, `decisions` and `references`, and the
+agent's write tools then say where each kind of entry goes.
 
 Status: first measured on 2026-09-18 against a real Claude Code memory of 158
 files (about 430 KB); revised on 2026-09-29 against the current command set,

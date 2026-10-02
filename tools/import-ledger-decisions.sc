@@ -15,7 +15,10 @@
 
 ;; Import a design ledger's numbered rulings as decision blocks.
 ;;
-;;   scheme --script tools/import-ledger-decisions.sc <ledger.md> <store> [<landed.txt>]
+;;   scheme --script tools/import-ledger-decisions.sc <ledger.md> <store> [<landed.txt>] [--under <id>]
+;;
+;; The section of decisions goes under <id> (by default the root); in a store
+;; made with the project template that is the `design` document's id.
 ;;
 ;; A RULING IS ONE LINE OF THE LEDGER'S CHANGE LOG, of the form
 ;;
@@ -93,7 +96,7 @@
           ((pair? x) (or (find (car x)) (find (cdr x))))
           (else #f))))
 
-(define (main ledger store landed-path)
+(define (main ledger store landed-path under)
   (define (run . args)
     (let ((a (rpc-dispatch store args "import-ledger-decisions")))
       (unless (and (pair? a) (eq? (car a) 'ok))
@@ -101,7 +104,7 @@
       a))
   (let* ((rulings (filter values (map ruling (lines-of ledger))))
          (landed (landed-of landed-path))
-         (section (answered-id (run 'insert "--under" "root" "--title" "Ledger decisions"
+         (section (answered-id (run 'insert "--under" under "--title" "Ledger decisions"
                                     "--text" (string-append "Rulings imported from " ledger ".")))))
     (for-each
       (lambda (r)
@@ -117,7 +120,10 @@
     (printf "~a rulings imported, ~a marked landed\n"
             (length rulings) (length (filter (lambda (r) (assoc (car r) landed)) rulings)))))
 
-(let ((args (command-line-arguments)))
-  (if (not (<= 2 (length args) 3))
-      (begin (display "usage: import-ledger-decisions.sc <ledger.md> <store> [<landed.txt>]\n") (exit 2))
-      (main (car args) (cadr args) (and (= 3 (length args)) (caddr args)))))
+(let* ((all (command-line-arguments))
+       (at (let loop ((xs all) (i 0)) (cond ((null? xs) #f) ((equal? (car xs) "--under") i) (else (loop (cdr xs) (+ i 1))))))
+       (under (if (and at (< (+ at 1) (length all))) (list-ref all (+ at 1)) "root"))
+       (args (if at (append (list-head all at) (list-tail all (min (length all) (+ at 2)))) all)))
+  (if (or (not (<= 2 (length args) 3)) (and at (>= (+ at 1) (length all))))
+      (begin (display "usage: import-ledger-decisions.sc <ledger.md> <store> [<landed.txt>] [--under <id>]\n") (exit 2))
+      (main (car args) (cadr args) (and (= 3 (length args)) (caddr args)) under)))
