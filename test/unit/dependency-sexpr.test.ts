@@ -18,11 +18,12 @@
  * The reader this extension depends on, against the tables that
  * adjudicate it.
  *
- * THE FIXTURE IS THE ORACLE AND THIS TREE IS NOT. The vectors were
- * generated from (igropyr sexpr), the authority for the format; the copy
- * of the reader in this repository is a copy, and the only thing that
- * would notice if it were edited -- or if it were replaced with a newer
- * upstream that changed behaviour -- is this file.
+ * THE FIXTURE IS THE ORACLE AND THE DEPENDENCY IS NOT. The vectors were
+ * generated from (igropyr sexpr), the authority for the format; the reader
+ * is goeteia's, taken from the package, and this file's sweep is what
+ * notices an upgrade of that package that changes how it reads anything
+ * the fixtures cover (the real-core cell S14 also catches the escapes a
+ * body may hold).
  *
  * ONLY THE READ SIDE IS SWEPT HERE. This extension never writes wire
  * text; `write` is exercised because the fixture's accept set records

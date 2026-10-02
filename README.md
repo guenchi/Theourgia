@@ -35,7 +35,9 @@ built for the machine that packages the extension, and this first package
 was built here. Packages for Intel macOS and for Linux (x86-64 and arm64)
 are built by the repository's workflow, `.github/workflows/package.yml`,
 each on its own platform, and one is published only when the unit suite has
-passed on every target, against a real core. There is no Windows package:
+passed on every target, against a real core. Today it cannot pass on Intel
+macOS: the core has no measured platform numbers for that machine and refuses
+to start there, so the workflow publishes nothing until the core measures it. There is no Windows package:
 the lock uses `flock`, and a Windows lock is a piece of work of its own.
 
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
@@ -45,9 +47,12 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
 * An **outline tree**: the top level comes from `outline --depth 1`, and opening a node
   asks `read <id> --recursive` and shows the blocks directly under it. A block in a
   structural conflict is marked, and so is one whose parent is gone.
-* **Opening a block**: `read <id>` gives the block, and its `heading-src` and `src`
-  fields are put in a markdown buffer, in that order. One file per (store, block), so
-  opening a block twice reaches the same document.
+* **Opening a block**: the block's text is read from this window's working view
+  (`read <id> --working-info --writer window-<session>`) -- this window's draft of it if
+  there is one, the committed block otherwise -- and its heading line and body are put in
+  the block's file, in that order, shown as markdown, or in the editor mode a code block's
+  `lang` names (see *Code blocks*). A datum block opens read-only instead. One file per
+  (store, block), so opening a block twice reaches the same document.
 * **Opening a subtree as one document**: right-click a node in the outline and choose
   `Theourgia: Open as Document`. It asks `read <id> --recursive --wire` and composes
   the block and everything under it into one markdown document. **It is a read-only,
@@ -104,7 +109,8 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
   by role, and the thin client is now the only program this extension runs.
 * Working drafts retain their original block hash and causal cut. Commit refuses a
   stale baseline; accepting a new baseline is an explicit reconcile/rebase action.
-* No cache. Every view asks the core.
+* No cache, but one: every view asks the core, except that the hover keeps its answers for
+  fifteen seconds (see *What the store holds about a name*).
 
 ### Recovering another window's unsent work: where it stops
 
@@ -133,11 +139,11 @@ of them is a decision rather than an oversight:
 
 | Setting | What it is |
 |---|---|
-| `theourgia.corePath` | The directory holding the core. Required. Either form works -- see below. |
+| `theourgia.corePath` | The core's own `theourgia/` directory, the one holding `theourgia.sc`. Required. Either form works -- see below. |
 | `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here, unless it is the one holding `corePath`, or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
-| `theourgia.writer` | The draft space this window writes into. Defaults to the actor. See *One agent, one writer id*. |
+| `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, the draft space a verb sent without `--writer` uses. Defaults to the actor. This window's own edits do not go there: they use a draft space of the window's own. See *Each window, its own draft space*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`; Homebrew installs it as `chez`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
 
@@ -155,18 +161,20 @@ It is worth pointing it at a product directory. Measured on one machine, one req
 about 460 ms reading the core from source, about 40 to 50 ms from a product directory,
 about 30 ms once a daemon is up.
 
-### One agent, one writer id
+### Each window, its own draft space
 
-A writer id is a draft space. Two windows that share one keep overwriting each other's
-unsent drafts of the same block, silently -- a later session may bind an id and carry on
-with its drafts, which is what makes recovery possible and is also what makes sharing
-one dangerous. Give a second window its own `theourgia.writer` when it should keep
-separate drafts of the same blocks.
+A writer id is a draft space. Each window writes its drafts under one of its own,
+`window-<session>`, named after the window's session, and passes it as `--writer` on
+every working read and write it sends. So two windows editing the same block keep
+separate drafts, and a window's unsent work is reached from another only through
+`Theourgia: Other Sessions`, which takes it over by that name.
 
-The id is passed to the core through the environment, as `THEOURGIA_WRITER`, together
-with `THEOURGIA_ACTOR`. It is deliberately not spliced into the argument vector: the
-verbs that do not take a `--writer` option refuse one, and a client that added it
-everywhere would turn ordinary requests into usage lines.
+`theourgia.writer` is passed to the core through the environment, as `THEOURGIA_WRITER`,
+together with `THEOURGIA_ACTOR`: the draft space a verb sent without `--writer` uses. It
+is deliberately not spliced into the argument vector: the verbs that do not take a
+`--writer` option refuse one, and a client that added it everywhere would turn ordinary
+requests into usage lines. Supply Diagnostics reads this setting's draft space today, not
+the window's (see *Supplying what the editor knows*).
 
 ## How a request is made
 
@@ -270,9 +278,10 @@ discard. This is local process exclusion, not a distributed filesystem locking p
 An editor or external tool that writes these files does not participate in this lock.
 
 The first cursor, before any write has been answered, comes from `check`: a store with one
-writer has no ambiguity. `check` does not say which writer is local, so a store with more
-than one — one that was adopted or copied — refuses to be written to from here rather than
-guessing.
+writer has no ambiguity, and in a store with more than one -- one that was adopted or
+copied -- `check` names the local writer (`(local-writer "<id>")`) and the cursor is that
+writer's. A core too old to name it is refused rather than guessed at; see *What it does
+not do yet*.
 
 ## The file a block is edited in
 
@@ -374,24 +383,18 @@ cannot reach.
 
 ## The s-expression reader
 
-`src/vendor/goeteia/sexpr.mjs` is a verbatim copy of goeteia's `rt/sexpr.mjs`, held to
-`sexpr-vectors.json`, the golden fixture generated from `(igropyr sexpr)` — the authority
-for this wire format. The copy exists only because goeteia's package does not export the
-deep path in a published release yet. Do not edit it: `test/unit/vendor-sexpr.test.ts`
-sweeps both fixtures and checks the file's own bytes against the digest its provenance note
-claims, so an edited copy that kept its note fails.
-
-It is held to two fixtures, both copied beside it: `sexpr-vectors.json`, generated from
-`(igropyr sexpr)`, and `sexpr-escape-vectors.json`, which covers the escapes a conforming
+The reader is goeteia's `sexpr` module, from the `goeteia` package (pinned at 1.7.2 in
+`package.json`), loaded by the one name `src/wire.ts` gives it (`READER`).
+`test/unit/dependency-sexpr.test.ts` sweeps the module that name loads against two fixtures
+in `test/fixtures/goeteia`: `sexpr-vectors.json`, the golden fixture generated from
+`(igropyr sexpr)` -- the authority for this wire format -- and
+`sexpr-escape-vectors.json`, which covers the escapes a conforming
 R6RS writer emits — `\a \b \f \v` and `\xHH;`, in strings and in symbols. That second
 table exists because of a gap this extension hit: the reader used to accept only
 `\n \t \r \" \\`, so a block whose body contained a form feed was stored happily by the
 core and could never be read back. `S14` in `test/unit/real-core.test.ts` was red for as
 long as that was true and is now the guard against it reopening.
 
-**Why it is still a copy.** goeteia's package exports `./sexpr` now, but the published
-1.7.1 predates that export, so depending on it would not resolve. When a release carries
-the export, this copy goes and a dependency takes its place.
 
 ## What the cells do not cover
 
@@ -451,34 +454,24 @@ exists and proves less than its name suggests, or where no cell exists at all.
   **What replaced them is not another check.** Removing the five exposed an older hazard
   they had been hiding: two opens of one block can overlap, and whichever finished last
   became the baseline a save is measured against — which has nothing to do with which
-  reading the store answered most recently. A baseline older than the buffer has a prefix
-  the buffer no longer starts with, and a prefix that fails to match is *not* refused: the
-  heading is taken for body and written into the block. Each open now takes a ticket
-  before it reads and cannot register over a newer one (`src/open.ts`). That rule lives
-  outside `activate` precisely so a cell can drive the interleaving the editor cannot be
-  made to produce.
+  reading the store answered most recently. Now an open's working read and its publication of
+  the block's file run on the save chain keyed by the block's directory, so those steps of two
+  opens of one block, and a save of it, run one after the other (`PathChain`; the cell "does
+  not let two publications of one block interleave"); the block's record is read before that
+  step and the editor calls come after it. The publication's record beside the file holds the
+  prefix the text was read with and the digest of the text written, and the publication names
+  the record it found before reading; a record that moved meanwhile refuses the publication as
+  `record-moved` (cells in `test/unit/publication.test.ts`).
 
-* **The three lines that hand VS Code to the placement step.** `src/open.ts` decides which
-  reading of a block a save is measured against and `src/placing.ts` acts on that decision;
-  both are driven directly by cells, because the interleavings they exist for cannot be
-  produced through the editor's API. What is left uncovered is the adapter: the three
-  closures in `openBlock` that forward `openTextDocument`, `setTextDocumentLanguage` and
-  `showTextDocument`. A cell hands `placeReading` three functions of its own, so nothing
-  checks that the real ones are wired to the right VS Code calls.
-
-  This shape is why that separation exists. For one round the decision was acted on inside
-  `activate`, and when `register` stopped returning a boolean the call site's
-  `if (!admission)` kept compiling and stopped firing — every answer was a non-empty string,
-  so a losing open would have gone on writing the file, with all 17 editor-hosted cells
-  green. It was caught by reading. The answer is now an object whose falsy reading is a
-  field, so the compiler finds that mistake, and the step it guards has its own cells.
+* **The editor calls after a publication.** `openBlock` opens the published file, sets its
+  language and shows it with VS Code's own calls, directly. The editor-hosted cells that
+  open a block read the editor's language and text back, for a markdown block; for a code
+  block, the mode its `lang` chooses is read back only by a cell with a stand-in editor
+  (`test/support/extension-schedules.js`), not by a real one.
 
 * **What a retry actually displayed.** The retry cells read the notice the command decided
   on and returned. Whether it reached the screen, and whether the status bar was repainted,
   is not observed: deleting the call that shows it would leave them passing.
-* **Nested-document visibility.** The tree does not mark a nested document, because the
-  core's own handling of the shape is still being decided. The mark is read and carried;
-  what the tree should draw for it is not settled.
 
 ## Running the cells
 
@@ -488,7 +481,7 @@ npm install
 # the parser, transport, outline, block, cursor and save cells
 npm run test:unit
 
-# the same, plus the ones that need the core itself (O3, S7, S14)
+# the same, plus the ones that need the core itself (every cell that names a real core)
 THEOURGIA_CORE=/path/to/theourgia THEOURGIA_LIBDIRS=/path/holding/igropyr npm run test:unit
 
 # the cells that need an editor
