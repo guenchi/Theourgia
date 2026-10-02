@@ -118,7 +118,7 @@ describe('plugin-r3 a store that says it is not sound', function () {
    * KEY: THE CASE THE READER EXISTS FOR ARRIVES WITH A NON-ZERO EXIT.
    *
    * The core makes `check` a failure exactly when its verdict is not
-   * `ok` (`rpc-ok?`, rpc.sc:360-370 in the pinned core). So a damaged store
+   * `ok` (`rpc-ok?`, rpc.sc:400-410 in the pinned core). So a damaged store
    * answers with exit 1 AND a complete check form, and a method that
    * asked `answer.ok` first would report "could not ask" on precisely
    * the occasion this item exists for. Put through a real client, over

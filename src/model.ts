@@ -90,7 +90,7 @@ export type StoreVerdict =
  * NEVER: THE EXIT CODE IS NOT ASKED. The core's `rpc-ok?` makes `check` a
  * failure exactly when its verdict is not `ok`, so a damaged store answers
  * with a non-zero exit AND a complete `(check ... (verdict damaged))` --
- * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:360-370). A reader that required `ok`
+ * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:400-410). A reader that required `ok`
  * would read "could not ask" on precisely the occasion it exists for.
  * The form's head is what says whether this is an answer at all.
  *

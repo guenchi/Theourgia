@@ -230,6 +230,11 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['projection-name.test.ts', 18],
   /*
+   * ADDED with the core's read receipts (59e69f3): each reader of an answer
+   * that now ends with a receipt reads it as before.
+   */
+  ['read-receipt.test.ts', 5],
+  /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
    * the setting. Its cells are one per setting in package.json, so the

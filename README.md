@@ -86,11 +86,6 @@ The extension's source is the `vscode` branch of https://github.com/guenchi/Theo
 * No graph view, no link editing, no title editing. Editing the heading line of a block
   is refused with a message rather than half-applied; changing a title is
   `set <id> title`, which is not in this batch.
-* **Going to a definition by name** is not here. It wants the core's `whereis`, which
-  the core does not have yet. Rather than contribute a command that answers "not
-  implemented", this extension asks the core what it can do -- `describe` returns the
-  catalogue -- so the entry will appear when the verb does. Nothing needs removing when
-  it lands.
 * **A store that more than one instance has written to needs a core that names its local
   writer.** A store gets a second log writer when a copy of it is adopted elsewhere and a
   segment published back. A core from F45 on says which writer is local
@@ -523,7 +518,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia 5230bb6, as 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 59e69f3, as 5230bb6, 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete
