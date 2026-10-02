@@ -240,7 +240,7 @@
                 (out (if (eq? stream 'stdout) (cons bv out) out))
                 (err (if (eq? stream 'stdout) err (cons bv err))))
             (if (> used output-bytes)
-                (stop-runner ref pgid (limit-answer 'output output-bytes (decoded out)))
+                (stop-runner ref pgid (output-limit-answer output-bytes (decoded out) cut-to-bytes))
                 (collect-raw ref pgid deadline out err used next-rss
                              memory-bytes output-bytes timeout-ms exited))))
          (`(worker-eof ,r ,stream)
@@ -405,7 +405,7 @@
                 (let ((used (+ used n)))
                   (if (> used output-bytes)
                       (limit-stop ref pgid stdout-done protocol
-                                  (limit-answer 'output output-bytes (string-append out o)))
+                                  (output-limit-answer output-bytes (string-append out o) cut-to-characters))
                       (collect ref pgid deadline protocol
                                (string-append out o) (string-append err e) used
                                next-rss memory-bytes output-bytes timeout-ms exited stdout-done))))))
@@ -487,6 +487,30 @@
   (define (limit-answer resource limit out)
     (list 'error 'eval-limit (list 'resource resource) (list 'limit limit)
           (list 'stdout out)))
+
+  ;; NEVER: THE TEXT AN OUTPUT LIMIT CARRIES IS NOT LONGER THAN THE LIMIT. The
+  ;; quota is checked per chunk, and the chunk that crossed it used to be
+  ;; carried whole: a limit of 65536 answered with 65555 characters. The
+  ;; text is cut to the limit in the quota's own unit -- `cut` -- and the
+  ;; answer says `(truncated #t)` when anything was cut.
+  (define (output-limit-answer limit out cut)
+    (let ((carried (cut out limit)))
+      (append (limit-answer 'output limit carried)
+              (if (< (string-length carried) (string-length out)) (list '(truncated #t)) '()))))
+
+  ;; A Scheme evaluation's quota counts decoded characters.
+  (define (cut-to-characters text n)
+    (if (> (string-length text) n) (substring text 0 n) text))
+
+  ;; A runner's quota counts bytes: the longest prefix whose UTF-8 encoding
+  ;; is at most n bytes, so a character is kept whole or not at all.
+  (define (cut-to-bytes text n)
+    (let loop ((i 0) (used 0))
+      (if (= i (string-length text))
+          text
+          (let* ((c (char->integer (string-ref text i)))
+                 (w (cond ((< c #x80) 1) ((< c #x800) 2) ((< c #x10000) 3) (else 4))))
+            (if (> (+ used w) n) (substring text 0 i) (loop (+ i 1) (+ used w)))))))
 
   ;; NEVER: A PROTOCOL LINE THAT NEVER FINISHED IS NOT AN ANSWER. The worker
   ;; writes its result with a terminating newline; anything else means the
