@@ -130,9 +130,28 @@
     ((_ name got expected) (want-1 name (caught got) expected))))
 
 (define EAGAIN (platform-number 'EAGAIN))
-(define c-fcntl (foreign-procedure "fcntl" (int int int) int))
+;; NEVER: fcntl IS VARIADIC, AND ITS THIRD ARGUMENT IS PASSED AS ONE. A fixed
+;; (int int int) binding passes it where a non-variadic argument goes, and on
+;; macOS ARM64 that is not where fcntl reads it: F_SETFL then set the flags
+;; to whatever it found (measured: O_WRONLY becomes O_WRONLY|O_APPEND, and the
+;; call answers 0), so this fixture's pipe was never non-blocking there and
+;; it raced nothing. On x86_64 the two conventions agree, the pipe was
+;; non-blocking, and EAGAIN appeared. The flags are read back with F_GETFL
+;; (no third argument) before anything is written.
+;; THE LIBRARY BODY RUNS FIRST: importing (theourgia ffi) does not run it, and
+;; it is what loads the C library these two bindings are looked up in.
+(define ffi-loaded (procedure? fd-open))
+(define c-fcntl (foreign-procedure (__varargs_after 2) "fcntl" (int int int) int))
+(define c-getfl (foreign-procedure "fcntl" (int int) int))
 (define F_SETFL (platform-number 'F_SETFL))
+(define F_GETFL (platform-number 'F_GETFL))
 (define O_NONBLOCK (platform-number 'O_NONBLOCK))
+;; -> #t when the descriptor reads back non-blocking.
+(define (make-nonblocking! fd)
+  (let* ((before (c-getfl fd F_GETFL))
+         (rc (c-fcntl fd F_SETFL (bitwise-ior before O_NONBLOCK)))
+         (after (c-getfl fd F_GETFL)))
+    (and (= rc 0) (not (zero? (bitwise-and after O_NONBLOCK))))))
 (define n 4000000)
 (define payload
   (let ((bv (make-bytevector n)))
@@ -165,15 +184,17 @@
 (define holder (string-append "exec 3< " dir1 "/f; sleep 30"))
 (system (string-append "sh -c '" holder "' &"))
 (define fd1 (fd-open (string-append dir1 "/f") (list 'write)))
-(define nb1 (c-fcntl fd1 F_SETFL O_NONBLOCK))
+(define nb1 (make-nonblocking! fd1))
 (define t0 (real-time))
-(define full (write-nonblocking fd1))
+;; NOT WRITTEN AT ALL unless the descriptor is non-blocking: a blocking
+;; write into a pipe nobody reads would wait for the holder to exit.
+(define full (if nb1 (write-nonblocking fd1) 'NOT-NONBLOCKING))
 (define full-ms (- (real-time) t0))
 (fd-close fd1)
 (system (string-append "pkill -f '" holder "' 2>/dev/null"))
-(printf "NB1 reading: ~s in ~a ms (O_NONBLOCK set -> ~a)\n" full full-ms nb1)
+(printf "NB1 reading: ~s in ~a ms (non-blocking: ~a)\n" full full-ms nb1)
 (want "NB1 a full non-blocking pipe: write-all! raises the filesystem error with errno EAGAIN, promptly, after writing what fitted"
-      (list (and (pair? full) (car full))
+      (list (if (pair? full) (car full) full)
             (and (pair? full) (eq? (car full) 'raised) (eqv? (cadr full) EAGAIN))
             (and (pair? full) (eq? (car full) 'raised) (< 0 (caddr full) n))
             (< full-ms 5000))
@@ -184,14 +205,14 @@
 (system (string-append "mkfifo " dir2 "/f"))
 (system (string-append "cat " dir2 "/f > " dir2 "/out.dat &"))
 (define fd2 (fd-open (string-append dir2 "/f") (list 'write)))
-(define nb2 (c-fcntl fd2 F_SETFL O_NONBLOCK))
-(define raced (write-nonblocking fd2))
+(define nb2 (make-nonblocking! fd2))
+(define raced (if nb2 (write-nonblocking fd2) 'NOT-NONBLOCKING))
 (fd-close fd2)
 (sleep (make-time 'time-duration 0 1))
 (define got
   (let ((p (open-file-input-port (string-append dir2 "/out.dat"))))
     (let ((b (get-bytevector-all p))) (close-port p) (if (eof-object? b) (make-bytevector 0) b))))
-(printf "NB2 reading: ~s (O_NONBLOCK set -> ~a); out.dat ~a bytes\n" raced nb2 (bytevector-length got))
+(printf "NB2 reading: ~s (non-blocking: ~a); out.dat ~a bytes\n" raced nb2 (bytevector-length got))
 (want "NB2 a non-blocking pipe with a reader: either every byte, through short writes and identical at the far end, or EAGAIN as in NB1; never anything else"
       (cond
         ((and (pair? raced) (eq? (car raced) 'all))
