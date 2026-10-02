@@ -152,7 +152,7 @@
     (let ((spec (cadr f)) (clauses (cddr f)))
       (define (field-spec? s)
         (or (symbol? s)
-            (and (list? s) (for-all symbol? s)
+            (and (pair? s) (list? s) (for-all symbol? s)
                  (case (car s)
                    ((immutable) (<= 2 (length s) 3))
                    ((mutable) (<= 2 (length s) 4))

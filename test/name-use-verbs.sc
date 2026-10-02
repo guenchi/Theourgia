@@ -205,6 +205,14 @@
                                (nongenerative) (sealed #t) (opaque #f) (protocol (lambda (n) n)))))
       '((define-record-type maybe r sealed) (define-record-type maybe r r? sealed z)
         (define-record-type fields mutable r r? x y z) ()))
+(want "U10 an empty field spec falls back and does not raise; a duplicate clause, or parent with parent-rtd, falls back"
+      (in-order (datum-uses '(define-record-type r (fields ())))
+                (datum-uses '(define-record-type r (sealed #t) (sealed #f)))
+                (datum-uses '(define-record-type r (parent p) (parent-rtd a b))))
+      '((define-record-type fields r) (define-record-type r sealed) (a b define-record-type p parent parent-rtd r)))
+(want "U8 two let-values groups, each valid alone, that bind one name fall back"
+      (datum-uses '(let-values (((x) a) ((x) b)) x))
+      '(a b let-values x))
 (want "K8 foreign-procedure: a parameter list that is not a list, or a convention Chez does not know, falls back"
       (in-order (datum-uses '(foreign-procedure entry bad-args result))
                 (datum-uses '(foreign-procedure bogus entry (int) int)))
