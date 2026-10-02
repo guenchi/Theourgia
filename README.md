@@ -2986,15 +2986,17 @@ sources rather than listed.
 
 ### `eval`
 
-    (eval ("--lang" <language>) ("--cut" <cut>) ("--under" <library>)
+    (eval ("--lang" <language>) ("--cut" <cut>) ("--under" <library-id>)
           ("--working") ("--latest") ("--writer" <name>) ("--timeout-ms" <n>)
           ("--memory-bytes" <n>) ("--output-bytes" <n>) <source>)
 
 Evaluates one expression against what the store holds, in a child process
 that is given nothing else: no filesystem, no network, no way to reach
 the committed store except by reading it.
-With no `<source>` argument the source is read from standard input. A source
+With no `<source>` argument the source is read from standard input; when
+that is empty too, the answer is the usage form, `(usage (eval ...))`. A source
 longer than 1048576 characters is refused `(error bad-source (reason input-limit))`.
+`--under` takes the id of a datum library block, not the library's name.
 
 **The answer is one complete line**, always, and one of:
 
@@ -3005,6 +3007,7 @@ longer than 1048576 characters is refused `(error bad-source (reason input-limit
     (error eval-exception (kind raised) (value <v>))
     (error eval-exception (kind raised) (reason unwritable-value) (type <t>))
     (error bad-request (reason ...) (usage (eval ...)))
+    (error bad-request (reason eval-arguments) (option "<name>" (reason <r>)) (usage (eval ...)))
     (error eval-busy (slots <K>) (waited-ms <n>))
     (error eval-value (kind <t>) (index <i>))
     (error bad-source (reason input-limit|expected-one-form|expected-one-cut))
@@ -3038,6 +3041,10 @@ with a fixed message. Any other raised value arrives inside `(value <v>)`, an
 otherwise the answer says `(reason unwritable-value)` and a `<t>` of
 `procedure`, `port`, `cycle`, `too-large` or `unsupported`, and the value
 itself is not sent.
+
+A limit the option cannot take names the option, inside the `option` clause:
+`<r>` is `not-a-number` (it is not a whole number), `not-positive`, or
+`out-of-range` followed by `(range <low> <high>)`.
 
 **The limits, and their bounds**: `--timeout-ms` 1..60000 (default 3000),
 `--memory-bytes` 1 MiB..2 GiB (default 256 MiB), `--output-bytes`
