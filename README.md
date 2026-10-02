@@ -89,4 +89,7 @@ that is not checked out, one at a commit other than the one the branch
 records, a dirty submodule or branch, a compiled object anywhere, and a
 packed file list that differs from `test/expected-files.txt`. It fixes
 nothing. Packing writes `source.json`, the submodule's commit, which the
-installed package reads for its compile cache.
+installed package reads for its compile cache. That cache's key covers the
+package version, the submodule commit, igropyr's version, and the Chez
+binary's version and machine type; it does not read the sources' contents,
+so a dependency edited by hand without a change of version is not detected.
