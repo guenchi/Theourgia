@@ -9,6 +9,12 @@
   reached the code.
 * A file opened under 1.0.0 on a datum block is now refused on save instead
   of appearing to save.
+* The setting `theourgia.writer` is removed. Each window has written its
+  drafts under a name of its own since before 1.0.0, so the setting decided
+  nothing; a `settings.json` that still sets it shows it as an unknown
+  setting, and nothing changes. The extension no longer passes
+  `THEOURGIA_WRITER` to the core, and ignores one in the environment VS Code
+  was started from.
 
 ## 1.0.0 — 2026-09-29
 

@@ -1528,8 +1528,8 @@ describe('on a real core the supply is taken, read back, made stale and cleared'
 /*
  * SUPPLY DIAGNOSTICS READS WHAT THIS WINDOW IS EDITING. A window writes its
  * drafts under a name of its own, and the diagnostics are taken from that
- * working view; the command once exported the view of `theourgia.writer`,
- * which holds none of the window's drafts, and analysed text the window was
+ * working view; the command once exported the view of a setting's writer
+ * (`theourgia.writer`, since removed), which held none of the window's drafts, and analysed text the window was
  * not editing. The harness is the compiled extension against a stand-in
  * editor, on a real core: a draft is written under the window's name and
  * left uncommitted, and the command is run.
@@ -1556,5 +1556,48 @@ describe('Supply Diagnostics reads the working view this window writes its draft
       assert.ok(supply.ok, `the core refused a supply: ${JSON.stringify(supply)}`);
       assert.ok(String(supply.header).includes(`(writer "${r.window}")`), `a supply file names another writer: ${JSON.stringify(supply)}`);
     }
+  });
+});
+
+/*
+ * A DRAFT SPACE THE ENVIRONMENT NAMES DECIDES NOTHING. The editor may have
+ * been started from a shell with THEOURGIA_WRITER set; every request this
+ * extension sends that takes a writer still names the window's own, and
+ * nothing is written under the environment's name. On a real core, through
+ * the compiled extension on a stand-in editor: an open, a save (its write
+ * and its commit) and Supply Diagnostics.
+ */
+describe('a draft space named in the environment decides nothing', function () {
+  this.timeout(180000);
+
+  it('opens, saves, commits and supplies under the window\'s name, and writes nothing under the other', () => {
+    const run = spawnSync(process.execPath, [path.join(__dirname, '../support/extension-schedules.js'), '', 'foreign-writer-real'], {
+      encoding: 'utf8',
+      timeout: 150000
+    });
+    assert.strictEqual(run.status, 0, run.stdout + run.stderr);
+    const done = JSON.parse(run.stdout.trim().split('\n').pop() as string);
+    assert.strictEqual(done.complete, true);
+    const r = done.result;
+    for (const verb of ['write', 'commit', 'export-code', 'supply']) {
+      assert.ok(r.named.some((n: string) => n.startsWith(`${verb} `)), `no ${verb} named a writer: ${JSON.stringify(r)}`);
+    }
+    assert.deepStrictEqual(
+      r.named.filter((n: string) => !n.endsWith(` ${r.window}`)),
+      [],
+      `a request named another writer than the window's: ${JSON.stringify(r)}`
+    );
+    assert.ok(r.writerRequests.length >= 4, `too few requests that take a draft space were seen: ${JSON.stringify(r.writerRequests)}`);
+    assert.deepStrictEqual(
+      r.writerRequests.filter((q: { writer: string | null }) => q.writer !== r.window),
+      [],
+      `a request that takes a draft space named none, or another: ${JSON.stringify(r.writerRequests)}`
+    );
+    assert.ok(r.committedHasText, `the save did not reach the store: ${JSON.stringify(r)}`);
+    assert.ok(String(r.windowDrafts).includes('(draft'), `the draft listing did not show the window's own draft, so its silence proves nothing: ${r.windowDrafts}`);
+    assert.ok(!/\(error/.test(String(r.foreignDrafts)), `the draft listing under ${r.foreign} was refused: ${r.foreignDrafts}`);
+    assert.ok(!String(r.foreignDrafts).includes('(draft'), `something was written under ${r.foreign}: ${r.foreignDrafts}`);
+    assert.ok(!/\(error/.test(String(r.actorDrafts)), `the draft listing under ${r.actor} was refused: ${r.actorDrafts}`);
+    assert.ok(!String(r.actorDrafts).includes('(draft'), `something was written under the actor's name ${r.actor}: ${r.actorDrafts}`);
   });
 });

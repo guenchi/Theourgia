@@ -143,7 +143,6 @@ of them is a decision rather than an oversight:
 | `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here, unless it is the one holding `corePath`, or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every change committed to the store; a draft is not attributed until it is committed. Defaults to the OS user name. |
-| `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, the draft space a verb sent without `--writer` uses. Defaults to the actor. Nothing this extension sends uses it: every request that takes a writer names one -- this window's own, or, when recovering or migrating another session's work, that session's (a migration also reads the committed text under a fresh `migration-<uuid>` name). See *Each window, its own draft space*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`; Homebrew installs it as `chez`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
 
@@ -169,16 +168,18 @@ every working read and write it sends. So two windows editing the same block kee
 separate drafts, and a window's unsent work is reached from another only through
 `Theourgia: Other Sessions`, which takes it over by that name.
 
-`theourgia.writer` is passed to the core through the environment, as `THEOURGIA_WRITER`,
-together with `THEOURGIA_ACTOR`: the draft space a verb sent without `--writer` uses. It
-is deliberately not spliced into the argument vector: the verbs that do not take a
-`--writer` option refuse one, and a client that added it everywhere would turn ordinary
-requests into usage lines. Nothing this extension sends uses it: the working reads and
-writes, `commit` and the diagnostics' export carry `--writer`, and `supply` its `--for`,
-always with a name -- this window's own, or, when it recovers or migrates another
-session's work, that session's (a take-over commits under the name the other window
-recorded, and a migration also reads the committed text under a fresh
-`migration-<uuid>` name).
+Every request that works in a draft space names one: the working reads and writes,
+`commit` and the diagnostics' export carry `--writer`, and the diagnostics' `supply` its
+`--for`, always with a name -- this window's own, or, when it recovers or migrates
+another session's work, that session's (a take-over commits under the name the other
+window recorded, and a migration also reads the committed text under a fresh
+`migration-<uuid>` name). The signatures and calls supplies are of the committed store
+and name no writer; the core files them under its committed table. So the extension
+passes the core no `THEOURGIA_WRITER`, and takes one out of the environment it was
+started from: a request that left its writer out would be refused by the core -- a
+working read, write or commit as `writer-required`, a diagnostics supply without `--for`
+as malformed, its file naming a writer the request did not -- and never land in a draft
+space two windows could share without knowing it. The actor goes with every request, as `--actor` and as `THEOURGIA_ACTOR`.
 
 ## How a request is made
 

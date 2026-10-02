@@ -32,12 +32,6 @@ export interface CoreConfig {
   libDirs: string[];
   store: string;
   actor: string;
-  /*
-   * WHICH DRAFT SPACE THIS WINDOW WRITES INTO. Empty means "the actor's
-   * name", which is what one window with one agent in it wants; two
-   * windows that need separate draft spaces set it to two names.
-   */
-  writer: string;
   timeoutMs: number;
 }
 
@@ -162,24 +156,6 @@ export function clientPath(config: CoreConfig): string {
 }
 
 /*
- * THE WRITER PASSED TO THE CORE AS `THEOURGIA_WRITER`: `theourgia.writer`,
- * else the actor. The core takes it as the draft space of a request sent
- * without `--writer`.
- *
- * NOTE: NOTHING THIS EXTENSION SENDS USES IT. Each window writes its drafts
- * under a name of its own (`windowWriter`, src/working.ts), and every
- * request whose handler takes a writer names one: the window's, or, when
- * recovering or migrating another session's work, that session's (and a
- * migration reads the committed text under a fresh `migration-<uuid>`). So two
- * windows keep separate drafts whatever this setting says. It is still
- * passed, so that a request that one day leaves out `--writer` meets a
- * named space rather than the core's refusal of an unbound one.
- */
-export function writerFor(config: CoreConfig): string {
-  return config.writer.length > 0 ? config.writer : config.actor;
-}
-
-/*
  * THE DIRECTORIES CHEZ LOOKS UP LIBRARIES IN: the core's directory, the
  * user's, and last the one that holds the core's directory -- a library
  * `(theourgia client)` is the file `theourgia/client.sc` under a library
@@ -206,7 +182,7 @@ export function libraryDirectories(config: CoreConfig): string[] {
 }
 
 /*
- * NOTE: THE IDENTITIES TRAVEL HERE AND NOT IN THE ARGUMENT VECTOR. The
+ * NOTE: NO WRITER IS ADDED TO EVERY REQUEST'S ARGUMENT VECTOR. The
  * thin client scans argv for the four options that say WHERE a request
  * goes and passes everything else through untouched; `--writer` is
  * deliberately not one of them, and a writer spliced into argv arrives
@@ -219,12 +195,23 @@ export function environmentFor(
   base: NodeJS.ProcessEnv,
   directory: CoreDirectory
 ): NodeJS.ProcessEnv {
+  /*
+   * NEVER: A DRAFT SPACE FROM THE ENVIRONMENT. Every request this extension
+   * sends that takes a writer names one -- the window's own, or the session
+   * whose work it recovers or migrates -- so none is passed, and one in the
+   * environment the editor was started from is taken out. A request that
+   * one day leaves out its writer is then refused by the core (a working
+   * read, write or commit as `writer-required`), which is loud, rather than
+   * filed under a space named after the actor or the shell, which two
+   * windows would share without a word.
+   */
+  const inherited: NodeJS.ProcessEnv = { ...base };
+  delete inherited.THEOURGIA_WRITER;
   return {
-    ...base,
+    ...inherited,
     CHEZSCHEMELIBDIRS: libraryDirectories(config).join(':'),
     CHEZSCHEMELIBEXTS: libraryExtensionsFor(coreFormOf(directory)),
     THEOURGIA_ACTOR: config.actor,
-    THEOURGIA_WRITER: writerFor(config),
     /*
      * NEVER: THE INTERPRETER THE USER CHOSE HAS TO REACH THE DAEMON TOO.
      *

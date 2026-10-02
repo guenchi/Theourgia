@@ -603,7 +603,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       report: (notice) => r.said.push(notice),
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
-    const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', writer: '', timeoutMs: 1000 }, {}));
+    const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', timeoutMs: 1000 }, {}));
 
     assert.throws(
       () => new Saver(client, r.queueOf(B), settlerForA, IGNORED_DURABILITY),

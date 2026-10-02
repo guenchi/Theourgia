@@ -137,7 +137,6 @@ function readConfig(): CoreConfig {
     libDirs: settings.get<string[]>('libDirs', []) ?? [],
     store: settings.get<string>('store', ''),
     actor: actor.length > 0 ? actor : defaultActor(),
-    writer: settings.get<string>('writer', ''),
     timeoutMs: settings.get<number>('timeoutMs', DEFAULT_TIMEOUT_MS)
   };
 }
@@ -1362,8 +1361,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const store = storeIdentity();
     /*
      * NEVER: ANOTHER WRITER'S VIEW. The diagnostics are of what this window
-     * is editing, which is in its own draft space; `theourgia.writer` names
-     * a space none of its drafts are in.
+     * is editing, which is in its own draft space.
      */
     const writer = kind === 'diagnostics' ? windowWriter(sessionId) : null;
     const directory = path.join(storage, 'projection', storeHash(config.store), writer === null ? '-' : encodeURIComponent(writer));

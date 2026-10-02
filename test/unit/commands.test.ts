@@ -65,8 +65,8 @@ function manifestSettings(): string[] {
  * NOTE: A SETTING THE MANIFEST DOES NOT DECLARE IS A SETTING THAT READS ITS
  * DEFAULT FOR EVER, AND NOTHING SAYS SO.
  *
- * `getConfiguration('theourgia').get('writer', '')` answers the default
- * whether or not `theourgia.writer` exists in the manifest: there is no
+ * `getConfiguration('theourgia').get('<name>', '')` answers the default
+ * whether or not `theourgia.<name>` exists in the manifest: there is no
  * error, no warning, and the settings page simply does not offer it.
  * The user sets nothing because there is nothing to set, and the
  * extension behaves as though they had chosen the default on purpose.
@@ -74,6 +74,16 @@ function manifestSettings(): string[] {
  * BOTH DIRECTIONS, for the reason the command census gives: the other
  * one catches a knob the settings page offers that no code ever reads.
  */
+/*
+ * NEVER: A SETTING FOR A DRAFT SPACE. Each window writes its drafts under a
+ * name of its own, so `theourgia.writer` governed nothing and was removed.
+ */
+describe('the draft space is the window\'s, not a setting', () => {
+  it('declares no theourgia.writer', () => {
+    assert.ok(!manifestSettings().includes('theourgia.writer'), 'the manifest still offers theourgia.writer');
+  });
+});
+
 describe('plugin-r2 the settings the extension reads and the settings it declares', () => {
   const read = (): string[] => {
     const source = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
@@ -101,9 +111,13 @@ describe('plugin-r2 the settings the extension reads and the settings it declare
     assert.deepStrictEqual(unread, [], 'these are offered to the user and nothing looks at them');
   });
 
+  /*
+   * 7 -> 6 with the removal of theourgia.writer: actor, scheme, corePath,
+   * libDirs, store and timeoutMs.
+   */
   it('finds the settings at all, so that neither direction is vacuous', () => {
-    assert.ok(read().length >= 7, `the source reads ${read().length} settings, which is too few to be reading it`);
-    assert.ok(manifestSettings().length >= 7);
+    assert.ok(read().length >= 6, `the source reads ${read().length} settings, which is too few to be reading it`);
+    assert.ok(manifestSettings().length >= 6);
   });
 });
 

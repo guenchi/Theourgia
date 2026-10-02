@@ -165,11 +165,11 @@ const base = {
   cwd: process.cwd(),
   /*
    * NOTE: EVERY VARIABLE THE CLIENT SETS IS RECORDED, not only the two the
-   * first cells asked about. The identities travel in the environment
-   * now (design 7.6.50: the writer is deliberately NOT an argument), so
-   * a stand-in that logged only the library path could not witness the
-   * binding at all -- and a cell that cannot see a thing reads the same
-   * as a thing that is not there.
+   * first cells asked about. The actor travels in the environment, and
+   * THEOURGIA_WRITER is recorded so that a cell can see that none is
+   * passed -- a stand-in that did not log it could not witness its absence,
+   * and a cell that cannot see a thing reads the same as a thing that is
+   * not there.
    */
   env: {
     CHEZSCHEMELIBDIRS: process.env.CHEZSCHEMELIBDIRS || null,

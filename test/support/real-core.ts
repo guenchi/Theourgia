@@ -278,7 +278,6 @@ export class RealStore {
       libDirs: where.libDirs,
       store: path.join(root, 'store'),
       actor,
-      writer: '',
       timeoutMs: DEFAULT_TIMEOUT_MS
     };
     const store = new RealStore(root, config, runRoot, ownRoot);

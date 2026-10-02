@@ -109,7 +109,11 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['census.test.ts', 17],
   ['chain.test.ts', 6],
-  ['commands.test.ts', 8],
+  /*
+   * RAISED 8 -> 9 with the removal of theourgia.writer: the manifest declares
+   * no draft-space setting.
+   */
+  ['commands.test.ts', 9],
   /*
    * RAISED in plugin-r3 item 2 to the fourteen it registers: the five that
    * read the core's `local-writer`; 14 -> 15 in its review r1, the named
@@ -244,7 +248,13 @@ const AT_LEAST: Array<[string, number]> = [
    * 33 -> 34 in queue item 22: D6, a takeover's durability warning in its
    * report and not in the sink.
    */
-  ['recovery.test.ts', 34],
+  /*
+   * LOWERED 34 -> 33 with the removal of theourgia.writer: the cell
+   * "imports when theourgia.writer changed under it and the store did not"
+   * went with the setting, as the transport one did above; there is
+   * nothing left for it to cover.
+   */
+  ['recovery.test.ts', 33],
   /*
    * ADDED in plugin-r3 item 3: the four source censuses of the enqueue
    * receipt -- the brand, where it is issued, and the two call-site
@@ -393,7 +403,10 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 70 -> 71: Supply Diagnostics reads the working view this window
    * writes its drafts into.
    */
-  ['supply.test.ts', 71],
+  /*
+   * RAISED 71 -> 72: a draft space named in the environment decides nothing.
+   */
+  ['supply.test.ts', 72],
   ['tombstones.test.ts', 11],
   /*
    * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket

@@ -937,6 +937,65 @@ async function main(){
     holdsDraft:texts.some(t=>t.includes('DRAFT_ONLY_IN_THIS_WINDOW')),exportedFiles:texts.length,shown:shown.slice()};
   }finally{realClient=null;store.dispose();}
  }
+ // A draft space named in the environment the editor was started with
+ // (THEOURGIA_WRITER, set before the store is made, so the fixture's
+ // environment carries it): open a block, save it, run Supply Diagnostics,
+ // and read which writer every request named and whether anything landed
+ // under the environment's name.
+ if(scenario==='foreign-writer-real'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const foreign='foreign-space';
+  const previous=process.env.THEOURGIA_WRITER;process.env.THEOURGIA_WRITER=foreign;
+  let store;
+  try{store=await real.RealStore.make('foreign-writer');}finally{if(previous===undefined)delete process.env.THEOURGIA_WRITER;else process.env.THEOURGIA_WRITER=previous;}
+  try{
+   const transport=store.transport();
+   const from=path.join(store.root,'src');fs.mkdirSync(from,{recursive:true});
+   fs.writeFileSync(path.join(from,'lib.js'),'function alpha() {\n  return 1;\n}\n');
+   const imported=store.cli(['import-code',from,'--store',store.store]);
+   if(!imported.startsWith('(ok'))throw new Error(`the source was not imported: ${imported}`);
+   const made=await transport.send('insert',['--title','A','--text','first\n']);
+   const id=(/\(state \(\("([^"]+)"/.exec(made.stdout)||[])[1];if(!id)throw new Error(`no id: ${made.stdout}`);
+   const client=new Client(transport),sent=[],request=client.request.bind(client);
+   client.request=async(verb,args,input)=>{sent.push([verb,...(args||[])]);return request(verb,args,input);};
+   realClient=client;change(store.store);
+   const windowName=`window-${core.sessionId.toLowerCase()}`;
+   await commands.get('theourgia.openBlock')(id);
+   const file=files(storage).find(p=>path.basename(path.dirname(p))===id&&!p.endsWith('.meta')&&!p.includes(`${path.sep}.block-control`));
+   if(!file)throw new Error(`the block ${id} was not opened into a file`);
+   const prefix=core.publisher.sidecarOf(file).prefix;
+   const text=prefix+'saved from the window\n';
+   fs.writeFileSync(file,text);shown.length=0;
+   await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>text});
+   const afterSave=shown.slice();
+   const saved={file:vs.Uri.file,parse:vs.Uri.parse,version:vs.version,opening:vs.workspace.openTextDocument};
+   const fileUri=p=>({fsPath:p,scheme:'file',toString(){return `file://${p}`;}});
+   vs.Uri.file=fileUri;vs.Uri.parse=t=>fileUri(String(t).replace(/^file:\/\//,''));vs.version='1.138.0';
+   vs.workspace.openTextDocument=async uri=>{const d=await saved.opening(uri);return Object.assign(d,{uri:fileUri(uri.fsPath),languageId:/\.js$/.test(uri.fsPath||'')?'javascript':'plaintext',version:1});};
+   try{await commands.get('theourgia.supplyDiagnostics')();}
+   finally{vs.Uri.file=saved.file;vs.Uri.parse=saved.parse;vs.version=saved.version;vs.workspace.openTextDocument=saved.opening;}
+   const named=sent.flatMap(r=>{const out=[];r.forEach((a,i)=>{if((a==='--writer'||a==='--for')&&i+1<r.length)out.push(`${r[0]} ${a} ${r[i+1]}`);});return out;});
+   // Every request whose verb takes a draft space (a working read or write, a
+   // commit, a working export, a diagnostics supply or listing, a draft
+   // listing, discard or restore), and whether it named the window's: a
+   // request that named nothing would have taken the default.
+   const usesWriter=r=>['write','commit','drafts','discard','eval','restore','diagnostics'].includes(r[0])||(r[0]==='read'&&(r.includes('--working-info')||r.includes('--working')))
+    ||((r[0]==='export-code'||r[0]==='export-md')&&r.includes('--working'))||(r[0]==='supply'&&r[1]==='diagnostics');
+   const nameOf=r=>{const i=r.findIndex(a=>a==='--writer'||a==='--for');return i>=0&&i+1<r.length?r[i+1]:null;};
+   const writerRequests=sent.filter(usesWriter).map(r=>({verb:r[0],writer:nameOf(r)}));
+   const committed=(await transport.send('read',[id])).stdout;
+   // The listing is shown able to see a draft: one left uncommitted under
+   // the window's name is in it.
+   store.cli(['write',id,'left as a draft\n','--store',store.store,'--writer',windowName]);
+   const foreignDrafts=store.cli(['drafts','--store',store.store,'--writer',foreign]);
+   // The actor's name too: where a request that relied on the default landed
+   // while the extension passed the actor as THEOURGIA_WRITER.
+   const actorDrafts=store.cli(['drafts','--store',store.store,'--writer',store.config.actor]);
+   const windowDrafts=store.cli(['drafts','--store',store.store,'--writer',windowName]);
+   return {window:windowName,foreign,named,committedHasText:committed.includes('saved from the window'),
+    writerRequests,foreignDrafts,actor:store.config.actor,actorDrafts,windowDrafts:windowDrafts.slice(0,400),afterSave,verbs:sent.map(r=>r[0])};
+  }finally{realClient=null;store.dispose();}
+ }
  // The hover in the window: one in each kind of document (a block's file, the
  // subtree view, the datum view), one under another store's address, one on
  // each kind of marker line, and the cache across a mode invalidation and a

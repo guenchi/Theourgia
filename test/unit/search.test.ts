@@ -1171,7 +1171,6 @@ describe('plugin-r2 T5 what a search does', function () {
         libDirs: [],
         store: '/store',
         actor: 'a',
-        writer: '',
         timeoutMs: 1000
       },
       {},
@@ -1197,7 +1196,6 @@ describe('plugin-r2 T5 what a search does', function () {
       libDirs: [],
       store: '/store',
       actor: 'a',
-      writer: '',
       timeoutMs: 1000
     };
     const found = problemsWith(config, { has: () => false });

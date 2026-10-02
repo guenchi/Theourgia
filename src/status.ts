@@ -209,7 +209,7 @@ export interface Notice {
  * `(behind (("w" . 7)))` -- its own record, reported back as though it
  * were somebody's. The core's rule excludes the DRAFT writer's name and
  * the keys here are LOG writer ids, which are equal only when the two
- * happen to coincide; a window with its own `theourgia.writer` parts
+ * happen to coincide; a window writing under its own draft name parts
  * them and the store starts naming itself. That is a defect in the core
  * and is being repaired there. This drops it whichever way the core
  * behaves, and the name to drop is read off this very answer's own

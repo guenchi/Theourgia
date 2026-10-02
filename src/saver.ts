@@ -792,12 +792,13 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
    * The core refuses a draft-space verb whose writer is unbound
    * (working.sc:131, `writer-required`) so that two agents handed only an
    * actor cannot silently
-   * share one draft space. This extension binds a writer on every
-   * request -- `THEOURGIA_WRITER`, defaulted to the actor -- so it
-   * should never see this. A provenance row would explain the answer
-   * away; a verdict row leaves the cell that binds the writer as the
-   * thing that fails when the binding breaks. If it does arrive, the
-   * write did not happen.
+   * share one draft space. This extension names a writer on every
+   * draft-space request it sends (`--writer`, the window's own draft name)
+   * and passes no `THEOURGIA_WRITER`, so it should never see this -- and if
+   * a request ever leaves its writer out, this is the answer it meets, by
+   * design. A provenance row would explain the answer away; a verdict row
+   * leaves the request that lost its writer as the thing that fails. If it
+   * does arrive, the write did not happen.
    */
   'writer-required': 'refused',
   /*

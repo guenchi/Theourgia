@@ -223,11 +223,6 @@
           "default": "",
           "description": "Actor name recorded with every change committed to the store (a draft is not attributed until it is committed). Defaults to the OS user name."
         },
-        "theourgia.writer": {
-          "type": "string",
-          "default": "",
-          "description": "Passed to the core as THEOURGIA_WRITER, the draft space a request sent without --writer uses. Defaults to the actor name. Nothing this extension sends uses it: each window writes its drafts under a name of its own, and every request that takes a writer names one."
-        },
         "theourgia.scheme": {
           "type": "string",
           "default": "scheme",

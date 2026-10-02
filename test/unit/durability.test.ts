@@ -175,8 +175,7 @@ describe('a timeout the timer cannot honour is refused where it is read', () => 
     corePath: '/core',
     libDirs: [],
     store: '/store',
-    actor: 'someone',
-    writer: ''
+    actor: 'someone'
   };
 
   /*

@@ -116,7 +116,6 @@ export class FakeCore {
       libDirs: [],
       store: this.store,
       actor: 'cell',
-      writer: '',
       timeoutMs: DEFAULT_TIMEOUT_MS,
       ...overrides
     };

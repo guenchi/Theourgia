@@ -397,34 +397,31 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
     assert.strictEqual(clientPath(config), path.join(config.corePath, CLIENT_PROGRAM));
   });
 
-  it('carries the actor and the writer in the environment and not in the argument vector', async () => {
-    core = new FakeCore([{ match: ['write'], stdout: '(ok (version "v1"))\n', rc: 0 }]);
-    const config = core.config({ actor: 'someone', writer: 'a-draft-space' });
+  it('carries the actor, and no writer in the argument vector', async () => {
+    core = new FakeCore([{ match: ['outline'], stdout: '- a.1  One\n', rc: 0 }]);
+    const config = core.config({ actor: 'someone' });
     const client = new Client(new CliTransport(config, core.env()));
-    await client.request('write', ['a.2', 'src', 'text']);
+    await client.request('outline', []);
     const logged = core.calls().filter((c) => c.event === 'answer')[0];
     assert.strictEqual(logged.env.THEOURGIA_ACTOR, 'someone');
-    assert.strictEqual(logged.env.THEOURGIA_WRITER, 'a-draft-space');
-    assert.ok(
-      !logged.argv.includes('--writer'),
-      'a writer spliced into the argument vector reaches verbs whose option table refuses it'
-    );
+    assert.ok(!logged.argv.includes('--writer'), 'a writer was spliced into the argument vector');
   });
 
   /*
-   * NOTE: THE WRITER DOES NOT FALL BACK TO ANYTHING IN THE CORE, and it
-   * does here -- for a different reason and at a different layer. The
-   * core refuses an unbound writer (`writer-required`) so that two
-   * agents cannot silently share one draft space; this extension is ONE
-   * agent, one window, and the setting's default is the actor's name so
-   * that a user who has not thought about draft spaces still has one.
-   * Two windows that want separate spaces set the setting.
+   * NEVER: A DRAFT SPACE FROM THE ENVIRONMENT. Every request this extension
+   * sends that takes a writer names one; a request that one day leaves it
+   * out must meet the core's refusal (`writer-required`), not a space named
+   * after the actor or inherited from the shell the editor was started in,
+   * which two windows would share without a word.
    */
-  it('defaults the writer to the actor, since one window is one agent', () => {
-    core = new FakeCore([]);
-    const config = core.config({ actor: 'someone', writer: '' });
-    const env = environmentFor(config, {}, { has: (n: string) => n === WITNESS_SOURCE });
-    assert.strictEqual(env.THEOURGIA_WRITER, 'someone');
+  it('passes no THEOURGIA_WRITER, not even one the editor inherited', async () => {
+    core = new FakeCore([{ match: ['outline'], stdout: '- a.1  One\n', rc: 0 }]);
+    const client = new Client(new CliTransport(core.config(), { ...core.env(), THEOURGIA_WRITER: 'from-the-shell' }));
+    await client.request('outline', []);
+    const logged = core.calls().filter((c) => c.event === 'answer')[0];
+    assert.strictEqual(logged.env.THEOURGIA_WRITER, null, 'the core was given a draft space by the environment');
+    const env = environmentFor(core.config(), { THEOURGIA_WRITER: 'from-the-shell' }, { has: (n: string) => n === WITNESS_SOURCE });
+    assert.ok(!('THEOURGIA_WRITER' in env), `THEOURGIA_WRITER is in the environment built for the core: ${env.THEOURGIA_WRITER}`);
   });
 });
 
