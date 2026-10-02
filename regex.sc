@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia regex)
-  (export regex-compile regex-match)
+  (export regex-compile regex-match regex-match-at)
   (import (rnrs))
 
   ;; A bounded regular-expression subset for data-driven definition heads.
@@ -75,7 +75,23 @@
         (unless (= i n) (assertion-violation 'regex "Unmatched parenthesis" source)) ast)))
 
   (define (regex-match ast text . spans)
-    (let ((n (string-length text)) (budget 30000))
+    (let ((answer (match-span ast text 0 (string-length text) "Definition line exceeds limit" #f)))
+      (and answer
+           (if (pair? spans) answer
+               (map (lambda (p) (cons (car p) (substring text (cadr p) (cddr p)))) answer)))))
+
+  ;; A MATCH ANCHORED AT START and reading no further than END, with no copy
+  ;; of the text: ^ is START and $ is END. It answers the LONGEST of the
+  ;; matches, whatever the pattern's alternation order or laziness prefers
+  ;; (regex-match answers the preferred one). -> the captures as
+  ;; (index start . end) in positions of TEXT, or #f.
+  (define (regex-match-at ast text start end)
+    (unless (and (<= 0 start end (string-length text)))
+      (assertion-violation 'regex-match-at "Invalid span" start end))
+    (match-span ast text start end "Span exceeds limit" #t))
+
+  (define (match-span ast text from n limit-message longest?)
+    (let ((budget 30000))
       (define (tick!)
         (set! budget (- budget 1))
         (when (< budget 0) (assertion-violation 'regex-limit "Pattern work limit exceeded")))
@@ -92,7 +108,7 @@
         (let ((pos (car state)) (captures (cdr state)))
           (define (consume yes?) (if (and (< pos n) yes?) (list (cons (+ pos 1) captures)) '()))
           (case (car pattern)
-            ((start) (if (= pos 0) (list state) '()))
+            ((start) (if (= pos from) (list state) '()))
             ((end) (if (= pos n) (list state) '()))
             ((char) (consume (and (< pos n) (char=? (cadr pattern) (string-ref text pos)))))
             ((any) (consume (and (< pos n) (not (memv (string-ref text pos) '(#\newline #\return))))))
@@ -118,9 +134,10 @@
                                           (filter (lambda (s) (> (car s) (car state))) (run body state)))))))
                    (if greedy? (append later here) (append here later))))))
             (else (assertion-violation 'regex "Unknown compiled operator" (car pattern))))))
-      (when (> n 4096) (assertion-violation 'regex-limit "Definition line exceeds limit"))
-      (let ((matches (run ast (cons 0 '()))))
+      (when (> (- n from) 4096) (assertion-violation 'regex-limit limit-message))
+      (let ((matches (run ast (cons from '()))))
         (and (pair? matches)
-             (if (pair? spans) (cdar matches)
-                 (map (lambda (p) (cons (car p) (substring text (cadr p) (cddr p)))) (cdar matches)))))))
+             (if longest?
+                 (cdr (fold-left (lambda (best m) (if (> (car m) (car best)) m best)) (car matches) (cdr matches)))
+                 (cdar matches))))))
 )
