@@ -139,6 +139,10 @@
                 (datum-uses '(quote x y))
                 (datum-uses '(case k (x))))
       '((define f x) (define-values g lambda x) (quote x y) (case k x)))
+(want "U9 a form registered through register-name-use-form! whose rule hands an improper body to the body walk: the body falls back, element by element"
+      (begin (register-name-use-form! 'custom (lambda (x env walk body) (body (cadr x) env)))
+             (caught (datum-uses '(custom (a . b)))))
+      '(a b))
 (want "U9 a check that decides names, not firing: a local else, => or define is a name; a bound head is an application; an improper or empty known form falls back"
       (in-order (datum-uses '(lambda (else) (cond (else 1) (a 2))))
                 (datum-uses '(lambda (=>) (cond (a => b c))))
