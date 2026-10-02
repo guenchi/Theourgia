@@ -449,6 +449,12 @@
 (define published-conflict (run 'publish "mirrorzx" "1" conflict-file))
 (define T2 (text 'root 'javascript "function target() {}\n"))
 (define S1 (insert! 'root '((kind . section) (title . "A section"))))
+;; The library column is the nearest LIBRARY ancestor, not the nearest
+;; ancestor: one code block under a section at the root, one under a section
+;; inside L1.
+(define DX (datum S1 '(define (sx) (sxname 1))))
+(define SL (insert! L1 '((kind . section) (title . "A section in a library"))))
+(define DY (datum SL '(define (sy) (sxname 2))))
 (run 'del L2)
 (run 'del D7)
 
@@ -458,7 +464,7 @@
                   (and b (pair? (cdr b)) (eq? (cadr b) 'conflict) (length (caddr b)))))
       '(ok 2))
 (want "U18 CONTROL: the store was built (every insert made exactly one block)"
-      (for-all string? (list L1 P1 D1 D2 D3 T1 D4 D5 D9 D11 TN L2 D6 D7 L3 D10 D12 DU T2 S1))
+      (for-all string? (list L1 P1 D1 D2 D3 T1 D4 D5 D9 D11 TN L2 D6 D7 L3 D10 D12 DU T2 S1 DX SL DY))
       #t)
 
 (want "U18 names: a datum block, a text block, a library block, exact answers"
@@ -494,6 +500,9 @@
       (in-order (run 'uses "CAR") (run 'uses "nothing-uses-this"))
       (list (list 'ok (list 'items (row D5 L1 'datum)) '(name-use syntactic) all-skipped)
             (list 'ok '(items) '(name-use syntactic) all-skipped)))
+(want "U19 the library column skips ancestors that are not libraries: under a section at the root none, under a section in L1 L1"
+      (run 'uses "sxname")
+      (list 'ok (cons 'items (sorted-rows (row DX 'none 'datum) (row DY L1 'datum))) '(name-use syntactic) all-skipped))
 (want "U19b a text block that defines a name lists it"
       (run 'uses "target")
       (list 'ok (list 'items (row T2 'none 'text)) '(name-use syntactic) all-skipped))
