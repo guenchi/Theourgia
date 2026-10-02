@@ -3764,19 +3764,39 @@
                                             (cons (cons (caar ms) (block-id (car (cdar ms)) (cadr (cdar ms)))) out)
                                             out))))))
                 (run (map (lambda (e) (bind-markers (cdr e) made-ids indices)) missing))
-                (plan-cut (or (state-event-cut state plan-event) '()))
-                (refused (stale-judgement state plan-event plan-cut consumes run)))
-           (if refused
-               (list (finish refused))
+                ;; THE PLAN IS APPLIED HERE: the verdict that sends a request
+                ;; to its completion answers unknown for any of its records
+                ;; that is waiting, the plan included (request.sc, rule 1,
+                ;; find-unknown). If it ever were not, the plan's cut would
+                ;; be unknown and every touching record would look foreign;
+                ;; that is C3 (a)'s case, and it is answered as (a) answers.
+                (plan-cut (state-event-cut state plan-event))
+                (refused (and plan-cut (stale-judgement state plan-event plan-cut consumes run))))
+           (cond
+             ((not plan-cut)
+              (list (finish (list 'error 'unknown (list 'not-applied plan-event)))))
+             (refused
+               (list (finish refused)))
+             (else
                (let ((cut-before (reduce-applied-cut state)))
                  (session-pending-count-set! s (length missing))
                  (run-intents! s state
                                (lambda (n) (request-actor req (list-ref indices n) plan-event))
                                run
                                (lambda (n answer)
-                                 (let ((ev (car (cadr (assq 'events (cdr answer)))))
+                                 ;; EVERY OK ANSWER OF A MEMBER NAMES ITS RECORD:
+                                 ;; one-intent! answers ok only once the record is
+                                 ;; committed, with (events ((<writer> . <seq>))),
+                                 ;; and write-outcome->answer never answers ok. A
+                                 ;; member that answered ok with no event would be
+                                 ;; a record this completion cannot see applied,
+                                 ;; which is C3 (a)'s case.
+                                 (let ((ev (let ((e (assq 'events (cdr answer))))
+                                             (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
                                        (cut (reduce-applied-cut state)))
                                    (cond
+                                     ((not ev)
+                                      (finish (list 'error 'unknown (list 'not-applied plan-event))))
                                      ((not (applied-in? cut plan-event))
                                       (finish (list 'error 'unknown (list 'not-applied plan-event))))
                                      ((not (applied-in? cut ev))
@@ -3787,7 +3807,7 @@
                                                                     (list-tail run (+ n 1)))))
                                         (set! cut-before cut)
                                         (and again (finish again))))
-                                     (else (set! cut-before cut) #f))))))))))))
+                                     (else (set! cut-before cut) #f)))))))))))))
 
   ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
   ;; an existing text-mode block's src -- the case canonical-intent settles;

@@ -676,6 +676,18 @@
           (list (car a) (map car (answers a)) (last-answer a) (clause 'done a))
           (list 'batch '(ok error) (list 'error 'unknown-sibling S) '(done 1))))))
 
+;; A MEMBER THAT WRITES THE VALUE ITS BLOCK ALREADY HOLDS still appends a
+;; record and answers ok with that record's event; the completion reads the
+;; event and goes on (main's reading of the after-each, r6).
+(cell "K1b"
+  (let* ((f (forged-store "k1b")) (st (car f)) (M (cadr f)))
+    (publish-plan! f (list (cons 0 (list 'set M 'src "old"))) #f)
+    (let* ((n0 (record-count st)) (a (forged-retry f)) (items (cdr (or (assq 'items (cdr a)) '(items)))))
+      (want "K1b a set of the value the block holds: the completion answers ok, its item naming its record"
+            (list (car a) (map car items) (and (pair? items) (let ((e (assq 'events (cdr (car items))))) (and e (pair? (cadr e)) #t))))
+            '(ok (ok) #t))
+      (want "K1b one record appended, and the block still holds the value" (list (- (record-count st) n0) (src st M)) '(1 "old")))))
+
 ;; K19: the hash check, alone. The consumes item names a based-on that is
 ;; not the block's hash, and its version is computed from that based-on,
 ;; so consumes-mismatch passes; nobody else writes.
