@@ -3535,6 +3535,7 @@
                       (lambda ()
                         (let ((bad (and (not (and verdict (eq? (car verdict) 'complete)))
                                         (or (and preflight (preflight state))
+                                            (datum-src-refusal state intents)
                                             (begin (announce-count! s intents)
                                                    (and req (cursor-unreachable store s req)))))))
                           ;; THE WRITING BRANCH, as one procedure of the reduction and
@@ -4900,6 +4901,24 @@
   (define (draft-on-datum-refusal id)
     (list (quote error) (quote bad-request) (quote draft-on-datum-unsupported)
           (list (quote block) id) (list (quote use) (quote def))))
+  ;; `set <id> src <text>` IS THE OTHER ROUTE TO A SRC, and a `batch` holding
+  ;; one: refused the same way before the first record, so a batch is
+  ;; refused whole. `set <id> src` with no value still runs, since it takes
+  ;; away a src written before the rule.
+  ;;
+  ;; The block a `set` of src with a value would give a src, when it is a
+  ;; datum block; #f otherwise. A malformed intent is #f here and is left
+  ;; for the validator that refuses it.
+  (define (datum-src-target state x)
+    (let ((i (if (and (list? x) (= 3 (length x)) (eq? (car x) 'expect)) (caddr x) x)))
+      (and (list? i) (= 4 (length i)) (eq? (car i) 'set) (eq? (caddr i) 'src)
+           (string? (cadr i)) (datum-mode-block? state (cadr i))
+           (cadr i))))
+  ;; The refusal for the first intent that would give a datum block a src,
+  ;; or #f.
+  (define (datum-src-refusal state intents)
+    (let ((hit (and (list? intents) (find (lambda (x) (datum-src-target state x)) intents))))
+      (and hit (draft-on-datum-refusal (datum-src-target state hit)))))
   ;; The live datum blocks that carry a src, in the store's order.
   (define (datum-blocks-with-src state)
     (filter (lambda (id)
