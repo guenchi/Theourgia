@@ -348,6 +348,62 @@
         (list (car r) (cadr r) (and (caddr r) (<= (caddr r) 128)) (cadddr r)))
       '(error output #t #t))
 
+;; ---- EV-14 a refused limit names the option and why ---------------------------
+;;
+;; One row per numeric option: zero, text and a positive value outside the
+;; bounds, each answered eval-arguments with the option clause naming it.
+(define (option-clause out)
+  (let ((a (answer-of out)))
+    (list (and (pair? a) (car a))
+          (and (pair? a) (assq 'reason (cdr a)))
+          (and (pair? a) (assq 'option (cdr a))))))
+(define (limit-readings name out-of-range)
+  (map (lambda (v) (option-clause (evaluate "(+ 1 2)" name v))) (list "0" "abc" out-of-range)))
+(define (limit-wants name low high)
+  (list (list 'error '(reason eval-arguments) (list 'option name '(reason not-positive)))
+        (list 'error '(reason eval-arguments) (list 'option name '(reason not-a-number)))
+        (list 'error '(reason eval-arguments) (list 'option name '(reason out-of-range) (list 'range low high)))))
+(want "EV-14 --timeout-ms: 0, abc and 60001 are refused naming the option and the reason"
+      (limit-readings "--timeout-ms" "60001")
+      (limit-wants "--timeout-ms" 1 60000))
+(want "EV-14 --memory-bytes: 0, abc and 1048575 are refused naming the option and the reason"
+      (limit-readings "--memory-bytes" "1048575")
+      (limit-wants "--memory-bytes" 1048576 2147483648))
+(want "EV-14 --output-bytes: 0, abc and 127 are refused naming the option and the reason"
+      (limit-readings "--output-bytes" "127")
+      (limit-wants "--output-bytes" 128 1048576))
+(want "EV-14 a count is a whole number: 1.5 is not-a-number"
+      (caddr (option-clause (evaluate "(+ 1 2)" "--timeout-ms" "1.5")))
+      '(option "--timeout-ms" (reason not-a-number)))
+
+;; ---- EV-15 no source at all is answered with the usage form --------------------
+(define (cli-no-input . args)
+  (let ((out (string-append here "/no-input.txt")))
+    (system (string-append
+              "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
+              "scheme --script ../core.sc "
+              (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+              "--store " store " --wire > " out " 2>&1 < /dev/null"))
+    (file-text out)))
+(define eval-entry
+  (let ((d (answer-of (cli "describe"))))
+    (let ((verbs (and (pair? d) (assq 'verbs (cdr d)))))
+      (and verbs (assq 'eval (cdr verbs))))))
+(define catalogue-usage (and eval-entry (cadr (assq 'usage (cdr eval-entry)))))
+(want "EV-15 eval with no argument and nothing on standard input answers the usage form, the catalogue's"
+      (let ((a (answer-of (cli-no-input "eval"))))
+        (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (equal? (cadr a) catalogue-usage))))
+      '(usage #t))
+(want "EV-15 TWIN: a positional that holds no form is still a source, judged as one"
+      (let ((a (answer-of (cli-no-input "eval" " "))))
+        (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a)) (and (pair? a) (assq 'reason (cdr a)))))
+      '(error bad-source (reason expected-one-form)))
+(want "EV-15 the catalogue's eval form says --under takes a library id, and a refusal carries the same form"
+      (let ((a (answer-of (evaluate "(+ 1 2)" "--timeout-ms" "0"))))
+        (list (and catalogue-usage (member '("--under" <library-id>) catalogue-usage) #t)
+              (and (pair? a) (equal? (assq 'usage (cdr a)) (list 'usage catalogue-usage)))))
+      '(#t #t))
+
 ;; ---- EV-03 the memory budget --------------------------------------------------
 ;;
 ;; KEY: THE SILENT ONE IS THE ROW THAT MATTERS, and it is the row the
