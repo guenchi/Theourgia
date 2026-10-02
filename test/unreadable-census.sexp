@@ -1039,11 +1039,11 @@
    unrelated b
    "working-read: utf8 decode of bytes in hand"
    (failure (#t #f)))
-  ("working.sc" (behind-item) 1 guard
+  ("working.sc" (behind-clauses) 1 guard
    (#t)
    unrelated b
-   "behind-item: arithmetic over cuts"
-   (e (#t #f)))
+   "behind-clauses: arithmetic over cuts; a failure is the two clauses' absence"
+   (e (#t (quote ()))))
   ("working.sc" (retire!) 1 guard
    (#t)
    fact b
