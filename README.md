@@ -157,6 +157,10 @@ Change a block with write and then commit, through a draft, rather than replacin
 Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
 Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.
 Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.
+Set class with set <id> class inference for what you concluded and did not verify, and with set <id> class external for material from outside; neither is ever treated as a ruling.
+To replace a ruling, write the new one and link <new> supersedes <old>; to record that something is wrong, link <evidence> refutes <claim>.
+Say what your work rests on with link <work> depends-on <premise>: when the premise changes, the work is marked for review.
+After checking that an implementation still carries out its decision, link <impl> implements <decision> again: linking again is how you say you checked.
 
 ## Reading a store
 
@@ -335,12 +339,13 @@ with no table the answer is `(ok (reached ((<id> 0))))`.
 
 ### `search`
 
-    (search <query> ("--all"))
+    (search <query> ("--all") ("--all-validity"))
 
 It answers:
 
     (hit <id> <score> "<snippet>" (fields (<field> ...)))
     --all           every hit, not just the best ten
+    --all-validity  superseded and refuted blocks too (see "Class and validity")
 
 The fifth part names the fields THIS block matched in. It is not the
 `fields` of the `scanned` clause, which names the fields the search read and
@@ -432,13 +437,14 @@ answer with items writes the items and nothing else.
 
 ### `grep`
 
-    (grep <pattern> ("--under" <id>) ("--all"))
+    (grep <pattern> ("--under" <id>) ("--all") ("--all-validity"))
 
 It answers:
 
     (match <id> <line-no> "<text>")
     --under <id>    only the block given and what is under it; an id that names no block matches nothing
     --all           no limit on how many lines come back
+    --all-validity  lines of superseded and refuted blocks too
 
 `search` finds blocks; `grep` finds lines. It prints every line of a live
 block's text that contains the pattern, in outline order, with the number of
@@ -469,12 +475,13 @@ has no lines.
 
 ### `whereis`
 
-    (whereis <name>)
+    (whereis <name> ("--all-validity"))
 
 It answers:
 
     (def <id> (library <lib>) (name <sym>) (kind code))
     (export <lib-id> (library <lib>) (name <sym>))
+    --all-validity  records in superseded and refuted blocks too
 
 Says where a name is. A `def` record is a block that defines it; an `export` record
 is a library that carries it in its export list, which means this library re-exports
@@ -648,16 +655,17 @@ another relation does not discharge it, and neither does an `implements` edge wh
 source block was deleted: the answer names that source under `implementer-deleted`.
 
 Time is a cut, never a sequence number. A decision's **origin** is the cut just after
-the write that created the block, and its **frontier** is the join of the cuts of its own
-content field values, origin included; moving a block or linking to it does not change it,
-and neither does a write to a bookkeeping field -- `status`, `batch`, `keywords`, `class` or
-`slug` -- which says where a block stands, not what it says: a task set to done after it was
-linked has not drifted. An
-implementation is **attested** at the join of the decision's frontier and the cuts of
-its `implements` links to the decision, and it has **drifted** when its own fields
-changed at a cut that attestation does not cover: it was edited after it was linked,
-or the linking writer had not seen the edit. Editing the decision, or unlinking and
-linking again, attests anew. A draft that is not committed is not a change.
+the write that created the block. An implementation has **drifted** when its content
+changed since the edge, as "Class and validity" below defines it: no single `implements`
+link of it, and no single content write of the decision, was made by a writer who had
+seen all of the implementation's current content. Its content is every field except the
+bookkeeping ones -- `status`, `batch`, `keywords`, `class` and `slug` -- which say where a
+block stands, not what it says: a task set to done after it was linked has not drifted,
+and moving a block or linking to it is not a change either. Two writers who each saw a
+part of the change do not make one who saw all of it. Editing the decision having seen
+the change, or linking again, attests anew. A draft that is not committed is not a
+change. Which decisions are discharged, who implements them and who has drifted are
+read from the one provider that also answers validity.
 
 By default it lists the open decisions; `--all` lists every decision. `--drifted`
 keeps those with at least one drifted implementation, `--since <cut>` those whose
@@ -772,6 +780,53 @@ the daemon, `names` and `uses` are answered by its store process from a fold of 
 store taken for the request, so a commit made outside the daemon is in the next
 answer.
 
+### Class and validity
+
+A block's `class` says what kind of statement it is: `observation`, `inference`,
+`ruling`, `verification` or `external`. A block with no class is a `ruling` if it is a
+decision and an `observation` otherwise. Observations, rulings and verifications are
+**authoritative**; inferences, external material, a class in conflict and one that
+cannot be read are not.
+
+Six relations have an effect on whether a block is still in force; every other
+relation is only an edge.
+
+| relation | from -> to | effect |
+|---|---|---|
+| `supersedes` | newer -> older | the older block is superseded |
+| `refutes` | evidence -> claim | the claim is refuted while it has not changed since; once it has, it needs review |
+| `depends-on` | dependent -> premise | the dependent needs review when the premise is deleted, superseded, refuted, needs review, or changed since |
+| `implements` | implementation -> decision | discharges the decision (see `commitments`); the implementation needs review when either end changed since, or the decision is deleted, superseded, refuted or needs review |
+| `verifies` | check -> subject | positive evidence while the subject has not changed since |
+| `conflicts-with` | block <-> block | none, unless proposed |
+
+**Changed since** is causal, not a matter of clocks: an end of an edge has changed since
+the edge when no single link of the edge, and no single content write of the other end,
+was made by a writer who had seen all of that end's current content. Linking again is
+how you attest. `supersedes`, `refutes` and `conflicts-with` take effect only from an
+authoritative block; from another they are proposals, and the target needs review with
+the reason `proposed-supersedes`, `proposed-refutes` or `proposed-conflicts-with`. A
+deleted block has no effect, and neither has an edge from a block to itself.
+
+A block's **validity** is one of `superseded`, `refuted`, `needs-review` and `valid`, in
+that order of precedence, with its reasons, each `(<why> <block>)`: `superseded-by`,
+`refuted-by`, `refutation-moved`, the three `proposed-` reasons, `premise-gone`,
+`premise-superseded`, `premise-refuted`, `premise-needs-review`, `premise-moved` and
+`implementation-moved`. A decision's state is one of `closed`, `open`, `review`,
+`verified` and `implemented`, the first that holds in that order.
+
+A plain `read` of a block that is not valid adds `(validity <v> (<why> <block>) ...)`
+after its own clauses, and `read --recursive` adds `(validity ((<id> <v> (<why> <block>)
+...) ...))` for the blocks that are not valid; no clause means valid, and `read` never
+hides a block. `search`, `grep` and `whereis` leave out superseded and refuted blocks and
+say so with `(excluded (blocks (superseded <n>) (refuted <n>)))`, counted in blocks; a hit
+on a block that needs review is returned and named in `(validity ((<id> needs-review
+(<why> <block>) ...) ...))`; `--all-validity` leaves nothing out and names every hit that
+is not valid. Their human output shows the hits in force and nothing else: to see the
+superseded and refuted ones, ask with `--all-validity`. These clauses come before the
+receipt. A store that links none of the six relations answers every read and search
+exactly as before.
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.
@@ -852,6 +907,11 @@ than stored. A kind stored as text would match nothing and the block would
 simply stop behaving like what it said it was. The same set applies to a kind
 written through `batch`, and to nothing else: a record already in a store
 keeps whatever kind it carries, including one a later version introduced.
+
+`class` is such a field too: a word from `observation`, `inference`, `ruling`,
+`verification`, `external`, converted and refused by the same rule as `kind`, with the legal set in the refusal
+(`(error bad-request class-not-known (class "<spelling>") (known (...)))`). It says what
+kind of statement a block is; see "Class and validity".
 
 ### `move`
 

@@ -3,6 +3,7 @@ actor-check - 16 852725fc03f011f27d9316f9ef315dec
 actor-cost - 4 965273ba3a708f1cd4d198b562225469
 adopt1 67 80 8fc609d4ca2b7d82badc8768347f4c68
 ascii-only 16 22 16fbb69abfb23dba970db8afde026687
+attest-model 64 67 521475801c44ce1aea707d5de3b0cb0d
 baseline-rules 29 32 9ec8471885760ece51fe6afe030c94e9
 behind 32 35 ad72f72e8266d469f349b21db9551f66
 cli-forward 22 25 d95ae64e53d1be5e9b7be3bb78eeea28
@@ -88,10 +89,10 @@ move-and-edges 11 17 afff5fb12f630959cefda34ae86c33d1
 name-use-verbs 96 100 bac8f4773b1e40e21071507eeadcc1fe
 nesting-depth 9 12 898b0fe2614ef03fbf5d58f1b4a9e649
 one-subtree 10 20 09c1fa2a354e693e88559f1ff8966500
-options-gate 33 37 40b0d951e0eb12a0471ef2d6e0ff5c09
+options-gate 33 37 55d6166c15fa74dda0d01eeb76fbca2c
 pin-store 8 14 200d5a359ac50896d1a77bd7a8792f13
 plan-completion 13 16 31a089685e6c33994375aaef442fd628
-platform-rows 40 44 b16eecc9ce8bb561bc79adbfa7448319
+platform-rows 40 44 c34e7402facb3f4fb1a6d403d05c54ed
 project-template 73 78 2b22c0992f5722d61290297df98a140d
 q1 48 58 d8ebc85e05d56cfc6c8bb21e7cb452c9
 q10 6 15 b81fec4ec5717997ac34d567cefd5545
@@ -143,6 +144,7 @@ unreadable-publish 12 20 6b80679017bfaea17e88094291717766
 unreadable-routes 76 87 89d98fa5f4d5f8f5d23deaf269ebcfa4
 unreadable-writer 77 105 22d795ef1d394873a0aa8d28c70d511d
 unscoped-lock 2 11 0bc39c12567c9dde5dff75237df153c7
+validity 27 30 bba592f3386544c5e57fbaa2836cb599
 verb-registry 23 28 61a5ba33c6368740ba83bc485562ef6d
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9

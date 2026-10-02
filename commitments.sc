@@ -22,15 +22,16 @@
 ;;; `commitments` lists it.
 ;;;
 ;;; TIME HERE IS A CUT, NEVER A NUMBER. A decision's ORIGIN is the causal
-;;; cut just after the put that created it; its FRONTIER is the join of the
-;;; cuts of its own surviving field candidates, the origin included. An
-;;; implementer is ATTESTED at the join of the decision's frontier and the
-;;; cuts of the surviving `implements` links from it to the decision, and
-;;; it DRIFTS when its CHANGE CUT -- the join of its own surviving field
-;;; events -- is not covered by that: it changed after it was said to
-;;; implement the decision, or the decision was edited by no one who had
-;;; seen the change. Sequence numbers of two writers are never compared
-;;; with each other.
+;;; cut just after the put that created it, and orders the listing.
+;;;
+;;; WHAT DISCHARGES A DECISION, WHO IMPLEMENTS IT AND WHO HAS DRIFTED ARE
+;;; THE LIFECYCLE PROVIDER'S, read here and defined nowhere else: a decision
+;;; is open when its state there is open; each live implementer is listed
+;;; with the cut at which it was said to implement the decision (its links'
+;;; join); one DRIFTS when its own content moved past every single witness
+;;; of the edge -- each link of it, each content write of the decision --
+;;; and is listed with that content's cut. Sequence numbers of two writers
+;;; are never compared with each other.
 ;;;
 ;;; NEVER: NOTHING IS WRITTEN. The query reads the committed reduction --
 ;;; in the daemon, the published one, which it does not change.
@@ -42,15 +43,15 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia reduce) state-read state-refs state-block-ids state-put-events
-                state-field-events state-link-events state-event-cut cut-join cut-covers?
-                block-id)
+          (only (theourgia reduce) state-read state-block-ids state-put-events state-event-cut
+                cut-covers? block-id)
+          (only (theourgia lifecycle) lifecycle implementation-of decision-state-of)
           (only (theourgia store) parse-cut)
           (only (theourgia project) subtree-ids)
           (only (theourgia extensions) commitments-usage)
           (only (theourgia template-read) query-scope-root)
           (only (theourgia field-reading) field-of conflict-form? conflict-values lenient-status
-                decision-statuses task-statuses bookkeeping-fields rows-left-out))
+                decision-statuses rows-left-out))
 
   ;; The handler, with the eight arguments every verb's handler takes.
   (define (commitments-verb store actor args req options state writer cwd)
@@ -92,34 +93,11 @@
   ;; done or dropped. Anything else is open, and the answer says which.
   (define (status-reading v) (lenient-status v decision-statuses))
 
-  (define (status-discharges? s) (or (eq? s 'done) (eq? s 'dropped)))
-
-  ;; KEY: WHETHER AN IMPLEMENTS EDGE DISCHARGES DEPENDS ON THE KIND OF ITS
-  ;; SOURCE, and the answer is a dispatch on that kind with one default
-  ;; clause. A kind with a condition of its own adds a clause here and
-  ;; edits none of the others.
-  (define (edge-discharges? view source)
-    (let ((row (state-read view source)))
-      (case (and row (let ((k (field-of row 'kind))) (and (symbol? k) k)))
-        ;; A TASK DISCHARGES ONLY ONCE IT IS DONE: an implements edge from a
-        ;; task says what will implement the decision, not that it has.
-        ((task) (eq? 'done (lenient-status (field-of row 'status) task-statuses)))
-        (else #t))))
-
   ;; ---- cuts -----------------------------------------------------------------
 
   (define (event-cut view event)
     (or (state-event-cut view event)
         (assertion-violation 'commitments "an applied event has no causal cut" event)))
-
-  ;; The join of the cuts of a block's own surviving CONTENT field events,
-  ;; from a starting cut: the bookkeeping fields (field-reading.sc) are
-  ;; left out, so setting a status, a batch or keywords is not a change
-  ;; that makes an implementer drift, nor one that covers a change.
-  (define (frontier view id from)
-    (fold-left (lambda (acc event) (cut-join acc (event-cut view event)))
-               from
-               (state-field-events view id bookkeeping-fields)))
 
   (define (sorted-cut cut)
     (list-sort (lambda (x y) (string<? (car x) (car y))) cut))
@@ -151,7 +129,8 @@
                         (else #f))))
       (if (and under (not (equal? under "root")) (not scope))
           ((dispatch-helper 'unknown-id) view under)
-          (let ((rows (commitment-rows view which drifted-only since scope)))
+          (let* ((L (lifecycle view))
+                 (rows (commitment-rows L view which drifted-only since scope)))
             (append
               ((dispatch-helper 'items)
                (if (and root scope)
@@ -159,7 +138,7 @@
                            (list (list 'scope root
                                        (list 'outside (rows-left-out
                                                         rows
-                                                        (commitment-rows view which drifted-only since #f))))))
+                                                        (commitment-rows L view which drifted-only since #f))))))
                    rows))
               ((dispatch-helper 'receipt) view (listed-ids rows)))))))
 
@@ -182,7 +161,7 @@
 
   ;; The decision rows and the skipped rows for one scope (#f: the whole
   ;; store), with the request's filters.
-  (define (commitment-rows view which drifted-only since scope)
+  (define (commitment-rows L view which drifted-only since scope)
     (let ((origins (make-hashtable string-hash string=?)))
       (for-each (lambda (event)
                   (hashtable-set! origins (block-id (car event) (cdr event)) event))
@@ -206,43 +185,22 @@
                  (loop (cdr ids) decisions (cons (cons id 'no-origin) skipped)))
                 (else
                  (loop (cdr ids)
-                       (cons (read-decision view id row (hashtable-ref origins id #f))
+                       (cons (read-decision L view id row (hashtable-ref origins id #f))
                              decisions)
                        skipped))))))))
 
   ;; A DELETED SOURCE DOES NOT DISCHARGE AND IS NOT LISTED AS AN
   ;; IMPLEMENTER; it is named apart, so a decision a deletion reopened says
-  ;; why. Each live implementer is listed with the cut at which it was said
-  ;; to implement (its links' join, without the decision), and a drifted
-  ;; one with its change cut.
-  (define (read-decision view id row event)
-    (let* ((origin (event-cut view event))
-           (front (frontier view id origin))
-           (status (status-reading (field-of row 'status)))
-           (sources (map car (filter (lambda (ref) (eq? (cdr ref) 'implements))
-                                     (state-refs view id))))
-           (deleted (filter (lambda (source) (deleted? view source)) sources))
-           (live (filter (lambda (source) (not (member source deleted))) sources))
-           (implementers
-             (map (lambda (source)
-                    (let ((said (fold-left (lambda (acc event) (cut-join acc (event-cut view event)))
-                                           '()
-                                           (state-link-events view source 'implements id)))
-                          (change (frontier view source '())))
-                      (list source said change)))
-                  live)))
-      (make-decision id event (field-of row 'title) status origin
-                     (map (lambda (i) (list (car i) (sorted-cut (cadr i)))) implementers)
-                     (map (lambda (i) (list (car i) (sorted-cut (caddr i))))
-                          (filter (lambda (i) (not (cut-covers? (cut-join front (cadr i)) (caddr i))))
-                                  implementers))
-                     deleted
-                     (or (status-discharges? status)
-                         (exists (lambda (source) (edge-discharges? view source)) live)))))
-
-  (define (deleted? view id)
-    (let ((row (state-read view id)))
-      (or (not row) (cdr (assq 'deleted row)))))
+  ;; why. All three lists, and whether the decision is discharged, are the
+  ;; provider's.
+  (define (read-decision L view id row event)
+    (let ((impl (implementation-of L id)))
+      (make-decision id event (field-of row 'title) (status-reading (field-of row 'status))
+                     (event-cut view event)
+                     (map (lambda (i) (list (car i) (sorted-cut (cadr i)))) (cdr (assq 'implemented-by impl)))
+                     (map (lambda (i) (list (car i) (sorted-cut (cadr i)))) (cdr (assq 'drifted impl)))
+                     (cdr (assq 'deleted impl))
+                     (not (eq? 'open (car (decision-state-of L id)))))))
 
   (define (wanted? d which drifted-only since)
     (and (or (eq? which 'all) (not (decision-discharged d)))

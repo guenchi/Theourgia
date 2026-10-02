@@ -21,7 +21,9 @@
 ;; (plain read and reach), whose human output shows their clauses.
 ;;
 ;; usage, from this directory, CHEZSCHEMELIBDIRS naming the product to use:
-;;   scheme --script read-receipt-base.ss seed <store> <lib-dir>     (this tree)
+;;   scheme --script read-receipt-base.ss seed <store> <scratch-dir> (this tree)
+;; <scratch-dir> is a new directory the seed writes a two-definition library
+;; into and imports; it is not the product's library directory.
 ;;   scheme --script read-receipt-base.ss read <store> <out> keep    (the older product)
 ;;   scheme --script read-receipt-base.ss read <store> <out> strip   (this tree)
 ;;   scheme --script read-receipt-base.ss compare <older-out> <this-out>
@@ -53,7 +55,14 @@
           (state-block-ids s))))
 
 (define (seed! store lib)
-  (let ((run (lambda a (store-call store a))))
+  ;; A SEED THAT DID NOT SEED MUST NOT SAY IT DID: every call has to succeed,
+  ;; and the two definitions have to be found after the import.
+  (let ((run (lambda a
+               (let ((answer (store-call store a)))
+                 (unless (rpc-ok? answer)
+                   (printf "NOT SEEDED: ~s answered ~s\n" a answer)
+                   (exit 1))
+                 answer))))
     (run 'init)
     (run 'insert "--title" "Xray block" "--text" "xray body alpha")
     (let ((x (id-by-title store "Xray block")))
@@ -70,7 +79,10 @@
     (call-with-output-file (string-append lib "/rr.sc")
       (lambda (p) (put-string p "(library (rr) (export h g) (import (rnrs))\n(define (h) 1)\n(define (g) (h)))\n"))
       'replace)
-    (run 'import-code lib "--datum")))
+    (run 'import-code lib "--datum")
+    (unless (and (definition-of store "h") (definition-of store "g"))
+      (printf "NOT SEEDED: the import of ~a did not define h and g\n" lib)
+      (exit 1))))
 
 ;; The calls, and the clauses the receipt appends to each answer.
 (define (calls store)
@@ -144,5 +156,5 @@
                     name (if same-answer "identical" "differs")
                     (cond ((memq name '(read reach)) "printed whole") (same-human "identical") (else "differs")))
             (loop (cdr o) (cdr t) (if (and same-answer same-human) bad (+ bad 1)))))))))
-  (else (printf "usage: seed <store> <lib-dir> | read <store> <out> keep|strip | compare <older> <this>\n")
+  (else (printf "usage: seed <store> <scratch-dir> | read <store> <out> keep|strip | compare <older> <this>\n")
         (exit 2)))
