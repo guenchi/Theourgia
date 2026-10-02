@@ -342,6 +342,9 @@
             ((not writer) (invalid-writer))
             ((not (safe-id? id)) '(error bad-request invalid-block-id))
             ((not (state-read state id)) (list 'error 'unknown-id id))
+            ;; NEVER: NO DRAFT ON A DATUM BLOCK. Nothing would read it: the
+            ;; block's text is its body (store.sc, datum-block?).
+            ((datum-block? state id) (draft-on-datum-refusal id))
             ((and (or parent-writer parent-version)
                   (not (and parent-writer parent-version hash cut-text (safe-id? parent-writer))))
              '(error invalid-working-baseline))
@@ -846,6 +849,12 @@
                                                 (let ((p (assoc (list-ref e 3) selected)))
                                                   (and p (not (equal? (cdr p) (list-ref e 4))))))
                                               entries)))))
+            ;; NEVER: A DRAFT ON A DATUM BLOCK IS NOT CONSUMED. One written
+            ;; before `write` refused it is refused here and left where it
+            ;; is; an unchanged one too, which would otherwise be retired
+            ;; as a commit that wrote nothing.
+            ((find (lambda (e) (datum-block? state (list-ref e 3))) entries)
+             => (lambda (e) (draft-on-datum-refusal (list-ref e 3))))
             ((null? bad) #f)
             ((null? (cdr bad)) (car bad))
             (else (list 'error 'stale-baseline (cons 'blocks (map cddr bad)))))))

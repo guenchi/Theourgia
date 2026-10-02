@@ -27,7 +27,7 @@
           text-decode-skipped-count prepared-generation-count prepared-token-now
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
-          batch-answer
+          batch-answer datum-block? draft-on-datum-refusal
           store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict failure-text)
@@ -2578,6 +2578,37 @@
          (known? state (cadr i))
          (equal? (assq 'mode (block-fields state (cadr i))) '(mode . text))))
 
+  ;; NEVER: A BLOCK OF MODE DATUM IS NOT GIVEN A SRC. Its text is its body,
+  ;; written by `def`, and export-code --datum, whereis and eval read the
+  ;; body. A src beside it was accepted, answered ok and read by none of
+  ;; them: an edit reported saved that never took effect. So every route
+  ;; that would put one there refuses by name before anything is written:
+  ;; `write` before the draft exists, `commit` before it consumes the draft,
+  ;; `set` and `batch` before their first record, so a batch is refused
+  ;; whole. `set <id> src` with no value still runs, since it takes away a
+  ;; src written before this rule; `check` lists the blocks that hold one.
+  (define (datum-block? state id)
+    (and (string? id) (known? state id)
+         (equal? (assq 'mode (block-fields state id)) '(mode . datum))))
+
+  (define (draft-on-datum-refusal id)
+    (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block id) '(use def)))
+
+  ;; The block a `set` of src with a value would give a src, when it is a
+  ;; datum block; #f otherwise. A malformed intent is #f here and is left
+  ;; for the validator that refuses it.
+  (define (datum-src-target state x)
+    (let ((i (if (and (list? x) (= 3 (length x)) (eq? (car x) 'expect)) (caddr x) x)))
+      (and (list? i) (= 4 (length i)) (eq? (car i) 'set) (eq? (caddr i) 'src)
+           (datum-block? state (cadr i))
+           (cadr i))))
+
+  ;; The refusal for the first intent that would give a datum block a src,
+  ;; or #f.
+  (define (datum-src-refusal state intents)
+    (let ((hit (and (list? intents) (find (lambda (x) (datum-src-target state x)) intents))))
+      (and hit (draft-on-datum-refusal (datum-src-target state hit)))))
+
   ;; THE ONE PLACE A TEXT-MODE SRC BECOMES BYTES, and the intent is otherwise
   ;; returned as it is -- the same object, so nothing else about it changes.
   ;; resolve asks it of every `set`; write-plan-then! asks it before the
@@ -3284,6 +3315,7 @@
                       (lambda ()
                         (let ((bad (and (not (and verdict (eq? (car verdict) 'complete)))
                                         (or (and preflight (preflight state))
+                                            (datum-src-refusal state intents)
                                             (begin (announce-count! s intents)
                                                    (and req (cursor-unreachable store s req)))))))
                           (cond
@@ -4620,6 +4652,16 @@
            ;; the same name. Present only when there is one; the verdict is
            ;; unchanged by it.
            (reserved (state-reserved-relation-records state))
+           ;; A DATUM BLOCK HOLDING A SRC IS REPORTED, AND IT IS NOT DAMAGE:
+           ;; a write before the rule above put it there, and every reader
+           ;; of the block goes on reading its body. Listed so that the
+           ;; edit nobody saw take effect is found; present only when there
+           ;; is one, and the verdict is unchanged by it.
+           (datum-with-src
+             (filter (lambda (id)
+                       (and (not (deleted? state id)) (datum-block? state id)
+                            (assq 'src (block-fields state id))))
+                     (state-block-ids state)))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4661,6 +4703,7 @@
             (list 'notes notes))
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
+        (map (lambda (id) (list 'datum-block-with-src id)) datum-with-src)
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

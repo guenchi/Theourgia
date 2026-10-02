@@ -747,6 +747,8 @@ conditional: the store refuses it if the block has moved on from that
 version, so a caller that read, thought, and came back cannot overwrite
 what happened in between.
 A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
+A datum block's `src` cannot be given a value (see `write`); `set <id> src`
+with no value takes away one written before that rule.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
 fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision`, `task`,
@@ -866,6 +868,15 @@ Puts a draft in that writer's slot for that block. A draft's version is
 the name of its content -- `sha256(bytes || based-on || cut)` -- so the
 same bytes written twice are the same version. A write into a slot that already holds a live draft keeps that draft's `based-on` and cut. `--rebase` moves a draft onto the committed version the caller merged onto, which it must name with both `--based-on <version>` and `--working-cut <cut>`, or it is refused `(error bad-request rebase-needs-baseline)`. A named baseline that cannot be checked is refused `(error invalid-working-baseline (reason cut-unusable|block-not-at-cut|hash-not-at-cut))`. The answer is `(ok (saved <block>) (writer <w>) (version <v>) (based-on <v>))`.
 
+NEVER: **A block of mode datum takes no draft.** Its text is its body, which
+`def` writes and which `export-code --datum`, `whereis` and `eval` read; a src
+beside it would be read by none of them. So `write` on one is refused
+`(error bad-request draft-on-datum-unsupported (block <id>) (use def))` and
+nothing is written. `commit` refuses a draft on a datum block written before
+this rule the same way and leaves the draft where it is; `set <id> src <text>`
+on a datum block, and a `batch` holding such a `set`, are refused the same way
+before anything is written, the batch whole.
+
 ### `restore`
 
     (restore <version> ("--writer" <name>))
@@ -949,7 +960,7 @@ Turns drafts into committed versions. Naming no block commits all of that
 writer's drafts. `--working-version` may be given once per block to say
 which version of the draft is being committed; with exactly one block
 named, the bare version may be given.
-A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. A commit that repeats a request this store has already applied is answered from that request's record, without these checks: its `items` hold `(ok (replay #t) (event ...))`. What makes two requests the same, and what `req-mismatch` answers, is in *Requests and replay* below; for `commit`, the blocks are compared as a set, so naming them in another order is the same request. Every refusal that `commit` itself makes carries `(usage ...)`, the commit form; when the store missed a writer, an `(incomplete ...)` clause follows it. The checks the dispatcher makes before it -- among them the transport options, the store's presence and the `--req` and `--cursor` rules -- answer without it: `commit --req <id>` with no `--cursor` is `(error bad-request req-without-cursor)`.
+A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. A draft on a block of mode datum is refused `draft-on-datum-unsupported` (see `write`) and is not retired. A commit that repeats a request this store has already applied is answered from that request's record, without these checks: its `items` hold `(ok (replay #t) (event ...))`. What makes two requests the same, and what `req-mismatch` answers, is in *Requests and replay* below; for `commit`, the blocks are compared as a set, so naming them in another order is the same request. Every refusal that `commit` itself makes carries `(usage ...)`, the commit form; when the store missed a writer, an `(incomplete ...)` clause follows it. The checks the dispatcher makes before it -- among them the transport options, the store's presence and the `--req` and `--cursor` rules -- answer without it: `commit --req <id>` with no `--cursor` is `(error bad-request req-without-cursor)`.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is
@@ -1300,7 +1311,10 @@ refuses it, so the verdict says it. An applied `link` or `unlink` record
 under a reserved relation name (`ref`, `uses`, `calls`, `guards`), written
 before the names were reserved, is listed under
 `(reserved-relations ((<from> <rel> <to> (event <writer> <seq>)) ...))`,
-again only when there is one; it does not change the verdict. The verdict
+again only when there is one; it does not change the verdict. A datum block
+that holds a src -- written before `write` and `commit` refused it, and read by
+nothing -- is listed as `(datum-block-with-src <id>)`, one clause per block and
+only when there is one; it does not change the verdict either. The verdict
 is `damaged` when a writer's log fails its integrity check, the reduction
 could not apply a record, or the registry is inside the store; otherwise
 `duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
