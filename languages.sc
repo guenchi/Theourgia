@@ -119,7 +119,7 @@
 
   (define catalog
     (checked-catalogue
-      '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls"))
+      '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls")) (identifier "[A-Za-z!$%&*/:<=>?^_~+.@\\-][A-Za-z0-9!$%&*/:<=>?^_~+.@\\-]*")
           (line-comment ";;") (block-comment ("#|" "|#"))
           (def-heads
             ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
@@ -135,7 +135,7 @@
             ("(define (f x) x)"
               "(define x 1)"
               "(define-syntax m (syntax-rules () ((_ x) x)))")))
-         ((lang "javascript") (extensions ("js" "mjs" "cjs")) (line-comment "//")
+         ((lang "javascript") (extensions ("js" "mjs" "cjs")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
            (runner ((argv ("node" "{file}")) (source-name "__eval.mjs")))
            (block-comment ("/*" "*/"))
            (def-heads
@@ -152,7 +152,7 @@
              ("function f() {}"
                "class C {}"
                "const inc = (x) => x + 1;")))
-         ((lang "typescript") (extensions ("ts" "mts" "cts")) (line-comment "//")
+         ((lang "typescript") (extensions ("ts" "mts" "cts")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
@@ -168,7 +168,7 @@
              ("interface Shape {}"
                "type Count = number;"
                "function f(): void {}")))
-         ((lang "python") (extensions ("py" "pyw")) (line-comment "#")
+         ((lang "python") (extensions ("py" "pyw")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "#")
            (runner ((argv ("python3" "{file}")) (source-name "__eval.py")))
            (block-comment #f)
            (def-heads
@@ -184,7 +184,7 @@
                (fallback "whole-file-with-warning") (prefix-lines ("^@"))))
            (name-vectors
              ("def f():\n\treturn 1" "class C:\n\tpass" "answer = 42")))
-         ((lang "go") (extensions ("go")) (line-comment "//")
+         ((lang "go") (extensions ("go")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
            (block-comment ("/*" "*/"))
            (def-heads
              ("^func\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\("
@@ -199,7 +199,7 @@
                (prefix-lines ())))
            (name-vectors
              ("func f() {}" "type Count int" "func (x T) M() {}")))
-         ((lang "rust") (extensions ("rs")) (line-comment "//")
+         ((lang "rust") (extensions ("rs")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:pub\\s+)?(?:async\\s+)?fn\\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -213,7 +213,7 @@
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("fn f() {}" "struct Thing {}" "impl Thing {}")))
-         ((lang "c") (extensions ("c" "h")) (line-comment "//")
+         ((lang "c") (extensions ("c" "h")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:static\\s+)?int\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*\\{"
@@ -229,7 +229,7 @@
              ("int f(void) { return 1; }"
                "void g(void) {}"
                "struct Point { int x; };")))
-         ((lang "java") (extensions ("java")) (line-comment "//")
+         ((lang "java") (extensions ("java")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:public\\s+)?class\\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -244,7 +244,7 @@
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("class C {}" "interface I {}" "enum E { A }")))
-         ((lang "shell") (extensions ("sh" "bash")) (line-comment "#")
+         ((lang "shell") (extensions ("sh" "bash")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "#")
            (runner ((argv ("sh" "{file}")) (source-name "__eval.sh")))
            (block-comment #f)
            (def-heads
@@ -261,7 +261,7 @@
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("f() { :; }" "function g { :; }" "function h() { :; }")))
-         ((lang "markdown") (extensions ("md" "markdown")) (line-comment #f)
+         ((lang "markdown") (extensions ("md" "markdown")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment #f)
            (block-comment ("<!--" "-->"))
            (def-heads
              ("^#\\s+(.+?)\\s*#*$"
@@ -284,7 +284,7 @@
          ;; the repositories it will hold spell their libraries. An operator
          ;; replaces any of its fields with THEOURGIA_RUNNER_CHEZ
          ;; (eval-runner.sc).
-         ((comment-prefixes (";")) (lang "chez") (extensions ()) (line-comment ";;")
+         ((comment-prefixes (";")) (lang "chez") (extensions ()) (identifier "[A-Za-z!$%&*/:<=>?^_~+.@\\-][A-Za-z0-9!$%&*/:<=>?^_~+.@\\-]*") (line-comment ";;")
            (block-comment ("#|" "|#"))
            (runner ((argv ("scheme" "--script" "{file}")) (source-name "__eval.ss")
                     (env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")

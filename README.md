@@ -682,6 +682,76 @@ decision: an edge to a deleted block, or of another relation, does not link it. 
 of the four words, and `--batch` matches the `batch` field's text exactly. An `implements` edge from
 a task discharges its decision only once the task's status is done.
 
+### `names`
+
+    (names <id>)
+
+Which names a code block uses, and which libraries a library block imports, as the
+stored code shows them. It answers:
+
+    (ok (items (name <sym>) ... (import <lib>) ... (import-unreadable <spec>) ...)
+        (name-use syntactic [(lexing whole-text)] | none (reason <r>)))
+
+The answer is **syntactic**: what the text shows, never what a compiler resolves.
+
+A datum block's stored body is walked as data. A symbol is a use unless the form it
+sits in binds it: `lambda`'s formals, the `let` family's names, `do`'s variables,
+`guard`'s variable, `rec`'s name, and the definitions at the head of a body, which
+bind in the whole body. `define`, `define-syntax`, `define-record-type` and
+`define-values` are definitions only as the block's own form or at the head of a body;
+`(define (f x) ...)` does not bind `f` in its own body, so a recursive call is a use.
+The known forms are `quote`, `quasiquote` (its unquoted parts are walked), `lambda`,
+`case-lambda`, `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values`, `do`,
+`begin`, `if`, `and`, `or`, `when`, `unless`, `set!`, `cond`, `case`, `guard`,
+`parameterize`, `rec` and `foreign-procedure`; their own keyword is not a use, nor
+`else` at the head of a `cond`, `case` or `guard` clause, nor `=>` as the second
+element of a `cond` or `guard` clause as written (`case` has no arrow: `=>` there is a
+name), nor `case`'s data or `foreign-procedure`'s types and calling convention. A known
+form whose shape does not fit its rule is walked as the fallback walks it. Every
+other form, a macro of the code's own included, is walked whole: its keyword and every
+name in it count as uses -- a pattern variable of `syntax-rules` too. That is the
+**over-approximation**. A name that only a macro's expansion introduces is not seen:
+the **under-approximation**.
+
+A text block's uses are every token of its text that matches its language's
+`identifier` pattern (the language table holds one per language), **comments and
+strings included** and keywords too: the answer says `(lexing whole-text)`. A token
+starts where the pattern first matches, so in `9abc` the token is `abc`, and is
+the longest match there whatever the pattern's alternation order prefers, read up to 4096 characters (a longer one is read as more
+than one). A block whose language has no entry answers
+`(name-use none (reason no-language))`.
+
+A library block, a program's included, answers its imports, each spec reduced to the
+library it names (`only`, `except`, `prefix`, `rename`, `for` and the `library`
+wrapper removed, a version reference dropped); a spec that does not reduce is listed as
+`import-unreadable`. Any other block answers `none` with the reason: `not-code`,
+`deleted`, `no-language` or `unreadable-code` (a stored block that cannot be read
+this way). An unknown id answers `unknown-id`. Nothing is evaluated or written.
+
+### `uses`
+
+    (uses <name> ["--under" <id>])
+
+The live code blocks that use a name, compared whole and exactly (case matters,
+`car` is not `cart`), one row per block, ordered by id:
+
+    (ok (items (use <id> (library <lib-id>|none) (mode datum|text)) ...)
+        (name-use syntactic) [(skipped (no-language <n>) (unreadable-code <n>))])
+
+`library` is the nearest enclosing library block, or `none`. `skipped` counts the
+blocks in scope that could not be read, by reason, and is there only when there are
+some. With `--under <id>` the blocks in that block's subtree, the block included (an
+unknown id answers `unknown-id`).
+
+**It is not find-references.** A use is listed whether or not anything defines the
+name, and whichever library defines it; nothing is resolved. In a text block a
+definition is also a use -- `function target() {}` is listed by `uses target` -- the
+distinction between defining and using exists only for datum code. Each request reads
+every block of the state it answers from; nothing is kept between requests. Through
+the daemon, `names` and `uses` are answered by its store process from a fold of the
+store taken for the request, so a commit made outside the daemon is in the next
+answer.
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.

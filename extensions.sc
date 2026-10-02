@@ -25,7 +25,7 @@
 ;;; An entry is (verb usage description protocol? route value-options
 ;;; flag-options (library . name)).
 (library (theourgia extensions)
-  (export extension-verbs commitments-usage tasks-usage template-usage)
+  (export extension-verbs commitments-usage tasks-usage template-usage names-usage uses-usage)
   (import (rnrs base))
 
   (define commitments-usage
@@ -38,6 +38,10 @@
 
   (define tasks-usage
     '(tasks ["--status" <status>] ["--batch" <batch>] ["--under" <id>]))
+
+  (define names-usage '(names <id>))
+
+  (define uses-usage '(uses <name> ["--under" <id>]))
 
   (define extension-verbs
     (list
@@ -59,4 +63,14 @@
             ;; export only prints.
             '("--file") '()
             '((theourgia template) . template-verb)
-            '(refuse "apply")))))
+            '(refuse "apply"))
+      (list 'names names-usage
+            "Which names a code block uses, as its stored code shows them, and which libraries a library block imports. A datum block's body is walked as data: a symbol is a use unless something in the form binds it, and an unknown macro's operands count as uses. A text block's uses are every token its language's identifier pattern matches, comments and strings included. No name is resolved."
+            #f 'daemon
+            '() '()
+            '((theourgia name-use) . names-verb))
+      (list 'uses uses-usage
+            "The live code blocks that use a name, compared whole and exactly, one row per block with its library and mode; with --under, those inside that block. It is not find-references: a use is listed whether or not anything defines the name, and a text block that defines the name also lists it."
+            #f 'daemon
+            '("--under") '()
+            '((theourgia name-use) . uses-verb)))))
