@@ -252,7 +252,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
      * `nested-document` HAS THIS CELL TOO (queue item 48). It was skipped
      * while the core's recursive walk stopped at a document below the
      * root; the pinned core (F85 R1-R3: project.sc:67-79, `read
-     * --recursive` through `subtree-ids`, rpc.sc:1337) answers such a
+     * --recursive` through `subtree-ids`, rpc.sc:1512) answers such a
      * block under its parent like any other and reports it once under
      * `conflicts`, so it arrives through this path carrying its mark
      * (measured on the pin: its own test one-subtree.sc, rows F85-1 and

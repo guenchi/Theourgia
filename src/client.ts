@@ -20,10 +20,10 @@
  *
  * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. The thin client exits
  * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
- * the answer is a success (daemon.sc:1881, relayed by `deliver!` in
+ * the answer is a success (daemon.sc:1999, relayed by `deliver!` in
  * theourgia.sc); `init`, which the thin client runs in-process through
  * `core.sc` (`local-verbs`, theourgia.sc:72), exits by the same predicate
- * there (core.sc:760) -- and that
+ * there (core.sc:767) -- and that
  * predicate lives in the core precisely so that a shell and a client
  * cannot come to different opinions. So this file never decides success
  * from the head symbol -- `(ok ...)` on a non-zero exit is a core that
@@ -32,7 +32,7 @@
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
  * client is forced to hold a second opinion. The core says an answer is
- * text, items or a single datum (rpc.sc:178-183), and `render-human`
+ * text, items or a single datum (rpc.sc:181-186), and `render-human`
  * (render.sc:65) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it

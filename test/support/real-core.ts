@@ -409,7 +409,7 @@ export class RealStore {
  *
  * What is matched instead is what the core actually writes into the
  * daemon's argument list: `--socket <run root>/<store key>/socket`
- * (`server-argv`, theourgia.sc:384-390). Both parts are required, because the run
+ * (`server-argv`, theourgia.sc:392-398). Both parts are required, because the run
  * root on its own would also match the client process that is asking
  * for one on the rare occasion the paths are spelled out.
  */
@@ -466,7 +466,7 @@ export function daemonsUnder(runRoot: string): number[] {
  * everything under the root would then have one store's teardown killing
  * another store's daemon, which is a defect this line would then spend a
  * morning on. The store path is in the daemon's own argument list
- * (`serve <store>`, `server-argv` at theourgia.sc:384-388) and is unique per fixture.
+ * (`serve <store>`, `server-argv` at theourgia.sc:392-396) and is unique per fixture.
  */
 /*
  * THE SOCKET PATH A RUNNING DAEMON WAS GIVEN, read off its own argument

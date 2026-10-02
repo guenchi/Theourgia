@@ -262,7 +262,11 @@ const AT_LEAST: Array<[string, number]> = [
    * `adopt` is sent nowhere (1), and a constructor matched only at a list's
    * head (1).
    */
-  ['refusals.test.ts', 17],
+  /*
+   * RAISED at the re-pin to f34d84f, 17 -> 18: `template` and `init` are sent
+   * nowhere (the project template's refusals answer only them).
+   */
+  ['refusals.test.ts', 18],
   /*
    * ADDED in plugin-r2: the gate that keeps comments in ASCII, and the
    * cell that proves the gate can tell a comment from a string.

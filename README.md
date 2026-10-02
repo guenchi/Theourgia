@@ -25,7 +25,7 @@ on an older core those two commands are refused by name. The three supply
 commands need commit 5230bb6 or later, which has `supply`; an older core
 answers it as an unknown verb, and the command shows that answer. The core
 runs on Chez Scheme 10.1.0, 10.3.0 or 10.4.1 from commit 8818b37 (10.1.0
-only before it); with another Chez its datum export, `def` and `eval`
+only before it), and on 10.4.0 as well from b742ac7; with another Chez its datum export, `def` and `eval`
 refuse (`unsupported-printer-version`). VS Code 1.138 is
 what the suites run on, and the extension claims nothing older.
 

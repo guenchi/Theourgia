@@ -451,6 +451,21 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * excused in NOT_A_WRITES_ANSWER on that ground; the day something sends it,
    * they need a verdict.
    */
+  /*
+   * THE PROJECT TEMPLATE'S REFUSALS (f34d84f) ANSWER ONLY `template` AND
+   * `init --template` or `--template-file`, and are excused in
+   * NOT_A_WRITES_ANSWER on that ground.
+   * This extension makes no store and applies no template; the day it does,
+   * they need a verdict.
+   */
+  it('sends no `template` and no `init` (the only verbs the template refusals answer)', () => {
+    const { verbs, unread } = verbsSent();
+    assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
+    assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
+    assert.strictEqual(verbs.has('template'), false, 'this extension now sends template, so the template refusals can answer it');
+    assert.strictEqual(verbs.has('init'), false, 'this extension now sends init, so the refusals of init --template and --template-file can answer it');
+  });
+
   it('sends no `adopt` (the only verb whose answers carry its refusals as heads)', () => {
     const { verbs, unread } = verbsSent();
     assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
@@ -464,7 +479,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * valid UTF-8 puts the block in the store, and none of its text is
    * visible to `search` or `grep` (core F61, not fixed). The only signal is
    * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
-   * grep answer (store.sc:1433 `search-report`, store.sc:1870 `report`).
+   * grep answer (store.sc:1434 `search-report`, store.sc:1871 `report`).
    * This extension sends neither import verb today, so the symptom is out of
    * its reach. The day it grows a command that imports a file or a
    * directory, that command ships with a reading of that count -- the user
@@ -491,7 +506,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * missing a writer, and `working-draft-unreadable` is reached only through
    * a writer's working view (`export-md`, `export-code --working`, `supply
    * --for`, derived.sc's working readers); the export and supply verbs are on
-   * the core's own list (rpc.sc:1921). The list is READ FROM THE PINNED CORE, not copied
+   * the core's own list (rpc.sc:2113). The list is READ FROM THE PINNED CORE, not copied
    * here, so a verb the core adds to it is checked without an edit in this
    * file. A tripwire, not a measurement.
    *
@@ -541,8 +556,8 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
 /*
  * QUEUE ITEM 12: TWO WORDS THAT BOTH SAY "UNREADABLE", ABOUT DIFFERENT
  * THINGS. The core's `(scanned ... (unreadable-blocks m))` counts the blocks
- * of one search or grep answer whose text is not valid UTF-8 (store.sc:1433
- * `search-report`, store.sc:1870 `report`). This client's
+ * of one search or grep answer whose text is not valid UTF-8 (store.sc:1434
+ * `search-report`, store.sc:1871 `report`). This client's
  * `TransportError('unreadable', ...)` (the `TransportFailure` union in
  * transport.ts) means that this client could not read the SHAPE of an
  * answer. The core named its clause with a unit, `-blocks`, so that the two

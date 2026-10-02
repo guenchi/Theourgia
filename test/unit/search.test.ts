@@ -1156,8 +1156,8 @@ describe('plugin-r2 T5 what a search does', function () {
    * the thin client, and the client starts the daemon with
    * `THEOURGIA_SCHEME` or, failing that, whatever `scheme` resolves to
    * on PATH (`scheme-binary`, theourgia.sc:149, which `server-argv` puts at
-   * the head of the daemon's argument list, :384-388; the in-process route
-   * reads the same variable, core.sc:635-636). A user who set the
+   * the head of the daemon's argument list, :392-396; the in-process route
+   * reads the same variable, core.sc:642-643). A user who set the
    * setting because `scheme` is not on their PATH got a client from the
    * path they gave and a daemon that could not be started at all -- and
    * the cells never met it, because the fixtures take the setting FROM

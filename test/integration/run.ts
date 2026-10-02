@@ -242,7 +242,7 @@ function countRealRunRoot(): number {
  * `0 still running` while the process it was written to catch went on
  * running. What is matched instead is what the core itself puts in the
  * daemon's argument list: `--socket <run root>/<key>/socket`
- * (`server-argv`, theourgia.sc:384-390).
+ * (`server-argv`, theourgia.sc:392-398).
  *
  * NEVER: AND THE MARKER IS REQUIRED. It was optional, and the branch that
  * dropped it -- every `scheme` on the machine, killed -- was reachable
