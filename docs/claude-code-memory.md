@@ -9,9 +9,9 @@ makes it with three roots, `lessons`, `decisions` and `references`, and the
 agent's write tools then say where each kind of entry goes.
 
 Status: first measured on 2026-09-18 against a real Claude Code memory of 158
-files (about 430 KB); revised on 2026-09-29 against the current command set,
-with one more measurement (large imports, section 1.1). Treat the prompts as
-working drafts, not as a finished product surface.
+files (about 430 KB), with one more measurement on 2026-09-28 (large imports,
+section 1.1); every command here last checked against the code on 2026-10-02.
+Treat the prompts as working drafts, not as a finished product surface.
 
 ---
 
@@ -34,7 +34,8 @@ Environment (every shell):
   export THEOURGIA_ACTOR=<your-name> THEOURGIA_WRITER=<your-name>
   STORE=<path of the store>
   theourgia <verb> --store $STORE ... --wire
-The first stderr line `(theourgia machine-home ...)` is a banner; ignore it.
+When THEOURGIA_HOME is set and not empty, the first stderr line is the
+banner `(theourgia machine-home ...)`; ignore it.
 
 Write protocol:
   - A block is the unit of writing: one block answers one question on its
@@ -79,8 +80,11 @@ nothing to the store except insert under the parents you were given. If the
 client fails more than three times in a row, stop, record, report.
 ```
 
-Give each agent its parent block ids up front (create the top-level sections
-yourself with `insert --under root`), its own writer name, and its own ledger
+Give each agent its parent block ids up front: in a store made with
+`init --template memory`, the ids of the roots `lessons`, `decisions` and
+`references`, which `init` names in its answer's `(created ...)`; in a store
+without a template, create the top-level sections yourself with
+`insert --under root`. Give it also its own writer name and its own ledger
 path.
 
 ### 1.1 Large directories go in file by file, not by one `import-md`
@@ -93,17 +97,22 @@ client answers
 
     (error transport-unknown (reason 35))
 
-while the daemon goes on and completes the import. That answer means "the
-outcome is unknown", not "nothing happened": do not retry the import on it.
+while the daemon goes on and completes the import. The reason is the error
+number of the socket read that ran out the client's 30-second wait: EAGAIN,
+which is 35 on macOS; another platform prints its own number. That answer
+means "the outcome is unknown", not "nothing happened": do not retry the
+import on it.
 Look at what arrived (`outline --depth 1`, `search`) before doing anything
 else. The per-file prompt keeps every request small, gives an id per file to
 the ledger, and lets several agents share the work.
 
 ### 1.2 Editing through Markdown files, and re-importing
 
-A store can also be edited as files: `export-md <dir> --with-ids`, edit the
-files, `import-md <dir>`. `--with-ids` keeps each block's id in the text, so
-the import lands on the same blocks. What the import does with what is
+A store can also be edited as files: `mkdir -p <dir>` (export-md writes into
+a directory that exists and does not create one), `export-md <dir>
+--with-ids`, edit the files, `import-md <dir>`. `--with-ids` writes each
+section's id before its heading, and a document is found again by its path,
+so the import lands on the same blocks. What the import does with what is
 missing:
 
 - A file that is no longer in the directory leaves its blocks alone; the
@@ -119,8 +128,10 @@ missing:
   title "<new title>"` in the store, or edit a file exported `--with-ids`,
   where the heading's marker keeps the match.
 
-`export-md <dir> --working --writer <name>` writes one writer's working view
-(its drafts over the committed store) instead of the committed store.
+`export-md <dir> --working --writer <name>`, into a directory made the same
+way, writes one writer's working view instead of the committed store: its
+drafts over the store at the cut they were written on, so a commit made after
+them is not in it.
 
 ---
 
@@ -171,8 +182,9 @@ context. Point it at the store:
 ```
 
 Add a second entry with `"matcher": "compact"` if the outline should return
-after context compaction. `--depth 1` gives the top-level sections only; the
-agent goes deeper with `search` and `read` when it needs to.
+after context compaction (`SessionStart` also matches `resume`, `clear` and
+`fork`). `--depth 1` gives the top-level sections only; the agent goes deeper
+with `search` and `read` when it needs to.
 
 To open every session with the decisions still owed, add a second command to
 the same `startup` entry:
@@ -199,13 +211,22 @@ directory is retired: do not read it and do not write to it.
 Identity: export THEOURGIA_ACTOR=<agent name> and THEOURGIA_WRITER=<agent
 name> before the first call. One writer id is held by one live agent at a
 time; a later session may bind the same id and carry on with its drafts.
-Two agents that need to edit the same draft copy it (drafts --writer w1,
-restore <version> --writer w2) instead of sharing the id.
+Two agents that need to edit the same draft copy it instead of sharing the
+id, keeping its baseline:
+  theourgia read --store $STORE <id> --working-info --writer w1
+  theourgia write --store $STORE <id> "<text>" --writer w2 \
+    --based-on <based-on> --working-cut <cut>
+The read answers (projection working w1 <id> <version> <based-on> <cut>
+"<text>" ...); w2 must not hold a draft of that block already.
 
 Recall, before starting a task:
-  theourgia search --store $STORE <two or three words from the task>
+  theourgia search --store $STORE "<two or three words from the task>"
   theourgia read --store $STORE <id>              # a hit that looks relevant
   theourgia read --store $STORE <id> --recursive  # a block and all under it
+search takes one query: quote the words, or it answers with its usage line.
+The first read ends with (cut ...), the state it read, and (versions ...),
+the block's version; read --recursive prints its blocks alone. Recall needs
+neither clause.
 Read what the search returns; do not page through the whole store. If a
 search finds nothing, try the other words a past self would have used, then
 stop: absence of a memory is an answer.
@@ -276,7 +297,8 @@ local route and does not offer `init` as a tool. The tool list and the write
 protocol then come from the store itself (`describe`); the CLAUDE.md text
 above stays the same with `theourgia_<verb>` tools, each taking
 `{"argv": [...]}`, in place of the commands, except its Identity line: over
-MCP the shell sets the writer, and the instructions say which.
+MCP the shell sets the writer, and the instructions say which. A search query
+is one string in that list: `{"argv": ["two or three words"]}`.
 
 `eval` is a tool too, `theourgia_eval`: the shell runs it on the store's
 machine as its own child, with the same argv the command line would take, and

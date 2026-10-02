@@ -940,13 +940,19 @@ first client's own `drafts` then reported the SECOND client's version as
 its own. Nothing in any answer distinguishes that from a normal write.
 
 **So a second process that wants to change the same draft takes a copy
-of it** rather than sharing the id:
+of it** rather than sharing the id, on the same baseline:
 
-    theourgia drafts --writer w1              # read the version
-    theourgia restore <version> --writer w2   # same bytes, under w2
+    theourgia read <id> --working-info --writer w1
+    theourgia write <id> "<text>" --writer w2 --based-on <based-on> --working-cut <cut>
 
-From there each writes its own, and the two meet at `commit` through
-`--based-on`.
+The read answers `(projection working <writer> <id> <version> <based-on>
+<cut> "<text>" "<prefix>")`, and the write records w2's draft on that
+baseline: its answer names it, `(based-on <based-on>)`. `--based-on`
+without `--working-cut` is refused `(error invalid-working-baseline (reason
+cut-unusable))`, and a writer that already holds a draft of the block keeps
+that draft's baseline. `restore` does not make this copy: it reads only the
+caller's own revoked drafts. From there each writes its own, and the two
+meet at `commit` through `--based-on`.
 
 NEVER: **There is no machinery behind this rule** -- no record of who holds an
 id, no lock, and nothing refuses a second process. It is a convention,
@@ -1096,8 +1102,9 @@ goes to the top level), and the `would-delete` refusal names them under
 
     (export-md <dir> ("--with-ids") ("--working") ("--writer" <name>))
 
-Writes the store out as Markdown. `--with-ids` keeps each block's id in
-the text, so the result can be imported back onto the same blocks.
+Writes the store out as Markdown. `--with-ids` writes each section's id
+before its heading, and a document is found again by its path, so the
+result can be imported back onto the same blocks.
 
 `--working` writes the writer's working view instead of the committed store
 (see "The working view on disk" above); `--writer` selects whose drafts, with
@@ -2449,6 +2456,11 @@ the daemon, and `eval`, run as its own child. See
 [`mcp/README.md`](mcp/README.md) -- what a tool returns, why a core
 refusal comes back as a successful result, and how the shell branches on
 the transport's tag rather than on the answer's text.
+
+To make an agent keep its memory in a store -- moving a markdown memory in,
+and the session hook, `CLAUDE.md` text and MCP registration that point Claude
+Code at the store -- see
+[`docs/claude-code-memory.md`](docs/claude-code-memory.md).
 
 ## Environment variables
 
