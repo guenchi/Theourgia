@@ -433,21 +433,27 @@
       (want "K9 datum: and names the block" (list (head2 retry) (clause 'block retry)) (list '(error stale-baseline) (list 'block target)))))))
 
 ;; K10: own progress is not foreign. An import that changes an entry AND
-;; moves it (two members on one block), stopped after the first of them.
+;; moves it (two members on one block), stopped after the FIRST of those two
+;; is written and before the second: only then is there a member of the
+;; plan on the block a missing member writes. (This import's plan is the
+;; moves of the two other entries, then the set and the move of the changed
+;; one, so that point is after member 2: the child is killed at append 5.)
 (cell "line 415"
   (let* ((c (import-case "k10" (list (cons "a.py" (projection-encode py #f (list (list "new" e1) (list "new" e2) (list "new" e3)))))))
        (st (car c)) (edit (cadr c)) (a (file-id st "a.py")) (ids (children st a)))
   (write-file! (string-append edit "/a.py")
                (projection-encode py (header st a) (list (list (list-ref ids 1) e2) (list (list-ref ids 2) e3) (list (list-ref ids 0) (changed 1)))))
   (let* ((args (import-args st edit "R10"))
-         (barriers (car (crash-at 3 root home cli args)))
-         (on-one (let ((targets (map (lambda (e) (cadr (cdr e))) (plan-entries st "R10"))))
-                   (exists (lambda (t) (> (length (filter (lambda (u) (equal? u t)) targets)) 1)) targets))))
+         (barriers (car (crash-at 5 root home cli args)))
+         (targets (map (lambda (e) (cons (car e) (cadr (cdr e)))) (plan-entries st "R10")))
+         (shared (find (lambda (p) (> (length (filter (lambda (q) (equal? (cdr q) (cdr p))) targets)) 1)) targets))
+         (on-it (if shared (map car (filter (lambda (q) (equal? (cdr q) (cdr shared))) targets)) '())))
     (printf "observe K10 plan entries ~s\n" (plan-entries st "R10"))
-    (want "K10 the plan has two members on one block" on-one #t)
-    (want "K10 the child stopped after the first member" barriers 3)
+    (want "K10 the plan has two members on one block, members 2 and 3" on-it '(2 3))
+    (want "K10 the child stopped after the first of them: member 2 on disk, member 3 missing"
+          (list barriers (subs st "R10")) '(5 (plan 0 1 2)))
     (let ((retry (cli-run args)))
-      (want "K10 the retry completes whole" (car retry) 'ok)
+      (want "K10 the retry completes whole" (list (car retry) (subs st "R10")) '(ok (plan 0 1 2 3)))
       (want "K10 the entry has its new text, last" (list (csrc st (list-ref ids 0)) (car (reverse (children st a))))
             (list (utf8->string (changed 1)) (list-ref ids 0)))))))
 
