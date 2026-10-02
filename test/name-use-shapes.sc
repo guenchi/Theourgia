@@ -68,6 +68,8 @@
 ;;     O8  make the list improper after it: its tail becomes the atom zz;
 ;;     O9  truncate the list after it (every shorter prefix, the outer head
 ;;         kept).
+;;   A STATED LIMIT: the operators walk lists only, never into a vector, so a
+;;     vector template is examined only as its seeds write it.
 ;;   PINNED: forms asked the same question without being generated: the gaps
 ;;     recorded when the rule was last written by hand.
 ;; The row prints how many forms the space holds, and the coverage rows ask
@@ -76,7 +78,8 @@
 ;;
 ;; CLASS A, the disagreements whose defect is one operand, is recognised by a
 ;; predicate (below), with two sub-classes; the row S2 asks that everything
-;; else agrees or is in the exception table.
+;; else agrees or is in the exception table. S5 and the A-name pin are
+;; regression checks, not proofs.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
@@ -84,14 +87,14 @@
 ;; macro keywords the walk deliberately does not know: they are never seeds,
 ;; and their entries say so.
 
-(import (chezscheme) (only (theourgia name-use) name-use-rule-fires?))
+(import (chezscheme) (only (theourgia name-use) name-use-rule-fires? datum-uses))
 
 (define bad 0)
 (define rows 0)
 (define (want-1 name got expected)
   (set! rows (+ rows 1))
   (if (equal? got expected)
-      (printf "ok   ~a\n" name)
+      (printf "ok   ~a -> ~s\n" name got)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
 ;; A ROW THAT RAISES IS A FAILED ROW, not the end of the file.
 (define-syntax caught
@@ -144,6 +147,12 @@
     (foreign-procedure __collect_safe "f" (int) int)
     (foreign-procedure (__varargs_after 1) "f" (int int) int)
     (foreign-procedure "f" () void)
+    (foreign-procedure __varargs "f" (int double) double)
+    (foreign-procedure "f" (double float uptr) double)
+    (foreign-procedure "f" ((* t) (& t)) (* t))
+    (foreign-procedure __collect_safe __varargs "f" (int double) int)
+    (quasiquote (a (quasiquote (b (unquote (unquote c))))))
+    (quasiquote #(a (unquote b)))
     (define (f a) (g a))
     (define x 1)
     (define-syntax m (syntax-rules () ((_ a) a)))
@@ -169,7 +178,13 @@
     (begin (begin))
     (define-record-type c (parent p) (parent-rtd a b))
     (define-record-type (p mk p))
-    (foreign-procedure __collect_safe __collect_safe entry (int) int)))
+    (foreign-procedure __collect_safe __collect_safe entry (int) int)
+    (foreign-procedure #f entry (int) int)
+    (quasiquote (unquote (unquote b)))
+    (define-record-type c (parent lambda) (fields z))
+    (define-record-type r (protocol (lambda (parent) (parent p))))
+    (lambda (a b . a) (f a b))
+    (define-values (a b . a) (g))))
 
 ;; (form position direction reason). position: top or body; direction:
 ;; stricter (Chez accepts, the walk falls back), looser (the walk fires,
@@ -181,7 +196,7 @@
     ((let-syntax) any not-a-seed "a macro scope; walked whole by design")
     ((letrec-syntax) any not-a-seed "as let-syntax")
     ((define-syntax syntax-rules (syntax-rules () ((_ a) a))) top looser
-     "the reference's own artifact: it replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined")
+     "a reference artifact: the fixture replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined; the form also fails direct top-level expansion, so the refusal is not the replacement's alone")
     ;; A keyword moved into an expression position by deletion, duplication
     ;; or a swap. Chez refuses the keyword there; the walk judges what
     ;; stands in an expression position where it meets it (class A's
@@ -343,12 +358,40 @@
   (if (and (pair? x) (eq? (car x) 'define-syntax) (list? x) (= (length x) 3))
       (list 'define-syntax (cadr x) '(syntax-rules ()))
       x))
+;; The (parent <name>) names of every record definition in T, read from
+;; each definition's own clauses only: (parent p) inside a protocol
+;; expression is an application.
 (define (parent-names t)
-  (let walk ((t t) (in-record? #f))
-    (cond ((not (pair? t)) '())
-          ((and in-record? (list? t) (= (length t) 2) (eq? (car t) 'parent) (symbol? (cadr t))) (list (cadr t)))
-          (else (let ((in (or in-record? (eq? (car t) 'define-record-type))))
-                  (append (walk (car t) in) (walk (cdr t) in)))))))
+  (cond ((not (pair? t)) '())
+        ((and (eq? (car t) 'define-record-type) (list? t) (pair? (cdr t)))
+         (append (apply append
+                        (map (lambda (c) (if (and (list? c) (= (length c) 2) (eq? (car c) 'parent) (symbol? (cadr c)))
+                                             (list (cadr c))
+                                             '()))
+                             (cddr t)))
+                 (apply append (map parent-names (cddr t)))))
+        (else (append (parent-names (car t)) (parent-names (cdr t))))))
+;; The ftype names a foreign-procedure's types name, (* t) or (& t): defined
+;; as ftypes, not variables.
+(define (ftype-names t)
+  (cond ((not (pair? t)) '())
+        ((and (eq? (car t) 'foreign-procedure) (list? t))
+         (dedup (filter symbol?
+                        (map (lambda (y) (and (list? y) (= (length y) 2) (memq (car y) '(* &)) (cadr y)))
+                             (apply append (map (lambda (e) (if (list? e) e (list e))) (cdr t)))))))
+        (else (append (ftype-names (car t)) (ftype-names (cdr t))))))
+;; The body wrapper: (lambda () D 0), or, when the form names lambda (a
+;; record parent called lambda would capture it), (let () D 0), or, when it
+;; names let too, (letrec () D 0). A form naming all three gets the lambda
+;; wrapper and is excepted by name. Both judges are asked the same form.
+(define (body-wrapper x)
+  (let ((names (symbols-in x)))
+    (cond ((not (memq 'lambda names)) 'lambda)
+          ((not (memq 'let names)) 'let)
+          ((not (memq 'letrec names)) 'letrec)
+          (else 'lambda))))
+(define (positioned x position)
+  (if (eq? position 'body) (list (body-wrapper x) '() x 0) x))
 (define base-environment (scheme-environment))
 (define base-symbols
   (let ((h (make-eq-hashtable)))
@@ -360,25 +403,27 @@
 ;; -> #t, #f, or undecided when the expander did not answer within its budget.
 (define (accepted? x position)
   (let* ((d (prepared x))
-         (t (if (eq? position 'body) (list 'lambda '() d 0) d))
-         (symbols (dedup (cons 'define-record-type (symbols-in t))))
+         (t (positioned d position))
+         (symbols (dedup (cons* 'define-record-type 'define-ftype (symbols-in t))))
+         (ftypes (ftype-names t))
          (env (copy-environment base-environment #t (filter syntax-symbol? symbols)))
          (judge (make-engine
                   (lambda ()
                     (guard (e (#t #f))
                       (when bind-free?
-                        (for-each (lambda (s) (unless (syntax-symbol? s) (define-top-level-value s 0 env))) symbols)
-                        (for-each (lambda (p) (eval (list 'define-record-type p) env)) (dedup (parent-names t))))
+                        (for-each (lambda (s) (unless (or (syntax-symbol? s) (memq s ftypes)) (define-top-level-value s 0 env))) symbols)
+                        (for-each (lambda (p) (eval (list 'define-record-type p) env)) (dedup (parent-names t)))
+                        (for-each (lambda (t) (eval `(define-ftype ,t (struct [x int])) env)) ftypes))
                       (expand t env)
                       #t)))))
     (judge 20000000 (lambda (ticks v) v) (lambda (k) 'undecided))))
 
 ;; THE WALK: does its rule fire on the form? A raise is 'raised. In the
 ;; body position it is asked what the reference is asked, the form inside
-;; (lambda () D 0): a definition that fits alone can still make a body
+;; its wrapper: a definition that fits alone can still make a body
 ;; malformed (a name defined twice).
 (define (fired x) (guard (e (#t 'raised)) (name-use-rule-fires? x)))
-(define (fired-at x position) (fired (if (eq? position 'body) (list 'lambda '() x 0) x)))
+(define (fired-at x position) (fired (positioned x position)))
 
 ;; ---- class A: the operand, not the shape ---------------------------------------------
 ;;
@@ -387,34 +432,44 @@
 ;; A disagreement is class A when the rule fired, Chez refused, the
 ;; generator changed exactly ONE operand of one enclosing list (replaced
 ;; it, inserted it, or changed it at a nested path: the PLACE of the
-;; generator above), and a substitute at that place gives a form on which
-;; the rule still fires and which Chez accepts: the defect is then in the
-;; operand. Recognised by this predicate, never by a list. Two substitutes,
-;; two sub-classes:
-;;   A-expression  a constant (0) is accepted by both: an expression slot;
-;;   A-name        only a fresh variable is: the slot takes a name (a set!
+;; generator above), and a fresh variable at that place gives a form on
+;; which the rule still fires, which Chez accepts, and in which the walk
+;; reaches the variable as a use (datum-uses reports it): the defect is
+;; then in an operand the walk evaluates. A place the walk does not reach
+;; (data, a binder) is never class A; it stays a disagreement, fixed or
+;; excepted by name. Recognised by this predicate, never by a list. Two
+;; sub-classes:
+;;   A-expression  a constant (0) there is accepted by both as well;
+;;   A-name        only the variable is: the slot takes a name (a set!
 ;;                 target, say). A-name is small and its (head position
 ;;                 place) set is PINNED (S6), so a binder slot that some
 ;;                 rule fails to check turns S6 red instead of joining A.
 (define (with-substitute form place v)
   (update form (car place) (lambda (l) (splice l (cdr place) (list v)))))
+;; Does the walk reach the place as an expression? A fresh variable put
+;; there must be among the names datum-uses reports for the form, in its
+;; position (main's ruling): a place the walk takes as data or as a binder
+;; is not class A. REACH? #f is the predicate without this, for its mutant.
+(define reach? #t)
+(define (reached? f2 position)
+  (or (not reach?)
+      (and (memq 'zfresh (guard (e (#t '())) (datum-uses (positioned f2 position)))) #t)))
 (define operand-classes (make-hashtable equal-hash equal?))
 ;; -> (A-expression place), (A-name place), or #f.
 (define (operand-class v)
   (or (hashtable-ref operand-classes v #f)
       (let ((answer
               (and (eq? (caddr v) #t) (eq? (cadddr v) #f)
-                   (let ((places (map cdr (hashtable-ref replacements (car v) '()))))
-                     (define (place-taking value)
-                       (find (lambda (place)
-                               (let ((f2 (with-substitute (car v) place value)))
-                                 (and (eq? (fired-at f2 (cadr v)) #t) (eq? (accepted? f2 (cadr v)) #t))))
-                             places))
-                     (let ((e (place-taking 0)))
-                       (if e
-                           (list 'A-expression e)
-                           (let ((n (place-taking 'zfresh)))
-                             (and n (list 'A-name n)))))))))
+                   (let* ((position (cadr v))
+                          (places (map cdr (hashtable-ref replacements (car v) '())))
+                          (both-accept? (lambda (f2) (and (eq? (fired-at f2 position) #t) (eq? (accepted? f2 position) #t))))
+                          (taking-name (filter (lambda (place)
+                                                 (let ((f2 (with-substitute (car v) place 'zfresh)))
+                                                   (and (both-accept? f2) (reached? f2 position))))
+                                               places)))
+                     (and (pair? taking-name)
+                          (let ((e (find (lambda (place) (both-accept? (with-substitute (car v) place 0))) taking-name)))
+                            (if e (list 'A-expression e) (list 'A-name (car taking-name)))))))))
         (hashtable-set! operand-classes v answer)
         answer)))
 (define (class-a? v) (and (operand-class v) #t))
