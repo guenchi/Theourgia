@@ -70,6 +70,7 @@ render page-manual     manual.html
 render manual-md       manual.md
 render page-agents     agents.html
 render page-changelog  changelog.html
+render changelog-md    changelog.md
 render favicon         favicon.svg
 # .gitignore is rendered too, from the same block the home page's
 # concurrency section shows, so the file and the page cannot drift apart.
