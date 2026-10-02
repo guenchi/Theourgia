@@ -100,6 +100,8 @@
     (raise (list 'error 'supply-malformed (list 'line line) (list 'reason reason))))
   (define (stale-file path)
     (raise (list 'error 'supply-stale (list 'file path))))
+  (define (not-text-mode path id)
+    (raise (list 'error 'supply-not-text-mode (list 'file path) (list 'block id))))
 
   ;; ---- the supply file ------------------------------------------------------
 
@@ -423,9 +425,18 @@
              (state (view))
              (projection (reproject store state))
              (by-path (lambda (p) (assoc p projection))))
+        ;; NEVER: A DATUM LIBRARY'S FILE IS NOT A STALE FILE. A supply's facts
+        ;; are about the text projection, and a datum library is not projected
+        ;; as text: its path is never in the re-projection, so it was answered
+        ;; supply-stale, which sends an editor to export again a file that
+        ;; can never match. A listed path the projection does not hold and a
+        ;; live datum library does is refused by name, with that library.
         (for-each (lambda (f)
                     (let ((p (by-path (car f))))
-                      (unless (and p (equal? (bytes-sha (caddr p)) (cadr f))) (stale-file (car f)))))
+                      (cond
+                        ((and (not p) (pair? (state-path-claimants state 'library 'datum (car f))))
+                         (not-text-mode (car f) (car (state-path-claimants state 'library 'datum (car f)))))
+                        ((not (and p (equal? (bytes-sha (caddr p)) (cadr f)))) (stale-file (car f))))))
                   files)
         (unless (for-all (lambda (p) (assoc p files)) replaces) (malformed 1 'replaces-not-listed))
         (let* ((file-of (let ((t (make-hashtable string-hash string=?)))
