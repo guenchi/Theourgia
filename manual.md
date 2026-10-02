@@ -53,6 +53,39 @@ Objects start about twelve times faster than source (measured: 50 ms from object
 
 Create the store first, once: `theourgia init --store <path>`. The MCP shell has no local route and does not offer `init` as a tool. Then register `theourgia-mcp --store <path>` in the client's MCP configuration. One store per project or per person, on one machine.
 
+## Quick start
+
+```
+theourgia init --template project
+```
+
+One store is one project. The `project` template gives it four roots and seven relations, and records them in the store as its template block, which `template export` prints:
+
+| Root | What goes there |
+|---|---|
+| `design` | The document `design.md`; record each decision as a block of kind `decision` under it. |
+| `tasks` | The document `tasks.md`; record each task as a block of kind `task` under it, with a `status` of todo, doing, done or dropped. |
+| `docs/` | Documents for readers are top-level docs whose path starts with `docs/`. |
+| `code/` | Code is imported so that the paths of its files start with `code/`. |
+
+The relations are `implements` (a task or code → the decision it carries out), `depends-on` (a task or code → one it needs first), `supersedes` (a decision → the one it replaces), `refutes` (a decision or doc → one it shows is wrong), `verifies` (a test → the code or decision it checks), `conflicts-with` (two decisions that cannot both hold) and `documents` (a doc → the code or decision it explains). Each is a name `link` accepts; any other relation name still links, and these are the ones the template names. `describe`, answered by the daemon, lists the store's roots and relations, and the MCP tools that write carry the roots' sentences after the writing protocol.
+
+The built-in templates are `project` and `memory`; `--template-file` takes one of your own. `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
+
+### A store's template
+
+`template apply <name>`, or `template apply --file <template-file>`, gives an existing store a template: it creates the template block and each document root the store does not have, and never changes a block that exists. A root is found by its slug and its path. When something else holds a root's place -- a template already, two blocks with the slug, a block with the slug that is not a top-level document at that path, or a document without the slug at the path -- it refuses and creates nothing.
+
+The template is data in its block: change it with write and commit like any block, and insert a new root's document; nothing else needs to change. A template block that cannot be read is listed by `conflicts`, and every verb then behaves as in a store without one. Importing a document does not make decisions or tasks.
+
+### Decisions and tasks
+
+A decision is a block of kind `decision`. It is owed until a block implements it -- `theourgia link <impl> implements <decision>` -- or its `status` reads done or dropped. `commitments` lists the decisions still owed, and `--all` every decision. An implementation has drifted when its own fields changed at a cut that neither its implements link nor the decision's latest edit covers: it was edited after it was linked. `--drifted` keeps the decisions with such an implementation, `--since <cut>` those whose creation the cut does not cover, and `--under <id>` those in a block's subtree. A write to a bookkeeping field (`status`, `batch`, `keywords`, `class`, `slug`) is not a change: a task set to done after it was linked has not drifted.
+
+`tasks` lists the blocks of kind `task`, each with its status, its batch, what it implements, and `(unlinked)` when it implements no live decision; `--status` and `--batch` filter them. A task's implements edge discharges its decision only once the task is done.
+
+In a store with a template, both verbs list by default what is under the template's root -- `design` for decisions and `tasks` for tasks in the project template -- and end with `(scope <root-id> (outside <n>))`, n being how many more rows `--under root` would list. In a store without a template nothing is narrowed and no scope clause is added. Neither verb writes.
+
 ## What a store is
 
 ### A store
@@ -101,6 +134,10 @@ State is a deterministic reduction over a fixed set of events. Given the same lo
 #### Deletion keeps the history
 
 del retires a block: the reduction stops treating it as live, and the record of its life stays in the log. A block that was written by mistake can be taken out of the view without taking it out of the history, and what was written before the mistake is still readable at an earlier cut.
+
+#### Reading the past
+
+`log` gives every event its cut: `cut` is the causal cut right after the event, and `past` the one right before it -- the event's premises, each with its own premises, and nothing a writer did without depending on it. `read <id> --cut <cut>` gives a block as it was at a cut, written out as `(("writer" . 12) ...)` or as a tag name, and `diff <past> <cut>` gives what an event changed. A block that did not exist yet answers `unknown-id`. A cut naming an event not received, a writer twice, or an event without its premises is refused `cut-unavailable`; `--working`, `--working-info`, `--writer` and `--signature` ask about the present and are refused with `--cut`. Each such read replays the log from its beginning to the cut.
 
 ### One graph over code and prose
 
@@ -176,17 +213,17 @@ $ theourgia insert --store store --under root --title "..."
 
 > **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. A clone that carries another copy's instance.sexp is refused for the mismatch, as above; a clone without one -- what the .gitignore init writes gives -- is refused `(error refused no-instance (remedy adopt))`. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
-## 38 verbs
+## 41 verbs
 
 Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, daemon over the socket, or child: a process the caller runs itself, so the store's server never runs user code.
 
 ### Reading a store
 
 ```
-read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info] [--signature]
+read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info] [--signature] [--cut <cut>]
 ```
 
-Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. (daemon)
+Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. With --cut, the block as it was at a causal cut (a literal or a tag name): the same answer over that cut's state, or unknown-id where the block did not exist yet. (daemon)
 
 ```
 refs <id>
@@ -242,13 +279,31 @@ describe
 
 List the verbs, what each is for, and the writing protocol. (daemon)
 
+```
+commitments [--open] [--all] [--drifted] [--since <cut>] [--under <id>]
+```
+
+List the decisions still owed: by default those neither implemented (an incoming implements edge) nor marked done or dropped; with --all every decision. --drifted keeps those with an implementation whose latest change was seen neither by its implements link nor by the decision's latest edit. (daemon)
+
+```
+tasks [--status <status>] [--batch <batch>] [--under <id>]
+```
+
+List the tasks: by default those under the root the store's template names for tasks, else every task; each with its status (todo, doing, done or dropped), its batch, what it implements, and (unlinked) when it implements no live decision. (daemon)
+
 ### Making and changing blocks
 
 ```
-init
+init [--template <name>] [--template-file <template-file>]
 ```
 
-Create a store in this directory. (local)
+Create a store in this directory; with --template (a built-in such as project) or --template-file, then apply that template to it. (local)
+
+```
+template <action> [<name>] [--file <template-file>]
+```
+
+Apply a template to this store (apply <name>, or apply --file <template-file>): create the template block and each document root the store lacks, changing nothing that exists. Or print the store's template (export). (daemon)
 
 ```
 insert [--under <id>] [--after <id>] --title <text> [--text <text>] [--keywords <text>]
@@ -484,7 +539,7 @@ The catalogue comes from whichever daemon is serving the store, and a client may
 
 ### The writing protocol
 
-describe carries this text once, beside the verbs, and the MCP shell puts it in the descriptions of `theourgia_insert` and `theourgia_write`:
+describe carries this text once, beside the verbs, and the MCP shell puts it in the descriptions of `theourgia_insert` and `theourgia_write`; in a store with a template, the tools that write carry the roots' sentences after it:
 
 ```
 A block is the unit of writing: one block should answer one question on its own.
@@ -495,6 +550,8 @@ Place a block under the parent its source or subject puts it under, with --under
 Do not rewrite the source bytes: splitting a document must not edit its prose.
 Change a block with write and then commit, through a draft, rather than replacing it.
 Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
+Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.
+Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.
 ```
 
 ### One writer per session
@@ -520,7 +577,7 @@ The extension drives the Theourgia core installed on the machine, and needs VS C
 | Setting | What it is |
 |---|---|
 | `theourgia.corePath` | The directory holding the core: a checkout, or a directory built by the core's build.ss. The extension tells which by looking for `client.sc` or `client.so`, and refuses a directory with neither. Required. |
-| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The core imports igropyr, so the directory holding igropyr belongs here. |
+| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The directory holding `corePath` is searched after them (the extension adds it itself), so a copy named here comes first. The core imports igropyr, so the directory holding igropyr belongs here, unless it is the one holding `corePath`. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
 | `theourgia.writer` | Passed to the core as `THEOURGIA_WRITER`, and the writer whose working view Supply Diagnostics reads. Defaults to the actor. |
@@ -553,7 +610,9 @@ Right-clicking a node and choosing "Open as Document" composes the block and eve
 
 The tree has a second mode, Files, showing the directory tree that export would write, with a group for blocks that are in no file. A store whose root blocks carry paths opens in Files mode; "Show Files" and "Show Outline" switch, and the choice is kept per store. "New File Here" creates a root `doc` block with that path (`.md` appended) and title. "Move to Directory" and "Rename File" read the block's version when they run and set its path with `--if-unchanged`: a block that changes before the answer is refused, and the view refreshes.
 
-A text-mode code block opens as its source in the language its `lang` field names, or as plain text without one. A datum-mode definition -- one imported with --datum or written with def -- opens with an empty body today: the extension reads a block's src, and a datum definition keeps its code in body. "Go to Definition", as a command and as the editor's own, asks the store's `whereis` which block defines a name, offers a choice when several do, and the nearest names when none does. "Suggest a Split" asks the core where a source file on disk could be divided into blocks, using the editor's own symbols for the cuts when it has them and the language's patterns otherwise, and opens the review file the core wrote; nothing is recorded in the store.
+A text-mode code block opens as its source in the language its `lang` field names, or as plain text without one. A datum-mode block -- a library `import-code --datum` made, or one definition in it -- opens read-only: the library's file as `export-code --datum` writes it, at the block's own place, with a note saying why. The extension cannot write a datum block yet, and nothing is written or committed for it; Go to Definition on a datum definition opens the same view at its `(define ...)`. "Go to Definition", as a command and as the editor's own, asks the store's `whereis` which block defines a name, offers a choice when several do, and the nearest names when none does. "Suggest a Split" asks the core where a source file on disk could be divided into blocks, using the editor's own symbols for the cuts when it has them and the language's patterns otherwise, and opens the review file the core wrote; nothing is recorded in the store.
+
+Resting the pointer on a name in a block's file, a composed document or a datum view adds, beside the language's own hover, what the store holds about it: blocks that link to the block under the pointer or to the block that defines the name (with the relation), blocks that refer to them in their text, and prose blocks -- documents, sections, decisions, tasks -- that mention the name as a whole word. Each line gives the title, the kind and the first sentence, and opens the block; past five lines, the last one lists them all. The hover only reads, from the store the document came from, and its answers are kept for fifteen seconds, or until this window saves, changes the tree or its settings.
 
 "Search Blocks" asks for words that must all match: one hit opens straight away, several give a list with scores. "Show Store Status" and the status bar show the store, actor, conflict count, pending and blocked saves. "Other Sessions" lists the unsent saves another window left behind, to take over or discard. "Migrate Legacy Block Files" moves verified block files of an earlier version into a recovery archive. The store is checked with `check` each time the extension connects to it -- at start and after a settings change -- and a bad verdict is warned about once per session; the extension's log is the "Theourgia" output channel.
 
@@ -563,7 +622,7 @@ When a writer's log cannot be read, the outline shows the blocks the other write
 
 Three commands hand the store facts that the editor's language support computes: "Theourgia: Supply Signatures and Keywords", "Theourgia: Supply Calls" and "Theourgia: Supply Diagnostics". Each projects the store's code with `export-code` into the extension's own storage, asks VS Code's providers for that language (symbols, hover, call hierarchy, diagnostics), and hands the facts to the core with `supply`, which keeps them beside the blocks with the editor and version they came from. The language's own extension must be installed: for C, clangd.
 
-Signatures, keywords and calls are taken from the committed store. Diagnostics are `theourgia.writer`'s, taken from its working view, and are collected once the analysis has been quiet for a second, at most after ten; a supply taken at the cap says the analysis may be incomplete. Facts are grouped by VS Code's language id, and VS Code files `.h` under C++, so a header's facts sit in the cpp table. A run stops if a projected file or document changes, or the store changes, while it is collecting. The supply file is removed afterwards, except one the core refused `supply-malformed`, which is kept to be read.
+Signatures, keywords and calls are taken from the committed store. A block's signature is the detail of its most representative top-level symbol -- a function, method or constructor, then a type, then anything else -- else the first line of code in that symbol's hover; a call into the same block gives no edge. Diagnostics are `theourgia.writer`'s, taken from its working view, and are collected once the analysis has been quiet for a second, at most after ten; a supply taken at the cap says the analysis may be incomplete. Facts are grouped by VS Code's language id, and VS Code files `.h` under C++, so a header's facts sit in the cpp table. A run stops if a projected file or document changes, or the store changes, while it is collecting. The supply file is removed afterwards, except one the core refused `supply-malformed`, which is kept to be read.
 
 An agent reads the facts through MCP; from the command line they come back from `read <id> --signature`, `refs <id>`, `reach <id>`, `search <word>` and `diagnostics --writer <w>`. Each answer names the source of its facts (`via`) and how many of them are stale (`stale`). The facts are as fresh as the last supply: after a source changes, supply again.
 
