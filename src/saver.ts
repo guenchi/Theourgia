@@ -302,7 +302,7 @@ export interface SaverOptions {
  * entry it could not read, WHEREVER in the verb that happened -- including
  * reads after the append -- so it did not say whether the write landed.
  * On f5ebd58 (F100b) the answer is made at the translation point,
- * `rpc-dispatch-parsed` (rpc.sc:1893-1937), by answers.sc's table: a bare
+ * `rpc-dispatch-parsed` (rpc.sc:2054-2096), by answers.sc's table: a bare
  * `unreadable` (now with an `errno` clause) means the request had changed
  * NOTHING, and a failure after something had changed is `incomplete`,
  * which is taken the same way. Keeping `unreadable` here is kept on
@@ -398,9 +398,10 @@ export const RETRYABLE_REFUSALS = [
    * when the census learned `make-log-error`). `active-operation`, log.sc:1902
    * `claim-store!`: another operation in the store's process holds it, and
    * nothing of this one has started. `temp`, log.sc:186 `create-temp!`: no
-   * temporary name could be had after 64 tries. It is reached from
+   * temporary name could be had in 65 tries (0 through 64). It is reached from
    * `atomic-write!`, which can follow an append (`session-commit!` writes the
-   * registry after it, log.sc:6102 and 4518), so it does not say the write
+   * registry after it, through `note-written!` at log.sc:6103 and the
+   * `atomic-write!` at 4518), so it does not say the write
    * did not land. Both are sent again under the same id -- which the request
    * ledger answers as a replay if the append landed -- and parked for a
    * person after RETRY_CAP in a row.
@@ -523,7 +524,7 @@ function whereAndWhy(datum: Datum): string {
  * NOTE: THE SAME RELAY THAT BRINGS `detach-failed` COULD BRING ANY NAME. Before
  * f5ebd58 a daemon that failed to start was answered with the LAST `(error
  * ...)` of the log the client had just written, whatever that was (then
- * client.sc:551, `last-error-in`). Since then the client answers
+ * `last-error-in`, since gone from client.sc). Since then the client answers
  * `serve-start-failed` with the kind of the last report carrying this start's
  * token (client.sc:619-631 `exited-answer`, client.sc:664-679
  * `select-report`), read below. The set of names that could arrive this
@@ -556,7 +557,10 @@ export const RETRY_CAP = 5;
  * main session 2026-09-27) On f5ebd58 the thin client answers every failed
  * start as `(error serve-start-failed (kind K) <the report's clauses> ...)`
  * (client.sc:555-631): K is the daemon's own startup report -- which on
- * 877f0da reached this extension as its own head -- or `exited` or `timeout`.
+ * 877f0da reached this extension as its own head -- or `exited` or `timeout`,
+ * or, when a step of the client's own failed (starting the daemon, reading
+ * its log), the kind the core's failure table gives that step
+ * (client.sc:572-580, 624-625).
  * So a store that does not exist, met by the request that starts the daemon,
  * arrived as a retryable start failure: five attempts, and the sentence that
  * points at the setting never shown. The kind is judged by the tables that
@@ -893,7 +897,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:552): local evaluator exception',
   'eval-context': 'eval-worker.sc:325, 332: local evaluator context',
   'eval-denied': 'eval-worker.sc:335: local evaluator capability refusal',
-  'launcher-unavailable': 'ffi.sc:500 (execvp; and 526, execve): local executable launch',
+  'launcher-unavailable': 'ffi.sc:500 (execvp) and ffi.sc:526 (execve): local executable launch',
   'transport-store-mismatch': 'daemon.sc:1693: rejected socket envelope before dispatch',
   'unknown-tag': 'resolve-cut, store.sc:2158: historical query cut lookup',
   'tag-unsettled': 'resolve-cut, store.sc:2160: historical query cut lookup',
@@ -923,7 +927,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'template-src-not-a-string': 'template-export, template.sc:96 -- a template block whose src is not a string; `template export` only',
   'template-present': 'apply-plan, template.sc:114 -- applying a template to a store that already has one',
   'slug-conflict': 'apply-plan, template.sc:130 -- two live blocks carry the slug a template root names',
-  'template-mismatch': 'apply-plan, template.sc:132 -- the block with a root\'s slug is not a top-level document',
+  'template-mismatch': 'apply-plan, template.sc:132 -- the block with a root\'s slug is not a top-level document at the root\'s path (`top-level-doc-at?`, template.sc:100)',
   'path-occupied': 'apply-plan, template.sc:134 -- a top-level document without the slug holds a root\'s path',
   'template-apply-failed': 'template-apply!, template.sc:166 -- the apply\'s batch was refused; it carries the answers',
   /*
@@ -974,8 +978,9 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.sc:330 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
-    'rpc-dispatch-parsed, rpc.sc:2054-2098, by answers.sc\'s table (`guarded`, rpc.sc:109, now ' +
-    're-raises it) -- an entry the verb could not read. answers.sc:106 answers it bare only when the ' +
+    'rpc-dispatch-parsed, rpc.sc:2054-2096, by answers.sc\'s table (`guarded`, rpc.sc:109, now ' +
+    're-raises it) -- an entry the verb could not read, named by `failure-kind` (answers.sc:97). ' +
+    'answers.sc:106 answers it bare only when the ' +
     'verb had written nothing; after an append it is `(error incomplete (failed ...) (written ...))` ' +
     '(answers.sc:107). `saysNobodyKnows` still takes the bare one before settlement, exactly as ' +
     '`transport-unknown`: pending, same request id, sent again, which a replay answers either way',

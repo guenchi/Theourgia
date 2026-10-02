@@ -278,6 +278,285 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
     const stale = Object.keys(NOT_A_WRITES_ANSWER).filter((kind) => !kinds.has(kind));
     assert.deepStrictEqual(stale, [], 'these kinds are excused and the core does not make them');
   });
+
+  /*
+   * A ROW'S LINES ARE STILL WHERE ITS KIND IS MADE. Every row of
+   * NOT_A_WRITES_ANSWER that cites a line of the core cites, among its lines,
+   * one that holds the kind itself, read at the pinned core. A re-pin moves
+   * the core's lines and its citations are moved by their text; a row whose
+   * lines all moved somewhere else, or whose file was renamed, is red here
+   * rather than read as provenance (a reading of all 175 citations against
+   * their sentences found six that pointed at unrelated lines, archive/
+   * theourgia-vsc-citation-audit-2026-10-02).
+   *
+   * NOTE: AT LEAST ONE, NOT EVERY ONE. A row also cites where its kind is
+   * relayed or caught (rpc.sc's `(cons 'error (cdr a))` for adopt's), a line
+   * that names no kind; asking that of every cited line would be red on rows
+   * that are right.
+   *
+   * NOTE: AS A SYMBOL IN CODE, NOT AS A WORD. The kind counts only where the
+   * code names it -- quoted, `'seq`, `(quote seq)`, or after `error` at the
+   * head of a quoted or quasiquoted `(error seq ...)` -- and only as the whole
+   * symbol (`seq?` is another one). Strings, `#|...|#`, character literals,
+   * datum comments and the comment after `;` are taken out first. A word match let a row pass on a comment
+   * that mentioned its kind, and would let a `seq` citation moved onto
+   * `(let ((seq ...)))` pass (found in this cell's review).
+   *
+   * NEVER: A READER OF FILES. Each cited line is tokenised on its own, so a
+   * string, a block comment or a datum comment that spans lines is not seen
+   * as one. The cell is here to catch a row whose lines a re-pin moved onto
+   * something else, and a line-at-a-time reading is enough for that; the
+   * lines in the cell pin what it does.
+   */
+  it('cites, in every row that cites the core, a line that holds the row\'s kind', () => {
+    /*
+     * ONE LINE OF SCHEME AS TOKENS: `(` and `)` (brackets too), the quote
+     * prefixes, a string or a character literal as one token each, and
+     * every other atom up to a delimiter; `#| ... |#` (nested) and the rest
+     * of the line after `;` are dropped, and a datum comment `#;` drops the
+     * datum after it, prefixes and all.
+     */
+    const tokens = (line: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let i = 0;
+      while (i < line.length) {
+        if (depth > 0) {
+          if (line.startsWith('|#', i)) {
+            depth -= 1;
+            i += 2;
+          } else if (line.startsWith('#|', i)) {
+            depth += 1;
+            i += 2;
+          } else {
+            i += 1;
+          }
+          continue;
+        }
+        const c = line[i];
+        if (/\s/.test(c)) {
+          i += 1;
+        } else if (line.startsWith('#|', i)) {
+          depth = 1;
+          i += 2;
+        } else if (line.startsWith('#;', i)) {
+          out.push('#;');
+          i += 2;
+        } else if (c === ';') {
+          break;
+        } else if (c === '"') {
+          let j = i + 1;
+          while (j < line.length && line[j] !== '"') {
+            j += line[j] === '\\' ? 2 : 1;
+          }
+          out.push('"string"');
+          i = j + 1;
+        } else if (line.startsWith('#\\', i)) {
+          let j = i + 3;
+          while (j < line.length && /[A-Za-z0-9]/.test(line[j])) {
+            j += 1;
+          }
+          out.push('#\\char');
+          i = j;
+        } else if ('([{'.includes(c) || ')]}'.includes(c)) {
+          out.push('([{'.includes(c) ? '(' : ')');
+          i += 1;
+        } else if (line.startsWith(',@', i)) {
+          out.push(',@');
+          i += 2;
+        } else if ("'`,".includes(c)) {
+          out.push(c);
+          i += 1;
+        } else {
+          let j = i;
+          while (j < line.length && !/[\s()[\]{}";'`,]/.test(line[j])) {
+            j += 1;
+          }
+          /*
+           * `#(` opens a vector and `#vu8(` a bytevector: a list for this
+           * reading, so that a datum comment over one drops all of it.
+           */
+          if (line[i] === '#' && line[j] === '(') {
+            out.push('(');
+            i = j + 1;
+          } else {
+            out.push(line.slice(i, j));
+            i = j;
+          }
+        }
+      }
+      const prefixes = ["'", '`', ',', ',@'];
+      const after = (k: number): number => {
+        while (k < out.length && prefixes.includes(out[k])) {
+          k += 1;
+        }
+        if (k < out.length && out[k] === '#;') {
+          return after(after(k + 1));
+        }
+        if (k < out.length && out[k] === '(') {
+          let open = 0;
+          do {
+            open += out[k] === '(' ? 1 : out[k] === ')' ? -1 : 0;
+            k += 1;
+          } while (k < out.length && open > 0);
+          return k;
+        }
+        return k + 1;
+      };
+      const kept: string[] = [];
+      for (let k = 0; k < out.length; ) {
+        if (out[k] === '#;') {
+          k = after(k + 1);
+        } else {
+          kept.push(out[k]);
+          k += 1;
+        }
+      }
+      return kept;
+    };
+    /*
+     * NAMED IN CODE: the kind as a whole atom that the line quotes -- `'k`,
+     * `(quote k)`, or anywhere inside a quoted or quasiquoted list
+     * (`'(error k ...)`, `'(absent unreadable unwritable)`), and not where a
+     * `,` or `,@` unquotes it.
+     *
+     * NOTE: NAMED, NOT MADE. A line that tests for the kind
+     * (`(eq? ... 'metadata-unreadable)`, log.sc:914 at ad0bd47) names it in
+     * code as well. Telling the two apart is reading the program, not a line.
+     * This cell exists to catch a row whose lines a re-pin moved onto
+     * something else, and a line naming the row's own kind in code is not
+     * where a moved citation lands by accident.
+     */
+    const makes = (kind: string, line: string): boolean => {
+      const t = tokens(line);
+      const closes = new Map<number, number>();
+      const opens: number[] = [];
+      t.forEach((token, k) => {
+        if (token === '(') {
+          opens.push(k);
+        } else if (token === ')' && opens.length > 0) {
+          closes.set(opens.pop() as number, k);
+        }
+      });
+      /*
+       * `(quote X)` read as `'X`: the open and `quote` become a quote, and
+       * the matching close is dropped.
+       */
+      const read: string[] = [];
+      const dropped = new Set<number>();
+      for (let k = 0; k < t.length; k += 1) {
+        if (dropped.has(k)) {
+          continue;
+        }
+        if (t[k] === '(' && t[k + 1] === 'quote' && closes.has(k)) {
+          read.push("'");
+          dropped.add(closes.get(k) as number);
+          k += 1;
+        } else {
+          read.push(t[k]);
+        }
+      }
+      const lists: boolean[] = [];
+      let quote = false;
+      let unquote = false;
+      for (const token of read) {
+        if (token === "'" || token === '`') {
+          quote = true;
+          continue;
+        }
+        if (token === ',' || token === ',@') {
+          unquote = true;
+          continue;
+        }
+        const quoted = !unquote && (quote || (lists.length > 0 && lists[lists.length - 1]));
+        quote = false;
+        unquote = false;
+        if (token === '(') {
+          lists.push(quoted);
+        } else if (token === ')') {
+          lists.pop();
+        } else if (token === kind && quoted) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const [line, held] of [
+      ["(raise '(error seq x))", true],
+      ['(display ";") (list \'error \'seq)', true],
+      ["(f #\\; 'seq)", true],
+      ["(f #\\space 'seq)", true],
+      ["(raise '(error  seq))", true],
+      ["(raise ' (error seq))", true],
+      ['(quote (error seq))', true],
+      ['( quote seq)', true],
+      ['( quote (error seq))', true],
+      ['`(error seq ,x)', true],
+      ["(list #;ignored 'seq)", true],
+      ['(list #;("(") \'seq)', true],
+      ["#| 'seq |#", false],
+      ["#| outer #| inner |# 'seq |#", false],
+      ['(display "\'seq")', false],
+      ['(list \'"x"(error seq))', false],
+      ['(list \'se"x"q)', false],
+      ['(error seq)', false],
+      ["(list 'error 'seq?)", false],
+      ["(list 'seq@)", false],
+      ["(let ((seq (cadr r)))", false],
+      [";; 'seq", false],
+      ["(list #;#('seq) 'other)", false],
+      ["(list #;#vu8(1 2) 'seq)", true],
+      ["((memq (log-error-kind (car es)) '(segment-unreadable seq))", true],
+      ["(define table-kinds '(absent seq unwritable))", true],
+      ["`(a ,seq)", false],
+      ["`(a ,@(list seq))", false],
+      ["(quote (a (b seq)))", true],
+      ["(list #;'seq 'other)", false],
+      ["(list #;('seq) 'other)", false],
+      ["(list #;' 'seq 'other)", false],
+      ["(list #;['seq] 'other)", false]
+    ] as const) {
+      assert.strictEqual(makes('seq', line), held, `the reader of a cited line got ${line} wrong`);
+    }
+    const { directory } = coreSources();
+    const cite = /\b([a-z0-9-]+\.sc):(\d+(?:-\d+)?(?:(?:, ?| and )\d+(?:-\d+)?)*)/g;
+    const lost: string[] = [];
+    let rows = 0;
+    for (const [kind, where] of Object.entries(NOT_A_WRITES_ANSWER)) {
+      const found = [...where.matchAll(cite)];
+      if (found.length === 0) {
+        continue;
+      }
+      rows += 1;
+      let held = false;
+      for (const [, file, spec] of found) {
+        const source = path.join(directory, file);
+        let lines: string[];
+        try {
+          lines = readFileSync(source, 'utf8').split('\n');
+        } catch {
+          lost.push(`${kind}: ${file} is not in the pinned core`);
+          continue;
+        }
+        /*
+         * Each part of a list on its own: `1619 and 1800-1803` is 1619 and
+         * every line from 1800 to 1803.
+         */
+        const range = spec.split(/, ?| and /).flatMap((part) => {
+          const [from, to] = part.split('-').map(Number);
+          return Array.from({ length: (to ?? from) - from + 1 }, (_, i) => from + i);
+        });
+        if (range.some((n) => n >= 1 && n <= lines.length && makes(kind, lines[n - 1]))) {
+          held = true;
+        }
+      }
+      if (!held) {
+        lost.push(`${kind}: none of ${found.map((m) => m[0]).join(', ')} holds it`);
+      }
+    }
+    assert.ok(rows > 50, `only ${rows} rows cite the core, so the reader of this table found too little to judge`);
+    assert.deepStrictEqual(lost, [], 'these rows cite lines that no longer hold their kind: read each against the pinned core');
+  });
 });
 
 /*

@@ -65,7 +65,7 @@ export interface Answer {
    * ROUND IT. Measured on a core pinned before F100b (877f0da or earlier): a commit answers
    * `(ok (events ...) (cursor ...) (replay #f))` by default and
    * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
-   * with the flag -- and `render-human` (render.sc:57) renders only
+   * with the flag -- and `render-human` (render.sc:62-65) renders only
    * the `items` clause and `incomplete`, so every other clause beside them
    * is lost on the way out.
    *

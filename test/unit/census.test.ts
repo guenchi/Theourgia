@@ -264,9 +264,11 @@ const AT_LEAST: Array<[string, number]> = [
    */
   /*
    * RAISED at the re-pin to f34d84f, 17 -> 18: `template` and `init` are sent
-   * nowhere (the project template's refusals answer only them).
+   * nowhere (the project template's refusals answer only them). RAISED by the
+   * citation audit, 18 -> 19: every row of NOT_A_WRITES_ANSWER that cites the
+   * core cites a line holding its kind.
    */
-  ['refusals.test.ts', 18],
+  ['refusals.test.ts', 19],
   /*
    * ADDED in plugin-r2: the gate that keeps comments in ASCII, and the
    * cell that proves the gate can tell a comment from a string.

@@ -1934,7 +1934,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
   it('settles a reason at position 2 that is not an instance clause as it always did', async () => {
     /*
      * Three of the other reasons 877f0da puts after `refused`, the first
-     * two a symbol that merely begins like the family (log.sc:5718, 5489).
+     * two a symbol that merely begins like the family (log.sc:5841, 5847).
      */
     for (const reason of ['instance-malformed', 'no-instance', 'integrity']) {
       const r = rig([{ match: ['set'], stdout: `(error refused ${reason})\n`, rc: 1 }]);
