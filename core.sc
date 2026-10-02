@@ -286,20 +286,39 @@
 (define eval-defaults
   '((timeout-ms . 3000) (memory-bytes . 268435456) (output-bytes . 65536)))
 
-(define (bounded name value low high)
-  (and value (exact? value) (integer? value) (<= low value high) value))
-
+;; NEVER: A REFUSED LIMIT NAMES ITSELF. -> the value; or, for a value the
+;; option cannot take, the clause naming the option and why:
+;; (option "<name>" (reason not-a-number|not-positive|out-of-range)), the
+;; last with (range <low> <high>). A count is an exact integer, so 1.5 and
+;; 1e3 are not-a-number. The calls stay spelled out, one per option, because
+;; options-gate reads them as the options eval takes.
 (define (eval-number nodes name fallback low high)
   (let ((given (argument-option nodes name)))
     (if (not given)
         fallback
-        (bounded name (string->number given) low high))))
+        (let ((n (string->number given)))
+          (cond ((not (and n (exact? n) (integer? n))) (list 'option name '(reason not-a-number)))
+                ((<= n 0) (list 'option name '(reason not-positive)))
+                ((not (<= low n high)) (list 'option name '(reason out-of-range) (list 'range low high)))
+                (else n))))))
+
+;; The refusal for the first limit eval-number refused, or #f.
+(define (eval-limits-refusal . limits)
+  (let ((problem (find pair? limits)))
+    (and problem (list 'error 'bad-request '(reason eval-arguments) problem (list 'usage eval-usage)))))
 
 (define (read-source nodes)
   (let ((positional (argument-positionals nodes)))
     (if (pair? positional)
         (car positional)
         (read-all-text (current-input-port)))))
+
+;; NEVER: NO SOURCE AT ALL IS A QUESTION ABOUT USAGE, not a malformed
+;; source. No positional and nothing on standard input is answered with
+;; eval's usage form, as a verb called without what it needs is; an empty
+;; or whitespace positional is still a source, and is judged as one.
+(define (no-source? nodes source)
+  (and (null? (argument-positionals nodes)) (string=? source "")))
 
 ;; NEVER: THE VIEW IS FIXED BEFORE THE CHILD EXISTS, or it is not a view at
 ;; all. Without `--working` there is nothing to overlay and the answer is
@@ -467,9 +486,7 @@
       ((argument-option nodes "--under")
        (done (list 'error 'bad-request '(reason lang-and-under)
                          (list 'usage eval-usage))))
-      ((not (and timeout memory output))
-       (done (list 'error 'bad-request '(reason eval-arguments)
-                         (list 'usage eval-usage))))
+      ((eval-limits-refusal timeout memory output) => done)
       ((not (and entry (language-runner entry)))
        (done (list 'error 'bad-request '(reason no-runner) (list 'lang (string->symbol lang))
                          (list 'usage eval-usage))))
@@ -486,8 +503,11 @@
       ((admit! timeout) => done)
       (else
        (let ((source (read-source nodes)))
-         (if (> (string-length source) 1048576)
-             (done '(error bad-source (reason input-limit)))
+         (cond
+           ((no-source? nodes source) (done (list 'usage eval-usage)))
+           ((> (string-length source) 1048576)
+             (done '(error bad-source (reason input-limit))))
+           (else
              (let ((before-scheduler (mutation-record)))
                ((later '(theourgia sched) 'start-scheduler)
                  (lambda ()
@@ -506,7 +526,7 @@
                                      (cons 'scheme (scheme-binary))
                                      (cons 'launcher (absolute-path (beside-this-program "eval-runner-exec.sc")))))
                              (mutation-record)))))
-                     before-scheduler))))))))))
+                     before-scheduler)))))))))))
 
 ;; A PATH MADE ABSOLUTE against this process's cwd: the launcher is started
 ;; with its cwd in the projection, where a relative path names nothing.
@@ -593,10 +613,8 @@
              (finish (list 'error 'bad-request '(reason cut-and-latest)
                            (list 'usage eval-usage))
                      wire?))
-            ((not (and timeout memory output))
-             (finish (list 'error 'bad-request '(reason eval-arguments)
-                           (list 'usage eval-usage))
-                     wire?))
+            ((eval-limits-refusal timeout memory output)
+             => (lambda (refusal) (finish refusal wire?)))
             (else
             ;; THE ADMISSION (eval-admission.sc eval-admit!): a slot of the
             ;; run root's pool, held until this process ends, before the cut,
@@ -611,8 +629,12 @@
              (finish (with-heard-clause (append (cadr cut) '((during cut))) (heard)) wire?))
             (else
              (let ((source (read-source nodes)))
-               (if (> (string-length source) 1048576)
-                   (finish (with-heard-clause '(error bad-source (reason input-limit)) (heard)) wire?)
+               (cond
+                 ((no-source? nodes source)
+                   (finish (with-heard-clause (list 'usage eval-usage) (heard)) wire?))
+                 ((> (string-length source) 1048576)
+                   (finish (with-heard-clause '(error bad-source (reason input-limit)) (heard)) wire?))
+                 (else
                    ;; THE RECORD CROSSES INTO THE SCHEDULER (F100b point 3):
                    ;; what this process changed before it -- the cut's draft
                    ;; lock, say -- is handed to the boot actor as its
@@ -661,7 +683,7 @@
                                          (mutation-record))
                                        (heard))
                                        wire?))))))
-                           before-scheduler))))))))))))))))))))
+                           before-scheduler)))))))))))))))))))))
 
 ;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
 ;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS
