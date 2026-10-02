@@ -458,11 +458,16 @@
                     (based-on (caddr item))
                     (cut (cadddr item))
                     (declared (caddr found))
-                    (text (or declared
-                              (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
-                                (and (reduction? past) (field past id 'src)))))
+                    (text (and (not (datum-mode-block? state id))
+                               (or declared
+                                   (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
+                                     (and (reduction? past) (field past id 'src))))))
                     (body (and text (if (string? text) (string->utf8 text) text))))
                (cond
+                 ;; NEVER: NO ROUTE MAKES A DRAFT ON A DATUM BLOCK (store.sc,
+                 ;; datum-mode-block?), and restore is one: a revoked draft on
+                 ;; one is refused by name and no draft file is written.
+                 ((datum-mode-block? state id) (draft-on-datum-refusal id))
                  ((not body) (list 'error 'working-unavailable (list 'reason 'no-text-for-version)))
                  ((not (equal? version (content-version body based-on cut)))
                   (list 'error 'consumes-version-mismatch (list 'block id)))
