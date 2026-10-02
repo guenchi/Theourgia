@@ -64,26 +64,33 @@
     (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
   (define (declared-kind e)
     (let ((u (declared-intent e))) (and (pair? u) (symbol? (car u)) (car u))))
-  ;; -> (parent sibling) of an insert or a move of four parts, or ().
+  ;; -> (parent sibling): an insert's elements 1 and 2, a move's 2 and 3,
+  ;; read through the pairs that reach them whatever follows, or () when
+  ;; the entry does not reach them. A plan the reducer admits can declare an
+  ;; insert or a move shorter or longer than the four parts the store
+  ;; writes; a marker in it is still a marker, and is still checked.
   (define (declared-refs e)
     (let ((u (declared-intent e)))
-      (cond ((not (and (list? u) (= (length u) 4))) '())
+      (cond ((not (and (pair? u) (pair? (cdr u)) (pair? (cddr u)))) '())
             ((eq? (car u) 'insert) (list (cadr u) (caddr u)))
-            ((eq? (car u) 'move) (list (caddr u) (cadddr u)))
+            ((and (eq? (car u) 'move) (pair? (cdddr u))) (list (caddr u) (cadddr u)))
             (else '()))))
-  ;; The entry with its parent and sibling replaced, the wrapper kept.
-  ;; A WRAPPED ENTRY HAS THREE PARTS: one with references was written, at
-  ;; plan time, by the store's own rewriting of references, which writes
-  ;; exactly (expect <subject> <intent>). Its member is gated on the first
-  ;; attempt already, since the reducer holds a member to its plan's entry
-  ;; and compares no expect; so this branch only meets a plan whose
-  ;; members can never be applied, and it rebuilds what was written.
+  ;; L with its elements at K1 and K2 replaced by A and B, the rest of its
+  ;; pairs and its tail as they were.
+  (define (with-elements l k1 a k2 b)
+    (let loop ((l l) (k 0))
+      (if (pair? l)
+          (cons (cond ((= k k1) a) ((= k k2) b) (else (car l))) (loop (cdr l) (+ k 1)))
+          l)))
+  ;; The entry with its parent and sibling replaced in place: the rest of
+  ;; the entry, and its wrapper, are kept as declared, and the run judges
+  ;; them as it judges any entry.
   (define (declared-with-refs e parent after)
     (let* ((u (declared-intent e))
            (r (if (eq? (car u) 'insert)
-                  (list 'insert parent after (cadddr u))
-                  (list 'move (cadr u) parent after))))
-      (if (eq? u e) r (list 'expect (cadr e) r))))
+                  (with-elements u 1 parent 2 after)
+                  (with-elements u 2 parent 3 after))))
+      (if (eq? u e) r (with-elements e 2 r -1 #f))))
 
   ;; A member of this plan: a record whose actor names this plan event with
   ;; an integer index. A record that claims the request's identity without

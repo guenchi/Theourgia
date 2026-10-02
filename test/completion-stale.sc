@@ -663,13 +663,39 @@
       (let* ((before (log-bytes st)) (a (forged-retry f)))
         (want (string-append "K14 fabricated: " label) (list (car a) (cadr a) (caddr a)) (list 'error 'no-such-intent expected))
         (want (string-append "K14 fabricated: " label ", and nothing is written") (log-bytes st) before))))
-  '("a marker naming a set" "a marker naming no index" "a marker naming a later member" "a marker naming a set, the set's block written by another (the marker check comes first)")
+  '("a marker naming a set" "a marker naming no index" "a marker naming a later member" "a marker naming a set, the set's block written by another (the marker check comes first)"
+    "a marker naming no index, in an insert longer than four parts" "a marker naming no index, in an insert of three parts")
   (list (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section))))
         (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 5) #f section))))
         (lambda (M) (list (cons 0 (list 'insert '("#%new" 1) #f section)) (cons 1 (list 'insert 'root #f section))))
-        (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section)))))
-  '(0 5 1 0)
-  '(#f #f #f #t)))
+        (lambda (M) (list (cons 0 (list 'set M 'src "x")) (cons 1 (list 'insert '("#%new" 0) #f section))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9) #f section 'extra))))
+        (lambda (M) (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 9) #f)))))
+  '(0 5 1 0 9 9)
+  '(#f #f #f #t #f #f))
+;; AN ENTRY LONGER THAN FOUR PARTS WITH NO MARKER is run as declared: the
+;; completion has nothing to bind in it, and the run answers for it what a
+;; fresh run of the same intent answers.
+(cell "K14 fabricated long, no marker"
+  (let* ((f (forged-store "k14fn")) (st (car f)) (intent (list 'insert 'root #f section 'extra)))
+    (publish-plan! f (list (cons 0 intent)) #f)
+    (let* ((a (forged-retry f))
+           (item (if (eq? (car a) 'ok) (car (cdr (assq 'items (cdr a)))) (last-answer a)))
+           (fresh (car (with-store-write (car (fresh-store "k14fnf")) (lambda (s v) (list intent)) "test"))))
+      (want "K14 fabricated: an insert longer than four parts with no marker is answered as a fresh run of it is"
+            (list (car item) (and (eq? (car item) 'error) (cadr item)))
+            (list (car fresh) (and (eq? (car fresh) 'error) (cadr fresh)))))))
+
+;; A VALID MARKER IN AN ENTRY LONGER THAN FOUR PARTS IS BOUND: the run then
+;; judges the entry as it judges any, and never answers that the marker is
+;; not an id.
+(cell "K14 fabricated long"
+  (let* ((f (forged-store "k14fl")) (st (car f)) (M (cadr f)))
+    (publish-plan! f (list (cons 0 (list 'insert 'root #f section)) (cons 1 (list 'insert '("#%new" 0) #f section 'extra))) #f)
+    (let* ((a (forged-retry f)) (l (last-answer (if (eq? (car a) 'ok) (cons 'batch (list (cdr (assq 'items (cdr a))))) a))))
+      (want "K14 fabricated: a valid marker in an insert longer than four parts is bound, never read as not an id"
+            (and (pair? l) (eq? (car l) 'error) (pair? (cddr l)) (pair? (caddr l)) (eq? (car (caddr l)) 'not-an-id))
+            #f)))))
 
 ;; K12's sibling case. AN IMPORT CANNOT NAME A SIBLING WITHOUT TARGETING
 ;; IT: it restates every entry's order with a move, so the sibling is a
