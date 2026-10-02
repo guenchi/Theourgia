@@ -87,7 +87,7 @@
                            (cons 'implements implements))
                      (if linked '() (list '(unlinked))))))))
 
-;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
+  ;; NEVER: A SCOPE THE CALLER DID NOT ASK FOR IS SAID. When the template chose
   ;; the scope, the last item is (scope <root-id> (outside <n>)): n is the
   ;; number of rows this same request would list with --under root that this
   ;; answer does not, so a narrowed listing never reads as a whole one and the

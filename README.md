@@ -749,7 +749,8 @@ what happened in between.
 A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
-fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision` -- and a
+fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision`, `task`,
+`template` -- and a
 spelling outside that set is refused, with the legal set in the answer, rather
 than stored. A kind stored as text would match nothing and the block would
 simply stop behaving like what it said it was. The same set applies to a kind
