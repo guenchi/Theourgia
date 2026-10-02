@@ -477,27 +477,34 @@
             (lambda (x env walk body)
               (and (= (length x) 3) (symbol? (cadr x)) (walk (caddr x) (cons (cadr x) env)))))
       ;; (foreign-procedure <convention> ... <entry> (<parameter type> ...)
-      ;; <result type>): the types are data, the entry is walked. A
-      ;; convention is one Chez knows (#f, __collect_safe, __varargs, or
-      ;; (__varargs_after <n>) with n a non-negative exact integer), none given
-      ;; twice; a type is
+      ;; <result type>): the types are data, the entry is walked. A type is
       ;; one of Chez's foreign type names, or (* <name>) or (& <name>) for an
       ;; ftype, whose name the walk cannot check; void only as the result.
+      ;; The conventions, as Chez answers them: each is #f, __collect_safe,
+      ;; __varargs or (__varargs_after <n>); none is given twice (#f #f
+      ;; included); at most one is __varargs or __varargs_after; __varargs
+      ;; needs a parameter, and (__varargs_after <n>) an exact n with
+      ;; 1 <= n <= the parameter count; #f and __collect_safe go with any
+      ;; other.
       (cons 'foreign-procedure
             (lambda (x env walk body)
               (let ((n (length x)))
                 (and (>= n 4)
-                     (let ((params (list-ref x (- n 2))))
-                       (and (list? params) (for-all foreign-type? params)))
+                     (let ((params (list-ref x (- n 2)))
+                           (conventions (first-n (cdr x) (- n 4))))
+                       (and (list? params) (for-all foreign-type? params)
+                            (let distinct ((cs conventions))
+                              (or (null? cs) (and (not (member (car cs) (cdr cs))) (distinct (cdr cs)))))
+                            (<= (length (filter (lambda (c) (or (eq? c '__varargs) (pair? c))) conventions)) 1)
+                            (for-all (lambda (c)
+                                       (or (not c)
+                                           (eq? c '__collect_safe)
+                                           (and (eq? c '__varargs) (pair? params))
+                                           (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after)
+                                                (integer? (cadr c)) (exact? (cadr c))
+                                                (<= 1 (cadr c) (length params)))))
+                                     conventions)))
                      (or (eq? (list-ref x (- n 1)) 'void) (foreign-type? (list-ref x (- n 1))))
-                     (let distinct-conventions ((cs (first-n (cdr x) (- n 4))))
-                       (or (null? cs) (and (not (member (car cs) (cdr cs))) (distinct-conventions (cdr cs)))))
-                     (for-all (lambda (c)
-                                (or (not c)
-                                    (memq c '(__collect_safe __varargs))
-                                    (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after)
-                                         (integer? (cadr c)) (exact? (cadr c)) (>= (cadr c) 0))))
-                              (first-n (cdr x) (- n 4)))
                      (walk (list-ref x (- n 3)) env))))))))
 
   ;; DOES THE WALK KNOW THIS FORM'S SHAPE: #t when, at a block's top form, the
