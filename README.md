@@ -1616,7 +1616,7 @@ written a block a missing member would write since the request was admitted, and
 for a commit, that the block's hash is still the one the draft started from. If
 either fails it writes none of them and answers `stale-baseline` as a fresh commit
 does, with a `(completion (plan <event>) (present <index> ...) (of <n>))` clause
-naming the members already on disk. The refusal is about the store as it is now:
+naming the members that are applied. The refusal is about the store as it is now:
 each retry is judged again, and completes once the other record has been taken
 back. A client that will not wait rebases the drafts the answer names and sends
 them under a new request id. If a member the retry writes makes another record

@@ -184,9 +184,19 @@
 (define (since-events a) (map car (cdr (or (clause 'since a) '(since)))))
 
 ;; A crash of a commit of IDS at its N-th append. -> barriers.
-(define (crash-commit! st ids req n)
+;; A crash at the N-th append, ASSERTED (the brief: each crash row first
+;; asserts where the child stopped and what the log holds): the child
+;; printed N barrier lines, and the request's evidence is its plan and the
+;; members before that append, or EXPECT when given. -> barriers.
+(define (crashed! label st req n args . expect)
+  (let ((barriers (car (crash-at n root home cli args))))
+    (want (string-append label ": the child stopped at append " (number->string n)) barriers n)
+    (want (string-append label ": the log holds the plan and the members before it")
+          (subs st req) (if (pair? expect) (car expect) (cons 'plan (iota (- n 2)))))
+    barriers))
+(define (crash-commit! label st ids req n)
   (let ((args (commit-args st ids req (cursor-of st))))
-    (values (car (crash-at n root home cli args)) args)))
+    (values (crashed! label st req n args) args)))
 
 ;; ---- K1 (control): a crash after member 0; a new draft; the retry ---------------
 
@@ -194,7 +204,7 @@
   (let* ((st (fresh-store "k1"))
        (A (new-block st "A" "old A")) (B (new-block st "B" "old B")))
   (call st 'write A "frozen A") (call st 'write B "frozen B")
-  (let-values (((barriers args) (crash-commit! st (list A B) "R1" 3)))
+  (let-values (((barriers args) (crash-commit! "K1" st (list A B) "R1" 3)))
     (want "K1 the child stopped at the third append" barriers 3)
     (want "K1 the plan and member 0 are on disk" (subs st "R1") '(plan 0))
     (let ((second (member-block st "R1" 1)))
@@ -221,7 +231,7 @@
 
 (define (k2-like tag other!)
   (let* ((st (fresh-store tag)) (ids (four st)))
-    (let-values (((barriers args) (crash-commit! st ids "R2" 2)))
+    (let-values (((barriers args) (crash-commit! (string-upcase tag) st ids "R2" 2)))
       (let* ((e (plan-event st "R2"))
              (C (member-block st "R2" 2))
              (ev (other! st C ids))
@@ -277,7 +287,7 @@
 
 (cell "line 265"
   (let* ((st (fresh-store "k4")) (ids (four st)))
-  (let-values (((barriers args) (crash-commit! st ids "R4" 2)))
+  (let-values (((barriers args) (crash-commit! "K4" st ids "R4" 2)))
     (let* ((C (member-block st "R4" 2)) (D (member-block st "R4" 3)) (e (plan-event st "R4")))
       (call st 'set C "src" "theirs C") (call st 'set D "src" "theirs D")
       (let* ((before (log-bytes st)) (retry (cli-run args)))
@@ -291,7 +301,7 @@
 
 (cell "line 278"
   (let* ((st (fresh-store "k5")) (ids (four st)))
-  (let-values (((barriers args) (crash-commit! st ids "R5" 3)))
+  (let-values (((barriers args) (crash-commit! "K5" st ids "R5" 3)))
     (want "K5 the child stopped at the third append" barriers 3)
     (let* ((C (member-block st "R5" 2)) (A (member-block st "R5" 0)) (e (plan-event st "R5")))
       (call st 'set C "src" "theirs")
@@ -305,7 +315,7 @@
 
 (cell "line 291"
   (let* ((st (fresh-store "k6")) (ids (four st)) (E (new-block st "E" "old E")))
-  (let-values (((barriers args) (crash-commit! st ids "R6" 2)))
+  (let-values (((barriers args) (crash-commit! "K6" st ids "R6" 2)))
     (call st 'set E "src" "theirs E")
     (call st 'insert "--title" "child" "--under" (member-block st "R6" 0))
     (let ((retry (cli-run args)))
@@ -316,7 +326,7 @@
 (cell "line 300"
   (let* ((st (fresh-store "k8")) (ids (four st)))
   (call st 'insert "--title" "T" "--req" "R0" "--cursor" (cursor-of st))
-  (let-values (((barriers args) (crash-commit! st ids "R8" 2)))
+  (let-values (((barriers args) (crash-commit! "K8" st ids "R8" 2)))
     (let* ((t (find (lambda (e) (eq? 'single (actor-sub (ev-actor e)))) (evidence st "R0")))
            (rival (encode-record 1 1789000000001 (ev-actor t) '() (storable-encode (ev-payload t)))))
       (log-publish! (car st) "rivalzzz" 1 rival (segment-sha rival))
@@ -328,8 +338,8 @@
 
 (cell "line 312"
   (let* ((st (fresh-store "k11")) (ids (four st)))
-  (let-values (((barriers args) (crash-commit! st ids "R11" 2)))
-    (let ((second (car (crash-at 2 root home cli args))))
+  (let-values (((barriers args) (crash-commit! "K11" st ids "R11" 2)))
+    (let ((second (crashed! "K11 the second attempt" st "R11" 2 args '(plan 0))))
       (want "K11 the second attempt stopped after member 0" (list second (subs st "R11")) '(2 (plan 0)))
       (let ((C (member-block st "R11" 2)) (e (plan-event st "R11")))
         (call st 'set C "src" "theirs")
@@ -339,7 +349,7 @@
           (want "K11 present is member 0" (clause 'completion retry) (list 'completion (list 'plan e) '(present 0) '(of 4)))))))))
 (cell "line 322"
   (let* ((st (fresh-store "k11b")) (ids (four st)))
-  (let-values (((barriers args) (crash-commit! st ids "R11" 2)))
+  (let-values (((barriers args) (crash-commit! "K11" st ids "R11" 2)))
     (call st 'set (member-block st "R11" 2) "src" "theirs")
     (let* ((before (log-bytes st)) (retry (cli-run args)))
       (want "K11 with the other's write before the second attempt, it writes nothing at all" (log-bytes st) before)
@@ -383,7 +393,7 @@
                  (projection-encode py (header st a) (list (list (list-ref ids 0) (changed 1)) (list (list-ref ids 1) (changed 2))
                                                            (list (list-ref ids 2) (changed 3)))))
     (let* ((args (import-args st edit "R9" "--allow-delete"))
-           (barriers (car (crash-at 2 root home cli args)))
+           (barriers (crashed! (string-append "K9 " tag) st "R9" 2 args))
            (target (pick ids)))
       (call st 'set target "src" "def theirs():\n  pass\n")
       (let* ((before (log-bytes st)) (retry (cli-run args)))
@@ -416,21 +426,26 @@
              (string-append (utf8->string (marker-line scm (string-append "@block " (car row)))) (datum-print (cadr row))))
            rows))
     ")\n"))
-(cell "line 398"
-  (let* ((c (datum-case "k9d" "(library (a) (export w x y z) (import (rnrs))\n(define w 1)\n(define x 2)\n(define y 3)\n(define z 4))\n"))
-       (st (car c)) (edit (cadr c)) (lib (library-id st '(a))) (ids (children st lib)))
-  (write-file! (string-append edit "/a.sc")
-               (b (render-datum st lib (list (list (list-ref ids 0) '(define w 10)) (list (list-ref ids 1) '(define x 20))
-                                             (list (list-ref ids 2) '(define y 30)))
-                                '(w x y))))
-  (let* ((args (append (list "import-code" edit "--datum" "--allow-delete") (list "--req" "R9d" "--cursor" (cursor-of st) "--store" (car st))))
-         (barriers (car (crash-at 2 root home cli args)))
-         (target (list-ref ids 1)))
-    (with-store-write (car st) (lambda (s v) (list (list 'set target 'body '(define x 99)))) "test")
-    (let* ((before (log-bytes st)) (retry (cli-run args)))
-      (want "K9 datum: the child stopped after the plan" barriers 2)
-      (want "K9 datum: the retry writes nothing" (log-bytes st) before)
-      (want "K9 datum: and names the block" (list (head2 retry) (clause 'block retry)) (list '(error stale-baseline) (list 'block target)))))))
+(for-each
+  (lambda (case-name pick)
+    (cell (string-append "K9 datum " case-name)
+      (let* ((c (datum-case "k9d" "(library (a) (export w x y z) (import (rnrs))\n(define w 1)\n(define x 2)\n(define y 3)\n(define z 4))\n"))
+             (st (car c)) (edit (cadr c)) (lib (library-id st '(a))) (ids (children st lib)))
+        ;; three definitions changed, the fourth deleted
+        (write-file! (string-append edit "/a.sc")
+                     (b (render-datum st lib (list (list (list-ref ids 0) '(define w 10)) (list (list-ref ids 1) '(define x 20))
+                                                   (list (list-ref ids 2) '(define y 30)))
+                                      '(w x y))))
+        (let* ((args (append (list "import-code" edit "--datum" "--allow-delete") (list "--req" "R9d" "--cursor" (cursor-of st) "--store" (car st))))
+               (barriers (crashed! (string-append "K9 datum " case-name) st "R9d" 2 args))
+               (target (pick ids)))
+          (with-store-write (car st) (lambda (s v) (list (list 'set target 'body '(define x 99)))) "test")
+          (let* ((before (log-bytes st)) (retry (cli-run args)))
+            (want (string-append "K9 datum " case-name ": the retry writes nothing") (log-bytes st) before)
+            (want (string-append "K9 datum " case-name ": and names the block") (list (head2 retry) (clause 'block retry))
+                  (list '(error stale-baseline) (list 'block target))))))))
+  '("set" "deleted")
+  (list (lambda (ids) (list-ref ids 1)) (lambda (ids) (list-ref ids 3))))
 
 ;; K10: own progress is not foreign. An import that changes an entry AND
 ;; moves it (two members on one block), stopped after the FIRST of those two
@@ -444,11 +459,10 @@
   (write-file! (string-append edit "/a.py")
                (projection-encode py (header st a) (list (list (list-ref ids 1) e2) (list (list-ref ids 2) e3) (list (list-ref ids 0) (changed 1)))))
   (let* ((args (import-args st edit "R10"))
-         (barriers (car (crash-at 5 root home cli args)))
+         (barriers (crashed! "K10" st "R10" 5 args))
          (targets (map (lambda (e) (cons (car e) (cadr (cdr e)))) (plan-entries st "R10")))
          (shared (find (lambda (p) (> (length (filter (lambda (q) (equal? (cdr q) (cdr p))) targets)) 1)) targets))
          (on-it (if shared (map car (filter (lambda (q) (equal? (cdr q) (cdr shared))) targets)) '())))
-    (printf "observe K10 plan entries ~s\n" (plan-entries st "R10"))
     (want "K10 the plan has two members on one block, members 2 and 3" on-it '(2 3))
     (want "K10 the child stopped after the first of them: member 2 on disk, member 3 missing"
           (list barriers (subs st "R10")) '(5 (plan 0 1 2)))
@@ -458,10 +472,13 @@
             (list (utf8->string (changed 1)) (list-ref ids 0)))))))
 
 ;; K14: a NEW file of two entries, interrupted three ways, against a twin.
+;; The tree in outline order: each block's kind, path and text, the file
+;; blocks in the order the outline gives them, each with its children.
+(define (block-props s id) (list (code-field s id 'kind) (code-field s id 'path) (text (code-field s id 'src))))
 (define (tree-of st)
   (let ((s (state st)))
-    (map (lambda (f) (list (code-field s f 'path) (map (lambda (k) (text (code-field s k 'src))) (code-children s f))))
-         (list-sort (lambda (x y) (string<? (code-field s x 'path) (code-field s y 'path))) (code-files s)))))
+    (map (lambda (f) (list (block-props s f) (map (lambda (k) (block-props s k)) (code-children s f))))
+         (code-files s))))
 (define (new-file-case tag)
   (let* ((c (import-case tag (list (cons "a.py" (projection-encode py #f (list (list "new" e1)))))))
          (st (car c)) (edit (cadr c)))
@@ -477,7 +494,7 @@
   (for-each
   (lambda (n)
     (let* ((c (new-file-case "k14")) (st (car c)) (args (import-args st (cadr c) "R14"))
-           (barriers (car (crash-at n root home cli args))))
+           (barriers (crashed! "K14 code" st "R14" n args)))
       (want (string-append "K14 code, stopped at append " (number->string n)) barriers n)
       (let ((retry (cli-run args)))
         (want (string-append "K14 code, stopped at append " (number->string n) ": the retry completes whole") (car retry) 'ok)
@@ -485,11 +502,11 @@
   '(2 3 4)))
 
 ;; The same for import-code --datum: a new library of several forms.
+(define (datum-props s id) (list (code-field s id 'kind) (code-field s id 'path) (code-field s id 'name) (code-field s id 'body)))
 (define (datum-tree st)
   (let ((s (state st)))
-    (map (lambda (l) (list (code-field s l 'name) (map (lambda (k) (code-field s k 'body)) (code-children s l))))
-         (list-sort (lambda (x y) (string<? (format "~s" (code-field s x 'name)) (format "~s" (code-field s y 'name))))
-                    (map cadr (state-datum s))))))
+    (map (lambda (l) (list (datum-props s l) (map (lambda (k) (datum-props s k)) (code-children s l))))
+         (map cadr (state-datum s)))))
 (define (new-library-case tag)
   (let* ((c (datum-case tag "(library (a) (export w) (import (rnrs))\n(define w 1))\n")) (st (car c)) (edit (cadr c)))
     (write-file! (string-append edit "/n.sc") (b "(library (n) (export p q) (import (rnrs))\n(define p 1)\n(define q 2))\n"))
@@ -505,7 +522,7 @@
   (lambda (n)
     (let* ((c (new-library-case "k14d")) (st (car c))
            (args (append (list "import-code" (cadr c) "--datum") (list "--req" "R14d" "--cursor" (cursor-of st) "--store" (car st))))
-           (barriers (car (crash-at n root home cli args))))
+           (barriers (crashed! "K14 datum" st "R14d" n args)))
       (want (string-append "K14 datum, stopped at append " (number->string n)) barriers n)
       (let ((retry (cli-run args)))
         (want (string-append "K14 datum, stopped at append " (number->string n) ": the retry completes whole") (car retry) 'ok)
@@ -528,7 +545,7 @@
 (cell "line 497"
   (let* ((c (data-row-case "k14d")) (st (car c))
        (args (append (list "import-code" (cadr c) "--datum") (list "--req" "RD" "--cursor" (cursor-of st) "--store" (car st))))
-       (barriers (car (crash-at 2 root home cli args)))
+       (barriers (crashed! "K14 data row" st "RD" 2 args))
        (e (plan-event st "RD"))
        (retry (cli-run args))
        (member (find (lambda (x) (eqv? 0 (actor-sub (ev-actor x)))) (evidence st "RD"))))
@@ -559,12 +576,15 @@
       ;; a set of A in a.py; an insertion into the empty P of p.py
       (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (car ids) (changed 1)) (list (cadr ids) e2))))
       (write-file! (string-append edit "/p.py") (projection-encode py (header st P) (list (list (car (children st P)) e4) (list "new" e3))))
-      (let* ((args (import-args st edit "R12")) (barriers (car (crash-at 2 root home cli args))))
-        (printf "observe K12 ~a: P ~s, plan entries ~s\n" label P (plan-entries st "R12"))
+      (let* ((args (import-args st edit "R12")) (barriers (crashed! "K12" st "R12" 2 args)))
+        (want (string-append "K12 " label ": the plan is a set of A, a move of P's child, an insert under P")
+              (map (lambda (e) (list (cadr e) (if (eq? (cadr e) 'insert) (caddr e) #f))) (plan-entries st "R12"))
+              (list (list 'set #f) (list 'move #f) (list 'insert P)))
         (other! st P)
         (let ((retry (cli-run args)))
-          (printf "observe K12 ~a: retry ~s\n" label retry)
-          (want (string-append "K12 " label) (expect retry P) #t)))))
+          (want (string-append "K12 " label) (expect retry P) #t)
+          (want (string-append "K12 " label ": the members written")
+                (subs st "R12") (if (eq? (car retry) 'ok) '(plan 0 1 2) '(plan 0 1)))))))
   ;; THE PLAN IS a set of A, a move of P's existing child (the import
   ;; restates its order) and the insert under P: a projection cannot make
   ;; an empty parent. So with P deleted the set and the move are written
@@ -584,12 +604,12 @@
 (cell "line 551"
   (let* ((k (k12-case "k12m")) (st (car k)) (edit (cadr k)) (a (caddr k)) (ids (list-ref k 4)))
   (write-file! (string-append edit "/a.py") (projection-encode py (header st a) (list (list (cadr ids) e2) (list (car ids) e1))))
-  (let* ((args (import-args st edit "R12m")) (barriers (car (crash-at 2 root home cli args))))
-    (printf "observe K12 move: plan entries ~s\n" (plan-entries st "R12m"))
+  (let* ((args (import-args st edit "R12m")) (barriers (crashed! "K12 move" st "R12m" 2 args)))
+    (want "K12 move: the plan is two moves under a.py"
+          (map (lambda (e) (list (cadr e) (cadddr e))) (plan-entries st "R12m")) (list (list 'move a) (list 'move a)))
     (call st 'del a)
     (let ((retry (cli-run args)))
-      (printf "observe K12 move: retry ~s\n" retry)
-      (want "K12 a move under a deleted parent is written, as on the base" (car retry) 'ok)))))
+      (want "K12 a move under a deleted parent is written, as on the base" (list (car retry) (subs st "R12m")) '(ok (plan 0 1)))))))
 ;; ---- forged plans: K14's fabricated plans, K19 ------------------------------------
 ;;
 ;; A PLAN NO PRODUCER WRITES, published under the identity a later
@@ -688,7 +708,7 @@
     (list A B)))
 (define (k15 tag arrange)
   (let* ((st (fresh-store tag)) (ids (two st)))
-    (let-values (((barriers args) (crash-commit! st ids "R15" 2)))
+    (let-values (((barriers args) (crash-commit! "K15" st ids "R15" 2)))
       (let* ((e (plan-event st "R15")) (X (member-block st "R15" 0)) (Y (member-block st "R15" 1))
              (next (cons (cdr st) (+ (last-seq st) 1)))
              (mirrored (arrange st Y next))
@@ -723,7 +743,7 @@
 ;; release do not hold it.
 (cell "line 686"
   (let* ((st (fresh-store "k16")) (ids (two st)))
-  (let-values (((barriers args) (crash-commit! st ids "R16" 2)))
+  (let-values (((barriers args) (crash-commit! "K16" st ids "R16" 2)))
     (let ((Y (member-block st "R16" 1)))
       ;; waits for a THIRD writer's record, which the completion does not write
       (publish! st "mirrorab" (list (list 1 (list (cons "thirdzzz" 1)) (list 'set Y 'src "q") "peer")))
@@ -736,7 +756,7 @@
             2)))))
 (cell "line 698"
   (let* ((st (fresh-store "k16b")) (ids (two st)))
-  (let-values (((barriers args) (crash-commit! st ids "R16" 2)))
+  (let-values (((barriers args) (crash-commit! "K16" st ids "R16" 2)))
     (let* ((Y (member-block st "R16" 1))
            (after (cons "forgezzz" 0))
            (fp (request-fingerprint "review" 'set '("x") after))
@@ -752,7 +772,7 @@
 (define (contest tag tag-before-plan?)
   (let* ((st (fresh-store tag)) (ids (two st)))
     (let* ((tag-ev (and tag-before-plan? (event-of (call st 'insert "--title" "T" "--req" "R0" "--cursor" (cursor-of st))))))
-      (let-values (((barriers args) (crash-commit! st ids "R18" 2)))
+      (let-values (((barriers args) (crash-commit! (string-upcase tag) st ids "R18" 2)))
         (let ((tag-ev (or tag-ev (event-of (call st 'insert "--title" "T" "--req" "R0" "--cursor" (cursor-of st))))))
           (let* ((e (plan-event st "R18"))
                  (t (find (lambda (x) (eq? 'single (actor-sub (ev-actor x)))) (evidence st "R0")))
