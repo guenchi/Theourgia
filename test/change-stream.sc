@@ -28,6 +28,12 @@
 ;; answer was read from, so a client can tell which frames its copy has
 ;; already seen.
 ;;
+;; THE READING USED FOR AN ADDED BLOCK (main's ruling on D2): a block
+;; named added or removed in a frame carries no field or position items in
+;; that frame -- a consumer reads a new block whole -- and structural items
+;; still apply to it (a block made with no position is (added id) and
+;; (conflict id unplaced)).
+;;
 ;; EVERY SUBSCRIBER HERE IS A PROCESS HOLDING ITS OWN SOCKET. It connects,
 ;; sends the subscription, and keeps every line it reads, in order; a row
 ;; asks it for its lines and asserts on them. The answers to everything
@@ -190,15 +196,19 @@
 ;;   (pause)/(resume) stops and restarts reading (the socket fills)
 ;;   (close)          closes the connection and ends
 ;; It ends by itself on EOF, keeping what it read, and still answers (lines).
-(define (spawn-subscriber! d args)
-  (let ((text (envelope (d-store d) 'subscribe args)))
+;; OPTS: 'paused (reading starts only on (resume)), and a string (bytes sent
+;; in the same write after the subscription, the buffered leftovers D4 names).
+(define (spawn-subscriber! d args . opts)
+  (let ((text (string-append (envelope (d-store d) 'subscribe args)
+                             (apply string-append (filter string? opts))))
+        (paused? (memq 'paused opts)))
     (spawn
       (lambda ()
         (connect! (d-socket d))
         (receive
           (after 4000 (let idle () (receive (`(lines ,from) (send from (list 'lines '(no-connect))) (idle)))))
           (`(connected ,p ,ref)
-           (conn-read-start! ref)
+           (unless paused? (conn-read-start! ref))
            (conn-write! ref (string->utf8 text) 'subscribe)
            (let loop ((acc "") (done '()) (open? #t))
              (receive
@@ -285,8 +295,8 @@
 ;; -> the number made, or (never-pending k).
 (define (fill-until-pending! d limit)
   (let loop ((k 1))
-    (cond ((contains? (d-log d) "(trace write-pending") k)
-          ((> k limit) (list 'never-pending k))
+    (cond ((contains? (d-log d) "(trace write-pending") (- k 1))
+          ((> k limit) (list 'never-pending (- k 1)))
           (else (mirror-many! d (string-append "bulk" (number->string k) "zz") 300)
                 (poke! d)
                 (sleep-ms 150)
@@ -317,6 +327,16 @@
           (else (loop (cdr ds) n)))))
 (define (rev-clause a) (clause 'rev a))
 (define (clause-names a) (if (pair? a) (map (lambda (c) (if (pair? c) (car c) c)) (cdr a)) '()))
+
+;; THE CONSUMER'S APPLICATION RULE BY REVISION (D6), the same as the client
+;; fixture's. held: alist object -> revision. -> (decision . held'), decision
+;; one of apply, skip, reread.
+(define (consume held object rev)
+  (let ((h (cdr (or (assoc object held) (cons object #f)))))
+    (cond ((not (and h rev)) (cons 'reread held))
+          ((<= rev h) (cons 'skip held))
+          ((= rev (+ h 1)) (cons 'apply (cons (cons object rev) (remp (lambda (e) (equal? (car e) object)) held))))
+          (else (cons 'reread held)))))
 
 ;; Waits for the subscriber's next frame after the N frames it already has.
 (define (next-frame sub n)
@@ -387,15 +407,18 @@
       (let* ((a (ask d 'insert "--title" "A"))
              (id (new-id a))
              (f (frame!)))
-        (want "F10-2 insert: the request is answered, and exactly one frame arrives, rev 2, (added id)"
+        (want "F10-2 insert: the request is answered, and exactly one frame arrives, rev 2, (added id) and none of the new block's fields"
               (list (car a) (frame-rev f) (equal? (clause 'daemon f) (list token)) (item-set f))
               (list 'ok 2 #t (expected-set (list 'added id))))
-        (want "F10-2 and the frame's from-cut and cut are two cuts, the second the publication's"
-              (list (and (clause 'from-cut f) #t) (and (clause 'cut f) #t)
-                    (not (equal? (clause 'from-cut f) (clause 'cut f))))
-              '(#t #t #t))
+        (let ((read-cut (clause 'cut (ask d 'read id))))
+          (want "F10-2 and the frame's cut is the publication's: the cut a read of it answers"
+                (list (and read-cut #t) (equal? (clause 'cut f) read-cut) (equal? (clause 'from-cut f) (clause 'cut f)))
+                '(#t #t #f)))
         (ask d 'set id "src" "first")
-        (want "F10-2 set src -> (changed id src)" (item-set (frame!)) (expected-set (list 'changed id 'src)))
+        (let ((g (frame!)))
+          (want "F10-2 set src -> (changed id src), and its from-cut is the previous frame's cut"
+                (list (item-set g) (equal? (clause 'from-cut g) (clause 'cut f)))
+                (list (expected-set (list 'changed id 'src)) #t)))
         (ask d 'set id "src" "first")
         (want "F10-2 set src to the SAME value -> (changed id src): the candidate set differs by its event"
               (item-set (frame!)) (expected-set (list 'changed id 'src)))
@@ -546,6 +569,15 @@
               (item-set (cdr (record! "mirrorsa" last-cut (list 'move b a 4))))
               (expected-set (list 'changed b 'position) (list 'changed b 'parent)
                             (list 'conflict a 'cycle) (list 'conflict b 'cycle)))
+        (let* ((r (record! "mirrorsf" last-cut (put "feeder" a 0))) (feeder (car r)))
+          (want "F10-2 a block put under a cycle member is added and is not on the cycle"
+                (item-set (cdr r))
+                (expected-set (list 'added feeder)))
+          ;; THE TWO COMPUTATIONS WHILE THE CYCLE AND ITS FEEDER EXIST, not
+          ;; only on the store left at the end (F10-12).
+          (want "F10-12 with a cycle and a block leading into it, the comparator's sets equal state-structure's"
+                (let ((r (open-and-reduce (d-store d)))) (equal? (structural-sets r) (state-structure r)))
+                #t))
         (want "F10-2 undoing it -> resolved for both"
               (item-set (cdr (record! "mirrorsa" last-cut (list 'move b 'root 4))))
               (expected-set (list 'changed b 'position) (list 'changed b 'parent)
@@ -596,6 +628,34 @@
                 (item-set f1) (expected-set (list 'added "aaa00000.1")))
           (want "F10-2 a rival claim reverses it: the block is taken back with no new event -> (removed it) alone"
                 (item-set f2) (expected-set (list 'removed "aaa00000.1")))))
+      ;; AN OLDER CANDIDATE COMES BACK: a block's src is set by a claimed
+      ;; record, and a rival claim takes that record back; the block's
+      ;; earlier value is its value again, with no new event.
+      (let* ((held-rev #f)
+             (single2 (list "test" (cons "other111" "t") 'single "fp" #f (cons "other111" 0))))
+        (mirror! d "plainzzz" 1 '() '(put ((kind . section) (title . "keeps") (parent . root) (ord . 12) (src . "original"))))
+        (poke! d)
+        (next-frame sub 2)
+        (set! held-rev (let ((r (rev-clause (ask d 'read "plainzzz.1" "--rev")))) (and r (car r))))
+        (mirror-as! d "ccc00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "claimed"))
+        (poke! d)
+        (let ((f3 (next-frame sub 3)))
+          (mirror-as! d "ddd00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "rival"))
+          (poke! d)
+          (let ((f4 (next-frame sub 4)))
+            (want "F10-2 a claimed record sets the field -> (changed id src)"
+                  (item-set f3) (expected-set (list 'changed "plainzzz.1" 'src)))
+            (want "F10-2 the rival claim takes it back: the old value returns with no new event -> (changed id src)"
+                  (item-set f4) (expected-set (list 'changed "plainzzz.1" 'src)))
+            ;; THE APPLICATION RULE IS BY REVISION (F10-7): the cut moves
+            ;; backwards here, and a consumer holding the read's rev still
+            ;; applies both frames, in order.
+            (let* ((d3 (consume (list (cons "plainzzz.1" held-rev)) "plainzzz.1" (frame-rev f3)))
+                   (d4 (consume (cdr d3) "plainzzz.1" (frame-rev f4))))
+              (want "F10-7 the retraction moves the applied cut backwards, and a consumer holding its read's rev applies both frames in order"
+                    (list (and (assoc "ccc00000" (or (frame-cut f3) '())) #t) (and (assoc "ccc00000" (or (frame-cut f4) '())) #t)
+                          (car d3) (car d4))
+                    '(#t #f apply apply))))))
       (stop-daemon! d))
 
     ;; ==== F10-11: every publisher frames ====
@@ -648,10 +708,12 @@
                     (rev-of (ask d 'read id "--recursive" "--rev"))
                     (rev-of (ask d 'read id "--working" "--rev" "--writer" writer)))
               (list n n n n))
-        (want "F10-13 and the clause names the daemon: (rev n (daemon token))"
-              (let ((r (rev-clause (ask d 'read id "--rev"))))
-                (and r (pair? (cdr r)) (pair? (cadr r)) (car (cadr r))))
-              'daemon)
+        (want "F10-13 and the clause names the daemon by the token its subscriptions answer: (rev n (daemon token))"
+              (let ((r (rev-clause (ask d 'read id "--rev")))
+                    (token (token-of (acceptance-of (await-lines (spawn-subscriber! d '("changes" "0")) 1 5000)))))
+                (list (and r (pair? (cdr r)) (pair? (cadr r)) (car (cadr r)))
+                      (and r (pair? (cdr r)) (pair? (cadr r)) (string? token) (equal? (cdr (cadr r)) (list token)))))
+              '(daemon #t))
         (mirror! d "mirrorrv" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 30))))
         (poke! d)
         (let wait ((k 0)) (unless (or (equal? (last-published d) (+ n 1)) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
@@ -693,18 +755,24 @@
       (insert! d "r")
       (await-lines a 2 5000)
       (let* ((b (spawn-subscriber! d (list "changes" (number->string base) token)))
-             (bacc (acceptance-of (await-lines b 2 5000))))
+             (bacc (acceptance-of (await-lines b 2 5000)))
+             ;; an INITIAL subscription while frames are retained replays none of them
+             (c (spawn-subscriber! d '("changes" "0")))
+             (cacc (acceptance-of (await-lines c 1 5000))))
+        (sleep-ms 400)
+        (want "F10-3 an initial subscription at a later revision, with frames retained, replays nothing"
+              (list (current-of cacc) (length (frames-of (sub-lines c)))) (list (+ base 1) 0))
         (insert! d "r+1")
         (await-lines a 3 5000) (await-lines b 3 5000)
         (want "F10-3 an initial subscriber and a resuming one each get their own acceptance, replay and live frames"
               (list (current-of bacc) (revs-of a) (revs-of b))
               (list (+ base 1) (list (+ base 1) (+ base 2)) (list (+ base 1) (+ base 2))))
         (send a '(close))
-        (sleep-ms 200)
+        (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace stream-closed") (> k 100)) (sleep-ms 50) (wait (+ k 1))))
         (insert! d "after a left")
         (await-lines b 4 5000)
-        (want "F10-3 one subscriber's connection closing drops it, and the other keeps receiving"
-              (revs-of b) (list (+ base 1) (+ base 2) (+ base 3)))
+        (want "F10-3 one subscriber's connection closing ends its stream, and the other keeps receiving"
+              (list (contains? (d-log d) "(trace stream-closed eof") (revs-of b)) (list #t (list (+ base 1) (+ base 2) (+ base 3))))
         (send b (list 'write (envelope (d-store d) 'read (list "x"))))
         (let ((ls (await-lines b 5 5000)))
           (want "F10-3 a subscribed connection that sends a request is answered bad-request subscribed, in the stream"
@@ -712,7 +780,13 @@
                 '(error bad-request (reason subscribed))))
         (insert! d "still streaming")
         (want "F10-3 and it still receives the next frame"
-              (last (revs-of (begin (await-lines b 6 5000) b))) (+ base 4)))
+              (car (reverse (revs-of (begin (await-lines b 6 5000) b)))) (+ base 4)))
+      ;; BUFFERED LEFTOVERS: a request sent in the same write as the subscription
+      (let* ((e (spawn-subscriber! d '("changes" "0") (envelope (d-store d) 'read (list "x"))))
+             (ls (await-lines e 2 5000)))
+        (want "F10-3 a request that arrived with the subscription is answered bad-request subscribed after the acceptance"
+              (and (>= (length ls) 2) (guard (x (#t (cadr ls))) (read (open-string-input-port (cadr ls)))))
+              '(error bad-request (reason subscribed))))
       (stop-daemon! d))
 
     ;; THE TRANSITION: a write the daemon could not finish, observed, then more
@@ -736,7 +810,9 @@
 
     ;; STALE COMPLETIONS: with a write pending, a notice with the wrong
     ;; reference (and, on a second daemon, one with an old token) neither
-    ;; completes the write nor ends the stream; the real completion does.
+    ;; completes the write nor ends the stream. THE PENDING WRITE STAYS
+    ;; PENDING: after the injected notice the stream's trace shows the real
+    ;; completion before it starts another write.
     (for-each
       (lambda (fault)
         (let* ((d (start-daemon! (string-append "f3" fault) (string-append "THEOURGIA_SEND_BUFFER=16384 THEOURGIA_FAULT=" fault "@conn")))
@@ -744,40 +820,86 @@
                (_ (await-lines s 1 5000)))
           (send s '(pause))
           (let ((made (fill-until-pending! d 40)))
+            (sleep-ms 300)
             (send s '(resume))
             (let* ((expect (if (integer? made) made 0))
                    (ls (await-lines s (+ expect 1) 15000)))
               (insert! d "one more")
               (let* ((ls (await-lines s (+ expect 2) 8000))
-                     (revs (map frame-rev (frames-of ls))))
-                (want (string-append "F10-3 " fault ": the notice fired, and the stream carried every frame and the next")
-                      (list (contains? (d-log d) (string-append "(trace fault " fault))
-                            (length revs)
-                            (equal? revs (let loop ((k (+ expect 1)) (out '())) (if (= k 0) out (loop (- k 1) (cons (+ k 1) out))))))
-                      (list #t (+ expect 1) #t)))))
+                     (revs (map frame-rev (frames-of ls)))
+                     (log (d-log d))
+                     (after-fault (let find ((ds (read-all-data log)) (seen #f))
+                                    (cond ((null? ds) 'no-fault-trace)
+                                          ((and (not seen) (pair? (car ds)) (eq? (caar ds) 'trace) (equal? (cdar ds) (list 'fault (string->symbol fault) #f)))
+                                           (find (cdr ds) #t))
+                                          ((and seen (pair? (car ds)) (eq? (caar ds) 'trace) (memq (cadar ds) '(stream-write stream-written)))
+                                           (cadar ds))
+                                          (else (find (cdr ds) seen))))))
+                (want (string-append "F10-3 " fault ": after the notice the next stream event is the real completion, not another write")
+                      after-fault 'stream-written)
+                (want (string-append "F10-3 " fault ": and the stream carried every frame and the next")
+                      (list (length revs) (equal? revs (let loop ((k (+ expect 1)) (out '())) (if (= k 0) out (loop (- k 1) (cons (+ k 1) out))))))
+                      (list (+ expect 1) #t)))))
           (stop-daemon! d)))
       '("stream-written-ref" "stream-written-token"))
 
-    ;; ==== F10-6: drain, restart, overflow ====
+    ;; ==== F10-6: drain, restart, overflow, the actors' deaths ====
     (printf "~%== F10-6: the stream's last frame says why it ended ==~%")
+    ;; A PUBLICATION IN FLIGHT AT THE DRAIN, with the stream busy: its reader
+    ;; is paused and a write pending, so the frame and the drain's stream-end
+    ;; both wait in the stream's mailbox, and the frame must come first.
     (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-drain"))
            (_ (system (string-append "rm -f " release " " release ".held")))
-           (d (start-daemon! "f6" (string-append "THEOURGIA_HOLD='reload-before-publish:" release "'")))
+           (d (start-daemon! "f6" (string-append "THEOURGIA_SEND_BUFFER=16384 THEOURGIA_HOLD='reload-before-publish:" release "'")))
            (s (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines s 1 5000)))
-      (mirror! d "mirrordr" 1 '() '(put ((kind . section) (title . "in flight") (parent . root) (ord . 40))))
+      ;; the first reload passes the hold, and the hold is re-armed
+      (mirror! d "mirrordp" 1 '() '(put ((kind . section) (title . "prime") (parent . root) (ord . 39))))
       (poke! d)
       (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
-      (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
-      (sleep-ms 200)
       (system (string-append "touch " release))
-      (let* ((ls (await-lines s 4 10000))
-             (fs (frames-of ls)))
-        (want "F10-6 a publication in flight at the drain arrives first, then (error draining) as the last frame, then the close"
-              (list (and (pair? fs) (item-set (car fs)))
-                    (and (> (length fs) 1) (list-ref fs 1))
-                    (and (pair? ls) (car (reverse ls))))
-              (list (expected-set (list 'added "mirrordr.1")) '(error draining) "<eof>"))))
+      (sleep-ms 500)
+      (system (string-append "rm -f " release " " release ".held"))
+      (send s '(pause))
+      (let ((made (fill-until-pending! d 40)))
+        (mirror! d "mirrordr" 1 '() '(put ((kind . section) (title . "in flight") (parent . root) (ord . 40))))
+        (poke! d)
+        (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
+        (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
+        (sleep-ms 200)
+        (system (string-append "touch " release))
+        (sleep-ms 300)
+        (send s '(resume))
+        (let* ((ls (await-lines s (+ (if (integer? made) made 0) 4) 12000))
+               (fs (frames-of ls))
+               (tail (reverse fs)))
+          (want "F10-6 with a write blocked, a publication in flight at the drain is written before (error draining), and the close follows"
+                (list (integer? made)
+                      (and (> (length tail) 1) (item-set (cadr tail)))
+                      (and (pair? tail) (car tail))
+                      (and (pair? ls) (car (reverse ls))))
+                (list #t (expected-set (list 'added "mirrordr.1")) '(error draining) "<eof>")))))
+    ;; A DRAIN WHILE AN ACCEPTED REPLAY LIST IS UNWRITTEN: a resuming
+    ;; subscriber paused from its first byte; the drain; then it reads every
+    ;; retained frame, and then the terminal.
+    (let* ((d (start-daemon! "f6p" ""))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc))
+           (base (current-of acc)))
+      (insert! d "kept one") (insert! d "kept two")
+      (await-lines a 3 5000)
+      (let ((b (spawn-subscriber! d (list "changes" (number->string base) token) 'paused)))
+        (sleep-ms 500)
+        (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
+        (sleep-ms 300)
+        (send b '(resume))
+        (let* ((ls (await-lines b 5 10000)) (fs (frames-of ls)))
+          (want "F10-6 a drain with a replay list unwritten: every retained frame, then (error draining), then the close"
+                (list (map frame-rev (filter (lambda (f) (eq? (car f) 'changes)) fs))
+                      (and (pair? fs) (car (reverse fs)))
+                      (and (pair? ls) (car (reverse ls))))
+                (list (list (+ base 1) (+ base 2)) '(error draining) "<eof>")))))
     (let* ((d (start-daemon! "f6r" ""))
            (s (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines s 1 5000)))
@@ -785,47 +907,105 @@
       (insert! d "before the restart")
       (restart-daemon! d "")
       (let ((a (acceptance-of (await-lines (spawn-subscriber! d (list "changes" "2" old)) 1 5000))))
-        (want "F10-6 a resume against the restarted daemon with the old token answers daemon-restarted"
-              (list (and (pair? a) (car a)) (clause 'reason a)) (list 'error '(daemon-restarted)))
+        (want "F10-6 a resume against the restarted daemon with the old token answers daemon-restarted, naming the new token"
+              (list (and (pair? a) (car a)) (clause 'reason a) (and (string? (token-of a)) (not (equal? (token-of a) old))))
+              (list 'error '(daemon-restarted) #t))
         (want "F10-14 two daemons started one after the other on one store answer different tokens"
               (and (string? (token-of a)) (not (equal? (token-of a) old))) #t))
       (stop-daemon! d))
+    ;; THE QUEUE'S BOUNDARY: with a write blocked, 64 queued frames are kept,
+    ;; and the 65th enqueue ends the stream with lagging. The daemon traces the
+    ;; queue's length at each enqueue, so the row knows where it is.
     (let* ((d (start-daemon! "f6o" "THEOURGIA_SEND_BUFFER=16384"))
+           (s (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines s 1 5000)))
+           (token (token-of acc)))
+      (send s '(pause))
+      (let* ((made (fill-until-pending! d 40))
+             (_ (let loop ((k 0))
+                  (when (and (< k 200) (not (contains? (d-log d) "(trace stream-queued 64")))
+                    (insert! d (string-append "q" (number->string k))) (loop (+ k 1)))))
+             (at-64 (list (contains? (d-log d) "(trace stream-queued 64") (contains? (d-log d) "(trace stream-closed lagging"))))
+        (want "F10-6 with a write blocked, 64 queued frames are kept: the queue reaches 64 and the stream has not ended"
+              (list (integer? made) at-64) (list #t '(#t #f)))
+        (insert! d "the 65th")
+        (insert! d "late one") (insert! d "late two")
+        (send s '(resume))
+        (let* ((ls (await-lines s 2 15000))
+               (_ (let wait ((k 0)) (unless (or (member "<eof>" (sub-lines s)) (> k 300)) (sleep-ms 50) (wait (+ k 1)))))
+               (ls (sub-lines s))
+               (fs (frames-of ls))
+               (terminal (find (lambda (f) (and (pair? f) (eq? (car f) 'error))) fs)))
+          (want "F10-6 the 65th enqueue: the terminal frame is lagging, with current and this daemon's token"
+                (list (and terminal (cadr terminal)) (clause 'reason terminal) (and (clause 'current terminal) #t) (equal? (token-of terminal) token))
+                (list 'changes-unavailable '(lagging) #t #t))
+          (want "F10-6 and after it nothing is written, the connection closes, and a frame that came late was consumed"
+                (list (length (let after ((fs fs)) (cond ((null? fs) '())
+                                                         ((and (pair? (car fs)) (eq? (caar fs) 'error)) (cdr fs))
+                                                         (else (after (cdr fs))))))
+                      (car (reverse ls))
+                      (contains? (d-log d) "(trace stream-late"))
+                (list 0 "<eof>" #t))))
+      (stop-daemon! d))
+    ;; THE STORE PROCESS DIES: the stream's terminal is transport-unknown.
+    (let* ((d (start-daemon! "f6s" "THEOURGIA_FAULT=store-raise@conn"))
+           (s (spawn-subscriber! d '("changes" "0")))
+           (_ (await-lines s 1 5000)))
+      (ask d 'insert "--title" "raises the store")
+      (let* ((ls (await-lines s 3 8000)) (fs (frames-of ls)))
+        (want "F10-6 the store process dying: the terminal frame is (error transport-unknown (reason store-actor-down)), then the close"
+              (list (and (pair? fs) (car (reverse fs))) (and (pair? ls) (car (reverse ls))))
+              (list '(error transport-unknown (reason store-actor-down)) "<eof>")))
+      (stop-daemon! d))
+    ;; A WRITER PROCESS DIES: nothing for the stream.
+    (let* ((d (start-daemon! "f6w" "THEOURGIA_FAULT=writer-raise@conn"))
+           (id (insert! d "w"))
+           (s (spawn-subscriber! d '("changes" "0")))
+           (_ (await-lines s 1 5000)))
+      (ask d 'write id "draft" "--writer" "dying")
+      (insert! d "after the writer died")
+      (want "F10-6 a writer process dying does not end the stream: the next frame arrives"
+            (map car (frames-of (await-lines s 2 6000))) '(changes))
+      (stop-daemon! d))
+    ;; A WRITE THAT FAILS: the subscriber's connection is closed while the
+    ;; daemon's write to it is blocked; the stream ends without a terminal,
+    ;; and the daemon goes on serving.
+    (let* ((d (start-daemon! "f6x" "THEOURGIA_SEND_BUFFER=16384"))
            (s (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines s 1 5000)))
       (send s '(pause))
       (let ((made (fill-until-pending! d 40)))
-        (let loop ((k 0)) (when (< k 66) (insert! d (string-append "q" (number->string k))) (loop (+ k 1))))
-        (send s '(resume))
-        (let* ((ls (await-lines s 2 15000))
-               (fs (frames-of (let settle ((prev -1)) (sleep-ms 500) (let ((now (sub-lines s))) (if (= (length now) prev) now (settle (length now)))))))
-               (last-frame (and (pair? fs) (car (reverse fs)))))
-          (want "F10-6 with a write blocked, the 65th queued frame overflows: the terminal frame is lagging, with current and the token"
-                (list (and (pair? last-frame) (car last-frame)) (and (pair? last-frame) (cadr last-frame)) (clause 'reason last-frame))
-                (list 'error 'changes-unavailable '(lagging)))
-          (want "F10-6 and nothing is written after the terminal frame"
-                (length (filter (lambda (f) (and (pair? f) (eq? (car f) 'changes)))
-                                (let after ((fs fs)) (cond ((null? fs) '())
-                                                           ((and (pair? (car fs)) (eq? (caar fs) 'error)) (cdr fs))
-                                                           (else (after (cdr fs)))))))
-                0)))
+        (send s '(close))
+        (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace stream-closed") (> k 200)) (sleep-ms 50) (wait (+ k 1))))
+        (want "F10-6 the subscriber gone while a write is blocked: the stream ends, and the daemon still answers"
+              (list (integer? made) (contains? (d-log d) "(trace stream-closed") (car (ask d 'outline)))
+              (list #t #t 'ok)))
       (stop-daemon! d))
 
     ;; A RELOAD THAT FAILS keeps the previous publication; subscribers are
     ;; told, with the reason the trace carries, and the stream goes on.
     (let* ((d (start-daemon! "f6f" "THEOURGIA_FAULT=reload-raise@conn"))
            (s (spawn-subscriber! d '("changes" "0")))
-           (_ (await-lines s 1 5000)))
+           (acc (acceptance-of (await-lines s 1 5000)))
+           (before (current-of acc)))
       (mirror! d "mirrorrr" 1 '() '(put ((kind . section) (title . "unfolded") (parent . root) (ord . 70))))
       (poke! d)
-      (let* ((ls (await-lines s 2 6000)) (f (and (> (length ls) 1) (car (frames-of ls)))))
-        (want "F10-6 a reload that fails sends (error store-unreadable (reason ...)) with no revision"
-              (list (and (pair? f) (car f)) (and (pair? f) (cadr f)) (and (clause 'reason f) #t) (frame-rev f))
-              (list 'error 'store-unreadable #t #f)))
+      (let* ((ls (await-lines s 2 6000)) (f (and (> (length ls) 1) (car (frames-of ls))))
+             (traced (let find ((ds (read-all-data (d-log d))))
+                       (cond ((null? ds) 'no-trace)
+                             ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'reload-failed))
+                              (caddar ds))
+                             (else (find (cdr ds)))))))
+        (want "F10-6 a reload that fails sends (error store-unreadable (reason <the trace's reason>)) with no revision"
+              (list (and (pair? f) (car f)) (and (pair? f) (cadr f)) (equal? (clause 'reason f) (list traced)) (frame-rev f))
+              (list 'error 'store-unreadable #t #f))
+        (want "F10-6 and the publication stayed: the last revision published is still the one before"
+              (last-published d) before))
       (insert! d "after the failed reload")
-      (want "F10-6 and the stream goes on: the next local commit's frame arrives"
-            (let ((fs (frames-of (await-lines s 3 6000)))) (and (> (length fs) 1) (car (cadr fs))))
-            'changes)
+      (let ((fs (frames-of (await-lines s 3 6000))))
+        (want "F10-6 and the stream goes on: the next local commit's frame is the next revision"
+              (and (> (length fs) 1) (list (car (cadr fs)) (frame-rev (cadr fs))))
+              (list 'changes (+ before 1))))
       (stop-daemon! d))
 
     ;; ==== F10-10: incomplete and withheld publications ====
@@ -879,15 +1059,17 @@
     ;; publication. No revision, no frame; the reload it asks for makes one.
     (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-barrier"))
            (_ (system (string-append "rm -f " release " " release ".held")))
+           ;; THE START'S OWN LOAD PASSES THE BARRIER TOO, before the socket
+           ;; exists: a releaser lets it through, and the hold is armed again.
+           (_ (system (string-append "sh -c 'k=0; while [ ! -e " release ".held ] && [ $k -lt 600 ]; do sleep 0.05; k=$((k+1)); done; "
+                                     "touch " release "; sleep 0.5; rm -f " release " " release ".held' &")))
            (d (start-daemon! "f10w" (string-append "THEOURGIA_HOLD='after-barrier:" release "'")))
-           (_ (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 400)) (sleep-ms 50) (wait (+ k 1)))))
-           (_ (begin (system (string-append "touch " release)) (sleep-ms 500)
-                     (system (string-append "rm -f " release " " release ".held"))))
+           (_ (let wait ((k 0)) (unless (or (not (file-exists? release)) (> k 100)) (sleep-ms 50) (wait (+ k 1)))))
            (_ (begin (mirror! d "mirrorwd" 1 '() '(put ((kind . section) (title . "old") (parent . root) (ord . 60))))
                      (mirror! d "mirrorwd" 2 '() '(put ((kind . section) (title . "new") (parent . root) (ord . 61))))))
            (older (string-append (writer-directory (d-store d) "mirrorwd") "/" (segment-file-name 1)))
            (sub (spawn-subscriber! d '("changes" "0")))
-           (_ (await-lines sub 1 5000))
+           (subscribed-at (current-of (acceptance-of (await-lines sub 1 5000))))
            (asker self))
       (spawn (lambda () (send asker (list 'insert-answer (ask d 'insert "--title" "withheld")))))
       (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 400)) (sleep-ms 50) (wait (+ k 1))))
@@ -898,6 +1080,10 @@
         (system (string-append "touch " release))
         (receive (after 30000 'no-insert-answer) (`(insert-answer ,a) a))
         (sleep-ms 500)
+        ;; THE BOUNDARY: the session is over and nothing has reloaded yet.
+        (want "F10-10 the withheld session made no revision and no frame: the last published is the subscription's, and no frame arrived"
+              (list (contains? (d-log d) "(trace publish-withheld") (last-published d) (length (frames-of (sub-lines sub))))
+              (list #t subscribed-at 0))
         (bytevector-u8-set! bv i (fxlogxor (bytevector-u8-ref bv i) 1))
         (call-with-port (open-file-output-port older (file-options no-fail)) (lambda (p) (put-bytevector p bv)))
         (poke! d)

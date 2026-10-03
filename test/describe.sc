@@ -425,25 +425,22 @@
 (want "DS-6s subscribe is in the catalogue, routed stream"
       (let ((e (assq 'subscribe entries))) (and e (entry-field e 'route)))
       'stream)
-(define (word-list-of-client text key)
-  (let ((at (let loop ((i 0))
-              (cond ((> (+ i (string-length key)) (string-length text)) #f)
-                    ((string=? (substring text i (+ i (string-length key))) key) i)
-                    (else (loop (+ i 1)))))))
-    (and at
-         (let loop ((i (+ at (string-length key))) (acc '()) (word '()))
-           (cond
-             ((>= i (string-length text)) (reverse acc))
-             ((char=? (string-ref text i) #\))
-              (reverse (if (null? word) acc (cons (list->string (reverse word)) acc))))
-             ((char=? (string-ref text i) #\space)
-              (loop (+ i 1) (if (null? word) acc (cons (list->string (reverse word)) acc)) '()))
-             (else (loop (+ i 1) acc (cons (string-ref text i) word))))))))
+;; THE CLIENT'S LIST, READ AS DATA: theourgia.sc's top-level forms are read
+;; and the one `(define stream-verbs '(...))` among them is taken, so its
+;; layout and any mention in a comment do not matter. #f when there is none.
+(define (client-list-of path name)
+  (and (file-exists? path)
+       (let ((p (open-input-file path)))
+         (let loop ()
+           (let ((x (guard (e (#t (eof-object))) (read p))))
+             (cond ((eof-object? x) (close-port p) #f)
+                   ((and (list? x) (= (length x) 3) (eq? (car x) 'define) (eq? (cadr x) name)
+                         (pair? (caddr x)) (eq? (car (caddr x)) 'quote) (list? (cadr (caddr x))))
+                    (close-port p)
+                    (map symbol->string (cadr (caddr x))))
+                   (else (loop))))))))
 (define client-stream
-  (or (word-list-of-client
-        (let ((p (string-append root-dir "/theourgia.sc"))) (if (file-exists? p) (call-with-input-file p get-string-all) ""))
-        "(define stream-verbs '(")
-      '()))
+  (or (client-list-of (string-append root-dir "/theourgia.sc") 'stream-verbs) '()))
 (define catalogue-stream
   (map (lambda (e) (symbol->string (car e)))
        (filter (lambda (e) (eq? 'stream (entry-field e 'route))) entries)))
