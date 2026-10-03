@@ -34,6 +34,8 @@
     ("a curried define head" (define ((f a) b) 1) ())
     ("a record whose name spec is improper" (define-record-type (p . q) (fields x)) ())
     ("a record whose name spec does not start with a symbol" (define-record-type ((p) mk p?) (fields x)) ())
+    ("a record whose name spec has two symbols" (define-record-type (p q) (fields x)) ())
+    ("a record whose name spec has four symbols" (define-record-type (p q r s) (fields x)) ())
     ("a record with a bare symbol clause" (define-record-type p sealed (fields x)) (p make-p p?))
     ("a field spec of one element" (define-record-type p (fields (immutable))) (p make-p p?))
     ("an improper field spec" (define-record-type p (fields (immutable . x))) (p make-p p?))
