@@ -705,16 +705,24 @@
            (kid (new-id (ask d 'insert "--under" id "--title" "kid")))
            (writer "w-rev"))
       (ask d 'write id "draft text" "--writer" writer)
-      ;; THE PUBLICATION A READ WAS BUILT FROM is the last one traced when its
-      ;; answer arrives, the daemon otherwise still: a read probes for outside
-      ;; change first and may publish a fold before it reads the cell (the
-      ;; draft written above changes the snapshot), and that publication is
-      ;; the one it answers from.
+      ;; THE PUBLICATION A READ WAS BUILT FROM is the one current when it was
+      ;; asked: a read that sees an outside change asks for a reload and
+      ;; answers from the cell as it is (the draft written above changes the
+      ;; snapshot). So the daemon is first let settle -- no publication for
+      ;; half a second, after a read that probes -- and then each read is
+      ;; compared with the last publication traced before it.
       (let* ((rev-of (lambda (a) (let ((r (rev-clause a))) (and r (car r)))))
+             (settle! (lambda ()
+                        (ask d 'read id)
+                        (let wait ((last (last-published d)) (k 0))
+                          (sleep-ms 500)
+                          (let ((now (last-published d)))
+                            (unless (or (equal? now last) (> k 20)) (wait now (+ k 1)))))))
              (answered-at (lambda args
-                            (let* ((a (apply ask d 'read args)) (p (last-published d)))
+                            (settle!)
+                            (let* ((p (last-published d)) (a (apply ask d 'read args)))
                               (list (rev-of a) p)))))
-        (want "F10-13 read, read --md, read --recursive and a writer's read --working each carry the revision last published when it was answered"
+        (want "F10-13 read, read --md, read --recursive and a writer's read --working each carry the revision current when it was asked"
               (map (lambda (x) (and (car x) (equal? (car x) (cadr x))))
                    (list (answered-at id "--rev")
                          (answered-at id "--md" "--rev")
@@ -731,7 +739,7 @@
           (mirror! d "mirrorrv" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 30))))
           (poke! d)
           (let wait ((k 0)) (unless (or (> (or (last-published d) 0) n) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
-          (want "F10-13 after an outside commit and its reload, the next read carries a later number, the one last published"
+          (want "F10-13 after an outside commit and its reload, the next read carries a later number, the one current when it was asked"
                 (let ((x (answered-at id "--rev"))) (list (and (car x) (> (car x) n)) (equal? (car x) (cadr x))))
                 '(#t #t))))
       (want "F10-13 --rev with --working-info, and with --signature, is refused incompatible-rev-options"
@@ -876,9 +884,11 @@
       (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
       (system (string-append "touch " release))
       (sleep-ms 500)
-      (system (string-append "rm -f " release " " release ".held"))
+      ;; the fill's reloads pass while the release exists; the hold is armed
+      ;; again only for the publication in flight
       (send s '(pause))
       (let ((made (fill-until-pending! d 40)))
+        (system (string-append "rm -f " release " " release ".held"))
         (mirror! d "mirrordr" 1 '() '(put ((kind . section) (title . "in flight") (parent . root) (ord . 40))))
         (poke! d)
         (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
