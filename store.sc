@@ -18,7 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
-          obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? store-withhold-hook!
+          obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
           ;; The interface pinned at dispatch (F77c; cells v3e look these up
           ;; in this library): re-exported from (theourgia incomplete).
@@ -224,13 +224,18 @@
   ;; it fails on the first row that reaches it, not quietly. POSSESSING A
   ;; STATE IS NOT CONSUMING IT (design review r2): a verb that never unseals
   ;; is never refused for holding one, and its answer carries no clause.
-  (define-record-type sealed-state (fields state notes (mutable unsealed?)))
+  ;; NAME is the publication the state is, (<revision> <token>), when the
+  ;; daemon sealed it from its cell; #f for any other seal. read --rev takes
+  ;; it from here, so the rev it answers is the state its answer was built
+  ;; from, whoever dispatched.
+  (define-record-type sealed-state (fields state notes (mutable unsealed?) name))
   ;; The interface name (F77c): a reduction's notes, '() when it is complete.
   ;; Defined here and not in (theourgia log): the cells import the log library
   ;; whole and look this name up for themselves.
   (define (state-incomplete-notes value) (unreadable-behind value))
-  (define (seal-state state extra-notes)
-    (make-sealed-state state (merge-unreadable (unreadable-behind state) extra-notes) #f))
+  (define (seal-state state extra-notes . name)
+    (make-sealed-state state (merge-unreadable (unreadable-behind state) extra-notes) #f
+                       (and (pair? name) (car name))))
 
   ;; THE ONE UNSEALER, AND THE ONE PLACE A CONSUMER OBTAINS STATE.
   ;; (obtain-state store supplied declaration . cut)

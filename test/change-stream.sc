@@ -811,35 +811,37 @@
     ;; STALE COMPLETIONS: with a write pending, a notice with the wrong
     ;; reference (and, on a second daemon, one with an old token) neither
     ;; completes the write nor ends the stream. THE PENDING WRITE STAYS
-    ;; PENDING: after the injected notice the stream's trace shows the real
-    ;; completion before it starts another write.
+    ;; PENDING: while the reader is still paused, nothing after the fault's
+    ;; trace says a write completed or another began -- a stream that took
+    ;; the notice would say one or the other at once. Resumed, every frame
+    ;; arrives.
     (for-each
       (lambda (fault)
         (let* ((d (start-daemon! (string-append "f3" fault) (string-append "THEOURGIA_SEND_BUFFER=16384 THEOURGIA_FAULT=" fault "@conn")))
                (s (spawn-subscriber! d '("changes" "0")))
                (_ (await-lines s 1 5000)))
           (send s '(pause))
-          (let ((made (fill-until-pending! d 40)))
-            (sleep-ms 300)
+          (let* ((made (fill-until-pending! d 40))
+                 (_ (sleep-ms 500))
+                 (paused-log (d-log d))
+                 (after-fault (let find ((ds (read-all-data paused-log)) (seen #f) (out '()))
+                                (cond ((null? ds) (if seen (reverse out) 'no-fault-trace))
+                                      ((and (not seen) (pair? (car ds)) (eq? (caar ds) 'trace) (equal? (cdar ds) (list 'fault (string->symbol fault) #f)))
+                                       (find (cdr ds) #t out))
+                                      ((and seen (pair? (car ds)) (eq? (caar ds) 'trace) (memq (cadar ds) '(stream-write stream-written)))
+                                       (find (cdr ds) seen (cons (cadar ds) out)))
+                                      (else (find (cdr ds) seen out))))))
+            (want (string-append "F10-3 " fault ": with the reader paused, after the notice no write completes and none begins")
+                  (list (integer? made) after-fault) (list #t '()))
             (send s '(resume))
             (let* ((expect (if (integer? made) made 0))
-                   (ls (await-lines s (+ expect 1) 15000)))
-              (insert! d "one more")
-              (let* ((ls (await-lines s (+ expect 2) 8000))
-                     (revs (map frame-rev (frames-of ls)))
-                     (log (d-log d))
-                     (after-fault (let find ((ds (read-all-data log)) (seen #f))
-                                    (cond ((null? ds) 'no-fault-trace)
-                                          ((and (not seen) (pair? (car ds)) (eq? (caar ds) 'trace) (equal? (cdar ds) (list 'fault (string->symbol fault) #f)))
-                                           (find (cdr ds) #t))
-                                          ((and seen (pair? (car ds)) (eq? (caar ds) 'trace) (memq (cadar ds) '(stream-write stream-written)))
-                                           (cadar ds))
-                                          (else (find (cdr ds) seen))))))
-                (want (string-append "F10-3 " fault ": after the notice the next stream event is the real completion, not another write")
-                      after-fault 'stream-written)
-                (want (string-append "F10-3 " fault ": and the stream carried every frame and the next")
-                      (list (length revs) (equal? revs (let loop ((k (+ expect 1)) (out '())) (if (= k 0) out (loop (- k 1) (cons (+ k 1) out))))))
-                      (list (+ expect 1) #t)))))
+                   (_ (await-lines s (+ expect 1) 15000))
+                   (_ (insert! d "one more"))
+                   (ls (await-lines s (+ expect 2) 8000))
+                   (revs (map frame-rev (frames-of ls))))
+              (want (string-append "F10-3 " fault ": resumed, the stream carries every frame and the next, in order")
+                    (list (length revs) (equal? revs (let loop ((k (+ expect 1)) (out '())) (if (= k 0) out (loop (- k 1) (cons (+ k 1) out))))))
+                    (list (+ expect 1) #t))))
           (stop-daemon! d)))
       '("stream-written-ref" "stream-written-token"))
 
@@ -915,8 +917,13 @@
       (stop-daemon! d))
     ;; THE QUEUE'S BOUNDARY: with a write blocked, 64 queued frames are kept,
     ;; and the 65th enqueue ends the stream with lagging. The daemon traces the
-    ;; queue's length at each enqueue, so the row knows where it is.
-    (let* ((d (start-daemon! "f6o" "THEOURGIA_SEND_BUFFER=16384"))
+    ;; queue's length at each enqueue, so the row knows where it is. The
+    ;; stream is held at the overflow while two more publications are made,
+    ;; so their frames reach it after the latch: they are consumed, not
+    ;; written.
+    (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-overflow"))
+           (_ (system (string-append "rm -f " release " " release ".held")))
+           (d (start-daemon! "f6o" (string-append "THEOURGIA_SEND_BUFFER=16384 THEOURGIA_HOLD='stream-overflow:" release "'")))
            (s (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines s 1 5000)))
            (token (token-of acc)))
@@ -929,33 +936,42 @@
         (want "F10-6 with a write blocked, 64 queued frames are kept: the queue reaches 64 and the stream has not ended"
               (list (integer? made) at-64) (list #t '(#t #f)))
         (insert! d "the 65th")
+        (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
         (insert! d "late one") (insert! d "late two")
+        (system (string-append "touch " release))
         (send s '(resume))
-        (let* ((ls (await-lines s 2 15000))
-               (_ (let wait ((k 0)) (unless (or (member "<eof>" (sub-lines s)) (> k 300)) (sleep-ms 50) (wait (+ k 1)))))
+        (let* ((_ (let wait ((k 0)) (unless (or (member "<eof>" (sub-lines s)) (> k 300)) (sleep-ms 50) (wait (+ k 1)))))
                (ls (sub-lines s))
                (fs (frames-of ls))
-               (terminal (find (lambda (f) (and (pair? f) (eq? (car f) 'error))) fs)))
+               (terminal (find (lambda (f) (and (pair? f) (eq? (car f) 'error))) fs))
+               (log (d-log d)))
           (want "F10-6 the 65th enqueue: the terminal frame is lagging, with current and this daemon's token"
                 (list (and terminal (cadr terminal)) (clause 'reason terminal) (and (clause 'current terminal) #t) (equal? (token-of terminal) token))
                 (list 'changes-unavailable '(lagging) #t #t))
-          (want "F10-6 and after it nothing is written, the connection closes, and a frame that came late was consumed"
-                (list (length (let after ((fs fs)) (cond ((null? fs) '())
+          (want "F10-6 the frames the store sent before the unsubscription reached it are consumed, not written; nothing follows the terminal; the connection closes"
+                (list (count-of log "(trace stream-late")
+                      (length (let after ((fs fs)) (cond ((null? fs) '())
                                                          ((and (pair? (car fs)) (eq? (caar fs) 'error)) (cdr fs))
                                                          (else (after (cdr fs))))))
-                      (car (reverse ls))
-                      (contains? (d-log d) "(trace stream-late"))
-                (list 0 "<eof>" #t))))
+                      (car (reverse ls)))
+                (list 2 0 "<eof>"))))
       (stop-daemon! d))
-    ;; THE STORE PROCESS DIES: the stream's terminal is transport-unknown.
+    ;; THE STORE PROCESS DIES: main leaves with 75 at once and does not wait
+    ;; for terminal writes (D4's shutdown policy), so the stream's
+    ;; transport-unknown terminal is attempted and may not arrive. What is
+    ;; decided: the daemon exits 75, the subscriber's connection ends, and a
+    ;; terminal line, if one arrived, is exactly that one.
     (let* ((d (start-daemon! "f6s" "THEOURGIA_FAULT=store-raise@conn"))
            (s (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines s 1 5000)))
       (ask d 'insert "--title" "raises the store")
-      (let* ((ls (await-lines s 3 8000)) (fs (frames-of ls)))
-        (want "F10-6 the store process dying: the terminal frame is (error transport-unknown (reason store-actor-down)), then the close"
-              (list (and (pair? fs) (car (reverse fs))) (and (pair? ls) (car (reverse ls))))
-              (list '(error transport-unknown (reason store-actor-down)) "<eof>")))
+      (let* ((_ (let wait ((k 0)) (unless (or (member "<eof>" (sub-lines s)) (> k 160)) (sleep-ms 50) (wait (+ k 1)))))
+             (ls (sub-lines s)) (fs (frames-of ls)))
+        (want "F10-6 the store process dying: the daemon exits 75, the stream ends, and any terminal is transport-unknown store-actor-down"
+              (list (let ((t (file-text (list-ref d 5)))) (and (> (string-length t) 0) (read (open-string-input-port t))))
+                    (and (pair? ls) (car (reverse ls)))
+                    (for-all (lambda (f) (equal? f '(error transport-unknown (reason store-actor-down)))) fs))
+              (list 75 "<eof>" #t)))
       (stop-daemon! d))
     ;; A WRITER PROCESS DIES: nothing for the stream.
     (let* ((d (start-daemon! "f6w" "THEOURGIA_FAULT=writer-raise@conn"))
