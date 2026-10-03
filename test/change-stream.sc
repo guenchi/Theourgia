@@ -1053,15 +1053,20 @@
         (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
         (system (string-append "touch " release))
         (let* ((f (next-frame sub 0))
-               (later (ask d 'read id)))
+               (later (ask d 'read id "--rev")))
           (want "F10-10 the next revision's frame names the unread writer's block removed and carries (incomplete ...)"
                 (list (frame-rev f) (item-set f) (and (clause 'incomplete f) #t))
                 (list (+ old 1) (expected-set (list 'removed "mirrorin.2")) #t))
-          (want "F10-10 and its clause is the one a read then answers"
-                (equal? (clause 'incomplete f) (clause 'incomplete later)) #t)
+          ;; THE CELL'S THREE READERS SAY ONE THING: the frame (made in
+          ;; publish!), the acceptance (subscription-answer) and a read
+          ;; (answer-published), on the same publication, carry one clause.
           (let ((acc2 (acceptance-of (await-lines (spawn-subscriber! d '("changes" "0")) 1 5000))))
-            (want "F10-10 a subscription accepted while the publication is incomplete carries the clause in its acceptance"
-                  (equal? (clause 'incomplete acc2) (clause 'incomplete f)) #t)))
+            (want "F10-10 on one publication the frame's, the acceptance's and read's incomplete clauses are present and equal"
+                  (list (and (rev-clause later) (car (rev-clause later))) (current-of acc2)
+                        (and (clause 'incomplete f) #t)
+                        (equal? (clause 'incomplete f) (clause 'incomplete later))
+                        (equal? (clause 'incomplete acc2) (clause 'incomplete f)))
+                  (list (frame-rev f) (frame-rev f) #t #t #t))))
         (system (string-append "chmod 600 " current))
         (poke! d)
         (let ((f (next-frame sub 1)))
