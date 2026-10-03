@@ -196,10 +196,13 @@
 ;;   (pause)/(resume) stops and restarts reading (the socket fills)
 ;;   (close)          closes the connection and ends
 ;; It ends by itself on EOF, keeping what it read, and still answers (lines).
-;; OPTS: 'paused (reading starts only on (resume)), and a string (bytes sent
-;; in the same write after the subscription, the buffered leftovers D4 names).
+;; OPTS: 'paused (reading starts only on (resume)), a string (bytes sent in
+;; the same write after the subscription, the buffered leftovers D4 names),
+;; and (before <text>) (a request sent ahead of the subscription on the same
+;; connection, whose answer is then the first line).
 (define (spawn-subscriber! d args . opts)
-  (let ((text (string-append (envelope (d-store d) 'subscribe args)
+  (let ((text (string-append (let ((b (find (lambda (o) (and (pair? o) (eq? (car o) 'before))) opts))) (if b (cadr b) ""))
+                             (envelope (d-store d) 'subscribe args)
                              (apply string-append (filter string? opts))))
         (paused? (memq 'paused opts)))
     (spawn
@@ -923,27 +926,31 @@
                       (and (pair? tail) (car tail))
                       (and (pair? ls) (car (reverse ls))))
                 (list #t (expected-set (list 'added "mirrordr.1")) '(error draining) "<eof>")))))
-    ;; A DRAIN WHILE AN ACCEPTED REPLAY LIST IS UNWRITTEN: a resuming
-    ;; subscriber paused from its first byte; the drain; then it reads every
-    ;; retained frame, and then the terminal.
-    (let* ((d (start-daemon! "f6p" ""))
+    ;; A DRAIN WHILE AN ACCEPTED REPLAY LIST IS UNWRITTEN: five large frames
+    ;; are retained, and a resuming subscriber, paused from its first byte
+    ;; with its socket's buffer pressed, cannot take them all -- the daemon's
+    ;; write blocks with replay entries still in its list; the drain; then
+    ;; the reader resumes and reads every retained frame, then the terminal.
+    (let* ((d (start-daemon! "f6p" "THEOURGIA_SEND_BUFFER=16384"))
            (a (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines a 1 5000)))
            (token (token-of acc))
            (base (current-of acc)))
-      (insert! d "kept one") (insert! d "kept two")
-      (await-lines a 3 5000)
+      (for-each (lambda (w) (mirror-many! d w 300) (poke! d) (await-lines a (- (string->number (substring w 7 8)) -1) 8000))
+                '("keptbig1" "keptbig2" "keptbig3" "keptbig4" "keptbig5"))
       (let ((b (spawn-subscriber! d (list "changes" (number->string base) token) 'paused)))
-        (sleep-ms 500)
+        (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace write-pending") (> k 100)) (sleep-ms 50) (wait (+ k 1))))
+        (want "F10-6 the resuming reader's replay blocks: the daemon traces (write-pending conn) before the drain"
+              (contains? (d-log d) "(trace write-pending") #t)
         (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
         (sleep-ms 300)
         (send b '(resume))
-        (let* ((ls (await-lines b 5 10000)) (fs (frames-of ls)))
+        (let* ((ls (await-lines b 7 15000)) (fs (frames-of ls)))
           (want "F10-6 a drain with a replay list unwritten: every retained frame, then (error draining), then the close"
                 (list (map frame-rev (filter (lambda (f) (eq? (car f) 'changes)) fs))
                       (and (pair? fs) (car (reverse fs)))
                       (and (pair? ls) (car (reverse ls))))
-                (list (list (+ base 1) (+ base 2)) '(error draining) "<eof>")))))
+                (list (list (+ base 1) (+ base 2) (+ base 3) (+ base 4) (+ base 5)) '(error draining) "<eof>")))))
     (let* ((d (start-daemon! "f6r" ""))
            (s (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines s 1 5000)))
@@ -1015,15 +1022,23 @@
                     (for-all (lambda (f) (equal? f '(error transport-unknown (reason store-actor-down)))) fs))
               (list 75 "<eof>" #t)))
       (stop-daemon! d))
-    ;; A WRITER PROCESS DIES: nothing for the stream.
-    (let* ((d (start-daemon! "f6w" "THEOURGIA_FAULT=writer-raise@conn"))
+    ;; A WRITER PROCESS DIES: nothing for the stream. The subscribing
+    ;; connection used the writer first, so it is watching it when it dies:
+    ;; the writer dies on its SECOND request (writer-raise-second), made by
+    ;; another connection while the stream is open.
+    (let* ((d (start-daemon! "f6w" "THEOURGIA_FAULT=writer-raise-second@conn"))
            (id (insert! d "w"))
-           (s (spawn-subscriber! d '("changes" "0")))
-           (_ (await-lines s 1 5000)))
-      (ask d 'write id "draft" "--writer" "dying")
+           (s (spawn-subscriber! d '("changes" "0")
+                                 (list 'before (envelope (d-store d) 'write (list id "first draft" "--writer" "dying")))))
+           (ls (await-lines s 2 5000)))
+      (ask d 'write id "second draft" "--writer" "dying")
+      (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace daemon-down") (> k 100)) (sleep-ms 50) (wait (+ k 1))))
       (insert! d "after the writer died")
-      (want "F10-6 a writer process dying does not end the stream: the next frame arrives"
-            (map car (frames-of (await-lines s 2 6000))) '(changes))
+      (let ((ls (await-lines s 3 6000)))
+        (want "F10-6 a writer the stream's connection was watching dies: the stream goes on and the next frame arrives"
+              (list (contains? (d-log d) "(trace daemon-down")
+                    (and (>= (length ls) 3) (guard (e (#t #f)) (car (read (open-string-input-port (list-ref ls 2)))))))
+              '(#t changes)))
       (stop-daemon! d))
     ;; A WRITE THAT FAILS: the subscriber's connection is closed while the
     ;; daemon's write to it is blocked; the stream ends without a terminal,

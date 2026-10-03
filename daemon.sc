@@ -1445,9 +1445,15 @@
         ((current-lock-release) l))))
 
   (define (writer-loop store name store-pid)
-    (let loop ()
+    (let loop ((served 0))
       (receive
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
+         ;; INJECTION ONLY: this writer dies on its SECOND request, so a
+         ;; connection that already used it can be watching it when it goes
+         ;; (a subscribed connection's writer DOWN).
+         (when (and (= served 1) (eq? (theourgia-fault) 'writer-raise-second))
+           (raise (condition (make-message-condition "injected writer raise on a second request")
+                             (make-irritants-condition (list name seq)))))
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise))
            (set! writer-fault-pending #f)
            ((current-lock-acquire) (string-append store "/lock") 'exclusive)
@@ -1494,7 +1500,7 @@
            (set! writer-fault-pending #f)
            (raise (condition (make-message-condition "injected writer raise beside a holder")
                              (make-irritants-condition (list name seq)))))
-         (loop)))))
+         (loop (+ served 1))))))
 
   (define (condition-text e)
     (if (and (condition? e) (message-condition? e)) (condition-message e) 'raised))
