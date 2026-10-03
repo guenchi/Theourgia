@@ -991,13 +991,18 @@
   ;; THE PUBLICATION'S NAME, (<revision> <token>), is made here once and kept
   ;; in the cell with the state: a read seals the state with it and makes
   ;; nothing (the change stream's read --rev).
+  ;; THE CELL HAS THREE READERS, pinned in the census: answer-published,
+  ;; and the change stream's two -- this one, whose frame is made before the
+  ;; cell holds the new state and so cannot go through answer-published, and
+  ;; subscription-answer. Each takes its incomplete clause with
+  ;; incomplete-clause over the state's unreadable notes, as a read does.
   ;; THE FRAME IS MADE HERE, the one place every publication passes -- a
   ;; local commit, a reload, a refresh before a read at a cut, the start --
   ;; from the reduction it replaces and the one it installs, while at
   ;; least one subscriber is registered. No caller makes one. Without a
   ;; subscriber there is no frame work at all.
   (define (publish! store state snapshot)
-    (let ((old (and published (vector-ref published 0)))
+    (let ((old (published-state))
           (seq (+ publish-seq 1)))
       (set! publish-seq seq)
       (if (and old (pair? subscribers))
@@ -1094,7 +1099,7 @@
         (else
          (monitor from)
          (set! subscribers (cons from subscribers))
-         (let ((clause (incomplete-clause (unreadable-behind (vector-ref published 0)))))
+         (let ((clause (incomplete-clause (unreadable-behind (published-state)))))
            (cons (append (list 'ok (list 'subscribed rev) (list 'daemon daemon-token) (list 'current current))
                          (if clause (list clause) '()))
                  (let collect ((r (+ rev 1)) (out '()))

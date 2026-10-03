@@ -198,6 +198,12 @@
 ;;   unsealer  obtain-state: a supplied state is judged where it is consumed
 ;;   daemon    the daemon's own fold, explicitly declared: it holds the state
 ;;   published the one reader of the daemon's publication (answer-published)
+;;   stream    the change stream's readers of the publication: publish!, whose
+;;             frame is made before the cell holds the new state and so cannot
+;;             go through answer-published, and subscription-answer (the
+;;             acceptance). Both take the clause with incomplete-clause over
+;;             the state's notes; change-stream.sc's F10-10 row holds the
+;;             frame's, the acceptance's and read's clause equal.
 ;;   notes     rows->state building a new value: from a base it keeps the
 ;;             base's notes (overlay-drafts), or it is the replay's own seed
 (define census
@@ -205,6 +211,8 @@
     ("code-project.sc" "export-code" "open-and-reduce" 1 request)
     ("core.sc" "eval-view" "open-and-reduce" 1 request)
     ("daemon.sc" "answer-published" "published-state" 1 published)
+    ("daemon.sc" "publish!" "published-state" 1 stream)
+    ("daemon.sc" "subscription-answer" "published-state" 1 stream)
     ("daemon.sc" "refold-and-publish!" "obtain-state" 1 daemon)
     ("daemon.sc" "store-loop" "obtain-state" 1 daemon)
     ("datum-project.sc" "current" "open-and-reduce" 1 request)
