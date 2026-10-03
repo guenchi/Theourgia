@@ -488,65 +488,73 @@
                 (close-noting-failure fd)
                 outcome)))))
 
+  ;; THE RECEIVE BOUND IS SET BEST-EFFORT. Measured on macOS: setsockopt on a
+  ;; socket whose peer has already closed answers EINVAL, and raising there
+  ;; ended a stream as lost-stream with its terminal line already received
+  ;; and unread. A peer that has closed cannot leave a read blocked -- what
+  ;; it sent is read, then EOF -- so a bound that could not be set costs
+  ;; nothing; the clock check before each read still holds.
+  (define (bound-receive! fd ms)
+    (guard (e ((fs-error? e) #f))
+      (socket-receive-timeout! fd ms)))
+
+  ;; THE PARTIAL LINE IS KEPT AS ITS PARTS, newest first, and joined once,
+  ;; when its newline arrives: re-joining it on every read made a line of
+  ;; tens of megabytes cost the square of its size, and the budget ran out
+  ;; before the limit was ever judged (a 33 MiB line answered lost-stream,
+  ;; not answer-too-large).
   (define (stream-lines fd line!)
     (let ((want (or (theourgia-read-chunk) 65536)))
-      (socket-receive-timeout! fd 0)
-      (let loop ((tail (make-bytevector 0)) (deadline #f))
+      (bound-receive! fd 0)
+      (let loop ((parts '()) (held 0) (deadline #f))
         (when deadline
-          (socket-receive-timeout! fd (max 1 (- deadline (wall-clock-ms)))))
+          (bound-receive! fd (max 1 (- deadline (wall-clock-ms)))))
         (let ((chunk (if (and deadline (>= (wall-clock-ms) deadline))
                          'expired
                          (guard (e ((fs-error? e) 'failed)) (fd-read fd want)))))
           (cond
             ((symbol? chunk) (list 'ended 'lost-stream))
             ((zero? (bytevector-length chunk))
-             (list 'ended (if (zero? (bytevector-length tail)) 'eof 'lost-stream)))
+             (list 'ended (if (zero? held) 'eof 'lost-stream)))
             (else
-             (let split ((bytes (append-two tail chunk)) (from 0) (lines 0))
-               (let ((nl (newline-from bytes from)))
+             (let split ((from 0) (parts parts) (held held) (whole 0))
+               (let ((nl (newline-from chunk from)))
                  (cond
+                   ((and nl (> (+ held (- nl from)) (answer-limit)))
+                    (list 'ended 'answer-too-large))
                    (nl
-                    (if (> (- nl from) (answer-limit))
-                        (list 'ended 'answer-too-large)
-                        (begin
-                          (line! (sub-bytes bytes from nl))
-                          (split bytes (+ nl 1) lines))))
+                    (line! (join-bytes (reverse (cons (sub-bytes chunk from nl) parts)) (+ held (- nl from))))
+                    (split (+ nl 1) '() 0 (+ whole 1)))
                    (else
-                    (let ((rest (sub-bytes bytes from (bytevector-length bytes)))
-                          (whole (count-newlines chunk)))
+                    (let* ((rest (- (bytevector-length chunk) from))
+                           (parts (if (zero? rest) parts (cons (sub-bytes chunk from (bytevector-length chunk)) parts)))
+                           (now-held (+ held rest)))
                       (trace-event! 'read-chunk (bytevector-length chunk)
                                     (string-append (number->string whole) " "
-                                                   (if (zero? (bytevector-length rest)) "#f" "#t")))
+                                                   (if (zero? now-held) "#f" "#t")))
                       (cond
-                        ((> (bytevector-length rest) (answer-limit)) (list 'ended 'answer-too-large))
-                        ((zero? (bytevector-length rest))
-                         (when deadline (socket-receive-timeout! fd 0))
-                         (loop rest #f))
+                        ((> now-held (answer-limit)) (list 'ended 'answer-too-large))
+                        ((zero? now-held)
+                         (when deadline (bound-receive! fd 0))
+                         (loop '() 0 #f))
                         (else
                          ;; the budget runs from the first byte of the line
                          ;; still partial: kept while the same line goes on,
                          ;; started afresh when this read began a new one
-                         (loop rest (if (and deadline (zero? whole))
-                                        deadline
-                                        (+ (wall-clock-ms) stream-frame-ms))))))))))))))))
+                         (loop parts now-held
+                               (if (and deadline (zero? whole))
+                                   deadline
+                                   (+ (wall-clock-ms) stream-frame-ms))))))))))))))))
 
   (define (newline-from bv from)
     (let loop ((i from))
       (cond ((>= i (bytevector-length bv)) #f)
             ((= (bytevector-u8-ref bv i) 10) i)
             (else (loop (+ i 1))))))
-  (define (count-newlines bv)
-    (let loop ((i 0) (n 0))
-      (if (= i (bytevector-length bv)) n
-          (loop (+ i 1) (if (= (bytevector-u8-ref bv i) 10) (+ n 1) n)))))
   (define (sub-bytes bv from to)
     (let ((out (make-bytevector (- to from))))
       (bytevector-copy! bv from out 0 (- to from))
       out))
-  (define (append-two a b)
-    (if (zero? (bytevector-length a))
-        b
-        (join-bytes (list a b) (+ (bytevector-length a) (bytevector-length b)))))
 
   (define (join-bytes chunks total)
     (let ((out (make-bytevector total)))

@@ -16,7 +16,11 @@
 ;; A DAEMON THAT NEVER HAD A SUBSCRIBER ANSWERS AS IT DID BEFORE THE STREAM.
 ;;
 ;; The guard is differential. One store is prepared, copied twice, and each
-;; copy is served by a daemon: one built from the tree before the change
+;; copy is served by a daemon (A COPY IS NOT THE STORE: its instance identity
+;; names the original's directory, and a daemon refuses it. Each copy's
+;; instance.sexp gets its own device and inode, and each daemon its own copy
+;; of the prepared machine home -- the same machine, its own registry -- so
+;; the two run as two equal stores without either learning of the other): one built from the tree before the change
 ;; stream (THEOURGIA_BASE_LIBDIR, a library root holding that theourgia and
 ;; igropyr), one from this tree. The same script of requests is asked of
 ;; both and the answers compared byte for byte, a timestamp (a run of twelve
@@ -64,7 +68,8 @@
 (define scratch (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/csg-" pid-text))
 (define sockets (string-append (or (getenv "THEOURGIA_TEST_SOCK") "/tmp") "/csg-" pid-text))
 (system (string-append "rm -rf " scratch " " sockets "; mkdir -p " scratch " " sockets))
-(putenv "THEOURGIA_HOME" (string-append scratch "/home"))
+(define prepared-home (string-append scratch "/home"))
+(putenv "THEOURGIA_HOME" prepared-home)
 
 (define (file-text p) (if (file-exists? p) (let ((t (call-with-input-file p get-string-all))) (if (string? t) t "")) ""))
 (define (replace-all text from to)
@@ -77,7 +82,7 @@
 ;; D's store and socket become STORE and SOCKET, then every run of twelve or
 ;; more digits becomes "#"
 (define (normalize-for d text)
-  (normalize (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE")))
+  (normalize (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME")))
 (define (normalize text)
   (let loop ((i 0) (out '()))
     (cond ((>= i (string-length text)) (list->string (reverse out)))
@@ -95,15 +100,20 @@
 (system (string-append (lib-env this-lib) " THEOURGIA_LOCAL=1 scheme --script ../theourgia.sc insert --title Seed --text seed --store " prepared " > /dev/null 2>&1 < /dev/null"))
 (define (start! name lib)
   (let ((st (string-append scratch "/" name)) (sk (string-append sockets "/" name ".sock"))
+        (hm (string-append scratch "/" name "-home"))
         (rn (string-append scratch "/" name ".sc")) (lg (string-append scratch "/" name ".log")))
-    (system (string-append "rm -rf " st "; cp -R " prepared " " st))
+    (system (string-append "rm -rf " st " " hm "; cp -R " prepared " " st "; cp -R " prepared-home " " hm))
+    ;; the copy's own device and inode, in the identity it carries
+    (system (string-append "perl -e 'my ($f, $d) = @ARGV; my @s = stat $d; open my $h, q(<), $f or die; local $/; my $t = <$h>; "
+                           "$t =~ s/\\(device \\d+\\)/(device $s[0])/; $t =~ s/\\(inode \\d+\\)/(inode $s[1])/; "
+                           "open $h, q(>), $f or die; print $h $t' " st "/instance.sexp " st))
     (call-with-output-file rn
       (lambda (p) (for-each (lambda (l) (display l p) (newline p))
                             (list "(import (chezscheme) (theourgia daemon))"
                                   (string-append "(serve \"" st "\" \"" sk "\")")))))
-    (system (string-append "THEOURGIA_TRACE=1 " (lib-env lib) " sh -c 'scheme --script " rn " > " lg " 2>&1' &"))
+    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_HOME=" hm " " (lib-env lib) " sh -c 'scheme --script " rn " > " lg " 2>&1' &"))
     (let up ((k 0))
-      (cond ((file-exists? sk) (list st sk rn lg))
+      (cond ((file-exists? sk) (list st sk rn lg hm))
             ((> k 400) (printf "NOT A READING: the ~a daemon never created its socket~%~a~%" name (file-text lg)) (exit 2))
             (else (sleep-ms 50) (up (+ k 1)))))))
 (define (stop! d) (system (string-append "pkill -f " (caddr d) " 2>/dev/null")))
@@ -141,10 +151,12 @@
                (answer (ask-raw d verb args))
                (label (cond ((and (eq? verb 'read) (null? args)) 'read-usage) (else verb)))
                (ids (cond ((and (eq? verb 'insert) (pair? (cdr req)))
-                           (let* ((a (guard (e (#t #f)) (read (open-string-input-port answer))))
-                                  (inner (and (pair? a) (assq 'stdout (cdr a)) (read (open-string-input-port (cadr (assq 'stdout (cdr a)))))))
-                                  (ev (and (pair? inner) (assq 'events (cdr inner))))
-                                  (id (and ev (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e)))))))
+                           ;; an answer of another shape (a refusal) names no id
+                           (let ((id (guard (e (#t #f))
+                                       (let* ((a (read (open-string-input-port answer)))
+                                              (inner (and (pair? a) (assq 'stdout (cdr a)) (read (open-string-input-port (cadr (assq 'stdout (cdr a)))))))
+                                              (ev (and (pair? inner) (assq 'events (cdr inner)))))
+                                         (and ev (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e)))))))))
                              (if id (cons (cons (caddr req) id) ids) ids)))
                           (else ids))))
           (loop (cdr ss) ids (cons (cons label (normalize-for d answer)) out))))))

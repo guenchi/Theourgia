@@ -46,8 +46,8 @@
 ;; daemon that is not there.
 
 (import (chezscheme) (theourgia sched) (theourgia net)
-        (only (theourgia log) encode-record log-publish! segment-sha writer-directory segment-file-name)
-        (only (theourgia wire) storable-encode)
+        (only (theourgia log) log-publish! segment-sha writer-directory segment-file-name)
+        (only (theourgia wire) encode-record storable-encode)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce seal-state)
         (only (theourgia reduce) state-structure structural-sets)
@@ -247,8 +247,12 @@
 (define (frames-of lines)
   (map (lambda (l) (guard (e (#t (list 'unreadable l))) (read (open-string-input-port l))))
        (filter (lambda (l) (not (equal? l "<eof>"))) (if (pair? lines) (cdr lines) '()))))
+;; A CLAUSE IS A LIST AFTER THE TAG; an error's second element is a symbol,
+;; so the lookup passes over what is not a pair.
 (define (clause name datum)
-  (let ((c (and (pair? datum) (assq name (cdr datum))))) (and c (cdr c))))
+  (let ((c (and (pair? datum) (list? datum)
+                (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr datum)))))
+    (and c (cdr c))))
 (define (frame-rev f) (let ((c (clause 'rev f))) (and c (car c))))
 ;; A frame's items as a sorted list of their printed forms, so a row
 ;; compares sets without caring about their order.

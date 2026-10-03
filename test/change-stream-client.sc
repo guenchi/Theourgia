@@ -77,8 +77,12 @@
   (let ((k (string-length n)) (m (string-length t)))
     (let loop ((i 0)) (cond ((> (+ i k) m) #f) ((string=? (substring t i (+ i k)) n) #t) (else (loop (+ i 1)))))))
 (define (datum-of-line l) (guard (e (#t (list 'unreadable l))) (read (open-string-input-port l))))
+;; A CLAUSE IS A LIST AFTER THE TAG; an error's second element is a symbol,
+;; so the lookup passes over what is not a pair.
 (define (clause name datum)
-  (let ((c (and (pair? datum) (list? datum) (assq name (cdr datum))))) (and c (cdr c))))
+  (let ((c (and (pair? datum) (list? datum)
+                (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr datum)))))
+    (and c (cdr c))))
 (define (wait-until thunk ms)
   (let loop ((k 0)) (cond ((thunk) #t) ((> k (div ms 50)) #f) (else (sh "sleep 0.05") (loop (+ k 1))))))
 
