@@ -293,8 +293,13 @@
   ;; (let ((unquote list)) ...) an (unquote x) in a template is data.
   (define (template x depth env)
     (cond
-      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x) (pair? (cdr x)))
+      ;; A bare (unquote) needs no arm of its own: walking its empty operand
+      ;; list here answers (), as the pair arm below would.
+      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x))
        (if (= depth 1) (walk-all (cdr x) env) (template (cdr x) (- depth 1) env)))
+      ;; The quasiquote rule enters template only where quasiquote is unbound,
+      ;; and template keeps env as it was; the check is still made here, so
+      ;; that what template answers does not depend on who called it.
       ((and (pair? x) (eq? (car x) 'quasiquote) (not (bound? 'quasiquote env)) (pair? (cdr x)) (null? (cddr x)))
        (template (cadr x) (+ depth 1) env))
       ((pair? x) (append (template (car x) depth env) (template (cdr x) depth env)))
