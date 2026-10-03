@@ -31,7 +31,7 @@
 
 import { Client, Note } from './client';
 import { TransportError } from './transport';
-import { Datum, answerOf, isList, isSym, wire } from './wire';
+import { Datum, Form, answerOf, asInteger, isList, isSym, wire } from './wire';
 
 export interface DefinitionRecord {
   kind: 'def' | 'export';
@@ -47,7 +47,17 @@ export interface DefinitionRecord {
 
 export type DefinitionAnswer =
   | { found: DefinitionRecord[]; notes: Note[] | null }
-  | { none: true; name: string; nearest: string[]; notes: Note[] | null };
+  | { none: true; name: string; nearest: string[]; leftOut: LeftOut | null; notes: Note[] | null };
+
+/*
+ * THE BLOCKS A LOOKUP LEFT OUT because they are superseded or refuted, as
+ * the store counted them in its `(excluded (blocks (superseded <n>)
+ * (refuted <n>)))` clause.
+ */
+export interface LeftOut {
+  superseded: number;
+  refuted: number;
+}
 
 /*
  * THE NAME UNDER THE CURSOR. A Scheme identifier runs between delimiters
@@ -263,7 +273,7 @@ export async function definitionsOf(client: Client, name: string): Promise<Defin
     const refusal = said === null ? null : answerOf(said, 'error', { at: 1, is: 'unknown-name' });
     if (refusal !== null) {
       const nearest = refusal.clause('nearest');
-      return { none: true, name, nearest: nearest.read ? nearest.items.map(symbolName) : [], notes };
+      return { none: true, name, nearest: nearest.read ? nearest.items.map(symbolName) : [], leftOut: null, notes };
     }
     throw new TransportError(
       'unreadable',
@@ -283,17 +293,59 @@ export async function definitionsOf(client: Client, name: string): Promise<Defin
     }
     found.push(record);
   }
+  /*
+   * A NAME WHOSE EVERY RECORD WAS LEFT OUT. From theourgia 06a348b
+   * `whereis` leaves out the records in superseded and refuted blocks, and
+   * a name all of whose records were left out answers no items with an
+   * `excluded` clause, not `unknown-name` (README, "Class and validity";
+   * lifecycle.sc `whereis-split`). Read by name for this one sentence and
+   * for nothing else: the name has records, in blocks that are not in force.
+   */
   if (found.length === 0) {
-    return { none: true, name, nearest: [], notes };
+    return { none: true, name, nearest: [], leftOut: leftOutOf(answer.envelope), notes };
   }
   return { found, notes };
 }
 
 /*
- * WHAT IS SAID WHEN NOTHING DEFINES THE NAME, with the names the store
- * found nearest to it.
+ * THE COUNTS IN AN ANSWER'S `excluded` CLAUSE, or null when there is no such
+ * clause, it cannot be read, or it counts nothing.
  */
-export function noDefinitionNotice(name: string, nearest: string[]): string {
+function leftOutOf(envelope: Datum | null): LeftOut | null {
+  const form = envelope === null ? null : answerOf(envelope, 'ok');
+  const excluded = form === null ? null : form.value('excluded');
+  const blocks = excluded === null || !excluded.read ? null : answerOf(excluded.value, 'blocks');
+  if (blocks === null) {
+    return null;
+  }
+  const superseded = countIn(blocks, 'superseded');
+  const refuted = countIn(blocks, 'refuted');
+  if (superseded === null || refuted === null || superseded + refuted === 0) {
+    return null;
+  }
+  return { superseded, refuted };
+}
+
+function countIn(form: Form, which: string): number | null {
+  const said = form.value(which);
+  const n = said.read ? asInteger(said.value) : null;
+  return n === null || n < 0 ? null : n;
+}
+
+/*
+ * WHAT IS SAID WHEN NOTHING DEFINES THE NAME, with the names the store
+ * found nearest to it -- or, when the store left out every block that
+ * holds a record of it, that it is found only in blocks that are not in
+ * force. "Found", not "defined": a record may be an export, and a name a
+ * library only exports is not defined there.
+ */
+export function noDefinitionNotice(name: string, nearest: string[], leftOut: LeftOut | null = null): string {
+  if (leftOut !== null) {
+    const which =
+      leftOut.superseded > 0 && leftOut.refuted > 0 ? 'superseded or refuted' : leftOut.superseded > 0 ? 'superseded' : 'refuted';
+    const blocks = leftOut.superseded + leftOut.refuted === 1 ? 'a block that is' : 'blocks that are';
+    return `no definition of ${name} in force: it is found only in ${blocks} ${which}.`;
+  }
   return nearest.length === 0
     ? `no definition of ${name}.`
     : `no definition of ${name}; nearest: ${nearest.join(', ')}.`;

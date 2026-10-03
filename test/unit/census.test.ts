@@ -151,7 +151,12 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['datum-view.test.ts', 29],
   ['decoding.test.ts', 12],
-  ['definition.test.ts', 14],
+  /*
+   * RAISED 14 -> 17 with the re-pin to theourgia 06a348b: a name defined
+   * only in a superseded block, in superseded and refuted ones, and an empty
+   * answer without an excluded clause.
+   */
+  ['definition.test.ts', 17],
   ['dependency-sexpr.test.ts', 15],
   /*
    * ADDED with the files view: the tree export would write, from the
@@ -237,7 +242,11 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED with the core's read receipts (59e69f3): each reader of an answer
    * that now ends with a receipt reads it as before.
    */
-  ['read-receipt.test.ts', 5],
+  /*
+   * RAISED 5 -> 8 with the re-pin to theourgia 06a348b: the plain read, the
+   * recursive read and whereis with the validity and excluded clauses.
+   */
+  ['read-receipt.test.ts', 8],
   /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
@@ -270,7 +279,11 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 20 -> 21 with the search reader's repair: the search view
    * against a real store.
    */
-  ['real-core.test.ts', 21],
+  /*
+   * RAISED 21 -> 22 with the re-pin to theourgia 06a348b: a superseded
+   * block left out of search and grep, and still read.
+   */
+  ['real-core.test.ts', 22],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them. RAISED 8 -> 14 when the

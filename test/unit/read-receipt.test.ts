@@ -128,3 +128,70 @@ describe("a read's receipt changes nothing this extension reads", () => {
     assert.strictEqual(await read(after), '- a.1  Doc\n  - a.2  Part\n');
   });
 });
+
+/*
+ * A BLOCK'S VALIDITY CHANGES NOTHING THIS EXTENSION READS EITHER.
+ *
+ * From theourgia 06a348b a plain read of a block that is not valid adds
+ * `(validity <v> (<why> <block>) ...)` after its own clauses and before the
+ * receipt; a recursive read adds `(validity ((<id> <v> ...) ...))` for the
+ * blocks that are not valid; `whereis` adds `(excluded (blocks ...))` when
+ * it left a block out and names a kept hit that needs review in the same
+ * listed form (README, "Class and validity"; lifecycle.sc
+ * `read-validity-clause`, `listed-validity-clause`, `search-clauses`). The
+ * same readers as above are handed the same answers without and with them.
+ *
+ * NOTE: SEARCH AND GREP ARE NOT HERE. This extension asks both in the human
+ * form, which prints the hits in force and none of these clauses, so a
+ * fixture with the clauses would be an answer it never receives. What they
+ * do -- a superseded block drops out -- is read against the real core in
+ * real-core.test.ts.
+ */
+describe("a block's validity changes nothing this extension reads", () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const SUPERSEDED = '(validity superseded (superseded-by "b.2"))';
+  const LISTED = '(validity (("a.2" needs-review (premise-superseded "b.3"))))';
+
+  it('reads a plain read of a superseded block the same, its version included', async () => {
+    const before = `(ok ${BLOCK} (version "h1") ${CUT} (versions (("a.1" . "h1"))))\n`;
+    const after = `(ok ${BLOCK} (version "h1") ${SUPERSEDED} ${CUT} (versions (("a.1" . "h1"))))\n`;
+    assert.strictEqual(await requireText(answering(after), 'a.1', null), true);
+    const read = async (stdout: string) => {
+      const got = await new StoreModel(answering(stdout)).blockWithVersion('a.1');
+      return { id: got.block?.id ?? null, version: got.version };
+    };
+    assert.deepStrictEqual(await read(after), await read(before));
+    assert.deepStrictEqual(await read(after), { id: 'a.1', version: 'h1' });
+    const plain = await answering(after).request('read', ['a.1']);
+    assert.strictEqual(plain.answers.length, 1, 'a plain read with its validity is no longer one datum');
+  });
+
+  it('opens a recursive read the same with the listed validity, and still takes the incomplete clause', async () => {
+    const before = `(ok (items ${BLOCK} ${CHILD}) ${VERSIONS} ${CUT})\n`;
+    const after = `(ok (items ${BLOCK} ${CHILD}) ${VERSIONS} ${LISTED} ${CUT})\n`;
+    const late = `(ok (items ${BLOCK} ${CHILD}) ${VERSIONS} ${LISTED} ${CUT} ${INCOMPLETE})\n`;
+    const ids = async (stdout: string) => {
+      const answer = await answering(stdout).request('read', ['a.1', '--recursive', '--wire']);
+      return { ids: answer.answers.map((b) => readBlock(b)?.id ?? null), notes: answer.notes?.length ?? 0 };
+    };
+    assert.deepStrictEqual(await ids(after), await ids(before));
+    assert.deepStrictEqual(await ids(late), { ids: ['a.1', 'a.2'], notes: 1 }, 'the incomplete clause after the validity was not taken');
+    assert.deepStrictEqual(await documentOf(answering(after), 'a.1'), await documentOf(answering(before), 'a.1'));
+  });
+
+  it('reads whereis the same with an excluded count and a hit that needs review', async () => {
+    const own =
+      '(ok (items (def "a.1" (library (probe d)) (name alpha) (kind code)) (export "b.1" (library (probe d)) (name alpha))) ' +
+      '(cut ()) (scanned (blocks 3) (fields (names exports)))';
+    const before = `${own} (versions (("a.1" . "h1") ("b.1" . "h2"))))\n`;
+    const after =
+      `${own} (excluded (blocks (superseded 1) (refuted 0))) (validity (("b.1" needs-review (premise-moved "c.1")))) ` +
+      '(versions (("a.1" . "h1") ("b.1" . "h2"))))\n';
+    const got = await definitionsOf(answering(after), 'alpha');
+    assert.deepStrictEqual(got, await definitionsOf(answering(before), 'alpha'));
+    assert.strictEqual('found' in got && got.found.length, 2);
+  });
+});

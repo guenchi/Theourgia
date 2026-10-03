@@ -146,6 +146,44 @@ describe('D4 no definition, another refusal, and an incomplete answer', () => {
     assert.strictEqual(noDefinitionNotice('foo', answer.nearest), 'no definition of foo; nearest: foo-bar, baz.');
   });
 
+  /*
+   * A NAME DEFINED ONLY IN BLOCKS THAT ARE NOT IN FORCE. From theourgia
+   * 06a348b `whereis` leaves out records in superseded and refuted blocks,
+   * and a name all of whose records were left out answers no items with an
+   * `excluded` clause, not `unknown-name`. The answer below is rpc.sc's
+   * whereis for that case: the scan clauses, the excluded count, the
+   * versions of nothing.
+   */
+  const LEFT_OUT = (superseded: number, refuted: number): string =>
+    `(ok (items) (cut ()) (scanned (blocks ${superseded + refuted + 1}) (fields (names exports))) ` +
+    `(excluded (blocks (superseded ${superseded}) (refuted ${refuted}))) (versions ()))\n`;
+
+  it('says a name found only in a superseded block is there, and not in force', async () => {
+    const answer = await definitionsOf(answering(LEFT_OUT(1, 0)), 'foo');
+    assert.ok('none' in answer, JSON.stringify(answer));
+    assert.deepStrictEqual(answer.leftOut, { superseded: 1, refuted: 0 });
+    assert.strictEqual(
+      noDefinitionNotice('foo', answer.nearest, answer.leftOut),
+      'no definition of foo in force: it is found only in a block that is superseded.'
+    );
+  });
+
+  it('names both when the blocks left out are superseded and refuted', async () => {
+    const answer = await definitionsOf(answering(LEFT_OUT(1, 2)), 'foo');
+    assert.ok('none' in answer, JSON.stringify(answer));
+    assert.strictEqual(
+      noDefinitionNotice('foo', answer.nearest, answer.leftOut),
+      'no definition of foo in force: it is found only in blocks that are superseded or refuted.'
+    );
+  });
+
+  it('says only that there is no definition when an empty answer has no excluded clause', async () => {
+    const answer = await definitionsOf(answering('(ok (items) (cut ()) (scanned (blocks 2) (fields (names exports))) (versions ()))\n'), 'foo');
+    assert.ok('none' in answer, JSON.stringify(answer));
+    assert.strictEqual(answer.leftOut, null);
+    assert.strictEqual(noDefinitionNotice('foo', answer.nearest, answer.leftOut), 'no definition of foo.');
+  });
+
   it('hands any other refusal back as the failure it is', async () => {
     await assert.rejects(
       definitionsOf(answering('(error unavailable (reason schedule))\n', 1), 'foo'),

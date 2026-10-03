@@ -516,7 +516,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia 3aad6fd, as 59e69f3, 5230bb6, 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 06a348b, as 3aad6fd, 59e69f3, 5230bb6, 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete

@@ -1966,7 +1966,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       show({ level: 'information', text: incompleteWarning(answer.notes) });
     }
     if (!('found' in answer)) {
-      vscode.window.showInformationMessage(`Theourgia: ${noDefinitionNotice(name, answer.nearest)}`);
+      vscode.window.showInformationMessage(`Theourgia: ${noDefinitionNotice(name, answer.nearest, answer.leftOut)}`);
       return;
     }
     let chosen = answer.found[0];

@@ -32,7 +32,7 @@
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
  * client is forced to hold a second opinion. The core says an answer is
- * text, items or a single datum (rpc.sc:181-186), and `render-human`
+ * text, items or a single datum (rpc.sc:185-190), and `render-human`
  * (render.sc:65) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it

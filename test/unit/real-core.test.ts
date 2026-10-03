@@ -67,6 +67,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
+import { gatherContext } from '../../src/hover';
 import { createHash } from 'crypto';
 import { nodeFileOps } from '../../src/fsops';
 import { Sessions } from '../../src/sessions';
@@ -1651,5 +1652,68 @@ describe('the search view reads what a real store answers', function () {
     assert.ok(!ids.includes(hay), `the search found ${hay}, which does not hold the word`);
     const hit = reading.hits.find((h) => h.id === needle);
     assert.ok(hit?.fields?.includes('src'), `the hit does not say it matched in src: ${JSON.stringify(hit)}`);
+  });
+});
+
+/*
+ * A SUPERSEDED BLOCK DROPS OUT OF SEARCH AND OF A HOVER'S MENTIONS, AND IS
+ * STILL READ. From theourgia 06a348b `search` and `grep` leave out
+ * superseded and refuted blocks, and this extension asks both in the human
+ * form, which says nothing about what it left out; a plain read never
+ * hides a block and names its validity (README, "Class and validity").
+ * This reads what the extension's own readers make of that on a real
+ * store: the search the view runs, the grep a hover runs, and the read
+ * the guarded write runs. Each is read once before the link, so that a
+ * block missing afterwards was there to be missed.
+ */
+describe('theourgia 06a348b: a superseded block is left out of search and grep, and is still read', function () {
+  this.timeout(120000);
+  let store: RealStore;
+  let pinned: CorePin | undefined;
+
+  before(async () => {
+    pinned = pinCore();
+    await initWire();
+    store = await RealStore.make('vscode-validity');
+    await store.importMarkdown('doc.md', '# Doc\n\n## Old\n\nalpha old\n\n## New\n\nalpha new\n');
+  });
+
+  after(() => {
+    try {
+      store?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  it('leaves the superseded block out of the search and the mentions, and reads it with its validity', async () => {
+    const older = await idOfSection(store, 'Old');
+    const newer = await idOfSection(store, 'New');
+    const model = new StoreModel(store.client);
+    const hits = async (): Promise<string[]> => (await model.searchReading('alpha')).hits.map((h) => h.id);
+    const mentions = async (): Promise<string[]> =>
+      (await gatherContext(store.client, newer, 'alpha', false, () => false)).candidates
+        .filter((c) => c.section === 'mention')
+        .map((c) => c.id);
+
+    assert.ok((await hits()).includes(older), `the search did not find ${older} before the link, so its absence says nothing`);
+    assert.ok((await mentions()).includes(older), `the hover did not mention ${older} before the link, so its absence says nothing`);
+
+    const linked = await store.client.request('link', [newer, 'supersedes', older]);
+    assert.strictEqual(linked.ok, true, `the link was refused: ${linked.text}`);
+
+    const after = await hits();
+    assert.ok(!after.includes(older), `the search still finds the superseded block ${older}: ${JSON.stringify(after)}`);
+    assert.ok(after.includes(newer), `the search lost the block in force ${newer}: ${JSON.stringify(after)}`);
+    assert.ok(!(await mentions()).includes(older), `the hover still mentions the superseded block ${older}`);
+
+    const plain = await store.client.request('read', [older]);
+    assert.strictEqual(plain.ok, true, plain.text);
+    assert.ok(
+      plain.text.includes(`(validity superseded (superseded-by "${newer}"))`),
+      `a plain read of the superseded block does not name its validity: ${plain.text}`
+    );
+    const read = await model.blockWithVersion(older);
+    assert.strictEqual(read.block?.id, older, 'the read the guarded write runs lost the superseded block');
   });
 });
