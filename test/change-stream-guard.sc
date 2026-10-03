@@ -39,7 +39,10 @@
 ;; sockets); each answer and trace has its daemon's store and socket read
 ;; as one token before comparing.
 ;;
-;; WITHOUT A BASE TREE THIS IS NOT A READING, and it says so and why.
+;; IT NEEDS A BASE TREE, AND THAT IS AN OPT-IN. With THEOURGIA_BASE_LIBDIR
+;; unset the guard says why it did not run and is green, as a named opt-in
+;; (the gate sets it to its own fresh base); set to a directory that is not
+;; a base library root, it is NOT A READING, and says so.
 
 (import (chezscheme) (theourgia sched) (theourgia net))
 
@@ -58,7 +61,11 @@
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
-(unless (and (string? base-lib) (file-exists? (string-append base-lib "/theourgia/daemon.sc")))
+(unless (and (string? base-lib) (> (string-length base-lib) 0))
+  (printf "SKIP: THEOURGIA_BASE_LIBDIR is unset: set it to a library root holding the base tree's theourgia/ and igropyr/ to compare this tree's daemon with the base's (an opt-in, not a failure)~%")
+  (printf "rows: 0~%0 failures~%change-stream-guard complete~%")
+  (exit 0))
+(unless (file-exists? (string-append base-lib "/theourgia/daemon.sc"))
   (printf "NOT A READING: THEOURGIA_BASE_LIBDIR must name a library root holding the base tree's theourgia/ and igropyr/ (it is ~s)~%" base-lib)
   (printf "change-stream-guard complete~%")
   (exit 2))

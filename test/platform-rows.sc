@@ -489,6 +489,7 @@
                           sites))))
 (define expected-read-sites
   '(("../client.sc" ECONNREFUSED (platform-number (quote ECONNREFUSED)))
+    ("../client.sc" EINVAL (platform-number (quote EINVAL)))
     ("../client.sc" ENOENT (platform-number (quote ENOENT)))
     ("../client.sc" ENOTSOCK (platform-number (quote ENOTSOCK)))
     ("../daemon.sc" signal-term (platform-number (quote SIGTERM)))

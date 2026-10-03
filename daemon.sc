@@ -60,7 +60,7 @@
                 start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
-          (only (theourgia rpc) rpc-dispatch rpc-ok?)
+          (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error)
           (only (theourgia client) socket-path envelope-version)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
@@ -1086,8 +1086,7 @@
                                   more
                                   (list (list 'current current) (list 'daemon daemon-token))))))
       (cond
-        ((not (and (<= 2 (length args) 3) (equal? (car args) "changes")))
-         (cons '(usage (subscribe changes <rev> [<token>])) '()))
+        ((subscribe-shape-error args) => (lambda (refusal) (cons refusal '())))
         ((not rev) (cons '(error bad-request invalid-revision) '()))
         ;; ANOTHER INCARNATION'S TOKEN IS JUDGED BEFORE ITS REVISION: a
         ;; revision of an earlier daemon does not compare with this one's

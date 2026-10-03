@@ -1026,6 +1026,9 @@
                                                  "(source (vscode \"1.140.0\")) (files ()) (replaces ()))\n"))
                               (census-ask st 'supply "signatures" f)))))
     (cons 'adopt (seeded (lambda (st x s) (census-ask st 'adopt))))
+    ;; subscribe is a stream a daemon carries; asked in process it answers
+    ;; needs-daemon, which is its correct answer here (allow-list below).
+    (cons 'subscribe (seeded (lambda (st x s) (census-ask st 'subscribe "changes" "0"))))
     (cons 'check (seeded (lambda (st x s) (census-ask st 'check))))
     (cons 'snapshot (seeded (lambda (st x s) (census-ask st 'snapshot))))
     (cons 'outline (seeded (lambda (st x s) (census-ask st 'outline))))
@@ -1229,7 +1232,7 @@
         link move outline publish reach restore set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
-      '(adopt))
+      '(adopt subscribe))
 
 ;; THE TAGGED MAP: verb -> (sorted heads . count of items that are not
 ;; symbol-headed pairs). A head may be `ok` (commit, import-code, def); none
@@ -1254,7 +1257,9 @@
 (define census-allowed
   (list
     (list 'adopt '(refused error not-needed)
-          "a healthy store needs no adoption (log.sc:4428)")))
+          "a healthy store needs no adoption (log.sc:4428)")
+    (list 'subscribe '(refused error bad-request)
+          "a stream needs a daemon: in process, subscribe answers (error bad-request (reason needs-daemon)) (rpc.sc's handler)")))
 (want "F58 CONTROL every accepted refusal says why it is correct"
       (filter (lambda (a) (not (and (string? (caddr a)) (> (string-length (caddr a)) 0))))
               census-allowed)

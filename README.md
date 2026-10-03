@@ -172,7 +172,7 @@ differences — and is never an error.
 ### `read`
 
     (read <id> ("--md") ("--recursive") ("--writer" <name>)
-          ("--working") ("--working-info") ("--signature") ("--cut" <cut>))
+          ("--working") ("--working-info") ("--signature") ("--cut" <cut>) ("--rev"))
 
 It answers:
 
@@ -261,6 +261,17 @@ without it the writer is the one this caller was given. A block with no
 draft still reads as committed in the same answer -- the overlay replaces
 the blocks it covers, not the view. `--working-info` adds what the view
 is made of rather than changing what is read. `--working` or `--working-info` with `--md` or `--recursive` is refused with `(error bad-request incompatible-working-options)`.
+
+**`--rev` names the publication the answer was built from**, for a program that
+follows the store with `subscribe`: an `ok` answer gains `(rev <n> (daemon
+"<token>"))` after its other clauses, where `<n>` is the daemon's publication
+number and `<token>` the daemon's incarnation, the same pair a change frame
+carries. Only a daemon has publications: on the local route, or for a state no
+daemon published, it answers `(error bad-request (reason no-published-state))`.
+It is refused with `--cut` (`incompatible-cut-options`) and with `--working-info`
+or `--signature` (`incompatible-rev-options`); with `--working` it names the
+publication under the writer's draft. An answer that carries a rev is printed
+whole, as `--wire` prints it, in either mode.
 
 **`--cut` reads the block as it was at a causal cut**: a tag name or a cut written
 out as `(("writer" . 12) ...)`, as `diff` takes them -- typically an entry's `cut`
@@ -935,6 +946,66 @@ Rules of the library:
 - `replaces/2` -- c supersedes or refutes o
 - `evidence-for/2` -- v verifies c currently, or implements it
 - `hard/4` -- what context must show for t: the block h, its role, and the block it is about
+
+## Following a store
+
+### `subscribe`
+
+    (subscribe changes <rev> (<token>))
+
+A daemon verb that keeps its connection: `theourgia subscribe changes 0` prints
+the acceptance and then one line for each publication the daemon makes, as it
+makes it, until the stream ends. It has no local route (`(error bad-request
+(reason needs-daemon))`), and the MCP shell, which is request and response, does
+not offer it.
+
+The acceptance is `(ok (subscribed <rev>) (daemon "<token>") (current <n>))`,
+with `(incomplete ...)` when the publication is missing a writer. `<token>` is
+the daemon's incarnation, `<pid>-<start-ms>`, new at each start; `<n>` is its
+current publication. Revision 0 subscribes from now and replays nothing: read
+what you need after subscribing. A resume, `subscribe changes <rev> <token>`,
+replays every publication after `<rev>` that the daemon still holds (it keeps
+the last 256 while anyone is subscribed).
+
+Every line after the acceptance is a bare datum. A publication is
+
+    (changes (rev <n>) (daemon "<token>") (from-cut <cut>) (cut <cut>)
+             (items <item> ...) [(incomplete ...)])
+
+and its items say what changed from the publication before it: `(added <id>)`
+and `(removed <id>)` (such a block carries no field or position items in that
+frame -- read it whole); `(changed <id> <field>)`, `(changed <id> position)`,
+`(changed <id> parent)`, `(changed <id> ord)`; `(conflict <id> <what>)` and
+`(resolved <id> <what>)` for a field, a position, or the structure (`cycle`,
+`orphan`, `unplaced`, `nested`); `(edge-added <from> <rel> <to> (event <writer>
+. <seq>))` and `(edge-removed <from> <rel> <to>)`. A reload that fails is
+reported as `(error store-unreadable (reason ...))`, with no revision, and the
+stream goes on; so does a further request on the connection, answered `(error
+bad-request (reason subscribed))`.
+
+**Apply frames by revision, not by cut.** Subscribe first, then `read --rev`
+each object you follow, and keep the revision it answered. A frame whose rev is
+at most an object's revision is already in it; the next one is applied; one
+further ahead is a gap: read the object again. A read whose daemon token is not
+the subscription's means the daemon restarted: subscribe afresh with 0 and read
+again. The cuts in a frame are informational (a retraction can move the applied
+cut backwards).
+
+The refusals: `(error bad-request invalid-revision)` (not decimal digits, or
+past the current publication), `(error bad-request missing-token)` (a resume
+without a token), `(error changes-unavailable (reason daemon-restarted)
+(current <n>) (daemon "<token>"))` (another incarnation's token), `(error
+changes-unavailable (reason window) (oldest <r>) (current <n>) (daemon
+"<token>"))` (a revision of the resume no longer held). The stream ends with
+one terminal line: `(error draining)` when the daemon stops (exit 0 once the
+connection closes after it); `(error changes-unavailable (reason lagging)
+(current <n>) (daemon "<token>"))` when the reader fell 64 publications behind;
+`(error transport-unknown (reason store-actor-down))` or `(reason
+write-failed)`. Those two and lagging exit 1 when they arrive. A connection
+that closes with no terminal, or in the middle of a line, or a line that stops
+arriving for 5 s, prints `(error transport-error lost-stream)` and exits 1; a
+line past the answer limit prints `(error transport-error answer-too-large)`.
+A stream with nothing to say waits as long as it has to.
 
 ## Making and changing blocks
 
@@ -2662,9 +2733,10 @@ Code at the store -- see
 | `THEOURGIA_SCHEME` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | the Chez binary every program starts its Scheme children with: the thin client's `core.sc` and daemon, the MCP shell's daemon and `eval` child, and `eval`'s worker. A tree started under a particular Chez therefore starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
-**Test-only. Six of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
-`THEOURGIA_BARRIER`, `THEOURGIA_HOLD`, `THEOURGIA_HOLD_MS` and
-`THEOURGIA_PLATFORM_KEY` -- are read only
+**Test-only. Eight of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
+`THEOURGIA_BARRIER`, `THEOURGIA_HOLD`, `THEOURGIA_HOLD_MS`,
+`THEOURGIA_PLATFORM_KEY`, `THEOURGIA_SEND_BUFFER` and `THEOURGIA_READ_CHUNK`
+-- are read only
 by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read
 them at all.**
 
@@ -2677,6 +2749,9 @@ them at all.**
 | `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) and `reload-before-publish` (the daemon's store process, between a refold and its publication). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
+| `THEOURGIA_SEND_BUFFER` | an exact positive integer: a daemon presses each accepted connection's send buffer to that many bytes, so a row can make a write the daemon cannot finish (`subscribe`'s blocked-write rows); refused at load if it is anything else |
+| `THEOURGIA_READ_CHUNK` | an exact positive integer: the streaming client reads at most that many bytes at a time, so a row can cut its lines where it likes; refused at load if it is anything else |
+| `THEOURGIA_BASE_LIBDIR` | `test/change-stream-guard.sc`'s base: a library root holding the base tree's `theourgia/` and `igropyr/`, whose daemon the guard compares with this tree's. Unset, the guard prints why and runs nothing. Read only by `test/` |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
