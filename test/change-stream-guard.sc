@@ -25,8 +25,8 @@
 ;; igropyr), one from this tree. The same script of requests is asked of
 ;; both and the answers compared byte for byte, a timestamp (a run of twelve
 ;; or more digits) read as one token. Then the trace of one read and one
-;; commit is compared the same way, and the time of fifty commits is
-;; measured three times on each.
+;; commit is compared the same way, and the time of commits is measured by
+;; forty alternating rounds (the bound is stated where it is judged).
 ;;
 ;; THE EXCEPTIONS ARE NAMED, and each is this row's own expectation:
 ;; `describe` (the catalogue gains subscribe and read's --rev), the
@@ -215,17 +215,38 @@
         (want "F10-9 the trace of a read and a commit is byte for byte the base's"
               (let ((tb (trace-of b)) (tn (trace-of n))) (if (equal? tb tn) 'equal (list tb tn)))
               'equal))
-      ;; THE TIME of fifty commits, three runs each, interleaved.
-      (let* ((time-50 (lambda (d k)
+      ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
+      ;; times ten commits on each daemon, the order flipped every round, so
+      ;; a drift of the machine falls on both arms alike. Each arm is read by
+      ;; its 10th percentile, the low edge a quiet machine reaches, not by a
+      ;; median that moves with the load.
+      ;; THE BOUND: new p10 <= base p10 x (1 + m), m = max(0.15, 2e), where e
+      ;; is the base's own run-to-run deviation, |p10 of its first twenty
+      ;; rounds / p10 of its last twenty - 1|. It is the start-up
+      ;; instrument's construction of K (a floor for quiet noise, widened by
+      ;; twice what this run shows the base itself moving), computed from
+      ;; this run, since the base and the tree run side by side here. Every
+      ;; number is printed.
+      (let* ((time-10 (lambda (d k)
                         (let ((t0 (real-time)))
-                          (let loop ((i 0)) (when (< i 50) (ask-raw d 'set (list seed "title" (string-append "t" (number->string k) "-" (number->string i)))) (loop (+ i 1))))
+                          (let loop ((i 0)) (when (< i 10) (ask-raw d 'set (list seed "title" (string-append "t" (number->string k) "-" (number->string i)))) (loop (+ i 1))))
                           (- (real-time) t0))))
-             (runs (let loop ((k 0) (out '())) (if (= k 3) (reverse out) (loop (+ k 1) (cons (list (time-50 b k) (time-50 n k)) out)))))
-             (base-ms (map car runs)) (new-ms (map cadr runs))
-             (median (lambda (xs) (cadr (list-sort < xs)))))
-        (printf "   50 commits, ms: base ~s new ~s~%" base-ms new-ms)
-        (want "F10-9 the median of fifty commits is within the base's measured spread: at most the slowest base run (three runs each)"
-              (<= (median new-ms) (apply max base-ms))
+             (rounds (let loop ((k 0) (out '()))
+                       (if (= k 40) (reverse out)
+                           (loop (+ k 1)
+                                 (cons (if (even? k)
+                                           (let* ((x (time-10 b k)) (y (time-10 n k))) (list x y))
+                                           (let* ((y (time-10 n k)) (x (time-10 b k))) (list x y)))
+                                       out)))))
+             (base-ms (map car rounds)) (new-ms (map cadr rounds))
+             (p10 (lambda (xs) (list-ref (list-sort < xs) (div (length xs) 10))))
+             (e (abs (- (/ (p10 (list-head base-ms 20)) (max 1 (p10 (list-tail base-ms 20)))) 1)))
+             (m (max 15/100 (* 2 e)))
+             (bound (* (p10 base-ms) (+ 1 m))))
+        (printf "   10 commits x 40 alternating rounds, ms: base p10 ~s new p10 ~s; e ~s m ~s bound ~s~%   base ~s~%   new  ~s~%"
+                (p10 base-ms) (p10 new-ms) (inexact e) (inexact m) (inexact bound) base-ms new-ms)
+        (want "F10-9 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e))"
+              (<= (p10 new-ms) bound)
               #t))
       (stop! b) (stop! n)
       (system (string-append "rm -rf " sockets))
