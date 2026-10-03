@@ -40,7 +40,7 @@
                                (mutable? (and (pair? field) (eq? (car field) 'mutable)))
                                (default (and (symbol? name) (string->symbol (string-append (symbol->string type) "-" (symbol->string name)))))
                                (access (if (and (list? field) (> (length field) 2)) (caddr field) default))
-                               (mutator (and mutable? (if (> (length field) 3) (cadddr field) (and default (suffix default "-set!"))))))
+                               (mutator (and mutable? (if (and (list? field) (> (length field) 3)) (cadddr field) (and default (suffix default "-set!"))))))
                           (filter symbol? (if mutable? (list access mutator) (list access)))))
                       (if fields (cdr fields) '())))))))
       (else '())))

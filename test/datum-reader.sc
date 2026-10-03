@@ -30,6 +30,7 @@
     ("a record with a bare symbol clause" (define-record-type p sealed (fields x)) (p make-p p? p-x))
     ("a field spec of one element" (define-record-type p (fields (immutable))) (p make-p p?))
     ("an improper field spec" (define-record-type p (fields (immutable . x))) (p make-p p?))
+    ("an improper mutable field spec" (define-record-type p (fields (mutable . x))) (p make-p p?))
     ("a field whose name is a number" (define-record-type p (fields (immutable 5))) (p make-p p?))
     ("a mutable field with an accessor and no mutator" (define-record-type p (fields (mutable x get-x))) (p make-p p? get-x p-x-set!))
     ("a mutable field whose name is a number" (define-record-type p (fields (mutable 5))) (p make-p p?))))
