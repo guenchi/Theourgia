@@ -301,7 +301,8 @@
   (let loop ((k 1))
     (cond ((contains? (d-log d) "(trace write-pending") (- k 1))
           ((> k limit) (list 'never-pending (- k 1)))
-          (else (mirror-many! d (string-append "bulk" (number->string k) "zz") 300)
+          ;; a writer id is 8 base36 characters: bulk0001, bulk0002, ...
+          (else (mirror-many! d (string-append "bulk" (let ((t (number->string k))) (string-append (make-string (- 4 (string-length t)) #\0) t))) 300)
                 (poke! d)
                 (sleep-ms 150)
                 (loop (+ k 1))))))
@@ -428,7 +429,7 @@
               (item-set (frame!)) (expected-set (list 'changed id 'src)))
         (ask d 'set id "front" "f: 1")
         (want "F10-2 set front -> (changed id front)" (item-set (frame!)) (expected-set (list 'changed id 'front)))
-        (ask d 'set id "kind" "note")
+        (ask d 'set id "kind" "doc")
         (want "F10-2 set kind -> (changed id kind)" (item-set (frame!)) (expected-set (list 'changed id 'kind)))
         (let ((b (insert! d "B")))
           (frame!)
@@ -704,25 +705,35 @@
            (kid (new-id (ask d 'insert "--under" id "--title" "kid")))
            (writer "w-rev"))
       (ask d 'write id "draft text" "--writer" writer)
-      (let* ((n (last-published d))
-             (rev-of (lambda (a) (let ((r (rev-clause a))) (and r (car r))))))
-        (want "F10-13 read, read --md, read --recursive and a writer's read --working each carry the current revision"
-              (list (rev-of (ask d 'read id "--rev"))
-                    (rev-of (ask d 'read id "--md" "--rev"))
-                    (rev-of (ask d 'read id "--recursive" "--rev"))
-                    (rev-of (ask d 'read id "--working" "--rev" "--writer" writer)))
-              (list n n n n))
+      ;; THE PUBLICATION A READ WAS BUILT FROM is the last one traced when its
+      ;; answer arrives, the daemon otherwise still: a read probes for outside
+      ;; change first and may publish a fold before it reads the cell (the
+      ;; draft written above changes the snapshot), and that publication is
+      ;; the one it answers from.
+      (let* ((rev-of (lambda (a) (let ((r (rev-clause a))) (and r (car r)))))
+             (answered-at (lambda args
+                            (let* ((a (apply ask d 'read args)) (p (last-published d)))
+                              (list (rev-of a) p)))))
+        (want "F10-13 read, read --md, read --recursive and a writer's read --working each carry the revision last published when it was answered"
+              (map (lambda (x) (and (car x) (equal? (car x) (cadr x))))
+                   (list (answered-at id "--rev")
+                         (answered-at id "--md" "--rev")
+                         (answered-at id "--recursive" "--rev")
+                         (answered-at id "--working" "--rev" "--writer" writer)))
+              '(#t #t #t #t))
         (want "F10-13 and the clause names the daemon by the token its subscriptions answer: (rev n (daemon token))"
               (let ((r (rev-clause (ask d 'read id "--rev")))
                     (token (token-of (acceptance-of (await-lines (spawn-subscriber! d '("changes" "0")) 1 5000)))))
                 (list (and r (pair? (cdr r)) (pair? (cadr r)) (car (cadr r)))
                       (and r (pair? (cdr r)) (pair? (cadr r)) (string? token) (equal? (cdr (cadr r)) (list token)))))
               '(daemon #t))
-        (mirror! d "mirrorrv" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 30))))
-        (poke! d)
-        (let wait ((k 0)) (unless (or (equal? (last-published d) (+ n 1)) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
-        (want "F10-13 after an outside commit and its reload, the next read carries the next number"
-              (rev-of (ask d 'read id "--rev")) (+ n 1)))
+        (let ((n (last-published d)))
+          (mirror! d "mirrorrv" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 30))))
+          (poke! d)
+          (let wait ((k 0)) (unless (or (> (or (last-published d) 0) n) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
+          (want "F10-13 after an outside commit and its reload, the next read carries a later number, the one last published"
+                (let ((x (answered-at id "--rev"))) (list (and (car x) (> (car x) n)) (equal? (car x) (cadr x))))
+                '(#t #t))))
       (want "F10-13 --rev with --working-info, and with --signature, is refused incompatible-rev-options"
             (list (ask d 'read id "--rev" "--working-info" "--writer" writer)
                   (ask d 'read id "--rev" "--signature"))
@@ -1017,8 +1028,13 @@
                               (caddar ds))
                              (else (find (cdr ds)))))))
         (want "F10-6 a reload that fails sends (error store-unreadable (reason <the trace's reason>)) with no revision"
-              (list (and (pair? f) (car f)) (and (pair? f) (cadr f)) (equal? (clause 'reason f) (list traced)) (frame-rev f))
-              (list 'error 'store-unreadable #t #f))
+              ;; THE TRACE PRINTS ITS FIELDS WITH display, so the reason is
+              ;; compared as that line spells it.
+              (list (and (pair? f) (car f)) (and (pair? f) (cadr f)) (not (eq? traced 'no-trace))
+                    (let ((r (clause 'reason f)))
+                      (and (pair? r) (contains? (d-log d) (string-append "(trace reload-failed " (format "~a" (car r)) " #f)"))))
+                    (frame-rev f))
+              (list 'error 'store-unreadable #t #t #f))
         (want "F10-6 and the publication stayed: the last revision published is still the one before"
               (last-published d) before))
       (insert! d "after the failed reload")
@@ -1094,7 +1110,7 @@
                      (mirror! d "mirrorwd" 2 '() '(put ((kind . section) (title . "new") (parent . root) (ord . 61))))))
            (older (string-append (writer-directory (d-store d) "mirrorwd") "/" (segment-file-name 1)))
            (sub (spawn-subscriber! d '("changes" "0")))
-           (subscribed-at (current-of (acceptance-of (await-lines sub 1 5000))))
+           (_ (await-lines sub 1 5000))
            (asker self))
       (spawn (lambda () (send asker (list 'insert-answer (ask d 'insert "--title" "withheld")))))
       (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 400)) (sleep-ms 50) (wait (+ k 1))))
@@ -1105,10 +1121,21 @@
         (system (string-append "touch " release))
         (receive (after 30000 'no-insert-answer) (`(insert-answer ,a) a))
         (sleep-ms 500)
-        ;; THE BOUNDARY: the session is over and nothing has reloaded yet.
-        (want "F10-10 the withheld session made no revision and no frame: the last published is the subscription's, and no frame arrived"
-              (list (contains? (d-log d) "(trace publish-withheld") (last-published d) (length (frames-of (sub-lines sub))))
-              (list #t subscribed-at 0))
+        ;; THE BOUNDARY: withholding asks for a reload at once, so a
+        ;; publication soon follows; what the withheld session itself may not
+        ;; do is publish. The first publication after the withheld trace is
+        ;; the reload's: a NEW load runs first, and it passes the barrier's
+        ;; hold again before anything is published.
+        (want "F10-10 the withheld session published nothing itself: after its trace, a new load passes the barrier before the next publication"
+              (let find ((ds (read-all-data (d-log d))) (state 'before))
+                (cond ((null? ds) state)
+                      ((not (and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)))) (find (cdr ds) state))
+                      ((and (eq? state 'before) (eq? (cadar ds) 'publish-withheld)) (find (cdr ds) 'withheld))
+                      ((and (eq? state 'withheld) (eq? (cadar ds) 'hold) (eq? (caddar ds) 'after-barrier)) (find (cdr ds) 'reloading))
+                      ((and (eq? state 'withheld) (eq? (cadar ds) 'published)) 'published-without-a-new-load)
+                      ((and (eq? state 'reloading) (eq? (cadar ds) 'published)) 'reload-published)
+                      (else (find (cdr ds) state))))
+              'reload-published)
         (bytevector-u8-set! bv i (fxlogxor (bytevector-u8-ref bv i) 1))
         (call-with-port (open-file-output-port older (file-options no-fail)) (lambda (p) (put-bytevector p bv)))
         (poke! d)

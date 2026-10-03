@@ -1069,13 +1069,14 @@
   ;; current revision are. -> (acceptance . replay), the replay a list of
   ;; (revision . bytes) the stream writes before any live frame, or
   ;; (refusal . ()).
-  ;;   - rev a non-negative integer, else invalid-revision; past current,
-  ;;     invalid-revision too;
+  ;;   - rev a non-negative integer, else invalid-revision;
+  ;;   - a resume naming another incarnation's token: daemon-restarted,
+  ;;     whatever its revision (judged first, see below);
+  ;;   - past current, invalid-revision;
   ;;   - 0 is the initial subscription: no token, nothing replayed, the
   ;;     subscriber reads the state at current for itself;
-  ;;   - a resume (rev > 0) needs this daemon's token, else missing-token
-  ;;     or daemon-restarted, and every revision after rev up to current in
-  ;;     the ring, else window.
+  ;;   - a resume (rev > 0) needs a token, else missing-token, and every
+  ;;     revision after rev up to current in the ring, else window.
   (define (subscription-answer from args)
     (let* ((current publish-seq)
            (rev (and (<= 2 (length args)) (decimal-digits->number (cadr args))))
@@ -1087,11 +1088,15 @@
       (cond
         ((not (and (<= 2 (length args) 3) (equal? (car args) "changes")))
          (cons '(usage (subscribe changes <rev> [<token>])) '()))
-        ((not (and rev (<= rev current)))
-         (cons '(error bad-request invalid-revision) '()))
-        ((and (> rev 0) (not token)) (cons '(error bad-request missing-token) '()))
-        ((and (> rev 0) (not (equal? token daemon-token)))
+        ((not rev) (cons '(error bad-request invalid-revision) '()))
+        ;; ANOTHER INCARNATION'S TOKEN IS JUDGED BEFORE ITS REVISION: a
+        ;; revision of an earlier daemon does not compare with this one's
+        ;; current, and the answer that lets the client recover is that the
+        ;; daemon restarted, not that the number is too large.
+        ((and (> rev 0) token (not (equal? token daemon-token)))
          (cons (unavailable 'daemon-restarted) '()))
+        ((> rev current) (cons '(error bad-request invalid-revision) '()))
+        ((and (> rev 0) (not token)) (cons '(error bad-request missing-token) '()))
         ((and (> rev 0)
               (let missing? ((r (+ rev 1)))
                 (and (<= r current) (or (not (hashtable-ref ring r #f)) (missing? (+ r 1))))))

@@ -79,10 +79,19 @@
             ((string=? (substring text i (+ i n)) from) (loop (+ i n) (cons to out)))
             (else (loop (+ i 1) (cons (string (string-ref text i)) out)))))))
 (define (contains? text needle) (not (equal? (replace-all text needle "") text)))
-;; D's store and socket become STORE and SOCKET, then every run of twelve or
-;; more digits becomes "#"
+;; D's store and socket become STORE and SOCKET, a writer session's process
+;; id (the digits after "w-", which each daemon's own pid makes) becomes "#",
+;; then every run of twelve or more digits becomes "#"
+(define (session-pids text)
+  (let loop ((i 0) (out '()))
+    (cond ((>= i (string-length text)) (list->string (reverse out)))
+          ((and (<= (+ i 3) (string-length text)) (string=? (substring text i (+ i 2)) "w-")
+                (char-numeric? (string-ref text (+ i 2))))
+           (let run ((j (+ i 2))) (if (and (< j (string-length text)) (char-numeric? (string-ref text j))) (run (+ j 1))
+                                      (loop j (append (list #\# #\- #\w) out)))))
+          (else (loop (+ i 1) (cons (string-ref text i) out))))))
 (define (normalize-for d text)
-  (normalize (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME")))
+  (normalize (session-pids (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME"))))
 (define (normalize text)
   (let loop ((i 0) (out '()))
     (cond ((>= i (string-length text)) (list->string (reverse out)))
