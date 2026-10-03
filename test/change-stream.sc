@@ -28,11 +28,10 @@
 ;; answer was read from, so a client can tell which frames its copy has
 ;; already seen.
 ;;
-;; THE READING USED FOR AN ADDED BLOCK (main's ruling on D2): a block
-;; named added or removed in a frame carries no field or position items in
-;; that frame -- a consumer reads a new block whole -- and structural items
-;; still apply to it (a block made with no position is (added id) and
-;; (conflict id unplaced)).
+;; AN ADDED OR REMOVED BLOCK CARRIES NO FIELD OR POSITION ITEMS in its
+;; frame -- a consumer reads a new block whole -- and structural items still
+;; apply to it (a block made with no position is (added id) and (conflict id
+;; unplaced)).
 ;;
 ;; EVERY SUBSCRIBER HERE IS A PROCESS HOLDING ITS OWN SOCKET. It connects,
 ;; sends the subscription, and keeps every line it reads, in order; a row
@@ -197,7 +196,7 @@
 ;;   (close)          closes the connection and ends
 ;; It ends by itself on EOF, keeping what it read, and still answers (lines).
 ;; OPTS: 'paused (reading starts only on (resume)), a string (bytes sent in
-;; the same write after the subscription, the buffered leftovers D4 names),
+;; the same write after the subscription, which the stream must answer too),
 ;; and (before <text>) (a request sent ahead of the subscription on the same
 ;; connection, whose answer is then the first line).
 (define (spawn-subscriber! d args . opts)
@@ -336,7 +335,7 @@
 (define (rev-clause a) (clause 'rev a))
 (define (clause-names a) (if (pair? a) (map (lambda (c) (if (pair? c) (car c) c)) (cdr a)) '()))
 
-;; THE CONSUMER'S APPLICATION RULE BY REVISION (D6), the same as the client
+;; THE CONSUMER'S APPLICATION RULE BY REVISION, the same as the client
 ;; fixture's. held: alist object -> revision. -> (decision . held'), decision
 ;; one of apply, skip, reread.
 (define (consume held object rev)
@@ -1006,7 +1005,7 @@
                 (list 2 0 "<eof>"))))
       (stop-daemon! d))
     ;; THE STORE PROCESS DIES: main leaves with 75 at once and does not wait
-    ;; for terminal writes (D4's shutdown policy), so the stream's
+    ;; for terminal writes, so the stream's
     ;; transport-unknown terminal is attempted and may not arrive. What is
     ;; decided: the daemon exits 75, the subscriber's connection ends, and a
     ;; terminal line, if one arrived, is exactly that one.
@@ -1057,7 +1056,7 @@
 
     ;; A WRITE THAT RAISES ON A USABLE CONNECTION: the frame's write raises
     ;; before anything is sent (stream-write-raise), the connection stays
-    ;; open, and the stream ends with the terminal attempted once (D4).
+    ;; open, and the stream ends with the terminal attempted once.
     (let* ((d (start-daemon! "f6r2" "THEOURGIA_FAULT=stream-write-raise@conn"))
            (s (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines s 1 5000)))

@@ -368,7 +368,7 @@
         '(ok #t #f))
   (stop-daemon! st))
 
-;; ---- the client's receive, against a scripted daemon (D6) ------------------------
+;; ---- the client's receive, against a scripted daemon -----------------------------
 ;;
 ;; A FAKE DAEMON on the store's socket: it accepts one connection, reads the
 ;; request line, answers the acceptance in the envelope, and then plays a
@@ -444,7 +444,7 @@
         (list rc (last-datum s))
         (list 1 '(error transport-unknown (reason store-actor-down)))))
 
-;; A FAILED TERMINAL ENDS THE RUN WHEN IT ARRIVES (D6): the lagging line,
+;; A FAILED TERMINAL ENDS THE RUN WHEN IT ARRIVES: the lagging line,
 ;; and then a peer that stays open fifteen seconds.
 (let* ((st (fresh-store!))
        (t0 (ms-now))

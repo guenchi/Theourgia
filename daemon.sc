@@ -1999,7 +1999,7 @@
               (answer-and-close ref '(error transport-unknown (reason store-actor-down))))
              (else (forget-writer! ctx who) (await))))))))
 
-  ;; THE STREAM STATE (D4). One write in flight at a time, each with a fresh
+  ;; THE STREAM STATE. One write in flight at a time, each with a fresh
   ;; token; only a `(written ...)` naming this connection and that token
   ;; completes it. Order: the acceptance, the replay list the store snapshot
   ;; into the acceptance, then the live queue (at most 64; a live frame the
@@ -2074,7 +2074,7 @@
               ;; A WRITE THAT RAISES ends the stream. igropyr leaves the
               ;; connection open when nothing was sent and closes it when a
               ;; prefix was: an open one gets the terminal attempted once, a
-              ;; closed one none (D4).
+              ;; closed one none.
               ((eq? held 'raised)
                (set! pending #f)
                (write-failed! what))
