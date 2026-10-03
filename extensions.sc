@@ -25,7 +25,8 @@
 ;;; An entry is (verb usage description protocol? route value-options
 ;;; flag-options (library . name)).
 (library (theourgia extensions)
-  (export extension-verbs commitments-usage tasks-usage template-usage names-usage uses-usage)
+  (export extension-verbs commitments-usage tasks-usage template-usage names-usage uses-usage
+          query-usage)
   (import (rnrs base))
 
   (define commitments-usage
@@ -42,6 +43,9 @@
   (define names-usage '(names <id>))
 
   (define uses-usage '(uses <name> ["--under" <id>]))
+
+  ;; One goal, as a datum in one argument; or the relations, with --relations.
+  (define query-usage '(query [<goal>] ["--relations"]))
 
   (define extension-verbs
     (list
@@ -73,4 +77,9 @@
             "The live code blocks that use a name, compared whole and exactly, one row per block with its library and mode; with --under, those inside that block. It is not find-references: a use is listed whether or not anything defines the name, and a text block that defines the name also lists it."
             #f 'daemon
             '("--under") '()
-            '((theourgia name-use) . uses-verb)))))
+            '((theourgia name-use) . uses-verb))
+      (list 'query query-usage
+            "Answer one goal of the query language over the committed state: every binding of its variables, one row each, sorted by their bytes, with a digest of the rows. A goal is a fact relation, a rule of the library, a test, or (and <goal> ...). --relations lists the fact relations and the rules."
+            #f 'daemon
+            '() '("--relations")
+            '((theourgia query) . query-verb)))))

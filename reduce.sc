@@ -50,7 +50,7 @@
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
           state-structure state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
-          cut-covers? state-put-events state-field-events state-block-ids state-link-events
+          cut-covers? state-put-events state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version
@@ -2199,6 +2199,22 @@
   ;; position and its edges are not among them -- moving a block or
   ;; linking to it is not an edit of the block. '() for an unknown id.
   ;; The optional list names fields whose events are left out.
+  ;; WHETHER A FIELD IS CONTESTED: two or more of its candidates survive. The
+  ;; value state-read gives such a field is `(conflict ((<value> <writer>
+  ;; <seq>) ...))`, and a value written once can have exactly that shape, so no
+  ;; reader of the value can tell the two apart; only the candidates can. #f
+  ;; for an unknown id or a field the block does not have.
+  ;; VALUE is the field's value as the caller read it. The reducer renders
+  ;; every contested field in that shape, so a value without it is never
+  ;; contested and is answered at once: the shape only FILTERS, the candidates
+  ;; decide. NEVER: ASKING THE CANDIDATES FOR EVERY VALUE IS NOT CHEAP. Finding
+  ;; the block is a search of the reduction's blocks (find-block), and every
+  ;; reader asks for every field it reads.
+  (define (state-field-contested? r id name value)
+    (and (pair? value) (eq? (car value) 'conflict)
+         (let ((b (find-block r id)))
+           (and b (let ((f (assq name (blk-fields b)))) (and f (> (length (cdr f)) 1)))))))
+
   (define (state-field-events r id . except)
     (let ((b (find-block r id)) (skip (if (pair? except) (car except) '())))
       (if (not b)

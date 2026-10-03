@@ -36,6 +36,7 @@
         (only (theourgia evidence-index) index-checkpoint! index-forget-memory!)
         (only (theourgia wire) storable-decode storable-encode string->sexpr-extended sexpr->string-extended)
         (only (theourgia log) store-id-of)
+        (only (theourgia extensions) extension-verbs)
         (only (theourgia crc32) crc32-hex)
         (only (theourgia digest) sha256 bytevector->hex))
 
@@ -1450,6 +1451,25 @@
               (let loop ((last #f))
                 (let ((x (read p))) (if (eof-object? x) last (loop x))))))))
       '(#f #t))
+
+;; THE QUERY RELATION `score` IS THE SEARCH VERB'S HITS, an editor's keywords
+;; included: a word only an editor supplied finds the same blocks with the same
+;; scores. Registered here, at the end, so no row above sees the extensions.
+(register-verbs! extension-verbs)
+;; NOTE: THE WORD IS SUPPLIED HERE, against alpha's current text. The words
+;; supplied above went stale when alpha's src changed, and a row that asks for
+;; one of them finds nothing on either side and says nothing about score.
+(want "D5 the query relation score answers an editor's keyword as search --all does: alpha, by the word ibex"
+      (let* ((supplied (car (supply-now r2 "-" (list (kw r2-alpha '("ibex"))) '("a.js"))))
+             (from-search (map (lambda (h) (list (list-ref h 1) (list-ref h 2)))
+                               (cdr (assq 'items (cdr (ask r2 'search "ibex" "--all"))))))
+             ;; The text is a constant, so a row is (row <id> <n>).
+             (from-score (map (lambda (r) (list (cadr r) (caddr r)))
+                              (cdr (assq 'items (cdr (ask r2 'query "(score ?id \"ibex\" ?n)")))))))
+        (in-order supplied (map car from-search)
+                  (equal? (list-sort (lambda (a b) (string<? (car a) (car b))) from-search)
+                          (list-sort (lambda (a b) (string<? (car a) (car b))) from-score))))
+      (list 'ok (list r2-alpha) #t))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsupply complete\n" bad rows)

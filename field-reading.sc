@@ -22,7 +22,7 @@
 ;;; in the vocabulary given (as a symbol or as its string spelling), or
 ;;; anything else, which is unreadable and printed as it was written.
 (library (theourgia field-reading)
-  (export field-of field-missing? conflict-form? conflict-values lenient-status written-text
+  (export field-of field-missing? conflict-values lenient-status written-text
           decision-statuses task-statuses bookkeeping-fields rows-left-out)
   (import (rnrs))
 
@@ -37,11 +37,14 @@
   (define (field-of row name)
     (let ((e (assq name (cdr (assq 'fields row))))) (if e (cdr e) missing)))
 
-  (define (conflict-form? v) (and (pair? v) (eq? (car v) 'conflict)))
+  ;; NEVER: A VALUE DOES NOT SAY WHETHER IT IS A CONFLICT. state-read renders a
+  ;; field two writers left as `(conflict ((<value> <writer> <seq>) ...))`, and
+  ;; a value written once can have exactly that shape; only the reducer, by
+  ;; its surviving candidates, can tell (state-field-contested?, reduce.sc).
+  ;; The predicate that read a conflict from a value's head is gone with that.
 
-  ;; The values a conflict form holds, each as written. A stored value can
-  ;; have the head `conflict` without the shape the reducer gives one (a
-  ;; record from elsewhere wrote it), and it holds no values then.
+  ;; The values a conflict form holds, each as written: for a field the reducer
+  ;; has said is contested. A form without that shape holds no values.
   (define (conflict-values v)
     (if (and (pair? (cdr v)) (list? (cadr v)))
         (map car (filter pair? (cadr v)))
@@ -69,10 +72,12 @@
     (call-with-string-output-port (lambda (port) (write v port))))
 
   ;; -> absent | conflict | one symbol of VOCABULARY | (unreadable "<text>").
-  ;; Lenient: the symbol or its string spelling are the same word.
-  (define (lenient-status v vocabulary)
+  ;; Lenient: the symbol or its string spelling are the same word. CONTESTED
+  ;; is the reducer's answer for this field (state-field-contested?), which
+  ;; every caller supplies: the value cannot say it.
+  (define (lenient-status v vocabulary contested)
     (cond ((field-missing? v) 'absent)
-          ((conflict-form? v) 'conflict)
+          (contested 'conflict)
           ((and (symbol? v) (memq v vocabulary)) v)
           ((and (string? v) (memq (string->symbol v) vocabulary)) (string->symbol v))
           (else (list 'unreadable (if (string? v) v (written-text v)))))))

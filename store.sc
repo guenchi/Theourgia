@@ -28,7 +28,7 @@
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
-          store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
+          store-check store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator
           make-write-request write-request? store-successors store-intervals
           request-verdict failure-text)
@@ -759,6 +759,8 @@
   ;; POSITION. They never meet today -- a position is not a field -- but the
   ;; count form would have raised here in exactly the same way, and the test
   ;; below rejects it rather than relying on them staying apart.
+  ;; KEY: THE SHAPE SAYS HOW TO READ A CONFLICT, NEVER WHETHER THERE IS ONE:
+  ;; field-strings asks it only of a field the reducer says is contested.
   (define (conflict-candidates value)
     (and (pair? value)
          (eq? (car value) (quote conflict))
@@ -814,7 +816,12 @@
           text
           (begin (set! text-decode-skipped (+ text-decode-skipped 1)) #f))))
 
-  (define (field-strings block name)
+  ;; THE TEXTS OF ONE FIELD OF A BLOCK: a string, a UTF-8 bytevector decoded,
+  ;; or, for a field two writers left at once, each candidate's. STATE and ID
+  ;; are the block's, because only the reducer can say a field is contested
+  ;; (state-field-contested?): a value written once can have the conflict's
+  ;; shape, and its "candidates" are then no text of the block.
+  (define (field-strings state id block name)
     (let* ((fields (cdr (assq (quote fields) block)))
            (e (assq name fields)))
       (cond
@@ -823,7 +830,7 @@
         ((bytevector? (cdr e))
          (let ((text (decoded-text (cdr e))))
            (if text (list text) (quote ()))))
-        ((conflict-candidates (cdr e))
+        ((and (state-field-contested? state id name (cdr e)) (conflict-candidates (cdr e)))
          => (lambda (cs)
               (let loop ((l cs) (out (quote ())))
                 (cond
@@ -1525,8 +1532,13 @@
                              limit)
         (apply store-search store query limit derived)))
 
+  ;; THE SEARCH OF ONE STATE: what store-search answers, over a state the
+  ;; caller already holds; store-search opens the store and asks it.
   (define (store-search store query . rest)
-    (let* ((state (open-and-reduce store))
+    (apply search-state (open-and-reduce store) query rest))
+
+  (define (search-state state query . rest)
+    (let* (
            ;; NEVER: THE QUERY IS PREPARED BEFORE IT IS SPLIT, NOT AFTER.
            ;; `tokens-of` cuts on whitespace, and `prepare` WRITES whitespace
            ;; at a CJK/Latin seam -- so splitting first left the seam inside a
@@ -1593,14 +1605,14 @@
                                ;; per failed decode, and what this needs is
                                ;; whether it moved at all for THIS block.
                                (decodes-before (text-decode-skipped-count))
-                               (titles (field-strings block (quote title)))
-                               (srcs (field-strings block (quote src)))
+                               (titles (field-strings state id block (quote title)))
+                               (srcs (field-strings state id block (quote src)))
                                ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
                                ;; SOURCE'S 1. They are the one field a
                                ;; writer chose FOR being found by, so a
                                ;; block whose keywords match is a better
                                ;; answer than one whose prose happens to.
-                               (kws (field-strings block (quote keywords)))
+                               (kws (field-strings state id block (quote keywords)))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
                                ;; ONE MATRIX, TWO PROJECTIONS OF IT.
@@ -1847,7 +1859,7 @@
   (define (grep-text-of state live id)
     (let ((stored (lambda (name)
                     (let ((b (state-read state id)))
-                      (if b (field-strings b name) (quote ())))))
+                      (if b (field-strings state id b name) (quote ())))))
           (derived (lambda (name) (derived-strings state live id name))))
       (append (stored (quote src))
               (derived (quote doc))
@@ -2415,7 +2427,7 @@
           out
           (let* ((from (cadr (car ds)))
                  (block (state-read state from))
-                 (srcs (field-strings block (quote src)))
+                 (srcs (field-strings state from block (quote src)))
                  (keys (apply append (map (lambda (text) (map caddr (md-refs text))) srcs))))
             (loop (cdr ds)
                   (if (and (not (equal? from id)) (member id keys))

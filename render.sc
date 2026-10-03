@@ -62,6 +62,19 @@
   ;; travel only in --wire.
   (define kept-clauses '(incomplete via stale))
   (define kept-after-items '(incomplete))
+  ;; A QUERY'S ROW IS ITS VALUES, separated by a space, one row a line; every
+  ;; other item is printed whole.
+  (define (render-item item)
+    (if (and (pair? item) (eq? (car item) 'row) (list? item))
+        (call-with-string-output-port
+          (lambda (p)
+            (let loop ((vs (cdr item)) (first #t))
+              (unless (null? vs)
+                (unless first (put-char p #\space))
+                (write (car vs) p)
+                (loop (cdr vs) #f)))
+            (newline p)))
+        (render-wire item)))
   (define (render-human answer)
     (let* ((clauses (if (and (pair? answer) (list? answer))
                         (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
@@ -80,6 +93,6 @@
                  (else (string-append text "\n" tail)))))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'items))
-         (string-append (apply string-append (map render-wire (cdadr answer))) items-tail))
+         (string-append (apply string-append (map render-item (cdadr answer))) items-tail))
         (else (render-wire answer)))))
 )

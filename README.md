@@ -839,6 +839,103 @@ The `excluded` and `validity` clauses are in the `--wire` answer only. These cla
 before the receipt. A store that links none of the six relations answers every read and
 search exactly as before.
 
+### `query`
+
+    (query (<goal>) ("--relations"))
+
+A language of queries and rules over the committed state at one cut, and
+nothing else: it reads no log, runs no code, writes nothing, and takes no
+rule over the wire. A TERM is a constant (a string, a symbol, an exact
+integer, or a list of those as the second argument of `member`), a
+variable (a symbol starting with `?`), or `_`, a variable never reported
+and never joined. A GOAL is a fact relation, a rule of the library, a test,
+or `(and <goal> ...)`. A rule body is a conjunction read left to right;
+several rules with one head are a disjunction, and a rule may call itself.
+There is no negation: every answer is the least model of the rules, and
+the same whatever order the facts were written in.
+
+It answers every binding of the goal's named variables, in the order they
+first appear, one row each:
+
+    (row <value> ...)
+    (vars (?v ...)) (digest "<hex>") (cut <cut>) [(name-use syntactic)]
+
+Each row is rendered as a block hash renders a block; rows are
+deduplicated and sorted by those bytes, and the digest is the sha256 of
+the rows joined by newlines, so the same bindings at a later cut have the
+same digest. A goal with no variable answers one empty row when it holds.
+`(name-use syntactic)` says a `uses-name` fact was consulted. The human
+output prints one row a line, its values separated by a space. Refusals
+name what is wrong: `not-a-goal`, `unknown-relation` (with the known
+names), `wrong-arity`, `not-a-term` (a term its position does not take),
+`test-variable-unbound` (a test's variable, `_` included, that no earlier
+goal binds), `unbound-argument` (the text of `score`), `query-budget` (more
+than a million tuples of new work in one query, never a partial answer),
+`unrenderable` (a value past the codec's nesting).
+
+A library whose name two writers contest has no name: no `library`,
+`in-library`, `def` or `imports` fact speaks one for it, so no rule that
+goes through a name reaches the code under it, and a query says nothing
+about it rather than something false.
+
+What a query costs, measured on two stores with nothing else running: on a
+memory store of 3037 blocks, `unsettled-for` from its root (8030 tuples)
+takes about 165 ms; on this repository's own libraries imported as a datum
+store (2522 blocks, 17855 name uses), `def-for` for its most name-using
+block (28570 tuples) takes 394 ms, against 376 ms before every read asked
+the reducer whether a field is contested. `depends*` was measured empty on
+both: neither store holds a link.
+
+`query --relations` lists the two tables below as items. This section is
+generated from them, and docs-check compares the two.
+
+Fact relations:
+
+- `kind/2` -- every live block, and its settled kind, else none, conflict or unreadable
+- `class/2` -- every live block, and its effective class
+- `validity/2` -- every live block, and its validity: valid, needs-review, refuted or superseded
+- `version/2` -- every live block that can be hashed, and its version
+- `title/2` -- a block whose title is a settled string, and that title
+- `field/3` -- every settled field of a live block: its name, and its value as stored
+- `edge/3` -- every surviving edge between two live blocks: from, relation, to
+- `under/2` -- a live block and its settled parent, "root" at the top
+- `ref/2` -- a text reference [[id]] in a live block's text to a live block
+- `library/2` -- a library block and its name
+- `in-library/2` -- every code block, and the name of the library containing it, or none; nothing under a library whose name is contested
+- `imports/2` -- a library, by name, and a library name it imports
+- `def/3` -- a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested
+- `uses-name/2` -- a code block and a name it uses (name use, syntactic)
+- `lang/2` -- a code block's language
+- `validity-reason/3` -- each reason of a block that is not valid, and the block that causes it
+- `decision-state/2` -- a live decision, and its state: closed, open, review, verified or implemented
+- `moved/4` -- an edge of an effect-bearing relation one of whose ends moved, and that end
+- `verified-by/2` -- a live block, and a live block with a current verifies edge to it
+- `score/3` -- exactly the hits search <text> returns with no cap, each with its score; text required
+
+Tests, on bound values only: `=/2`, `/=/2`, `string</2`, `member/2`.
+
+Rules of the library:
+
+- `depends/2` -- a depends-on or implements edge from a to b
+- `depends*/2` -- depends, transitively
+- `under*/2` -- b is an ancestor of a (walks up from a bound a)
+- `within/2` -- d is inside m (walks down from a bound m)
+- `supersedes*/2` -- a supersedes b, through a chain too
+- `affects/2` -- b depends on a, transitively
+- `in-force/1` -- x is valid or needs review
+- `authoritative/1` -- x's effective class is observation, ruling or verification
+- `unit/2` -- u is t or inside t
+- `scope-of/2` -- m is in t's unit, or what the unit depends on, transitively
+- `unsettled/1` -- a decision whose state is open or review
+- `unsettled-for/2` -- an unsettled, in-force, authoritative decision in t's scope or inside it
+- `scope-name/2` -- a library name visible to b: its own library and those it imports
+- `def-for/3` -- a definition d of a name b uses, in b's scope, in force and authoritative
+- `ambiguous/2` -- b uses a name two such definitions answer
+- `contradicts/2` -- a and b conflict, both in force and authoritative, either way round
+- `replaces/2` -- c supersedes or refutes o
+- `evidence-for/2` -- v verifies c currently, or implements it
+- `hard/4` -- what context must show for t: the block h, its role, and the block it is about
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.
@@ -2536,7 +2633,9 @@ dispatcher, one tool per catalogue verb it can carry out -- those routed to
 the daemon, and `eval`, run as its own child. See
 [`mcp/README.md`](mcp/README.md) -- what a tool returns, why a core
 refusal comes back as a successful result, and how the shell branches on
-the transport's tag rather than on the answer's text.
+the transport's tag rather than on the answer's text. A tool's result text is
+exactly what the command line prints with `--wire`, its final newline
+included (the query fixture compares the two byte for byte).
 
 To make an agent keep its memory in a store -- moving a markdown memory in,
 and the session hook, `CLAUDE.md` text and MCP registration that point Claude

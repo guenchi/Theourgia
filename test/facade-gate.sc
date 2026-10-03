@@ -973,6 +973,7 @@
                            (census-ask st 'set (census-get s 'B) "kind" "task")
                            (census-ask st 'tasks))))
     (cons 'template (seeded (lambda (st x s) (census-ask st 'template "apply" "project"))))
+    (cons 'query (seeded (lambda (st x s) (census-ask st 'query "(kind ?x section)"))))
     ;; init is given a directory nothing has initialised
     (cons 'init (lambda (st x) (census-ask st 'init)))
     (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))
@@ -1218,7 +1219,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit commitments conflicts def diagnostics diff drafts grep import-code log names refs search tag tasks uses whereis))
+      '(commit commitments conflicts def diagnostics diff drafts grep import-code log names query refs search tag tasks uses whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1237,7 +1238,7 @@
       (census-detail 'tagged)
       '((commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
-        (import-code (ok) . 0) (log (entry) . 0) (names (import) . 0) (refs (ref) . 0) (search (hit) . 0)
+        (import-code (ok) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)

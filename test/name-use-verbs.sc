@@ -618,7 +618,7 @@
       '((rnrs)
         (only (theourgia rpc) dispatch-helper)
         (only (theourgia arguments) argument-option)
-        (only (theourgia reduce) state-read state-block-ids)
+        (only (theourgia reduce) state-read state-block-ids state-field-contested?)
         (only (theourgia store) library-locator)
         (only (theourgia project) subtree-ids)
         (only (theourgia datum-code) datum-names record-definition-shape?)

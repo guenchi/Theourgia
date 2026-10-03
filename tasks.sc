@@ -32,7 +32,7 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia reduce) state-read state-block-ids)
+          (only (theourgia reduce) state-read state-block-ids state-field-contested?)
           (only (theourgia project) subtree-ids)
           (only (theourgia field-reading) field-of field-missing? lenient-status task-statuses
                 written-text rows-left-out)
@@ -57,8 +57,8 @@
   (define (live? state id)
     (let ((row (state-read state id))) (and row (not (cdr (assq 'deleted row))))))
 
-  (define (status-of row)
-    (let ((s (lenient-status (field-of row 'status) task-statuses)))
+  (define (status-of state id row)
+    (let ((s (lenient-status (field-of row 'status) task-statuses (state-field-contested? state id 'status (field-of row 'status)))))
       (if (pair? s) s (list s))))
 
   (define (batch-of row)
@@ -82,7 +82,7 @@
                                   targets)))
              (append (list 'task id
                            (let ((t (field-of row 'title))) (list 'title (if (string? t) t (written-text t))))
-                           (cons 'status (status-of row))
+                           (cons 'status (status-of state id row))
                            (cons 'batch (batch-of row))
                            (cons 'implements implements))
                      (if linked '() (list '(unlinked))))))))

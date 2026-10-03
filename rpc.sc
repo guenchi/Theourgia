@@ -714,13 +714,22 @@
                    (directory-entries dir))
            #t)))
 
+  ;; AN EDITOR'S KEYWORDS, as `search` consults them: from the committed
+  ;; store's table, judged against the state searched, asked only when the
+  ;; query has a word; #f when no table exists. One procedure, so the query
+  ;; relation `score` gets exactly the hits `search` does.
+  (define (search-keyword-hook store)
+    (lambda (st)
+      (and (derived-tables? store 'signatures)
+           ((derived 'keyword-hook) store st))))
+
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
   (define (dispatch-helper name)
     (case name
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((count-argument) count-argument)
-      ((usage) usage) ((receipt) receipt)
+      ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
   (define (one-write store actor intent req . check)
@@ -1746,14 +1755,7 @@
                                          (if (argument-option options "--all")
                                              #f
                                              search-hit-limit)
-                                         ;; an editor's keywords, from the
-                                         ;; committed store's table, judged
-                                         ;; against the state searched
-                                         ;; asked only when the query has a word,
-                                         ;; as before; #f when no table exists
-                                         (lambda (st)
-                                           (and (derived-tables? store 'signatures)
-                                                ((derived 'keyword-hook) store st)))
+                                         (search-keyword-hook store)
                                          (validity-hook (lambda (L) (set! held L)) all-validity)))
                                     (hits (cdr (assq 'items r)))
                                     (omitted (cdr (assq 'omitted-hits r))))

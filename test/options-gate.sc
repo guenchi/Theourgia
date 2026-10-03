@@ -1304,7 +1304,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 44 44))
+      (list 45 45))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1397,7 +1397,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit commitments eval insert names outline read serve supply tasks template uses))
+      '(commit commitments eval insert names outline query read serve supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1739,7 +1739,7 @@
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "field-reading.sc" "incomplete.sc" "json.sc"
         "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
-        "operation-packet.sc" "platform-numbers.sc" "proc.sc" "project.sc" "reduce.sc" "refusal.sc" "regex.sc"
+        "operation-packet.sc" "platform-numbers.sc" "proc.sc" "project.sc" "query.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"
         "view.sc" "wire.sc" "working.sc"))

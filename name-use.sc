@@ -52,12 +52,12 @@
 ;;; registry); the entries that name it are data in (theourgia extensions).
 (library (theourgia name-use)
   (export names-verb uses-verb block-name-use name-use-table datum-uses text-uses
-          import-library-name register-name-use-form! default-identifier-pattern
+          import-library-name library-name-proper live-kind register-name-use-form! default-identifier-pattern
           name-use-rule-fires?)
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia reduce) state-read state-block-ids)
+          (only (theourgia reduce) state-read state-block-ids state-field-contested?)
           (only (theourgia store) library-locator)
           (only (theourgia project) subtree-ids)
           (only (theourgia datum-code) datum-names record-definition-shape?)
@@ -554,17 +554,11 @@
 
   ;; ---- one block --------------------------------------------------------------------
 
-  ;; THE REDUCER'S CONFLICT, BY ITS WHOLE SHAPE: (conflict (<candidate> ...))
-  ;; with two candidates or more, each (value writer seq). The head alone
-  ;; would take a stored application of a procedure named conflict for one.
-  ;; Not field-reading's conflict-form?, which knows a conflict by its head
-  ;; alone: a stored body is code, and (conflict x) is an application there.
-  (define (reducer-conflict-value? v)
-    (and (list? v) (= (length v) 2) (eq? (car v) 'conflict)
-         (list? (cadr v)) (>= (length (cadr v)) 2)
-         (for-all (lambda (c) (and (list? c) (= (length c) 3) (string? (cadr c))
-                                   (integer? (caddr c)) (exact? (caddr c))))
-                  (cadr v))))
+  ;; NEVER: A BODY DOES NOT SAY WHETHER IT IS IN CONFLICT. A stored body is
+  ;; code, and code can have any shape, the reducer's conflict form included;
+  ;; whether two writers left the field is the reducer's to say, by its
+  ;; surviving candidates (state-field-contested?). The shape test that stood
+  ;; here dropped such a body written once.
 
   ;; -> ((names <sym> ...) (imports <lib> ...) (import-unreadable <d> ...)
   ;;     (contract syntactic [(lexing whole-text)] | none (reason <r>)))
@@ -580,9 +574,9 @@
     (let ((row (state-read state id)))
       (and row
            (guard (e (#t (none 'unreadable-code)))
-             (block-answer row)))))
+             (block-answer state id row)))))
 
-  (define (block-answer row)
+  (define (block-answer state id row)
            (let ((kind (field-of row 'kind)))
              (cond
                ((cdr (assq 'deleted row)) (none 'deleted))
@@ -590,7 +584,7 @@
                ((not (eq? kind 'code)) (none 'not-code))
                ((eq? (field-of row 'mode) 'datum)
                 (let ((body (field-of row 'body)))
-                  (if (or (field-missing? body) (reducer-conflict-value? body))
+                  (if (or (field-missing? body) (state-field-contested? state id 'body body))
                       (none 'unreadable-code)
                       (answer (datum-uses body) '() '() '(syntactic)))))
                (else

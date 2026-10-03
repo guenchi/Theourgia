@@ -44,13 +44,13 @@
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-put-events state-event-cut
-                cut-covers? block-id)
+                cut-covers? block-id state-field-contested?)
           (only (theourgia lifecycle) lifecycle implementation-of decision-state-of)
           (only (theourgia store) parse-cut)
           (only (theourgia project) subtree-ids)
           (only (theourgia extensions) commitments-usage)
           (only (theourgia template-read) query-scope-root)
-          (only (theourgia field-reading) field-of conflict-form? conflict-values lenient-status
+          (only (theourgia field-reading) field-of conflict-values lenient-status
                 decision-statuses rows-left-out))
 
   ;; The handler, with the eight arguments every verb's handler takes.
@@ -79,11 +79,11 @@
   ;; the reducer does not know. It is said, as a skipped row. A kind in
   ;; conflict where one side is a decision cannot be called either, and is
   ;; said the same way.
-  (define (row-kind row)
+  (define (row-kind view id row)
     (let ((k (field-of row 'kind)))
       (cond ((eq? k 'decision) 'decision)
             ((equal? k "decision") 'kind-not-a-symbol)
-            ((and (conflict-form? k)
+            ((and (state-field-contested? view id 'kind k)
                   (exists (lambda (v) (or (eq? v 'decision) (equal? v "decision")))
                           (conflict-values k)))
              'unreadable-block)
@@ -91,7 +91,7 @@
 
   ;; STATUS IS READ LENIENTLY: the symbol or the string spelling of open,
   ;; done or dropped. Anything else is open, and the answer says which.
-  (define (status-reading v) (lenient-status v decision-statuses))
+  (define (status-reading v contested) (lenient-status v decision-statuses contested))
 
   ;; ---- cuts -----------------------------------------------------------------
 
@@ -174,7 +174,7 @@
                          (list-sort (lambda (x y) (string<? (car x) (car y))) skipped)))
             (let* ((id (car ids))
                    (row (and (or (not scope) (member id scope)) (state-read view id)))
-                   (kind (and row (row-kind row))))
+                   (kind (and row (row-kind view id row))))
               (cond
                 ((not kind) (loop (cdr ids) decisions skipped))
                 ((not (eq? kind 'decision))
@@ -195,7 +195,7 @@
   ;; provider's.
   (define (read-decision L view id row event)
     (let ((impl (implementation-of L id)))
-      (make-decision id event (field-of row 'title) (status-reading (field-of row 'status))
+      (make-decision id event (field-of row 'title) (status-reading (field-of row 'status) (state-field-contested? view id 'status (field-of row 'status)))
                      (event-cut view event)
                      (map (lambda (i) (list (car i) (sorted-cut (cadr i)))) (cdr (assq 'implemented-by impl)))
                      (map (lambda (i) (list (car i) (sorted-cut (cadr i)))) (cdr (assq 'drifted impl)))

@@ -21,7 +21,7 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia commitments) commitments-answer)
-        (only (theourgia reduce) reduce-empty reduce-apply! state-read effect-relation-names known-classes)
+        (only (theourgia reduce) reduce-empty reduce-apply! state-read state-field-contested? effect-relation-names known-classes)
         (prefix (theourgia attest) attest:)
         (prefix (theourgia lifecycle) lc:))
 
@@ -368,7 +368,7 @@
 
 ;; ---- C49-2: the effective class -----------------------------------------------------------------------
 
-(define (effective s id) (lc:effective-class (state-read s id)))
+(define (effective s id) (let ((row (state-read s id))) (lc:effective-class row (state-field-contested? s id 'class (cdr (or (assq 'class (cdr (assq 'fields row))) '(class)))))))
 (want "C49-2 absent on a decision reads ruling, absent elsewhere observation; the string \"ruling\" reads ruling"
       (let ((s (state-of '("a" 1 () (put ((kind . decision) (title . "d"))))
                          '("a" 2 () (put ((kind . section) (title . "s"))))

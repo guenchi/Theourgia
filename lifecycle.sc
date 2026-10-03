@@ -60,7 +60,7 @@
           read-validity-clause listed-validity-clause search-clauses search-filter whereis-split)
   (import (rnrs)
           (only (theourgia reduce) state-read state-edges state-effect-relation?
-                effect-relation-names known-classes)
+                effect-relation-names known-classes state-field-contested?)
           (prefix (theourgia attest) attest:)
           (only (theourgia field-reading) field-of lenient-status decision-statuses task-statuses))
 
@@ -92,9 +92,10 @@
 
   ;; THE EFFECTIVE CLASS: the symbol or its string spelling; absent gives the
   ;; default, ruling for a decision and observation for anything else; a
-  ;; field in conflict gives conflict; anything else unreadable.
-  (define (effective-class row)
-    (let ((c (lenient-status (field-of row 'class) known-classes)))
+  ;; field in conflict gives conflict; anything else unreadable. CONTESTED is
+  ;; the reducer's answer for the row's class (state-field-contested?).
+  (define (effective-class row contested)
+    (let ((c (lenient-status (field-of row 'class) known-classes contested)))
       (cond ((eq? c 'absent) (if (eq? (field-of row 'kind) 'decision) 'ruling 'observation))
             ((symbol? c) c)
             (else 'unreadable))))
@@ -133,7 +134,8 @@
   (define (live? L id)
     (let ((row (row-of L id))) (and row (not (cdr (assq 'deleted row))))))
 
-  (define (authority? L id) (authoritative? (effective-class (row-of L id))))
+  (define (contested? L id field row) (state-field-contested? (provider-state L) id field (field-of row field)))
+  (define (authority? L id) (let ((row (row-of L id))) (authoritative? (effective-class row (contested? L id 'class row)))))
 
   ;; The edges of one relation to one block, from an index of the edges by
   ;; target built once, on first use.
@@ -335,7 +337,7 @@
   (define (edge-discharges? L source)
     (let ((row (row-of L source)))
       (case (and row (let ((k (field-of row 'kind))) (and (symbol? k) k)))
-        ((task) (eq? 'done (lenient-status (field-of row 'status) task-statuses)))
+        ((task) (eq? 'done (lenient-status (field-of row 'status) task-statuses (contested? L source 'status row))))
         (else #t))))
 
   (define (implements-sources L d)
@@ -385,7 +387,7 @@
   (define (decision-state-of L d)
     (let ((row (row-of L d)))
       (and row (not (cdr (assq 'deleted row))) (eq? (field-of row 'kind) 'decision)
-           (let ((status (lenient-status (field-of row 'status) decision-statuses))
+           (let ((status (lenient-status (field-of row 'status) decision-statuses (contested? L d 'status row)))
                  (live (cdr (assq 'implemented-by (implementation-of L d)))))
              (cond
                ((or (eq? status 'done) (eq? status 'dropped)) (list 'closed status))

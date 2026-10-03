@@ -224,6 +224,36 @@
    unrelated a
    "a stored block the name-use walk cannot read (a malformed fields list, a definition datum-names raises on): the body reads a row already in the reduction, never a file, and answers (name-use none (reason unreadable-code)), which uses counts under skipped"
    (e (#t (none (quote unreadable-code)))))
+  ("query.sc" (build) 1 guard
+   (#t)
+   unrelated a
+   "the query language's version fact: a block that cannot be hashed has no version row; the state is already in memory, never a file"
+   (e (#t #f)))
+  ("query.sc" (fact-tuples) 1 guard
+   (#t)
+   unrelated a
+   "the version fact asked for one bound block: one that cannot be hashed answers no row; the state is already in memory, never a file"
+   (e (#t #f)))
+  ("query.sc" (render-row) 1 guard
+   (#t)
+   unrelated a
+   "a row whose value the codec cannot render: refused as unrenderable, naming the relation, never dropped; values already in memory"
+   (e (#t (let ((bad (let loop ((i 1) (vs vars)) (cond ((null? vs) #f) ((guard (e2 (#t #t)) (sexpr->string-extended (storable-encode (row-prefix row i))) #f) (car vs)) (else (loop (+ i 1) (cdr vs))))))) (refuse (quote error) (quote unrenderable) (list (quote relation) (if bad (relation-binding bad goals) (car (car goals)))) (quote (reason nesting)))))))
+  ("query.sc" (render-row) 2 guard
+   (#t)
+   unrelated a
+   "which value of an unrenderable row the codec refuses: a probe over values already in memory"
+   (e2 (#t #t)))
+  ("query.sc" (session-answer) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a query's refusal, raised as a record from wherever it is found, becomes the answer; nothing else is caught"
+   (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (query-verb) 1 guard
+   (#t)
+   unrelated a
+   "a goal argument that does not read as a datum answers not-a-goal; the text is the request's argument, never a file"
+   (e (#t (quote unreadable))))
   ("name-use.sc" (live-kind) 1 guard
    (#t)
    unrelated a

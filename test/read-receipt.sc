@@ -154,7 +154,8 @@
     (diagnostics "an editor's supplied facts") (split-suggest "reads a file, not the store")
     (export-code "an export") (export-md "an export") (log "the log, not a read of the state")
     (diff "two cuts, not one state") (conflicts "conflicts, not a read of blocks")
-    (check "the store's health") (describe "the catalogue")))
+    (check "the store's health") (describe "the catalogue")
+    (query "answers its own cut and a digest of its rows")))
 (define (census table-verbs)
   (let ((catalogue (map car (verb-catalogue))))
     (list (filter (lambda (v) (not (memq v table-verbs))) catalogue)
@@ -443,6 +444,7 @@
         (list 'check (lambda () (run 'check)))
         (list 'describe (lambda () (run 'describe)))
         (list 'template (lambda () (run 'template "apply" "memory")))
+        (list 'query (lambda () (run 'query "(kind ?x section)")))
         (list 'del (lambda () (run 'del probe)))))
 (define none-not-run
   '((adopt "binds a store written on another machine; this store has one writer, its own")
@@ -455,7 +457,7 @@
       (in-order (symbols-sorted (map car none)) (length none)))
 ;; A VERB WHOSE OWN ANSWER ALREADY SAID ITS CUT, before receipts existed:
 ;; snapshot names the cut it froze. That clause is the verb's, not a receipt.
-(define own-cut '(snapshot))
+(define own-cut '(snapshot query))
 (for-each
   (lambda (c)
     (want (format "C48a-4 ~a, classified none, answers a success (rpc-ok?) with no (versions ...) clause, and no (cut ...) unless the verb's own" (car c))

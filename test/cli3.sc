@@ -1322,14 +1322,15 @@
 ;; So it asks two things: the odd value IS in the block, and an ordinary
 ;; write still lands on that same block.
 (want "N4m CONTROL: the odd value is in the block, and ordinary writes still land on it"
-      (list (let ((r (run d4m "read" d4m-odd)))
-              ;; `run` answers with the PARSED lines, so the raw text is read
-              ;; from the output file rather than from the answer.
-              (if (and (= 0 (car r)) (holds? (text-of out-path) "(title conflict)"))
-                  'the-odd-value-is-there
-                  'NOT-THERE))
-            (car (run-with-stdin d4m (string-append "((set \"" d4m-odd "\" keywords \"quorvan\"))") "batch"))
-            (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED))
+      (let* ((there (let ((r (run d4m "read" d4m-odd)))
+                      ;; `run` answers with the PARSED lines, so the raw text is read
+                      ;; from the output file rather than from the answer.
+                      (if (and (= 0 (car r)) (holds? (text-of out-path) "(title conflict)"))
+                          'the-odd-value-is-there
+                          'NOT-THERE)))
+             (code (car (run-with-stdin d4m (string-append "((set \"" d4m-odd "\" keywords \"quorvan\"))") "batch")))
+             (landed (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED)))
+        (list there code landed))
       (list 'the-odd-value-is-there 0 'the-write-landed))
 
 (want "N4m search still answers about the other blocks, and exits cleanly"
@@ -1356,11 +1357,28 @@
 ;; break the path it was protecting, and nothing would say so -- the rows above
 ;; pass just as well if `field-strings` stopped reading conflicts altogether.
 ;; A genuine conflict is what `reduce.sc` builds when two writers set one
-;; field, so this one is written in that shape by hand.
+;; field at once, so this one is made that way: the local writer sets the
+;; title, and a rival record that names only the block's creation as its
+;; premise is published from a mirror writer after it.
+;; NEVER: NOT ONE FORGED RECORD IN THE CONFLICT'S SHAPE. This twin used to be
+;; exactly that, and one record is one writer: its value is the value it is,
+;; whatever it looks like (state-field-contested?, reduce.sc). The row after
+;; the twin pins that, so the false conflict cannot come back as a fixture.
 (define d4m-real (insert! d4m "--title" "placeholder"))
-(forge-record! d4m
-  (string-append "(set \"" d4m-real
-                 "\" title (conflict ((\"winning words\" \"w1\" 1) (\"other words\" \"w2\" 1))))"))
+(define (d4m-id-split id)
+  (let loop ((i 0))
+    (if (char=? (string-ref id i) #\.)
+        (cons (substring id 0 i) (string->number (substring id (+ i 1) (string-length id)) 36))
+        (loop (+ i 1)))))
+(define d4m-rival-file (string-append scratch "/d4m-rival.bin"))
+(put! d4m-rival-file
+      (encode-record 1 1757300003000 "agent:claude" (list (d4m-id-split d4m-real))
+                     (storable-encode (list 'set d4m-real 'title "other words"))))
+(want "N4m CONTROL: the twin's two writers -- the local set commits, and the rival naming only the creation publishes after it"
+      (let* ((local (code-of (run d4m "set" d4m-real "title" "winning words")))
+             (rival (car (lines-of (run d4m "publish" "mirrorn4" "1" d4m-rival-file)))))
+        (list local rival))
+      (list 0 '(ok (published 1))))
 
 ;; NEVER: AND EVERY CLAUSE OF THE SHAPE TEST NEEDS A CASE. The test has four
 ;; parts -- a pair, the tag, a second element, and a candidate list whose
@@ -1374,8 +1392,14 @@
 ;; `(conflict (1 2))` reaches `(map car ...)` with members that are not pairs.
 (define d4m-notlist (insert! d4m "--title" "havrel the second"))
 (define d4m-notpairs (insert! d4m "--title" "yompus the third"))
-(forge-record! d4m (string-append "(set \"" d4m-notlist "\" title (conflict 5))"))
-(forge-record! d4m (string-append "(set \"" d4m-notpairs "\" title (conflict (1 2)))"))
+;; NEVER: AFTER THE TWIN'S MIRROR IS PUBLISHED, A FORGE NAMES THE STORE'S OWN
+;; WRITER. forge-record! appends to the first directory under writers/, and
+;; with the mirror there that is whichever name sorts first: a store whose
+;; random writer id sorted after "mirrorn4" had these records appended to
+;; the mirror's segment, where they wait on a predecessor that never comes.
+(define d4m-writer (car (d4m-id-split d4m-odd)))
+(forge-record-as! d4m d4m-writer (string-append "(set \"" d4m-notlist "\" title (conflict 5))"))
+(forge-record-as! d4m d4m-writer (string-append "(set \"" d4m-notpairs "\" title (conflict (1 2)))"))
 
 (want "N4m every shape the test rejects leaves search working, and none of them matches"
       (let ((a (run d4m "search" "havrel"))
@@ -1413,10 +1437,22 @@
       (list 0 0 0 #t))
 
 (want "N4m TWIN: a field in a real conflict is still searched, on every candidate"
-      (let ((a (run d4m "search" "winning"))
-            (b (run d4m "search" "other")))
-        (list (> (length (lines-of a)) 0) (> (length (lines-of b)) 0)))
-      (list #t #t))
+      (let* ((a (code-of (run d4m "search" "winning"))) (a-hit (holds? (text-of out-path) d4m-real))
+             (b (code-of (run d4m "search" "other"))) (b-hit (holds? (text-of out-path) d4m-real)))
+        (list a a-hit b b-hit))
+      (list 0 #t 0 #t))
+;; AND ONE RECORD IN THE CONFLICT'S SHAPE IS NOT ONE: its "candidates", a
+;; reference to the plain block beside the word tamblet, are no text of the
+;; block, for search, grep or refs.
+(define d4m-onerec (insert! d4m "--title" "kelvar holder"))
+(forge-record-as! d4m d4m-writer
+  (string-append "(set \"" d4m-onerec "\" src (conflict ((\"see [[" d4m-plain "]] tamblet\" \"w1\" 1) (\"other\" \"w2\" 1))))"))
+(want "N4m a value written once in a conflict's shape is not a conflict: search, grep and refs do not read its candidates"
+      (let* ((s (begin (run d4m "search" "tamblet") (holds? (text-of out-path) d4m-onerec)))
+             (g (begin (run d4m "grep" "tamblet") (holds? (text-of out-path) d4m-onerec)))
+             (r (begin (run d4m "refs" d4m-plain) (holds? (text-of out-path) d4m-onerec))))
+        (list s g r))
+      (list #f #f #f))
 
 (printf "\n== N4n: a word written as a symbol is in the store and cannot be found ==\n")
 ;; KNOWN OPEN, PINNED SO THAT FIXING IT IS LOUD. `batch` carries an intent as
@@ -2259,9 +2295,9 @@
 
 ;; AND NONE OF IT REACHES A PERSON, who gets the ten lines and nothing else.
 (want "N8 TWIN: the human rendering shows the hits and not the clause"
-      (begin (run d8 "search" "quilvane")
-             (list (length (lines-of (run d8 "search" "quilvane")))
-                   (holds? (text-of out-path) "truncated")))
+      (let* ((n (length (lines-of (run d8 "search" "quilvane"))))
+             (clause (holds? (text-of out-path) "truncated")))
+        (list n clause))
       (list 10 #f))
 
 (printf "\n== N8b: two clauses called fields, and why that is allowed ==\n")
@@ -2552,9 +2588,14 @@
 ;; product's own comment says where one comes from: a field in CONFLICT is
 ;; decoded once per candidate.
 ;;
-;; The conflict is forged, because there is no other way to it: a conflict
-;; value is what the reducer builds from two writers who had not seen each
-;; other, and the caller path cannot write one.
+;; The conflict is made from two writers who had not seen each other, which is
+;; the only thing a conflict is: the local writer sets the src to one
+;; undecodable value, and a rival record naming only the block's creation is
+;; published from a mirror writer with the other.
+;; NEVER: NOT ONE FORGED RECORD IN THE CONFLICT'S SHAPE. This row used to be
+;; exactly that, and one record is one writer: its value is the value it is,
+;; whatever it looks like (state-field-contested?, reduce.sc), so no candidate
+;; was decoded and the row read (0 1 0).
 ;;
 ;; NEVER: AND A RECORD IS SPELLED THE WAY THE STORE SPELLS IT. The first
 ;; version of this wrote `#vu8(255 254)`, which is how a bytevector is
@@ -2570,9 +2611,15 @@
 (define d11d (fresh-store!))
 (init! d11d)
 (define d11d-id (insert! d11d "--title" "a vesselwort block"))
-(forge-record! d11d
-  (string-append "(set \"" d11d-id
-                 "\" src (conflict ((#vu8\"//4=\" \"w1\" 1) (#vu8\"/fw=\" \"w2\" 1))))"))
+(define d11d-rival-file (string-append scratch "/d11d-rival.bin"))
+(put! d11d-rival-file
+      (encode-record 1 1757300004000 "agent:claude" (list (d4m-id-split d11d-id))
+                     (storable-encode (list 'set d11d-id 'src (bytevector 253 252)))))
+(want "N10 CONTROL: two writers set the src at once -- the local batch commits, and the rival naming only the creation publishes after it"
+      (let* ((local (car (run-with-stdin d11d (string-append "((set \"" d11d-id "\" src #vu8(255 254)))") "batch")))
+             (rival (car (lines-of (run d11d "publish" "mirrorn1" "1" d11d-rival-file)))))
+        (list local rival))
+      (list 0 '(ok (published 1))))
 
 (want "N10 a block with two undecodable candidates in one field is ONE unreadable block"
       (let* ((before (text-decode-skipped-count))
@@ -2988,8 +3035,9 @@
 ;; past and would supersede it, leaving one candidate and no conflict --
 ;; which is correct behaviour and the wrong construction for this row.
 (want "CONTROL: the local move commits and the rival publishes after it"
-      (list (code-of (run d9 "move" r2 r1))
-            (car (lines-of (run d9 "publish" "mirrorzz" "1" rival-file))))
+      (let* ((local (code-of (run d9 "move" r2 r1)))
+             (rival (car (lines-of (run d9 "publish" "mirrorzz" "1" rival-file)))))
+        (list local rival))
       (list 0 '(ok (published 1))))
 (want "a block moved concurrently by two writers is reported unplaced"
       (filter (lambda (l) (eq? 'conflict (car l))) (lines-of (run d9 "conflicts")))
