@@ -126,7 +126,15 @@
         (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
         "--store " (quoted st) " > " out " 2> " err " < /dev/null; echo $? > " rcf " ) &")
     (list out rcf err)))
-(define (sub-lines s) (lines-of-text (text-of-file (car s))))
+;; ONLY COMPLETE LINES: a tail with no newline yet is a datum still being
+;; written, and a row must not parse it.
+(define (complete-lines-of-text t)
+  (let ((ls (lines-of-text t)))
+    (if (and (pair? ls) (> (string-length t) 0) (not (char=? (string-ref t (- (string-length t) 1)) #\newline)))
+        (reverse (cdr (reverse ls)))
+        ls)))
+(define (sub-lines s) (complete-lines-of-text (text-of-file (car s))))
+(define (sub-trace s) (map datum-of-line (lines-of-text (text-of-file (caddr s)))))
 (define (sub-rc s) (let ((t (text-of-file (cadr s)))) (and (> (string-length t) 0) (string->number (car (lines-of-text t))))))
 (define (await-sub-lines s k ms) (wait-until (lambda () (>= (length (sub-lines s)) k)) ms) (sub-lines s))
 (define (await-sub-exit s ms) (wait-until (lambda () (sub-rc s)) ms) (sub-rc s))
@@ -147,6 +155,24 @@
           ((= frame-rev (+ h 1)) (cons 'apply (cons (cons object frame-rev) (remp (lambda (e) (equal? (car e) object)) held))))
           (else (cons 'reread held)))))
 
+;; THE FRAMES ARE WHOLE: each line between the acceptance and the terminal is
+;; a (changes ...) datum, their revisions consecutive from the acceptance's
+;; current, each naming exactly the block its insert made. -> #t, or what
+;; differed.
+(define (frames-whole? ls ids)
+  (let* ((acc (datum-of-line (car ls)))
+         (current (let ((c (clause 'current acc))) (and c (car c))))
+         (fs (map datum-of-line (cdr ls)))
+         (changes (filter (lambda (f) (and (pair? f) (eq? (car f) 'changes))) fs)))
+    (or (and current
+             (= (length changes) (length ids))
+             (let loop ((fs changes) (ids ids) (k (+ current 1)))
+               (or (null? fs)
+                   (and (equal? (clause 'rev (car fs)) (list k))
+                        (equal? (clause 'items (car fs)) (list (list 'added (car ids))))
+                        (loop (cdr fs) (cdr ids) (+ k 1))))))
+        (list 'frames current (map (lambda (f) (list (clause 'rev f) (clause 'items f))) changes) 'ids ids))))
+
 ;; =============================================================================
 (printf "== F10-7: the client verb ==~%")
 (let* ((st (fresh-store!))
@@ -157,7 +183,7 @@
   (insert! st "two")
   (await-sub-lines s 3 10000)
   (signal-daemon! st "TERM")
-  (let ((rc (await-sub-exit s 15000)) (ls (sub-lines s)))
+  (let* ((rc (await-sub-exit s 15000)) (ls (sub-lines s)))
     (want "F10-7 the client prints the acceptance, two frames and the draining terminal as four lines, and exits 0"
           (list rc (length ls)
                 (let ((a (datum-of-line (car ls)))) (and (pair? a) (car a)))
@@ -168,16 +194,23 @@
 ;; THE SAME FOUR LINES with every byte its own read.
 (let* ((st (fresh-store!))
        (_ (insert! st "warm"))
-       (s (subscribe-bg! "THEOURGIA_READ_CHUNK=1" st "0")))
+       (s (subscribe-bg! "THEOURGIA_INJECT=on THEOURGIA_READ_CHUNK=1" st "0")))
   (await-sub-lines s 1 10000)
-  (insert! st "one") (insert! st "two")
-  (await-sub-lines s 3 10000)
-  (signal-daemon! st "TERM")
-  (let ((rc (await-sub-exit s 15000)) (ls (sub-lines s)))
-    (want "F10-7 with THEOURGIA_READ_CHUNK=1 the same four lines and exit 0"
-          (list rc (length ls) (and (= (length ls) 4) (datum-of-line (list-ref ls 3))))
-          (list 0 4 '(error draining)))))
+  (let* ((one (new-id (insert! st "one"))) (two (new-id (insert! st "two"))))
+    (await-sub-lines s 3 10000)
+    (signal-daemon! st "TERM")
+    (let* ((rc (await-sub-exit s 15000)) (ls (sub-lines s))
+           (chunks (filter (lambda (d) (and (pair? d) (list? d) (>= (length d) 3) (eq? (car d) 'trace) (eq? (cadr d) 'read-chunk)))
+                           (sub-trace s))))
+      (want "F10-7 with THEOURGIA_READ_CHUNK=1 the same four lines, the frames whole, exit 0"
+            (list rc (length ls) (and (= (length ls) 4) (frames-whole? (reverse (cdr (reverse ls))) (list one two)))
+                  (and (= (length ls) 4) (datum-of-line (list-ref ls 3))))
+            (list 0 4 #t '(error draining)))
+      (want "F10-7 and the seam ran: the client's reads were traced, every one of at most one byte"
+            (list (> (length chunks) 4) (for-all (lambda (d) (<= (caddr d) 1)) chunks))
+            '(#t #t)))))
 
+(define coalesced-ids '())
 ;; TWO LINES AND A TAIL IN ONE READ: the daemon writes two complete frames
 ;; and the first half of a third in one write; the client's trace must show
 ;; one read holding two complete lines and a tail. Retried up to five
@@ -187,7 +220,7 @@
          (_ (client "THEOURGIA_INJECT=on THEOURGIA_FAULT=stream-coalesce-cut@conn" "insert" "--title" "warm" "--store" st))
          (s (subscribe-bg! "THEOURGIA_INJECT=on THEOURGIA_FAULT=stream-coalesce-cut@conn THEOURGIA_READ_CHUNK=65536" st "0")))
     (await-sub-lines s 1 10000)
-    (insert! st "one") (insert! st "two") (insert! st "three")
+    (set! coalesced-ids (map (lambda (t) (new-id (insert! st t))) '("one" "two" "three")))
     (await-sub-lines s 4 10000)
     (signal-daemon! st "TERM")
     (let* ((rc (await-sub-exit s 15000)) (ls (sub-lines s))
@@ -197,9 +230,10 @@
                              (lines-of-text (text-of-file (caddr s))))))
       (cond
         (observed
-         (want "F10-7 under stream-coalesce-cut a read held two complete lines and a tail, and the lines are whole"
-               (list rc (length ls) (map (lambda (l) (car (datum-of-line l))) (cdr ls)))
-               (list 0 5 '(changes changes changes error))))
+         (want "F10-7 under stream-coalesce-cut a read held two complete lines and a tail, and the frames are whole"
+               (list rc (length ls) (and (= (length ls) 5) (frames-whole? (reverse (cdr (reverse ls))) coalesced-ids))
+                     (and (= (length ls) 5) (datum-of-line (list-ref ls 4))))
+               (list 0 5 #t '(error draining))))
         ((< try 5) (loop (+ try 1)))
         (else (want "F10-7 under stream-coalesce-cut a read held two complete lines and a tail" 'NO-READING 'observed))))))
 
@@ -239,18 +273,47 @@
           '(apply skip)))
   (stop-daemon! st))
 
-;; A RESTART: a read answered by another incarnation carries another token.
+;; A RESTART: a frame of the old incarnation is buffered; a read answered by
+;; the new one carries another token, so the consumer discards the buffered
+;; frame, subscribes afresh, and applies the new stream's next frame.
 (let* ((st (fresh-store!))
        (x (new-id (insert! st "x")))
        (s (subscribe-bg! "" st "0")))
   (let* ((ls (await-sub-lines s 1 10000))
          (acc (datum-of-line (car ls)))
          (sub-token (let ((c (clause 'daemon acc))) (and c (car c)))))
-    (stop-daemon! st)
-    (let ((later (cadr (client "" "read" x "--rev" "--store" st))))
-      (want "F10-7 a read answered by a restarted daemon carries another token: the consumer subscribes afresh"
-            (and (string? sub-token) (string? (token-of later)) (not (equal? sub-token (token-of later))))
-            #t)))
+    (client "" "set" x "src" "before the restart" "--store" st)
+    (let* ((buffered (datum-of-line (cadr (await-sub-lines s 2 10000)))))
+      (stop-daemon! st)
+      (let* ((later (cadr (client "" "read" x "--rev" "--store" st)))
+             (restarted? (and (string? sub-token) (string? (token-of later)) (not (equal? sub-token (token-of later)))))
+             ;; the consumer's state after the read: the buffered frame is
+             ;; the old incarnation's and is not offered to the rule at all
+             (held (if restarted? (list (cons x (rev-of later))) (list (cons x (car (clause 'rev buffered))))))
+             (s2 (subscribe-bg! "" st "0"))
+             (acc2 (datum-of-line (car (await-sub-lines s2 1 10000)))))
+        (client "" "set" x "src" "after the restart" "--store" st)
+        (let* ((f (datum-of-line (cadr (await-sub-lines s2 2 10000)))))
+          (want "F10-7 a read answered by a restarted daemon carries another token; the fresh subscription's token is the read's, and its next frame is applied"
+                (list restarted? (equal? (clause 'daemon acc2) (list (token-of later)))
+                      (equal? (clause 'daemon f) (list (token-of later)))
+                      (car (consume held x (car (clause 'rev f)))))
+                (list #t #t #t 'apply))))))
+  (stop-daemon! st))
+
+;; A GAP: an object read BEFORE subscribing, with two publications between
+;; the read and the subscription; the first frame is two past the held rev,
+;; and the consumer reads again.
+(let* ((st (fresh-store!))
+       (x (new-id (insert! st "x")))
+       (held (list (cons x (rev-of (cadr (client "" "read" x "--rev" "--store" st)))))))
+  (insert! st "between one") (insert! st "between two")
+  (let ((s (subscribe-bg! "" st "0")))
+    (await-sub-lines s 1 10000)
+    (insert! st "the first frame")
+    (let ((f (datum-of-line (cadr (await-sub-lines s 2 10000)))))
+      (want "F10-7 a frame more than one past the held rev is a gap: the consumer reads again"
+            (car (consume held x (car (clause 'rev f)))) 'reread)))
   (stop-daemon! st))
 
 ;; ---- the client's other ends -----------------------------------------------------
@@ -271,8 +334,8 @@
 ;; OVERFLOW: the client stopped (SIGSTOP) while the daemon's queue fills
 ;; past its limit; continued, it prints the lagging terminal and exits 1.
 (let* ((st (fresh-store!))
-       (_ (client "THEOURGIA_TRACE=1 THEOURGIA_SEND_BUFFER=16384" "insert" "--title" "warm" "--store" st))
-       (s (subscribe-bg! "THEOURGIA_SEND_BUFFER=16384" st "0")))
+       (_ (client "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_SEND_BUFFER=16384" "insert" "--title" "warm" "--store" st))
+       (s (subscribe-bg! "" st "0")))
   (await-sub-lines s 1 10000)
   (let ((pids (map (lambda (l) (string->number (car (filter (lambda (w) (> (string-length w) 0))
                                                              (let split ((cs (string->list l)) (cur '()) (acc '()))
@@ -283,7 +346,7 @@
                            (lines-of-command "ps -ax -o pid= -o command=")))))
     (for-each (lambda (p) (sh "kill -STOP " (number->string p))) pids)
     (let loop ((k 0))
-      (when (and (< k 300) (not (has-substring? (text-of-file (serve-log-path st)) "(trace lagging")))
+      (when (and (< k 300) (not (has-substring? (text-of-file (serve-log-path st)) "(trace stream-closed lagging")))
         (insert! st (string-append "q" (number->string k)))
         (loop (+ k 1))))
     (for-each (lambda (p) (sh "kill -CONT " (number->string p))) pids))
@@ -293,10 +356,101 @@
           (list 1 'error '(lagging))))
   (stop-daemon! st))
 (let* ((st (fresh-store!))
-       (_ (insert! st "warm")))
-  (want "F10-7 search --rev on a daemon still searches the text \"--rev\", as on the base"
-        (let ((r (cadr (client "" "search" "--rev" "--store" st)))) (and (pair? r) (car r)))
-        'ok)
+       (hit (new-id (client "" "insert" "--title" "carries --rev in its title" "--store" st)))
+       (miss (new-id (insert! st "plain"))))
+  (want "F10-7 search --rev on a daemon still searches the text \"--rev\", as on the base: it finds the block that has it and not the other"
+        (let* ((r (cadr (client "" "search" "--rev" "--store" st))) (text (format "~s" r)))
+          (list (and (pair? r) (car r)) (and hit (has-substring? text hit)) (and miss (has-substring? text miss))))
+        '(ok #t #f))
+  (stop-daemon! st))
+
+;; ---- the client's receive, against a scripted daemon (D6) ------------------------
+;;
+;; A FAKE DAEMON on the store's socket: it accepts one connection, reads the
+;; request line, answers the acceptance in the envelope, and then plays a
+;; script -- lines, pauses, bytes with no newline, frames of a given size --
+;; so a row decides exactly when each byte arrives. It is Perl
+;; (change-stream-fake-daemon.pl, its language stated there), as `alarm`
+;; above already needs Perl.
+(define fake-daemon "change-stream-fake-daemon.pl")
+(unless (file-exists? fake-daemon)
+  (printf "NOT A READING: ~a is missing (the rows run from test/)~%" fake-daemon)
+  (exit 2))
+;; -> the subscriber's (out rc err), the fake daemon serving SCRIPT (a list
+;; of lines of the little language above).
+(define fake-n 0)
+(define (subscribe-to-fake! st script)
+  (set! fake-n (+ fake-n 1))
+  (let ((sf (string-append root "/fake" (number->string fake-n) ".script"))
+        (sk (socket-path st)))
+    (call-with-output-file sf (lambda (p) (for-each (lambda (l) (display l p) (newline p)) script)))
+    (sh "mkdir -p \"$(dirname " (quoted sk) ")\"; perl " (quoted fake-daemon) " " (quoted sk) " " (quoted sf)
+        " > " sf ".log 2>&1 &")
+    (wait-until (lambda () (file-exists? sk)) 5000)
+    (subscribe-bg! "" st "0")))
+(define (last-datum s) (let ((ls (sub-lines s))) (and (pair? ls) (datum-of-line (car (reverse ls))))))
+(define (ms-now) (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+
+;; A TAIL THAT STALLS: one whole frame, then part of one, then nothing for
+;; fifteen seconds. The partial-frame budget (5 s) ends the stream long
+;; before the daemon would: exit 1 and lost-stream, the tail not printed.
+(let* ((st (fresh-store!))
+       (t0 (ms-now))
+       (s (subscribe-to-fake! st '("f 1 200" "p 40" "s 15000" "c")))
+       (rc (await-sub-exit s 14000))
+       (elapsed (- (ms-now) t0)))
+  (want "F10-7 a partial frame that stalls past the budget: exit 1 and lost-stream within the budget, the frame before it printed, the tail not"
+        (list rc (< elapsed 12000) (length (sub-lines s)) (last-datum s))
+        (list 1 #t 3 '(error transport-error lost-stream))))
+;; NO IDLE DEADLINE: nothing for longer than an ordinary request's receive
+;; timeout (30 s), then a frame and the drain.
+(let* ((st (fresh-store!))
+       (s (subscribe-to-fake! st '("s 33000" "f 1 200" "w (error draining)" "c")))
+       (rc (await-sub-exit s 60000)))
+  (want "F10-7 a stream idle past the ordinary receive timeout is not ended: the frame and the drain arrive, exit 0"
+        (list rc (length (sub-lines s)) (last-datum s))
+        (list 0 3 '(error draining))))
+;; THE ANSWER LIMIT IS PER FRAME: thirty-four frames of one MiB each, more
+;; than the 32 MiB limit together, each well under it.
+(let* ((st (fresh-store!))
+       (s (subscribe-to-fake! st '("f 34 1048576" "w (error draining)" "c")))
+       (rc (await-sub-exit s 60000)))
+  (want "F10-7 frames that together pass the answer limit, each under it, are all printed, exit 0"
+        (list rc (length (sub-lines s)) (last-datum s))
+        (list 0 36 '(error draining))))
+;; ONE FRAME OVER THE LIMIT: 33 MiB with no newline.
+(let* ((st (fresh-store!))
+       (s (subscribe-to-fake! st '("p 34603008" "s 3000" "c")))
+       (rc (await-sub-exit s 60000)))
+  (want "F10-7 one frame past the answer limit ends the stream: exit 1 and answer-too-large"
+        (list rc (last-datum s))
+        (list 1 '(error transport-error answer-too-large))))
+;; EOF IN MID-FRAME.
+(let* ((st (fresh-store!))
+       (s (subscribe-to-fake! st '("f 1 200" "p 30" "c")))
+       (rc (await-sub-exit s 15000)))
+  (want "F10-7 EOF in mid-frame: exit 1 and lost-stream, the partial frame not printed"
+        (list rc (length (sub-lines s)) (last-datum s))
+        (list 1 3 '(error transport-error lost-stream))))
+;; THE STORE'S DEATH: the transport-unknown terminal.
+(let* ((st (fresh-store!))
+       (s (subscribe-to-fake! st '("f 1 200" "w (error transport-unknown (reason store-actor-down))" "c")))
+       (rc (await-sub-exit s 15000)))
+  (want "F10-7 a transport-unknown terminal: printed, exit 1"
+        (list rc (last-datum s))
+        (list 1 '(error transport-unknown (reason store-actor-down)))))
+
+;; ---- core.sc forwards it like any verb (F10-14) -----------------------------------
+(let* ((st (fresh-store!))
+       (_ (insert! st "warm"))
+       (out (string-append root "/core-subscribe.out"))
+       (rc (sh "perl -e 'alarm 60; exec @ARGV' scheme --script ../core.sc subscribe changes 0 --wire --store " (quoted st)
+               " > " out " 2> " out ".err < /dev/null"))
+       (ls (lines-of-text (text-of-file out)))
+       (a (and (pair? ls) (datum-of-line (car ls)))))
+  (want "F10-14 core.sc subscribe changes 0 with a daemon present prints the acceptance and exits 0"
+        (list rc (length ls) (and (pair? a) (car a)) (and (pair? a) (clause 'subscribed a)) (and (pair? a) (string? (car (or (clause 'daemon a) '(#f))))))
+        (list 0 1 'ok '(0) #t))
   (stop-daemon! st))
 
 (sh "rm -rf " run-root)
