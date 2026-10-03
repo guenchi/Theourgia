@@ -13,12 +13,68 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia datum-code)
-  (export datum-source-read datum-names datum-print)
+  (export datum-source-read datum-names datum-print record-definition-shape?)
   (import (rnrs) (theourgia source-lex) (theourgia text-code)
           (only (theourgia ffi) source-reader-open source-reader-next source-reader-at source-datum-print))
 
+  ;; (define-record-type <name spec> <clause> ...) as R6RS shapes it: the
+  ;; name spec a symbol or three symbols; each clause one of R6RS's, each
+  ;; kind at most once, parent and parent-rtd not both:
+  ;;   (fields <field spec> ...)   a symbol, (immutable n [accessor]) or
+  ;;                               (mutable n [accessor mutator])
+  ;;   (parent <name>)  (protocol <expression>)  (sealed <boolean>)
+  ;;   (opaque <boolean>)  (nongenerative [<uid>])  (parent-rtd <e> <e>)
+  ;; F is any datum; anything else answers #f. This is the one statement of
+  ;; the shape: the name walk asks it of a record definition before its rule
+  ;; fires, and datum-names asks it before it reads a field.
+  (define (record-definition-shape? f)
+    (define (distinct? xs)
+      (or (null? xs) (and (not (memq (car xs) (cdr xs))) (distinct? (cdr xs)))))
+    (define (field-spec? s)
+      (or (symbol? s)
+          (and (pair? s) (list? s) (for-all symbol? s)
+               (case (car s)
+                 ((immutable) (<= 2 (length s) 3))
+                 ((mutable) (memv (length s) '(2 4)))
+                 (else #f)))))
+    (define (clause? c)
+      (and (pair? c) (list? c)
+           (case (car c)
+             ((fields) (for-all field-spec? (cdr c)))
+             ((parent) (and (= (length c) 2) (symbol? (cadr c))))
+             ((protocol) (= (length c) 2))
+             ((sealed opaque) (and (= (length c) 2) (boolean? (cadr c))))
+             ((nongenerative) (or (= (length c) 1) (and (= (length c) 2) (symbol? (cadr c)))))
+             ((parent-rtd) (= (length c) 3))
+             (else #f))))
+    (and (list? f) (>= (length f) 2) (eq? (car f) 'define-record-type)
+         (let ((spec (cadr f)) (clauses (cddr f)))
+           (and (or (symbol? spec)
+                    (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
+                (for-all clause? clauses)
+                (distinct? (map car clauses))
+                (not (and (assq 'parent clauses) (assq 'parent-rtd clauses)))))))
+
+  ;; The names a definition binds. TOTAL BY CONSTRUCTION: a stored body can
+  ;; be any datum, and every shape is decided at the entry -- a define by its
+  ;; head, a record definition by record-definition-shape? -- before a name
+  ;; is read from it. A record definition that does not fit its shape binds
+  ;; only its type's own names, when its name spec is one R6RS allows, and
+  ;; otherwise none.
   (define (datum-names body)
     (define (suffix name ending) (string->symbol (string-append (symbol->string name) ending)))
+    (define (type-names head)
+      (cond ((symbol? head)
+             (list head (string->symbol (string-append "make-" (symbol->string head))) (suffix head "?")))
+            ((and (list? head) (= (length head) 3) (for-all symbol? head)) head)
+            (else '())))
+    (define (field-names type field)
+      (let* ((name (if (symbol? field) field (cadr field)))
+             (default (string->symbol (string-append (symbol->string type) "-" (symbol->string name))))
+             (access (if (and (pair? field) (> (length field) 2)) (caddr field) default)))
+        (if (and (pair? field) (eq? (car field) 'mutable))
+            (list access (if (= (length field) 4) (cadddr field) (suffix default "-set!")))
+            (list access))))
     (cond
       ((not (and (list? body) (>= (length body) 2))) '())
       ((memq (car body) '(define define-syntax))
@@ -27,22 +83,14 @@
                ((and (eq? (car body) 'define) (pair? head) (symbol? (car head))) (list (car head)))
                (else '()))))
       ((eq? (car body) 'define-record-type)
-       (let* ((head (cadr body))
-              (type (cond ((symbol? head) head) ((and (list? head) (= (length head) 3) (symbol? (car head))) (car head)) (else #f)))
-              (base (cond ((not type) '()) ((symbol? head) (list type (string->symbol (string-append "make-" (symbol->string type))) (suffix type "?")))
-                          (else (filter symbol? head))))
-              (fields (find (lambda (x) (and (pair? x) (eq? (car x) 'fields))) (cddr body))))
-         (if (not type) '()
-             (append base
-               (apply append
-                 (map (lambda (field)
-                        (let* ((name (if (symbol? field) field (and (list? field) (> (length field) 1) (cadr field))))
-                               (mutable? (and (pair? field) (eq? (car field) 'mutable)))
-                               (default (and (symbol? name) (string->symbol (string-append (symbol->string type) "-" (symbol->string name)))))
-                               (access (if (and (list? field) (> (length field) 2)) (caddr field) default))
-                               (mutator (and mutable? (if (and (list? field) (> (length field) 3)) (cadddr field) (and default (suffix default "-set!"))))))
-                          (filter symbol? (if mutable? (list access mutator) (list access)))))
-                      (if fields (cdr fields) '())))))))
+       (let ((head (cadr body)))
+         (if (not (record-definition-shape? body))
+             (type-names head)
+             (let ((type (if (symbol? head) head (car head)))
+                   (fields (assq 'fields (cddr body))))
+               (append (type-names head)
+                       (apply append (map (lambda (field) (field-names type field))
+                                          (if fields (cdr fields) '()))))))))
       (else '())))
 
   (define (datum-print datum) (source-datum-print datum))

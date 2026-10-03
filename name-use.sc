@@ -60,7 +60,7 @@
           (only (theourgia reduce) state-read state-block-ids)
           (only (theourgia store) library-locator)
           (only (theourgia project) subtree-ids)
-          (only (theourgia datum-code) datum-names)
+          (only (theourgia datum-code) datum-names record-definition-shape?)
           (only (theourgia languages) language-for-name language-property)
           (only (theourgia regex) regex-compile regex-match-at)
           (only (theourgia extensions) names-usage uses-usage)
@@ -140,47 +140,17 @@
                                 (body-shape? (cddr f) (append (formals-names (cdr target)) env)))))
              ((define-syntax) (and (symbol? target) (= n 3)))
              ((define-values) (and (formals? target) (= n 3)))
-             ((define-record-type) (record-definition-shape? f))
+             ;; The record shape is datum-code's, the one statement of it. The
+             ;; constructor, the predicate, the accessors and the mutators,
+             ;; defaults derived, must also be distinct, as Chez requires of
+             ;; one record definition at the top level; the record name and the
+             ;; field names may equal any of them. In a body the body rule
+             ;; refuses any name defined twice, the record name included.
+             ((define-record-type)
+              (and (record-definition-shape? f)
+                   (let ((names (datum-names f)))
+                     (or (null? names) (distinct? (cdr names))))))
              (else #f)))))
-
-  ;; (define-record-type <name spec> <clause> ...) as R6RS shapes it: the
-  ;; name spec a symbol or three symbols; each clause one of R6RS's, each
-  ;; kind at most once, parent and parent-rtd not both:
-  ;;   (fields <field spec> ...)   a symbol, (immutable n [accessor]) or
-  ;;                               (mutable n [accessor [mutator]])
-  ;;   (parent <name>)  (protocol <expression>)  (sealed <boolean>)
-  ;;   (opaque <boolean>)  (nongenerative [<uid>])  (parent-rtd <e> <e>)
-  (define (record-definition-shape? f)
-    (let ((spec (cadr f)) (clauses (cddr f)))
-      (define (field-spec? s)
-        (or (symbol? s)
-            (and (pair? s) (list? s) (for-all symbol? s)
-                 (case (car s)
-                   ((immutable) (<= 2 (length s) 3))
-                   ((mutable) (memv (length s) '(2 4)))
-                   (else #f)))))
-      (define (clause? c)
-        (and (pair? c) (list? c)
-             (case (car c)
-               ((fields) (for-all field-spec? (cdr c)))
-               ((parent) (and (= (length c) 2) (symbol? (cadr c))))
-               ((protocol) (= (length c) 2))
-               ((sealed opaque) (and (= (length c) 2) (boolean? (cadr c))))
-               ((nongenerative) (or (= (length c) 1) (and (= (length c) 2) (symbol? (cadr c)))))
-               ((parent-rtd) (= (length c) 3))
-               (else #f))))
-      (and (or (symbol? spec)
-               (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
-           (for-all clause? clauses)
-           (distinct? (map car clauses))
-           ;; The constructor, the predicate, the accessors and the mutators,
-           ;; defaults derived, are distinct, as Chez requires of one record
-           ;; definition at the top level; the record name and the field
-           ;; names may equal any of them. In a body the body rule refuses
-           ;; any name defined twice, the record name included.
-           (let ((names (datum-names f)))
-             (or (null? names) (distinct? (cdr names))))
-           (not (and (assq 'parent clauses) (assq 'parent-rtd clauses))))))
 
   ;; The names a definition defines. define-values' formals are its names;
   ;; the others are datum-names', the one reading of a definition's names.

@@ -13,9 +13,16 @@
     ((begin (define wrapped 1)) ()) ((unknown thing 1) ())))
 (for-each (lambda (row) (want "CD-01 complete binding set" (datum-names (car row)) (cadr row))) names)
 ;; CD-04 A MALFORMED DEFINITION ANSWERS ITS NAMES AND NEVER RAISES. A stored
-;; datum can have any shape; each guard in datum-names keeps one of these
-;; from raising or from naming what is not a name. Each row is one form,
-;; the names the reader answers for it, and a raise shown as a value.
+;; datum can have any shape. The reader is total because every definition
+;; is shape-checked at its entry -- a define by its head, a record definition
+;; by record-definition-shape? -- before any name is read from it; a record
+;; definition that does not fit binds only its type's own names. Each row is
+;; one form, the names the reader answers for it, and a raise shown as a
+;; value.
+;; A RECORD DEFINITION CHEZ REFUSES BINDS ONLY ITS TYPE'S NAMES, as a
+;; malformed define binds none of its parts: a bare symbol among the clauses,
+;; or a mutable field of three parts, makes the definition one the expander
+;; rejects, and reading field names out of it was the inconsistency.
 (define (names-or-raise d)
   (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
     (datum-names d)))
@@ -27,12 +34,14 @@
     ("a curried define head" (define ((f a) b) 1) ())
     ("a record whose name spec is improper" (define-record-type (p . q) (fields x)) ())
     ("a record whose name spec does not start with a symbol" (define-record-type ((p) mk p?) (fields x)) ())
-    ("a record with a bare symbol clause" (define-record-type p sealed (fields x)) (p make-p p? p-x))
+    ("a record with a bare symbol clause" (define-record-type p sealed (fields x)) (p make-p p?))
     ("a field spec of one element" (define-record-type p (fields (immutable))) (p make-p p?))
     ("an improper field spec" (define-record-type p (fields (immutable . x))) (p make-p p?))
     ("an improper mutable field spec" (define-record-type p (fields (mutable . x))) (p make-p p?))
+    ("an improper fields clause" (define-record-type p (fields x . y)) (p make-p p?))
+    ("a fields clause whose tail is an atom" (define-record-type p (fields . x)) (p make-p p?))
     ("a field whose name is a number" (define-record-type p (fields (immutable 5))) (p make-p p?))
-    ("a mutable field with an accessor and no mutator" (define-record-type p (fields (mutable x get-x))) (p make-p p? get-x p-x-set!))
+    ("a mutable field with an accessor and no mutator" (define-record-type p (fields (mutable x get-x))) (p make-p p?))
     ("a mutable field whose name is a number" (define-record-type p (fields (mutable 5))) (p make-p p?))))
 (let ((forms (parse ";; docs\n(define (f x) ; inside\n x)\n#;(define ignored 1)\n(define x 1/2)")))
   (want "CD-02 adjacent comments attach without moving body data" (cadar forms) ";; docs\n")

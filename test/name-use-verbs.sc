@@ -328,9 +328,9 @@
       (in-order (datum-uses (internal-define "../working.sc" 'latest-parent-cut))
                 (datum-uses (internal-define "../datum-code.sc" 'datum-names)))
       '((car cdr cut-covers? fold-left pair?)
-        (= > >= append apply cadddr caddr cadr car cddr cdr eq? filter find
-         length list list? map memq not pair? string->symbol string-append
-         symbol->string symbol?)))
+        (= > >= append apply assq cadddr caddr cadr car cddr cdr eq? for-all
+         length list list? map memq not pair? record-definition-shape?
+         string->symbol string-append symbol->string symbol?)))
 
 ;; K10b: EVERY FORM OF TWO WHOLE PRODUCT FILES, walked with no catch taken.
 ;; datum-uses is called directly, outside the provider's catch-all, so a
@@ -621,7 +621,7 @@
         (only (theourgia reduce) state-read state-block-ids)
         (only (theourgia store) library-locator)
         (only (theourgia project) subtree-ids)
-        (only (theourgia datum-code) datum-names)
+        (only (theourgia datum-code) datum-names record-definition-shape?)
         (only (theourgia languages) language-for-name language-property)
         (only (theourgia regex) regex-compile regex-match-at)
         (only (theourgia extensions) names-usage uses-usage)
