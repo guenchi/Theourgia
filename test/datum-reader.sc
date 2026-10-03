@@ -12,6 +12,27 @@
     ((define-record-type point (fields x (mutable y))) (point make-point point? point-x point-y point-y-set!))
     ((begin (define wrapped 1)) ()) ((unknown thing 1) ())))
 (for-each (lambda (row) (want "CD-01 complete binding set" (datum-names (car row)) (cadr row))) names)
+;; CD-04 A MALFORMED DEFINITION ANSWERS ITS NAMES AND NEVER RAISES. A stored
+;; datum can have any shape; each guard in datum-names keeps one of these
+;; from raising or from naming what is not a name. Each row is one form,
+;; the names the reader answers for it, and a raise shown as a value.
+(define (names-or-raise d)
+  (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+    (datum-names d)))
+(for-each
+  (lambda (row) (want (string-append "CD-04 " (car row)) (names-or-raise (cadr row)) (caddr row)))
+  '(("a define of one element" (define) ())
+    ("a define-syntax with a procedure head" (define-syntax (f x) 1) ())
+    ("a define whose head is a number" (define 5 1) ())
+    ("a curried define head" (define ((f a) b) 1) ())
+    ("a record whose name spec is improper" (define-record-type (p . q) (fields x)) ())
+    ("a record whose name spec does not start with a symbol" (define-record-type ((p) mk p?) (fields x)) ())
+    ("a record with a bare symbol clause" (define-record-type p sealed (fields x)) (p make-p p? p-x))
+    ("a field spec of one element" (define-record-type p (fields (immutable))) (p make-p p?))
+    ("an improper field spec" (define-record-type p (fields (immutable . x))) (p make-p p?))
+    ("a field whose name is a number" (define-record-type p (fields (immutable 5))) (p make-p p?))
+    ("a mutable field with an accessor and no mutator" (define-record-type p (fields (mutable x get-x))) (p make-p p? get-x p-x-set!))
+    ("a mutable field whose name is a number" (define-record-type p (fields (mutable 5))) (p make-p p?))))
 (let ((forms (parse ";; docs\n(define (f x) ; inside\n x)\n#;(define ignored 1)\n(define x 1/2)")))
   (want "CD-02 adjacent comments attach without moving body data" (cadar forms) ";; docs\n")
   (want "CD-02 internal comment reports independently counted coordinates"
