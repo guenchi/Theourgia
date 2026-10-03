@@ -1519,21 +1519,25 @@
            '("tinvor" "pesgul" "raxmid" "qolnev" "hufpar" "dewzin"))
       '(0 1 0 1 0 1))
 
-(printf "\n== N4k: the other way a block can be unreadable ==\n")
-;; NEVER: A BLOCK IS NOT UNREADABLE IN ONE WAY, AND N4g MODELLED ONLY ONE OF
-;; THEM. Its fixture raises while the NAMES are parsed, which the guard used to
-;; catch because the guard was around name parsing. A block can also raise
-;; while its FIELDS are derived -- before any verb asks for a name -- and that
-;; path had no guard at all: the index read `kind` through its own reader
-;; BEFORE calling for names, and search read `doc` and `body` AFTER.
+(printf "\n== N4k: a malformed definition is not an unreadable block ==\n")
+;; A BLOCK WHOSE DEFINITION THE EXPANDER WOULD REFUSE IS STILL READABLE. This
+;; section used to model a second way a block could be unreadable: a body that
+;; raised while its FIELDS were derived, before any verb asked for a name. The
+;; body below did that -- `(fields (mutable x . broken))` reached an arity test
+;; that took `length` of an improper list inside datum-names. datum-names is
+;; now total by construction (datum-code.sc): a record definition is checked
+;; against record-definition-shape? at its entry, and one that does not fit
+;; binds only its type's names. Field derivation for a datum block is that
+;; reader and nothing else that can raise, so no stored datum body reaches the
+;; raise this section was written for.
 ;;
-;; The shapes are not interchangeable and the difference is one level of
-;; nesting. `(fields . broken)` is caught by a `list?` test at the outer level
-;; and yields nothing; `(fields (mutable x . broken))` reaches an arity test
-;; written as `(> (length field) 3)` behind a `pair?` check, and `length` on an
-;; improper list raises. The comment that documented the guard gave the FIRST
-;; shape as its example, the fixture was written from the comment, and so the
-;; round that added the guard never exercised the case the guard was for.
+;; So the same store is kept and the rows say what it is now: the block is
+;; listed, binds only its type's names, is skipped by nothing, and every verb
+;; answers. Unreadable means bytes that do not decode or a name that cannot be
+;; parsed (N4g's block); a malformed definition is neither.
+;;
+;; The index's and search's guards stay: N4g's path still raises, and the
+;; field-derivation entry they also cover keeps them as defence.
 (define d4k (fresh-store!))
 (init! d4k)
 ;; NEVER: AND THE ROUTE MATTERS, BECAUSE ONE WRITER REFUSES THIS SHAPE. The
@@ -1581,43 +1585,21 @@
             (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED))
       (list 0 'the-write-landed))
 
-;; NEVER: AND THE COUNTER IS IN THIS PROCESS WHILE THE VERB IS NOT. The first
-;; version of this row read `defs-index-skipped-count` either side of
-;; `whereis-in`, which runs the product in a `(system ...)` SUBPROCESS -- so
-;; the counter never moved and the row read `(def #f #t)`. That is the third
-;; time in this batch that a call was copied from elsewhere without asking
-;; which channel it goes through; the first cost a round, because the row it
-;; broke was green instead of red.
-;;
-;; So the halves are split by channel, as in N4g: the counting runs IN THIS
-;; PROCESS where the counter lives, and what a caller sees is asked of the
-;; command line.
-;; NEVER: AND THE UPPER BOUND WAS COMPUTED FROM A COMMAND THAT FAILS. It used
-;; `(blocks-in d4k)` -- and `outline` is one of the three verbs this very store
-;; takes down, which the KNOWN OPEN row below asserts. So the count was of a
-;; one-line error message, the bound became `d <= 3`, and the limit that was
-;; added to stop the counting degenerating unnoticed could never have bound
-;; anything. The factor was wrong as well: the INDEX path reads a block at most
-;; TWICE -- `fields-of` and `block-names` -- and it is SEARCH that reads three
-;; times, with `doc` and `body`. This row measures the index.
-;;
-;; No listing verb works on this store, so the size is STATED here, and the
-;; control above pins it with the verb that does work.
-(want "N4k CONTROL: no listing verb can count this store, so the size below is stated"
+;; The counting runs IN THIS PROCESS, where the counter lives; what a caller
+;; sees is asked of the command line.
+(want "N4k the store is listed whole: outline counts both blocks"
       (blocks-in d4k)
-      'outline-failed-so-this-store-cannot-be-counted)
+      2)
 
-(want "N4k the index skips the unreadable block, counts it, and still indexes the rest"
-      (let* ((n 2)
-             (st (open-and-reduce d4k))
+(want "N4k the index skips nothing, binds the block's type names, and indexes the rest"
+      (let* ((st (open-and-reduce d4k))
              (s0 (defs-index-skipped-count))
              (ix (defs-index st))
-             (s1 (defs-index-skipped-count))
-             (d (- s1 s0)))
+             (s1 (defs-index-skipped-count)))
         (list (if (pair? (hashtable-ref ix "ok-name" (quote ()))) 'the-rest-is-indexed 'MISSING)
-              (> d 0)
-              (<= d (* 2 n))))
-      (list 'the-rest-is-indexed #t #t))
+              (if (pair? (hashtable-ref ix "thing" (quote ()))) 'type-name-indexed 'TYPE-MISSING)
+              (- s1 s0)))
+      (list 'the-rest-is-indexed 'type-name-indexed 0))
 
 (want "N4k and the verb answers about the rest of the store"
       (car (car (whereis-in d4k "ok-name")))
@@ -1634,69 +1616,19 @@
         (list (car r) (lines-of r)))
       (list 0 '()))
 
-;; KNOWN OPEN, MEASURED HERE RATHER THAN LEFT TO BE DISCOVERED. Three verbs
-;; read a block without the guard, and on this store all three refuse:
+;; THE THREE READERS THAT HAD NO GUARD -- outline, read, export-code -- used
+;; to refuse on this body with a sentence that did not name the block. They
+;; now answer: outline and read list it, export-code exits 0 (neither block
+;; lies under a file block, so it writes nothing). Each verb's output is read
+;; before the next one runs, on both streams.
 ;;
-;;     outline      -> (error internal (condition "~s is not a proper list"))
-;;     read <id>    -> the same
-;;     export-code  -> the same
-;;
-;; They fail LOUDLY, which is the better half of the news -- a projection that
-;; wrote one file fewer and exited 0 would be worse. What is wrong is that the
-;; refusal does not say WHICH block: `(error internal (condition ...))` is the
-;; same sentence on every path, and it drops the one useful fact at the point
-;; where it was still known.
-;;
-;; NEVER: AND THIS ROW PINS TODAY'S ANSWER, NOT THE RIGHT ONE. It is expected
-;; to go red, and the two ways it can go red mean opposite things:
-;;
-;;   somebody fixed it       -- the refusals name the block, or a verb learns
-;;                              to fall back. Change this row, deliberately.
-;;   somebody quietly added  -- a guard appears on one of these paths and the
-;;   a guard                    verb starts SKIPPING. That would nail "silently
-;;                              incomplete" down as the design.
-;;
-;; The row asserts both halves separately -- that all three refuse, AND that
-;; none of them names the block -- so the reading says which half moved. A row
-;; that asserted only "it refuses" could not tell the fix from the regression.
-;; NEVER: AND THE TITLE OF THIS ROW IS THE PROMISE IT MAKES. What was measured
-;; is that an unreadable block is found BEFORE anything is written: the verb
-;; refuses and the target directory is empty, whether the broken block is in
-;; the middle of the store or the last one in it -- the second case is what
-;; tells "all or nothing" apart from "it failed before it got that far".
-;;
-;; It does NOT say the projection is atomic. A failure during WRITING -- the
-;; disk filling on the third file, a target that cannot be written, the process
-;; being killed -- would still leave a half-written tree, and this row would be
-;; green through all of it. Whether the projection should write to a temporary
-;; directory and rename is open, and belongs with the rest of the unreadable-
-;; block question rather than here.
-(want "N4k an unreadable block is found before anything is written: the verb refuses and the directory is empty"
-      (let* ((out (string-append scratch "/n4k-empty"))
-             (ignored (system (string-append "rm -rf " out "; mkdir -p " out)))
-             (r (run d4k "export-code" out))
-             (left (length (filter (lambda (f) (not (member f '("." ".."))))
-                                   (directory-list out)))))
-        (list (> (car r) 0) left))
-      (list #t 0))
-
-;; NEVER: AND EACH VERB'S OUTPUT IS READ BEFORE THE NEXT ONE OVERWRITES IT.
-;; This ran all three and THEN read `(text-of out-path)` -- but `run`
-;; redirects every call to the same file, so the naming half measured only
-;; `export-code`, and it never looked at stderr at all. The consequence is not
-;; a wrong answer today: it is that the row would stay GREEN on the day
-;; somebody makes `read` name the block, which is the only day it exists for.
-;;
-;; The fixture already contained the idiom that avoids this, in two other rows
-;; -- `(begin (run ...) (text-of out-path))`, each run paired with its own read
-;; immediately. A sweep of the file found three rows that call `run` more than
-;; once before reading the shared output; those two were safe for exactly that
-;; reason, and this one was not.
-;;
-;; Both streams are read, because a refusal in this tree has appeared on each.
-(want "N4k KNOWN OPEN: the three unguarded readers all refuse, and none of them names the block"
+;; STILL OPEN, NOT MEASURED HERE: a text block's fields come from its
+;; language's reader, and a refusal on that path would still not name the
+;; block; no datum body reaches it. And export-code is not atomic: a failure
+;; during writing would leave a half-written tree.
+(want "N4k the three readers answer on this body"
       (let* ((names? (lambda (r)
-                       (list (> (car r) 0)
+                       (list (car r)
                              (if (or (holds? (text-of out-path) d4k-id)
                                      (holds? (text-of err-path) d4k-id))
                                  'names-the-block
@@ -1705,7 +1637,7 @@
              (r (names? (run d4k "read" d4k-id)))
              (e (names? (run d4k "export-code" (string-append scratch "/n4k-export")))))
         (append o r e))
-      (list #t 'no #t 'no #t 'no))
+      (list 0 'names-the-block 0 'names-the-block 0 'no))
 
 (printf "\n== N4b: the outline calls a code block by the name it defines ==\n")
 ;; NEVER: AND THIS ONE WAS ALREADY TRUE. D10 asked for it and the outline has
