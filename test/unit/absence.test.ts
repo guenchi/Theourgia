@@ -405,6 +405,14 @@ export function silentCatches(root: string): SilentCatch[] {
 }
 
 describe('plugin-r2 an inability is not answered as an absence', function () {
+  /*
+   * A STATIC CENSUS WITH A TIMEOUT OF ITS OWN. These cells parse every file
+   * in src, some of them several times over a changed copy, and on the
+   * Intel macOS runner one of them took longer than mocha's default two
+   * seconds: that is the runner's speed, not anything about the platform,
+   * and a red for it would hide the reds that are.
+   */
+  this.timeout(30000);
   const root = path.join(__dirname, '..', '..', '..');
 
   /*

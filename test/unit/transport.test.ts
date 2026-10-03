@@ -227,8 +227,8 @@ describe('the core refusing to run on a platform it has not measured', () => {
   it('says the machine it cannot run on and the core\'s remedy, as the core failing to start', async () => {
     const cases: Array<[string, string]> = [
       [
-        '(error platform-unmeasured (system "Darwin") (machine "x86_64") (remedy "run test/probe/layout.c and add its row"))\n',
-        'the core has no measured platform numbers for this machine (system Darwin, machine x86_64), so it does not ' +
+        '(error platform-unmeasured (system "FreeBSD") (machine "aarch64") (remedy "run test/probe/layout.c and add its row"))\n',
+        'the core has no measured platform numbers for this machine (system FreeBSD, machine aarch64), so it does not ' +
           'run here; the core says: run test/probe/layout.c and add its row'
       ],
       [

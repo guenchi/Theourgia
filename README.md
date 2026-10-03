@@ -35,9 +35,10 @@ built for the machine that packages the extension, and this first package
 was built here. Packages for Intel macOS and for Linux (x86-64 and arm64)
 are built by the repository's workflow, `.github/workflows/package.yml`,
 each on its own platform, and one is published only when the unit suite has
-passed on every target, against a real core. Today it cannot pass on Intel
-macOS: the core has no measured platform numbers for that machine and refuses
-to start there, so the workflow publishes nothing until the core measures it. There is no Windows package:
+passed on every target, against a real core. The core measured Intel macOS
+in theourgia 5c28e42, the core this suite is pinned to, and the unit suite
+passes there as on the other three targets, so a version can be published
+for all four. There is no Windows package:
 the lock uses `flock`, and a Windows lock is a piece of work of its own.
 
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
@@ -516,7 +517,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia 06a348b, as 3aad6fd, 59e69f3, 5230bb6, 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 5c28e42, as 06a348b, 3aad6fd, 59e69f3, 5230bb6, 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete

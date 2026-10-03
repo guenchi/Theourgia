@@ -851,7 +851,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia 06a348b; re-read row by row at
+ * is made in the pinned core (theourgia 5c28e42; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
@@ -867,8 +867,9 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
  * relocation-f34d84f.md with checks-resolved.txt, and from f34d84f to
  * ad0bd47 in archive/theourgia-vsc-repin-ad0bd47-2026-10-02/
  * relocation-ad0bd47.md with checks-resolved.txt, and from ad0bd47 to
- * 59e69f3 the same way, and from 59e69f3 to 3aad6fd and from 3aad6fd to
- * 06a348b the same way, by each cited line's text). The
+ * 59e69f3 the same way, and from 59e69f3 to 3aad6fd, from 3aad6fd to
+ * 06a348b and from 06a348b to 5c28e42 the same way, by each cited line's
+ * text). The
  * reason is the provenance, not a guess about intent: if the grep does
  * not find it, the row says so rather than inventing a story.
  *
@@ -1174,7 +1175,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'eval-busy':
     'eval-admission.sc:120 -- `eval` found no free slot within its wait; this extension does not send eval',
   'platform-unmeasured':
-    'platform-numbers.sc:797 -- written to standard error when the core loads on a platform with no measured ' +
+    'platform-numbers.sc:953 -- written to standard error when the core loads on a platform with no measured ' +
     'row, exit 75, before any verb runs; never an answer. The transport reads it as the core failing to start ' +
     '(describeStderr), and a save is kept with that sentence',
 };
