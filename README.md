@@ -736,7 +736,13 @@ The known forms are `quote`, `quasiquote` (its unquoted parts are walked), `lamb
 `else` at the head of a `cond`, `case` or `guard` clause, nor `=>` as the second
 element of a `cond` or `guard` clause as written (`case` has no arrow: `=>` there is a
 name), nor `case`'s data or `foreign-procedure`'s types and calling convention. A known
-form whose shape does not fit its rule is walked as the fallback walks it. Every
+form whose shape does not fit its rule is walked as the fallback walks it: the shape is
+the form's own (its arity, binders and clauses) as R6RS writes it, or as Chez Scheme
+accepts it where Chez is wider (a `case` clause with one datum, an `else` clause anywhere
+in a `case`), and a body is its definitions and then at least one expression, a `begin`
+splicing only before the first expression. What stands in one of the form's expression
+positions is judged where the walk reaches it, not by the enclosing rule. A block's top
+form may be a `begin`, which splices. Every
 other form, a macro of the code's own included, is walked whole: its keyword and every
 name in it count as uses -- a pattern variable of `syntax-rules` too. That is the
 **over-approximation**. A name that only a macro's expansion introduces is not seen:

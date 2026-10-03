@@ -52,14 +52,15 @@
 ;;; registry); the entries that name it are data in (theourgia extensions).
 (library (theourgia name-use)
   (export names-verb uses-verb block-name-use name-use-table datum-uses text-uses
-          import-library-name register-name-use-form! default-identifier-pattern)
+          import-library-name register-name-use-form! default-identifier-pattern
+          name-use-rule-fires?)
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids)
           (only (theourgia store) library-locator)
           (only (theourgia project) subtree-ids)
-          (only (theourgia datum-code) datum-names)
+          (only (theourgia datum-code) datum-names record-definition-shape?)
           (only (theourgia languages) language-for-name language-property)
           (only (theourgia regex) regex-compile regex-match-at)
           (only (theourgia extensions) names-usage uses-usage)
@@ -139,40 +140,17 @@
                                 (body-shape? (cddr f) (append (formals-names (cdr target)) env)))))
              ((define-syntax) (and (symbol? target) (= n 3)))
              ((define-values) (and (formals? target) (= n 3)))
-             ((define-record-type) (record-definition-shape? f))
+             ;; The record shape is datum-code's, the one statement of it. The
+             ;; constructor, the predicate, the accessors and the mutators,
+             ;; defaults derived, must also be distinct, as Chez requires of
+             ;; one record definition at the top level; the record name and the
+             ;; field names may equal any of them. In a body the body rule
+             ;; refuses any name defined twice, the record name included.
+             ((define-record-type)
+              (and (record-definition-shape? f)
+                   (let ((names (datum-names f)))
+                     (or (null? names) (distinct? (cdr names))))))
              (else #f)))))
-
-  ;; (define-record-type <name spec> <clause> ...) as R6RS shapes it: the
-  ;; name spec a symbol or three symbols; each clause one of R6RS's, each
-  ;; kind at most once, parent and parent-rtd not both:
-  ;;   (fields <field spec> ...)   a symbol, (immutable n [accessor]) or
-  ;;                               (mutable n [accessor [mutator]])
-  ;;   (parent <name>)  (protocol <expression>)  (sealed <boolean>)
-  ;;   (opaque <boolean>)  (nongenerative [<uid>])  (parent-rtd <e> <e>)
-  (define (record-definition-shape? f)
-    (let ((spec (cadr f)) (clauses (cddr f)))
-      (define (field-spec? s)
-        (or (symbol? s)
-            (and (pair? s) (list? s) (for-all symbol? s)
-                 (case (car s)
-                   ((immutable) (<= 2 (length s) 3))
-                   ((mutable) (<= 2 (length s) 4))
-                   (else #f)))))
-      (define (clause? c)
-        (and (pair? c) (list? c)
-             (case (car c)
-               ((fields) (for-all field-spec? (cdr c)))
-               ((parent) (and (= (length c) 2) (symbol? (cadr c))))
-               ((protocol) (= (length c) 2))
-               ((sealed opaque) (and (= (length c) 2) (boolean? (cadr c))))
-               ((nongenerative) (or (= (length c) 1) (and (= (length c) 2) (symbol? (cadr c)))))
-               ((parent-rtd) (= (length c) 3))
-               (else #f))))
-      (and (or (symbol? spec)
-               (and (list? spec) (= (length spec) 3) (for-all symbol? spec)))
-           (for-all clause? clauses)
-           (distinct? (map car clauses))
-           (not (and (assq 'parent clauses) (assq 'parent-rtd clauses))))))
 
   ;; The names a definition defines. define-values' formals are its names;
   ;; the others are datum-names', the one reading of a definition's names.
@@ -208,44 +186,59 @@
   ;; Every begin in the body is spliced first, nested and empty ones too, as
   ;; the expander splices them; a begin among the expressions walks to the
   ;; same names spliced or not.
-  (define (splice-begins forms env)
-    (if (not (list? forms))
-        forms
-        (apply append
-               (map (lambda (f)
-                      (if (and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)) (list? f))
-                          (splice-begins (cdr f) env)
-                          (list f)))
-                    forms))))
-
-  ;; The definitions at the head of a body, collected in order: a name a
-  ;; collected definition binds is bound for the forms after it, so after
-  ;; (define define list) a define is an application. -> (defs . rest)
-  (define (head-definitions forms env)
-    (let collect ((fs (splice-begins forms env)) (defs '()) (env env))
-      (if (and (pair? fs) (definition? (car fs) env))
-          (collect (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env))
-          (cons (reverse defs) fs))))
-
-  ;; A BODY as R6RS shapes it: its definitions, then at least one expression.
-  (define (body-shape? forms env)
+  ;; A BODY AS CHEZ SHAPES IT: definitions, then at least one expression.
+  ;; In the definition part a begin splices (its forms are taken in its
+  ;; place, an empty one is nothing), and a name a definition binds is bound
+  ;; for the forms after it, so after (define begin list) a begin is an
+  ;; application. From the first form that is not a definition on, every
+  ;; form is an expression: a definition there, or a begin that is empty or
+  ;; holds one, makes the body malformed, and so does a name defined twice.
+  ;; A begin with an improper tail makes it malformed in either part.
+  ;; -> (definitions . expressions), or #f.
+  (define (body-split forms env)
     (and (list? forms)
-         (let ((rest (cdr (head-definitions forms env))))
-           (and (list? rest) (pair? rest)))))
+         (let loop ((fs forms) (defs '()) (env env))
+           (cond
+             ((null? fs) #f)
+             ((and (pair? (car fs)) (eq? (car (car fs)) 'begin) (not (bound? 'begin env)))
+              (and (list? (car fs)) (loop (append (cdr (car fs)) (cdr fs)) defs env)))
+             ((definition? (car fs) env)
+              (loop (cdr fs) (cons (car fs) defs) (append (defined-names (car fs)) env)))
+             (else
+              (let ((defs (reverse defs)))
+                (and (distinct? (apply append (map defined-names defs)))
+                     (for-all (lambda (f) (expression-form? f env)) fs)
+                     (cons defs fs))))))))
+
+  ;; A form in an expression position of a body or a command sequence: not a
+  ;; definition, and not a begin that is empty, improper, or holds a
+  ;; definition.
+  (define (expression-form? f env)
+    (cond
+      ((and (pair? f) (symbol? (car f)) (not (bound? (car f) env)) (memq (car f) defining-heads)) #f)
+      ((and (pair? f) (eq? (car f) 'begin) (not (bound? 'begin env)))
+       (and (list? f) (pair? (cdr f)) (for-all (lambda (g) (expression-form? g env)) (cdr f))))
+      (else #t)))
+
+  (define (body-shape? forms env) (and (body-split forms env) #t))
 
   (define (walk-body forms env)
-    (let* ((split (head-definitions forms env))
-           (defs (car split))
-           (fs (cdr split))
-           (env2 (append (apply append (map defined-names defs)) env)))
-      (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
-              (if (list? fs) (walk-all fs env2) (walk-elements fs env2)))))
+    (let ((split (body-split forms env)))
+      (if (not split)
+          (if (list? forms) (walk-all forms env) (walk-elements forms env))
+          (let* ((defs (car split))
+                 (env2 (append (apply append (map defined-names defs)) env)))
+            (append (apply append (map (lambda (d) (walk-definition d env2)) defs))
+                    (walk-all (cdr split) env2))))))
 
-  ;; A block's top form may be an empty begin, which splices to nothing.
-  (define (datum-uses body)
-    (symbol-set (cond ((definition? body '()) (walk-definition body '()))
-                      ((equal? body '(begin)) '())
-                      (else (walk body '())))))
+  ;; A BLOCK'S TOP FORM: a definition, a begin, which splices (its forms are
+  ;; top forms, an empty one is nothing), or an expression.
+  (define (top-begin? body) (and (pair? body) (eq? (car body) 'begin) (list? body)))
+  (define (top-uses body)
+    (cond ((definition? body '()) (walk-definition body '()))
+          ((top-begin? body) (apply append (map top-uses (cdr body))))
+          (else (walk body '()))))
+  (define (datum-uses body) (symbol-set (top-uses body)))
 
   ;; ---- the known forms ----------------------------------------------------------
   ;;
@@ -265,12 +258,19 @@
   (define (binding-inits bs env) (apply append (map (lambda (b) (walk-all (cdr b) env)) bs)))
 
   ;; quasiquote's template, at a depth: unquote and unquote-splicing at depth 1
-  ;; walk their expression; a nested quasiquote raises the depth.
+  ;; walk their expression; a nested quasiquote raises the depth. Each of the
+  ;; three is template syntax only where it is not bound: under
+  ;; (let ((unquote list)) ...) an (unquote x) in a template is data.
   (define (template x depth env)
     (cond
-      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (list? x) (pair? (cdr x)))
+      ;; A bare (unquote) needs no arm of its own: walking its empty operand
+      ;; list here answers (), as the pair arm below would.
+      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x))
        (if (= depth 1) (walk-all (cdr x) env) (template (cdr x) (- depth 1) env)))
-      ((and (pair? x) (eq? (car x) 'quasiquote) (pair? (cdr x)) (null? (cddr x)))
+      ;; The quasiquote rule enters template only where quasiquote is unbound,
+      ;; and template keeps env as it was; the check is still made here, so
+      ;; that what template answers does not depend on who called it.
+      ((and (pair? x) (eq? (car x) 'quasiquote) (not (bound? 'quasiquote env)) (pair? (cdr x)) (null? (cddr x)))
        (template (cadr x) (+ depth 1) env))
       ((pair? x) (append (template (car x) depth env) (template (cdr x) depth env)))
       ((vector? x) (apply append (map (lambda (e) (template e depth env)) (vector->list x))))
@@ -285,6 +285,19 @@
       (append (if else? '() (walk (car c) env))
               (if (pair? (cdr c)) (if arrow? '() (walk (cadr c) env)) '())
               (if (pair? (cdr c)) (walk-all (cddr c) env) '()))))
+
+  ;; Chez's foreign type names, as its User's Guide lists them for
+  ;; foreign-procedure, and the two ftype forms.
+  (define foreign-type-names
+    '(integer-8 unsigned-8 integer-16 unsigned-16 integer-24 unsigned-24 integer-32 unsigned-32
+      integer-40 unsigned-40 integer-48 unsigned-48 integer-56 unsigned-56 integer-64 unsigned-64
+      short unsigned-short int unsigned unsigned-int long unsigned-long long-long unsigned-long-long
+      char wchar_t wchar float double single-float double-float size_t ssize_t ptrdiff_t
+      iptr uptr void* boolean fixnum string wstring utf-8 utf-16 utf-16le utf-16be
+      utf-32 utf-32le utf-32be u8* u16* u32* scheme-object))
+  (define (foreign-type? t)
+    (or (and (symbol? t) (memq t foreign-type-names) #t)
+        (and (list? t) (= (length t) 2) (memq (car t) '(* &)) (symbol? (cadr t)))))
 
   ;; -> the first K elements of the list L.
   (define (first-n l k) (if (= k 0) '() (cons (car l) (first-n (cdr l) (- k 1)))))
@@ -307,16 +320,14 @@
                       (loop (cdr cs))))))))
 
   ;; The clauses of a case: at least one, each (<datums> <expression> ...),
-  ;; the datums a list or, as Chez accepts, one datum; an else clause last.
+  ;; the datums a list or, as Chez accepts, one datum; an else clause where
+  ;; Chez accepts one, anywhere, clauses after it included.
   (define (case-clauses-shape? clauses env)
     (and (lists? clauses) (pair? clauses)
          (let loop ((cs clauses))
            (or (null? cs)
                (let ((c (car cs)))
                  (and (>= (length c) 2)
-                      (if (and (eq? (car c) 'else) (not (bound? 'else env)))
-                          (null? (cdr cs))
-                          #t)
                       (loop (cdr cs))))))))
 
   ;; A definition rather than a bare expression: a library body's
@@ -399,11 +410,12 @@
               (and (>= (length x) 3) (lists? (cadr x)) (list? (caddr x)) (pair? (caddr x))
                    (for-all (lambda (s) (and (symbol? (car s)) (<= 2 (length s) 3))) (cadr x))
                    (distinct? (map car (cadr x)))
+                   (for-all (lambda (f) (expression-form? f (append (map car (cadr x)) env))) (cdddr x))
                    (let* ((specs (cadr x)) (env2 (append (map car specs) env)))
                      (append (apply append (map (lambda (s) (walk (cadr s) env)) specs))
                              (apply append (map (lambda (s) (walk-all (cddr s) env2)) specs))
                              (walk-all (caddr x) env2)
-                             (body (cdddr x) env2))))))
+                             (walk-all (cdddr x) env2))))))
       ;; begin as an expression holds at least one (a body's begins are
       ;; spliced before this is reached); if has a test, a consequent and at
       ;; most an alternative; when and unless a test and an expression.
@@ -444,20 +456,48 @@
             (lambda (x env walk body)
               (and (= (length x) 3) (symbol? (cadr x)) (walk (caddr x) (cons (cadr x) env)))))
       ;; (foreign-procedure <convention> ... <entry> (<parameter type> ...)
-      ;; <result type>): the types are data, the entry is walked, and a
-      ;; convention is #f, a __-named symbol or (__varargs_after <n>), data too.
+      ;; <result type>): the types are data, the entry is walked. A type is
+      ;; one of Chez's foreign type names, or (* <name>) or (& <name>) for an
+      ;; ftype, whose name the walk cannot check; void only as the result.
+      ;; The conventions, as Chez answers them: each is #f, __collect_safe,
+      ;; __varargs or (__varargs_after <n>); none is given twice (#f #f
+      ;; included); at most one is __varargs or __varargs_after; __varargs
+      ;; needs a parameter, and (__varargs_after <n>) an exact n with
+      ;; 1 <= n <= the parameter count; #f and __collect_safe go with any
+      ;; other.
       (cons 'foreign-procedure
             (lambda (x env walk body)
               (let ((n (length x)))
                 (and (>= n 4)
-                     (list? (list-ref x (- n 2)))
-                     (for-all (lambda (c)
-                                (or (not c)
-                                    (and (symbol? c) (let ((t (symbol->string c)))
-                                                       (and (> (string-length t) 2) (string=? (substring t 0 2) "__"))))
-                                    (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after))))
-                              (first-n (cdr x) (- n 4)))
+                     (let ((params (list-ref x (- n 2)))
+                           (conventions (first-n (cdr x) (- n 4))))
+                       (and (list? params) (for-all foreign-type? params)
+                            (let distinct ((cs conventions))
+                              (or (null? cs) (and (not (member (car cs) (cdr cs))) (distinct (cdr cs)))))
+                            (<= (length (filter (lambda (c) (or (eq? c '__varargs) (pair? c))) conventions)) 1)
+                            (for-all (lambda (c)
+                                       (or (not c)
+                                           (eq? c '__collect_safe)
+                                           (and (eq? c '__varargs) (pair? params))
+                                           (and (list? c) (= (length c) 2) (eq? (car c) '__varargs_after)
+                                                (integer? (cadr c)) (exact? (cadr c))
+                                                (<= 1 (cadr c) (length params)))))
+                                     conventions)))
+                     (or (eq? (list-ref x (- n 1)) 'void) (foreign-type? (list-ref x (- n 1))))
                      (walk (list-ref x (- n 3)) env))))))))
+
+  ;; DOES THE WALK KNOW THIS FORM'S SHAPE: #t when, at a block's top form, the
+  ;; known form's rule fires on FORM, or FORM is a definition; #f when the walk
+  ;; would fall back. It decides nothing new: it asks the rule the walk asks,
+  ;; in the empty environment of a block's top form, and is exported for the
+  ;; fixture that compares the walk's shapes with Chez's expander.
+  (define (name-use-rule-fires? form)
+    (cond
+      ((not (and (pair? form) (symbol? (car form)) (list? form))) #f)
+      ((memq (car form) defining-heads) (and (definition? form '()) #t))
+      ((top-begin? form) #t)
+      (else (let ((rule (hashtable-ref known-forms (car form) #f)))
+              (and rule (rule form '() walk walk-body) #t)))))
 
   ;; ---- text code: the identifier tokens -------------------------------------------
   ;;

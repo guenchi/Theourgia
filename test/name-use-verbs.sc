@@ -138,13 +138,32 @@
                 (datum-uses '(lambda () (define-values ((x)) (g)) x))
                 (datum-uses '(quote x y))
                 (datum-uses '(case k (x))))
-      '((define f x) (define-values g x) (quote x y) (case k x)))
-(want "U8 what Chez accepts is not refused: a case clause with one datum, an empty begin as the block's form, unquote with several operands"
+      '((define f x) (define-values g lambda x) (quote x y) (case k x)))
+(want "U9 a form registered through register-name-use-form! whose rule hands an improper body to the body walk: the body falls back, element by element"
+      (begin (register-name-use-form! 'custom (lambda (x env walk body) (body (cadr x) env)))
+             (caught (datum-uses '(custom (a . b)))))
+      '(a b))
+(want "U9 a check that decides names, not firing: a local else, => or define is a name; a bound head is an application; an improper or empty known form falls back"
+      (in-order (datum-uses '(lambda (else) (cond (else 1) (a 2))))
+                (datum-uses '(lambda (=>) (cond (a => b c))))
+                (datum-uses '(lambda (define) (define x 2) x))
+                (datum-uses '(lambda (quote) (quote x)))
+                (datum-uses '(f (if a . b)))
+                (datum-uses '(f (begin)))
+                (caught (datum-uses '(begin 1 . 2))))
+      '((a) (a b c) (x) (x) (a b f if) (begin f) (begin)))
+(want "U8 a bound unquote or unquote-splicing is no template syntax: the operand is data, not a use"
+      (in-order (datum-uses '(let ((unquote list)) (quasiquote (unquote x))))
+                (datum-uses '(let ((unquote-splicing list)) (quasiquote ((unquote-splicing x))))))
+      '((list) (list)))
+(want "U8 what Chez accepts is not refused: a case clause with one datum, an else that is not last, a begin as the block's form (empty, nested), unquote with several operands"
       (in-order (datum-uses '(case k (x y)))
+                (datum-uses '(case k (else 1) ((a) 2)))
+                (datum-uses '(begin (begin) (define x y) (f x)))
                 (datum-uses '(begin))
                 (datum-uses '(quasiquote ((unquote a b))))
                 (datum-uses '(quasiquote ((unquote-splicing a b)))))
-      '((k y) () (a b) (a b)))
+      '((k y) (k) (f x y) () (a b) (a b)))
 (want "U8 no name twice in formals or bindings, let* excepted: lambda, let, let-values and do fall back"
       (in-order (datum-uses '(lambda (x x) x))
                 (datum-uses '(let ((x 1) (x 2)) x))
@@ -165,7 +184,7 @@
                 (datum-uses '(define-syntax m))
                 (datum-uses '(define-values (x) a b))
                 (datum-uses '(lambda () (define x a b) x)))
-      '((a b define x) (define-syntax m) (a b define-values x) (a b define x)))
+      '((a b define x) (define-syntax m) (a b define-values x) (a b define lambda x)))
 (want "U8 a binding without an initialiser, a missing body, an empty do test: each falls back"
       (in-order (datum-uses '(let ((x)) x))
                 (datum-uses '(letrec* ((x)) x))
@@ -188,23 +207,23 @@
                 (datum-uses '(cond (else) (a b)))
                 (datum-uses '(cond (a => b c)))
                 (datum-uses '(case k ((a))))
-                (datum-uses '(case k (else 1) ((a) 2)))
+                (datum-uses '(case k (else)))
                 (datum-uses '(guard (e) 1)))
-      '((a if) (a b c d if) (a when) (unless) (cond) (a b cond else) (=> a b c cond) (a case k) (a case else k)
+      '((a if) (a b c d if) (a when) (unless) (cond) (a b cond else) (=> a b c cond) (a case k) (case else k)
         (e guard)))
 (want "U10 a record definition with a malformed name or an unknown clause falls back, and binds nothing in a body"
       (in-order (datum-uses '(define-record-type (r bad) (protocol p)))
                 (datum-uses '(define-record-type r (bogus x)))
                 (datum-uses '(lambda () (define-record-type r (bogus x)) (r? 1))))
-      '((bad define-record-type p protocol r) (bogus define-record-type r x) (bogus define-record-type r r? x)))
+      '((bad define-record-type p protocol r) (bogus define-record-type r x) (bogus define-record-type lambda r r? x)))
 (want "U10 every record clause has its R6RS shape: a non-boolean sealed or an improper field spec falls back, a full definition does not"
       (in-order (datum-uses '(define-record-type r (sealed maybe)))
                 (datum-uses '(lambda () (define-record-type r (sealed maybe)) (r? z)))
                 (datum-uses '(lambda () (define-record-type r (fields (mutable x . y))) (r? z)))
                 (datum-uses '(define-record-type (p make-p p?) (fields (immutable x px) (mutable y py py!))
                                (nongenerative) (sealed #t) (opaque #f) (protocol (lambda (n) n)))))
-      '((define-record-type maybe r sealed) (define-record-type maybe r r? sealed z)
-        (define-record-type fields mutable r r? x y z) ()))
+      '((define-record-type maybe r sealed) (define-record-type lambda maybe r r? sealed z)
+        (define-record-type fields lambda mutable r r? x y z) ()))
 (want "U10 an empty field spec falls back and does not raise; a duplicate clause, or parent with parent-rtd, falls back"
       (in-order (datum-uses '(define-record-type r (fields ())))
                 (datum-uses '(define-record-type r (sealed #t) (sealed #f)))
@@ -309,9 +328,9 @@
       (in-order (datum-uses (internal-define "../working.sc" 'latest-parent-cut))
                 (datum-uses (internal-define "../datum-code.sc" 'datum-names)))
       '((car cdr cut-covers? fold-left pair?)
-        (= > >= append apply cadddr caddr cadr car cddr cdr eq? filter find
-         length list list? map memq not pair? string->symbol string-append
-         symbol->string symbol?)))
+        (= > >= append apply assq cadddr caddr cadr car cddr cdr eq? for-all
+         length list list? map memq not pair? record-definition-shape?
+         string->symbol string-append symbol->string symbol?)))
 
 ;; K10b: EVERY FORM OF TWO WHOLE PRODUCT FILES, walked with no catch taken.
 ;; datum-uses is called directly, outside the provider's catch-all, so a
@@ -602,7 +621,7 @@
         (only (theourgia reduce) state-read state-block-ids)
         (only (theourgia store) library-locator)
         (only (theourgia project) subtree-ids)
-        (only (theourgia datum-code) datum-names)
+        (only (theourgia datum-code) datum-names record-definition-shape?)
         (only (theourgia languages) language-for-name language-property)
         (only (theourgia regex) regex-compile regex-match-at)
         (only (theourgia extensions) names-usage uses-usage)
