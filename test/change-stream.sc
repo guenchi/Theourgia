@@ -1023,6 +1023,20 @@
               (list #t #t 'ok)))
       (stop-daemon! d))
 
+    ;; A WRITE THAT RAISES ON A USABLE CONNECTION: the frame's write raises
+    ;; before anything is sent (stream-write-raise), the connection stays
+    ;; open, and the stream ends with the terminal attempted once (D4).
+    (let* ((d (start-daemon! "f6r2" "THEOURGIA_FAULT=stream-write-raise@conn"))
+           (s (spawn-subscriber! d '("changes" "0")))
+           (_ (await-lines s 1 5000)))
+      (insert! d "its write raises")
+      (let* ((_ (let wait ((k 0)) (unless (or (member "<eof>" (sub-lines s)) (> k 160)) (sleep-ms 50) (wait (+ k 1)))))
+             (ls (sub-lines s)) (fs (frames-of ls)))
+        (want "F10-6 a write that raises with the connection still open: the terminal transport-unknown write-failed, no frame, then the close"
+              (list (contains? (d-log d) "(trace fault stream-write-raise") fs (and (pair? ls) (car (reverse ls))))
+              (list #t '((error transport-unknown (reason write-failed))) "<eof>")))
+      (stop-daemon! d))
+
     ;; A RELOAD THAT FAILS keeps the previous publication; subscribers are
     ;; told, with the reason the trace carries, and the stream goes on.
     (let* ((d (start-daemon! "f6f" "THEOURGIA_FAULT=reload-raise@conn"))

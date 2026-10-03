@@ -263,6 +263,7 @@
   ;; these errnos negated, and it asks it through no-daemon-errno? below,
   ;; so the answer lives in one place.
   (define ENOENT (platform-number 'ENOENT))
+  (define EINVAL (platform-number 'EINVAL))
   (define ECONNREFUSED (platform-number 'ECONNREFUSED))
   (define ENOTSOCK (platform-number 'ENOTSOCK))
 
@@ -488,14 +489,16 @@
                 (close-noting-failure fd)
                 outcome)))))
 
-  ;; THE RECEIVE BOUND IS SET BEST-EFFORT. Measured on macOS: setsockopt on a
-  ;; socket whose peer has already closed answers EINVAL, and raising there
-  ;; ended a stream as lost-stream with its terminal line already received
-  ;; and unread. A peer that has closed cannot leave a read blocked -- what
-  ;; it sent is read, then EOF -- so a bound that could not be set costs
-  ;; nothing; the clock check before each read still holds.
+  ;; ONE FAILURE OF THE RECEIVE BOUND IS NOT AN END. Measured on macOS:
+  ;; setsockopt on a socket whose peer has already closed answers EINVAL, and
+  ;; raising there ended a stream as lost-stream with its terminal line
+  ;; already received and unread. A peer that has closed cannot leave a read
+  ;; blocked -- what it sent is read, then EOF -- so that failure is passed
+  ;; over. ANY OTHER FAILURE RAISES, and the stream ends lost-stream: a bound
+  ;; that could not be set on a live peer would leave a read unbounded, and
+  ;; one that could not be cleared would end an idle stream later anyway.
   (define (bound-receive! fd ms)
-    (guard (e ((fs-error? e) #f))
+    (guard (e ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)) #f))
       (socket-receive-timeout! fd ms)))
 
   ;; THE PARTIAL LINE IS KEPT AS ITS PARTS, newest first, and joined once,

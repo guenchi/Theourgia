@@ -59,7 +59,7 @@
           (only (theourgia sched)
                 start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
-                conn-write! conn-write-observed! conn-close! conn-ref-pid)
+                conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch rpc-ok?)
           (only (theourgia client) socket-path envelope-version)
           (only (theourgia render) render-wire render-human answer-printing!)
@@ -2032,7 +2032,8 @@
           (done #f)
           (input rest)
           (stale-armed (and (memq (theourgia-fault) '(stream-written-ref stream-written-token)) #t))
-          (coalesce-armed (eq? (theourgia-fault) 'stream-coalesce-cut)))
+          (coalesce-armed (eq? (theourgia-fault) 'stream-coalesce-cut))
+          (write-raise-armed (eq? (theourgia-fault) 'stream-write-raise)))
       (define (finish!)
         (set! done #t)
         (conn-close! ref))
@@ -2055,13 +2056,22 @@
           (set! pending tok)
           (set! pending-is what)
           (trace-event! 'stream-write what #f)
-          (let ((held (guard (e (#t 'raised)) (conn-write-observed! ref bytes tok))))
+          (let ((held (guard (e (#t 'raised))
+                        ;; INJECTION ONLY: one frame's write raises before
+                        ;; anything is sent, as a queue failure does.
+                        (when (and write-raise-armed (number? what))
+                          (set! write-raise-armed #f)
+                          (trace-event! 'fault 'stream-write-raise #f)
+                          (raise (make-message-condition "injected stream write raise")))
+                        (conn-write-observed! ref bytes tok))))
             (cond
-              ;; A WRITE THAT RAISES at once is a write that failed; the
-              ;; transport is not usable, so no terminal is attempted.
+              ;; A WRITE THAT RAISES ends the stream. igropyr leaves the
+              ;; connection open when nothing was sent and closes it when a
+              ;; prefix was: an open one gets the terminal attempted once, a
+              ;; closed one none (D4).
               ((eq? held 'raised)
                (set! pending #f)
-               (if (eq? what 'terminal) (finish!) (latch! 'write-failed #f)))
+               (write-failed! what))
               ((> held 0)
                (trace-event! 'write-pending 'conn #f)
                ;; INJECTION ONLY: a stale completion while this write is
@@ -2072,6 +2082,15 @@
                  (send self (if (eq? (theourgia-fault) 'stream-written-ref)
                                 (list 'written (list 'another-connection) tok 0)
                                 (list 'written ref (list 'stream 0) 0)))))))))
+      ;; A FAILED WRITE, by a raise or by its completion's status: the
+      ;; terminal's own failure ends at once; otherwise a usable transport
+      ;; is told why, and a broken one is closed without a word.
+      (define (write-failed! what)
+        (cond
+          ((eq? what 'terminal) (finish!))
+          ((guard (e (#t #f)) (conn-open? ref))
+           (latch! 'write-failed '(error transport-unknown (reason write-failed))))
+          (else (latch! 'write-failed #f))))
       (define (enqueue! rev bytes)
         (if (= queued stream-queue-limit)
             ;; INJECTION ONLY: held at the overflow, before the latch, so a
@@ -2176,7 +2195,7 @@
                (trace-event! 'stream-written status #f)
                (cond
                  ((eq? pending-is 'terminal) (finish!))
-                 ((not (= status 0)) (latch! 'write-failed #f)))))
+                 ((not (= status 0)) (write-failed! pending-is)))))
             (`(data ,r ,bv)
              (unless closing
                (set! input (append-bytes input bv))

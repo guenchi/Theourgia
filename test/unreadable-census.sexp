@@ -140,10 +140,10 @@
    "stream socket write, as exchange-on's"
    (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e)))))))
   ("client.sc" (bound-receive!) 1 guard
-   ((fs-error? e))
+   ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)))
    unrelated a
-   "stream socket receive bound, best-effort: setsockopt on a socket whose peer has closed answers EINVAL on macOS, and such a peer cannot leave a read blocked"
-   (e ((fs-error? e) #f)))
+   "stream socket receive bound: only EINVAL is passed over -- setsockopt on a socket whose peer has closed answers it on macOS (measured), and such a peer cannot leave a read blocked; any other failure raises and ends the stream lost-stream"
+   (e ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)) #f)))
   ("client.sc" (stream-lines) 1 guard
    ((fs-error? e))
    unrelated a
@@ -214,6 +214,11 @@
    fact c
    "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4); the one body of (reload) and of the store process's refresh before a cut read; subscribers are sent (error store-unreadable (reason <the same>)) with no revision"
    (e (#t (let ((why (or (classify-failure e (quote ())) (condition-text e)))) (trace-event! (quote reload-failed) why #f) (stream-notice! (list (quote error) (quote store-unreadable) (list (quote reason) why)))))))
+  ("daemon.sc" (stream-run write-failed!) 1 guard
+   (#t)
+   unrelated a
+   "after a failed write: a connection whose state cannot be read is treated as not usable, so no terminal is attempted"
+   (e (#t #f)))
   ("daemon.sc" (stream-run issue!) 1 guard
    (#t)
    unrelated a

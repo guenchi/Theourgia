@@ -444,6 +444,17 @@
         (list rc (last-datum s))
         (list 1 '(error transport-unknown (reason store-actor-down)))))
 
+;; A FAILED TERMINAL ENDS THE RUN WHEN IT ARRIVES (D6): the lagging line,
+;; and then a peer that stays open fifteen seconds.
+(let* ((st (fresh-store!))
+       (t0 (ms-now))
+       (s (subscribe-to-fake! st '("f 1 200" "w (error changes-unavailable (reason lagging) (current 9) (daemon \"1-2\"))" "s 15000" "c")))
+       (rc (await-sub-exit s 14000))
+       (elapsed (- (ms-now) t0)))
+  (want "F10-7 a lagging terminal with the peer still open: printed, exit 1 at once, not at the peer's close"
+        (list rc (< elapsed 10000) (and (last-datum s) (car (last-datum s))) (clause 'reason (last-datum s)))
+        (list 1 #t 'error '(lagging))))
+
 ;; ---- core.sc forwards it like any verb (F10-14) -----------------------------------
 (let* ((st (fresh-store!))
        (_ (insert! st "warm"))

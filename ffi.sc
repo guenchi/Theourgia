@@ -2445,7 +2445,7 @@
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
          lseek-fail mkdir-fail client-extra-child store-raise-early
          reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
-         stream-written-ref stream-written-token stream-coalesce-cut))
+         stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))

@@ -342,12 +342,15 @@
                         (set! accepted #t))))
                    (begin
                      (stream-out! line)
-                     (set! last (stream-terminal line))))))))
+                     (set! last (stream-terminal line))
+                     ;; A LAGGING OR TRANSPORT-UNKNOWN TERMINAL ENDS THE RUN
+                     ;; WHEN IT ARRIVES (D6), whether or not the peer closes;
+                     ;; only the drain waits for the EOF that must follow it.
+                     (when (eq? last 'failed) (exit 1))))))))
       (if (eq? (car outcome) 'ended)
           (let ((how (cadr outcome)))
             (cond
               ((and (eq? how 'eof) (eq? last 'draining)) (exit 0))
-              ((and (eq? how 'eof) (eq? last 'failed)) (exit 1))
               ((eq? how 'answer-too-large)
                (put-string (current-output-port) "(error transport-error answer-too-large)\n")
                (exit 1))

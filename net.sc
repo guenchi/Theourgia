@@ -42,7 +42,7 @@
 (library (theourgia net)
   (export listen! stop-listen! listener-open? connect!
           conn-read-start! conn-read-stop!
-          conn-write! conn-write-observed! conn-close! exchange
+          conn-write! conn-write-observed! conn-open? conn-close! exchange
           conn-ref? conn-ref-conn conn-ref-pid listen-ref?)
   (import (rnrs base) (rnrs control) (rnrs records syntactic)
           (rnrs bytevectors) (rnrs lists)
@@ -356,6 +356,12 @@
       (with-interrupts-disabled
         (tcp-write! c bv (lambda (status) (send me (list 'written ref tok status))))
         (if (eq? (conn-state c) 'open) (uv-write-queue-size (conn-handle c)) 0))))
+
+  ;; WHETHER A CONNECTION IS STILL USABLE after a write failed: igropyr
+  ;; leaves it open when nothing was sent and closes it when a prefix was
+  ;; (see conn-write! above).
+  (define (conn-open? ref)
+    (eq? (conn-state (conn-ref-conn ref)) 'open))
 
   ;; Closing is killing the adapter, and the runtime closes what it
   ;; owned. NOTE: The same verb cancels a dial that has not completed: there
