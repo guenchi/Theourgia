@@ -17,7 +17,7 @@
 ;; THE RULE UNDER TEST: a known form's rule fires only on the form's whole
 ;; shape as Chez Scheme accepts it, and any other shape falls back (walks
 ;; every element). Writing that rule form by form, by hand, never closed:
-;; each review found the next dimension. So this file asks a second,
+;; each reading found the next dimension. So this file asks a second,
 ;; independent judge -- the expander -- over a space of forms stated here,
 ;; before the first run, and the row is: the walk's rule fired if and only
 ;; if Chez accepts the form.
@@ -48,8 +48,8 @@
 ;; raise there is its own outcome, never a firing: it is a disagreement on
 ;; every form.
 ;;
-;; THE SPACE, stated before the first run (its first statement, s1, was
-;; widened after codex reviewed the space and before any run; NOTES says so):
+;; THE SPACE, stated before the first run, and widened once, also before
+;; any run, when a reading of it found operators it lacked:
 ;;   SEEDS: well-formed forms per head (below), each accepted by the
 ;;     reference and fired by the walk (the control row says so).
 ;;   OPERATORS, each applied ONCE to a seed, at every position of every list
@@ -70,7 +70,7 @@
 ;;         kept).
 ;;     O10 a begin with an improper tail inside the seed's body, once in its
 ;;         definition part (at the body's head) and once in its expression
-;;         part (at its end). ADDED AFTER A MEASUREMENT (s6e): no single
+;;         part (at its end). ADDED AFTER A MEASUREMENT: no single
 ;;         operator above makes a begin improper inside a body, and
 ;;         (lambda () 1 (begin 2 . x)) and (lambda () (begin (define x 1) . y) x)
 ;;         were walked as bodies while Chez refuses both.
@@ -83,20 +83,21 @@
 ;; the space has a verdict.
 ;;
 ;; CLASS A, the disagreements whose defect is one operand, is recognised by a
-;; predicate (below), with two sub-classes; the row S2 asks that everything
-;; else agrees or is in the exception table. CLASS K, a keyword standing in
-;; an expression position, is recognised by a second predicate, over the
-;; keywords begin, define, else, =>, unquote, unquote-splicing, quasiquote,
-;; lambda and quote (fixed before the run). S5, S8 and the A-name pin are
-;; regression checks, not proofs.
+;; predicate (below), with two sub-classes; the row over the whole space
+;; asks that everything else agrees or is in the exception table. CLASS K,
+;; a keyword standing in an expression position, is recognised by a second
+;; predicate, over the keywords begin, define, else, =>, unquote,
+;; unquote-splicing, quasiquote, lambda and quote (fixed before the run). The control rows that no pinned
+;; gap is class A or class K, and the pinned A-name set, are regression
+;; checks, not proofs.
 ;;
 ;; WHAT THIS FIXTURE ASKS, AND WHAT IT DOES NOT: it compares whether the
 ;; TOP form's own rule fires. A rule's checks on a nested form, and every
 ;; check that reads the environment (a local binding of else, =>, define or
 ;; a form's own head), change only the names the walk reports, never that
 ;; answer; at the top the environment is empty. Names are name-use-verbs'
-;; to cover. The conjunct census runs both fixtures on every mutant, and is
-;; what ties the two: a check neither fixture sees is a missing row.
+;; to cover. A check that neither this fixture nor name-use-verbs would
+;; notice losing is a missing row in one of them.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
@@ -201,14 +202,15 @@
     (define-record-type r (protocol (lambda (parent) (parent p))))
     (lambda (a b . a) (f a b))
     (define-values (a b . a) (g))
-    ;; From the conjunct census: each a form only one check refuses, named
-    ;; by its census id and the row that turns red without the check. A
-    ;; definition after an expression, per head (S8: it becomes class K).
+    ;; Forms that only one check refuses, each kept here so that losing that
+    ;; check turns a row red. A definition after an expression, per head:
+    ;; without the body rule's check it becomes class K, which the row on
+    ;; pinned gaps and class K refuses.
     (let ((a 1)) 1 (define x 2))
     (let lp ((a 1)) 1 (define x 2))
-    ;; case-lambda's clause body (s6g's closing review: weakening the
-    ;; clause's body check to "has a body" made a malformed clause body
-    ;; class A, every row passing) (S5).
+    ;; case-lambda's clause body: weakening the clause's body check to "has
+    ;; a body" made a malformed clause body class A with every row passing,
+    ;; until this form was pinned (the row on pinned gaps and class A).
     (case-lambda ((a) 1 (define x 2)) ((a b) b))
     (let* ((a 1)) 1 (define x 2))
     (letrec ((a 1)) 1 (define x 2))
@@ -218,25 +220,25 @@
     (guard (e (else 0)) 1 (define x 2))
     (parameterize ((p 1)) 1 (define x 2))
     (define (f a) 1 (define x 2))
-    ;; C148: an else clause with no expression (S8); C149: an arrow clause
-    ;; with no receiver (S8).
+    ;; An else clause with no expression, and an arrow clause with no
+    ;; receiver: each class K without its check.
     (cond (a b) (else))
     (cond (a b) ((p a) =>))
-    ;; C119: a convention twice after the first (S4); C126: an inexact
-    ;; __varargs_after count, which Chez refuses ("invalid foreign-procedure
-    ;; convention", measured in s6e, readings/measure) (S4).
+    ;; A convention twice after the first, and an inexact __varargs_after
+    ;; count, which Chez refuses ("invalid foreign-procedure convention",
+    ;; measured): each a pinned gap that disagrees without its check.
     (foreign-procedure __collect_safe #f #f "f" (int) int)
     (foreign-procedure (__varargs_after 1.0) "f" (int) int)
-    ;; C225, C228: nongenerative with two operands (S4).
+    ;; nongenerative with two operands: a pinned gap without its check.
     (define-record-type c (nongenerative u v))
-    ;; C181: an empty begin after an expression; C182: a begin holding a
-    ;; definition after an expression (S8).
+    ;; An empty begin after an expression, and a begin holding a definition
+    ;; after an expression: each class K without its check.
     (lambda () 1 (begin))
     (lambda () 1 (begin (define x 2)))
-    ;; C180, C015 (s6e): a begin with an improper tail in a body, in the
-    ;; expression part and in the definition part. Chez refuses both
-    ;; ("invalid syntax", measured in s6e, readings/measure); the walk now
-    ;; does too (S4 without the body rule's check).
+    ;; A begin with an improper tail in a body, in the expression part and
+    ;; in the definition part. Chez refuses both ("invalid syntax",
+    ;; measured); the walk now does too, and without the body rule's check
+    ;; each is a pinned gap that disagrees.
     (lambda () 1 (begin 2 . x))
     (lambda () (begin (define x 1) . y) x)))
 
@@ -253,8 +255,8 @@
      "a reference artifact: the fixture replaces the right-hand side by (syntax-rules ()), which then names the keyword being defined; the form also fails direct top-level expansion, so the refusal is not the replacement's alone")
     ;; ONE CHANGE, TWO DEFECTS: an insertion or duplication that leaves two
     ;; things Chez refuses, so no single substitute (class A or K) repairs
-    ;; either alone. Listed by name (main's ruling: no two-place
-    ;; substitution for them).
+    ;; either alone. Listed by name: no class is given a two-place
+    ;; substitution for them.
     ((lambda (a) (define b a) ((begin) define c a) (f b c)) top looser
      "two defects: the inserted (begin) heads an application whose operand is the keyword define")
     ((lambda (a) (define b a) ((define zz 0) define c a) (f b c)) top looser
@@ -438,8 +440,8 @@
 ;; ---- the two judges --------------------------------------------------------------------
 
 ;; THE REFERENCE: does Chez accept the form in that position? BIND-FREE? #f
-;; is the reference with an environment binding nothing, for the mutant that
-;; shows the reference is asked.
+;; is the reference with an environment binding nothing: with it, the
+;; control rows show whether the reference is really asked.
 (define bind-free? #t)
 ;; Every define-syntax of three parts outside quoted data, the form's own
 ;; and any internal one, gets (syntax-rules ()) as its right-hand side.
@@ -524,7 +526,7 @@
 
 ;; ---- class A: the operand, not the shape ---------------------------------------------
 ;;
-;; A STATED LIMIT OF THE RULE (main's ruling): what stands in an expression
+;; A STATED LIMIT OF THE RULE: what stands in an expression
 ;; slot is judged where the walk meets it, not by the enclosing form's rule.
 ;; A disagreement is class A when the rule fired, Chez refused, the
 ;; generator changed exactly ONE operand of one enclosing list (replaced
@@ -539,14 +541,16 @@
 ;;   A-expression  a constant (0) there is accepted by both as well;
 ;;   A-name        only the variable is: the slot takes a name (a set!
 ;;                 target, say). A-name is small and its (head position
-;;                 place) set is PINNED (S6), so a binder slot that some
-;;                 rule fails to check turns S6 red instead of joining A.
+;;                 place) set is PINNED (the A-name control row), so a
+;;                 binder slot that some rule fails to check turns that
+;;                 row red instead of joining A.
 (define (with-substitute form place v)
   (update form (car place) (lambda (l) (splice l (cdr place) (list v)))))
 ;; Does the walk reach the place as an expression? A fresh variable put
 ;; there must be among the names datum-uses reports for the form, in its
-;; position (main's ruling): a place the walk takes as data or as a binder
-;; is not class A. REACH? #f is the predicate without this, for its mutant.
+;; position: a place the walk takes as data or as a binder is not class A.
+;; REACH? #f is the predicate without this check, so that the control rows
+;; can show the check matters.
 (define reach? #t)
 (define (reached? f2 position)
   (or (not reach?)
@@ -573,14 +577,14 @@
 
 ;; ---- class K: a keyword where an expression stands ---------------------------------------
 ;;
-;; CLASS A'S LIMIT STATED FOR THE KEYWORD (main's ruling): a disagreement is
+;; CLASS A'S LIMIT STATED FOR THE KEYWORD: a disagreement is
 ;; class K when the rule fired, Chez refused, and replacing ONE occurrence
 ;; of a keyword symbol from the list below (not the form's own head) by a
 ;; fresh variable gives a form that both judges accept and in which the
 ;; walk reaches that variable (datum-uses reports it). The keyword stood in
 ;; an expression position, which the walk judges where it meets it.
-;; THE KEYWORD LIST, fixed before the run; a keyword added later is said in
-;; NOTES.
+;; THE KEYWORD LIST, fixed before the first run; a keyword added later is
+;; added here with its reason.
 (define k-keywords '(begin define else => unquote unquote-splicing quasiquote lambda quote))
 (define k-reach? #t)
 ;; Every occurrence of a keyword in X's lists, as (path . index), but X's
