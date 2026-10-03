@@ -226,7 +226,9 @@
       ;; instrument's construction of K (a floor for quiet noise, widened by
       ;; twice what this run shows the base itself moving), computed from
       ;; this run, since the base and the tree run side by side here. Every
-      ;; number is printed.
+      ;; number is printed. A BASE THAT MOVED BY MORE THAN HALF (e > 0.5) WAS
+      ;; NOT A QUIET RUN: the row then says NOT A READING and is red, rather
+      ;; than passing on a bound that widened to fit the noise.
       (let* ((time-10 (lambda (d k)
                         (let ((t0 (real-time)))
                           (let loop ((i 0)) (when (< i 10) (ask-raw d 'set (list seed "title" (string-append "t" (number->string k) "-" (number->string i)))) (loop (+ i 1))))
@@ -245,8 +247,10 @@
              (bound (* (p10 base-ms) (+ 1 m))))
         (printf "   10 commits x 40 alternating rounds, ms: base p10 ~s new p10 ~s; e ~s m ~s bound ~s~%   base ~s~%   new  ~s~%"
                 (p10 base-ms) (p10 new-ms) (inexact e) (inexact m) (inexact bound) base-ms new-ms)
-        (want "F10-9 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e))"
-              (<= (p10 new-ms) bound)
+        (when (> e 1/2)
+          (printf "NOT A READING: the base's p10 moved by ~s between its halves (more than 0.5); the machine was not quiet~%" (inexact e)))
+        (want "F10-9 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e)), on a quiet run (e <= 0.5)"
+              (if (> e 1/2) 'not-a-reading (<= (p10 new-ms) bound))
               #t))
       (stop! b) (stop! n)
       (system (string-append "rm -rf " sockets))
