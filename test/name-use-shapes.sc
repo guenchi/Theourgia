@@ -100,8 +100,9 @@
 ;; notice losing is a missing row in one of them. Many of the rules' checks
 ;; are tried that way one at a time -- an and's operands that do not
 ;; themselves call the walk, and numeric comparisons, dropped or weakened --
-;; but an if that dispatches on a form's kind and a filter are not, so a
-;; change there is seen only by a row that covers it.
+;; but an or's alternatives, an if or case that dispatches on a form's kind,
+;; a membership test and a filter are not, so a change there is seen only by
+;; a row that covers it.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
