@@ -147,6 +147,18 @@ The split between a code repository and a documentation store is a filesystem ac
 
 Every verb answers with one line: an S-expression that begins with ok or error. --wire asks for the machine-facing spelling of it. There is no second, prettier output mode that an agent has to parse differently, and no rendering markup in the way -- the reply is the same data the store holds, and the agent can judge the size of what it is about to read before it reads it.
 
+### Read receipts
+
+A read of the committed store ends with a receipt: `(cut <cut>)`, the state the answer was read from, and `(versions ((<id> . "<hash>") ...))`, the version of each block it shows. A version is the token `--if-unchanged` compares, so a block read and written back with it is refused if it changed in between. `read` (plain, `--md`, `--recursive`), `refs`, `commitments`, `tasks`, `names` and `uses` carry both clauses; `search`, `grep` and `whereis`, which already give their cut, add the versions; `outline` and `reach` carry the cut only. A working read, a draft listing, `log`, `diff`, `conflicts`, `check`, `diagnostics`, `describe` and the exports carry none. The human output shows the receipt only for a plain `read` and for `reach`. Recall does not need either clause; a write that must not overwrite a later change does.
+
+### Class and validity
+
+A block's `class` says what kind of statement it is: `observation`, `inference`, `ruling`, `verification` or `external`. With no class, a decision is a ruling and anything else an observation. Observations, rulings and verifications are authoritative; inferences and external material are not.
+
+Blocks are linked with six relations: `supersedes`, `refutes`, `depends-on`, `implements`, `verifies` and `conflicts-with`. From those links each block has a validity, `valid`, `needs-review`, `superseded` or `refuted`; README's "Class and validity" gives the rules. Only an authoritative block can supersede or refute another. From any other block, `supersedes`, `refutes` and `conflicts-with` are only proposals.
+
+A plain `read` of a block that is not valid adds a `(validity ...)` clause, and `read` never hides a block. `search`, `grep` and `whereis` leave out superseded and refuted blocks; the `(excluded ...)` clause that counts them is in the `--wire` answer only, and the human output shows the hits in force and nothing else -- nothing at all when every hit was left out, except an `(incomplete ...)` line if the store missed a writer. `--all-validity` leaves nothing out and names every hit that is not valid. A store that links none of the six relations answers as before.
+
 ### Writers
 
 Every agent and every person writes under a writer id. The id is what block ids are built from, so a block carries the identity of who wrote it for as long as it exists. One writer id is held by one live agent at a time -- that is a rule in the documentation, not a mechanism in the code; a later session may bind the same id and carry on with its drafts.
@@ -213,7 +225,7 @@ $ theourgia insert --store store --under root --title "..."
 
 > **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. A clone that carries another copy's instance.sexp is refused for the mismatch, as above; a clone without one -- what the .gitignore init writes gives -- is refused `(error refused no-instance (remedy adopt))`. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
-## 41 verbs
+## 43 verbs
 
 Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, daemon over the socket, or child: a process the caller runs itself, so the store's server never runs user code.
 
@@ -232,19 +244,19 @@ refs <id>
 List the relations a block takes part in. (daemon)
 
 ```
-search <query> [--all]
+search <query> [--all] [--all-validity]
 ```
 
 Find blocks whose title, keywords or text match every word given. (daemon)
 
 ```
-grep <pattern> [--under <id>] [--all]
+grep <pattern> [--under <id>] [--all] [--all-validity]
 ```
 
 List the lines that contain a pattern, literally. (daemon)
 
 ```
-whereis <name>
+whereis <name> [--all-validity]
 ```
 
 Say where a name is defined, and which libraries carry it. (daemon)
@@ -290,6 +302,18 @@ tasks [--status <status>] [--batch <batch>] [--under <id>]
 ```
 
 List the tasks: by default those under the root the store's template names for tasks, else every task; each with its status (todo, doing, done or dropped), its batch, what it implements, and (unlinked) when it implements no live decision. (daemon)
+
+```
+names <id>
+```
+
+Which names a code block uses, as its stored code shows them, and which libraries a library block imports. A datum block's body is walked as data: a symbol is a use unless something in the form binds it, and an unknown macro's operands count as uses. A text block's uses are every token its language's identifier pattern matches, comments and strings included. No name is resolved. (daemon)
+
+```
+uses <name> [--under <id>]
+```
+
+The live code blocks that use a name, compared whole and exactly, one row per block with its library and mode; with --under, those inside that block. It is not find-references: a use is listed whether or not anything defines the name, and a text block that defines the name also lists it. (daemon)
 
 ### Making and changing blocks
 
@@ -552,6 +576,10 @@ Change a block with write and then commit, through a draft, rather than replacin
 Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
 Record a decision as a block of kind decision, and link each block that implements it with link <block> implements <decision>.
 Open a session with commitments --open, which lists the decisions not yet implemented, done or dropped.
+Set class with set <id> class inference for what you concluded and did not verify, and with set <id> class external for material from outside; neither is ever treated as a ruling.
+To replace a ruling, write the new one and link <new> supersedes <old>; to record that something is wrong, link <evidence> refutes <claim>.
+Say what your work rests on with link <work> depends-on <premise>: when the premise changes, the work is marked for review.
+After checking that an implementation still carries out its decision, link <impl> implements <decision> again: linking again is how you say you checked.
 ```
 
 ### One writer per session
