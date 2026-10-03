@@ -266,7 +266,11 @@ const AT_LEAST: Array<[string, number]> = [
    * record goes through writeSidecar, and its probe.
    */
   ['record-door.test.ts', 6],
-  ['real-core.test.ts', 20],
+  /*
+   * RAISED 20 -> 21 with the search reader's repair: the search view
+   * against a real store.
+   */
+  ['real-core.test.ts', 21],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them. RAISED 8 -> 14 when the
@@ -328,7 +332,11 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
    * what a search does, and the envelope --wire puts round a commit.
    */
-  ['search.test.ts', 70],
+  /*
+   * RAISED 70 -> 72 with the search reader's repair: the flat form refused,
+   * and a hit as the real core printed it.
+   */
+  ['search.test.ts', 72],
   /*
    * RAISED in plugin-r3 item 1, 54 -> 55: a bare `unreadable` answer to a
    * save is kept pending under its own id, like `transport-unknown`. And

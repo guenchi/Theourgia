@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* The search view answered "the store did not answer the search" for every
+  query that found anything, since 1.0.0: the extension read the fields a
+  hit matched in as a shape the core never printed. Fixed; a search now
+  lists its hits.
 * A datum-mode block -- a library imported with `import-code --datum`, or one
   definition in it -- now opens read-only, as the datum export writes its
   library's file, at the block's own place. Before, it opened as an empty

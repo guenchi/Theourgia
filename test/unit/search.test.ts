@@ -88,7 +88,11 @@ describe('plugin-r2 T5 reading a search answer', function () {
   /*
    * plugin-r3: a hit with a fifth element, and one with four.
    *
-   * The core's S batch adds `(fields (title keywords ...))` to every hit.
+   * The core's S batch adds `(fields (title keywords ...))` to every hit:
+   * ONE list of field names. These fixtures were first written flat,
+   * `(fields title keywords)`, from a description of the clause rather than
+   * from an answer, and the reader was written to match them -- so every
+   * cell here passed while every real hit was refused (see the cells below).
    * A reader asking for a length of exactly four would answer "the
    * search did not happen" for every query the day that lands -- so the
    * four-element shape and the five-element shape are both read, and
@@ -98,7 +102,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
    */
   it('reads a hit that carries the fields it matched, and one that does not', function () {
     assert.deepStrictEqual(
-      hitsOf(data('(hit "a.1" 6 "k" (fields title keywords))')),
+      hitsOf(data('(hit "a.1" 6 "k" (fields (title keywords)))')),
       [{ id: 'a.1', score: 6, note: 'k', fields: ['title', 'keywords'] }],
       'the fifth element was not read'
     );
@@ -109,11 +113,11 @@ describe('plugin-r2 T5 reading a search answer', function () {
     );
     /*
      * AND UNDEFINED IS NOT AN EMPTY SET. A hit from an older core says
-     * nothing about which fields matched; `(fields)` from a newer one
+     * nothing about which fields matched; `(fields ())` from a newer one
      * says none did. A reader that gave `[]` for both would put this
      * client's age into the store's answer.
      */
-    assert.deepStrictEqual(hitsOf(data('(hit "a.1" 6 "k" (fields))')), [
+    assert.deepStrictEqual(hitsOf(data('(hit "a.1" 6 "k" (fields ()))')), [
       { id: 'a.1', score: 6, note: 'k', fields: [] }
     ]);
   });
@@ -121,14 +125,41 @@ describe('plugin-r2 T5 reading a search answer', function () {
   it('refuses a hit with fewer than four elements, and one whose fifth is not readable', function () {
     assert.strictEqual(hitsOf(data('(hit "a.1" 6)')), null, 'a three-element hit was read');
     assert.strictEqual(
-      hitsOf(data('(hit "a.1" 6 "k" (fields title) (fields keywords))')),
+      hitsOf(data('(hit "a.1" 6 "k" (fields (title)) (fields (keywords)))')),
       null,
       'two fields clauses supplied one of them'
     );
     assert.strictEqual(
-      hitsOf(data('(hit "a.1" 6 "k" (fields "title"))')),
+      hitsOf(data('(hit "a.1" 6 "k" (fields ("title")))')),
       null,
       'a field name that is not a symbol was read as one'
+    );
+  });
+
+  /*
+   * THE FLAT FORM IS REFUSED. No core printed `(fields title keywords)`:
+   * the clause has been `(fields (<field> ...))` since it arrived (README,
+   * the search verb). A reader that also took the flat form would read a
+   * guessed shape as an answer and hide the next drift.
+   */
+  it('refuses the flat form, which no core prints', function () {
+    assert.strictEqual(hitsOf(data('(hit "a.1" 6 "k" (fields title keywords))')), null, 'the flat form was read');
+    assert.strictEqual(hitsOf(data('(hit "a.1" 6 "k" (fields title))')), null, 'a single bare field name was read');
+  });
+
+  /*
+   * A HIT AS THE REAL CORE PRINTED IT, copied from a search of a real store
+   * (theourgia 3aad6fd and 06a348b print it the same). Before this, the
+   * reader answered null for it, and the search view said "the store did
+   * not answer the search" for every query that found anything.
+   */
+  it('reads a hit as the real core printed it', function () {
+    assert.deepStrictEqual(
+      hitsOf(data('(hit "pt45r9ir.3" 2 "alpha old" (fields (src)))\n(hit "pt45r9ir.4" 2 "alpha new" (fields (src)))\n')),
+      [
+        { id: 'pt45r9ir.3', score: 2, note: 'alpha old', fields: ['src'] },
+        { id: 'pt45r9ir.4', score: 2, note: 'alpha new', fields: ['src'] }
+      ]
     );
   });
 

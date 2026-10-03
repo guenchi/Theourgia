@@ -155,14 +155,27 @@ export function hitsOf(data: Datum[]): Hit[] | null {
      * values is not for it. Asking the form is also the reading that
      * refuses two `fields` clauses rather than taking the first.
      */
-    const matched = hit.clause('fields');
+    /*
+     * NEVER: THE FIELDS ARE ONE LIST, `(fields (<field> ...))`, AS THE CORE
+     * PRINTS THEM (README, the search verb; since the clause arrived), and
+     * not `(fields <field> ...)`. The flat form was read here from a
+     * description of the clause, never from an answer, and it refused
+     * every real hit carrying the clause: the search view answered "the
+     * store did not answer the search" for every query that found
+     * anything. The flat form is refused, not kept beside the real one --
+     * no core printed it, and a reader that accepts a guessed shape hides
+     * the next drift.
+     */
+    const matched = hit.value('fields');
     if (!matched.read && matched.because !== 'absent') {
       return null;
     }
-    const fields = matched.read
-      ? matched.items.filter((name): name is { name: string } => isSym(name)).map((n) => n.name)
-      : undefined;
-    if (matched.read && fields !== undefined && fields.length !== matched.items.length) {
+    if (matched.read && !isList(matched.value)) {
+      return null;
+    }
+    const listed = matched.read && isList(matched.value) ? matched.value : undefined;
+    const fields = listed?.filter((name): name is { name: string } => isSym(name)).map((n) => n.name);
+    if (listed !== undefined && fields !== undefined && fields.length !== listed.length) {
       return null;
     }
     out.push(fields === undefined ? { id, score, note } : { id, score, note, fields });

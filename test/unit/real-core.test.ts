@@ -1613,3 +1613,43 @@ describe('re-pin f5ebd58 a store gone from under a known cursor stops at once', 
     assert.match(second.message, /the store directory in theourgia\.store does not exist/);
   });
 });
+
+/*
+ * THE SEARCH VIEW AGAINST THE REAL CORE. Every reading of a search answer
+ * was a fixture until this cell, and the fixtures had a shape no core
+ * printed: the reader refused every real hit carrying `(fields (...))`, and
+ * the search view answered "the store did not answer the search" for every
+ * query that found anything, from 1.0.0. This searches a real store through
+ * the reader the view uses.
+ */
+describe('the search view reads what a real store answers', function () {
+  this.timeout(120000);
+  let store: RealStore;
+  let pinned: CorePin | undefined;
+
+  before(async () => {
+    pinned = pinCore();
+    await initWire();
+    store = await RealStore.make('vscode-search');
+    await store.importMarkdown('doc.md', '# Doc\n\n## Needle\n\nalpha here\n\n## Hay\n\nnothing\n');
+  });
+
+  after(() => {
+    try {
+      store?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  it('finds the block that holds the word, with the field it matched in', async () => {
+    const needle = await idOfSection(store, 'Needle');
+    const hay = await idOfSection(store, 'Hay');
+    const reading = await new StoreModel(store.client).searchReading('alpha');
+    const ids = reading.hits.map((h) => h.id);
+    assert.ok(ids.includes(needle), `the search did not find ${needle}: ${JSON.stringify(reading.hits)}`);
+    assert.ok(!ids.includes(hay), `the search found ${hay}, which does not hold the word`);
+    const hit = reading.hits.find((h) => h.id === needle);
+    assert.ok(hit?.fields?.includes('src'), `the hit does not say it matched in src: ${JSON.stringify(hit)}`);
+  });
+});
