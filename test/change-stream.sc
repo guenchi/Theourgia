@@ -587,6 +587,23 @@
               (item-set (cdr (record! "mirrorsa" last-cut (list 'move b 'root 4))))
               (expected-set (list 'changed b 'position) (list 'changed b 'parent)
                             (list 'resolved a 'cycle) (list 'resolved b 'cycle))))
+      ;; A FEEDER OLDER THAN THE CYCLE: blocks are walked oldest first, so the
+      ;; walk that finds this cycle starts at the feeder, and only the two
+      ;; members may be marked.
+      (let* ((old (car (record! "mirrorsg" last-cut (put "older feeder" 'root 13))))
+             (c (car (record! "mirrorsg" last-cut (put "c" 'root 14))))
+             (e (car (record! "mirrorsg" last-cut (put "e" 'root 15)))))
+        (record! "mirrorsg" last-cut (list 'move old c 0))
+        (record! "mirrorsg" last-cut (list 'move c e 0))
+        (want "F10-2 a cycle found from an older feeder: only its two members are in conflict"
+              (item-set (cdr (record! "mirrorsg" last-cut (list 'move e c 0))))
+              (expected-set (list 'changed e 'position) (list 'changed e 'parent) (list 'changed e 'ord)
+                            (list 'conflict c 'cycle) (list 'conflict e 'cycle)))
+        (want "F10-12 with that cycle and its older feeder, the comparator's sets equal state-structure's, and the feeder is not a member"
+              (let* ((r (open-and-reduce (d-store d))) (sets (structural-sets r)))
+                (list (equal? sets (state-structure r)) (and (member old (cdr (assq 'conflicts sets))) #t)))
+              '(#t #f))
+        (record! "mirrorsg" last-cut (list 'move e 'root 15)))
       (let* ((parent (car (record! "mirrorob" last-cut (put "parent" 'root 6))))
              (child (car (record! "mirrorob" last-cut (put "child" parent 0)))))
         (want "F10-2 deleting a parent whose child survives -> removed, and the child an orphan"
