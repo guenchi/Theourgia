@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Intel macOS: the package for macOS on x86_64 now passes its unit suite
+  against the core it is pinned to (theourgia 5c28e42, which measured that
+  machine), so it can be published with the other three targets. 1.0.0 was
+  packaged for Apple Silicon only.
 * The search view answered "the store did not answer the search" for every
   query that found anything, since 1.0.0: the extension read the fields a
   hit matched in as a shape the core never printed. Fixed; a search now
