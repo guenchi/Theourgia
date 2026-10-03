@@ -97,7 +97,11 @@
 ;; a form's own head), change only the names the walk reports, never that
 ;; answer; at the top the environment is empty. Names are name-use-verbs'
 ;; to cover. A check that neither this fixture nor name-use-verbs would
-;; notice losing is a missing row in one of them.
+;; notice losing is a missing row in one of them. The rules' checks are
+;; tried that way one at a time -- each operand of an and, and each numeric
+;; comparison, dropped or weakened -- but an if that dispatches on a form's
+;; kind and a filter are not, so a change there is seen only by a row that
+;; covers it.
 ;;
 ;; THE EXCEPTION TABLE is data: (form position direction reason). A
 ;; disagreement it lists is accepted with its reason; an entry whose form is
