@@ -21,7 +21,7 @@
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
   (export socket-path run-root store-key
-          call! answer-limit no-daemon-errno?
+          call! stream! answer-limit no-daemon-errno?
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
@@ -39,7 +39,8 @@
           (only (theourgia ffi)
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
-                unix-socket-connect fd-read fd-close write-all!
+                unix-socket-connect fd-read fd-close write-all! socket-receive-timeout!
+                theourgia-read-chunk
                 spawn-detached! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 entry-type read-entry
@@ -437,6 +438,115 @@
                   (if (= 10 (bytevector-u8-ref chunk (- (bytevector-length chunk) 1)))
                       (list 'answer (join-bytes (reverse chunks) total))
                       (loop chunks total)))))))))))) 
+
+  ;; ---- a stream: one request, then lines until the connection ends ----------
+  ;;
+  ;; THE ONE CALL THAT KEEPS ITS CONNECTION. The frame is sent as call! sends
+  ;; it; then every line that arrives is handed to `line!` (its bytes, no
+  ;; newline) as soon as it is whole, and the answer is how the stream
+  ;; ended:
+  ;;   (no-daemon <errno>) or (not-sent <answer>)  as call! says them;
+  ;;   (ended eof)               the connection closed at a line's end;
+  ;;   (ended lost-stream)       it closed in mid-line, a read failed, or a
+  ;;                             partial line waited past its budget;
+  ;;   (ended answer-too-large)  one line passed the answer limit.
+  ;; NO IDLE DEADLINE: a stream idles legitimately, so the receive timeout
+  ;; that connecting installs is taken off once the frame is sent. A PARTIAL
+  ;; LINE HAS A BUDGET, the daemon's frame budget: once bytes of a line have
+  ;; arrived, the rest must arrive within it, and each read is bounded by
+  ;; what is left of it (a receive timeout, which the platform table
+  ;; measures). The answer limit applies to each line, never to the stream.
+  ;;
+  ;; THEOURGIA_READ_CHUNK (the injection build only) bounds each read, so a
+  ;; row can cut lines where it likes; every read is traced as
+  ;; (trace read-chunk <bytes> <whole lines> <tail?>).
+  (define stream-frame-ms 5000)
+  (define (stream! path frame line!)
+    (if (not (socket-path-fits? path))
+        (list 'not-sent (path-too-long path))
+        (let ((fd (guard (e ((fs-error? e)
+                             (let ((code (fs-error-errno e)))
+                               (if (no-daemon-errno? code)
+                                   (list 'no-daemon code)
+                                   (list 'not-sent
+                                         (list 'error 'connect-failed
+                                               (list 'path path)
+                                               (list 'errno code)))))))
+                    (unix-socket-connect path 30000))))
+          (if (pair? fd)
+              fd
+              (let ((outcome (guard (e ((fs-error? e) (list 'ended 'lost-stream)))
+                               (let* ((sent 0)
+                                      (unsent (guard (e ((and (fs-error? e) (= sent 0))
+                                                         (list 'not-sent
+                                                               (list 'error 'write-failed
+                                                                     (list 'path path)
+                                                                     (list 'errno (fs-error-errno e))))))
+                                                (write-all! fd frame path (lambda (n) (set! sent n)))
+                                                #f)))
+                                 (or unsent (stream-lines fd line!))))))
+                (close-noting-failure fd)
+                outcome)))))
+
+  (define (stream-lines fd line!)
+    (let ((want (or (theourgia-read-chunk) 65536)))
+      (socket-receive-timeout! fd 0)
+      (let loop ((tail (make-bytevector 0)) (deadline #f))
+        (when deadline
+          (socket-receive-timeout! fd (max 1 (- deadline (wall-clock-ms)))))
+        (let ((chunk (if (and deadline (>= (wall-clock-ms) deadline))
+                         'expired
+                         (guard (e ((fs-error? e) 'failed)) (fd-read fd want)))))
+          (cond
+            ((symbol? chunk) (list 'ended 'lost-stream))
+            ((zero? (bytevector-length chunk))
+             (list 'ended (if (zero? (bytevector-length tail)) 'eof 'lost-stream)))
+            (else
+             (let split ((bytes (append-two tail chunk)) (from 0) (lines 0))
+               (let ((nl (newline-from bytes from)))
+                 (cond
+                   (nl
+                    (if (> (- nl from) (answer-limit))
+                        (list 'ended 'answer-too-large)
+                        (begin
+                          (line! (sub-bytes bytes from nl))
+                          (split bytes (+ nl 1) lines))))
+                   (else
+                    (let ((rest (sub-bytes bytes from (bytevector-length bytes)))
+                          (whole (count-newlines chunk)))
+                      (trace-event! 'read-chunk (bytevector-length chunk)
+                                    (string-append (number->string whole) " "
+                                                   (if (zero? (bytevector-length rest)) "#f" "#t")))
+                      (cond
+                        ((> (bytevector-length rest) (answer-limit)) (list 'ended 'answer-too-large))
+                        ((zero? (bytevector-length rest))
+                         (when deadline (socket-receive-timeout! fd 0))
+                         (loop rest #f))
+                        (else
+                         ;; the budget runs from the first byte of the line
+                         ;; still partial: kept while the same line goes on,
+                         ;; started afresh when this read began a new one
+                         (loop rest (if (and deadline (zero? whole))
+                                        deadline
+                                        (+ (wall-clock-ms) stream-frame-ms))))))))))))))))
+
+  (define (newline-from bv from)
+    (let loop ((i from))
+      (cond ((>= i (bytevector-length bv)) #f)
+            ((= (bytevector-u8-ref bv i) 10) i)
+            (else (loop (+ i 1))))))
+  (define (count-newlines bv)
+    (let loop ((i 0) (n 0))
+      (if (= i (bytevector-length bv)) n
+          (loop (+ i 1) (if (= (bytevector-u8-ref bv i) 10) (+ n 1) n)))))
+  (define (sub-bytes bv from to)
+    (let ((out (make-bytevector (- to from))))
+      (bytevector-copy! bv from out 0 (- to from))
+      out))
+  (define (append-two a b)
+    (if (zero? (bytevector-length a))
+        b
+        (join-bytes (list a b) (+ (bytevector-length a) (bytevector-length b)))))
 
   (define (join-bytes chunks total)
     (let ((out (make-bytevector total)))

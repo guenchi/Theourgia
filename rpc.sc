@@ -641,7 +641,7 @@
 
   (define read-usage-form
     '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
-           ["--working"] ["--working-info"] ["--signature"] ["--cut" <cut>]))
+           ["--working"] ["--working-info"] ["--signature"] ["--cut" <cut>] ["--rev"]))
 
   ;; <file> BEFORE THE OPTIONAL GROUPS: the positional slots are read off
   ;; the form up to its first group, and the daemon resolves a <file> slot
@@ -914,6 +914,10 @@
   ;; the answer, and the command line execs it, as for `local`: the work
   ;; has to be a process's child, and the shell is a process that can have
   ;; one and still answer the next call.
+  ;; `stream` means a client that keeps the connection open carries it out:
+  ;; the thin client sends it to the daemon and prints what arrives until
+  ;; the stream ends. The MCP shell, which is request and response, does not
+  ;; offer it.
   ;;
   ;; NEVER: IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
   ;; THE SHELL. `init` is what CREATES a store, so there is no daemon for
@@ -1044,6 +1048,8 @@
             "Report what changed between two cuts." #f 'daemon)
       (list 'conflicts '(conflicts)
             "List blocks whose writers disagree." #f 'daemon)
+      (list 'subscribe '(subscribe changes <rev> [<token>])
+            "Follow the store's publications: every one after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave." #f 'stream)
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
 
@@ -1619,8 +1625,25 @@
                                    (else (append (list 'ok b)
                                                  (validity-clauses (lifecycle-of state) 'read-validity-clause (car rest))
                                                  (receipt state (list (car rest)))))))))))))
+                ;; --rev NAMES THE PUBLICATION THE ANSWER WAS BUILT FROM: the
+                ;; name the daemon sealed with the state it handed here. It is
+                ;; appended to an ok answer and to nothing else; a state with
+                ;; no name -- the local route, a bare reduction -- has no
+                ;; publication to name.
+                (define (with-rev answer)
+                  (let ((name (and (sealed-state? state) (sealed-state-name state))))
+                    (if (and (pair? answer) (eq? (car answer) 'ok))
+                        (append answer (list (list 'rev (car name) (list 'daemon (cadr name)))))
+                        answer)))
+                (define rev? (argument-option options "--rev"))
                 (cond
                   ((not (= 1 (length args))) (usage read-usage-form))
+                  ((and rev? at) '(error bad-request incompatible-cut-options))
+                  ((and rev? (or (argument-option options "--working-info") (argument-option options "--signature")))
+                   '(error bad-request incompatible-rev-options))
+                  ((and rev? (not (and (sealed-state? state) (sealed-state-name state))))
+                   '(error bad-request (reason no-published-state)))
+                  (rev? (with-rev (read-from store args options state writer)))
                   ((not at) (read-from store args options state writer))
                   (incompatible '(error bad-request incompatible-cut-options))
                   (else
@@ -1902,7 +1925,13 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(conflicts))
-                  (guarded (lambda () (items (store-conflicts store)))))))))
+                  (guarded (lambda () (items (store-conflicts store)))))))
+      ;; A STREAM NEEDS A DAEMON: the daemon carries a subscription on its
+      ;; connection and never hands it here, so whoever reaches this handler
+      ;; -- the local route, a nested dispatch -- has no stream to give.
+      (cons 'subscribe
+            (lambda (store actor args req options state writer cwd)
+              '(error bad-request (reason needs-daemon))))))
 
   (define verbs (verb-table))
 
