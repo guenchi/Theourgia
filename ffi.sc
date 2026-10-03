@@ -394,7 +394,7 @@
           redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
-          process-id wall-clock-ms machine-home env-or)
+          process-id wall-clock-ms machine-home env-or libc-entry-name)
   (import (chezscheme)
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
@@ -841,6 +841,43 @@
       'theourgia-ffi
       '("libc.dylib" "libc.so.7" "libc.so.6" "libc.so")))
 
+  ;; THE SYMBOL A C LIBRARY NAME IS BOUND AS, decided here and nowhere
+  ;; else. macOS on x86_64 exports two families of the calls that fill a
+  ;; struct stat, statfs or dirent: the bare names keep the legacy layout
+  ;; with 32-bit inode numbers, and their twins with the suffix $INODE64
+  ;; use the layout the system headers select -- the one a C program gets,
+  ;; and so the one its platform row measures. arm64 has the one family.
+  ;; Binding a bare name there reads the legacy struct with the modern
+  ;; row's offsets.
+  ;;
+  ;; The list is every $INODE64 symbol that the SDK's libsystem_c.tbd and
+  ;; libsystem_kernel.tbd export for x86_64-macos (Xcode SDK, read
+  ;; 2026-10-01), without the leading underscore of the C symbol, whether
+  ;; or not this library binds the name yet: a name bound later is
+  ;; covered without an edit here.
+  ;;
+  ;; NEVER: CHOSEN BY THE PLATFORM ROW. The symbols are this process's, so
+  ;; the machine type the code runs on decides; a row forced for a test
+  ;; names another platform while this process's library stays its own.
+  (define inode64-names
+    '("__opendir2" "_readdir_unlocked" "_seekdir" "alphasort" "fdopendir"
+      "fdscandir" "fdscandir_b" "fstat" "fstatat" "fstatfs" "fstatx_np"
+      "fts_children" "fts_close" "fts_open" "fts_open_b" "fts_read"
+      "fts_set" "ftw" "getfsstat" "getmntinfo" "getmntinfo_r_np" "glob"
+      "glob_b" "lstat" "lstatx_np" "nftw" "opendir" "readdir" "readdir_r"
+      "rewinddir" "scandir" "scandir_b" "scandirat" "scandirat_b"
+      "seekdir" "stat" "statfs" "statx_np" "telldir"))
+
+  ;; -> the symbol to bind for the C name NAME on a Chez of machine type
+  ;; MACHINE: NAME$INODE64 for a listed name on macOS x86_64, NAME itself
+  ;; for any other name or machine.
+  (define (libc-entry-name machine name)
+    (if (and (memq machine '(a6osx ta6osx)) (member name inode64-names))
+        (string-append name "$INODE64")
+        name))
+
+  (define (libc-entry name) (libc-entry-name (machine-type) name))
+
   ;; Two named arguments only: see the note on open(2) above.
   (define c-open  (foreign-procedure "open"  (string int) int))
   (define c-close (foreign-procedure "close" (int) int))
@@ -869,8 +906,8 @@
   (define c-rmdir (foreign-procedure "rmdir" (string) int))
   (define c-access (foreign-procedure "access" (string int) int))
   (define c-mkdir (foreign-procedure "mkdir" (string unsigned-16) int))
-  (define c-stat  (foreign-procedure "stat"  (string u8*) int))
-  (define c-lstat (foreign-procedure "lstat" (string u8*) int))
+  (define c-stat  (foreign-procedure (libc-entry "stat")  (string u8*) int))
+  (define c-lstat (foreign-procedure (libc-entry "lstat") (string u8*) int))
   (define c-realpath (foreign-procedure "realpath" (string u8*) uptr))
   (define c-socket (foreign-procedure "socket" (int int int) int))
   (define c-connect (foreign-procedure "connect" (int u8* int) int))
@@ -2143,11 +2180,8 @@
   ;; d_name's offset is the platform row's: 21 on macOS, 19 on Linux, 24
   ;; on FreeBSD.
   (define dirent-name-offset (platform-field 'dirent 'd_name 'offset))
-  (define x86-macos? (and macos? (memq (machine-type) '(a6osx ta6osx)) #t))
-  (define c-opendir
-    (foreign-procedure (if x86-macos? "opendir$INODE64" "opendir") (string) uptr))
-  (define c-readdir
-    (foreign-procedure (if x86-macos? "readdir$INODE64" "readdir") (uptr) uptr))
+  (define c-opendir (foreign-procedure (libc-entry "opendir") (string) uptr))
+  (define c-readdir (foreign-procedure (libc-entry "readdir") (uptr) uptr))
   (define c-closedir (foreign-procedure "closedir" (uptr) int))
   (define (errno-set! code) (foreign-set! 'int (c-errno-location) 0 code))
 
