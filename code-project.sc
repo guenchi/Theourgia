@@ -171,24 +171,38 @@
   (define (text-packet-extra captured tag)
     (let ((x (and (> (length captured) 4) (assq tag (list-tail captured 4)))))
       (and x (cadr x))))
-  (define (import-code store dir actor req allow-delete?)
+  ;; PREMISES, when given, is the list (check finish run) the handler made of
+  ;; the request's `--premises` (store.sc, premises-preflight): the check is
+  ;; asked before this verb's own, finish is given the answer of the write --
+  ;; only of the write, so a refusal made before it carries no clause -- and
+  ;; run holds the part from the write on, so a raise inside it says so.
+  (define (import-code store dir actor req allow-delete? . premises)
     (answer
       (lambda ()
-        (let* ((packet (frozen-operation store req (lambda () (capture-import store dir allow-delete?))))
-               (captured (cadr packet))
-               (results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
-                          (lambda (state)
-                            (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
-                                (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
-                                                         (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children))))
-                                        (caddr captured)))) #t)))
-          ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED, and
-          ;; only on an answer that succeeded.
-          (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
-              (append (list 'ok (cons 'items results))
-                      (let ((skipped (text-packet-extra captured 'skipped)))
-                        (if (pair? skipped) (list (list 'skipped skipped)) '())))
-              (if (= (length results) 1) (car results) (batch-answer results)))))))
+        (let* ((given (and (pair? premises) (car premises)))
+               (pc (and given (car given)))
+               (finish (if given (cadr given) (lambda (a) a)))
+               (run (if given (caddr given) (lambda (thunk) (thunk))))
+               (packet (frozen-operation store req (lambda () (capture-import store dir allow-delete?))))
+               (captured (cadr packet)))
+          (run
+            (lambda ()
+              (let ((results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
+                               (premises-also pc
+                                 (lambda (state)
+                                   (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
+                                       (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
+                                                                (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children))))
+                                               (caddr captured)))))
+                               #t)))
+                ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED,
+                ;; and only on an answer that succeeded.
+                (finish
+                  (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
+                      (append (list 'ok (cons 'items results))
+                              (let ((skipped (text-packet-extra captured 'skipped)))
+                                (if (pair? skipped) (list (list 'skipped skipped)) '())))
+                      (if (= (length results) 1) (car results) (batch-answer results)))))))))))
 ;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's
   ;; working view.

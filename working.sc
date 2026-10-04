@@ -1005,6 +1005,22 @@
   (define (with-cleanup answer failed)
     (if (and failed (pair? answer) (list? answer)) (append answer (list failed)) answer))
 
+  ;; THE PREMISES OF A COMMIT, read once (store.sc, premises-preflight): ->
+  ;; (check finish run), or the refusal of a set the store cannot check,
+  ;; which is raised as an answer and returned as one.
+  (define (commit-premises store text)
+    (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
+      (call-with-values (lambda () (premises-preflight store text #f)) list)))
+
+  ;; THE PATH THAT WRITES NOTHING ENTERS AND ASKS the premises itself: it is
+  ;; the one place besides a write session where the check is called.
+  (define (premises-asked gate state)
+    (cond ((premises-gate? gate)
+           ((premises-gate-enter gate))
+           ((premises-gate-check gate) state))
+          (gate (gate state))
+          (else #f)))
+
   (define (working-commit! store supplied ids actor supplied-req . rest)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
@@ -1012,8 +1028,22 @@
       ;; in another. Reading the wrapper as the list made every value a
       ;; list of strings, and the first refusal was a type error from
       ;; deep inside the parser rather than the answer this rule owes.
+      ;; THE PREMISES THE COMMIT IS ACCEPTED ON (store.sc, premises-preflight),
+      ;; compiled once. A set the store cannot check was refused at the
+      ;; dispatcher's entry (rpc.sc, premises-refusal), before any of this;
+      ;; called directly, the refusal is still the answer.
+      ;; PREMISE-CHECK is asked before the commit's own check on both paths
+      ;; below; FINISH is given each answer those paths make, and RUN holds
+      ;; them, so a raise after either was entered says so.
+      (let ((premises-given (commit-premises store (and (pair? rest) (pair? (cdr rest)) (cadr rest)))))
+       (if (eq? (car premises-given) 'error)
+           premises-given
       (let* ((selected-version (if (pair? rest) (or (car rest) '()) '()))
-             (writer (requested-writer store supplied)) (state (open-and-reduce store)))
+             (writer (requested-writer store supplied)) (state (open-and-reduce store))
+             (premise-check (car premises-given))
+             (finish (cadr premises-given))
+             (run (caddr premises-given)))
+       (run (lambda ()
         (cond
           ((not writer) (invalid-writer))
           ((not (for-all safe-id? ids)) '(error bad-request invalid-block-id))
@@ -1261,9 +1291,14 @@
                     ;; NEVER: THE CHECK IS THE SAME FUNCTION, not a copy of
                     ;; its rules: `preflight` is asked here exactly as
                     ;; the write path asks it.
+                    ;; THE PREMISES ARE ASKED HERE TOO (on the state this verb
+                    ;; read, not under the store's lock: nothing is written on
+                    ;; this path, so there is no later state to protect), and
+                    ;; a refusal retires nothing.
                     ((and (not supplied-req) (null? intents) (not read-failure)
-                          (preflight state entries missing ids pairs))
-                     => (lambda (refusal) refusal))
+                          (or (premises-asked premise-check state)
+                              (preflight state entries missing ids pairs)))
+                     => (lambda (refusal) (finish refusal)))
                     ((and (not supplied-req) (null? intents) (not read-failure))
                      ;; NOTE: THIS ARM ANSWERS THE SAME QUESTION AND USED TO
                      ;; SKIP IT. Nothing is written here -- the request has
@@ -1274,7 +1309,7 @@
                      ;; current one.
                      (let* ((failed (retire! store writer entries pairs #f))
                             (behind (behind-item (reduce-applied-cut state) writer entries)))
-                       (with-cleanup (if behind (list 'ok '(items) behind) '(ok (items))) failed)))
+                       (finish (with-cleanup (if behind (list 'ok '(items) behind) '(ok (items))) failed))))
                     ((and (not supplied-req) read-failure) read-failure)
                     (else
                      ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
@@ -1282,10 +1317,15 @@
                      ;; inputs the version is computed from, so a reader
                      ;; with the record alone can both check the name and
                      ;; rebuild the draft.
+                     (finish
                      (let* ((live #f)
                             (answers (with-store-write store
                                        (lambda (current view) (set! live current) intents)
-                                      actor effective (lambda (current) (or read-failure (preflight current entries missing ids pairs))) #t
+                                      actor effective
+                                      (premises-also premise-check
+                                        (lambda (current)
+                                          (or read-failure (preflight current entries missing ids pairs))))
+                                      #t
                                       (and (pair? entries)
                                            (list 'consumes writer
                                                  (map (lambda (e)
@@ -1341,5 +1381,5 @@
                                        (list 'ok (cons 'items answers) behind)
                                        (list 'ok (cons 'items answers)))
                                    failed)))))
-                           (if (= (length answers) 1) (car answers) (batch-answer answers))))))))))))))))
+                           (if (= (length answers) 1) (car answers) (batch-answer answers)))))))))))))))))))))
 )

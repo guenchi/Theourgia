@@ -39,7 +39,7 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia store) open-and-reduce with-store-write)
+          (only (theourgia store) open-and-reduce with-store-write premises-preflight)
           (only (theourgia reduce) state-read state-block-ids block-id)
           (only (theourgia field-reading) field-of written-text)
           (only (theourgia ffi) entry-bytes)
@@ -61,7 +61,8 @@
           (lambda ()
             (let ((d (template-datum-for (and (pair? (cdr args)) (cadr args)) file)))
               (if (eq? (car d) 'ok)
-                  (template-apply! store actor req (cadr d))
+                  (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
+                    (template-apply! store actor req (cadr d) check finish run))
                   d)))))
         (else ((dispatch-helper 'usage) template-usage)))))
 
@@ -143,10 +144,21 @@
   ;; it is before any write session opens, so a refusal never begins one; and
   ;; made again inside the session, against the state the write lands on, so
   ;; that a root created in between refuses instead of being created twice.
-  (define (template-apply! store actor req datum)
-    (let ((before (apply-plan (open-and-reduce store) datum)))
+  ;; CHECK, FINISH and RUN are the request's premises (store.sc,
+  ;; premises-preflight): the check is the write's preflight, finish is given
+  ;; the answer of the write -- not a plan refused before it -- and run holds
+  ;; the write, so a raise inside it says so.
+  (define (template-apply! store actor req datum . premises)
+    (let ((before (apply-plan (open-and-reduce store) datum))
+          (check (and (pair? premises) (car premises)))
+          (finish (if (and (pair? premises) (pair? (cdr premises))) (cadr premises) (lambda (a) a)))
+          (run (if (and (pair? premises) (pair? (cdr premises)) (pair? (cddr premises)))
+                   (caddr premises)
+                   (lambda (thunk) (thunk)))))
       (if (eq? (car before) 'refuse)
           (cadr before)
+          (run (lambda ()
+          (finish
           (let* ((late #f)
                  (inner #f)
                  (answers
@@ -158,7 +170,7 @@
                          (if (eq? (car p) 'refuse)
                              (begin (set! late (cadr p)) '())
                              (map (lambda (c) (list 'insert 'root #f (cadr c))) (cdr p)))))
-                     actor req))
+                     actor req check))
                  (made (if (and inner (eq? (car inner) 'create)) (map car (cdr inner)) '())))
             (cond
               (late late)
@@ -166,7 +178,7 @@
                (list 'error 'template-apply-failed (cons 'answers answers)))
               (else
                (list 'ok (cons 'created
-                               (map (lambda (slug a) (list slug (event-block-id a))) made answers)))))))))
+                               (map (lambda (slug a) (list slug (event-block-id a))) made answers))))))))))))
 
   (define (event-block-id answer)
     (let ((ev (assq 'events (cdr answer))))

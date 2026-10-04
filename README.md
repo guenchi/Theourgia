@@ -534,7 +534,7 @@ already covers — which would produce a log that silently began in the middle.
 
 ### `tag`
 
-    (tag (<name>))
+    (tag (<name>) ("--premises" <datum>))
 
 It answers:
 
@@ -1030,7 +1030,7 @@ The answer is `(ok (store <id>) (writer <writer>))`. A directory that already ho
 
 ### `template`
 
-    (template <action> [<name>] ["--file" <template-file>])
+    (template <action> [<name>] ["--file" <template-file>] ["--premises" <datum>])
 
 `template apply <name>` (a built-in) or `template apply --file <template-file>` gives an existing
 store a template: it creates the template block and each document root the store does not have,
@@ -1056,7 +1056,7 @@ matches an existing decision keeps it a decision, and a new heading becomes a se
 ### `insert`
 
     (insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
-            ("--keywords" <text>))
+            ("--keywords" <text>) ("--premises" <datum>))
 
 Adds a block under an existing one. Without --under the block goes under root.
 `--after` places it among that parent's children; without it the block goes
@@ -1072,7 +1072,8 @@ normalised form could not give back what was sent. `set <id> keywords
 
 ### `set`
 
-    (set <id> <field> <value> ("--if-unchanged" <version>) ("--based-on" <version>))
+    (set <id> <field> <value> ("--if-unchanged" <version>) ("--based-on" <version>)
+         ("--premises" <datum>))
 
 Replaces one field of one block. `--if-unchanged` makes the write
 conditional: the store refuses it if the block has moved on from that
@@ -1096,7 +1097,7 @@ kind of statement a block is; see "Class and validity".
 
 ### `move`
 
-    (move <id> <parent> ("--after" <id>))
+    (move <id> <parent> ("--after" <id>) ("--premises" <datum>))
 
 Re-parents a block. `root` is spelled as the word, not as an id. A block
 cannot be moved under itself or under one of its own descendants: that
@@ -1107,7 +1108,7 @@ make a cycle together; that one is shown by `conflicts` after the merge.
 
 ### `del <id>`
 
-    (del <id>)
+    (del <id> ("--premises" <datum>))
 
 Marks a block deleted. The block and its history stay in the log -- what
 changes is what the outline and the reads answer.
@@ -1115,7 +1116,7 @@ The deletion is permanent: nothing brings a deleted block back.
 
 ### `link <from> <rel> <to>`
 
-    (link <from> <rel> <to>)
+    (link <from> <rel> <to> ("--premises" <datum>))
 
 Adds a typed edge between two blocks. `<rel>` is a name of the caller's
 choosing; the store does not interpret it. The answer carries
@@ -1130,7 +1131,7 @@ written under one of them before they were reserved still applies, and
 
 ### `unlink <from> <rel> <to>`
 
-    (unlink <from> <rel> <to>)
+    (unlink <from> <rel> <to> ("--premises" <datum>))
 
 Removes that edge. NOTE: The three positionals are the same three `link`
 takes, in the same order, and getting them out of order is not an error
@@ -1141,7 +1142,7 @@ is not removed by it.
 
 ### `def`
 
-    (def <name> ("--under" <library>) <source>)
+    (def <name> ("--under" <library>) <source> ("--premises" <datum>))
 
 Defines one datum by name inside a datum library block, adding it after the library's last child. `<source>` must be exactly one form, and that form must define `<name>`; otherwise it is refused `expected-one-form` or `name-mismatch`. Without `--under`, the store's only datum library is used; if there is not exactly one, the request is refused `library-required`. A name one of the library's children already defines is refused `(error name-exists (name <name>) (ids (<id> ...)))`: `def` does not replace a definition.
 
@@ -1286,7 +1287,8 @@ untouched.
 
 ### `commit`
 
-    (commit (<block> ...) ("--writer" <name>) ("--working-version" <block>=<version>))
+    (commit (<block> ...) ("--writer" <name>) ("--working-version" <block>=<version>)
+            ("--premises" <datum>))
 
 Turns drafts into committed versions. Naming no block commits all of that
 writer's drafts. `--working-version` may be given once per block to say
@@ -1299,11 +1301,41 @@ writers who landed after this writer's drafts were taken. It is
 informational, and it is **absent** when nothing moved rather than
 present and empty: a field that is always there says nothing.
 
+PREMISES: **what a reader was given is checked when its result is accepted.**
+Every committed write -- `insert`, `set`, `move`, `del`, `link`, `unlink`,
+`tag`, `batch`, `commit`, `import-code`, `import-md`, `def` and `template
+apply` -- takes `--premises <datum>`, a list of `(premise <id> <version>)`
+and `(premise (query <goal>) <digest>)`, and the clauses a read answers,
+given back as they came: `(versions ((<id> . <version>) ...))`, `(cut ...)`
+and `(receipt ...)`. A form the store cannot check is refused
+`(error bad-request premise-not-understood (form "<spelling>"))`, and two
+versions for one block `premise-inconsistent`, before anything else of the
+request is looked at.
+The set is checked once, under the store's lock, before the first record
+of a fresh request; when it no longer holds, the request writes nothing
+and is refused with every premise that failed, in the order given:
+
+    (error premise-changed
+      (block <id> (expected <v>) (current <v> | deleted | unknown) [(since (<writer> . <seq>) ...)]) ...
+      (query <goal> (expected <digest>) (current <digest>)) ...)
+
+`since`, when the set carried a cut, names the events that changed the
+block after it. A query that cannot be evaluated is `(error
+premise-unevaluable (query <goal>) (reason ...))`. A request's identity
+never includes its premises, so the same request retried with a new
+receipt is the same request. A replay, or the completion of a request whose
+plan was already written, is not checked again, and its answer says so:
+`(premises not-checked (reason replay | not-fresh))`. So does a request
+that fails after its write began and before the check was asked; one that
+fails before it began, a lock that cannot be taken among them, wrote nothing
+and carries no clause. A commit that writes nothing asks the same check of
+the state it read.
+
 ## Importing, exporting, and splitting
 
 ### `import-md`
 
-    (import-md <dir> ("--allow-delete"))
+    (import-md <dir> ("--allow-delete") ("--premises" <datum>))
 
 Reads a directory of Markdown into the store. Without `--allow-delete` a
 file that has disappeared from the directory leaves its blocks alone: the
@@ -1396,7 +1428,7 @@ lost blocks only. The clause is absent when there is nothing to name.
 
 ### `import-code`
 
-    (import-code <dir> ("--allow-delete") ("--datum"))
+    (import-code <dir> ("--allow-delete") ("--datum") ("--premises" <datum>))
 
 Reads a directory of source into the store. `--datum` reads it as data --
 one block per top-level form -- rather than as text. With `--datum`, the
@@ -1903,7 +1935,7 @@ exits 1.
 
 ### `batch`
 
-    (batch <intents>)
+    (batch <intents> ("--premises" <datum>))
 
 Intents are read from standard input, one wrapping list or several top-level
 forms:

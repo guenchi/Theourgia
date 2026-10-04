@@ -129,6 +129,17 @@
                                 (else "unexpected failure"))))))
       (thunk)))
 
+  ;; A RAISE AFTER A WRITE WAS ENTERED, before its premises were checked, is
+  ;; answered as this dispatcher answers any raise (store.sc, premises-
+  ;; preflight's RUN): a filesystem failure with the dispatch's record, and
+  ;; anything else as guarded answers it. Installed once, when this library
+  ;; is loaded, so every route that dispatches has it.
+  (define raise-answer-installed
+    (begin
+      (store-raise-answer-hook!
+        (lambda (e) (or (classify-failure e (mutation-record)) (guarded (lambda () (raise e))))))
+      #t))
+
   ;; HOW TO WRITE INTO A STORE, IN ONE PLACE.
   ;;
   ;; KEY: THIS STRING IS THE ONLY COPY. The README's `## Writing for
@@ -393,6 +404,24 @@
   ;; THROUGH THE DOOR (F100a): absent is no-store, as before; a meta.sexp
   ;; whose directory cannot be searched raises instead of reading as no
   ;; store (F100b translates what escapes).
+  ;; A VERB TAKES `--premises` EXACTLY WHEN ITS USAGE FORM NAMES IT: the
+  ;; catalogue is the one place a verb's options are written down.
+  (define (takes-premises? verb)
+    (let ((e (assq verb (verb-catalogue))))
+      (and e (let walk ((x (cadr e)))
+               (cond ((equal? x "--premises") #t)
+                     ((pair? x) (or (walk (car x)) (walk (cdr x))))
+                     (else #f))))))
+
+  ;; -> the refusal of a premise set the store cannot check, or #f. Reading
+  ;; the set reads nothing of the store (store.sc, premises-preflight).
+  (define (premises-refusal store verb options)
+    (let ((text (argument-option options "--premises")))
+      (and text (takes-premises? verb)
+           (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
+             (premises-preflight store text #f)
+             #f))))
+
   (define (no-store? store)
     (and (eq? (entry-type (string-append store "/meta.sexp")) 'absent)
          (list 'error 'no-store store)))
@@ -634,7 +663,7 @@
   ;; the shape is that an agent can read it back -- a form this library
   ;; could not itself read would be a poor thing to hand out.
   (define commit-usage
-    '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>]))
+    '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>] ["--premises" <datum>]))
 
   (define outline-usage
     '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"]))
@@ -661,9 +690,14 @@
 
   ;; --under IS OPTIONAL, and its absence is root (parse-insert); the usage
   ;; says so by bracketing it like every other optional part.
+  ;; LINK'S AND UNLINK'S FORMS, written once: the catalogue and `parse-edge`,
+  ;; which answers both, use these.
+  (define link-usage '(link <from> <rel> <to> ["--premises" <datum>]))
+  (define unlink-usage '(unlink <from> <rel> <to> ["--premises" <datum>]))
+
   (define insert-usage
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
-             ("--keywords" <text>)))
+             ("--keywords" <text>) ("--premises" <datum>)))
 
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
@@ -733,6 +767,16 @@
       (and (derived-tables? store 'signatures)
            ((derived 'keyword-hook) store st))))
 
+  ;; IMPORT-MD'S ANSWER, with the request's premises. Its files are read
+  ;; inside the write session, before the check: a raise there is answered
+  ;; by RUN (store.sc, premises-preflight) and says so.
+  (define (import-md-answer store dir actor options)
+    (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
+      (run (lambda ()
+             (let ((r (import-md-report store dir actor (argument-option options "--allow-delete") check)))
+               (finish (append (list 'import (car r))
+                               (if (cadr r) (list (cadr r)) '()))))))))
+
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
   (define (dispatch-helper name)
@@ -742,10 +786,13 @@
       ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
-  (define (one-write store actor intent req . check)
-    (let ((answers (with-store-write store (lambda (state view) (list intent))
-                                     actor req (and (pair? check) (car check)))))
-      (car answers)))
+  ;; ONE INTENT, ONE WRITE SESSION. OPTIONS are the handler's, for the
+  ;; premises the request carries (store.sc, premises-preflight); CHECK is the
+  ;; verb's own preflight, asked after them.
+  (define (one-write store actor intent req options . check)
+    (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises")
+                                                             (and (pair? check) (car check)))))
+      (run (lambda () (finish (car (with-store-write store (lambda (state view) (list intent)) actor req preflight)))))))
 
   (define (parse-insert store actor args req options)
     (let ((under (argument-option options "--under"))
@@ -772,7 +819,7 @@
                           (append (list (cons 'kind 'section) (cons 'title title))
                                   (if text (list (cons 'src text)) '())
                                   (if keywords (list (cons 'keywords keywords)) '())))
-                    req)))))
+                    req options)))))
 
   (define (parse-set store actor args req options state)
     (let ((expect (argument-option options "--if-unchanged")) (rest args))
@@ -818,42 +865,44 @@
                  (list 'set (car rest) (string->symbol (cadr rest))))
                 (else #f))))
         (if (not intent)
-            (usage '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>]))
-            (one-write store actor (if expect (list 'expect expect intent) intent) req
+            (usage '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>] ["--premises" <datum>]))
+            (one-write store actor (if expect (list 'expect expect intent) intent) req options
               (let ((h (argument-option options "--based-on")))
                 (and h (lambda (state) (baseline-refusal state (car rest) h)))))))))
 
   (define (parse-move store actor args req options)
     (let ((after (argument-option options "--after")) (rest args))
       (if (not (= 2 (length rest)))
-          (usage '(move <id> <parent> ["--after" <id>]))
+          (usage '(move <id> <parent> ["--after" <id>] ["--premises" <datum>]))
           (one-write store actor
                      (list 'move (car rest)
                            (if (string=? (cadr rest) "root") 'root (cadr rest))
                            after)
-                     req))))
+                     req options))))
 
-  (define (parse-edge store actor verb args req)
+  (define (parse-edge store actor verb args req options)
     (if (not (= 3 (length args)))
-        (usage (list verb '<from> '<rel> '<to>))
+        (usage (if (eq? verb 'link) link-usage unlink-usage))
         (one-write store actor
                    (list verb (car args) (string->symbol (cadr args)) (caddr args))
-                   req)))
+                   req options)))
 
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the
   ;; bytes, handed here as a list of intents; running them one at a time
   ;; through separate sessions would let another writer interleave, and
   ;; the back-references `(from n)` would then point into a history the
   ;; author did not have.
-  (define (run-batch store actor items req)
+  (define (run-batch store actor items req options)
     ;; the caller knows whether this request had any sub-operations at all;
     ;; the answer cannot be told from its shape
-    (batch-answer (with-store-write store (lambda (state view) items) actor req)
-                  (null? items)))
+    (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises") #f)))
+      (run (lambda ()
+             (finish (batch-answer (with-store-write store (lambda (state view) items) actor req preflight)
+                                   (null? items)))))))
 
-  (define (parse-batch store actor args req)
+  (define (parse-batch store actor args req options)
     (if (not (= 1 (length args)))
-        (usage '(batch <intents>))
+        (usage '(batch <intents> ["--premises" <datum>]))
         (let ((data (guard (e (#t 'unreadable))
                       (let ((in (open-string-input-port (car args))))
                         (let loop ((out '()))
@@ -871,7 +920,7 @@
                                   (pair? (car data)) (list? (car (car data))))
                              (car data)
                              data)
-                         req)))))
+                         req options)))))
 
   ;; ---- the verbs ------------------------------------------------------------
 
@@ -962,15 +1011,15 @@
       ;; rather than widened here, because the mark is what the MCP tool
       ;; descriptions are built from and widening it silently would
       ;; change what agents are told without anyone deciding to.
-      (list 'set '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>])
+      (list 'set '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>] ["--premises" <datum>])
             "Replace one field of one block." #f 'daemon)
-      (list 'move '(move <id> <parent> ["--after" <id>])
+      (list 'move '(move <id> <parent> ["--after" <id>] ["--premises" <datum>])
             "Move a block to another parent, optionally after a sibling." #f 'daemon)
-      (list 'del '(del <id>)
+      (list 'del '(del <id> ["--premises" <datum>])
             "Retire a block. Its history stays." #f 'daemon)
-      (list 'link '(link <from> <rel> <to>)
+      (list 'link link-usage
             "Record a named relation between two blocks." #f 'daemon)
-      (list 'unlink '(unlink <from> <rel> <to>)
+      (list 'unlink unlink-usage
             "Remove a named relation between two blocks." #f 'daemon)
       ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
       ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the
@@ -1010,18 +1059,18 @@
             "List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src." #f 'daemon)
       (list 'discard '(discard <block> ["--writer" <name>])
             "Throw away a writer's draft of a block." #f 'daemon)
-      (list 'batch '(batch <intents>)
+      (list 'batch '(batch <intents> ["--premises" <datum>])
             "Carry out several changes as one request." #f 'daemon)
       (list 'split-suggest '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])
             "Propose where a long file could be divided into blocks. With --symbols, the cuts come from an editor's list of the file's top-level symbols instead of the language's definition patterns; the answer's cuts-from says which." #f 'daemon)
-      (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"])
+      (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"] ["--premises" <datum>])
             "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL."
             #f 'daemon)
       (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])
             "Write the store's source back out to a directory." #f 'daemon)
-      (list 'def '(def <name> ["--under" <library>] <source>)
+      (list 'def '(def <name> ["--under" <library>] <source> ["--premises" <datum>])
             "Define or replace one named definition." #f 'daemon)
-      (list 'import-md '(import-md <dir> ["--allow-delete"])
+      (list 'import-md '(import-md <dir> ["--allow-delete"] ["--premises" <datum>])
             "Read a directory of markdown into the store." #f 'daemon)
       (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])
             "Write the store out as markdown." #f 'daemon)
@@ -1052,7 +1101,7 @@
             "Say where a name is defined, and which libraries carry it." #f 'daemon)
       (list 'log '(log [<id>])
             "Show the changes recorded, for the store or for one block." #f 'daemon)
-      (list 'tag '(tag [<name>])
+      (list 'tag '(tag [<name>] ["--premises" <datum>])
             "Name the current cut, or list the names already given." #f 'daemon)
       (list 'diff '(diff <cut> <cut>)
             "Report what changed between two cuts." #f 'daemon)
@@ -1301,10 +1350,10 @@
       (cons 'del
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(del <id>))
-                  (guarded (lambda () (one-write store actor (list 'del (car args)) req))))))
-      (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req)))))
-      (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
+                  (usage '(del <id> ["--premises" <datum>]))
+                  (guarded (lambda () (one-write store actor (list 'del (car args)) req options))))))
+      (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req options)))))
+      (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req options)))))
       (cons 'write
             (lambda (store actor args req options state writer cwd)
               (if (= 2 (length args))
@@ -1338,7 +1387,8 @@
             (lambda (store actor args req options state writer cwd)
               (let ((answer (working-commit! store writer
                                              args actor req
-                                             (argument-option-list options "--working-version"))))
+                                             (argument-option-list options "--working-version")
+                                             (argument-option options "--premises"))))
                 (if (and (pair? answer) (eq? (car answer) 'error))
                     (append answer (list (list 'usage commit-usage)))
                     answer))))
@@ -1363,7 +1413,7 @@
               (if (= 1 (length args))
                   (working-discard! store writer (car args))
                   (usage '(discard <block> ["--writer" <name>])))))
-      (cons 'batch (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-batch store actor args req)))))
+      (cons 'batch (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-batch store actor args req options)))))
       (cons 'split-suggest
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
@@ -1375,10 +1425,11 @@
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
                   (guarded (lambda ()
-                    (if (argument-option options "--datum") (import-datum store (car args) actor req)
-                        (import-code store (car args) actor req
-                                     (argument-option options "--allow-delete")))))
-                  (usage '(import-code <dir> ["--allow-delete"] ["--datum"])))))
+                    (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
+                      (if (argument-option options "--datum") (import-datum store (car args) actor req (list check finish run))
+                          (import-code store (car args) actor req
+                                       (argument-option options "--allow-delete") (list check finish run))))))
+                  (usage '(import-code <dir> ["--allow-delete"] ["--datum"] ["--premises" <datum>])))))
       (cons 'export-code
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
@@ -1407,21 +1458,19 @@
       (cons 'def
             (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
-                  (guarded (lambda () (def-datum store (car args) (argument-option options "--under") (cadr args) actor req)))
-                  (usage '(def <name> ["--under" <library>] <source>)))))
+                  (guarded (lambda ()
+                    (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
+                      (def-datum store (car args) (argument-option options "--under") (cadr args) actor req (list check finish run)))))
+                  (usage '(def <name> ["--under" <library>] <source> ["--premises" <datum>])))))
       (cons 'import-md
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(import-md <dir> ["--allow-delete"]))
+                  (usage '(import-md <dir> ["--allow-delete"] ["--premises" <datum>]))
                   ;; THE RESULTS STAY THE SECOND ELEMENT, judged one by one
                   ;; as before; what the directory lacked, or what was
                   ;; deleted, is a clause beside them, there only when
                   ;; there is something to say.
-                  (guarded (lambda ()
-                             (let ((r (import-md-report store (car args) actor
-                                                        (argument-option options "--allow-delete"))))
-                               (append (list 'import (car r))
-                                       (if (cadr r) (list (cadr r)) '()))))))))
+                  (guarded (lambda () (import-md-answer store (car args) actor options))))))
       (cons 'export-md
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
@@ -1922,8 +1971,8 @@
                                                         (caddr t))))
                                              (store-tags store)))))))
                 ((= 1 (length args))
-                 (guarded (lambda () (one-write store actor (list 'tag (car args)) req))))
-                (else (usage '(tag [<name>]))))))
+                 (guarded (lambda () (one-write store actor (list 'tag (car args)) req options))))
+                (else (usage '(tag [<name>] ["--premises" <datum>]))))))
       (cons 'diff
             (lambda (store actor args req options state writer cwd)
               (if (not (= 2 (length args)))
@@ -2390,6 +2439,11 @@
         ;; question is quite often one that has not got a store yet --
         ;; the MCP shell builds its tool list this way, before anyone has
         ;; said which store they mean.
+        ;; THE PREMISE SET IS READ HERE, ONCE, before the store is asked
+        ;; whether it exists and before any verb's own checks: a set the
+        ;; store cannot check is the answer. Both routes dispatch through
+        ;; this point; what comes before it is the request arriving.
+        ((premises-refusal store verb options) => (lambda (a) a))
         ((and (not (memq verb '(init describe))) (no-store? store)) => (lambda (a) a))
         ((and id (not after)) '(error bad-request req-without-cursor))
         ((and id (not (tracked-request? verb args)))
@@ -2400,7 +2454,10 @@
         (else (with-verb-declaration store verb args
                 (lambda ()
                   ((cdr entry) store actor args
-                   (and id (make-write-request actor verb (argument-strings options) id after))
+                   ;; A REQUEST'S IDENTITY NEVER INCLUDES ITS PREMISES: the same
+                   ;; request retried with a new receipt is the same request.
+                   ;; The handler still receives the option.
+                   (and id (make-write-request actor verb (argument-strings (argument-remove options '("--premises"))) id after))
                    options state writer cwd)))))))
 
   ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader

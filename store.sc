@@ -17,7 +17,8 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
+  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also
+          premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
           ;; The interface pinned at dispatch (F77c; cells v3e look these up
@@ -3211,6 +3212,41 @@
       (assertion-violation 'store-withhold-hook! "not a procedure" procedure))
     (set! withhold-hook procedure))
 
+  ;; HOW A RAISE IS ANSWERED, as the dispatcher answers it: rpc.sc installs
+  ;; its own conversion here when it is loaded, on every route that
+  ;; dispatches. Without it a raise goes on as it came.
+  (define raise-answer-hook (lambda (e) (raise e)))
+  (define (store-raise-answer-hook! procedure)
+    (unless (procedure? procedure)
+      (assertion-violation 'store-raise-answer-hook! "not a procedure" procedure))
+    (set! raise-answer-hook procedure))
+
+  ;; A GATE is the premises' preflight: #(premises-gate <check> <enter>
+  ;; <also>), made by (theourgia premises). with-store-write calls ENTER once
+  ;; its session has begun, then asks CHECK; a plain procedure is still a
+  ;; preflight. A tagged vector, so nothing here loads the premises library.
+  (define (premises-gate? p) (and (vector? p) (= (vector-length p) 4) (eq? (vector-ref p 0) 'premises-gate)))
+  (define (premises-gate-check p) (vector-ref p 1))
+  (define (premises-gate-enter p) (vector-ref p 2))
+
+  ;; A SITE'S OWN CHECK, asked after the premises: the gate composes it
+  ;; (keeping its entry); without a set, the plain composition.
+  (define (premises-also gate own)
+    (cond ((premises-gate? gate) ((vector-ref gate 3) own))
+          (gate (lambda (state) (or (gate state) (own state))))
+          (else own)))
+
+  ;; THE PREMISES A COMMITTED WRITE IS ACCEPTED ON (`--premises <datum>`):
+  ;;   (premises-preflight store text own) -> preflight, finish, run
+  ;; Without the option, OWN, the identity and a plain runner, and nothing is
+  ;; loaded; with it, the three faces of one compilation, made by (theourgia
+  ;; premises), premises-faces, where what each face does is written.
+  (define (premises-preflight store text own)
+    (if (not text)
+        (values own (lambda (answer) answer) (lambda (thunk) (thunk)))
+        ((eval 'premises-faces (environment '(theourgia premises)))
+         store text own (lambda (e) (raise-answer-hook e)))))
+
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
@@ -3222,7 +3258,12 @@
           ;; is written into.
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty)))
-      (let ((s (log-begin store (deliver-into state #f))))
+      (let* ((s (log-begin store (deliver-into state #f)))
+             ;; ENTERED: the session has begun. A gate is told so here, and
+             ;; its check is the preflight from now on.
+             (preflight (if (premises-gate? preflight)
+                            (begin ((premises-gate-enter preflight)) (premises-gate-check preflight))
+                            preflight)))
         ;; THE SESSION IS GIVEN BACK BY THE UNWIND, NOT BY A LINE ON EACH
         ;; PATH. Written once per exit it got written wrong twice in one
         ;; sitting: one version raised past every `log-end!` and held the

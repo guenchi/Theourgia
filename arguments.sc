@@ -133,6 +133,11 @@
         ((eval) '("--cut" "--under" "--timeout-ms" "--memory-bytes"
                   "--output-bytes" "--writer" "--lang"))
         (else '()))
+      ;; THE PREMISES A COMMITTED WRITE IS ACCEPTED ON: every verb that writes
+      ;; a record takes them; a registered one declares them in its entry.
+      (case verb
+        ((insert set move del link unlink tag batch commit import-code import-md def) '("--premises"))
+        (else '()))
       (extension-options-of verb car)))
 
   ;; THE OPTIONS THAT SAY WHERE A REQUEST GOES AND HOW ITS ANSWER TRAVELS,

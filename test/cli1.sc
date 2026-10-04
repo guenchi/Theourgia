@@ -629,8 +629,8 @@
 (want "a verb given the wrong shape prints the right shape"
       (list (> (code-of short-set) 0) (datum-of short-set) (out-of short-set))
       (list #t '(usage (set <id> <field> <value> ["--if-unchanged" <version>]
-                            ["--based-on" <version>]))
-            "(usage (set <id> <field> <value> (\"--if-unchanged\" <version>) (\"--based-on\" <version>)))\n"))
+                            ["--based-on" <version>] ["--premises" <datum>]))
+            "(usage (set <id> <field> <value> (\"--if-unchanged\" <version>) (\"--based-on\" <version>) (\"--premises\" <datum>)))\n"))
 (define unknown (run d6 "set nosuch.9 title x"))
 (want "an unknown id names the ids that do exist"
       (list (> (code-of unknown) 0)

@@ -259,6 +259,21 @@
    unrelated a
    "a stored block the name-use walk cannot read (a malformed fields list, a definition datum-names raises on): the body reads a row already in the reduction, never a file, and answers (name-use none (reason unreadable-code)), which uses counts under skipped"
    (e (#t (none (quote unreadable-code)))))
+  ("premises.sc" (spelling) 1 guard
+   (#t)
+   unrelated a
+   "a premise form the codec cannot print is named <unprintable> in its refusal; the form is the request's own datum, never a file"
+   (e (#t "<unprintable>")))
+  ("premises.sc" (read-set) 1 guard
+   (#t)
+   unrelated a
+   "a --premises value that does not read as a datum is refused premise-not-understood; the text is the request's argument, never a file"
+   (e (#t (not-understood text))))
+  ("premises.sc" (current-version) 1 guard
+   (#t)
+   unrelated a
+   "a premised block that cannot be hashed is current (unavailable (reason ...)) in the refusal; the state is already in memory, never a file"
+   (e (#t (list (quote unavailable) (list (quote reason) (if (message-condition? e) (condition-message e) "hash"))))))
   ("query.sc" (build) 1 guard
    (#t)
    unrelated a
@@ -1134,6 +1149,11 @@
    fact b
    "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (F77b review 2)"
    (failure (#t #f)))
+  ("working.sc" (commit-premises) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "a commit's --premises the store cannot check (premise-not-understood, premise-inconsistent) is the commit's answer; the set is the request's argument, never a file"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("working.sc" (working-commit!) 1 guard
    ((unreadable-entry? e) #t)
    fact b
@@ -1189,6 +1209,16 @@
    refuse a
    "F100b point 2b: the store check's stat failing answers the table's kind with an empty record, as the transport's refusal (P2b); anything else propagates"
    (e ((classify-failure e (quote ())) => (lambda (a) a))))
+  ("premises.sc" (premises-faces) 1 guard
+   ((and entered (not called)))
+   refuse a
+   "a request with premises: a raise after its write was entered and before the check was asked is answered as the dispatcher answers a raise (the hook rpc.sc installs, passed in by store.sc) and given the premises' not-checked clause; any other raise goes on as it came"
+   (e ((and entered (not called)) (finish (raise-answer e)))))
+  ("rpc.sc" (premises-refusal) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "a request's --premises the store cannot check (premise-not-understood, premise-inconsistent) is the request's answer, read at the dispatcher's entry; the set is the request's argument, never a file"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("rpc.sc" (rpc-dispatch-parsed) 1 guard
    ((and refused (classify-failure refused (mutation-record))) (classify-failure e (mutation-record)))
    refuse a

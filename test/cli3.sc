@@ -3201,7 +3201,7 @@
 ;; survive, and it is also what makes this case reachable at all.
 (want "intents given both as an argument and on stdin is a usage error"
       (cadr (run-piped dB one-intent "batch" one-intent))
-      '(usage (batch <intents>)))
+      '(usage (batch <intents> ["--premises" <datum>])))
 ;; AND A VERB THAT WOULD IGNORE THE IDENTITY SAYS SO. Accepting it and
 ;; dropping it is the shape of a fault that arms and never fires: the
 ;; caller is told nothing and believes it is protected.

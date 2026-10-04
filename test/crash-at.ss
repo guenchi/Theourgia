@@ -30,6 +30,9 @@
 ;;
 ;; It adds no barrier and calls nothing but the product's entry. Each call
 ;; uses its own files under ROOT, named by a counter.
+;; An optional last argument names a file the child reads as its standard
+;; input (a batch's intents arrive there on the command line); without it
+;; the child inherits the caller's.
 ;;
 ;; NOTE: EVERY WAIT IS BOUNDED. A fifo write with no reader blocks for
 ;; ever; the whole dance runs under one alarm, the shell kills its child
@@ -46,7 +49,7 @@
             (else (loop (cdr cs) (cons (car cs) out)))))
     "'"))
 
-(define (crash-at n root home cli args)
+(define (crash-at n root home cli args . stdin-file)
   (set! crash-at-count (+ crash-at-count 1))
   (let* ((tag (string-append "crash" (number->string crash-at-count)))
          (fifo (string-append root "/" tag ".gate"))
@@ -73,6 +76,7 @@
             "THEOURGIA_BARRIER=before-append:" (crash-at-quote fifo) " THEOURGIA_TRACE=1 "
             "scheme --script " (crash-at-quote cli)
             (apply string-append (map (lambda (a) (string-append " " (crash-at-quote a))) args))
+            (if (pair? stdin-file) (string-append " < " (crash-at-quote (car stdin-file))) "")
             " > /dev/null 2> " (crash-at-quote trace) " &\n"
             "child=$!\n"
             (let release ((k 1) (out ""))

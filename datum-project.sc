@@ -228,28 +228,45 @@
   (define (packet-extra captured tag)
     (let ((x (and (> (length captured) 5) (assq tag (list-tail captured 5)))))
       (and x (cadr x))))
-  (define (execute store actor packet)
-    (let* ((captured (cadr packet))
-           (results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
-             (lambda (state)
-               (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
-                   (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
-                                            (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children)))) (caddr captured))
-                   (exists (lambda (c) (and (not (equal? (cadr c) (state-path-claimants state 'library 'datum (car c))))
-                                            (list 'error 'stale-baseline (list 'path (car c)) '(reason changed-claimants))))
-                           (or (packet-extra captured 'claimants) '())))) #t)))
-      ;; THE SKIPPED AND KEPT CLAUSES ARE THERE ONLY WHEN THEY NAME SOMETHING,
-      ;; and only on an answer that succeeded. A packet captured before these
-      ;; slots existed has five, and def's has five: neither gains one.
-      (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
-          (append (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
-                  (let ((skipped (packet-extra captured 'skipped)))
-                    (if (pair? skipped) (list (list 'skipped skipped)) '()))
-                  (let ((kept (packet-extra captured 'kept)))
-                    (if (pair? kept) (list (list 'kept (list 'ids kept))) '())))
-          (if (= (length results) 1) (car results) (batch-answer results)))))
-  (define (import-datum store dir actor req)
-    (answer (lambda () (execute store actor (frozen-operation store req (lambda () (capture-import store dir)))))))
+  ;; PREMISES, when given, is the list (check finish run) the handler made of
+  ;; the request's `--premises` (store.sc, premises-preflight): the check is
+  ;; asked before this verb's own, finish is given the answer of the write --
+  ;; only of the write, so def's name-exists, refused while the operation is
+  ;; captured, carries no clause -- and run holds the part from the write on,
+  ;; so a raise inside it says so.
+  (define (execute store actor packet . premises)
+    (let* ((given (and (pair? premises) (car premises)))
+           (pc (and given (car given)))
+           (finish (if given (cadr given) (lambda (a) a)))
+           (run (if given (caddr given) (lambda (thunk) (thunk))))
+           (captured (cadr packet)))
+      (run
+        (lambda ()
+          (let ((results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
+                           (premises-also pc
+                             (lambda (state)
+                               (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
+                                   (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
+                                                            (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children))))
+                                           (caddr captured))
+                                   (exists (lambda (c) (and (not (equal? (cadr c) (state-path-claimants state 'library 'datum (car c))))
+                                                            (list 'error 'stale-baseline (list 'path (car c)) '(reason changed-claimants))))
+                                           (or (packet-extra captured 'claimants) '())))))
+                           #t)))
+            ;; THE SKIPPED AND KEPT CLAUSES ARE THERE ONLY WHEN THEY NAME
+            ;; SOMETHING, and only on an answer that succeeded. A packet
+            ;; captured before these slots existed has five, and def's has
+            ;; five: neither gains one.
+            (finish
+              (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
+                  (append (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
+                          (let ((skipped (packet-extra captured 'skipped)))
+                            (if (pair? skipped) (list (list 'skipped skipped)) '()))
+                          (let ((kept (packet-extra captured 'kept)))
+                            (if (pair? kept) (list (list 'kept (list 'ids kept))) '())))
+                  (if (= (length results) 1) (car results) (batch-answer results)))))))))
+  (define (import-datum store dir actor req . premises)
+    (answer (lambda () (apply execute store actor (frozen-operation store req (lambda () (capture-import store dir))) premises))))
 ;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-code-view.
   (define (export-datum store dir)
     (export-datum-view store dir (lambda () (open-and-reduce store))))
@@ -293,10 +310,10 @@
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (code-parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
           (list 'ok (list 'files (length outputs)))))))
-  (define (def-datum store name under source actor req)
+  (define (def-datum store name under source actor req . premises)
     (answer
       (lambda ()
-        (execute store actor (frozen-operation store req
+        (apply execute store actor (frozen-operation store req
           (lambda ()
             (let* ((forms (datum-source-read (string->utf8 source))) (state (open-and-reduce store))
                    (libs (libraries state)) (id (or under (and (= (length libs) 1) (car libs))))
@@ -314,5 +331,5 @@
                 (list (list (list 'insert id (and (pair? children) (car (reverse children)))
                                   (code-fields (list #f (car form) (cadr form) (caddr form)))))
                       (map (lambda (b) (list b (block-hash state b) cut)) (cons id children))
-                      (list (list id children)) (list-ref form 5) source)))))))))
+                      (list (list id children)) (list-ref form 5) source))))) premises))))
 )

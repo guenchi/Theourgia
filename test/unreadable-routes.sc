@@ -540,7 +540,7 @@
               #t
               ans))))
 (define commit-usage
-  (read (open-string-input-port "(usage (commit (<block> ...) (\"--writer\" <name>) (\"--working-version\" <block>=<version>)))")))
+  (read (open-string-input-port "(usage (commit (<block> ...) (\"--writer\" <name>) (\"--working-version\" <block>=<version>) (\"--premises\" <datum>)))")))
 (let* ((s (m1-store!))
        (a (m1-insert-a s))
        (writer (m1-writer s)))

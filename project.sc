@@ -685,6 +685,10 @@
     (require-md-directory dir)
     (let* ((actor (if (pair? opts) (car opts) "unknown"))
            (allow-delete? (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
+           ;; the premises' check, asked before the write's first record
+           ;; (store.sc, premises-preflight); the caller gives the answer to
+           ;; its finish
+           (premise-check (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)))
            (files (md-files dir))
            (absent '())
            (doc-deletions '()))
@@ -738,7 +742,7 @@
                                (append imports rehomes section-dels doc-dels))
                              (let ((is (file-intents state dir (car fs) base)))
                                (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
-                actor)))
+                actor #f premise-check)))
         (list results
               (if allow-delete?
                   (let ((ran (filter (lambda (d)

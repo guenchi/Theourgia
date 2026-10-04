@@ -35,7 +35,7 @@
 ;; `template apply <name>`, `template apply --file <template-file>` and
   ;; `template export`: the action is the first positional.
   (define template-usage
-    '(template <action> [<name>] ["--file" <template-file>]))
+    '(template <action> [<name>] ["--file" <template-file>] ["--premises" <datum>]))
 
   (define tasks-usage
     '(tasks ["--status" <status>] ["--batch" <batch>] ["--under" <id>]))
@@ -65,7 +65,7 @@
 ;; APPLY WRITES FROM THE REDUCTION -- what exists decides what is
             ;; created -- so it refuses a load that could not read a writer;
             ;; export only prints.
-            '("--file") '()
+            '("--file" "--premises") '()
             '((theourgia template) . template-verb)
             '(refuse "apply"))
       (list 'names names-usage
