@@ -161,7 +161,7 @@ A plain `read` of a block that is not valid adds a `(validity ...)` clause, and 
 
 ### Writers
 
-Every agent and every person writes under a writer id. The id is what block ids are built from, so a block carries the identity of who wrote it for as long as it exists. One writer id is held by one live agent at a time -- that is a rule in the documentation, not a mechanism in the code; a later session may bind the same id and carry on with its drafts.
+Every agent and every person writes drafts under a writer id. Every record in the log also carries the actor that wrote it, a name the client states (`--actor`, else `THEOURGIA_ACTOR`, else the login name); nothing proves it, and a block id does not say who wrote the block. One writer id is held by one live agent at a time -- that is a rule in the documentation, not a mechanism in the code; a later session may bind the same id and carry on with its drafts.
 
 ### Drafts, then commit
 
