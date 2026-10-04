@@ -308,10 +308,23 @@ export async function definitionsOf(client: Client, name: string): Promise<Defin
 }
 
 /*
- * THE COUNTS IN AN ANSWER'S `excluded` CLAUSE, or null when there is no such
- * clause, it cannot be read, or it counts nothing.
+ * THE BLOCKS A COUNT NAMES, as a sentence ends: "a block that is superseded",
+ * "blocks that are superseded or refuted". One wording for every notice that
+ * says what was left out.
  */
-function leftOutOf(envelope: Datum | null): LeftOut | null {
+export function leftOutBlocks(leftOut: LeftOut): string {
+  const which =
+    leftOut.superseded > 0 && leftOut.refuted > 0 ? 'superseded or refuted' : leftOut.superseded > 0 ? 'superseded' : 'refuted';
+  const blocks = leftOut.superseded + leftOut.refuted === 1 ? 'a block that is' : 'blocks that are';
+  return `${blocks} ${which}`;
+}
+
+/*
+ * THE COUNTS IN AN ANSWER'S `excluded` CLAUSE, or null when there is no such
+ * clause, it cannot be read, or it counts nothing. `whereis`, `search` and
+ * `grep` carry the same clause, and this is the one reader of it.
+ */
+export function leftOutOf(envelope: Datum | null): LeftOut | null {
   const form = envelope === null ? null : answerOf(envelope, 'ok');
   const excluded = form === null ? null : form.value('excluded');
   const blocks = excluded === null || !excluded.read ? null : answerOf(excluded.value, 'blocks');
@@ -341,10 +354,7 @@ function countIn(form: Form, which: string): number | null {
  */
 export function noDefinitionNotice(name: string, nearest: string[], leftOut: LeftOut | null = null): string {
   if (leftOut !== null) {
-    const which =
-      leftOut.superseded > 0 && leftOut.refuted > 0 ? 'superseded or refuted' : leftOut.superseded > 0 ? 'superseded' : 'refuted';
-    const blocks = leftOut.superseded + leftOut.refuted === 1 ? 'a block that is' : 'blocks that are';
-    return `no definition of ${name} in force: it is found only in ${blocks} ${which}.`;
+    return `no definition of ${name} in force: it is found only in ${leftOutBlocks(leftOut)}.`;
   }
   return nearest.length === 0
     ? `no definition of ${name}.`

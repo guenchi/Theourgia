@@ -262,11 +262,17 @@ interface MatchRow {
 }
 
 /*
- * `grep <name>` answers one `(match <id> <line> "<text>")` per line, literally
+ * `grep <name>` answers one `(match <id> <line> "<text>")` per item, literally
  * and without case.
+ *
+ * NEVER: ASKED WITH `--wire`. On the human route, when every match was in a
+ * superseded or refuted block, the pinned core (5c28e42) prints nothing, and
+ * a newer core prints its `(excluded ...)` line, which is not a match and
+ * would fail the hover where there is nothing to mention. The wire answer's
+ * items are the matches on either core; what was left out is not mentioned.
  */
 async function matchesOf(client: Client, name: string): Promise<MatchRow[]> {
-  const answer = await client.request('grep', [name]);
+  const answer = await client.request('grep', [name, '--wire']);
   if (!answer.ok) {
     throw new TransportError('unreadable', `the store would not search the text for ${name}: ${answer.text.trim()}`, answer.text);
   }

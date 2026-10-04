@@ -33,6 +33,15 @@
 import { Datum, answerOf, asInteger, isList, isSym } from './wire';
 import { Note } from './client';
 import { incompleteWarning } from './status';
+import { LeftOut, leftOutBlocks } from './definition';
+
+/*
+ * WHAT IS SAID WHEN EVERY HIT WAS LEFT OUT: the query matches only in blocks
+ * that are not in force.
+ */
+export function leftOutNotice(query: string, leftOut: LeftOut): string {
+  return `nothing in force matches "${query}": it is found only in ${leftOutBlocks(leftOut)}.`;
+}
 
 export interface Hit {
   id: string;
@@ -281,7 +290,7 @@ export interface Searcher {
    * searcher has it; a searcher with `search` alone is one whose readings
    * are taken as complete.
    */
-  searchReading?(query: string): Promise<{ hits: Hit[]; notes: Note[] | null }>;
+  searchReading?(query: string): Promise<{ hits: Hit[]; notes: Note[] | null; leftOut?: LeftOut | null }>;
 }
 
 export type SearchOutcome =
@@ -318,11 +327,13 @@ export async function runSearch(
   }
   let hits: Hit[];
   let notes: Note[] | null = null;
+  let leftOut: LeftOut | null = null;
   try {
     if (model.searchReading !== undefined) {
       const reading = await model.searchReading(query);
       hits = reading.hits;
       notes = reading.notes;
+      leftOut = reading.leftOut ?? null;
     } else {
       hits = await model.search(query);
     }
@@ -340,6 +351,14 @@ export async function runSearch(
   const warning = notes === null ? null : incompleteWarning(notes);
   if (hits.length === 0 && warning !== null) {
     editor.say(`${warning} Nothing in what was read matches "${query}".`, 'information');
+    return { did: 'nothing', because: 'no-hits', query };
+  }
+  /*
+   * EVERY HIT LEFT OUT IS NOT NOTHING FOUND: the store holds matches, each
+   * in a block that is superseded or refuted, and says so in its count.
+   */
+  if (hits.length === 0 && leftOut !== null) {
+    editor.say(leftOutNotice(query, leftOut), 'information');
     return { did: 'nothing', because: 'no-hits', query };
   }
   if (hits.length === 0) {
@@ -367,8 +386,9 @@ export async function runSearch(
    *
    * It read `${hits.length} blocks match "${query}"`. From the core's C2
    * on, `search` answers the best ten by default, and the number cut off
-   * is reported only by `(truncated (hits n))` under `--wire` -- which
-   * this client does not ask for on a search. So the sentence would tell
+   * is reported only by `(truncated (hits n))` under `--wire`. This client
+   * now asks a search with `--wire` and does not read that clause yet
+   * (whether it does is a later ruling), so the sentence would still tell
    * a user that ten blocks match when forty-seven do, with no way here to
    * know better: what arrived, described as what exists.
    *
@@ -380,10 +400,10 @@ export async function runSearch(
    * NOTE: AND THE REMEDY IS NOT TO FETCH EVERYTHING. `--all` would make the
    * old sentence true by asking for every hit so that a count can be
    * printed, which is the cost running the wrong way and gets worse as a
-   * store grows. The total becomes available when this client asks for
-   * `--wire` on a search -- and that is one change together with the
-   * ruling that `hitsOf` does not open envelopes, not a special case for
-   * one number. Ruled by the main session, 2026-09-21.
+   * store grows. The total is in the wire answer this client now asks for;
+   * reading it is one change together with the ruling that `hitsOf` does
+   * not open envelopes, not a special case for one number. Ruled by the
+   * main session, 2026-09-21.
    */
   const placeHolder = `${hits.length} shown for "${query}", most relevant first`;
   const chosen =

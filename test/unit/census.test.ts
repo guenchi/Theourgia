@@ -218,7 +218,11 @@ const AT_LEAST: Array<[string, number]> = [
    * window (its three kinds of document, marker lines, the name in a restored
    * tab, the cache across a mode invalidation and a save); two on a real store.
    */
-  ['hover.test.ts', 30],
+  /*
+   * RAISED 30 -> 31 when the hover's grep was asked with --wire: every match
+   * left out mentions nothing and does not fail.
+   */
+  ['hover.test.ts', 31],
   /*
    * ADDED with the supply commands: the reader of the projection's marker
    * lines, one cell per layout the core writes.
@@ -246,7 +250,11 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 5 -> 8 with the re-pin to theourgia 06a348b: the plain read, the
    * recursive read and whereis with the validity and excluded clauses.
    */
-  ['read-receipt.test.ts', 8],
+  /*
+   * RAISED 8 -> 10 when search and grep were asked with --wire: a search
+   * and a grep answer with the excluded and validity clauses.
+   */
+  ['read-receipt.test.ts', 10],
   /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
@@ -349,7 +357,12 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 70 -> 72 with the search reader's repair: the flat form refused,
    * and a hit as the real core printed it.
    */
-  ['search.test.ts', 72],
+  /*
+   * RAISED 72 -> 76 when search was asked with --wire: no hits and the count
+   * left out read from the wire answer, the sentence that says so, its twin,
+   * and the human line that is not a hit.
+   */
+  ['search.test.ts', 76],
   /*
    * RAISED in plugin-r3 item 1, 54 -> 55: a bare `unreadable` answer to a
    * save is kept pending under its own id, like `transport-unknown`. And

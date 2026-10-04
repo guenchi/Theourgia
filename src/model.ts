@@ -48,6 +48,7 @@ import { parseOutline } from './outline';
 import { TransportError } from './transport';
 import { Datum, Form, answerOf, isList, isSym } from './wire';
 import { Hit, hitsOf, knownVerbs, rankHits } from './search';
+import { LeftOut, leftOutOf } from './definition';
 
 /*
  * THE MARKS, AS A VALUE AND NOT ONLY AS A TYPE. A union is erased before
@@ -830,9 +831,18 @@ export class StoreModel {
    * THE HITS AND WHAT THE SEARCH COULD NOT SEE. The search a person runs
    * reads this one: hits from a store missing a writer are still hits,
    * and the notes say whose writing was not searched.
+   *
+   * NEVER: A PROGRAM READS THE WIRE ANSWER. The human output is for a
+   * person. When every hit was in a superseded or refuted block, the pinned
+   * core (5c28e42) prints nothing there, which this read as "nothing in the
+   * store matches", the same as words found nowhere; a newer core prints its
+   * `(excluded ...)` line there, which, read line by line as hits, would
+   * throw "the store did not answer the search". Asked with `--wire`, the
+   * hits are the answer's items and the count of what was left out is its
+   * `excluded` clause, read as `whereis`'s is, on either core.
    */
-  public async searchReading(query: string): Promise<{ hits: Hit[]; notes: Note[] | null }> {
-    const answer = await this.client.request('search', [query]);
+  public async searchReading(query: string): Promise<{ hits: Hit[]; notes: Note[] | null; leftOut: LeftOut | null }> {
+    const answer = await this.client.request('search', [query, '--wire']);
     /*
      * NEVER: THE EXIT CODE IS READ BEFORE THE BYTES ARE.
      *
@@ -858,7 +868,7 @@ export class StoreModel {
         answer.text
       );
     }
-    return { hits: rankHits(hits), notes: answer.notes ?? null };
+    return { hits: rankHits(hits), notes: answer.notes ?? null, leftOut: leftOutOf(answer.envelope) };
   }
 
   /*

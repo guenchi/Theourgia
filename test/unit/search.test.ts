@@ -65,9 +65,10 @@ function datum(text: string): unknown {
 
 /*
  * EVERY TOP-LEVEL DATUM THE CORE PRINTED, which is what `Client` hands
- * a reader for a verb whose answer is a sequence of items. On the human
- * route -- the one this extension is on -- a search prints one `(hit
- * ...)` per line and prints nothing at all when nothing matched.
+ * a reader for a verb whose answer is a sequence of items when no envelope
+ * was opened. This extension asks a search on the wire route, `--wire`,
+ * where the hits are the items of one `(ok (items ...))` the client opens;
+ * the cells below hand the reader those items, a `(hit ...)` each.
  */
 function data(text: string): unknown[] {
   return parseAnswers(text);
@@ -998,11 +999,19 @@ describe('plugin-r2 T5 what a search does', function () {
       kind: 'stand-in',
       send: async (verb: string, args: string[]): Promise<RawResult> => {
         asked.push({ verb, args });
-        return { argv: [], rc: 0, stdout: '', stderr: '' };
+        /* an empty search as the core prints it under --wire */
+        return {
+          argv: [],
+          rc: 0,
+          stdout:
+            '(ok (items) (cut (("w0000001" . 4))) (scanned (blocks 5) (fields (title keywords src names doc body)) ' +
+            '(unreadable-blocks 0)) (coverage (defs (names 0)) (names-from (datum lexical))) (versions ()))\n',
+          stderr: ''
+        };
       }
     };
     await new StoreModel(new Client(watching)).search('stale baseline');
-    assert.deepStrictEqual(asked, [{ verb: 'search', args: ['stale baseline'] }]);
+    assert.deepStrictEqual(asked, [{ verb: 'search', args: ['stale baseline', '--wire'] }]);
   });
 
   /*
@@ -1021,13 +1030,17 @@ describe('plugin-r2 T5 what a search does', function () {
       send: async (): Promise<RawResult> => ({
         argv: [],
         rc: 0,
-        stdout: '(hit "w.9" 2 "b")\n(hit "w.2" 7 "a")\n',
+        /* two hits as the core prints them under --wire, the lower first */
+        stdout:
+          '(ok (items (hit "w.9" 2 "b" (fields (src))) (hit "w.2" 7 "a" (fields (title src)))) ' +
+          '(cut (("w0000001" . 4))) (scanned (blocks 5) (fields (title keywords src names doc body)) (unreadable-blocks 0)) ' +
+          '(versions (("w.9" . "h9") ("w.2" . "h2"))))\n',
         stderr: ''
       })
     };
     assert.deepStrictEqual(await new StoreModel(new Client(answering)).search('two words'), [
-      { id: 'w.2', score: 7, note: 'a' },
-      { id: 'w.9', score: 2, note: 'b' }
+      { id: 'w.2', score: 7, note: 'a', fields: ['title', 'src'] },
+      { id: 'w.9', score: 2, note: 'b', fields: ['src'] }
     ]);
   });
 
@@ -2082,5 +2095,68 @@ describe('plugin-r2 a refusal this build cannot read is not a refusal', function
     assert.deepStrictEqual((read as { sidecar: { outstanding: unknown } }).sidecar.outstanding, [
       { seq: 1, req: 'R1' }
     ]);
+  });
+});
+
+/*
+ * A SEARCH WHOSE EVERY HIT WAS LEFT OUT. On the human route the pinned core
+ * (5c28e42) prints nothing when every hit was in a superseded or refuted
+ * block, so this client said "nothing in the store matches"; a newer core
+ * prints its `(excluded ...)` line there, a line that is not a hit, on which
+ * the human-route reader would throw "the store did not answer the search".
+ * The search is asked with `--wire` and read as `whereis` is: the items are
+ * the hits, and the `excluded` clause is the count of what was left out.
+ * The answers below are the core's, clause for clause: an empty search
+ * carries the scan's cut, scanned and coverage, then the validity clauses,
+ * then the versions of no hit.
+ */
+describe('a search whose every hit was left out', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const SCAN =
+    '(cut (("w0000001" . 4))) (scanned (blocks 3) (fields (title keywords src names doc body)) (unreadable-blocks 0)) ' +
+    '(coverage (defs (names 0)) (names-from (datum lexical)))';
+  const LEFT_OUT = `(ok (items) ${SCAN} (excluded (blocks (superseded 1) (refuted 0))) (versions ()))\n`;
+  const NOTHING = `(ok (items) ${SCAN} (versions ()))\n`;
+  const storeAnswering = (stdout: string, asked: Array<{ verb: string; args: string[] }> = []): StoreModel =>
+    new StoreModel(
+      new Client({
+        kind: 'stand-in',
+        send: async (verb: string, args: string[]): Promise<RawResult> => {
+          asked.push({ verb, args });
+          return { argv: [], rc: 0, stdout, stderr: '' };
+        }
+      })
+    );
+
+  it('asks with --wire and reads no hits and the count of what was left out', async () => {
+    const asked: Array<{ verb: string; args: string[] }> = [];
+    const reading = await storeAnswering(LEFT_OUT, asked).searchReading('osprey');
+    assert.deepStrictEqual(asked, [{ verb: 'search', args: ['osprey', '--wire'] }]);
+    assert.deepStrictEqual(reading.hits, []);
+    assert.deepStrictEqual(reading.leftOut, { superseded: 1, refuted: 0 });
+  });
+
+  it('says the words match only in a block that is not in force, as information', async () => {
+    const editor = editorThat('osprey');
+    const outcome = await runSearch(storeAnswering(LEFT_OUT), editor);
+    assert.deepStrictEqual(outcome, { did: 'nothing', because: 'no-hits', query: 'osprey' });
+    assert.deepStrictEqual(editor.said, ['nothing in force matches "osprey": it is found only in a block that is superseded.']);
+    assert.deepStrictEqual(editor.levels, ['information']);
+    assert.deepStrictEqual(editor.offered, []);
+  });
+
+  it('TWIN: with no excluded clause, nothing matched is what is said', async () => {
+    const editor = editorThat('osprey');
+    const reading = await storeAnswering(NOTHING).searchReading('osprey');
+    assert.strictEqual(reading.leftOut, null);
+    await runSearch(storeAnswering(NOTHING), editor);
+    assert.deepStrictEqual(editor.said, ['nothing in the store matches "osprey".']);
+  });
+
+  it('an (excluded ...) line, which a newer core prints on the human route, is not a hit', () => {
+    assert.strictEqual(hitsOf(parseAnswers('(excluded (blocks (superseded 1) (refuted 0)))\n')), null);
   });
 });

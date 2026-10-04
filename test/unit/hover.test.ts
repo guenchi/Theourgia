@@ -30,7 +30,8 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Answer, Client } from '../../src/client';
+import { Answer, Client, answerKind, interpret } from '../../src/client';
+import { RawResult } from '../../src/transport';
 import { HOVER_MORE, OPEN_BLOCK } from '../../src/commands';
 import {
   HOVER_COMMANDS,
@@ -46,7 +47,7 @@ import {
   listEntries,
   nameUnder
 } from '../../src/hover';
-import { initWire, parseAnswers } from '../../src/wire';
+import { initWire } from '../../src/wire';
 import { RealStore } from '../support/real-core';
 
 type Reply = string | { rc: number; text: string } | Error | Promise<string>;
@@ -71,17 +72,14 @@ function scripted(script: Record<string, Reply>) {
       }
       const resolved = reply instanceof Promise ? await reply : reply;
       const { rc, text } = typeof resolved === 'string' ? { rc: 0, text: resolved } : resolved;
-      return {
-        argv: [verb, ...args],
-        rc,
-        ok: rc === 0,
-        kind: 'items',
-        text,
-        answers: text.trim() === '' ? [] : parseAnswers(text),
-        envelope: null,
-        stderr: '',
-        notes: null
-      } as Answer;
+      /*
+       * READ BY THE CLIENT'S OWN READER, not a copy of it: the printed bytes
+       * and the exit code go through `interpret` with the answer kind the
+       * client gives the verb, so an envelope is opened, an `(incomplete ...)`
+       * taken off and a malformed one refused exactly as the client does.
+       */
+      const raw: RawResult = { argv: [verb, ...args], rc, stdout: text, stderr: '' };
+      return interpret(raw, verb, answerKind(verb, args), args);
     }
   } as unknown as Client;
   return { client, asked };
@@ -91,7 +89,23 @@ const record = (id: string, kind: string, title: string, src: string): string =>
   `(ok ((id . "${id}") (deleted . #f) (fields (kind . ${kind}) (src . ${JSON.stringify(src)}) (title . ${JSON.stringify(title)})) (position root . 0) (edges)))\n`;
 const link = (from: string, rel: string): string => `(ref (from "${from}") (rel ${rel}) (via link))\n`;
 const textRef = (from: string): string => `(ref (from "${from}") (rel ref) (via md))\n`;
-const match = (id: string, text: string): string => `(match "${id}" 1 ${JSON.stringify(text)})\n`;
+const match = (id: string, text: string): string => `(match "${id}" 1 ${JSON.stringify(text)})`;
+/*
+ * A GREP AS THE CORE PRINTS IT UNDER `--wire`: one envelope, the matches its
+ * items, then the scan's cut and scanned clauses (rpc.sc scan-clauses; a
+ * grep reads src, doc and body), then the versions of the blocks matched,
+ * each once, in order.
+ */
+const matches = (...rows: string[]): string => {
+  const ids = rows
+    .map((row) => (/^\(match "([^"]*)"/.exec(row) ?? ['', ''])[1])
+    .filter((id, at, all) => all.indexOf(id) === at);
+  const versions = ids.map((id) => `("${id}" . "h-${id}")`).join(' ');
+  return (
+    `(ok (items ${rows.join(' ')}) (cut (("w0000001" . 4))) ` +
+    `(scanned (blocks ${ids.length + 2}) (fields (src doc body)) (unreadable-blocks 0)) (versions (${versions})))\n`
+  );
+};
 
 const NEVER = { isCancellationRequested: false };
 
@@ -143,7 +157,7 @@ describe('the hover says what the store holds about the name under the pointer',
 
   it('H3 mentions: a whole word in prose is listed; a longer identifier and a code block are not', async () => {
     const { client } = scripted({
-      'grep alpha': match('p.1', 'We call alpha first.') + match('p.2', 'Only alpha_extra here.') + match('c.1', '(define (alpha x) x)'),
+      'grep alpha --wire': matches(match('p.1', 'We call alpha first.'), match('p.2', 'Only alpha_extra here.'), match('c.1', '(define (alpha x) x)')),
       'read p.1': record('p.1', 'section', 'Usage', 'We call alpha first.'),
       'read c.1': record('c.1', 'code', 'alpha', '(define (alpha x) x)')
     });
@@ -197,7 +211,7 @@ describe('the hover says what the store holds about the name under the pointer',
   it('H7 shows five lines in the order edges, text references, mentions, then "up to 3 more mentions", and the list holds all eight', async () => {
     const script: Record<string, Reply> = {
       'refs t.1': link('e.1', 'implements') + link('e.2', 'implements') + link('e.3', 'depends-on') + textRef('r.1') + textRef('r.2'),
-      'grep alpha': match('m.1', 'alpha here') + match('m.2', 'alpha there') + match('m.3', 'alpha again')
+      'grep alpha --wire': matches(match('m.1', 'alpha here'), match('m.2', 'alpha there'), match('m.3', 'alpha again'))
     };
     for (const id of ['e.1', 'e.2', 'e.3', 'r.1', 'r.2', 'm.1', 'm.2', 'm.3']) {
       script[`read ${id}`] = record(id, 'section', `T ${id}`, `${id}.`);
@@ -216,7 +230,7 @@ describe('the hover says what the store holds about the name under the pointer',
   it('says "up to" for mentions it has not read, and the list shows only the prose ones among them', async () => {
     const script: Record<string, Reply> = {
       'refs t.1': ['e.1', 'e.2', 'e.3', 'e.4', 'e.5'].map((id) => link(id, 'implements')).join(''),
-      'grep alpha': match('m.1', 'alpha here') + match('l.1', '(export alpha)') + match('m.2', 'alpha there'),
+      'grep alpha --wire': matches(match('m.1', 'alpha here'), match('l.1', '(export alpha)'), match('m.2', 'alpha there')),
       'read l.1': record('l.1', 'library', 'probe', 'x'),
       'read m.1': record('m.1', 'section', 'M1', 'm.'),
       'read m.2': record('m.2', 'task', 'M2', 'm.')
@@ -235,6 +249,41 @@ describe('the hover says what the store holds about the name under the pointer',
     assert.deepStrictEqual(listed.filter((e) => e.description.startsWith('mentions')).map((e) => e.id), ['m.1', 'm.2']);
   });
 
+  /*
+   * A NAME WHOSE EVERY MENTION IS IN A BLOCK NOT IN FORCE. The grep is asked
+   * with `--wire`, through the client that opens the envelope: its items are
+   * none, and the `excluded` clause beside them is not a match. On the human
+   * route a newer core prints that clause as a line of its own, on which the
+   * hover would fail; the pinned core (5c28e42) prints nothing there.
+   */
+  it('mentions nothing, and does not fail, when the store left out every match', async () => {
+    const asked: string[] = [];
+    const transport = {
+      kind: 'stand-in',
+      send: async (verb: string, args: string[]): Promise<RawResult> => {
+        asked.push([verb, ...args].join(' '));
+        if (verb === 'grep') {
+          return {
+            argv: [],
+            rc: 0,
+            stdout:
+              '(ok (items) (cut (("w0000001" . 4))) (scanned (blocks 3) (fields (src doc body)) (unreadable-blocks 0)) ' +
+              '(excluded (blocks (superseded 1) (refuted 0))) (versions ()))\n',
+            stderr: ''
+          };
+        }
+        if (verb === 'whereis') {
+          return { argv: [], rc: 1, stdout: `(error unknown-name ${args[0]} (nearest))\n`, stderr: '' };
+        }
+        return { argv: [], rc: 0, stdout: '', stderr: '' };
+      }
+    };
+    const answer = await gatherContext(new Client(transport), 't.1', 'alpha', false, () => false);
+    assert.ok(asked.includes('grep alpha --wire'), JSON.stringify(asked));
+    assert.deepStrictEqual(answer.lines, []);
+    assert.strictEqual(answer.unverified, 0);
+  });
+
   it('H8 asks exactly the sequence once, answers again from the cache, asks for another name, and asks again after a drop', async () => {
     const { client, asked } = scripted({
       'whereis alpha --wire': '(def "d.9" (library (probe d)) (name alpha) (kind code))\n',
@@ -245,7 +294,7 @@ describe('the hover says what the store holds about the name under the pointer',
     });
     const hovers = service(client, []);
     await hovers.answer('/s', 't.1', 'alpha', false, NEVER);
-    assert.deepStrictEqual(asked, ['whereis alpha --wire', 'refs t.1', 'grep alpha', 'refs d.9', 'read e.1', 'read r.1']);
+    assert.deepStrictEqual(asked, ['whereis alpha --wire', 'refs t.1', 'grep alpha --wire', 'refs d.9', 'read e.1', 'read r.1']);
     await hovers.answer('/s', 't.1', 'alpha', false, NEVER);
     assert.strictEqual(asked.length, 6, 'the same hover asked again');
     await hovers.answer('/s', 't.1', 'beta', false, NEVER);
@@ -401,7 +450,7 @@ describe('the hover says what the store holds about the name under the pointer',
 
   it('H23 lists a mention in a task block and not in a library or a file block', async () => {
     const { client } = scripted({
-      'grep alpha': match('l.1', '(export alpha)') + match('f.1', 'alpha in a file') + match('k.1', 'Do alpha first.'),
+      'grep alpha --wire': matches(match('l.1', '(export alpha)'), match('f.1', 'alpha in a file'), match('k.1', 'Do alpha first.')),
       'read l.1': record('l.1', 'library', 'probe', 'x'),
       'read f.1': record('f.1', 'file', 'a.c', 'x'),
       'read k.1': record('k.1', 'task', 'Task', 'Do alpha first.')

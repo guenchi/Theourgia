@@ -1658,8 +1658,8 @@ describe('the search view reads what a real store answers', function () {
 /*
  * A SUPERSEDED BLOCK DROPS OUT OF SEARCH AND OF A HOVER'S MENTIONS, AND IS
  * STILL READ. From theourgia 06a348b `search` and `grep` leave out
- * superseded and refuted blocks, and this extension asks both in the human
- * form, which says nothing about what it left out; a plain read never
+ * superseded and refuted blocks, and this extension asks both with `--wire`
+ * and reads their items; a plain read never
  * hides a block and names its validity (README, "Class and validity").
  * This reads what the extension's own readers make of that on a real
  * store: the search the view runs, the grep a hover runs, and the read

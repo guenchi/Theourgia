@@ -42,7 +42,8 @@
 import * as assert from 'assert';
 import { readBlock } from '../../src/blocks';
 import { Client } from '../../src/client';
-import { definitionsOf } from '../../src/definition';
+import { definitionsOf, leftOutOf } from '../../src/definition';
+import { gatherContext } from '../../src/hover';
 import { documentOf } from '../../src/document-view';
 import { StoreModel } from '../../src/model';
 import { RawResult } from '../../src/transport';
@@ -141,11 +142,12 @@ describe("a read's receipt changes nothing this extension reads", () => {
  * `read-validity-clause`, `listed-validity-clause`, `search-clauses`). The
  * same readers as above are handed the same answers without and with them.
  *
- * NOTE: SEARCH AND GREP ARE NOT HERE. This extension asks both in the human
- * form, which prints the hits in force and none of these clauses, so a
- * fixture with the clauses would be an answer it never receives. What they
- * do -- a superseded block drops out -- is read against the real core in
- * real-core.test.ts.
+ * NOTE: SEARCH AND GREP ARE HERE TOO. This extension asks both with
+ * `--wire`, whose answer carries the `excluded` count and the listed
+ * validity beside the items; the hits and the matches are read the same with
+ * them, and the search's count of what was left out is read from the first.
+ * What they do on a real store -- a superseded block drops out -- is read
+ * against the real core in real-core.test.ts.
  */
 describe("a block's validity changes nothing this extension reads", () => {
   before(async () => {
@@ -180,6 +182,60 @@ describe("a block's validity changes nothing this extension reads", () => {
     assert.deepStrictEqual(await ids(after), await ids(before));
     assert.deepStrictEqual(await ids(late), { ids: ['a.1', 'a.2'], notes: 1 }, 'the incomplete clause after the validity was not taken');
     assert.deepStrictEqual(await documentOf(answering(after), 'a.1'), await documentOf(answering(before), 'a.1'));
+  });
+
+  it('reads a search the same with an excluded count and a hit that needs review, and takes the count', async () => {
+    const own =
+      '(ok (items (hit "a.1" 7 "alpha here" (fields (src))) (hit "a.2" 3 "alpha there" (fields (title)))) ' +
+      '(cut ()) (scanned (blocks 7) (fields (title keywords src names doc body)) (unreadable-blocks 0))';
+    const before = `${own} (versions (("a.1" . "h1") ("a.2" . "h2"))))\n`;
+    const after =
+      `${own} (excluded (blocks (superseded 2) (refuted 3))) (validity (("a.2" needs-review (premise-moved "c.1")))) ` +
+      '(versions (("a.1" . "h1") ("a.2" . "h2"))))\n';
+    const got = await new StoreModel(answering(after)).searchReading('alpha');
+    const plain = await new StoreModel(answering(before)).searchReading('alpha');
+    assert.deepStrictEqual(got.hits, plain.hits);
+    assert.deepStrictEqual(got.hits.map((h) => h.id), ['a.1', 'a.2']);
+    assert.deepStrictEqual(got.leftOut, { superseded: 2, refuted: 3 });
+    assert.strictEqual(plain.leftOut, null);
+  });
+
+  it("reads a grep the same with an excluded count and a hit that needs review, in the hover's mentions", async () => {
+    const own =
+      '(ok (items (match "m.1" 1 "alpha here") (match "m.2" 2 "alpha there")) ' +
+      '(cut ()) (scanned (blocks 7) (fields (src doc body)) (unreadable-blocks 0))';
+    const before = `${own} (versions (("m.1" . "h1") ("m.2" . "h2"))))\n`;
+    const after =
+      `${own} (excluded (blocks (superseded 2) (refuted 3))) (validity (("m.2" needs-review (premise-moved "c.1")))) ` +
+      '(versions (("m.1" . "h1") ("m.2" . "h2"))))\n';
+    const grepAnswering = (grep: string): Client =>
+      new Client({
+        kind: 'test',
+        send: async (verb: string, args: string[]): Promise<RawResult> => ({
+          argv: [verb, ...args],
+          rc: verb === 'whereis' ? 1 : 0,
+          /*
+           * whereis of a name nothing defines is refused, as the core
+           * refuses it; refs and the reads of the mentioned blocks get no
+           * bytes, which the hover takes as no rows and no description
+           */
+          stdout: verb === 'grep' ? grep : verb === 'whereis' ? `(error unknown-name ${args[0]} (nearest))\n` : '',
+          stderr: ''
+        })
+      });
+    const mentions = async (grep: string): Promise<string[]> =>
+      (await gatherContext(grepAnswering(grep), 't.1', 'alpha', false, () => false)).candidates
+        .filter((c) => c.section === 'mention')
+        .map((c) => c.id);
+    assert.deepStrictEqual(await mentions(after), await mentions(before));
+    assert.deepStrictEqual(await mentions(after), ['m.1', 'm.2']);
+    /*
+     * AND THE COUNT IS THERE TO READ: the hover shows none of it, and the
+     * envelope the client hands back for the grep carries it whole.
+     */
+    const asked = await grepAnswering(after).request('grep', ['alpha', '--wire']);
+    assert.deepStrictEqual(leftOutOf(asked.envelope), { superseded: 2, refuted: 3 });
+    assert.strictEqual(leftOutOf((await grepAnswering(before).request('grep', ['alpha', '--wire'])).envelope), null);
   });
 
   it('reads whereis the same with an excluded count and a hit that needs review', async () => {
