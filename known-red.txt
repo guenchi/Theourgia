@@ -23,6 +23,11 @@
 # (its calibration is this machine's). Red on a slow runner: cli2's CONTROL
 # and mcp-shell X15 (both are timings). These rows are judged on the
 # development machine instead; every other red row is the tree's.
+# change-stream F10-8 (2026-10-04, run 37215820602): the per-publication
+# frame time on the cost store, bounded at 20 ms absolute on the
+# development machine (read 11 9 9 there); the runner read (31 19 22) and
+# the fixture alone rc 0. An absolute timing bound; judged on the
+# development machine until the bound is made relative.
 client-program	^FAIL P-17 
 f0-ondemand	^FAIL F0-2 
 startup-ratio	^FAIL C[13] 
@@ -30,3 +35,4 @@ cli2	^FAIL CONTROL: with the product's lock removed
 mcp-shell	^FAIL X1(5 |3 CONTROL: the descriptor instrument)
 eval-lang	^FAIL L15 
 facade-record	^FAIL H8 
+change-stream	^FAIL F10-8 three frames on the cost store
