@@ -1041,10 +1041,13 @@
   (define (structural-sets r) ((car frame-procedures) r))
   (define (change-items old new old-sets new-sets) ((cdr frame-procedures) old new old-sets new-sets))
 
+  ;; (frame-time <ms>): the sets and the items of one frame, timed.
   (define (frame! old new seq)
-    (let* ((old-sets (or published-sets (structural-sets old)))
+    (let* ((started (real-time))
+           (old-sets (or published-sets (structural-sets old)))
            (new-sets (structural-sets new))
            (items (change-items old new old-sets new-sets))
+           (_ (trace-event! 'frame-time (- (real-time) started) #f))
            (clause (incomplete-clause (unreadable-behind new)))
            (datum (append (list 'changes (list 'rev seq) (list 'daemon daemon-token)
                                 (list 'from-cut (reduce-applied-cut old))
@@ -1076,7 +1079,48 @@
          (string->number text 10)))
 
   (define (drop-subscriber! pid)
-    (set! subscribers (remp (lambda (p) (eq? p pid)) subscribers)))
+    (when (memq pid subscribers)
+      (set! subscribers (remp (lambda (p) (eq? p pid)) subscribers))
+      (trace-event! 'stream-unregistered #f #f)
+      (timer-follow!)))
+
+  ;; ---- outside changes: the timer, while the stream is live ----------------
+  ;;
+  ;; A COMMIT MADE OUTSIDE THE DAEMON IS SEEN BY A PROBE: while at least one
+  ;; subscriber is registered, a timer actor asks the store process to probe
+  ;; once a second, and the store compares the store's snapshot with the
+  ;; published one (refresh-if-behind!: a reload on a difference, a snapshot
+  ;; it cannot take counted as behind). The timer never folds or publishes;
+  ;; the store process does both, so a probe never interleaves with its own
+  ;; commits. With nobody subscribed there is no timer and no probe.
+  ;; THE SCHEDULE IS ABSOLUTE: each due time is the previous one plus 1000 ms,
+  ;; so a slow probe does not push the next. AT MOST ONE PROBE IS OUTSTANDING:
+  ;; a tick whose predecessor is not yet acknowledged is skipped, not queued
+  ;; (a mailbox has no capacity check), and traced as probe-skipped.
+  (define probe-ms 1000)
+  (define prober #f)
+  (define (timer-follow!)
+    (cond
+      ((and (pair? subscribers) (not prober))
+       (let ((store-pid self))
+         (set! prober (spawn (lambda () (probe-timer store-pid))))))
+      ((and (null? subscribers) prober)
+       (send prober '(stop))
+       (set! prober #f))
+      (else (void))))
+  (define (probe-timer store-pid)
+    (let loop ((due (+ (real-time) probe-ms)) (outstanding #f))
+      (receive
+        (after (max 0 (- due (real-time)))
+          (if outstanding
+              (begin
+                (trace-event! 'probe-skipped (wall-clock-ms) #f)
+                (loop (+ due probe-ms) #t))
+              (begin
+                (send store-pid (list 'probe self))
+                (loop (+ due probe-ms) #t))))
+        (`(probe-done) (loop due #f))
+        (`(stop) (void)))))
 
   ;; `subscribe changes <rev> [<token>]`, judged where the ring and the
   ;; current revision are. -> (acceptance . replay), the replay a list of
@@ -1117,6 +1161,7 @@
          (frames-loaded!)
          (monitor from)
          (set! subscribers (cons from subscribers))
+         (timer-follow!)
          (let ((clause (incomplete-clause (unreadable-behind (published-state)))))
            (cons (append (list 'ok (list 'subscribed rev) (list 'daemon daemon-token) (list 'current current))
                          (if clause (list clause) '()))
@@ -1169,8 +1214,15 @@
   ;; reload-failed when it cannot complete. A failure that has passed by the
   ;; time the fold reads leaves no trace here: the fold simply succeeds, and
   ;; what it read is what is answered.
+  (define snapshot-fault-pending #t)
   (define (refresh-if-behind! store)
-    (let ((now (guard (e (#t #f)) (store-state-snapshot store))))
+    (let ((now (guard (e (#t #f))
+                 ;; INJECTION ONLY: one snapshot that cannot be taken.
+                 (when (and snapshot-fault-pending (eq? (theourgia-fault) 'refresh-snapshot-raise))
+                   (set! snapshot-fault-pending #f)
+                   (trace-event! 'fault 'refresh-snapshot-raise #f)
+                   (raise (make-message-condition "injected snapshot raise")))
+                 (store-state-snapshot store))))
       (unless (and now (equal? now (published-snapshot)))
         (reload-or-say-why! store))))
 
@@ -1359,6 +1411,17 @@
              (send from (list 'subscription seq draining-answer '())))
          (loop))
         (`(unsubscribe ,pid) (drop-subscriber! pid) (loop))
+        ;; THE TIMER'S PROBE, traced when it arrives, answered by the same
+        ;; comparison a read at a cut makes, then acknowledged.
+        (`(probe ,from)
+         (trace-event! 'probe (wall-clock-ms) #f)
+         (refresh-if-behind! store)
+         ;; INJECTION ONLY: a slow probe, and a probe held before its
+         ;; acknowledgement.
+         (when (eq? (theourgia-fault) 'probe-slow) (sleep-ms 300))
+         (hold-point! 'probe-before-ack)
+         (send from '(probe-done))
+         (loop))
         ;; THE STREAM'S LAST WORD BEFORE A DRAIN ENDS IT: unregistered here,
         ;; and answered after every frame this process already sent it, since
         ;; it handles messages in order.

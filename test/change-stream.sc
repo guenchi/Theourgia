@@ -49,8 +49,8 @@
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce seal-state)
-        (only (theourgia reduce) state-structure)
-        (only (theourgia stream-frames) structural-sets)
+        (only (theourgia reduce) state-structure reduction-facts)
+        (only (theourgia stream-frames) structural-sets change-items)
         (only (theourgia render) render-human render-wire))
 
 (define bad 0)
@@ -108,6 +108,8 @@
 ;; runs the injection build with its trace on, so a row can read what it did.
 (define daemon-count 0)
 (define all-stores '())
+;; the cost store's reduction before its three timed sets (for the shortcut row)
+(define cost-before #f)
 (define (start-daemon! tag env)
   (set! daemon-count (+ daemon-count 1))
   (let* ((t (string-append pid-text "-" (number->string daemon-count) "-" tag))
@@ -207,7 +209,11 @@
         (paused? (memq 'paused opts)))
     (spawn
       (lambda ()
-        (connect! (d-socket d))
+        ;; A PAUSED READER HAS NOT STARTED READING, and a connection that has
+        ;; not started is closed by its own adapter at net.sc's idle deadline
+        ;; (5 s): a row holding a replay longer than that would read its own
+        ;; reader closing. Paused, the deadline is a minute.
+        (if paused? (connect! (d-socket d) 60000) (connect! (d-socket d)))
         (receive
           (after 4000 (let idle () (receive (`(lines ,from) (send from (list 'lines '(no-connect))) (idle)))))
           (`(connected ,p ,ref)
@@ -333,6 +339,46 @@
           ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'published))
            (loop (cdr ds) (caddar ds)))
           (else (loop (cdr ds) n)))))
+;; THE FRAME OF THE PUBLICATION AN ACTION MADE, BY REVISION: wait until the
+;; daemon's last published revision is past AFTER and has held still for
+;; 300 ms; the action's publications are the revisions after AFTER up to it.
+;; While anyone is subscribed the daemon probes once a second, and a probe
+;; that lands between a writer's segment and its published marker reloads:
+;; the probe's reload or the read's may be the one that carries the
+;; change, and the other reloads the same state, an EMPTY frame (kept,
+;; sent, counted like any other). So of those revisions' frames the one
+;; with items is the action's; none with items, the last one (an empty
+;; frame); two with items is not one action's frame, and says so.
+(define (frame-settled d sub after)
+  (let* ((target (let wait ((k 0) (last #f) (still 0))
+                   (let ((p (last-published d)))
+                     (cond ((and p (> p after) (equal? p last) (>= still 6)) p)
+                           ((> k 200) p)
+                           (else (sleep-ms 50) (wait (+ k 1) p (if (equal? p last) (+ still 1) 0))))))))
+    (let look ((k 0))
+      (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r target (> r after) (<= r target))))
+                         (frames-of (sub-lines sub))))
+             (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) fs)))
+        (cond ((and target (= (length fs) (- target after)))
+               (cond ((null? said) (car (reverse fs)))
+                     ((null? (cdr said)) (car said))
+                     (else (list 'several-frames-with-items (map frame-rev said)))))
+              ((> k 120) (list 'no-frame target (map frame-rev fs)))
+              (else (sleep-ms 50) (look (+ k 1))))))))
+;; WAITS until the daemon's log holds at least N lines containing NEEDLE, or
+;; MS pass; the rows then read the count themselves.
+(define (await-trace d needle n ms)
+  (let wait ((k 0))
+    (unless (or (>= (count-of (d-log d) needle) n) (> k (div ms 50)))
+      (sleep-ms 50) (wait (+ k 1)))))
+;; THE NUMBERS A TRACE CARRIES: for each (trace <name> <n> ...) line of the
+;; daemon's log, <n>, in order.
+(define (trace-values d name)
+  (let loop ((ds (read-all-data (d-log d))) (out '()))
+    (cond ((null? ds) (reverse out))
+          ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) name) (pair? (cddar ds)))
+           (loop (cdr ds) (cons (caddar ds) out)))
+          (else (loop (cdr ds) out)))))
 (define (rev-clause a) (clause 'rev a))
 (define (clause-names a) (if (pair? a) (map (lambda (c) (if (pair? c) (car c) c)) (cdr a)) '()))
 
@@ -345,6 +391,85 @@
           ((<= rev h) (cons 'skip held))
           ((= rev (+ h 1)) (cons 'apply (cons (cons object rev) (remp (lambda (e) (equal? (car e) object)) held))))
           (else (cons 'reread held)))))
+
+;; THE FRAME'S COMPARISON WITHOUT ITS SHORTCUTS, the reference a row compares
+;; the product's with: stream-frames' change-items as it was before the
+;; equal? skips, copied here and kept here, so the reference is not the
+;; code under test. Its accessors are the facts' vector slots.
+(define (fact-blocks facts) (map (lambda (v) (cons (vector-ref v 0) v)) (car facts)))
+(define (blk-tomb v) (vector-ref v 1))
+(define (blk-fields v) (vector-ref v 2))
+(define (blk-position v) (vector-ref v 3))
+(define (reference-change-items old new old-sets new-sets)
+  (if (eq? old new)
+      '()
+      (let* ((of (reduction-facts old)) (nf (reduction-facts new))
+             (old-blocks (fact-blocks of)) (new-blocks (fact-blocks nf))
+             (old-links (cadr of)) (new-links (cadr nf))
+             (ot (make-hashtable string-hash string=?))
+            (nt (make-hashtable string-hash string=?))
+            (out '()))
+        (define (emit! item) (set! out (cons item out)))
+        (define (live b) (and b (not (blk-tomb b)) b))
+        (define (same-set? a b)
+          (and (= (length a) (length b))
+               (for-all (lambda (x) (member x b)) a)))
+        (define (settled-of cs part)
+          (and (= 1 (length cs)) (part (car (car cs)))))
+        (define (crossing! id what o n differ?)
+          (let ((so (length o)) (sn (length n)))
+            (cond ((and (<= so 1) (> sn 1)) (emit! (list 'conflict id what)))
+                  ((and (> so 1) (<= sn 1)) (emit! (list 'resolved id what)))
+                  ((and (> so 1) (> sn 1) differ?) (emit! (list 'conflict id what))))))
+        (define (compare-live! id ob nb)
+          (let ((ofs (blk-fields ob)) (nfs (blk-fields nb)))
+            (for-each
+              (lambda (f)
+                (let* ((o (let ((e (assq f ofs))) (if e (cdr e) '())))
+                       (n (let ((e (assq f nfs))) (if e (cdr e) '())))
+                       (differ? (not (same-set? o n))))
+                  (when differ? (emit! (list 'changed id f)))
+                  (crossing! id f o n differ?)))
+              (let union ((fs (map car ofs)) (acc '()))
+                (cond ((null? fs)
+                       (append (reverse acc) (filter (lambda (f) (not (memq f acc))) (map car nfs))))
+                      ((memq (car fs) acc) (union (cdr fs) acc))
+                      (else (union (cdr fs) (cons (car fs) acc)))))))
+          (let* ((o (blk-position ob)) (n (blk-position nb)) (differ? (not (same-set? o n))))
+            (when differ?
+              (emit! (list 'changed id 'position))
+              (unless (equal? (settled-of o car) (settled-of n car)) (emit! (list 'changed id 'parent)))
+              (unless (equal? (settled-of o cdr) (settled-of n cdr)) (emit! (list 'changed id 'ord))))
+            (crossing! id 'position o n differ?)))
+        (for-each (lambda (e) (hashtable-set! ot (car e) (cdr e))) old-blocks)
+        (for-each (lambda (e) (hashtable-set! nt (car e) (cdr e))) new-blocks)
+        (for-each
+          (lambda (id)
+            (let ((ob (live (hashtable-ref ot id #f))) (nb (live (hashtable-ref nt id #f))))
+              (cond ((and ob (not nb)) (emit! (list 'removed id)))
+                    ((and nb (not ob)) (emit! (list 'added id)))
+                    ((and ob nb) (compare-live! id ob nb)))))
+          (append (map car old-blocks)
+                  (filter (lambda (id) (not (hashtable-ref ot id #f))) (map car new-blocks))))
+        (for-each
+          (lambda (key kind)
+            (let ((o (cdr (assq key old-sets))) (n (cdr (assq key new-sets))))
+              (for-each (lambda (id) (unless (member id o) (emit! (list 'conflict id kind)))) n)
+              (for-each (lambda (id) (unless (member id n) (emit! (list 'resolved id kind)))) o)))
+          '(conflicts orphans unplaced nested-documents)
+          '(cycle orphan unplaced nested))
+        (let ((ol (make-hashtable equal-hash equal?)) (nl (make-hashtable equal-hash equal?)))
+          (for-each (lambda (l) (hashtable-set! ol l #t)) old-links)
+          (for-each (lambda (l) (hashtable-set! nl l #t)) new-links)
+          (for-each (lambda (l)
+                      (unless (hashtable-ref ol l #f)
+                        (emit! (list 'edge-added (car l) (cadr l) (caddr l) (cons 'event (cadddr l))))))
+                    new-links)
+          (for-each (lambda (l)
+                      (unless (hashtable-ref nl l #f)
+                        (emit! (list 'edge-removed (car l) (cadr l) (caddr l)))))
+                    old-links))
+        (reverse out))))
 
 ;; Waits for the subscriber's next frame after the N frames it already has.
 (define (next-frame sub n)
@@ -449,8 +574,9 @@
            (sub (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines sub 1 5000)))
            (token (token-of acc))
-           (n 0)
-           (frame! (lambda () (let ((f (next-frame sub n))) (set! n (+ n 1)) f))))
+           (seen (current-of acc))
+           ;; the frame of the publication the last action made (frame-settled)
+           (frame! (lambda () (let ((f (frame-settled d sub seen))) (when (frame-rev f) (set! seen (frame-rev f))) f))))
       (let* ((a (ask d 'insert "--title" "A"))
              (id (new-id a))
              (f (frame!)))
@@ -477,9 +603,9 @@
           (frame!)
           (ask d 'del b)
           (want "F10-2 del -> (removed id), and nothing else" (item-set (frame!)) (expected-set (list 'removed b))))
-        (want "F10-2 revisions are dense: the frames so far are 2 .. n+1 in order"
+        (want "F10-2 revisions are dense: the frames so far are 2 .. the last read, in order, an empty one included"
               (map frame-rev (frames-of (sub-lines sub)))
-              (let loop ((k n) (out '())) (if (= k 0) out (loop (- k 1) (cons (+ k 1) out))))))
+              (let loop ((k seen) (out '())) (if (< k 2) out (loop (- k 1) (cons k out))))))
       (stop-daemon! d))
 
     ;; A REFOLD OF THE SAME LOG IS A REVISION WITH NO ITEMS. The store process
@@ -502,9 +628,12 @@
       (sleep-ms 300)
       (system (string-append "touch " release))
       (let* ((ls (await-lines sub 3 8000)) (fs (frames-of ls)))
+        ;; AT LEAST ONE empty frame after it: the timer's probes may add
+        ;; another redundant reload, which is empty too.
         (want "F10-2 a reload publishes the outside record, and the reload queued behind it publishes an EMPTY frame"
-              (list (length fs) (and (pair? fs) (item-set (car fs))) (and (> (length fs) 1) (item-set (cadr fs))))
-              (list 2 (expected-set (list 'added "mirrorrf.1")) '()))
+              (list (>= (length fs) 2) (and (pair? fs) (item-set (car fs)))
+                    (and (> (length fs) 1) (for-all (lambda (f) (equal? (item-set f) '())) (cdr fs))))
+              (list #t (expected-set (list 'added "mirrorrf.1")) #t))
         (want "F10-2 and the deleted block is named in neither"
               (contains? (apply string-append ls) gone)
               #f))
@@ -521,11 +650,12 @@
     ;; settled ord change when the candidate set goes to or from one.
     (let* ((d (start-daemon! "f2m" ""))
            (sub (spawn-subscriber! d '("changes" "0")))
-           (_ (await-lines sub 1 5000))
-           (n 0) (last-cut '()) (seqs '())
+           (seen (current-of (acceptance-of (await-lines sub 1 5000))))
+           (last-cut '()) (seqs '())
+           ;; the frame of the publication the last action made (frame-settled)
            (frame! (lambda ()
-                     (let ((f (next-frame sub n)))
-                       (set! n (+ n 1))
+                     (let ((f (frame-settled d sub seen)))
+                       (when (frame-rev f) (set! seen (frame-rev f)))
                        (let ((c (frame-cut f))) (when c (set! last-cut c)))
                        f)))
            ;; the next segment number of writer W
@@ -1248,6 +1378,256 @@
                 '(#t #t #t))))
       (stop-daemon! d))
 
+    ;; ==== F10-4: the window: what a resume can still be given ====
+    (printf "~%== F10-4: retention, the window, the gap, eviction ==~%")
+    ;; W1: a resume two revisions back gets exactly the two retained frames.
+    (let* ((d (start-daemon! "w1" ""))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc)) (base (current-of acc)))
+      (insert! d "w1 one") (insert! d "w1 two") (insert! d "w1 three")
+      (await-lines a 4 6000)
+      (let* ((b (spawn-subscriber! d (list "changes" (number->string (+ base 1)) token))))
+        (await-lines b 3 6000)
+        (insert! d "w1 live")
+        (await-lines b 4 6000)
+        (want "F10-4 a resume at current-2 receives the two retained frames in order, then live ones"
+              (revs-of b) (list (+ base 2) (+ base 3) (+ base 4))))
+      (stop-daemon! d))
+    ;; W2: 258 publications with a subscriber throughout; the ring keeps 256.
+    ;; The sets travel on separate connections: the publications are what
+    ;; the row counts, and one connection would only make them faster.
+    (let* ((d (start-daemon! "w2" ""))
+           (id (insert! d "w2 block"))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc)) (base (current-of acc)))
+      (let loop ((k 1)) (when (<= k 258) (ask d 'set id "src" (number->string k)) (loop (+ k 1))))
+      (let wait ((k 0)) (unless (or (equal? (last-published d) (+ base 258)) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
+      (let* ((oldest (+ base 3)) (current (+ base 258))
+             (b (spawn-subscriber! d (list "changes" (number->string (- oldest 1)) token)))
+             (ls (await-lines b 257 30000)))
+        (want "F10-4 258 publications counted by the published trace"
+              (last-published d) current)
+        (want "F10-4 a resume at oldest-1 is accepted and replays all 256 retained frames, in order, without lagging"
+              (list (and (pair? (acceptance-of ls)) (car (acceptance-of ls)))
+                    (equal? (revs-of b) (let loop ((r current) (out '())) (if (< r oldest) out (loop (- r 1) (cons r out)))))
+                    (exists (lambda (f) (and (pair? f) (eq? (car f) 'error))) (frames-of ls)))
+              '(ok #t #f))
+        (let ((c (acceptance-of (await-lines (spawn-subscriber! d (list "changes" (number->string (- oldest 2)) token)) 1 5000))))
+          (want "F10-4 a resume at oldest-2 answers window with oldest and current"
+                (list (and (pair? c) (cadr c)) (clause 'reason c) (clause 'oldest c) (clause 'current c) (equal? (token-of c) token))
+                (list 'changes-unavailable '(window) (list oldest) (list current) #t))))
+      (stop-daemon! d))
+    ;; W3: the gap: nobody subscribed, one publication made unframed. The
+    ;; store's own unregistration is waited for, not a sleep.
+    (let* ((d (start-daemon! "w3" ""))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc)) (base (current-of acc)))
+      (insert! d "w3 framed")
+      (await-lines a 2 5000)
+      (send a '(close))
+      (await-trace d "(trace stream-unregistered" 1 5000)
+      (insert! d "w3 unframed")
+      (let ((c (acceptance-of (await-lines (spawn-subscriber! d (list "changes" (number->string (+ base 1)) token)) 1 5000))))
+        (want "F10-4 after the last subscriber leaves and one more publication, a resume from the last framed revision answers window"
+              (list (and (pair? c) (cadr c)) (clause 'reason c))
+              (list 'changes-unavailable '(window))))
+      (stop-daemon! d))
+    ;; W4: framing stopped and restarted leaves a hole the endpoints do not show.
+    (let* ((d (start-daemon! "w4" ""))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc)) (base (current-of acc)))
+      (insert! d "w4 two") (insert! d "w4 three")
+      (await-lines a 3 5000)
+      (send a '(close))
+      (await-trace d "(trace stream-unregistered" 1 5000)
+      (insert! d "w4 four, unframed")
+      (let ((b (spawn-subscriber! d '("changes" "0"))))
+        (await-lines b 1 5000)
+        (insert! d "w4 five, framed")
+        (await-lines b 2 5000)
+        (let ((c (acceptance-of (await-lines (spawn-subscriber! d (list "changes" (number->string (+ base 2)) token)) 1 5000))))
+          (want "F10-4 restarted framing: a resume across the unframed revision answers window, oldest still the first retained"
+                (list (and (pair? c) (cadr c)) (clause 'reason c) (clause 'oldest c) (clause 'current c))
+                (list 'changes-unavailable '(window) (list (+ base 1)) (list (+ base 4))))))
+      (stop-daemon! d))
+    ;; W5 and W6: EVICTION while a replay is held. The ring is full (256
+    ;; frames, oldest = base+3); a second reader resumes from oldest-1 paused
+    ;; from its first byte with its send buffer pressed, so its replay of 256
+    ;; frames blocks -- the write-pending traces counted after it subscribed
+    ;; are its own, since the first reader reads promptly. Then LIVE
+    ;; publications EVICT that many of the oldest frames from the ring: the
+    ;; replay list it was accepted with must still hold them.
+    (for-each
+      (lambda (live)
+        (let* ((d (start-daemon! (string-append "w5-" (number->string live)) "THEOURGIA_SEND_BUFFER=16384"))
+               (id (insert! d "w5 block"))
+               (a (spawn-subscriber! d '("changes" "0")))
+               (acc (acceptance-of (await-lines a 1 5000)))
+               (token (token-of acc)) (base (current-of acc)))
+          (let loop ((k 1)) (when (<= k 258) (ask d 'set id "src" (number->string k)) (loop (+ k 1))))
+          (await-lines a 259 30000)
+          (let* ((oldest (+ base 3)) (current (+ base 258))
+                 (pending-before (count-of (d-log d) "(trace write-pending"))
+                 (b (spawn-subscriber! d (list "changes" (number->string (- oldest 1)) token) 'paused)))
+            (await-trace d "(trace write-pending" (+ pending-before 1) 5000)
+            (let ((held (> (count-of (d-log d) "(trace write-pending") pending-before)))
+              (let loop ((k 0)) (when (< k live) (ask d 'set id "src" (string-append "live " (number->string k))) (loop (+ k 1))))
+              (send b '(resume))
+              (let* ((_ (let wait ((k 0)) (unless (or (>= (length (sub-lines b)) (+ 1 256 live)) (member "<eof>" (sub-lines b)) (> k 400)) (sleep-ms 50) (wait (+ k 1)))))
+                     (_ (sleep-ms 1000))
+                     (fs (frames-of (sub-lines b)))
+                     (revs (map frame-rev (filter (lambda (f) (and (pair? f) (eq? (car f) 'changes))) fs))))
+                (if (< live 64)
+                    (want (string-append "F10-4 eviction: " (number->string live) " publications evict retained frames while the replay is held, and every accepted frame still arrives, in order, before the live ones")
+                          (list held
+                                (equal? revs (let loop ((r (+ current live)) (out '())) (if (< r oldest) out (loop (- r 1) (cons r out)))))
+                                (exists (lambda (f) (and (pair? f) (eq? (car f) 'error))) fs))
+                          '(#t #t #f))
+                    ;; THE TWIN: the replay is dropped at the latch, so what came
+                    ;; before the terminal is a strict prefix of it, consecutive
+                    ;; from oldest, and nothing follows the terminal.
+                    (want (string-append "F10-4 eviction's overflow twin: " (number->string live) " publications end the stream lagging; before the terminal only a consecutive prefix of the replay, after it nothing")
+                          (let* ((before (let take ((fs fs) (out '())) (cond ((null? fs) (reverse out)) ((and (pair? (car fs)) (eq? (caar fs) 'error)) (reverse out)) (else (take (cdr fs) (cons (frame-rev (car fs)) out))))))
+                                 (after (let skip ((fs fs)) (cond ((null? fs) '()) ((and (pair? (car fs)) (eq? (caar fs) 'error)) (cdr fs)) (else (skip (cdr fs))))))
+                                 (t (find (lambda (f) (and (pair? f) (eq? (car f) 'error))) fs)))
+                            (list held
+                                  (and t (clause 'reason t))
+                                  (< (length before) 256)
+                                  (equal? before (let loop ((r (+ oldest (length before) -1)) (out '())) (if (< r oldest) out (loop (- r 1) (cons r out)))))
+                                  after
+                                  (car (reverse (sub-lines b)))))
+                          '(#t (lagging) #t #t () "<eof>"))))))
+          (stop-daemon! d)))
+      '(40 65))
+
+    ;; ==== F10-5 and the timer: outside changes reach a subscriber ====
+    (printf "~%== F10-5: the timer probes while someone follows, and only then ==~%")
+    ;; P1-P3. The bounds: no probe in 5 s with nobody subscribed (the timer
+    ;; ticks every second, so a running one would show five); an outside
+    ;; commit within 2 s (one tick to see it, one to spare); no probe in 3 s once the last subscriber is unregistered.
+    (let* ((d (start-daemon! "p1" "")))
+      (sleep-ms 5000)
+      (want "F10-5 with no subscriber, no probe in five seconds"
+            (count-of (d-log d) "(trace probe ") 0)
+      (let* ((a (spawn-subscriber! d '("changes" "0")))
+             (_ (await-lines a 1 5000))
+             (_ (await-trace d "(trace probe " 1 3000)))
+        (mirror! d "outsideq" 1 '() '(put ((kind . section) (title . "made outside") (parent . root) (ord . 80))))
+        (let* ((t0 (real-time))
+               (ls (await-lines a 2 4000)) (dt (- (real-time) t0)) (f (and (> (length ls) 1) (car (frames-of ls)))))
+          (printf "   outside commit to frame: ~s ms~%" dt)
+          (want "F10-5 a commit made outside the daemon reaches a subscriber within two seconds, with no request made"
+                (list (and f (item-set f)) (<= dt 2000))
+                (list (expected-set (list 'added "outsideq.1")) #t)))
+        (send a '(close))
+        (await-trace d "(trace stream-unregistered" 1 5000)
+        (let ((n (count-of (d-log d) "(trace probe ")))
+          (sleep-ms 3000)
+          (want "F10-5 after the last subscriber is unregistered, no probe in three seconds"
+                (- (count-of (d-log d) "(trace probe ") n) 0)))
+      (stop-daemon! d))
+    ;; P6: the timer follows the subscriber count: one of two leaving keeps it
+    ;; running, the last leaving stops it, a new subscriber starts it again.
+    (let* ((d (start-daemon! "p6" ""))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (b (spawn-subscriber! d '("changes" "0"))))
+      (await-lines a 1 5000) (await-lines b 1 5000)
+      (send a '(close))
+      (await-trace d "(trace stream-unregistered" 1 5000)
+      (let ((n1 (count-of (d-log d) "(trace probe ")))
+        (sleep-ms 2500)
+        (let ((n2 (count-of (d-log d) "(trace probe ")))
+          (send b '(close))
+          (await-trace d "(trace stream-unregistered" 2 5000)
+          (let ((n3 (count-of (d-log d) "(trace probe ")))
+            (sleep-ms 2500)
+            (let ((n4 (count-of (d-log d) "(trace probe ")))
+              (await-lines (spawn-subscriber! d '("changes" "0")) 1 5000)
+              (sleep-ms 2500)
+              (want "F10-5 the timer follows the subscribers: one of two leaving keeps it, the last stops it, a new one starts it again"
+                    (list (>= (- n2 n1) 1) (- n4 n3) (>= (- (count-of (d-log d) "(trace probe ") n4) 1))
+                    '(#t 0 #t))))))
+      (stop-daemon! d))
+    ;; P7: A SNAPSHOT THAT CANNOT BE TAKEN COUNTS AS BEHIND: with the timer's
+    ;; snapshot failing once, the probe reloads, and a frame arrives with no
+    ;; commit at all.
+    (let* ((d (start-daemon! "p7" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
+           (a (spawn-subscriber! d '("changes" "0"))))
+      (await-lines a 1 5000)
+      (let* ((ls (await-lines a 2 4000)) (f (and (> (length ls) 1) (car (frames-of ls)))))
+        (want "F10-5 a probe whose snapshot cannot be taken reloads: a frame arrives with no commit made"
+              (list (contains? (d-log d) "(trace fault refresh-snapshot-raise") (and f (car f)) (and f (item-set f)))
+              (list #t 'changes '())))
+      (stop-daemon! d))
+    ;; AN EMPTY FRAME IS A FRAME: kept in the ring like any other. The probe's
+    ;; reload of the same state (a snapshot it could not take) publishes an
+    ;; empty frame at base+1, a commit makes base+2, and a resume from base
+    ;; is accepted and replays both -- a withheld empty frame would be a hole
+    ;; and the resume would be refused window for nothing.
+    (let* ((d (start-daemon! "pe" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000)))
+           (token (token-of acc)) (base (current-of acc)))
+      (await-lines a 2 4000)
+      (insert! d "after the empty one")
+      (await-lines a 3 4000)
+      (let* ((b (spawn-subscriber! d (list "changes" (number->string base) token)))
+             (ls (await-lines b 3 5000)) (fs (frames-of ls)))
+        (want "F10-5 a resume across a revision whose frame was empty is accepted and replays the empty frame, then the next"
+              (list (let ((c (acceptance-of ls))) (and (pair? c) (car c)))
+                    (map frame-rev fs) (and (pair? fs) (item-set (car fs))))
+              (list 'ok (list (+ base 1) (+ base 2)) '())))
+      (stop-daemon! d))
+    ;; P4: ONE PROBE OUTSTANDING. The store process traces a probe when it
+    ;; receives it and is then held before acknowledging, about 3.5 s: during
+    ;; the hold exactly one probe and at least two skipped ticks (3.5 s at
+    ;; one a second leaves a margin of one). A commit asked during the hold
+    ;; is answered only after the release: the probe and the commit are the
+    ;; same actor's.
+    (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-probe"))
+           (_ (system (string-append "rm -f " release " " release ".held")))
+           (d (start-daemon! "p4" (string-append "THEOURGIA_HOLD='probe-before-ack:" release "'")))
+           (a (spawn-subscriber! d '("changes" "0")))
+           (asker self))
+      (await-lines a 1 5000)
+      (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
+      (let ((entered (file-exists? (string-append release ".held"))))
+        (spawn (lambda () (send asker (list 'held-commit (ask d 'insert "--title" "during the held probe") (real-time)))))
+        (sleep-ms 3500)
+        (let ((probes (count-of (d-log d) "(trace probe ")) (skipped (count-of (d-log d) "(trace probe-skipped "))
+              (released-at (real-time)))
+          (system (string-append "touch " release))
+          (let ((answered (receive (after 8000 #f) (`(held-commit ,a ,t) t))))
+            (sleep-ms 1600)
+            (want "F10-5 with an acknowledgement late, the timer skips its ticks: the hold entered, one probe during it, at least two skipped, then probes again"
+                  (list entered probes (>= skipped 2) (> (count-of (d-log d) "(trace probe ") probes))
+                  '(#t 1 #t #t))
+            (want "F10-5 a commit asked during the held probe is answered only after the release: the probe and the commit are one actor's"
+                  (and answered (>= answered released-at))
+                  #t))))
+      (stop-daemon! d))
+    ;; P5: THE SCHEDULE IS ABSOLUTE. With every probe taking 300 ms before its
+    ;; acknowledgement, six consecutive probes keep a mean interval between
+    ;; 850 and 1150 ms: an absolute schedule gives 1000, a schedule counted
+    ;; from the acknowledgement gives about 1300, a faster timer less than
+    ;; 850; 150 ms either side is the margin, half the probe's own 300.
+    (let* ((d (start-daemon! "p5" "THEOURGIA_FAULT=probe-slow@conn"))
+           (a (spawn-subscriber! d '("changes" "0"))))
+      (await-lines a 1 5000)
+      (await-trace d "(trace probe " 7 12000)
+      (let* ((instants (trace-values d 'probe))
+             (six (and (>= (length instants) 7) (list-head (cdr instants) 6)))
+             (mean (and six (/ (- (car (reverse six)) (car six)) 5))))
+        (printf "   probe instants (ms): ~s~%" instants)
+        (want "F10-5 with each probe taking 300 ms, six consecutive probes keep a mean interval within 850..1150 ms (the schedule is absolute, 1000 ms)"
+              (and mean (<= 850 mean 1150))
+              #t))
+      (stop-daemon! d))
+
     ;; ==== F10-12: the comparator's structural sets are state-structure's ====
     (printf "~%== F10-12: two implementations of one rule, on every store above ==~%")
     (want "F10-12 on every store the rows built, the comparator's four structural sets equal state-structure's"
@@ -1258,6 +1638,93 @@
                              (if (equal? (structural-sets r) (state-structure r)) #f (list st 'DIFFER)))))
                        all-stores))
           '())
+
+    ;; ==== F10-8: the cost of a frame, measured ====
+    ;; THE COST STORE: 5000 blocks, three edges each, 1 KiB bodies, written
+    ;; as one segment of another writer and folded once; then one subscriber
+    ;; and three publications, each frame's time read from the daemon's
+    ;; frame-time trace and bounded at 20 ms.
+    (printf "~%== F10-8: the per-publication frame time on the cost store ==~%")
+    (let* ((d (start-daemon! "cost" ""))
+           (body (make-string 1024 #\b))
+           ;; a block's id carries its record's sequence in base 36, as
+           ;; reduce.sc's block-id spells it
+           (b36 (lambda (k)
+                  (let loop ((k k) (out '()))
+                    (if (< k 36)
+                        (list->string (cons (string-ref "0123456789abcdefghijklmnopqrstuvwxyz" k) out))
+                        (loop (div k 36) (cons (string-ref "0123456789abcdefghijklmnopqrstuvwxyz" (mod k 36)) out))))))
+           (n 5000)
+           (records
+             (let loop ((k 1) (seq 1) (out '()))
+               (if (> k n)
+                   (reverse out)
+                   (let* ((put (encode-record seq (+ 1789000000000 seq) "peer" '()
+                                              (storable-encode
+                                                (list 'put (list (cons 'kind 'section)
+                                                                 (cons 'title (string-append "cost " (number->string k)))
+                                                                 (cons 'parent 'root) (cons 'ord k) (cons 'src body))))))
+                          (links (let edge ((e 1) (out '()))
+                                   (if (> e 3) (reverse out)
+                                       (edge (+ e 1)
+                                             (cons (encode-record (+ seq e) (+ 1789000000000 seq e) "peer" '()
+                                                                  (storable-encode
+                                                                    (list 'link (string-append "costwrtr." (b36 seq))
+                                                                          'relates (string-append "costwrtr." (b36 (+ 1 (* 4 (mod (+ k e) n))))))))
+                                                   out))))))
+                     (loop (+ k 1) (+ seq 4) (append (reverse (cons put links)) out))))))
+           (bytes (string->utf8 (apply string-append (map utf8->string records)))))
+      (log-publish! (d-store d) "costwrtr" 1 bytes (segment-sha bytes))
+      (poke! d)
+      (let* ((a (spawn-subscriber! d '("changes" "0")))
+             (st (d-store d)))
+        (await-lines a 1 30000)
+        ;; the reduction before the three sets, folded here from the log, for
+        ;; the shortcut row below (the fixture's time, not the daemon's)
+        (set! cost-before (open-and-reduce st))
+        ;; the publications change one of the 5000, so it stays the cost store
+        (let loop ((k 1)) (when (<= k 3) (ask d 'set "costwrtr.1" "src" (string-append "cost run " (number->string k))) (loop (+ k 1))))
+        (await-lines a 4 30000)
+        (let ((times (trace-values d 'frame-time)))
+          (printf "   frame times (ms), three publications on the cost store: ~s~%" times)
+          (want "F10-8 three frames on the cost store, each computed in at most 20 ms"
+                (list (length times) (for-all (lambda (t) (and (number? t) (<= t 20))) times))
+                '(3 #t)))
+        ;; THE SHORTCUTS CHANGE NO ITEM: on the cost store, the product's
+        ;; change-items equals the reference (the comparison without them)
+        ;; item for item, across the three sets (one block's field differs,
+        ;; the links are equal) and across one more writer's link (the links
+        ;; differ, every block is equal), and across one link REPLACED by
+        ;; another in one reload: the two lists are as long as each other and
+        ;; differ (a skip judged by length would say nothing there). The
+        ;; reductions are folded here from the store's log: the first before
+        ;; the sets, the others after the frames above were timed.
+        (let* ((r1 (open-and-reduce st))
+               (_ (mirror! d "costlink" 1 '() (list 'link "costwrtr.1" 'relates "costwrtr.5")))
+               (_ (poke! d))
+               (_ (await-lines a 5 30000))
+               (r2 (open-and-reduce st))
+               ;; costwrtr.l is block 21 (21 = 1 mod 4); costwrtr.1's own
+               ;; edges go to 9, d and h
+               (_ (mirror! d "costlink" 2 '(("costlink" . 1)) (list 'unlink "costwrtr.1" 'relates "costwrtr.5")))
+               (_ (mirror! d "costlink" 3 '(("costlink" . 2)) (list 'link "costwrtr.1" 'relates "costwrtr.l")))
+               (r3 (open-and-reduce st))
+               (r0 cost-before)
+               (pair (lambda (o n)
+                       (let ((os (structural-sets o)) (ns (structural-sets n)))
+                         (let ((p (list-sort string<? (map (lambda (i) (format "~s" i)) (change-items o n os ns))))
+                               (q (list-sort string<? (map (lambda (i) (format "~s" i)) (reference-change-items o n os ns)))))
+                           (list (equal? p q) p))))))
+          (let ((sets (pair r0 r1)) (link (pair r1 r2)) (swap (pair r2 r3))
+                (links-of (lambda (r) (length (cadr (reduction-facts r))))))
+            (want "F10-8 on the cost store the frame with the shortcuts equals the full comparison, item for item: across the sets, across a link, across a link replaced"
+                  (list (car sets) (cadr sets)
+                        (car link) (and (exists (lambda (i) (contains? i "edge-added")) (cadr link)) #t)
+                        (car swap) (= (links-of r2) (links-of r3))
+                        (and (exists (lambda (i) (contains? i "edge-added")) (cadr swap))
+                             (exists (lambda (i) (contains? i "edge-removed")) (cadr swap)) #t))
+                  (list #t '("(changed \"costwrtr.1\" src)") #t #t #t #t #t)))))
+      (stop-daemon! d))
 
     (printf "rows: ~a~%~a failures~%change-stream complete~%" rows bad)
     (exit (if (= bad 0) 0 1))))

@@ -170,6 +170,20 @@
               (let ((ob (live (hashtable-ref ot id #f))) (nb (live (hashtable-ref nt id #f))))
                 (cond ((and ob (not nb)) (emit! (list 'removed id)))
                       ((and nb (not ob)) (emit! (list 'added id)))
+                      ;; THE SAME FIELDS AND POSITION SAY NOTHING. The skips
+                      ;; preserve the items by the rules themselves: an item
+                      ;; arises only from sets that differ, so equal link
+                      ;; lists and a block with equal fields and position can
+                      ;; produce none. A row compares this procedure with
+                      ;; the comparison without the skips, item for item.
+                      ;; One equal? per block instead of a set comparison per
+                      ;; field --
+                      ;; a publication changes few of a store's blocks, and
+                      ;; each reduction is a fold of its own, so nothing is
+                      ;; shared to compare by eq?.
+                      ((and ob nb (equal? (blk-fields ob) (blk-fields nb))
+                            (equal? (blk-position ob) (blk-position nb)))
+                       #f)
                       ((and ob nb) (compare-live! id ob nb)))))
             (append (map car old-blocks)
                     (filter (lambda (id) (not (hashtable-ref ot id #f))) (map car new-blocks))))
@@ -180,16 +194,21 @@
                 (for-each (lambda (id) (unless (member id n) (emit! (list 'resolved id kind)))) o)))
             '(conflicts orphans unplaced nested-documents)
             '(cycle orphan unplaced nested))
-          (let ((ol (make-hashtable equal-hash equal?)) (nl (make-hashtable equal-hash equal?)))
-            (for-each (lambda (l) (hashtable-set! ol l #t)) old-links)
-            (for-each (lambda (l) (hashtable-set! nl l #t)) new-links)
-            (for-each (lambda (l)
-                        (unless (hashtable-ref ol l #f)
-                          (emit! (list 'edge-added (car l) (cadr l) (caddr l) (cons 'event (cadddr l))))))
-                      new-links)
-            (for-each (lambda (l)
-                        (unless (hashtable-ref nl l #f)
-                          (emit! (list 'edge-removed (car l) (cadr l) (caddr l)))))
-                      old-links))
+          ;; THE SAME LINKS ADD AND REMOVE NONE (an item arises only from
+          ;; sets that differ), and a publication seldom touches them: one
+          ;; equal? walk over the two lists before the two tables of every
+          ;; link.
+          (unless (equal? old-links new-links)
+            (let ((ol (make-hashtable equal-hash equal?)) (nl (make-hashtable equal-hash equal?)))
+              (for-each (lambda (l) (hashtable-set! ol l #t)) old-links)
+              (for-each (lambda (l) (hashtable-set! nl l #t)) new-links)
+              (for-each (lambda (l)
+                          (unless (hashtable-ref ol l #f)
+                            (emit! (list 'edge-added (car l) (cadr l) (caddr l) (cons 'event (cadddr l))))))
+                        new-links)
+              (for-each (lambda (l)
+                          (unless (hashtable-ref nl l #f)
+                            (emit! (list 'edge-removed (car l) (cadr l) (caddr l)))))
+                        old-links)))
           (reverse out))))
 )

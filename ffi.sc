@@ -2446,7 +2446,7 @@
          lseek-fail mkdir-fail client-extra-child store-raise-early
          reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
          stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
-         writer-raise-second))
+         writer-raise-second probe-slow refresh-snapshot-raise))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2704,7 +2704,7 @@
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
          after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
-         stream-overflow))
+         stream-overflow probe-before-ack))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond

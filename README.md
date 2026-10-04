@@ -984,6 +984,11 @@ reported as `(error store-unreadable (reason ...))`, with no revision, and the
 stream goes on; so does a further request on the connection, answered `(error
 bad-request (reason subscribed))`.
 
+A commit made outside the daemon -- another process writing to the store
+directly -- arrives too: while anyone is subscribed, the daemon compares the
+store with what it published once a second, so such a commit reaches a
+subscriber within about a second. With nobody subscribed it does not look.
+
 **Apply frames by revision, not by cut.** Subscribe first, then `read --rev`
 each object you follow, and keep the revision it answered. A frame whose rev is
 at most an object's revision is already in it; the next one is applied; one

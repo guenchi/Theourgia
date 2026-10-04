@@ -28,12 +28,13 @@
 ;; commit is compared the same way, and the time of commits is measured by
 ;; forty alternating rounds (the bound is stated where it is judged).
 ;;
-;; THE EXCEPTIONS ARE NAMED, and each is this row's own expectation:
-;; `describe` (the catalogue gains subscribe and read's --rev), the
-;; unknown-verb refusal (its list of verbs gains subscribe), and read's
-;; usage answer (it shows --rev): each answer differs from the base's by
-;; exactly that addition, removed from it the base's answer again.
-;; Everything else must be equal.
+;; THE ANSWERS A CHANGE MEANS TO ALTER ARE DATA, in
+;; change-stream-guard-expect.sexp: each scripted answer this tree's change
+;; alters against its base, with why. Empty when the tree changes no answer.
+;; Every observed difference must be listed there, and every listed one
+;; observed, so an item that changes an answer says so in the same commit,
+;; and an entry that no longer differs (its change is in the base now) is
+;; red until it is removed.
 ;;
 ;; THE TWO DAEMONS' OWN PATHS differ by construction (two copies, two
 ;; sockets); each answer and trace has its daemon's store and socket read
@@ -60,6 +61,13 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
 (unless (and (string? base-lib) (> (string-length base-lib) 0))
   (printf "SKIP: THEOURGIA_BASE_LIBDIR is unset: set it to a library root holding the base tree's theourgia/ and igropyr/ to compare this tree's daemon with the base's (an opt-in, not a failure)~%")
@@ -156,7 +164,11 @@
     (batch "()") (snapshot) (check) (adopt) (log "A")
     (del "B") (read "B") (outline)
     (describe) (no-such-verb) (read)))
-(define exceptions '(describe no-such-verb read-usage))
+;; (label reason) entries; label is the script's verb, or read-usage for read
+;; with no arguments.
+(define expected-differences
+  (let ((f (string-append script-dir "/change-stream-guard-expect.sexp")))
+    (if (file-exists? f) (call-with-input-file f read) 'NO-EXPECTATION-FILE)))
 (define (resolve d args ids)
   (map (lambda (a) (let ((e (assoc a ids))) (if e (cdr e) a))) args))
 (define (run-script d)
@@ -188,30 +200,24 @@
            (n (start! "new" this-lib))
            (rb (run-script b))
            (rn (run-script n)))
-      (want "F10-9 every answer of the script is byte for byte the base's, but the three named exceptions"
-            (filter (lambda (x) x)
-                    (map (lambda (x y) (and (not (memq (car x) exceptions)) (not (equal? (cdr x) (cdr y))) (list (car x) (cdr x) (cdr y))))
-                         rb rn))
-            '())
-      ;; EACH EXCEPTION'S OWN EXPECTATION: the base's answer lacks the
-      ;; addition, the new one has it, and taking it out of the new one gives
-      ;; the base's back (for describe, which adds an entry with its own
-      ;; text, the first two only, and read's usage inside it).
-      (let ((old (lambda (k) (cdr (assq k rb)))) (new (lambda (k) (cdr (assq k rn))))
-            (without-word (lambda (t w) (let ((a (replace-all t (string-append " " w) "")) (b (replace-all t (string-append w " ") "")))
-                                          (list a b)))))
-        (want "F10-9 the unknown-verb refusal differs by subscribe in its list of verbs, and by nothing else"
-              (list (contains? (old 'no-such-verb) "subscribe") (contains? (new 'no-such-verb) "subscribe")
-                    (and (member (old 'no-such-verb) (without-word (new 'no-such-verb) "subscribe")) #t))
-              '(#f #t #t))
-        (want "F10-9 read's usage answer differs by its --rev option, and by nothing else"
-              (list (contains? (old 'read-usage) "--rev") (contains? (new 'read-usage) "--rev")
-                    (equal? (replace-all (new 'read-usage) " (\\\"--rev\\\")" "") (old 'read-usage)))
-              '(#f #t #t))
-        (want "F10-9 describe gains subscribe with route stream, and read's --rev"
-              (list (contains? (old 'describe) "subscribe") (contains? (new 'describe) "subscribe")
-                    (contains? (new 'describe) "stream") (contains? (old 'describe) "--rev") (contains? (new 'describe) "--rev"))
-              '(#f #t #t #f #t)))
+      (let* ((differing (let loop ((xs rb) (ys rn) (out '()))
+                          (cond ((or (null? xs) (null? ys)) (reverse out))
+                                ((and (not (equal? (cdar xs) (cdar ys))) (not (memq (caar xs) out)))
+                                 (loop (cdr xs) (cdr ys) (cons (caar xs) out)))
+                                (else (loop (cdr xs) (cdr ys) out)))))
+             (listed (if (list? expected-differences) (map car expected-differences) '())))
+        (want "F10-9 the expectation file is read, and every entry gives its reason"
+              (and (list? expected-differences)
+                   (for-all (lambda (e) (and (pair? e) (symbol? (car e)) (pair? (cdr e)) (string? (cadr e)))) expected-differences))
+              #t)
+        (want "F10-9 every answer of the script that differs from the base's is listed, and every listed one differs"
+              (list (filter (lambda (l) (not (memq l listed))) differing)
+                    (filter (lambda (l) (not (memq l differing))) listed))
+              '(() ()))
+        (for-each (lambda (l)
+                    (unless (memq l listed)
+                      (printf "   unlisted difference ~s:~%   base ~a~%   tree ~a~%" l (cdr (assq l rb)) (cdr (assq l rn)))))
+                  differing))
       ;; THE TRACE of one read and one commit, each daemon's lines between two markers.
       (let ((trace-of (lambda (d)
                         (let* ((before (string-length (file-text (cadddr d)))))
