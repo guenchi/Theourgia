@@ -39,7 +39,7 @@
 (library (theourgia daemon)
   (export serve write-report-line!)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
-          (rnrs io simple) (rnrs io ports)
+          (rnrs io simple) (rnrs io ports) (rnrs hashtables)
           (only (chezscheme) real-time getenv write newline read void let-values
                 char-whitespace? lookahead-char get-char
                 register-signal-handler
@@ -47,7 +47,7 @@
                 make-message-condition make-irritants-condition
                 open-string-input-port call-with-string-output-port
                 condition? message-condition? condition-message guard exit
-                parameterize)
+                parameterize eval environment)
           ;; NEVER: NAMED ONE BY ONE, AND `link` IS NOT AMONG THEM. A linked
           ;; process that exits abnormally takes its peer down with it
           ;; without asking, which is the one shape this daemon must not
@@ -59,15 +59,17 @@
           (only (theourgia sched)
                 start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
-                conn-write! conn-close! conn-ref-pid)
-          (only (theourgia rpc) rpc-dispatch rpc-ok?)
+                conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
+          (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error)
           (only (theourgia client) socket-path envelope-version)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
                 store-withhold-hook!)
           (only (theourgia log) store-state-snapshot snapshot-unreadable-notes
-                unreadable-entry? unreadable-entry-path unreadable-entry-reason)
+                unreadable-entry? unreadable-entry-path unreadable-entry-reason
+                unreadable-behind incomplete-clause)
+          (only (theourgia reduce) reduce-applied-cut)
           (only (theourgia incomplete) incomplete-accepted)
           (only (theourgia arguments) parse-arguments argument-option)
           ;; KEY: THE SAME LEXICAL RULE GUARDS BOTH DIRECTIONS. A request and
@@ -76,7 +78,8 @@
           ;; in `(theourgia client)` and is asked here rather than copied.
           (only (theourgia client) readable-shape?)
           (only (theourgia trace) trace-event!)
-          (only (theourgia ffi) theourgia-fault hold-point! hold-sleeper-set!)
+          (only (theourgia ffi) theourgia-fault hold-point! hold-sleeper-set!
+                theourgia-send-buffer process-id wall-clock-ms)
           (only (theourgia platform-numbers) platform-number)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
@@ -195,6 +198,11 @@
     ;; OS thread -- so they are set on the way in rather than around each
     ;; write.
     (answer-printing!)
+    ;; THE INCARNATION'S TOKEN, made once per start: this process's id and
+    ;; its start instant, so two daemons on one store differ in one or the
+    ;; other. A subscriber resuming with another token is told the daemon
+    ;; restarted; it is compared for equality and nothing else.
+    (set! daemon-token (string-append (number->string (process-id)) "-" (number->string (wall-clock-ms))))
     (let ((socket (if (pair? opts) (car opts) (socket-path store)))
           (attempt (and (pair? opts) (pair? (cdr opts)) (cadr opts))))
       (start-scheduler (lambda () (main store socket attempt)))))
@@ -978,11 +986,144 @@
   ;;     look like an outside change and cost a fold).
   (define published #f)
   (define publish-seq 0)
+  (define daemon-token #f)
 
+  ;; THE PUBLICATION'S NAME, (<revision> <token>), is made here once and kept
+  ;; in the cell with the state: a read seals the state with it and makes
+  ;; nothing (the change stream's read --rev).
+  ;; THE CELL HAS THREE READERS, pinned in the census: answer-published,
+  ;; and the change stream's two -- this one, whose frame is made before the
+  ;; cell holds the new state and so cannot go through answer-published, and
+  ;; subscription-answer. Each takes its incomplete clause with
+  ;; incomplete-clause over the state's unreadable notes, as a read does.
+  ;; THE FRAME IS MADE HERE, the one place every publication passes -- a
+  ;; local commit, a reload, a refresh before a read at a cut, the start --
+  ;; from the reduction it replaces and the one it installs, while at
+  ;; least one subscriber is registered. No caller makes one. Without a
+  ;; subscriber there is no frame work at all.
   (define (publish! store state snapshot)
-    (set! publish-seq (+ publish-seq 1))
-    (set! published (vector state publish-seq snapshot))
-    (trace-event! 'published publish-seq #f))
+    (let ((old (published-state))
+          (seq (+ publish-seq 1)))
+      (set! publish-seq seq)
+      (if (and old (pair? subscribers))
+          (frame! old state seq)
+          (set! published-sets #f))
+      (set! published (vector state seq snapshot (list seq daemon-token)))
+      (trace-event! 'published seq #f)))
+
+  ;; ---- the change stream: subscribers, frames, the ring ---------------------
+  ;;
+  ;; ALL OF THIS IS THE STORE PROCESS'S: it publishes, so it frames, and it
+  ;; registers subscribers, so the ring and the list are only ever touched
+  ;; in one process.
+  ;; The live stream: while `subscribers` is not empty every publication
+  ;; makes a frame, kept in a ring of the last 256 by revision. When the
+  ;; last subscriber leaves the ring stays and framing stops; a later
+  ;; publication is a hole in it, which a resume across it is told.
+  (define subscribers '())
+  (define ring (make-eqv-hashtable))
+  (define ring-revs '())
+  (define ring-size 256)
+  ;; The structural sets of the publication in the cell, while it was
+  ;; framed: a frame then computes one reduction's sets, not two.
+  (define published-sets #f)
+
+  ;; THE FRAME'S LIBRARY IS LOADED WHEN A SUBSCRIPTION IS ACCEPTED, not at
+  ;; start: (theourgia stream-frames) is all of the frame computation, and a
+  ;; daemon nobody follows never needs it. Asked by name, once.
+  (define frame-procedures #f)
+  (define (frames-loaded!)
+    (unless frame-procedures
+      (trace-event! 'library-loaded 'stream-frames #f)
+      (let ((env (environment '(theourgia stream-frames))))
+        (set! frame-procedures
+              (cons (eval 'structural-sets env) (eval 'change-items env))))))
+  (define (structural-sets r) ((car frame-procedures) r))
+  (define (change-items old new old-sets new-sets) ((cdr frame-procedures) old new old-sets new-sets))
+
+  (define (frame! old new seq)
+    (let* ((old-sets (or published-sets (structural-sets old)))
+           (new-sets (structural-sets new))
+           (items (change-items old new old-sets new-sets))
+           (clause (incomplete-clause (unreadable-behind new)))
+           (datum (append (list 'changes (list 'rev seq) (list 'daemon daemon-token)
+                                (list 'from-cut (reduce-applied-cut old))
+                                (list 'cut (reduce-applied-cut new))
+                                (cons 'items items))
+                          (if clause (list clause) '())))
+           (bytes (string->utf8 (render-wire datum))))
+      (set! published-sets new-sets)
+      (hashtable-set! ring seq bytes)
+      (set! ring-revs (append ring-revs (list seq)))
+      (when (> (length ring-revs) ring-size)
+        (hashtable-delete! ring (car ring-revs))
+        (set! ring-revs (cdr ring-revs)))
+      (for-each (lambda (pid) (send pid (list 'frame seq bytes))) subscribers)))
+
+  ;; A NOTICE THAT IS NOT A PUBLICATION -- a reload that failed -- goes to
+  ;; every subscriber, with no revision, and is not kept.
+  (define (stream-notice! datum)
+    (unless (null? subscribers)
+      (let ((bytes (string->utf8 (render-wire datum))))
+        (for-each (lambda (pid) (send pid (list 'stream-notice bytes))) subscribers))))
+
+  ;; A REVISION IS WRITTEN IN DECIMAL DIGITS AND NOTHING ELSE: string->number
+  ;; would also take "#x10" or "1e2", which name numbers no frame carries.
+  (define (decimal-digits->number text)
+    (and (string? text)
+         (> (string-length text) 0)
+         (for-all (lambda (c) (char<=? #\0 c #\9)) (string->list text))
+         (string->number text 10)))
+
+  (define (drop-subscriber! pid)
+    (set! subscribers (remp (lambda (p) (eq? p pid)) subscribers)))
+
+  ;; `subscribe changes <rev> [<token>]`, judged where the ring and the
+  ;; current revision are. -> (acceptance . replay), the replay a list of
+  ;; (revision . bytes) the stream writes before any live frame, or
+  ;; (refusal . ()).
+  ;;   - rev a non-negative integer, else invalid-revision;
+  ;;   - a resume naming another incarnation's token: daemon-restarted,
+  ;;     whatever its revision (judged first, see below);
+  ;;   - past current, invalid-revision;
+  ;;   - 0 is the initial subscription: no token, nothing replayed, the
+  ;;     subscriber reads the state at current for itself;
+  ;;   - a resume (rev > 0) needs a token, else missing-token, and every
+  ;;     revision after rev up to current in the ring, else window.
+  (define (subscription-answer from args)
+    (let* ((current publish-seq)
+           (rev (and (<= 2 (length args)) (decimal-digits->number (cadr args))))
+           (token (and (= 3 (length args)) (caddr args)))
+           (unavailable (lambda (reason . more)
+                          (append (list 'error 'changes-unavailable (list 'reason reason))
+                                  more
+                                  (list (list 'current current) (list 'daemon daemon-token))))))
+      (cond
+        ((subscribe-shape-error args) => (lambda (refusal) (cons refusal '())))
+        ((not rev) (cons '(error bad-request invalid-revision) '()))
+        ;; ANOTHER INCARNATION'S TOKEN IS JUDGED BEFORE ITS REVISION: a
+        ;; revision of an earlier daemon does not compare with this one's
+        ;; current, and the answer that lets the client recover is that the
+        ;; daemon restarted, not that the number is too large.
+        ((and (> rev 0) token (not (equal? token daemon-token)))
+         (cons (unavailable 'daemon-restarted) '()))
+        ((> rev current) (cons '(error bad-request invalid-revision) '()))
+        ((and (> rev 0) (not token)) (cons '(error bad-request missing-token) '()))
+        ((and (> rev 0)
+              (let missing? ((r (+ rev 1)))
+                (and (<= r current) (or (not (hashtable-ref ring r #f)) (missing? (+ r 1))))))
+         (cons (unavailable 'window (list 'oldest (if (null? ring-revs) (+ current 1) (car ring-revs)))) '()))
+        (else
+         (frames-loaded!)
+         (monitor from)
+         (set! subscribers (cons from subscribers))
+         (let ((clause (incomplete-clause (unreadable-behind (published-state)))))
+           (cons (append (list 'ok (list 'subscribed rev) (list 'daemon daemon-token) (list 'current current))
+                         (if clause (list clause) '()))
+                 (let collect ((r (+ rev 1)) (out '()))
+                   (if (or (= rev 0) (> r current))
+                       (reverse out)
+                       (collect (+ r 1) (cons (cons r (hashtable-ref ring r #f)) out))))))))))
 
   ;; FOLD AGAIN AND PUBLISH WHAT CAME BACK, with the snapshot sampled before
   ;; the fold (see publish!). The one body of `(reload)`, and of every other
@@ -1002,9 +1143,9 @@
   ;; name: the table's answer for the condition, or its text.
   ;; `reload-raise` makes it fail.
   (define (reload-or-say-why! store)
-    (guard (e (#t (trace-event! 'reload-failed
-                                (or (classify-failure e '()) (condition-text e))
-                                #f)))
+    (guard (e (#t (let ((why (or (classify-failure e '()) (condition-text e))))
+                    (trace-event! 'reload-failed why #f)
+                    (stream-notice! (list 'error 'store-unreadable (list 'reason why))))))
       (when (eq? (theourgia-fault) 'reload-raise)
         (raise (make-message-condition "injected reload raise")))
       (refold-and-publish! store)))
@@ -1033,7 +1174,10 @@
       (unless (and now (equal? now (published-snapshot)))
         (reload-or-say-why! store))))
 
-  (define (published-state) (and published (vector-ref published 0)))
+  ;; CELL, when given, is the vector its caller already read: a reader that
+  ;; needs the state and its name reads the cell once (answer-published).
+  (define (published-state . cell)
+    (let ((c (if (pair? cell) (car cell) published))) (and c (vector-ref c 0))))
   (define (published-snapshot) (and published (vector-ref published 2)))
 
   ;; NEVER: THE READ IS ANSWERED FROM WHAT IS PUBLISHED, WHATEVER THIS FINDS.
@@ -1073,10 +1217,13 @@
   ;; probe, then hand the publication SEALED with what the probe found. The
   ;; connection's local reads and the writer processes both come here; the
   ;; census row pins (published-state) to this one reader.
+  ;; THE CELL IS READ ONCE: the state and its name come from one vector, so
+  ;; the name sealed with a state is that state's.
   (define (answer-published store store-pid parsed actor writer piped cwd)
-    (let ((notes (probe-for-outside-change! store store-pid))
-          (state (published-state)))
-      (answer-for store parsed actor (and state (seal-state state notes)) writer piped cwd)))
+    (let* ((notes (probe-for-outside-change! store store-pid))
+           (cell published)
+           (state (published-state cell)))
+      (answer-for store parsed actor (and state (seal-state state notes (vector-ref cell 3))) writer piped cwd)))
 
   ;; ---- the store process -------------------------------------------------
   ;;
@@ -1200,6 +1347,23 @@
                (send from (list 'answer seq answer 'core)))
              (send from (list 'answer seq draining-answer 'transport)))
          (loop))
+        ;; A SUBSCRIPTION IS REGISTERED HERE, where the ring and the current
+        ;; revision are, and its admission ticket is finished at once: a
+        ;; stream lives as long as its connection, and holding the ticket
+        ;; that long would hold a drain open for it.
+        (`(subscribe ,from ,seq ,ticket ,main-pid ,args)
+         (if (may-execute? main-pid ticket)
+             (let ((answer (subscription-answer from args)))
+               (executed! main-pid ticket)
+               (send from (list 'subscription seq (car answer) (cdr answer))))
+             (send from (list 'subscription seq draining-answer '())))
+         (loop))
+        (`(unsubscribe ,pid) (drop-subscriber! pid) (loop))
+        ;; THE STREAM'S LAST WORD BEFORE A DRAIN ENDS IT: unregistered here,
+        ;; and answered after every frame this process already sent it, since
+        ;; it handles messages in order.
+        (`(stream-end ,pid) (drop-subscriber! pid) (send pid (list 'stream-end)) (loop))
+        (`#(DOWN ,who ,reason) (drop-subscriber! who) (loop))
         (`(drain) (loop)))))
 
   ;; NOTE: A RAISED `(error ...)` IS AN ANSWER THAT TOOK THE SHORT WAY OUT.
@@ -1294,9 +1458,15 @@
         ((current-lock-release) l))))
 
   (define (writer-loop store name store-pid)
-    (let loop ()
+    (let loop ((served 0))
       (receive
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
+         ;; INJECTION ONLY: this writer dies on its SECOND request, so a
+         ;; connection that already used it can be watching it when it goes
+         ;; (a subscribed connection's writer DOWN).
+         (when (and (= served 1) (eq? (theourgia-fault) 'writer-raise-second))
+           (raise (condition (make-message-condition "injected writer raise on a second request")
+                             (make-irritants-condition (list name seq)))))
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise))
            (set! writer-fault-pending #f)
            ((current-lock-acquire) (string-append store "/lock") 'exclusive)
@@ -1343,7 +1513,7 @@
            (set! writer-fault-pending #f)
            (raise (condition (make-message-condition "injected writer raise beside a holder")
                              (make-irritants-condition (list name seq)))))
-         (loop)))))
+         (loop (+ served 1))))))
 
   (define (condition-text e)
     (if (and (condition? e) (message-condition? e)) (condition-message e) 'raised))
@@ -1362,7 +1532,9 @@
           (lref (begin
                   ;; INJECTION ONLY (item 7): held before the bind (P6-timeout).
                   (hold-point! 'bind)
-                  (listen! socket 64))))
+                  ;; The send buffer is a fixture's seam, #f outside the
+                  ;; injection build: the system's own.
+                  (listen! socket 64 #f (theourgia-send-buffer)))))
       (send main-pid (list 'bound (device-inode socket)))
       (let loop ()
         (receive
@@ -1736,6 +1908,11 @@
            ;; NOTE: THE ANSWER IS MATCHED AGAINST THIS REQUEST'S OWN
            ;; SEQUENCE NUMBER, so a reply that belongs to some earlier
            ;; exchange cannot be written out as the answer to this one.
+           ;; A SUBSCRIPTION turns this connection into a stream for the
+           ;; rest of its life: it is registered with the store process and
+           ;; never comes back to `frames`.
+           (if (eq? (car request) 'subscribe)
+               (subscribe-stream ctx seq parsed rest mode)
            (if (conn-local-read? request)
                (begin
                  (routed! parsed 'connection)
@@ -1803,7 +1980,255 @@
                      (answer-and-close ref '(error transport-unknown (reason writer-actor-down))))
                     (else
                      (forget-writer! ctx who)
-                     (await)))))))))))))
+                     (await))))))))))))))
+
+  ;; ---- a subscribed connection: the change stream -----------------------
+  ;;
+  ;; THE SUBSCRIPTION IS JUDGED BY THE STORE PROCESS, which holds the ring and
+  ;; the current revision; this process asks, and an acceptance turns the
+  ;; connection into a stream for the rest of its life. A refusal is an
+  ;; ordinary answer and the connection goes on as before.
+  (define stream-queue-limit 64)
+  (define terminal-write-ms 2000)
+
+  (define (subscribe-stream ctx seq parsed rest mode)
+    (let ((ref (ctx-ref ctx)))
+      (routed! parsed 'store)
+      (send (ctx-store-pid ctx)
+            (list 'subscribe self seq (fresh-ticket) (ctx-main ctx) (cdr (frame-field 'request parsed))))
+      (let await ()
+        (receive
+          ;; A DRAIN WHILE THE STORE IS JUDGING: remembered; an acceptance
+          ;; then streams what it accepted and ends with the drain.
+          (`(drain) (ctx-drain! ctx) (await))
+          (`(subscription ,@seq ,answer ,replay)
+           (if (and (pair? answer) (eq? (car answer) 'ok))
+               (stream-run ctx answer replay rest)
+               (write-answer ctx seq answer rest mode
+                             (if (equal? answer draining-answer) 'transport 'core))))
+          (`#(DOWN ,who ,reason)
+           (cond
+             ((eq? who (ctx-store-pid ctx))
+              (answer-and-close ref '(error transport-unknown (reason store-actor-down))))
+             (else (forget-writer! ctx who) (await))))))))
+
+  ;; THE STREAM STATE. One write in flight at a time, each with a fresh
+  ;; token; only a `(written ...)` naming this connection and that token
+  ;; completes it. Order: the acceptance, the replay list the store snapshot
+  ;; into the acceptance, then the live queue (at most 64; a live frame the
+  ;; replay already wrote is skipped). Teardown is latched: the first cause
+  ;; -- lagging, EOF, a failed write, the drain's end, the store's death, the
+  ;; connection's -- unsubscribes once, drops the queue, writes the terminal
+  ;; if it has one and the transport is usable, and closes; a frame that
+  ;; arrives after that is consumed and not written.
+  ;;
+  ;; THE ACCEPTANCE IS ALWAYS WIRE-RENDERED, whatever the request's mode: the
+  ;; lines after it are bare data, and whoever subscribes is a program.
+  ;;
+  ;; NO DEADLINE WHILE STREAMING: a stream idles legitimately. The only clock
+  ;; is the terminal's: the write ahead of it and the terminal itself each
+  ;; get terminal-write-ms.
+  ;;
+  ;; TRACES (THEOURGIA_TRACE): (stream-write <rev>|acceptance|notice|terminal),
+  ;; (stream-written <status>), (write-pending conn) when libuv held a write's
+  ;; bytes, (stream-queued <n>) at each enqueue, (stream-late <rev>) for a
+  ;; frame consumed after closing, (stream-closed <cause>).
+  (define (stream-run ctx answer replay rest)
+    (let ((ref (ctx-ref ctx))
+          (store-pid (ctx-store-pid ctx))
+          (adapter (conn-ref-pid (ctx-ref ctx)))
+          (pending #f)
+          (pending-is #f)
+          (tokens 0)
+          (replayed 0)
+          (queue '())
+          (queued 0)
+          (closing #f)
+          (terminal #f)
+          (deadline #f)
+          (end-asked #f)
+          (ended #f)
+          (done #f)
+          (input rest)
+          (stale-armed (and (memq (theourgia-fault) '(stream-written-ref stream-written-token)) #t))
+          (coalesce-armed (eq? (theourgia-fault) 'stream-coalesce-cut))
+          (write-raise-armed (eq? (theourgia-fault) 'stream-write-raise)))
+      (define (finish!)
+        (set! done #t)
+        (conn-close! ref))
+      (define (latch! cause terminal-datum)
+        (unless closing
+          (set! closing cause)
+          (trace-event! 'stream-closed cause #f)
+          (unless (eq? cause 'store-down) (send store-pid (list 'unsubscribe self)))
+          (set! replay '())
+          (set! queue '())
+          (set! queued 0)
+          (if terminal-datum
+              (begin
+                (set! terminal (string->utf8 (render-wire terminal-datum)))
+                (when pending (set! deadline (+ (real-time) terminal-write-ms))))
+              (finish!))))
+      (define (issue! bytes what)
+        (set! tokens (+ tokens 1))
+        (let ((tok (list 'stream tokens)))
+          (set! pending tok)
+          (set! pending-is what)
+          (trace-event! 'stream-write what #f)
+          (let ((held (guard (e (#t 'raised))
+                        ;; INJECTION ONLY: one frame's write raises before
+                        ;; anything is sent, as a queue failure does.
+                        (when (and write-raise-armed (number? what))
+                          (set! write-raise-armed #f)
+                          (trace-event! 'fault 'stream-write-raise #f)
+                          (raise (make-message-condition "injected stream write raise")))
+                        (conn-write-observed! ref bytes tok))))
+            (cond
+              ;; A WRITE THAT RAISES ends the stream. igropyr leaves the
+              ;; connection open when nothing was sent and closes it when a
+              ;; prefix was: an open one gets the terminal attempted once, a
+              ;; closed one none.
+              ((eq? held 'raised)
+               (set! pending #f)
+               (write-failed! what))
+              ((> held 0)
+               (trace-event! 'write-pending 'conn #f)
+               ;; INJECTION ONLY: a stale completion while this write is
+               ;; pending -- another connection's, or an older write's.
+               (when stale-armed
+                 (set! stale-armed #f)
+                 (trace-event! 'fault (theourgia-fault) #f)
+                 (send self (if (eq? (theourgia-fault) 'stream-written-ref)
+                                (list 'written (list 'another-connection) tok 0)
+                                (list 'written ref (list 'stream 0) 0)))))))))
+      ;; A FAILED WRITE, by a raise or by its completion's status: the
+      ;; terminal's own failure ends at once; otherwise a usable transport
+      ;; is told why, and a broken one is closed without a word.
+      (define (write-failed! what)
+        (cond
+          ((eq? what 'terminal) (finish!))
+          ((guard (e (#t #f)) (conn-open? ref))
+           (latch! 'write-failed '(error transport-unknown (reason write-failed))))
+          (else (latch! 'write-failed #f))))
+      (define (enqueue! rev bytes)
+        (if (= queued stream-queue-limit)
+            ;; INJECTION ONLY: held at the overflow, before the latch, so a
+            ;; row can have the store send frames that arrive after it.
+            (begin
+              (hold-point! 'stream-overflow)
+              (latch! 'lagging (list 'error 'changes-unavailable '(reason lagging)
+                                   (list 'current publish-seq) (list 'daemon daemon-token))))
+            (begin
+              (set! queue (append queue (list (cons rev bytes))))
+              (set! queued (+ queued 1))
+              (trace-event! 'stream-queued queued #f))))
+      ;; INJECTION ONLY: two whole frames and the first half of a third in
+      ;; one write, the rest in the next, so a reader can be shown one read
+      ;; holding two lines and a tail.
+      (define (coalesce-ready?)
+        (and coalesce-armed (not closing) (not ended)
+             (>= (length queue) 3)
+             (number? (car (car queue))) (number? (car (cadr queue))) (number? (car (caddr queue)))
+             #t))
+      (define (coalesce!)
+        (set! coalesce-armed #f)
+        (trace-event! 'fault 'stream-coalesce-cut #f)
+        (let* ((a (car queue)) (b (cadr queue)) (c (caddr queue))
+               (third (cdr c))
+               (half (div (bytevector-length third) 2)))
+          (set! queue (cons (cons 'tail (subbytes third half (bytevector-length third))) (cdddr queue)))
+          (set! queued (- queued 2))
+          (issue! (append-bytes (append-bytes (cdr a) (cdr b)) (subbytes third 0 half)) (car a))))
+      ;; THE NEXT WRITE, when none is in flight: the terminal once closing,
+      ;; else the replay list, else the queue; and the drain's terminal when
+      ;; the store has said stream-end and everything before it is written.
+      (define (pump!)
+        (let again ()
+          (unless (or pending done)
+            (cond
+              (closing
+               (if terminal
+                   (let ((t terminal))
+                     (set! terminal #f)
+                     (set! deadline (+ (real-time) terminal-write-ms))
+                     (issue! t 'terminal))
+                   (finish!)))
+              ((pair? replay)
+               (let ((e (car replay)))
+                 (set! replay (cdr replay))
+                 (set! replayed (car e))
+                 (issue! (cdr e) (car e))
+                 (again)))
+              ((and coalesce-armed (not closing) (not ended) (not (coalesce-ready?))) (void))
+              ((coalesce-ready?) (coalesce!) (again))
+              ((pair? queue)
+               (let ((e (car queue)))
+                 (set! queue (cdr queue))
+                 (set! queued (- queued 1))
+                 (cond
+                   ;; the coalesced frame's rest goes after a pause, so a
+                   ;; reader sees the first write on its own
+                   ((eq? (car e) 'tail) (sleep-ms 200) (issue! (cdr e) 'tail))
+                   ((and (number? (car e)) (<= (car e) replayed)) (void))
+                   (else (issue! (cdr e) (or (car e) 'notice))))
+                 (again)))
+              (ended
+               (latch! 'draining draining-answer)
+               (again))
+              (else (void))))))
+      ;; A FURTHER FRAME FROM THE CLIENT, buffered leftovers included, is
+      ;; answered bad-request subscribed through the queue.
+      (define (take-requests!)
+        (let ((cut (newline-at input)))
+          (cond
+            (cut
+             (set! input (subbytes input (+ cut 1) (bytevector-length input)))
+             (enqueue! #f (string->utf8 (render-wire '(error bad-request (reason subscribed)))))
+             (unless closing (take-requests!)))
+            ((> (bytevector-length input) frame-limit)
+             (set! input (make-bytevector 0))
+             (enqueue! #f (string->utf8 (render-wire '(error bad-request (reason frame-limit))))))
+            (else (void)))))
+      (define (ask-end!)
+        (unless (or closing end-asked)
+          (set! end-asked #t)
+          (send store-pid (list 'stream-end self))))
+      (monitor adapter)
+      (issue! (string->utf8 (datum->string (answer-envelope answer 'wire 'core))) 'acceptance)
+      (unless closing (take-requests!))
+      (when (ctx-draining? ctx) (ask-end!))
+      (let loop ()
+        (pump!)
+        (unless done
+          (receive
+            (after (if deadline (max 0 (- deadline (real-time))) 'infinity)
+              (trace-event! 'stream-closed 'terminal-timeout #f)
+              (finish!))
+            (`(frame ,rev ,bytes)
+             (if closing (trace-event! 'stream-late rev #f) (enqueue! rev bytes)))
+            (`(stream-notice ,bytes)
+             (unless closing (enqueue! #f bytes)))
+            (`(written ,r ,tok ,status)
+             (when (and pending (eq? r ref) (equal? tok pending))
+               (set! pending #f)
+               (trace-event! 'stream-written status #f)
+               (cond
+                 ((eq? pending-is 'terminal) (finish!))
+                 ((not (= status 0)) (write-failed! pending-is)))))
+            (`(data ,r ,bv)
+             (unless closing
+               (set! input (append-bytes input bv))
+               (take-requests!)))
+            (`(eof ,r) (latch! 'eof #f))
+            (`(drain) (ctx-drain! ctx) (ask-end!))
+            (`(stream-end) (set! ended #t))
+            (`#(DOWN ,who ,reason)
+             (cond
+               ((eq? who store-pid)
+                (latch! 'store-down '(error transport-unknown (reason store-actor-down))))
+               ((eq? who adapter) (latch! 'connection-down #f))
+               (else (forget-writer! ctx who)))))
+          (loop)))))
 
   ;; NEVER: THE ENVELOPE NAMES THE STORE IT IS FOR:
   ;; `(request <store> <actor> <verb> <arg> ...)`.

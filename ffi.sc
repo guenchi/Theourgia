@@ -376,7 +376,7 @@
           lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version real-path
           fs-error? fs-error-op fs-error-target fs-error-errno errno-text
-          theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
+          theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
@@ -390,7 +390,7 @@
           hold-point! hold-sleeper-set!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
-          unix-socket-connect fd-read socket-timeout! sun-path-max sockaddr-un
+          unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
           redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
@@ -1647,6 +1647,16 @@
             (raise (fs-err 'setsockopt "socket" (errno)))))
         (list SO_RCVTIMEO SO_SNDTIMEO))))
 
+  ;; A DEADLINE ON RECEIVING ONLY, for a client that keeps its connection:
+  ;; a stream idles legitimately, so its receive has no deadline (0) until
+  ;; part of a line has arrived, and then the rest of that line has one.
+  ;; Sending keeps the bound socket-timeout! gave it. A receive that runs
+  ;; out raises from fd-read like any other failed read.
+  (define (socket-receive-timeout! fd ms)
+    (let ((tv (timeval-bytes ms)))
+      (when (= -1 (c-setsockopt fd SOL_SOCKET SO_RCVTIMEO tv (bytevector-length tv)))
+        (raise (fs-err 'setsockopt "socket" (errno))))))
+
   ;; Answers a connected descriptor, or raises a durable-error carrying
   ;; the errno. NEVER: IT DOES NOT CLASSIFY THE ERRNO: which failures mean
   ;; "no daemon, start one" and which mean "stop" is the client's rule
@@ -2330,6 +2340,24 @@
 
      (define fault-spec (getenv "THEOURGIA_FAULT"))
 
+     ;; TWO SEAMS OF THE CHANGE STREAM, read like the hold's wait: an exact
+     ;; positive integer, or refused at load. THEOURGIA_SEND_BUFFER presses
+     ;; a daemon's accepted sockets' send buffer to that many bytes, so a
+     ;; row can make a write the daemon cannot finish; THEOURGIA_READ_CHUNK
+     ;; bounds every read of the streaming client to that many bytes, so a
+     ;; row can cut a line where it chooses.
+     (define (positive-setting name)
+       (let ((v (getenv name)))
+         (and v
+              (let ((n (string->number v 10)))
+                (unless (and n (exact? n) (integer? n) (> n 0))
+                  (assertion-violation 'theourgia-ffi (string-append name " must be an exact positive integer") v))
+                n))))
+     (define send-buffer-setting (positive-setting "THEOURGIA_SEND_BUFFER"))
+     (define read-chunk-setting (positive-setting "THEOURGIA_READ_CHUNK"))
+     (define (theourgia-send-buffer) send-buffer-setting)
+     (define (theourgia-read-chunk) read-chunk-setting)
+
      ;; NOFLOCK: THE PRODUCT'S LOCK IS REMOVED AND THE BARRIER IS KEPT.
      ;; It exists so that the rows asserting mutual exclusion can be
      ;; shown to fail when there is no mutual exclusion -- a lock is
@@ -2416,7 +2444,9 @@
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
          lseek-fail mkdir-fail client-extra-child store-raise-early
-         reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail))
+         reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
+         stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
+         writer-raise-second))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2673,7 +2703,8 @@
      ;; exactly like a hold that never came.
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
-         after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish))
+         after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
+         stream-overflow))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond
@@ -2941,6 +2972,8 @@
      ;; form the compiler can fold away.
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
+     (define (theourgia-send-buffer) #f)
+     (define (theourgia-read-chunk) #f)
      (define (stat-fault? path) #f)
      (define (stat-fault-errno) EIO)
      (define (lseek-fault subject) #f)

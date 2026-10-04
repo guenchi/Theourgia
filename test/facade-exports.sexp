@@ -56,9 +56,13 @@
 ((sched
    start-scheduler spawn spawn&link receive send self monitor demonitor
    link kill process-alive? process-count process-monitor-count sleep-ms)
+ ;; conn-write-observed! AND conn-open? ARE THE CHANGE STREAM'S: the first
+ ;; writes and answers how many bytes libuv still holds for the connection
+ ;; (a write the peer is not taking), the second says whether a connection
+ ;; is still usable after a write failed, so a terminal line can be tried.
  (net
    listen! stop-listen! listener-open? connect! conn-read-start! conn-read-stop!
-   conn-write! conn-close! exchange
+   conn-write! conn-write-observed! conn-open? conn-close! exchange
    conn-ref? conn-ref-conn conn-ref-pid listen-ref?)
  (proc
    spawn-worker! worker-write! worker-close-stdin! worker-kill!

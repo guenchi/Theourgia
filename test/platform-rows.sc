@@ -468,7 +468,7 @@
             (and (member "../client.sc" scanned-files) (member "../rpc.sc" scanned-files)
                  (member "../mcp/server.sc" scanned-files) #t)
             (member "../platform-numbers.sc" scanned-files))
-      (list 65 #t #f))
+      (list 67 #t #f))
 (define sites (apply append (map walk-sites scanned-files)))
 (define (site-file s) (car s))
 (define (site-name s) (cadr s))
@@ -580,7 +580,8 @@
     ("../ffi.sc" timeval-bytes (row-uint-set! tv (quote timeval) (quote tv_usec) (* 1000 (mod ms 1000))))
     ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
     ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
-    ("../mcp/server.sc" kill-at-deadline (platform-number (quote SIGKILL)))))
+    ("../mcp/server.sc" kill-at-deadline (platform-number (quote SIGKILL)))
+    ("../stream-client.sc" EINVAL (platform-number (quote EINVAL)))))
 ;; compared as MULTISETS: the same read twice in one definition is two
 ;; entries, and replacing one of them with a literal leaves one too few
 (define (multiset-minus xs ys)
@@ -636,7 +637,7 @@
       (list (length read-definitions)
             (and (member '("../client.sc" ENOENT) read-definitions) (member '("../ffi.sc" ENOENT) read-definitions) #t)
             (> (symbol-count 'spawn-O_RDONLY (file-forms "../ffi.sc")) 0))
-      (list 57 #t #t))
+      (list 58 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))

@@ -124,6 +124,31 @@
    refuse a
    "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created (F15)"
    (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
+  ("stream-client.sc" (stream!) 1 guard
+   ((fs-error? e))
+   unrelated a
+   "stream socket connect, as call-on-socket's"
+   (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (list (quote error) (quote connect-failed) (list (quote path) path) (list (quote errno) code))))))))
+  ("stream-client.sc" (stream!) 2 guard
+   ((fs-error? e))
+   unrelated a
+   "stream socket: a transport failure after the frame may have gone ends the stream as lost-stream"
+   (e ((fs-error? e) (list (quote ended) (quote lost-stream)))))
+  ("stream-client.sc" (stream!) 3 guard
+   ((and (fs-error? e) (= sent 0)))
+   unrelated a
+   "stream socket write, as exchange-on's"
+   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e)))))))
+  ("stream-client.sc" (bound-receive!) 1 guard
+   ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)))
+   unrelated a
+   "stream socket receive bound: only EINVAL is passed over -- setsockopt on a socket whose peer has closed answers it on macOS (measured), and such a peer cannot leave a read blocked; any other failure raises and ends the stream lost-stream"
+   (e ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)) #f)))
+  ("stream-client.sc" (stream-lines) 1 guard
+   ((fs-error? e))
+   unrelated a
+   "stream socket read: a failed or timed-out read ends the stream as lost-stream"
+   (e ((fs-error? e) (quote failed))))
   ("project.sc" (export-md-view) 1 guard
    ((unreadable-entry? e) (fs-error? e))
    refuse a
@@ -187,8 +212,18 @@
   ("daemon.sc" (reload-or-say-why!) 1 guard
    (#t)
    fact c
-   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4); the one body of (reload) and of the store process's refresh before a cut read"
-   (e (#t (trace-event! (quote reload-failed) (or (classify-failure e (quote ())) (condition-text e)) #f))))
+   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4); the one body of (reload) and of the store process's refresh before a cut read; subscribers are sent (error store-unreadable (reason <the same>)) with no revision"
+   (e (#t (let ((why (or (classify-failure e (quote ())) (condition-text e)))) (trace-event! (quote reload-failed) why #f) (stream-notice! (list (quote error) (quote store-unreadable) (list (quote reason) why)))))))
+  ("daemon.sc" (stream-run write-failed!) 1 guard
+   (#t)
+   unrelated a
+   "after a failed write: a connection whose state cannot be read is treated as not usable, so no terminal is attempted"
+   (e (#t #f)))
+  ("daemon.sc" (stream-run issue!) 1 guard
+   (#t)
+   unrelated a
+   "connection write: a write that raises at once ends the stream as write-failed, with no terminal (the transport is not usable)"
+   (e (#t (quote raised))))
   ("daemon.sc" (refresh-if-behind!) 1 guard
    (#t)
    conservative a
@@ -1159,6 +1194,11 @@
    refuse a
    "F77c: a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a nested dispatch opens no scope; anything else propagates"
    (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((classify-failure e (mutation-record)) => (lambda (a) a))))
+  ("theourgia.sc" (stream-terminal) 1 guard
+   (#t)
+   unrelated a
+   "a stream line from the peer that does not read is not a terminal; it was printed as it came"
+   (e (#t #f)))
   ("theourgia.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a

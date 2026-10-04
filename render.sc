@@ -75,6 +75,12 @@
                 (loop (cdr vs) #f)))
             (newline p)))
         (render-wire item)))
+  ;; AN ANSWER THAT CARRIES A REVISION IS PRINTED WHOLE, as --wire prints it:
+  ;; only a program asks a read for its rev, and unwrapping the body would
+  ;; drop the clause it asked for.
+  (define (carries-rev? answer)
+    (and (pair? answer) (list? answer)
+         (exists (lambda (x) (and (pair? x) (eq? (car x) 'rev))) (cdr answer))))
   (define (render-human answer)
     (let* ((clauses (if (and (pair? answer) (list? answer))
                         (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
@@ -83,6 +89,7 @@
            (items-tail (apply string-append
                               (map render-wire (filter (lambda (x) (memq (car x) kept-after-items)) clauses)))))
       (cond
+        ((carries-rev? answer) (render-wire answer))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'text))
          (let ((text (cadadr answer)))

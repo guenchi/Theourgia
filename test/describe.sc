@@ -413,11 +413,42 @@
 (want "DS-6 every entry in the catalogue carries a route that exists"
       (let loop ((es entries) (bad '()))
         (cond ((null? es) (reverse bad))
-              ((memq (entry-field (car es) 'route) '(local daemon child))
+              ((memq (entry-field (car es) 'route) '(local daemon child stream))
                (loop (cdr es) bad))
               (else (loop (cdr es)
                           (cons (list (car (car es)) (entry-field (car es) 'route)) bad)))))
       '())
+
+;; THE STREAM ROUTE (F10-14). `subscribe` keeps its connection open, so it is
+;; carried out by a client that streams: the route is `stream`, which the
+;; shell does not offer and the thin client names in a list of its own.
+(want "DS-6s subscribe is in the catalogue, routed stream"
+      (let ((e (assq 'subscribe entries))) (and e (entry-field e 'route)))
+      'stream)
+;; THE CLIENT'S LIST, READ AS DATA: theourgia.sc's top-level forms are read
+;; and the one `(define stream-verbs '(...))` among them is taken, so its
+;; layout and any mention in a comment do not matter. #f when there is none.
+(define (client-list-of path name)
+  (and (file-exists? path)
+       (let ((p (open-input-file path)))
+         (let loop ()
+           (let ((x (guard (e (#t (eof-object))) (read p))))
+             (cond ((eof-object? x) (close-port p) #f)
+                   ((and (list? x) (= (length x) 3) (eq? (car x) 'define) (eq? (cadr x) name)
+                         (pair? (caddr x)) (eq? (car (caddr x)) 'quote) (list? (cadr (caddr x))))
+                    (close-port p)
+                    (map symbol->string (cadr (caddr x))))
+                   (else (loop))))))))
+(define client-stream
+  (or (client-list-of (string-append root-dir "/theourgia.sc") 'stream-verbs) '()))
+(define catalogue-stream
+  (map (lambda (e) (symbol->string (car e)))
+       (filter (lambda (e) (eq? 'stream (entry-field e 'route))) entries)))
+(want "DS-6s the client's stream list is not empty and equals the catalogue's stream entries, both ways"
+      (list (pair? client-stream)
+            (list-sort string<? client-stream)
+            (equal? (list-sort string<? client-stream) (list-sort string<? catalogue-stream)))
+      (list #t (list-sort string<? catalogue-stream) #t))
 
 ;; NOTE: THE OTHER DIRECTION HAS AN EXEMPTION, AND IT IS NAMED. `serve` is a
 ;; command of the daemon PROGRAM, not a core verb, so it is not in the

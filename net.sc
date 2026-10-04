@@ -42,13 +42,13 @@
 (library (theourgia net)
   (export listen! stop-listen! listener-open? connect!
           conn-read-start! conn-read-stop!
-          conn-write! conn-close! exchange
+          conn-write! conn-write-observed! conn-open? conn-close! exchange
           conn-ref? conn-ref-conn conn-ref-pid listen-ref?)
   (import (rnrs base) (rnrs control) (rnrs records syntactic)
           (rnrs bytevectors) (rnrs lists)
-          (only (chezscheme) real-time)
+          (only (chezscheme) real-time foreign-procedure with-interrupts-disabled)
           (only (igropyr tcp)
-                pipe-listen! pipe-connect! conn-set-owner! conn-owner
+                pipe-listen! pipe-connect! conn-set-owner! conn-owner conn-handle conn-state
                 conn-on-close! listener-token tcp-stop-listen!
                 tcp-read-start! tcp-read-stop! tcp-write!)
           (rename (only (igropyr tcp) listener-open?)
@@ -79,7 +79,20 @@
   ;; reading it. NOTE: It bounds OUR consumer's inaction, never the peer's.
   (define default-idle-ms 5000)
 
-  (define (idle-of opts) (if (pair? opts) (car opts) default-idle-ms))
+  (define (idle-of opts) (if (and (pair? opts) (car opts)) (car opts) default-idle-ms))
+  ;; THE SEND BUFFER OF AN ACCEPTED CONNECTION, a fixture's seam: the second
+  ;; option of `listen!`, #f or absent for the system's own. A row that
+  ;; needs a write the daemon cannot finish presses the buffer and stops
+  ;; reading. It is libuv's own setter, on the connection's handle, so no
+  ;; socket constant is needed here; it presses the kernel's buffer and
+  ;; does not bound what libuv queues, so a row observes a pending write
+  ;; rather than relying on a size.
+  (define (send-buffer-of opts) (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
+  (define uv-send-buffer-size (foreign-procedure "uv_send_buffer_size" (void* u8*) int))
+  (define (press-send-buffer! c n)
+    (let ((cell (make-bytevector 4 0)))
+      (bytevector-s32-native-set! cell 0 n)
+      (uv-send-buffer-size (conn-handle c) cell)))
 
   ;; ---- listening ---------------------------------------------------------
   ;;
@@ -97,9 +110,11 @@
   ;; failed allocation here leaves no ownerless connection behind.
   (define (listen! path backlog . opts)
     (let ((custodian self)
-          (idle (idle-of opts)))
+          (idle (idle-of opts))
+          (send-buffer (send-buffer-of opts)))
       (let ((h (pipe-listen! path backlog
                  (lambda (c)
+                   (when send-buffer (press-send-buffer! c send-buffer))
                    (let ((a (spawn (lambda () (accepted-adapter c custodian idle)))))
                      (conn-set-owner! c a)
                      (conn-on-close! c (lambda () (send a (list 'closed)))))))))
@@ -327,6 +342,26 @@
     (let ((me self))
       (tcp-write! (conn-ref-conn ref) bv
                   (lambda (status) (send me (list 'written ref tok status))))))
+
+  ;; A WRITE THAT SAYS WHETHER IT WAS FINISHED AT ONCE: as conn-write!, and
+  ;; answers the bytes libuv still holds for the connection after it -- 0
+  ;; when the kernel took them all, more when the peer is not reading and
+  ;; the write is pending. A stream reads it to know its write is blocked.
+  ;; ONE REGION, so the handle cannot be closed between the write and the
+  ;; question; on a connection no longer open it answers 0 and asks nothing
+  ;; (the write's own completion reports the failure).
+  (define uv-write-queue-size (foreign-procedure "uv_stream_get_write_queue_size" (void*) size_t))
+  (define (conn-write-observed! ref bv tok)
+    (let ((me self) (c (conn-ref-conn ref)))
+      (with-interrupts-disabled
+        (tcp-write! c bv (lambda (status) (send me (list 'written ref tok status))))
+        (if (eq? (conn-state c) 'open) (uv-write-queue-size (conn-handle c)) 0))))
+
+  ;; WHETHER A CONNECTION IS STILL USABLE after a write failed: igropyr
+  ;; leaves it open when nothing was sent and closes it when a prefix was
+  ;; (see conn-write! above).
+  (define (conn-open? ref)
+    (eq? (conn-state (conn-ref-conn ref)) 'open))
 
   ;; Closing is killing the adapter, and the runtime closes what it
   ;; owned. NOTE: The same verb cancels a dial that has not completed: there

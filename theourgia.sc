@@ -73,6 +73,13 @@
 
 (define (local-by-name? verb) (memq verb local-verbs))
 
+;; THE VERBS THIS PROGRAM STREAMS: it sends them to the daemon like any other
+;; and then keeps the connection, printing every line that arrives. The
+;; catalogue routes them `stream`; it cannot be read here without loading
+;; the dispatcher, so the list is written here and `describe.sc` holds it
+;; equal to the catalogue's stream entries, both ways.
+(define stream-verbs '(subscribe))
+
 ;; ---- scanning, not parsing ----------------------------------------------
 ;;
 ;; NOTE: A KNOWN OPTION'S VALUE IS CONSUMED, which is what keeps the verb
@@ -286,6 +293,75 @@
 (define (send-once socket frame)
   (call! socket frame 30000))
 
+;; ---- a stream -----------------------------------------------------------
+;;
+;; THE ACCEPTANCE IS THE ONE ENVELOPED LINE; every line after it is a bare
+;; datum, printed as it arrives. A refusal is printed and exits 1. Then the
+;; stream's end decides the exit: 0 when (error draining) was the last line
+;; and the connection closed after it; 1 with the lagging or
+;; transport-unknown terminal already printed; otherwise 1 with
+;; (error transport-error lost-stream) printed -- the connection closed with
+;; no terminal, or in mid-line, or a read failed -- or answer-too-large for
+;; one line past the limit. A store-unreadable notice or a refused request
+;; is printed and the stream goes on.
+(define (stream-terminal line)
+  (let ((d (guard (e (#t #f))
+             (let ((text (utf8->string line)))
+               (and (readable-shape? text) (read (open-string-input-port text)))))))
+    (cond
+      ((equal? d '(error draining)) 'draining)
+      ((and (pair? d) (list? d) (eq? (car d) 'error) (pair? (cdr d))
+            (memq (cadr d) '(changes-unavailable transport-unknown)))
+       'failed)
+      (else #f))))
+
+(define (stream-out! line)
+  (put-string (current-output-port) (utf8->string line))
+  (put-string (current-output-port) "\n")
+  (flush-output-port (current-output-port)))
+
+;; THE STREAMING CLIENT IS ENTERED HERE, for a stream verb only: every other
+;; call starts without (theourgia stream-client).
+(define (stream-once socket frame)
+  (let ((accepted #f) (last #f)
+        (stream! (eval 'stream! (environment '(theourgia stream-client)))))
+    (let ((outcome
+           (stream! socket frame
+             (lambda (line)
+               (if (not accepted)
+                   (let* ((envelope (read-envelope line))
+                          (out (and envelope (envelope-field envelope 'stdout string?)))
+                          (code (and envelope (envelope-field envelope 'exit exit-code?))))
+                     (cond
+                       ((not (and out code))
+                        (refuse '(error transport-unknown (reason unreadable-answer))))
+                       ((not (= code 0))
+                        (put-string (current-output-port) out)
+                        (flush-output-port (current-output-port))
+                        (exit 1))
+                       (else
+                        (put-string (current-output-port) out)
+                        (flush-output-port (current-output-port))
+                        (set! accepted #t))))
+                   (begin
+                     (stream-out! line)
+                     (set! last (stream-terminal line))
+                     ;; A LAGGING OR TRANSPORT-UNKNOWN TERMINAL ENDS THE RUN
+                     ;; WHEN IT ARRIVES, whether or not the peer closes;
+                     ;; only the drain waits for the EOF that must follow it.
+                     (when (eq? last 'failed) (exit 1))))))))
+      (if (eq? (car outcome) 'ended)
+          (let ((how (cadr outcome)))
+            (cond
+              ((and (eq? how 'eof) (eq? last 'draining)) (exit 0))
+              ((eq? how 'answer-too-large)
+               (put-string (current-output-port) "(error transport-error answer-too-large)\n")
+               (exit 1))
+              (else
+               (put-string (current-output-port) "(error transport-error lost-stream)\n")
+               (exit 1))))
+          outcome))))
+
 (define (main argv)
   ;; THE TRANSLATION POINT (F100b point 4): the whole run -- the socket
   ;; derivation, the frame, the start of a daemon -- in this process's
@@ -336,7 +412,8 @@
                                        (cons 'stdin (piped-input verb args))
                                        (cons 'cwd (current-directory))
                                        (cons 'mode (if wire? 'wire 'human)))))
-           (first (send-once socket frame)))
+           (ask-once (if (memq verb stream-verbs) stream-once send-once))
+           (first (ask-once socket frame)))
       (settle first
               ;; NEVER: NOBODY THERE IS A REASON TO START ONE; A LOST ANSWER IS
               ;; NOT. Nothing was read, so the request reached nobody and
@@ -345,7 +422,7 @@
               (lambda ()
                 (let ((started (ensure-daemon! (server-argv store socket) store socket)))
                   (if (eq? started 'ready)
-                      (settle (send-once socket frame) #f)
+                      (settle (ask-once socket frame) #f)
                       (refuse started)))))))))))
 
 ;; KEY: ONE CLASSIFICATION, WHICHEVER SEND PRODUCED THE OUTCOME. The second

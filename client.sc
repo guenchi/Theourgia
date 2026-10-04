@@ -22,6 +22,7 @@
 (library (theourgia client)
   (export socket-path run-root store-key
           call! answer-limit no-daemon-errno?
+          socket-path-fits? path-too-long close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error

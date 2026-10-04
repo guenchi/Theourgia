@@ -272,5 +272,37 @@
       (closure-of-all program-imports)
       '(answers arguments client digest ffi incomplete platform-numbers render trace))
 
+;; ---- C-3 the change stream's two libraries are entered on demand -----------
+;;
+;; KEY: A START THAT FOLLOWS NOTHING DOES NOT LOAD THEM. (theourgia
+;; stream-frames) is the frame computation, entered by the daemon's store
+;; process when a subscription is accepted; (theourgia stream-client) is the
+;; streaming reader, entered by the command line for a stream verb. Neither
+;; is imported by any program or library: these rows say so from the
+;; imports, and change-stream.sc's on-demand rows say so from a running
+;; process (library-list) and a daemon's trace.
+(define stream-libraries '(stream-frames stream-client))
+(define (program-imports-of rel)
+  (map cadr (filter (lambda (r) (pair? (cdr r)))
+                    (imports-of-file 'theourgia (string-append root "/" rel)))))
+(want "C-3 CONTROL: both libraries are in the graph"
+      (filter (lambda (n) (not (assq n graph))) stream-libraries)
+      '())
+(want "C-3 no program reaches either: core.sc, theourgia.sc, theourgiad.sc, the MCP shell"
+      (map (lambda (rel)
+             (list rel (filter (lambda (n) (memq n stream-libraries))
+                               (closure-of-all (program-imports-of rel)))))
+           '("core.sc" "theourgia.sc" "theourgiad.sc" "mcp/server.sc"))
+      '(("core.sc" ()) ("theourgia.sc" ()) ("theourgiad.sc" ()) ("mcp/server.sc" ())))
+(want "C-3 and no library imports either"
+      (filter (lambda (entry) (exists (lambda (n) (memq n stream-libraries)) (cdr entry))) graph)
+      '())
+(want "C-3 the frame library reaches the reducer, through its one exported reading"
+      (and (memq 'reduce (closure 'stream-frames)) #t)
+      #t)
+(want "C-3 the streaming reader's closure is the client library's, and none of the server"
+      (list (closure 'stream-client) (server-parts-of 'stream-client))
+      (list '(answers client digest ffi incomplete platform-numbers render stream-client trace) '()))
+
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

@@ -25,6 +25,8 @@
         ;; child that nothing waits for -- the only way this fixture can
         ;; produce one, measured.
         (only (theourgia ffi) spawn-detached! reap-children!)
+        ;; F10-14: the catalogue itself, to say the stream verb is in it.
+        (only (theourgia rpc) rpc-dispatch)
         ;; F100b M3a's P7 rows: the key directory the client derives.
         (only (theourgia client) socket-path store-key)
         ;; The shell's own option table, probed as data.
@@ -463,6 +465,27 @@
                     (list 'said (text-of (caddr out))))
                 (code-of (cadddr out))))
         '(listed #f an-evaluation -32602)))
+
+;; ---- MC-05s the stream verb is in the catalogue and is not a tool ------------
+;;
+;; ONE ASSERTION, TWO HALVES (F10-14): the shell lists only verbs routed
+;; daemon or child, and `subscribe` is routed stream. "No subscribe tool"
+;; alone is green on a tree without the verb at all; with the entry in the
+;; catalogue it says the shell filters it.
+(let* ((cat-home (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/mcs-cat-" (number->string (get-process-id))))
+       (_ (system (string-append "rm -rf " cat-home "; mkdir -p " cat-home "/store")))
+       (_ (rpc-dispatch (string-append cat-home "/store") '(init) "test"))
+       (described (rpc-dispatch (string-append cat-home "/store") '(describe) "test"))
+       (entry (let ((vs (and (pair? described) (assq 'verbs (cdr described))))) (and vs (assq 'subscribe (cdr vs)))))
+       (out (talk (list hello ready "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}")))
+       (names (let ((tools (field (cadr out) "result" "tools")))
+                (if (vector? tools)
+                    (map (lambda (i) (json-ref* (vector-ref tools i) "name"))
+                         (let loop ((i 0) (acc '())) (if (= i (vector-length tools)) (reverse acc) (loop (+ i 1) (cons i acc)))))
+                    '()))))
+  (want "MC-05s subscribe is in the catalogue, routed stream, and the shell offers no subscribe tool"
+        (list (and entry (cadr (assq 'route (cdr entry)))) (if (member "theourgia_subscribe" names) 'OFFERED 'not-offered))
+        '(stream not-offered)))
 
 ;; ---- MC-06 which route served it ---------------------------------------------
 ;;

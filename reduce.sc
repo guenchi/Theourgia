@@ -49,7 +49,7 @@
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
-          state-structure state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
+          state-structure reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
           cut-covers? state-put-events state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -2105,6 +2105,19 @@
   (define (blk-kind b)
     (let ((e (assq 'kind (blk-fields b))))
       (and e (= 1 (length (cdr e))) (car (car (cdr e))))))
+
+  ;; THE FACTS A FRAME IS COMPUTED FROM, for the change stream's library,
+  ;; which is loaded only when somebody subscribes: each block, in creation
+  ;; order, as #(id tombstone? fields position kind settled-parent), and the
+  ;; links. One procedure, so the reduction's own records stay this
+  ;; library's and the frame logic stays out of every start-up.
+  (define (reduction-facts r)
+    (list (map (lambda (e)
+                 (let ((b (cdr e)))
+                   (vector (car e) (blk-tomb b) (blk-fields b) (blk-position b)
+                           (blk-kind b) (settled-parent b))))
+               (reduction-blocks r))
+          (reduction-links r)))
 
   ;; ---- cuts (design 9.3) ----------------------------------------------------
 

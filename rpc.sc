@@ -37,7 +37,7 @@
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs register-verbs! dispatch-helper
           request-frame transport-unreachable?
           count-argument outline-text write-protocol verb-catalogue
-          describe-log-error eval-usage)
+          describe-log-error eval-usage subscribe-shape-error)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
           (only (theourgia client) request-frame verb-spelling-error no-daemon-errno?)
@@ -639,9 +639,19 @@
   (define outline-usage
     '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"]))
 
+  ;; ONE SPELLING OF subscribe's FORM, reached by name from its catalogue
+  ;; entry and from the refusal below. The daemon carries the verb and asks
+  ;; subscribe-shape-error for the same refusal, so the form is written once.
+  ;; <stream> names what is followed; `changes` is the one stream there is,
+  ;; and the refusal below holds a request to it.
+  (define subscribe-usage '(subscribe <stream> <rev> [<token>]))
+  (define (subscribe-shape-error args)
+    (and (not (and (<= 2 (length args) 3) (equal? (car args) "changes")))
+         (usage subscribe-usage)))
+
   (define read-usage-form
     '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
-           ["--working"] ["--working-info"] ["--signature"] ["--cut" <cut>]))
+           ["--working"] ["--working-info"] ["--signature"] ["--cut" <cut>] ["--rev"]))
 
   ;; <file> BEFORE THE OPTIONAL GROUPS: the positional slots are read off
   ;; the form up to its first group, and the daemon resolves a <file> slot
@@ -914,6 +924,10 @@
   ;; the answer, and the command line execs it, as for `local`: the work
   ;; has to be a process's child, and the shell is a process that can have
   ;; one and still answer the next call.
+  ;; `stream` means a client that keeps the connection open carries it out:
+  ;; the thin client sends it to the daemon and prints what arrives until
+  ;; the stream ends. The MCP shell, which is request and response, does not
+  ;; offer it.
   ;;
   ;; NEVER: IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
   ;; THE SHELL. `init` is what CREATES a store, so there is no daemon for
@@ -1044,6 +1058,8 @@
             "Report what changed between two cuts." #f 'daemon)
       (list 'conflicts '(conflicts)
             "List blocks whose writers disagree." #f 'daemon)
+      (list 'subscribe subscribe-usage
+            "Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave." #f 'stream)
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
 
@@ -1520,7 +1536,10 @@
                      (incompatible (and at (or (argument-option options "--working")
                                                (argument-option options "--working-info")
                                                (argument-option options "--writer")
-                                               (argument-option options "--signature")))))
+                                               (argument-option options "--signature"))))
+                     (rev? (argument-option options "--rev"))
+                     (rev-incompatible (and rev? (or (argument-option options "--working-info")
+                                                     (argument-option options "--signature")))))
                 ;; THE READ ITSELF, over whatever state it is given: the present (the
                 ;; request's own, or a fresh fold) or the state at a causal cut. It
                 ;; is defined here, inside the handler, so the facade gate's walk of
@@ -1619,8 +1638,23 @@
                                    (else (append (list 'ok b)
                                                  (validity-clauses (lifecycle-of state) 'read-validity-clause (car rest))
                                                  (receipt state (list (car rest)))))))))))))
+                ;; --rev NAMES THE PUBLICATION THE ANSWER WAS BUILT FROM: the
+                ;; name the daemon sealed with the state it handed here. It is
+                ;; appended to an ok answer and to nothing else; a state with
+                ;; no name -- the local route, a bare reduction -- has no
+                ;; publication to name.
+                (define (with-rev answer)
+                  (let ((name (and (sealed-state? state) (sealed-state-name state))))
+                    (if (and (pair? answer) (eq? (car answer) 'ok))
+                        (append answer (list (list 'rev (car name) (list 'daemon (cadr name)))))
+                        answer)))
                 (cond
                   ((not (= 1 (length args))) (usage read-usage-form))
+                  ((and rev? at) '(error bad-request incompatible-cut-options))
+                  (rev-incompatible '(error bad-request incompatible-rev-options))
+                  ((and rev? (not (and (sealed-state? state) (sealed-state-name state))))
+                   '(error bad-request (reason no-published-state)))
+                  (rev? (with-rev (read-from store args options state writer)))
                   ((not at) (read-from store args options state writer))
                   (incompatible '(error bad-request incompatible-cut-options))
                   (else
@@ -1902,7 +1936,14 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(conflicts))
-                  (guarded (lambda () (items (store-conflicts store)))))))))
+                  (guarded (lambda () (items (store-conflicts store)))))))
+      ;; A STREAM NEEDS A DAEMON: the daemon carries a subscription on its
+      ;; connection and never hands it here, so whoever reaches this handler
+      ;; -- the local route, a nested dispatch -- has no stream to give.
+      (cons 'subscribe
+            (lambda (store actor args req options state writer cwd)
+              (or (subscribe-shape-error args)
+                  '(error bad-request (reason needs-daemon)))))))
 
   (define verbs (verb-table))
 

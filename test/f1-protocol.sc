@@ -194,11 +194,16 @@
 ;; not exist, and the daemon could not start. The route field in the
 ;; catalogue says `local` for it, and the shell has no local route.
 ;;
-;; Written as a list of one rather than as a `route` test on purpose: if a
-;; second verb ever cannot be offered, somebody has to come here and say why.
-(define not-offered-by-the-shell '(init))
+;; `subscribe` is the second, and it is named for its own reason: it is a
+;; stream -- the connection stays open and lines keep arriving -- and the
+;; shell is request and response, so it has nothing to carry it in. Its
+;; catalogue route is `stream`, which the shell does not list.
+;;
+;; Written as a list rather than as a `route` test on purpose: if another
+;; verb ever cannot be offered, somebody has to come here and say why.
+(define not-offered-by-the-shell '(init subscribe))
 
-(want "MC-P1 every verb in the catalogue is offered as a tool, except init"
+(want "MC-P1 every verb in the catalogue is offered as a tool, except init and subscribe"
       (let loop ((es (verb-catalogue)) (missing '()))
         (cond
           ((null? es) (reverse missing))
@@ -214,6 +219,9 @@
 ;; the list above would be excusing something that does not need excusing.
 (want "MC-P1 CONTROL: and init really is absent from the listing"
       (and tools-line (contains? tools-line "theourgia_init"))
+      #f)
+(want "MC-P1 CONTROL: and subscribe really is absent from the listing"
+      (and tools-line (contains? tools-line "theourgia_subscribe"))
       #f)
 
 ;; NEVER: THE VERB'S SENTENCE COMES FROM THE SERVER, NOT FROM A LITERAL HERE.
