@@ -599,7 +599,9 @@
 ;; The mechanism is `render.sc:52-58`: for an `items` answer `render-human`
 ;; writes each item on its own line and drops every other clause. That is why
 ;; `cut`, `scanned` and `coverage` can only be asked for with `--wire`, and
-;; why zero hits has to mean zero output.
+;; why zero hits has to mean zero output. The one line beside it is the
+;; excluded count when validity left out every hit (render.sc), printed
+;; only when no hit is left.
 (want "N2c zero hits print nothing at all"
       (run d2b "search" "zzzzzzzzzz")
       (list 0 (quote ())))

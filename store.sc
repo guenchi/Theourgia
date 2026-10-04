@@ -71,7 +71,8 @@
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
-                file-is-directory? report-fault? trace-event! entry-type overwrite-entry!)
+                file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
+                hold-point!)
           (only (theourgia digest) sha256 bytevector->hex)
           ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
           ;; `code-project.sc` says it outright: a code block's `name` is
@@ -2202,7 +2203,24 @@
   ;; replay). -> a reduction, or the refusal:
   ;;   (error unknown-tag <text> (cut cut)) | (error tag-unsettled ...)
   ;;   (error cut-unavailable (cut cut) (reason duplicate-writer|not-received|not-closed|malformed))
-  ;; the shapes diff gives.
+  ;; the shapes diff gives, or
+  ;;   (error cut-moved (asked <cut>) (served <cut>))
+  ;;
+  ;; NEVER: A CUT THAT MOVED IS NOT SERVED AS IF IT HAD NOT. The check reads
+  ;; one state and the replay opens the log again; a record quarantined in
+  ;; between (log.sc, the fork's ceiling) is not delivered, so the replay
+  ;; stops short of the cut that was judged usable and the read answered ok
+  ;; for a cut it did not serve. The served state's cut is asked again after
+  ;; the replay: when it does not cover the cut asked, the read is refused
+  ;; with both. The hold stage read-cut-before-replay sits in the window.
+  ;;
+  ;; NEVER: A WRITER ASKED AT 0 IS NOT MISSING FROM WHAT WAS SERVED. The
+  ;; replay delivers none of its records, and a reduction names a writer
+  ;; only once one of its records applies, so the served cut has no entry
+  ;; for it; cut-covers? reads an absent writer as covering nothing, and a
+  ;; cut such as ((A . 1) (B . 0)) on an unchanged store was refused. Only
+  ;; the entries above 0 are asked to be covered; the refusal names the
+  ;; cut as it was asked.
   (define (store-state-at-cut store supplied text)
     (let* ((base (obtain-state store supplied #f))
            (resolved (resolve-cut store (quote cut) text base)))
@@ -2210,7 +2228,15 @@
           resolved
           (let ((verdict (cut-usable? base (cadr resolved))))
             (if (eq? verdict (quote usable))
-                (replay store (cadr resolved) #f)
+                (begin
+                  (hold-point! (quote read-cut-before-replay))
+                  (let ((past (replay store (cadr resolved) #f)))
+                    (if (cut-covers? (reduce-applied-cut past)
+                                     (filter (lambda (e) (> (cdr e) 0)) (cadr resolved)))
+                        past
+                        (list (quote error) (quote cut-moved)
+                              (list (quote asked) (cadr resolved))
+                              (list (quote served) (reduce-applied-cut past))))))
                 (list (quote error) (quote cut-unavailable)
                       (list (quote cut) (quote cut))
                       (list (quote reason) (if (pair? verdict) (cadr verdict) verdict))))))))

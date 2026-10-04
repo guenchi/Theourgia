@@ -388,7 +388,9 @@
 ;;
 ;; What the three are:
 ;;   store.sc        the one guarded read, which is the property above
-;;   rpc.sc          rendering -- the outline's label and the `read` verb
+;;   rpc.sc          rendering -- the outline's label and the `read` verb,
+;;                   all three through one reader that names a block whose
+;;                   derivation raises
 ;;   code-project.sc the code projection, which needs the DERIVED name
 ;;                   because a code block's name is not in its stored fields
 ;;
@@ -424,7 +426,7 @@
 
 (want "S-B1 the store reads a block in exactly one place, and these are all the readers"
       (list-sort (lambda (a b) (string<? (car a) (car b))) view-read-hits)
-      '(("code-project.sc" . 1) ("rpc.sc" . 3) ("store.sc" . 1)))
+      '(("code-project.sc" . 1) ("rpc.sc" . 1) ("store.sc" . 1)))
 
 ;; ---- S-B2b no two places construct the same item tag ----------------------
 ;;

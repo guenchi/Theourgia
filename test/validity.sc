@@ -255,7 +255,7 @@
 ;; ---- C49-4d: the human output ---------------------------------------------------------------------------
 
 (define (human-is-items? a) (string=? (render-human a) (render-human (list 'ok (cons 'items (items-of a))))))
-(want "C49-4d search, grep and whereis print the hits in force, one per line, and nothing else; the wire form has the clauses"
+(want "C49-4d search and grep print the hits in force, one per line, and nothing else; whereis, every hit left out, prints the excluded line; the wire form has the clauses"
       (let ((as (list (run 'search "kestrel") (run 'grep "kestrel") (run 'whereis "wkhidden"))))
         (in-order (map human-is-items? as)
                   (map (lambda (a) (length (filter (lambda (l) (> (string-length l) 0))
@@ -265,7 +265,22 @@
                                                            (else (split (cdr cs) (cons (car cs) cur) out)))))))
                        as)
                   (map (lambda (a) (and (or (clause a 'excluded) (clause a 'validity)) #t)) as)))
-      '((#t #t #t) (2 2 0) (#t #t #t)))
+      '((#t #t #f) (2 2 1) (#t #t #t)))
+;; Every hit left out is not no hit: with no item left the human output is
+;; the excluded line, and a search that matched nothing prints nothing.
+(define PL (ins! "plover" "plover body"))
+(define PLn (ins! "Later" "nothing to see"))
+(run 'link PLn "supersedes" PL)
+(want "C49-4d a search or grep whose every hit was left out prints the excluded line, one that matched nothing prints nothing"
+      (in-order (map (lambda (verb) (render-human (run verb "plover"))) '(search grep))
+                (map (lambda (verb) (render-human (run verb "qqzzunmatched"))) '(search grep)))
+      (list (list "(excluded (blocks (superseded 1) (refuted 0)))\n" "(excluded (blocks (superseded 1) (refuted 0)))\n")
+            (list "" "")))
+(want "C49-4d the wire forms are as they were: no items and the excluded clause, no items and none"
+      (in-order (map (lambda (verb) (let ((a (run verb "plover"))) (list (items-of a) (excluded a)))) '(search grep))
+                (map (lambda (verb) (let ((a (run verb "qqzzunmatched"))) (list (items-of a) (excluded a)))) '(search grep)))
+      (list (list (list '() '(blocks (superseded 1) (refuted 0))) (list '() '(blocks (superseded 1) (refuted 0))))
+            (list (list '() #f) (list '() #f))))
 
 ;; ---- C49-7: the write protocol --------------------------------------------------------------------------
 

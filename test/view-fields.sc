@@ -36,7 +36,8 @@
 ;; that is why both halves are asserted on the same block.
 
 (import (chezscheme) (theourgia store) (theourgia reduce) (theourgia view)
-        (theourgia rpc) (theourgia ffi))
+        (theourgia rpc) (theourgia ffi)
+        (only (theourgia languages) register-language!))
 
 (define bad 0)
 (define rows 0)
@@ -147,5 +148,38 @@
       (has? state-read plain-id 'name) #f)
 (want "VF-05 and no doc"
       (has? state-read plain-id 'doc) #f)
+
+;; A DERIVATION THAT RAISES NAMES THE BLOCK. The language below is one
+;; register-language! accepts and whose comment prefixes are not a list,
+;; so reading a text block's name and doc through it raises. `read`,
+;; `read --recursive` and `outline` refuse as any raise is refused, and
+;; the refusal ends with the block's id.
+(register-language! '((lang "brittle") (extensions ("brittle")) (def-heads ()) (comment-prefixes 5)))
+(with-store-write store
+  (lambda (s v)
+    (list (list 'insert 'root #f
+                (list '(kind . code) '(mode . text) '(lang . brittle)
+                      (cons 'src "brittle line\n")))))
+  "test")
+(define brittle-id
+  (let ((ids (map cadr (state-datum (state)))))
+    (car (filter (lambda (id) (not (member id (list text-id datum-id plain-id)))) ids))))
+(define (refusal-head a)
+  (and (pair? a) (pair? (cdr a))
+       (list (car a) (cadr a) (and (list? a) (assq 'id (cddr a))))))
+(want "VF-06 a read whose field derivation raises is refused internal and names the block"
+      (refusal-head (rpc-dispatch store (list 'read brittle-id) "test"))
+      (list 'error 'internal (list 'id brittle-id)))
+(want "VF-06 and read --recursive names it too"
+      (refusal-head (rpc-dispatch store (list 'read brittle-id "--recursive") "test"))
+      (list 'error 'internal (list 'id brittle-id)))
+(want "VF-06 and outline, which shows its title, names it too"
+      (refusal-head (rpc-dispatch store (list 'outline) "test"))
+      (list 'error 'internal (list 'id brittle-id)))
+(want "VF-06 the refusal keeps the condition clause it had, before the id"
+      (let ((a (rpc-dispatch store (list 'read brittle-id) "test")))
+        (and (list? a) (>= (length a) 4)
+             (list (car (caddr a)) (string? (cadr (caddr a))) (list-tail a 3))))
+      (list 'condition #t (list (list 'id brittle-id))))
 
 (printf "rows: ~a\n~a failures\nview-fields complete\n" rows bad)

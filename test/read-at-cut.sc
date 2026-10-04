@@ -487,6 +487,87 @@
               '("(trace routed read connection)" "(trace routed read connection)" "(trace routed unknown connection)"))))
 
 (for-each stop-daemon! d-stores)
+;; =============================================================================
+(printf "== RC-8: a cut that moves between its judgement and its replay ==\n")
+;; NEVER: A READ DOES NOT ANSWER OK FOR A CUT IT DID NOT SERVE. A read at
+;; a cut is judged on one state and replayed from a second opening of the
+;; log. Held at read-cut-before-replay (the injection build's hold seam),
+;; a fork marker is written for the mirrored writer in the window: its
+;; records from the fork on are set aside, the replay stops short, and
+;; the read is refused with the cut asked and the cut served. The twin
+;; is held the same way with no marker and is served the cut it asked.
+;; ROUTE is local, the command line reading the store itself, or daemon,
+;; where the cut is judged on the daemon's publication, handed to the
+;; store process as the supplied state, and the hold is in that process.
+(define (held-cut-read! fork? route)
+  (let* ((c (fresh-store!)) (st (car c))
+         (Q "qqqqqqqq")
+         (published (list (mirror! st Q 1 1757300000001 '() (section "q1"))
+                          (mirror! st Q 2 1757300000002 '() (section "q2"))
+                          (mirror! st Q 3 1757300000003 '() (section "q3"))))
+         (cut (list (cons Q 3)))
+         (release (string-append root "/hold-" (if fork? "moved" "still") "-" (symbol->string route)))
+         (out (string-append release ".out")))
+    (when (eq? route 'daemon) (set! d-stores (cons st d-stores)))
+    (sh "( THEOURGIA_INJECT=on " (if (eq? route 'local) "THEOURGIA_LOCAL=1 " "")
+        "THEOURGIA_HOLD=read-cut-before-replay:" release
+        " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read " (quoted (block-id Q 1))
+        " --cut " (quoted (cut-text cut)) " --store " (quoted st) " --wire > " out " 2> " out ".err"
+        " < /dev/null; echo $? > " out ".rc ) &")
+    (let ((held (let wait ((k 0))
+                  (cond ((file-exists? (string-append release ".held")) 'held)
+                        ((> k 300) 'never-held)
+                        (else (sh "sleep 0.1") (wait (+ k 1)))))))
+      (when (and fork? (eq? held 'held))
+        (call-with-output-file (string-append (writer-directory st Q) "/quarantine.sexp")
+          (lambda (p) (put-string p "((format 1) (fork 2) (ours \"o\") (theirs \"t\"))\n"))
+          'truncate))
+      (sh "touch " release)
+      (let wait ((k 0))
+        (unless (or (file-exists? (string-append out ".rc")) (> k 700))
+          (sh "sleep 0.1") (wait (+ k 1))))
+      (let ((answer (first-datum-of out)))
+        (when (eq? route 'daemon) (stop-daemon! st))
+        (list published held answer)))))
+(define rc8-Q "qqqqqqqq")
+(for-each
+  (lambda (route)
+    (let ((r (held-cut-read! #t route)))
+      (want (format "RC-8 ~a: a record set aside between the judgement and the replay: refused cut-moved, the cut asked and the cut served" route)
+            (let ((a (caddr r)))
+              (list (car r) (cadr r)
+                    (and (pair? a) (list? a) (pair? (cdr a))
+                         (list (car a) (cadr a) (assq 'asked (cddr a))
+                               (let ((s (assq 'served (cddr a)))) (and s (list? (cadr s)) (assoc rc8-Q (cadr s))))))))
+            (list '(published published published) 'held
+                  (list 'error 'cut-moved (list 'asked (list (cons rc8-Q 3))) (cons rc8-Q 1)))))
+    (let ((r (held-cut-read! #f route)))
+      (want (format "RC-8 ~a TWIN: held the same way with nothing set aside, the read is served the cut it asked" route)
+            (let ((a (caddr r)))
+              (list (car r) (cadr r)
+                    (and (pair? a) (eq? (car a) 'ok)
+                         (let ((c (clause-of a 'cut))) (and c (list? (cadr c)) (assoc rc8-Q (cadr c)))))))
+            (list '(published published published) 'held (cons rc8-Q 3)))))
+  '(local daemon))
+
+;; NEVER: A WRITER ASKED AT 0 IS SERVED AT 0. The replay delivers none of
+;; its records, and the cut it reached names no entry for it; that is the
+;; cut asked, not one that moved. Read on a store B has written to, then
+;; again after B writes once more: both are served, the same block.
+(let* ((c (fresh-store!)) (st (car c))
+       (A "aaaaaaaa") (B "bbbbbbbb")
+       (published (list (mirror! st A 1 1757300000001 '() (section "a1"))
+                        (mirror! st B 1 1757300000002 '() (section "b1"))))
+       (cut (cut-text (list (cons A 1) (cons B 0))))
+       (first (ask st 'read (block-id A 1) "--cut" cut))
+       (later (mirror! st B 2 1757300000003 '() (section "b2")))
+       (second (ask st 'read (block-id A 1) "--cut" cut)))
+  (want "RC-9 a cut naming a writer at 0 is served on the store as it is, and still after that writer writes"
+        (list published (head-of first) later (head-of second)
+              (and (pair? first) (pair? second) (pair? (cdr first)) (pair? (cdr second))
+                   (equal? (cadr first) (cadr second))))
+        '((published published) ok published ok #t)))
+
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
 (sh "chmod -R u+rwX " root " 2>/dev/null")

@@ -190,6 +190,13 @@ reads what it read before. `--recursive` gives one pair per block in item order,
 after the items. A deleted block has no version, read alone or in a subtree.
 `--working` answers as it did.
 
+A code block's derived fields -- a text block's `name` and `doc`, read
+through the language table, and a datum block's `names` and `name` -- are
+read when it is shown. When that reading raises, `read` (one block or a
+subtree) and `outline`, which shows its title, are refused as any raise is,
+with the block named after the condition:
+`(error internal (condition "...") (id <id>))`.
+
 **The receipt: which state was read, and which version of each block.** A read of
 the committed store ends with `(cut <cut>)`, the applied cut of the state it read
 (for `--cut`, the state at that cut), and `(versions ((<id> . "<hash>") ...))`,
@@ -286,7 +293,11 @@ The cut is judged as `diff` judges it: a name no tag has answers `unknown-tag`, 
 unsettled tag `tag-unsettled`, and a cut naming an event not yet received, a writer
 twice, or an event without its premises `(error cut-unavailable (cut cut) (reason
 not-received|duplicate-writer|not-closed))`. Each such read replays the log from
-its beginning to the cut. Through the daemon, a cut naming an event another
+its beginning to the cut. When the replay does not reach the cut that was judged
+-- a record in it was set aside as a writer's fork between the judgement and the
+replay -- the read is refused `(error cut-moved (asked <cut>) (served <cut>))`,
+naming the cut asked and the one the replay reached, and never answers ok for a
+cut it did not serve. Through the daemon, a cut naming an event another
 process wrote after the daemon last read the store is answered: the daemon
 reads the store again first. An event written after that check may not be
 seen by this request (`not-received`); it is answered once the daemon has read
@@ -445,7 +456,9 @@ index, and
 `scanned` already says what it looked at.
 
 None of these clauses appear without `--wire`. The human rendering of an
-answer with items writes the items and nothing else.
+answer with items writes the items and nothing else, but for the `(excluded ...)`
+line when validity left out every hit (see "Class and validity" below) and an
+`(incomplete ...)` line.
 
 ### `grep`
 
@@ -841,13 +854,15 @@ say so with `(excluded (blocks (superseded <n>) (refuted <n>)))`, counted in blo
 on a block that needs review is returned and named in `(validity ((<id> needs-review
 (<why> <block>) ...) ...))`; `--all-validity` leaves nothing out and names every hit that
 is not valid. Their human output shows the hits in force and nothing else: to see the
-superseded and refuted ones, ask with `--all-validity`. It gives no count of what it left
-out, and when everything was left out it prints nothing -- only an `(incomplete ...)`
-line, if the store missed a writer -- and exits 0: so for a `whereis` of a name whose
-every record is in a superseded or refuted block (a name the store does not know is
-`unknown-name` instead), and for a `search` or a `grep` whose every hit was left out.
-The `excluded` and `validity` clauses are in the `--wire` answer only. These clauses come
-before the receipt. A store that links none of the six relations answers every read and
+superseded and refuted ones, ask with `--all-validity`. While a hit is left it gives no
+count of what it left out, so every line is a hit. When everything was left out it
+prints the `(excluded ...)` line -- then an `(incomplete ...)` line, if the store missed
+a writer -- and exits 0: so for a `whereis` of a name whose every record is in a
+superseded or refuted block (a name the store does not know is `unknown-name` instead),
+and for a `search` or a `grep` whose every hit was left out, where one that matched
+nothing prints nothing. The `validity` clause, and `excluded` beside a hit, are in the
+`--wire` answer only. The human output is for a person: a program reads these verbs,
+and every other, with `--wire`. These clauses come before the receipt. A store that links none of the six relations answers every read and
 search exactly as before.
 
 ### `query`
@@ -1351,6 +1366,13 @@ answer lists the ones whose deletion ran under
 `(deleted (files (<path> ...)))`. Either clause is there only when it has
 a file to name. A section that has disappeared from a file that is still
 there is refused as `would-delete` until `--allow-delete` is given.
+
+A file that is not UTF-8 text, or that holds a NUL byte, is skipped by the
+rule `import-code`'s text mode uses: it is not imported, and the answer
+lists it, in the order the directory was walked, under
+`(skipped (<path> ...))`, after the absent or deleted clause and only when
+something was skipped. A skipped file touches nothing: a document whose
+file it is keeps its blocks, and is neither absent nor deleted.
 
 Each heading in a file that is already in the store is matched to a
 section this way: a heading preceded by a `--with-ids` marker is the block
@@ -2335,6 +2357,16 @@ holds both `theourgia/` and `igropyr/` (see `test/RUN.md`):
 
     cd test && . ./env.sh && sh run-fixtures.sh <output-directory>
 
+The run's preflight, `test/expansion-branches.sc`, imports the libraries the
+programs import statically, in a child under each value of `THEOURGIA_INJECT`,
+and stops the run when one does not build. It loads no library entered on
+demand -- one a program or the dispatcher reaches through `environment` when a
+verb asks for it -- so an unbound identifier in such a library passes the
+preflight. `test/f0-ondemand.sc` loads each of them in a child, in both
+branches: every library a source hands, quoted, to `environment` or to the
+programs' `later`, and every extension verb's handler library, read from the
+sources rather than listed.
+
 ## Evaluating against a store
 
 ### `eval`
@@ -2784,7 +2816,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) and `reload-before-publish` (the daemon's store process, between a refold and its publication). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
 | `THEOURGIA_SEND_BUFFER` | an exact positive integer: a daemon presses each accepted connection's send buffer to that many bytes, so a row can make a write the daemon cannot finish (`subscribe`'s blocked-write rows); refused at load if it is anything else |

@@ -959,6 +959,11 @@
    unrelated c
    "read-version: an in-memory hash over a state already obtained; a value too deep to encode answers the version unavailable, as state-section does"
    (e (#t (list (quote unavailable) (list (quote reason) (failure-text e))))))
+  ("rpc.sc" (view-of) 1 guard
+   (#t)
+   refuse c
+   "view-of: a raise while a block's fields are derived for the view is handed to guarded, which answers it, and (id <id>) is appended; guarded's filesystem branches PROPAGATE through it, an unreadable-entry or a durable-error raised again to rpc-dispatch-parsed's table, as guarded's own entry says"
+   (e (#t (raise (append (guarded (lambda () (raise e))) (list (list (quote id) id)))))))
   ("rpc.sc" (parse-batch) 1 guard
    (#t)
    unrelated a

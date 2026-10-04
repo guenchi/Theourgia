@@ -475,6 +475,116 @@
 
 (sh (string-append "kill $(cat " scratch "/so-serve.pid) 2>/dev/null; rm -f " so-socket))
 
+;; ---- F0-5: every library entered on demand loads -----------------------------
+;;
+;; NEVER: THE PREFLIGHT DOES NOT LOAD THEM. expansion-branches.sc imports
+;; the static libraries in a child under each value of THEOURGIA_INJECT;
+;; a library entered on demand is reached by none of those imports, so an
+;; unbound identifier in it passes the preflight and is met only when its
+;; verb is dispatched. These rows load each one, in a child, in both
+;; branches.
+;;
+;; THE LIST IS READ FROM THE PROGRAM, NOT WRITTEN HERE: every library a
+;; shipped source hands, quoted, to `environment` or to the programs'
+;; `later`, and the library of every extension verb's handler. The files
+;; are listed and read by source-files and forms-of, import-walk.sc's,
+;; which this file loads at its top for F0-1's walk; they are not copied.
+(define (quoted-theourgia-lib x)
+  (and (pair? x) (eq? (car x) 'quote) (pair? (cdr x))
+       (pair? (cadr x)) (eq? (car (cadr x)) 'theourgia)
+       (cadr x)))
+;; `environment` takes any number of import specs, so every quoted one is
+;; read; the programs' `later` takes one, and then a name.
+(define (entered-libs x)
+  (cond ((not (pair? x)) '())
+        ((and (eq? (car x) 'environment) (list? (cdr x)) (exists quoted-theourgia-lib (cdr x)))
+         (append (filter values (map quoted-theourgia-lib (cdr x)))
+                 (apply append (map entered-libs (cdr x)))))
+        ((and (eq? (car x) 'later) (pair? (cdr x)) (quoted-theourgia-lib (cadr x)))
+         => (lambda (lib) (cons lib (entered-libs (cddr x)))))
+        (else (append (entered-libs (car x)) (entered-libs (cdr x))))))
+(define (sources-in dir)
+  (map (lambda (n) (string-append dir "/" n)) (source-files dir)))
+(define on-demand
+  (let loop ((ls (append (apply append (map (lambda (path) (apply append (map entered-libs (forms-of path))))
+                                            (append (sources-in root) (sources-in (string-append root "/mcp")))))
+                         (map (lambda (e) (car (list-ref e 7)))
+                              (eval 'extension-verbs (environment '(theourgia extensions))))))
+             (out '()))
+    (cond ((null? ls) (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b))) out))
+          ((member (car ls) out) (loop (cdr ls) out))
+          (else (loop (cdr ls) (cons (car ls) out))))))
+
+;; One child loads each library in LIBS, each under its own guard, and
+;; prints one datum a library; -> the libraries that did not load, each
+;; with what the child said, or (did-not-finish <text>). A library the
+;; child never reported loaded is one that did not load, (<lib>
+;; not-reported), so a transcript that holds only its last line is not
+;; read as clean.
+(define (unloaded libs inject extra-dir tag)
+  (let ((src (string-append scratch "/ondemand-" tag ".sc"))
+        (out (string-append scratch "/ondemand-" tag ".out")))
+    (call-with-output-file src
+      (lambda (p)
+        (write '(import (chezscheme)) p)
+        (write `(for-each
+                  (lambda (lib)
+                    (guard (e (#t (write (list lib 'failed
+                                               (call-with-string-output-port
+                                                 (lambda (q) (display-condition e q)))))
+                                  (newline)))
+                      (environment lib)
+                      (write (list lib 'loaded))
+                      (newline)))
+                  ',libs) p)
+        (write '(begin (write '(probe done)) (newline)) p))
+      'truncate)
+    (sh (string-append (if inject "THEOURGIA_INJECT=on " "env -u THEOURGIA_INJECT ")
+                       "CHEZSCHEMELIBDIRS=" (if extra-dir (string-append extra-dir ":") "")
+                       (getenv "CHEZSCHEMELIBDIRS")
+                       " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                       " scheme --script " src " > " out " 2>&1"))
+    (let ((said (guard (e (#t #f))
+                  (call-with-input-file out
+                    (lambda (p) (let loop ((acc '()))
+                                  (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
+      (if (and said (member '(probe done) said))
+          (append (filter (lambda (x) (and (pair? x) (pair? (cdr x)) (eq? (cadr x) 'failed))) said)
+                  (map (lambda (lib) (list lib 'not-reported))
+                       (filter (lambda (lib)
+                                 (not (exists (lambda (x) (and (pair? x) (equal? (car x) lib) (pair? (cdr x))))
+                                              said)))
+                               libs)))
+          (list 'did-not-finish (file-text out))))))
+
+(want "F0-5 CONTROL: the walk finds the libraries the programs and the dispatcher enter at run time"
+      (map (lambda (l) (and (member l on-demand) #t))
+           '((theourgia daemon) (theourgia eval-supervise) (theourgia sched) (theourgia net)
+             (theourgia stream-client) (theourgia derived) (theourgia premises) (theourgia query)))
+      '(#t #t #t #t #t #t #t #t))
+(want "F0-5 every library entered on demand loads in a child, THEOURGIA_INJECT unset"
+      (unloaded on-demand #f #f "plain")
+      '())
+(want "F0-5 every library entered on demand loads in a child, THEOURGIA_INJECT=on"
+      (unloaded on-demand #t #f "inject")
+      '())
+;; TWIN: the child says when a library does not load. A library of this
+;; scratch directory's own that names an unbound identifier is reported
+;; failed, and the one beside it loaded, by the same probe: only the
+;; broken one is in the answer, which also holds every library the child
+;; did not report.
+(define twin-dir (string-append scratch "/ondemand-twin"))
+(sh (string-append "mkdir -p " twin-dir "/f0probe"))
+(call-with-output-file (string-append twin-dir "/f0probe/broken.sc")
+  (lambda (p) (write '(library (f0probe broken) (export f) (import (rnrs)) (define (f) (not-bound-anywhere))) p))
+  'truncate)
+(want "F0-5 TWIN: a library naming an unbound identifier is reported, by name, as not loaded"
+      (let ((r (unloaded '((f0probe broken) (theourgia extensions)) #f twin-dir "twin")))
+        (and (list? r)
+             (list (map car r)
+                   (and (pair? r) (contains? (caddr (car r)) "not-bound-anywhere")))))
+      '(((f0probe broken)) #t))
+
 ;; ---- F18: the output directory has to be usable BY ITSELF -----------------
 ;;
 ;; KEY: EVERY ROW ABOVE RUNS THE PROGRAM FROM THE SOURCE TREE. They put only

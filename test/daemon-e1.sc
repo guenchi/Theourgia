@@ -168,6 +168,12 @@
     (map (lambda (c) (if (or (char-alphabetic? c) (char-numeric? c)) c #\-))
          (string->list text))))
 
+;; WHERE A DAEMON THAT NEVER CAME UP IS REPORTED: a failed row, by default.
+;; The row that starts one on purpose sets this to catch the report, so
+;; the failure it expects does not make the run red.
+(define tagged-start-report
+  (lambda (label came) (want-1 label came 'up)))
+
 (define (start-tagged-daemon! suffix fault)
   ;; NOTE: THE TAG CARRIES THE FAULT, so two armed runs do not collide on
   ;; one runner file -- `call-with-output-file` refuses an existing one,
@@ -216,10 +222,21 @@
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
-    (let up ((k 0))
-      (cond ((file-exists? sk) 'up)
-            ((> k 120) 'never) (else (sleep-ms 50) (up (+ k 1)))))
-    (list st sk rn lg pf rc)))
+    ;; NEVER: A DAEMON THAT NEVER CAME UP IS SAID, NOT DROPPED. The wait's
+    ;; answer was thrown away, so every row after it asked a socket that
+    ;; was not there and read as the daemon's own failure. It answers as
+    ;; start-daemon! answers, up or never-came-up, as the seventh element,
+    ;; and a daemon that never came up is a failed row naming its tag.
+    (let ((came (let up ((k 0))
+                  (cond ((file-exists? sk) 'up)
+                        ((> k 120) 'never-came-up)
+                        (else (sleep-ms 50) (up (+ k 1)))))))
+      (unless (eq? came 'up)
+        (tagged-start-report (string-append "the daemon tagged " tag " comes up and creates its socket") came))
+      (list st sk rn lg pf rc came))))
+
+;; up or never-came-up, as start-tagged-daemon! saw it
+(define (tagged-came-up d) (list-ref d 6))
 
 (define (tagged-pid d)
   (let ((text (file-text (list-ref d 4))))
@@ -490,6 +507,29 @@
   (lambda ()
     (let ((main self))
       (want "D-01 the daemon comes up and creates its socket" (start-daemon!) 'up)
+      (let ((d (start-tagged-daemon! "comesup" #f)))
+        (stop-tagged-daemon! d)
+        (want "D-01 TAGGED a daemon the tagged helper starts comes up, and the helper says so"
+              (tagged-came-up d) 'up))
+      ;; TWIN: a fault this build does not implement is refused when the
+      ;; library loads, so the daemon exits before it binds its socket. The
+      ;; helper says never-came-up and reports the row it would fail, named
+      ;; by its tag; the report is caught here, so the run stays green.
+      (let* ((caught-reports '())
+             (default-report tagged-start-report)
+             (d (begin
+                  (set! tagged-start-report
+                    (lambda (label came) (set! caught-reports (cons (list label came) caught-reports))))
+                  (start-tagged-daemon! "nevercomes" "no-such-fault@conn"))))
+        (set! tagged-start-report default-report)
+        (stop-tagged-daemon! d)
+        (want "D-01 TAGGED TWIN a daemon that does not come up: never-came-up, and one failed row naming its tag"
+              (list (tagged-came-up d)
+                    (let ((x (tagged-exit d 5000))) (and (eq? (car x) 'exited) (not (eqv? 0 (cadr x))) 'exited-not-zero))
+                    caught-reports)
+              (list 'never-came-up 'exited-not-zero
+                    (list (list (string-append "the daemon tagged " pid-text "-nevercomes comes up and creates its socket")
+                                'never-came-up)))))
 
       ;; ---- D-01 TWIN: the build said nothing ---------------------------
       ;;

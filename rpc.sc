@@ -503,11 +503,22 @@
                 (else (put-char out c)))
               (loop (+ i 1)))))))
 
+  ;; NEVER: A DERIVATION THAT RAISES IS NOT A REFUSAL WITH NO BLOCK. A
+  ;; block's derived fields are read through the language table, and a
+  ;; raise there was answered as guarded answers any raise, which named
+  ;; no block, so a reader of a subtree could not tell which one. The
+  ;; refusal is guarded's, byte for byte, with (id <id>) after it; a
+  ;; filesystem failure goes on as guarded sends it. Every reading of the
+  ;; view in this file comes through here.
+  (define (view-of state id)
+    (guard (e (#t (raise (append (guarded (lambda () (raise e))) (list (list 'id id))))))
+      (view-read state id)))
+
   ;; A TITLE IS SOMETHING A PERSON READS, so it comes from the view: for
   ;; a code block the name is derived from its source, and `state-read`
   ;; no longer derives anything.
   (define (title-of state id)
-    (let* ((b (view-read state id))
+    (let* ((b (view-of state id))
            (fs (and b (cdr (assq 'fields b)))))
       (define (get k)
         (let ((e (and fs (assq k fs))))
@@ -775,7 +786,7 @@
       (run (lambda ()
              (let ((r (import-md-report store dir actor (argument-option options "--allow-delete") check)))
                (finish (append (list 'import (car r))
-                               (if (cadr r) (list (cadr r)) '()))))))))
+                               (filter (lambda (c) c) (cdr r)))))))))
 
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
@@ -1616,7 +1627,8 @@
                            ;; HERE. Swapping this one call back left every
                            ;; cell green, which is what a call with no
                            ;; consumer looks like; the other three
-                           ;; `view-read`s in this file each kill a row.
+                           ;; readings of the view in this file, each
+                           ;; through `view-of`, kill a row.
                            (let* ((state (reduction-for store state))
                                   (b (state-read state (car rest))))
                              (cond
@@ -1667,7 +1679,7 @@
                                  ;; unchanged; the versions are one clause after
                                  ;; them, in item order, so a reader of the items
                                  ;; reads what it read before.
-                                 (append (items (map (lambda (id) (view-read state id)) ids))
+                                 (append (items (map (lambda (id) (view-of state id)) ids))
                                          (list (list 'versions
                                                      (filter cdr (map (lambda (id) (cons id (read-version state id)))
                                                                       ids))))
@@ -1677,7 +1689,7 @@
                        (guarded
                          (lambda ()
                            (let* ((state (reduction-for store state))
-                                  (b (view-read state (car rest)))
+                                  (b (view-of state (car rest)))
                                   (v (and b (read-version state (car rest)))))
                              (cond ((not b) (unknown-id state (car rest)))
                                    (v (append (list 'ok b (cons 'version (if (string? v) (list v) v)))

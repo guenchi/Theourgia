@@ -62,6 +62,12 @@
   ;; travel only in --wire.
   (define kept-clauses '(incomplete via stale))
   (define kept-after-items '(incomplete))
+  ;; NEVER: EVERY HIT LEFT OUT IS NOT NO HIT. A search, grep or whereis
+  ;; whose every hit was in a superseded or refuted block printed nothing,
+  ;; as one that matched nothing does. With no item left, the excluded
+  ;; clause is printed, so the two differ. With an item left it is not:
+  ;; then every line is a hit, as the reader above needs.
+  (define kept-after-no-items '(excluded))
   ;; A QUERY'S ROW IS ITS VALUES, separated by a space, one row a line; every
   ;; other item is printed whole.
   (define (render-item item)
@@ -86,8 +92,15 @@
                         (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
                         '()))
            (tail (apply string-append (map render-wire clauses)))
-           (items-tail (apply string-append
-                              (map render-wire (filter (lambda (x) (memq (car x) kept-after-items)) clauses)))))
+           (items-tail
+             (lambda (items)
+               (apply string-append
+                      (map render-wire
+                           (filter (lambda (x)
+                                     (and (pair? x)
+                                          (or (memq (car x) kept-after-items)
+                                              (and (null? items) (memq (car x) kept-after-no-items)))))
+                                   (if (list? answer) (cdr answer) '())))))))
       (cond
         ((carries-rev? answer) (render-wire answer))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
@@ -100,6 +113,6 @@
                  (else (string-append text "\n" tail)))))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'items))
-         (string-append (apply string-append (map render-item (cdadr answer))) items-tail))
+         (string-append (apply string-append (map render-item (cdadr answer))) (items-tail (cdadr answer))))
         (else (render-wire answer)))))
 )

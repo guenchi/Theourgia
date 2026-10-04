@@ -2001,6 +2001,61 @@
                   (exported (car t) d "f.md" #f)))))
       (list #t #f #t #t "# B\nb\n"))
 
+;; NEVER: A FILE THAT IS NOT TEXT IS NOT IMPORTED WITH ITS BYTES CHANGED.
+;; Decoded as it was, an invalid byte became U+FFFD and the file went in
+;; as a document whose text no file holds. It is skipped and listed, by
+;; import-code's rule, and touches nothing.
+(define (put-bytes! p bv)
+  (call-with-port (open-file-output-port p (file-options no-fail))
+    (lambda (o) (put-bytevector o bv))))
+;; "# B\n", one byte that is not UTF-8, "\n"
+(define not-utf8 (bytevector 35 32 66 10 255 10))
+(want "Markdown files with a byte that is not UTF-8 are skipped and listed in the walk's order, and make no block"
+      (let* ((t (fresh-case! (list (cons "a.md" "# A\nbody a\n") (cons "e.md" "# E\nbody e\n"))))
+             (src (car t)) (d (cdr t)))
+        (system (string-append "mkdir -p " src "/d"))
+        (put-bytes! (string-append src "/d/c.md") not-utf8)
+        (put-bytes! (string-append src "/b.md") not-utf8)
+        (let ((r (import-md-report d src "t")))
+          (list (all-ok? (car r)) (cadr r) (caddr r)
+                (and (live-doc-of d "a.md") #t) (and (live-doc-of d "e.md") #t)
+                (live-doc-of d "b.md") (live-doc-of d "d/c.md"))))
+      (list #t #f '(skipped ("b.md" "d/c.md")) #t #t #f #f))
+(want "a document whose file stops being UTF-8 is left as it is, not absent and not deleted with --allow-delete"
+      (let* ((t (fresh-case! (list (cons "a.md" "# A\nbody a\n") (cons "b.md" "# B\nbody b\n## B2\nsub\n"))))
+             (src (car t)) (d (cdr t)))
+        (import-md d src "t")
+        (let* ((b (live-doc-of d "b.md")) (hashes (subtree-hashes d b)) (before (records d)))
+          (put-bytes! (string-append src "/b.md") not-utf8)
+          (let ((r (import-md-report d src "t" #t)))
+            (list (all-ok? (car r)) (cadr r) (caddr r) (- (records d) before)
+                  (equal? hashes (subtree-hashes d b))))))
+      (list #t #f '(skipped ("b.md")) 0 #t))
+;; A NUL byte is not text either, and the skipped clause comes after the
+;; absent or the deleted one, each where it has something to name.
+(want "a file holding a NUL is skipped beside an absent document, and beside the deleted one with --allow-delete"
+      (let* ((t (fresh-case! (list (cons "a.md" "# A\nbody a\n") (cons "b.md" "# B\nbody b\n"))))
+             (src (car t)) (d (cdr t)))
+        (import-md d src "t")
+        (system (string-append "rm " src "/b.md"))
+        ;; "# N\n", a NUL, "\n"
+        (put-bytes! (string-append src "/n.md") (bytevector 35 32 78 10 0 10))
+        (let* ((reported (import-md-report d src "t"))
+               (wire (rpc-dispatch d (list 'import-md src) "t"))
+               (allowed (import-md-report d src "t" #t)))
+          (list (cdr reported) (and (pair? wire) (list? wire) (list-tail wire 2))
+                (cdr allowed) (live-doc-of d "n.md"))))
+      (list '((absent (files ("b.md"))) (skipped ("n.md")))
+            '((absent (files ("b.md"))) (skipped ("n.md")))
+            '((deleted (files ("b.md"))) (skipped ("n.md")))
+            #f))
+(want "the answer through the dispatcher carries the skipped clause last"
+      (let* ((t (fresh-case! (list (cons "a.md" "# A\nbody a\n")))) (src (car t)) (d (cdr t)))
+        (put-bytes! (string-append src "/b.md") not-utf8)
+        (let ((a (rpc-dispatch d (list 'import-md src) "t")))
+          (list (car a) (all-ok? (cadr a)) (cddr a))))
+      (list 'import #t '((skipped ("b.md")))))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "md2 complete\n")

@@ -42,6 +42,8 @@
           ;; library because moving the rule somewhere lower touches both
           ;; projections; that move is recorded, not done here.
           (only (theourgia code-project) code-safe-path?)
+          ;; what a text import holds is decided once, for both importers
+          (only (theourgia markers) import-text?)
           (theourgia md)
           (theourgia reduce)
           (theourgia store))
@@ -569,8 +571,15 @@
   (define (write-file path text)
     (overwrite-entry! path (string->utf8 text)))
 
-  (define (read-file path)
-    (utf8->string (entry-bytes path)))
+  ;; NEVER: A FILE THAT IS NOT TEXT IS NOT DECODED. utf8->string replaces
+  ;; a byte sequence that is not UTF-8 with U+FFFD and raises nothing, so a
+  ;; Latin-1 file was imported with its bytes silently changed. The rule is
+  ;; import-code's, asked of the same bytes (markers.sc, import-text?): a
+  ;; file that is not UTF-8, or that holds a NUL, gives #f here, and the
+  ;; import skips it and lists it. Each file is read once per session.
+  (define (read-md-text path)
+    (let ((b (entry-bytes path)))
+      (and (import-text? b) (utf8->string b))))
 
   ;; ---- import --------------------------------------------------------------
 
@@ -680,7 +689,13 @@
   ;; `(deleted (files (<path> ...)))`, read from the deletions that RAN: a
   ;; batch stops at its first error, and a deletion planned after it did
   ;; not happen.
-  ;; -> (results report), report #f or the one clause above.
+  ;;
+  ;; A FILE THAT IS NOT TEXT is skipped, as import-code skips one: it is
+  ;; listed, in the walk's order, under `(skipped (<path> ...))`, and it
+  ;; touches nothing. It is present, so its document is neither absent nor
+  ;; deleted, and it is not read, so no section of it is missing.
+  ;; -> (results report skipped), report #f or the one clause above,
+  ;; skipped #f or its clause.
   (define (import-md-report store dir . opts)
     (require-md-directory dir)
     (let* ((actor (if (pair? opts) (car opts) "unknown"))
@@ -691,6 +706,7 @@
            (premise-check (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)))
            (files (md-files dir))
            (absent '())
+           (skipped '())
            (doc-deletions '()))
 ;; THE OFFSET IS THREADED BECAUSE `from` COUNTS THE WHOLE BATCH. Each
       ;; file's intents are built on their own, so a file's doc is its
@@ -701,11 +717,14 @@
       (let ((results
               (with-store-write store
                 (lambda (state view)
-                  (let* ((docs (absent-documents state files))
-                         (gone (missing-sections state dir files))
+                  (let* ((read-in (map (lambda (rel) (cons rel (read-md-text (string-append dir "/" rel)))) files))
+                         (texts (filter cdr read-in))
+                         (docs (absent-documents state files))
+                         (gone (missing-sections state texts files))
                          (gone-sections (map car gone))
                          (roots (apply append (map cdr gone))))
                     (set! absent (map cadr docs))
+                    (set! skipped (map car (filter (lambda (r) (not (cdr r))) read-in)))
                     (set! doc-deletions '())
                     (cond
                       ;; The refusal names what deleting the sections would
@@ -720,7 +739,7 @@
                                          '()
                                          (list (list 'holds (map car roots)))))))
                       (else
-                       (let loop ((fs files) (base 0) (out '()))
+                       (let loop ((fs (map car texts)) (base 0) (out '()))
                          (if (null? fs)
                              (let* ((imports (apply append (reverse out)))
                                     ;; What a deleted section holds that the
@@ -740,7 +759,7 @@
                                    (if (or (null? ds) (not allow-delete?)) (reverse acc)
                                        (number (cdr ds) (+ k 1) (cons (cons (cadr (car ds)) k) acc)))))
                                (append imports rehomes section-dels doc-dels))
-                             (let ((is (file-intents state dir (car fs) base)))
+                             (let ((is (file-intents state texts (car fs) base)))
                                (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
                 actor #f premise-check)))
         (list results
@@ -751,7 +770,8 @@
                                               (let ((r (list-ref results k))) (and (pair? r) (eq? (car r) 'ok))))))
                                      doc-deletions)))
                     (and (pair? ran) (list 'deleted (list 'files (map car ran)))))
-                  (and (pair? absent) (list 'absent (list 'files absent))))))))
+                  (and (pair? absent) (list 'absent (list 'files absent))))
+              (and (pair? skipped) (list 'skipped skipped))))))
 
   ;; The results alone, for a caller that reads only them.
   (define (import-md store dir . opts)
@@ -778,22 +798,24 @@
   ;; document's kind decides here, as before, deleted or not: a deleted
   ;; document whose file is still there keeps its sections under the
   ;; section rule.
-  (define (missing-sections state dir files)
+  ;; TEXTS is (rel . text) for each file the import reads; a skipped file
+  ;; is present but not read, so its document's sections are not asked.
+  (define (missing-sections state texts files)
     (let loop ((bs (state-datum state)) (sections '()))
       (if (null? bs)
           (reverse sections)
           (let* ((id (cadr (car bs))) (b (state-read state id)))
             (loop (cdr bs)
-                  (if (and (eq? 'doc (kind-of b)) (member (text-field b 'path) files))
-                      (append (reverse (unmatched-sections state dir id b files)) sections)
+                  (if (and (eq? 'doc (kind-of b)) (assoc (text-field b 'path) texts))
+                      (append (reverse (unmatched-sections state texts id b files)) sections)
                       sections))))))
 
   ;; ONLY A SECTION CAN BE MISSING: a code block, a file or a nested
   ;; document under the document is never missing, so the file saying
   ;; nothing about it is not the file removing it.
-  (define (unmatched-sections state dir doc-id b files)
+  (define (unmatched-sections state texts doc-id b files)
     (let* ((rel (text-field b 'path))
-           (raw (read-file (string-append dir "/" rel)))
+           (raw (cdr (assoc rel texts)))
            (sections (file-sections raw))
            (candidates (heading-candidates state doc-id))
            (matched (match-sections state (doc-sections-of state doc-id) candidates sections)))
@@ -886,12 +908,12 @@
                   (cons (cons lv i) kept)
                   (cons parent out))))))
 
-  (define (file-intents state dir rel base)
+  (define (file-intents state texts rel base)
 ;; THE RAW TEXT GOES TO file-sections, NOT THE STRIPPED ONE. Stripping
     ;; here and again in there left the second pass with no comments to
     ;; find, so every declared id was thrown away and a file carrying
     ;; markers was matched as if it carried none.
-    (let* ((raw (read-file (string-append dir "/" rel)))
+    (let* ((raw (cdr (assoc rel texts)))
            (text (car (strip-recovery raw)))
            (split (md-split text))
            (sections (file-sections raw))
