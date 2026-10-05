@@ -69,7 +69,7 @@ say "cells start $(date '+%H:%M:%S') on $(uname -sm); node $("$NODE" --version);
 
 if [ -z "$TGZ" ]; then
   (cd "$here" && npm pack --pack-destination "$W" > "$R/pack.out" 2> "$R/pack.err")
-  TGZ=$W/theourgia-1.1.0.tgz
+  TGZ=$W/theourgia-$("$NODE" -p 'require(process.argv[1]).version' "$here/package.json").tgz
 fi
 [ -f "$TGZ" ] || { say "FAIL no tarball"; exit 1; }
 PKGBIN_DIR=$(bindir chez); ln -sf "$REAL" "$PKGBIN_DIR/$(basename "$REAL")"
