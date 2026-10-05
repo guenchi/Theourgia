@@ -2610,11 +2610,12 @@ adding a word to that argv.
 #### `--lang`: another language
 
 `eval --lang <language> <source>` runs the source with the RUNNER the
-language table names for that language -- `node` for `javascript`,
-`python3` for `python`, `sh` for `shell`, `scheme --script` for `chez` --
-over a projection of the store. `--lang scheme` is the evaluation above,
-unchanged, with all its options; `--lang chez` runs Scheme outside that
-sandbox (below).
+language table names for that language -- `node` for `javascript` and
+`typescript`, `python3` for `python`, `go run` for `go`, the compiler and
+then the program it built for `rust` and `c`, `java` for `java`, `sh` for
+`shell`, `scheme --script` for `chez` -- over a projection of the store.
+`--lang scheme` is the evaluation above, unchanged, with all its options;
+`--lang chez` runs Scheme outside that sandbox (below).
 
 **Runners are off** unless the operator sets `THEOURGIA_RUNNERS=on` in the
 environment of the process that runs `eval`; otherwise the answer is
@@ -2682,9 +2683,8 @@ naming it.
 The refusals: `(error bad-request (reason lang-and-cut))` for `--cut` or
 `--latest`, `(reason lang-and-under)` for `--under`, `(reason no-runner)`
 with `(lang <language>)` for a language the table does not know or one with no
-runner (`typescript` has none: it needs a compile step; nor do `go`, `rust`,
-`c`, `java` or `markdown`); `(error projection-failed <the export's answer>)` when the store
-cannot be projected, and nothing runs -- a store whose `meta.sexp` is
+runner (`markdown` has none); `(error projection-failed <the export's
+answer>)` when the store cannot be projected, and nothing runs -- a store whose `meta.sexp` is
 missing, or is not a store's, answers the export verb's own `(error meta
 (path ...))` inside it -- with `--working` the view meets it first and
 answers `(error working-unavailable ...)` instead; an unreadable
@@ -2716,6 +2716,49 @@ interpreter's name may not be empty. `source-name` is one path component: not
 empty, not `.` or `..`, and without `/`. An `env` name may not be empty or hold
 `=`. An interpreter name holding `/` is taken as a path; any other is searched
 for on `PATH`.
+
+#### `--lang typescript`, `go`, `rust`, `c` and `java`
+
+Each runs with what a standard install of its language provides, and no
+project around the source:
+
+- `typescript`: `node {file}`, the source written as `__eval.mts`. Node
+  runs a TypeScript file by stripping its types from 22.18 and 23.6 on; an
+  older `node` exits non-zero with its own message in `stderr`.
+- `go`: `go run {file}`, as `eval.go`; the source is a `package main`
+  with a `main`. Not `__eval.go`: the go tool leaves out a file whose name
+  begins with `_` or `.`, even one named on its command line.
+- `rust`: `rustc` builds `__eval.rs` into `__eval.rs.bin` beside it in
+  `source/`, and the program runs in its place:
+  `(argv ("sh" "-c" "rustc -o \"$1.bin\" \"$1\" && exec \"$1.bin\"" "rust" "{file}"))`.
+  A source that does not compile answers the compiler's non-zero exit and
+  its `stderr`; one that does answers the program's own. The interpreter
+  is `sh`, so a missing `rustc` is the shell's `(exit 127)`, not
+  `interpreter-missing`.
+- `c`: the same with `cc`, as `__eval.c`.
+- `java`: `java {file}`, Java's single-file source launch, as
+  `__eval.java`; the file's first class holds `main`.
+
+The binary is removed with `eval-<token>/`. What a compiler writes
+elsewhere, Go's build cache under `HOME` among it, is the operator's.
+
+The operator replaces any of the five with that language's variable:
+`THEOURGIA_RUNNER_TYPESCRIPT`, `THEOURGIA_RUNNER_GO`,
+`THEOURGIA_RUNNER_RUST`, `THEOURGIA_RUNNER_C` or `THEOURGIA_RUNNER_JAVA`,
+read as `THEOURGIA_RUNNER_CHEZ` is, from the environment of the process
+that runs `eval` and never from the store; an empty value is unset. Unlike
+chez's, the value is a WHOLE runner: one datum holding `argv` and
+`source-name`, and `env` if it needs one, which replaces the table's runner
+entire. Nothing of the default survives it: a value naming `argv` alone is
+refused with `(detail (field source-name))`, not completed from the table.
+A value that is not exactly one datum, or that a runner's checks refuse,
+answers `(error bad-request (reason runner-config-invalid) (variable
+"THEOURGIA_RUNNER_GO") (detail ...))`, naming its own language's variable,
+before the evaluation takes an admission slot, and nothing runs. TypeScript
+through `tsx`:
+`THEOURGIA_RUNNER_TYPESCRIPT='((argv ("tsx" "{file}")) (source-name "__eval.ts"))'`.
+`javascript`, `python` and `shell` have no variable: their runner is the
+table's.
 
 #### `--lang chez`: Scheme outside the sandbox
 
@@ -2945,6 +2988,11 @@ Code at the store -- see
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |
 | `THEOURGIA_RUNNER_CHEZ` | `eval-runner.sc` | the operator's runner for `eval --lang chez`: one datum naming any of `argv`, `source-name` and `env`, each replacing the language table's field whole. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
+| `THEOURGIA_RUNNER_C` | `eval-runner.sc` | the operator's runner for `eval --lang c`: one datum that is a whole runner, `argv` and `source-name` at least, replacing the language table's runner entire; nothing of the default survives it. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` naming this variable, and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
+| `THEOURGIA_RUNNER_RUST` | `eval-runner.sc` | the operator's runner for `eval --lang rust`: one datum that is a whole runner, `argv` and `source-name` at least, replacing the language table's runner entire; nothing of the default survives it. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` naming this variable, and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
+| `THEOURGIA_RUNNER_GO` | `eval-runner.sc` | the operator's runner for `eval --lang go`: one datum that is a whole runner, `argv` and `source-name` at least, replacing the language table's runner entire; nothing of the default survives it. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` naming this variable, and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
+| `THEOURGIA_RUNNER_JAVA` | `eval-runner.sc` | the operator's runner for `eval --lang java`: one datum that is a whole runner, `argv` and `source-name` at least, replacing the language table's runner entire; nothing of the default survives it. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` naming this variable, and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
+| `THEOURGIA_RUNNER_TYPESCRIPT` | `eval-runner.sc` | the operator's runner for `eval --lang typescript`: one datum that is a whole runner, `argv` and `source-name` at least, replacing the language table's runner entire; nothing of the default survives it. Empty is unset; a value that does not read or that the checks refuse answers `runner-config-invalid` naming this variable, and nothing runs. Read from the environment of the process that runs `eval`, never from the store |
 | `THEOURGIA_SCHEME` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | the Chez binary every program starts its Scheme children with: the thin client's `core.sc` and daemon, the MCP shell's daemon and `eval` child, and `eval`'s worker. A tree started under a particular Chez therefore starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 

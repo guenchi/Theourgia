@@ -232,35 +232,47 @@
       (parameterize ((theourgia-stage 'eval-cleanup))
         (remove-tree! dir))))
 
-  ;; ---- the operator's runner for chez -------------------------------------
+  ;; ---- the operator's runner, one variable per language ---------------------
   ;;
   ;; NEVER: WHAT RUNS IS WHAT THE OPERATOR NAMED, AND THE STORE NAMES
-  ;; NOTHING. The runner is the language table's, or for `chez` the table's
-  ;; with THEOURGIA_RUNNER_CHEZ in place of the fields it names; that
-  ;; variable is read from this process's environment, never from a block,
-  ;; a language entry in the store, or a projected file. The store is data
-  ;; that may come from anyone. After exec, a projected library the source
-  ;; imports runs with the runner's reach: that is what the runner is for
-  ;; (README).
+  ;; NOTHING. The runner is the language table's, or the one the language's
+  ;; variable gives; that variable is read from this process's environment,
+  ;; never from a block, a language entry in the store, or a projected file.
+  ;; The store is data that may come from anyone. After exec, a projected
+  ;; library the source imports runs with the runner's reach: that is what
+  ;; the runner is for (README).
   ;;
-  ;; KEY: ONE DATUM, ((argv (...)) (source-name "...") (env (...))), any
-  ;; non-empty set of the three, each held to the table's own check. A field
-  ;; it names replaces the table's whole (env included). EMPTY IS UNSET, as
-  ;; env-or reads every THEOURGIA_ variable; the name is written here as a
-  ;; literal so the documentation's scanner finds it.
+  ;; KEY: ONE VARIABLE PER LANGUAGE THAT HAS ONE, AND ONE READER. Each row is
+  ;; (lang variable how value): the variable's name, how its value meets the
+  ;; table's runner, and the value as this process's environment holds it,
+  ;; read by a literal getenv so the documentation's scanner finds the name.
+  ;;   merge    -- chez, as it always was: one datum naming any non-empty
+  ;;               set of argv, source-name and env, each replacing the
+  ;;               table's field whole (env included); the merged runner is
+  ;;               checked again.
+  ;;   replace  -- every other language: one datum that is a whole runner,
+  ;;               argv and source-name at least, and it is the runner; no
+  ;;               field of the table's survives it.
+  ;; EMPTY IS UNSET, as env-or reads every THEOURGIA_ variable.
   ;;
   ;; NEVER: A VALUE THAT DOES NOT READ, OR THAT THE CHECKS REFUSE, IS
-  ;; REFUSED BY NAME, never replaced by the table's default: the operator's
-  ;; line is the whole truth, and a runner they did not name must not run in
-  ;; its place. The merged runner is checked again, so a merge can never
-  ;; produce a runner the table would refuse.
-  (define (chez-runner-text)
-    (let ((v (getenv "THEOURGIA_RUNNER_CHEZ")))
-      (and v (> (string-length v) 0) v)))
+  ;; REFUSED BY NAME, its own variable's, never replaced by the table's
+  ;; default: the operator's line is the whole truth, and a runner they did
+  ;; not name must not run in its place.
+  (define (runner-variables)
+    (list (list "chez" "THEOURGIA_RUNNER_CHEZ" 'merge (getenv "THEOURGIA_RUNNER_CHEZ"))
+          (list "c" "THEOURGIA_RUNNER_C" 'replace (getenv "THEOURGIA_RUNNER_C"))
+          (list "rust" "THEOURGIA_RUNNER_RUST" 'replace (getenv "THEOURGIA_RUNNER_RUST"))
+          (list "go" "THEOURGIA_RUNNER_GO" 'replace (getenv "THEOURGIA_RUNNER_GO"))
+          (list "java" "THEOURGIA_RUNNER_JAVA" 'replace (getenv "THEOURGIA_RUNNER_JAVA"))
+          (list "typescript" "THEOURGIA_RUNNER_TYPESCRIPT" 'replace (getenv "THEOURGIA_RUNNER_TYPESCRIPT"))))
 
-  (define (runner-config-invalid detail)
+  (define (runner-text value)
+    (and value (> (string-length value) 0) value))
+
+  (define (runner-config-invalid variable detail)
     (list 'error 'bad-request '(reason runner-config-invalid)
-          '(variable "THEOURGIA_RUNNER_CHEZ") (list 'detail detail)))
+          (list 'variable variable) (list 'detail detail)))
 
   ;; -> (list <datum>) when `text` is exactly one datum, else #f.
   (define (one-datum text)
@@ -270,15 +282,22 @@
 
   ;; -> (values <runner> #f), or (values #f <refusal>).
   (define (resolved-runner lang)
-    (let ((table (language-runner (language-for-name lang)))
-          (text (and (string=? lang "chez") (chez-runner-text))))
+    (let* ((table (language-runner (language-for-name lang)))
+           (row (assoc lang (runner-variables)))
+           (variable (and row (cadr row)))
+           (text (and row (runner-text (cadddr row)))))
       (if (not text)
           (values table #f)
           (let ((d (one-datum text)))
             (cond
-              ((not d) (values #f (runner-config-invalid 'not-one-datum)))
+              ((not d) (values #f (runner-config-invalid variable 'not-one-datum)))
+              ((eq? (caddr row) 'replace)
+               (let ((problem (runner-problem (car d) '(argv source-name))))
+                 (if problem
+                     (values #f (runner-config-invalid variable (list 'field problem)))
+                     (values (car d) #f))))
               ((not (override-valid? (car d)))
-               (values #f (runner-config-invalid (list 'field (or (runner-problem (car d) '()) 'runner)))))
+               (values #f (runner-config-invalid variable (list 'field (or (runner-problem (car d) '()) 'runner)))))
               (else
                ;; A TRIPWIRE: unreachable by construction today -- an override
                ;; that passes override-valid?, merged field by field into a
@@ -289,7 +308,7 @@
                (let ((r (runner-with-override table (car d))))
                  (if (runner-valid? r)
                      (values r #f)
-                     (values #f (runner-config-invalid
+                     (values #f (runner-config-invalid variable
                                   (list 'field (runner-problem r '(argv source-name)))))))))))))
 
   ;; THE REFUSAL THE OPERATOR'S CONFIGURATION FORCES, or #f: core.sc asks it

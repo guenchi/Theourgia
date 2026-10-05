@@ -153,6 +153,7 @@
                "class C {}"
                "const inc = (x) => x + 1;")))
          ((lang "typescript") (extensions ("ts" "mts" "cts")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
+           (runner ((argv ("node" "{file}")) (source-name "__eval.mts")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
@@ -184,7 +185,16 @@
                (fallback "whole-file-with-warning") (prefix-lines ("^@"))))
            (name-vectors
              ("def f():\n\treturn 1" "class C:\n\tpass" "answer = 42")))
+         ;; GO, RUST, C AND JAVA RUN A FILE WITH A STANDARD INSTALL AND NO
+         ;; PROJECT: `go run`, the compiler then the binary it wrote beside the
+         ;; source (one `sh -c` line, the source as $1), and Java's single-file
+         ;; source launch. TypeScript runs under node, which strips a file's
+         ;; types from Node 22.18 and 23.6 on. Each is replaced whole by its
+         ;; THEOURGIA_RUNNER_<LANG> (eval-runner.sc). Go's source is eval.go,
+         ;; not __eval.go: the go tool leaves out a file whose name begins
+         ;; with _ or ., one named on its command line included.
          ((lang "go") (extensions ("go")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
+           (runner ((argv ("go" "run" "{file}")) (source-name "eval.go")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^func\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\("
@@ -200,6 +210,8 @@
            (name-vectors
              ("func f() {}" "type Count int" "func (x T) M() {}")))
          ((lang "rust") (extensions ("rs")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
+           (runner ((argv ("sh" "-c" "rustc -o \"$1.bin\" \"$1\" && exec \"$1.bin\"" "rust" "{file}"))
+                    (source-name "__eval.rs")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:pub\\s+)?(?:async\\s+)?fn\\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -214,6 +226,8 @@
            (name-vectors
              ("fn f() {}" "struct Thing {}" "impl Thing {}")))
          ((lang "c") (extensions ("c" "h")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
+           (runner ((argv ("sh" "-c" "cc -o \"$1.bin\" \"$1\" && exec \"$1.bin\"" "c" "{file}"))
+                    (source-name "__eval.c")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:static\\s+)?int\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*\\{"
@@ -230,6 +244,7 @@
                "void g(void) {}"
                "struct Point { int x; };")))
          ((lang "java") (extensions ("java")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "//")
+           (runner ((argv ("java" "{file}")) (source-name "__eval.java")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:public\\s+)?class\\s+([A-Za-z_][A-Za-z0-9_]*)"

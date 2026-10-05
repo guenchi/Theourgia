@@ -1207,7 +1207,7 @@
   ("eval-runner.sc" (one-datum) 1 guard
    (#t)
    unrelated a
-   "the operator's THEOURGIA_RUNNER_CHEZ: text that does not read as exactly one datum answers #f, and the caller refuses it by name as runner-config-invalid; no filesystem is involved"
+   "a language's runner variable (THEOURGIA_RUNNER_CHEZ and its family): text that does not read as exactly one datum answers #f, and the caller refuses it by the variable's name as runner-config-invalid; no filesystem is involved"
    (e (#t #f)))
   ("eval-runner.sc" (project-and-run) 1 guard
    ((log-error? e))

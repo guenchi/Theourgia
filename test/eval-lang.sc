@@ -19,6 +19,8 @@
 ;; with the source on standard input and --wire, one THEOURGIA_HOME and one
 ;; THEOURGIA_RUN for the file. Shell rows need /bin/sh only; the python and
 ;; node rows are red BY NAME when the interpreter is absent, not skipped.
+;; The RT rows, which run the compiled languages' real tools, are skipped by
+;; name, with the reason, where a tool is absent (RT, below).
 
 (import (chezscheme))
 
@@ -281,9 +283,133 @@
         (list 'ok '(values (3)) #t)))
 
 ;; ---- L5: no runner ------------------------------------------------------------
-(let ((a (ask ON S "x\n" "--lang" "typescript")))
-  (want "L5 typescript has no runner: (error bad-request (reason no-runner) (lang typescript) ...)"
-        (list (head-of a) (clause-of a 'reason) (clause-of a 'lang)) (list '(error bad-request) '(reason no-runner) '(lang typescript))))
+(let ((a (ask ON S "x\n" "--lang" "markdown")))
+  (want "L5 markdown has no runner: (error bad-request (reason no-runner) (lang markdown) ...)"
+        (list (head-of a) (clause-of a 'reason) (clause-of a 'lang)) (list '(error bad-request) '(reason no-runner) '(lang markdown))))
+
+;; ---- R: the default runners of typescript, go, rust, c and java ------------------
+;; STAND-INS FIRST ON PATH: the runner keeps the calling process's PATH, so
+;; scripts named node, go, rustc, cc and java in a directory put ahead of it
+;; are what the table's argv reaches, on a machine with none of them. Each
+;; prints its own name and its whole argv, one per line. node, go and java
+;; then print -- and the source. The two compilers write a program at their
+;; -o path that prints `ran`, the full path it runs as, --, then the source;
+;; a source holding BAD they refuse with exit 3, writing nothing. A row
+;; compares the whole of stdout, so an extra argument, a program run from
+;; elsewhere or a source under another name is red.
+(define stubs (string-append outside "/stubs"))
+(sh "mkdir -p " (quoted stubs))
+(define (stub! name text)
+  (put! (string-append stubs "/" name) (string-append "#!/bin/sh\n" text))
+  (sh "chmod 755 " (quoted (string-append stubs "/" name))))
+(define (compiler-stub name)
+  (string-append
+    "printf '%s\\n' " name " \"$@\"\n"
+    "[ \"$1\" = -o ] || exit 2\n"
+    "if grep -q BAD \"$3\"; then echo '" name ": cannot compile' >&2; exit 3; fi\n"
+    "cat > \"$2\" <<EOF\n"
+    "#!/bin/sh\n"
+    "printf '%s\\n' ran \"\\$0\"\n"
+    "printf -- '--\\n'\n"
+    "cat '$3'\n"
+    "EOF\n"
+    "chmod 755 \"$2\"\n"))
+(stub! "node" "printf '%s\\n' node \"$@\"; printf -- '--\\n'; cat \"$1\"\n")
+(stub! "java" "printf '%s\\n' java \"$@\"; printf -- '--\\n'; cat \"$1\"\n")
+(stub! "go" "printf '%s\\n' go \"$@\"; printf -- '--\\n'; cat \"$2\"\n")
+(stub! "rustc" (compiler-stub "rustc"))
+(stub! "cc" (compiler-stub "cc"))
+(define STUB-PATH (string-append "PATH=" (quoted stubs) ":\"$PATH\""))
+(define (with-stubs . more) (apply string-append ON " " STUB-PATH more))
+(define (stdout-of a) (let ((c (clause-of a 'stdout))) (if c (cadr c) "")))
+(define (stderr-of a) (let ((c (clause-of a 'stderr))) (if c (cadr c) "")))
+(define run-real (let ((s (sh-out "cd " (quoted run) " && pwd -P"))) (substring s 0 (max 0 (- (string-length s) 1)))))
+;; (lang source-name at lines): the name the table writes the source as, the
+;; line of stdout holding its full path, and, given that path, the lines the
+;; stand-ins print before the source.
+(define stand-ins
+  (list (list "typescript" "__eval.mts" 1 (lambda (p) (list "node" p "--")))
+        (list "go" "eval.go" 2 (lambda (p) (list "go" "run" p "--")))
+        (list "rust" "__eval.rs" 3
+              (lambda (p) (let ((bin (string-append p ".bin"))) (list "rustc" "-o" bin p "ran" bin "--"))))
+        (list "c" "__eval.c" 3
+              (lambda (p) (let ((bin (string-append p ".bin"))) (list "cc" "-o" bin p "ran" bin "--"))))
+        (list "java" "__eval.java" 1 (lambda (p) (list "java" p "--")))))
+(define (lines-text ls) (apply string-append (map (lambda (l) (string-append l "\n")) ls)))
+(define (begins-with? s b) (and (>= (string-length s) (string-length b)) (string=? (substring s 0 (string-length b)) b)))
+;; A SOURCE'S PATH: <run root>/eval-<token>/source/<name>, the run root as
+;; given or as resolved.
+(define (source-path? p name)
+  (and (string? p)
+       (ends-with? p (string-append "/source/" name))
+       (or (begins-with? p (string-append run-real "/eval-")) (begins-with? p (string-append run "/eval-")))))
+;; -> the full path of the source in what lang's stand-ins printed, or #f.
+(define (printed-path lang out)
+  (let ((s (assoc lang stand-ins)) (ls (lines-of out)))
+    (and (> (length ls) (caddr s))
+         (let ((p (list-ref ls (caddr s)))) (and (source-path? p (cadr s)) p)))))
+;; -> #t when `out` is exactly what lang's stand-ins print for `source`, else `out`.
+(define (stand-in-printed lang source out)
+  (let ((p (printed-path lang out)))
+    (or (and p (string=? out (string-append (lines-text ((cadddr (assoc lang stand-ins)) p)) source))) out)))
+(for-each
+  (lambda (c)
+    (let* ((lang (car c)) (source (cadr c)) (a (ask (with-stubs) S source "--lang" lang)))
+      (want (string-append "R1 " lang ": the table's runner runs the source through " (caddr c)
+                           "; ok, (exit 0), and stdout is all the stand-ins printed, the full paths under this run root")
+            (list (head-of a) (clause-of a 'exit) (stand-in-printed lang source (stdout-of a)) (clause-of a 'lang))
+            (list 'ok '(exit 0) #t (list 'lang (string->symbol lang))))))
+  (list (list "typescript" "let x: number = 1;\n" "node, as __eval.mts")
+        (list "go" "package main\nfunc main() {}\n" "go run, as eval.go")
+        (list "rust" "fn main() {}\n" "rustc, then the program it built beside it")
+        (list "c" "int main(void) { return 0; }\n" "cc, then the program it built beside it")
+        (list "java" "class C { public static void main(String[] a) {} }\n" "java, as __eval.java")))
+;; A SOURCE THAT DOES NOT COMPILE: the compiler's exit and stderr are the
+;; answer, and no program runs after it: stdout is the compiler's argv and
+;; nothing more.
+(for-each
+  (lambda (lang)
+    (let* ((a (ask (with-stubs) S "BAD\n" "--lang" lang))
+           (out (stdout-of a))
+           (p (printed-path lang out))
+           (tool (if (string=? lang "rust") "rustc" "cc")))
+      (want (string-append "R2 " lang ": a source the compiler refuses answers ok with its (exit 3) and its stderr; stdout is the compiler's argv alone, so nothing ran after it")
+            (list (head-of a) (clause-of a 'exit)
+                  (or (and p (string=? out (lines-text (list tool "-o" (string-append p ".bin") p)))) out)
+                  (has-substring? (stderr-of a) (string-append tool ": cannot compile")))
+            (list 'ok '(exit 3) #t #t))))
+  '("rust" "c"))
+
+;; ---- RT: the default runners with the real tools ----------------------------------
+;; Where the tool is on PATH, the table's runner runs a program with it and
+;; the row expects what it prints. Where it is not, the row prints SKIP with
+;; the reason and is counted as skipped, never silently. node must also strip
+;; types (process.features.typescript, Node 22.18 and 23.6 on), and java must
+;; have a runtime (`java -version` succeeds; macOS has a java that only says
+;; there is none), or the row is skipped saying which. The limits are wide:
+;; a first build fills a compiler's cache.
+(define skipped 0)
+(define (skip! label why) (set! skipped (+ skipped 1)) (printf "SKIP ~a: ~a\n" label why))
+(for-each
+  (lambda (c)
+    (let ((lang (list-ref c 0)) (tool (list-ref c 1)) (ready (list-ref c 2)) (unready (list-ref c 3)) (source (list-ref c 4))
+          (label (string-append "RT-" (list-ref c 0))))
+      (cond
+        ((not (have? tool)) (skip! label (string-append tool " is not on PATH")))
+        ((and ready (not (= 0 (sh ready " > /dev/null 2>&1")))) (skip! label unready))
+        (else
+         (let ((a (ask ON S source "--lang" lang "--timeout-ms" "60000" "--memory-bytes" "1073741824")))
+           (want (string-append label ": the table's runner runs a program with the real " tool "; ok, (exit 0), stdout 42")
+                 (list (head-of a) (clause-of a 'exit) (stdout-of a))
+                 (list 'ok '(exit 0) "42\n")))))))
+  (list (list "typescript" "node" "node -e 'process.exit(process.features.typescript ? 0 : 1)'"
+              "node strips no types (Node 22.18 and 23.6 on do)"
+              "const n: number = 6 * 7;\nconsole.log(n);\n")
+        (list "go" "go" #f "" "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(6 * 7) }\n")
+        (list "rust" "rustc" #f "" "fn main() { println!(\"{}\", 6 * 7); }\n")
+        (list "c" "cc" #f "" "#include <stdio.h>\nint main(void) { printf(\"%d\\n\", 6 * 7); return 0; }\n")
+        (list "java" "java" "java -version" "java has no runtime (java -version fails)"
+              "class Main { public static void main(String[] a) { System.out.println(6 * 7); } }\n")))
 
 ;; ---- L6: what the runner reaches ----------------------------------------------
 (let* ((a (ask ON S "env | cut -d= -f1 | sort | tr '\\n' ' '; echo; printf '%s|' \"$0\" \"$@\"; echo; pwd\n" "--lang" "shell"))
@@ -1186,8 +1312,6 @@
 ;; and the property each row also asserts is for the mutants.
 (define LIB-A "(library (lib a) (export f) (import (rnrs)) (define (f) 42))\n")
 (define SC (make-store! "chez1" (list (cons "lib/a.sc" LIB-A))))
-(define (stdout-of a) (let ((c (clause-of a 'stdout))) (if c (cadr c) "")))
-(define (stderr-of a) (let ((c (clause-of a 'stderr))) (if c (cadr c) "")))
 (define (chez-var text) (string-append "THEOURGIA_RUNNER_CHEZ=" (quoted text)))
 (define (with-var text) (string-append ON " " (chez-var text)))
 ;; What a whitespace run is, in README: any run of spaces and newlines is one space.
@@ -1383,6 +1507,62 @@
         (list (config-refusal x) (directory-list r)))
       (list (refused-with 'not-one-datum) '()))
 
+;; ---- V: the other languages' variables are whole runners ---------------------------
+;; Each value names a recorder as argv[0], and the stand-ins are first on
+;; PATH, so a value wrongly taken runs the recorder and a value wrongly
+;; ignored runs the stand-in, which prints.
+(define V-LANGS '("typescript" "go" "rust" "c" "java"))
+(define (variable-of lang) (string-append "THEOURGIA_RUNNER_" (string-upcase lang)))
+(define (lang-var lang text) (string-append (with-stubs) " " (variable-of lang) "=" (quoted text)))
+(define (refused-by variable detail)
+  (list '(error bad-request) '(reason runner-config-invalid) (list 'variable variable) (list 'detail detail)))
+(for-each
+  (lambda (lang)
+    (let* ((r (make-recorder!))
+           (a (ask (lang-var lang (string-append "((argv (\"" (rec-script r) "\" \"{file}\")) (source-name \"run.src\"))"))
+                   S "x\n" "--lang" lang)))
+      (want (string-append "V1 " lang ": a whole runner in " (variable-of lang)
+                           " is what runs: ok, (exit 0), the recorder ran on the source written as run.src, and no stand-in printed")
+            (list (head-of a) (clause-of a 'exit) (rec-lines r ".base") (rec-lines r ".src") (stdout-of a))
+            (list 'ok '(exit 0) '("run.src") '("x") ""))))
+  V-LANGS)
+;; NOTHING OF THE TABLE'S IS MERGED IN: argv alone lacks a source-name, and
+;; the table's is not taken to fill it.
+(for-each
+  (lambda (lang)
+    (let* ((r (make-recorder!))
+           (a (ask (lang-var lang (string-append "((argv (\"" (rec-script r) "\" \"{file}\")))")) S "x\n" "--lang" lang)))
+      (want (string-append "V2 " lang ": argv alone answers runner-config-invalid naming " (variable-of lang)
+                           " and (field source-name); nothing ran")
+            (list (config-refusal a) (rec-ran? r) (stdout-of a))
+            (list (refused-by (variable-of lang) '(field source-name)) #f ""))))
+  V-LANGS)
+(for-each
+  (lambda (c)
+    (let* ((r (make-recorder!))
+           (lang (car c))
+           (a (ask (lang-var lang ((caddr c) (rec-script r))) S "x\n" "--lang" lang)))
+      (want (string-append "V3 " lang ", " (cadr c) ": runner-config-invalid naming " (variable-of lang)
+                           " and " (format "~s" (cadddr c)) "; nothing ran")
+            (list (config-refusal a) (rec-ran? r) (stdout-of a))
+            (list (refused-by (variable-of lang) (cadddr c)) #f ""))))
+  (list (list "rust" "not a datum" (lambda (p) (string-append "((argv (\"" p "\"")) 'not-one-datum)
+        (list "go" "two datums" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (source-name \"a\")) ()")) 'not-one-datum)
+        (list "java" "env alone" (lambda (p) "((env ()))") '(field argv))
+        (list "java" "an empty runner" (lambda (p) "()") '(field argv))
+        (list "c" "a source-name holding /" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (source-name \"a/b\"))")) '(field source-name))
+        (list "typescript" "a field no runner has" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (source-name \"a\") (cmd \"x\"))")) '(field cmd))
+        (list "typescript" "PATH named in env" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (source-name \"a\") (env ((\"PATH\" \"/x\"))))")) '(field env))))
+(let ((a (ask (string-append (with-stubs) " THEOURGIA_RUNNER_GO=") S "x\n" "--lang" "go")))
+  (want "V4 CONTROL an empty THEOURGIA_RUNNER_GO is unset: the table's runner runs the stand-in"
+        (list (head-of a) (stand-in-printed "go" "x\n" (stdout-of a)))
+        (list 'ok #t)))
+(want "V5 on a fresh run root, an invalid THEOURGIA_RUNNER_JAVA is refused and the run root stays empty (no admission directory)"
+      (let* ((r (fresh-run! "java-noadmit"))
+             (x (ask (slots-env r (lang-var "java" "((")) S "x\n" "--lang" "java")))
+        (list (config-refusal x) (directory-list r)))
+      (list (refused-by "THEOURGIA_RUNNER_JAVA" 'not-one-datum) '()))
+
 ;; ---- C5: the launcher never loads from the projection; the interpreter does ----------
 (define marker-c5a (string-append outside "/c5a"))
 (define marker-c5b (string-append outside "/c5b"))
@@ -1533,14 +1713,14 @@
   (let ((child (string-append root "/" name ".sc")))
     (put! child program)
     (datum-of (sh-out (quoted scheme-path) " --script " (quoted child) " 2>/dev/null"))))
-(want "T1 every runner of the built-in table passes runner-valid?, and four languages have one"
+(want "T1 every runner of the built-in table passes runner-valid?, and nine languages have one"
       (child-datum "t1"
         (string-append
           "(import (chezscheme) (theourgia languages))\n"
           "(write (let ((rs (filter values (map language-runner (language-table)))))\n"
           "  (list (for-all runner-valid? rs) (length rs)\n"
           "        (map (lambda (e) (language-property e 'lang #f)) (filter language-runner (language-table))))))\n"))
-      '(#t 4 ("javascript" "python" "shell" "chez")))
+      '(#t 9 ("javascript" "typescript" "python" "go" "rust" "c" "java" "shell" "chez")))
 (want "T2 a table built with an entry whose runner the checks refuse stops at construction, naming the entry and the field"
       (child-datum "t2"
         (string-append
@@ -1579,11 +1759,24 @@
            (or (find (lambda (x) (and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (equal? (cadr x) name))) (cdar fs))
                (loop (cdr fs))))
           (else (loop (cdr fs))))))
-(want "D1 docs: README's environment table has a THEOURGIA_RUNNER_CHEZ row read by eval-runner.sc; chez-runner-text reads it by a literal getenv"
-      (list (and (exists (lambda (l) (prefix? l "| `THEOURGIA_RUNNER_CHEZ` | `eval-runner.sc` |")) (environment-table-rows)) #t)
-            (let ((d (library-defines "../eval-runner.sc" '(chez-runner-text))))
-              (and d (holds-datum? (cddr d) '(getenv "THEOURGIA_RUNNER_CHEZ")))))
-      (list #t #t))
+(define RUNNER-VARIABLES
+  '("THEOURGIA_RUNNER_CHEZ" "THEOURGIA_RUNNER_C" "THEOURGIA_RUNNER_RUST" "THEOURGIA_RUNNER_GO"
+    "THEOURGIA_RUNNER_JAVA" "THEOURGIA_RUNNER_TYPESCRIPT"))
+(want "D1 docs: README's environment table has a row read by eval-runner.sc for each runner variable; runner-variables reads each by a literal getenv"
+      (let ((d (library-defines "../eval-runner.sc" '(runner-variables))))
+        (map (lambda (v)
+               (list v
+                     (and (exists (lambda (l) (prefix? l (string-append "| `" v "` | `eval-runner.sc` |"))) (environment-table-rows)) #t)
+                     (and d (holds-datum? (cddr d) (list 'getenv v)))))
+             RUNNER-VARIABLES))
+      (map (lambda (v) (list v #t #t)) RUNNER-VARIABLES))
+(want "D3 docs: README states the five variables are whole runners, argv alone is refused rather than completed, the refusal names its own variable, and the tsx example"
+      (map (lambda (t) (has-substring? readme (squash t)))
+           (list "Unlike chez's, the value is a WHOLE runner"
+                 "a value naming `argv` alone is refused with `(detail (field source-name))`, not completed from the table."
+                 "naming its own language's variable"
+                 "THEOURGIA_RUNNER_TYPESCRIPT='((argv (\"tsx\" \"{file}\")) (source-name \"__eval.ts\"))'"))
+      '(#t #t #t #t))
 (want "D2 docs: README states chez's default runner, the field-wise replacement, empty is unset, an interpreter and a compiler example with {file} as $1, the reach sentence in place of the old one, and the argv placeholders"
       (map (lambda (t) (has-substring? readme (squash t)))
            (list "(runner ((argv (\"scheme\" \"--script\" \"{file}\")) (source-name \"__eval.ss\") (env ((\"CHEZSCHEMELIBDIRS\" \"{dir}:{libdirs}\") (\"CHEZSCHEMELIBEXTS\" \".sc:.ss:.sls:.scm\")))))"
@@ -1605,5 +1798,6 @@
 (want "C every chez run above left no eval-* directory behind" (eval-dirs) '())
 
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
+(printf "\nskipped: ~a\n" skipped)
 (printf "\n~a failures\nrows: ~a\neval-lang complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

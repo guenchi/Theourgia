@@ -475,10 +475,10 @@
                          (list 'usage eval-usage))))
       ((not (runners-enabled?))
        (done '(error runners-disabled)))
-      ;; THE OPERATOR'S RUNNER IS RESOLVED BEFORE ADMISSION: an invalid
-      ;; THEOURGIA_RUNNER_CHEZ is refused as itself, takes no slot and makes
-      ;; no admission directory. The gate above comes first, so with runners
-      ;; off no configuration is read.
+      ;; THE OPERATOR'S RUNNER IS RESOLVED BEFORE ADMISSION: an invalid runner
+      ;; variable, THEOURGIA_RUNNER_CHEZ or one of its family, is refused as
+      ;; itself, takes no slot and makes no admission directory. The gate
+      ;; above comes first, so with runners off no configuration is read.
       (((later '(theourgia eval-runner) 'runner-refusal) lang) => done)
       ;; THE ADMISSION comes after the last of this branch's own refusals and
       ;; before the source is read, the view taken or the scratch claimed:
