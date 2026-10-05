@@ -1184,7 +1184,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
 
   /*
    * WHERE THE USER'S OWN SOCKETS LIVE, spelled the way the core spells
-   * it (`run-root`, client.sc:73-75) rather than the way this file would like to.
+   * it (`run-root`, client.sc:74-76) rather than the way this file would like to.
    * NEVER: Not read from `THEOURGIA_RUN`: this process may well have one
    * set, and then this would be measuring the fixture's directory
    * against itself and could never fail.
@@ -1715,5 +1715,57 @@ describe('theourgia 06a348b: a superseded block is left out of search and grep, 
     );
     const read = await model.blockWithVersion(older);
     assert.strictEqual(read.block?.id, older, 'the read the guarded write runs lost the superseded block');
+  });
+});
+
+/*
+ * EVERY HIT LEFT OUT IS NOT NO HIT, ON THE PINNED CORE. From theourgia
+ * 6593f78 the human route of a search whose every hit was in a superseded or
+ * refuted block prints the `(excluded ...)` clause as a line of its own; the
+ * core before printed nothing. That line is not a hit, which is why the view
+ * asks with `--wire`: there the items are none and the clause is the count
+ * the view says it from.
+ */
+describe('theourgia 6593f78: a search whose every hit was left out says so on both routes', function () {
+  this.timeout(120000);
+  let store: RealStore;
+  let pinned: CorePin | undefined;
+
+  before(async () => {
+    pinned = pinCore();
+    await initWire();
+    store = await RealStore.make('vscode-excluded');
+    await store.importMarkdown('doc.md', '# Doc\n\n## Old\n\nosprey old\n\n## New\n\nalpha new\n');
+  });
+
+  after(() => {
+    try {
+      store?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  it('prints the excluded line on the human route, and the view reads none and the count', async () => {
+    const older = await idOfSection(store, 'Old');
+    const newer = await idOfSection(store, 'New');
+    const model = new StoreModel(store.client);
+    assert.deepStrictEqual(
+      (await model.searchReading('osprey')).hits.map((h) => h.id),
+      [older],
+      `the search did not find ${older} before the link, so its absence says nothing`
+    );
+
+    const linked = await store.client.request('link', [newer, 'supersedes', older]);
+    assert.strictEqual(linked.ok, true, `the link was refused: ${linked.text}`);
+
+    const human = await store.client.request('search', ['osprey']);
+    assert.ok(
+      human.text.includes('(excluded (blocks (superseded 1) (refuted 0)))'),
+      `the human route of the search printed no excluded line: ${JSON.stringify(human.text)}`
+    );
+    const reading = await model.searchReading('osprey');
+    assert.deepStrictEqual(reading.hits, []);
+    assert.deepStrictEqual(reading.leftOut, { superseded: 1, refuted: 0 });
   });
 });

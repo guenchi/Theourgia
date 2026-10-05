@@ -254,7 +254,11 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 8 -> 10 when search and grep were asked with --wire: a search
    * and a grep answer with the excluded and validity clauses.
    */
-  ['read-receipt.test.ts', 10],
+  /*
+   * RAISED 10 -> 12 with the re-pin to theourgia 6593f78: a recursive and a
+   * markdown read asked with --rev, printed whole as the wire form.
+   */
+  ['read-receipt.test.ts', 12],
   /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
@@ -291,7 +295,11 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 21 -> 22 with the re-pin to theourgia 06a348b: a superseded
    * block left out of search and grep, and still read.
    */
-  ['real-core.test.ts', 22],
+  /*
+   * RAISED 22 -> 23 with the re-pin to theourgia 6593f78: a search whose
+   * every hit was left out prints the excluded line on the human route.
+   */
+  ['real-core.test.ts', 23],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them. RAISED 8 -> 14 when the

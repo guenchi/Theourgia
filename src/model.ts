@@ -91,7 +91,7 @@ export type StoreVerdict =
  * NEVER: THE EXIT CODE IS NOT ASKED. The core's `rpc-ok?` makes `check` a
  * failure exactly when its verdict is not `ok`, so a damaged store answers
  * with a non-zero exit AND a complete `(check ... (verdict damaged))` --
- * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:404-414). A reader that required `ok`
+ * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:433-443). A reader that required `ok`
  * would read "could not ask" on precisely the occasion it exists for.
  * The form's head is what says whether this is an answer at all.
  *
@@ -578,7 +578,7 @@ export class StoreModel {
      *
      * `read <id> --recursive` includes the block itself -- the core's
      * `subtree-ids` answers the block and everything under it
-     * (project.sc:180-184) -- so a success
+     * (project.sc:182-186) -- so a success
      * carrying nothing is an answer this build cannot account for, and
      * drawing it as a leaf is the reassuring reading. The repair that
      * made the LOOP refuse an unreadable record left this case outside
@@ -597,7 +597,7 @@ export class StoreModel {
      * NEVER: AND IT HAS TO BE THE SUBTREE THAT WAS ASKED FOR.
      *
      * The core's `read --recursive` includes the block itself
-     * (`project.sc:180-184`), so an answer that never mentions it is not an
+     * (`project.sc:182-186`), so an answer that never mentions it is not an
      * answer about it. Measured in a twelfth review round: a successful
      * response carrying only an unrelated root block gave
      * `{nodes: [], marksKnown: true}` -- a leaf, confidently. Checking
@@ -834,10 +834,10 @@ export class StoreModel {
    *
    * NEVER: A PROGRAM READS THE WIRE ANSWER. The human output is for a
    * person. When every hit was in a superseded or refuted block, the pinned
-   * core (5c28e42) prints nothing there, which this read as "nothing in the
-   * store matches", the same as words found nowhere; a newer core prints its
-   * `(excluded ...)` line there, which, read line by line as hits, would
-   * throw "the store did not answer the search". Asked with `--wire`, the
+   * core (6593f78) prints its `(excluded ...)` line there, which, read line
+   * by line as hits, would throw "the store did not answer the search"; an
+   * older core (5c28e42) printed nothing, which this read as "nothing in the
+   * store matches", the same as words found nowhere. Asked with `--wire`, the
    * hits are the answer's items and the count of what was left out is its
    * `excluded` clause, read as `whereis`'s is, on either core.
    */

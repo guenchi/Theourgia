@@ -266,10 +266,11 @@ interface MatchRow {
  * and without case.
  *
  * NEVER: ASKED WITH `--wire`. On the human route, when every match was in a
- * superseded or refuted block, the pinned core (5c28e42) prints nothing, and
- * a newer core prints its `(excluded ...)` line, which is not a match and
- * would fail the hover where there is nothing to mention. The wire answer's
- * items are the matches on either core; what was left out is not mentioned.
+ * superseded or refuted block, the pinned core (6593f78) prints its
+ * `(excluded ...)` line, which is not a match and would fail the hover where
+ * there is nothing to mention; an older core (5c28e42) printed nothing. The
+ * wire answer's items are the matches on either core; what was left out is
+ * not mentioned.
  */
 async function matchesOf(client: Client, name: string): Promise<MatchRow[]> {
   const answer = await client.request('grep', [name, '--wire']);

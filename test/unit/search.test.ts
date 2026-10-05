@@ -1199,7 +1199,7 @@ describe('plugin-r2 T5 what a search does', function () {
    * Found by a second review round. `theourgia.scheme` is used to start
    * the thin client, and the client starts the daemon with
    * `THEOURGIA_SCHEME` or, failing that, whatever `scheme` resolves to
-   * on PATH (`scheme-binary`, theourgia.sc:149, which `server-argv` puts at
+   * on PATH (`scheme-binary`, theourgia.sc:156, which `server-argv` puts at
    * the head of the daemon's argument list, :392-396; the in-process route
    * reads the same variable, core.sc:642-643). A user who set the
    * setting because `scheme` is not on their PATH got a client from the
@@ -2100,10 +2100,11 @@ describe('plugin-r2 a refusal this build cannot read is not a refusal', function
 
 /*
  * A SEARCH WHOSE EVERY HIT WAS LEFT OUT. On the human route the pinned core
- * (5c28e42) prints nothing when every hit was in a superseded or refuted
- * block, so this client said "nothing in the store matches"; a newer core
- * prints its `(excluded ...)` line there, a line that is not a hit, on which
- * the human-route reader would throw "the store did not answer the search".
+ * (6593f78) prints its `(excluded ...)` line when every hit was in a
+ * superseded or refuted block, a line that is not a hit, on which the
+ * human-route reader would throw "the store did not answer the search"; an
+ * older core (5c28e42) printed nothing, so this client said "nothing in the
+ * store matches".
  * The search is asked with `--wire` and read as `whereis` is: the items are
  * the hits, and the `excluded` clause is the count of what was left out.
  * The answers below are the core's, clause for clause: an empty search
@@ -2156,7 +2157,7 @@ describe('a search whose every hit was left out', () => {
     assert.deepStrictEqual(editor.said, ['nothing in the store matches "osprey".']);
   });
 
-  it('an (excluded ...) line, which a newer core prints on the human route, is not a hit', () => {
+  it('an (excluded ...) line, which the pinned core prints on the human route, is not a hit', () => {
     assert.strictEqual(hitsOf(parseAnswers('(excluded (blocks (superseded 1) (refuted 0)))\n')), null);
   });
 });

@@ -20,7 +20,7 @@
  *
  * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. The thin client exits
  * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
- * the answer is a success (daemon.sc:1999, relayed by `deliver!` in
+ * the answer is a success (daemon.sc:2487, relayed by `deliver!` in
  * theourgia.sc); `init`, which the thin client runs in-process through
  * `core.sc` (`local-verbs`, theourgia.sc:72), exits by the same predicate
  * there (core.sc:767) -- and that
@@ -32,8 +32,8 @@
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
  * client is forced to hold a second opinion. The core says an answer is
- * text, items or a single datum (rpc.sc:185-190), and `render-human`
- * (render.sc:65) draws each
+ * text, items or a single datum (rpc.sc:196-201), and `render-human`
+ * (render.sc:131) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it
  * drew. Over a socket the whole `(ok (text ...))` form would arrive and
@@ -65,7 +65,7 @@ export interface Answer {
    * ROUND IT. Measured on a core pinned before F100b (877f0da or earlier): a commit answers
    * `(ok (events ...) (cursor ...) (replay #f))` by default and
    * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
-   * with the flag -- and `render-human` (render.sc:62-65) renders only
+   * with the flag -- and `render-human` (render.sc:62-131) renders only
    * the `items` clause and `incomplete`, so every other clause beside them
    * is lost on the way out.
    *
@@ -291,6 +291,21 @@ export function appendsARecord(verb: string, args: string[]): boolean {
   return ALWAYS_WRITE_VERBS.has(verb);
 }
 
+/*
+ * NOTE: `subscribe` IS NOT HERE, AND THAT IS A DECISION. From theourgia
+ * 6593f78 the daemon has a change stream: `subscribe changes <rev>` keeps
+ * its connection and prints a line per publication, read with `read --rev`
+ * (README, `subscribe`). A request and its one answer is all a transport
+ * here carries, so the stream is not offered: `answerKind` throws for the
+ * verb, and the views refresh as they did. Offering it is a separate
+ * piece of work, a long-lived reader beside the transport, not a row here.
+ *
+ * NOTE: NOR IS `context`, for now. From the same core, `context --for <id>
+ * --budget <tokens>` answers what to read before working on a block, with
+ * the receipt a commit gives back (README, `context`). Nothing here shows
+ * it yet; the verb is added with the surface that asks it, and its answer
+ * kind is decided then.
+ */
 const KNOWN_VERBS = new Set([
   'write', 'commit', 'drafts', 'discard',
   'whereis',
@@ -406,8 +421,21 @@ export class Client {
  * message it could not tell from a store whose first line happens to
  * start with a parenthesis.
  */
+/*
+ * WHETHER THE ANSWER IS PRINTED AS `--wire` PRINTS IT. A `read` asked with
+ * `--rev` is printed whole in either mode (theourgia 6593f78, render.sc:146
+ * `carries-rev?`): its rev clause is for a program, and unwrapping the body
+ * would drop it. So it is read as the wire form, its envelope opened and its
+ * text taken from the form, never as items or text on lines. This extension
+ * sends no `--rev` today; a caller that does gets the answer it asked for.
+ */
+function printedAsWire(verb: string, args: string[]): boolean {
+  return args.includes('--wire') || (verb === 'read' && args.includes('--rev'));
+}
+
 export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: string[] = []): Answer {
   const ok = raw.rc === 0;
+  const wire = printedAsWire(verb, args);
   if (!ok) {
     /*
      * A REFUSAL CAN CARRY THE CLAUSE TOO, inside its own form: it is
@@ -436,7 +464,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
      * read for it is asked for with `--wire`, where the text is a string
      * inside the form and the clause sits beside it.
      */
-    if (args.includes('--wire')) {
+    if (wire) {
       return textFromWire(raw, verb, args);
     }
     return {
@@ -458,7 +486,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
    * on the human route of an items answer it is the last line.
    */
   const outer =
-    whole.length === 1 && (args.includes('--wire') || kind === 'datum')
+    whole.length === 1 && (wire || kind === 'datum')
       ? splitIncomplete(whole[0], verb, raw.stdout)
       : null;
   const trailing = outer === null && kind === 'items' ? splitTrailingIncomplete(whole, verb, raw.stdout) : null;
@@ -494,7 +522,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
    * the whole form was handed on as the answers. This client asked for
    * an envelope; an answer with two of them is one it cannot open.
    */
-  const wrapped = args.includes('--wire') && read.length === 1 ? answerOf(read[0], 'ok') : null;
+  const wrapped = wire && read.length === 1 ? answerOf(read[0], 'ok') : null;
   const items = wrapped === null ? null : wrapped.clause('items');
   if (items !== null && !items.read && items.because !== 'absent') {
     throw new TransportError(

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* The core is pinned at theourgia 6593f78, which adds `read --rev`, the
+  `subscribe` change stream, `context` and `query`, and prints an
+  `(excluded ...)` line on the human route when every hit was out of force.
+
 * Intel macOS: the package for macOS on x86_64 now passes its unit suite
   against the core it is pinned to (theourgia 5c28e42, which measured that
   machine), so it can be published with the other three targets. 1.0.0 was
@@ -18,13 +22,13 @@
 * A file opened under 1.0.0 on a datum block is now refused on save instead
   of appearing to save.
 * Search and the hover's mentions now ask the core with `--wire`. When every
-  hit was in a superseded or refuted block, the pinned core prints nothing on
-  the human route, and the search view said "nothing in the store matches",
-  as for words found nowhere; it now says the words are found only in blocks
-  that are not in force. A newer core prints an `(excluded ...)` line there,
-  which the human-route readers would have refused as "the store did not
-  answer the search" and as a failed hover; on the wire route the hover
-  mentions nothing.
+  hit was in a superseded or refuted block, the core before 6593f78 printed
+  nothing on the human route, and the search view said "nothing in the store
+  matches", as for words found nowhere; it now says the words are found only
+  in blocks that are not in force. The pinned core prints an `(excluded ...)`
+  line there, which the human-route readers would have refused as "the store
+  did not answer the search" and as a failed hover; on the wire route the
+  hover mentions nothing.
 * The setting `theourgia.writer` is removed. Each window has written its
   drafts under a name of its own since before 1.0.0, so the setting decided
   nothing; a `settings.json` that still sets it shows it as an unknown

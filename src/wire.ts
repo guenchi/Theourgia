@@ -35,9 +35,10 @@
  * synchronous, so no caller has to be async merely to read an answer.
  *
  * ONE LINE IS ONE DATUM, and that is a fact about the command line
- * rather than about the format: `render-human` (render.sc:81-83) prints an
- * `items` answer with one `write` per item and no wrapper around them, and
- * Chez's writer escapes
+ * rather than about the format: `render-human` (render.sc:156-158) prints an
+ * `items` answer with one `write` per item and no wrapper around them (a
+ * query's row, which this extension does not ask for, is printed as its
+ * values, render.sc:73), and Chez's writer escapes
  * a newline inside a string rather than emitting it. A transport that
  * had the whole answer -- the socket one, when it exists -- would not
  * split anything.

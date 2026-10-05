@@ -251,3 +251,38 @@ describe("a block's validity changes nothing this extension reads", () => {
     assert.strictEqual('found' in got && got.found.length, 2);
   });
 });
+
+/*
+ * A READ ASKED WITH `--rev` IS PRINTED AS `--wire` PRINTS IT. From theourgia
+ * 6593f78 an answer that carries `(rev <n> (daemon "<token>"))` is printed
+ * whole in either mode, so the human route of `read --recursive --rev` is
+ * one `(ok (items ...) ... (rev ...))` form, not one block per line, and
+ * `read --md --rev` is an `(ok (text "...") ... (rev ...))` form, not the
+ * text. This extension sends no `--rev`; these cells hold that a caller that
+ * does is read the way the core printed it.
+ */
+describe('a read asked with --rev is read as the wire form', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const REV = '(rev 3 (daemon "1-2"))';
+
+  it('opens a recursive read with --rev as its envelope, the blocks as the answers', async () => {
+    const stdout = `(ok (items ${BLOCK} ${CHILD}) ${VERSIONS} ${CUT} ${REV})\n`;
+    const answer = await answering(stdout).request('read', ['a.1', '--recursive', '--rev']);
+    assert.deepStrictEqual(answer.answers.map((b) => readBlock(b)?.id ?? null), ['a.1', 'a.2']);
+    assert.notStrictEqual(answer.envelope, null, 'the form carrying the rev was not kept as the envelope');
+  });
+
+  it('takes the text of a markdown read with --rev from its text clause', async () => {
+    /*
+     * As the core prints it: the text, then the receipt a markdown read
+     * appends (its cut and the read block's version), then the rev.
+     */
+    const stdout = `(ok (text "# Doc\\n") ${CUT} (versions (("a.1" . "h1"))) ${REV})\n`;
+    const answer = await answering(stdout).request('read', ['a.1', '--md', '--rev']);
+    assert.strictEqual(answer.text, '# Doc\n');
+    assert.strictEqual(answer.kind, 'text');
+  });
+});
