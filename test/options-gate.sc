@@ -1304,7 +1304,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 46 46))
+      (list 47 47))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1398,7 +1398,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit commitments eval insert names outline query read serve subscribe supply tasks template uses))
+      '(commit commitments context eval insert names outline query read serve subscribe supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1734,7 +1734,7 @@
                                 (else (loop (- i 1))))))
                       source-file-list))
       '("admission.sc" "answers.sc" "arguments.sc" "attest.sc" "baseline.sc" "client.sc"
-        "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "core.sc" "crc32.sc"
+        "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "context.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"

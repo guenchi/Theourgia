@@ -87,6 +87,47 @@
   (define (carries-rev? answer)
     (and (pair? answer) (list? answer)
          (exists (lambda (x) (and (pair? x) (eq? (car x) 'rev))) (cdr answer))))
+  ;; A CONTEXT ANSWER IS PRINTED BY SECTION, for a person: each section's
+  ;; name, then one line per entry, its id, level and title; the notes one
+  ;; per line; the insufficient, excluded and budget clauses as the wire
+  ;; writes them. The receipt, the cut and the versions are for a program,
+  ;; which asks for the wire form.
+  (define context-sections '(for constraints evidence to-verify counterexamples background notes))
+  (define context-tail '(insufficient excluded budget))
+  (define (context-answer? answer)
+    (and (pair? answer) (list? answer) (eq? (car answer) 'ok) (pair? (cdr answer))
+         (pair? (cadr answer)) (eq? (car (cadr answer)) 'for)))
+  (define (context-entry-line e)
+    (let ((part (lambda (name)
+                  (let ((c (and (list? e) (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr e)))))
+                    (and c (pair? (cdr c)) (cadr c))))))
+      (call-with-string-output-port
+        (lambda (p)
+          (put-string p "  ")
+          (display (car e) p)
+          (put-char p #\space)
+          (display (or (part 'level) "") p)
+          (put-char p #\space)
+          (display (or (part 'title) "") p)
+          (newline p)))))
+  (define (render-context answer kept)
+    (apply string-append
+           (append
+             (map (lambda (c)
+                    (cond
+                      ((not (and (pair? c) (pair? (cdr c)))) "")
+                      ((eq? (car c) 'for)
+                       (string-append "for\n" (context-entry-line (cadr c))))
+                      ((eq? (car c) 'notes)
+                       (apply string-append "notes\n"
+                              (map (lambda (n) (string-append "  " (render-wire n))) (cadr c))))
+                      ((memq (car c) context-sections)
+                       (apply string-append (symbol->string (car c)) "\n"
+                              (map context-entry-line (cadr c))))
+                      ((memq (car c) context-tail) (render-wire c))
+                      (else "")))
+                  (cdr answer))
+             (list kept))))
   (define (render-human answer)
     (let* ((clauses (if (and (pair? answer) (list? answer))
                         (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
@@ -103,6 +144,7 @@
                                    (if (list? answer) (cdr answer) '())))))))
       (cond
         ((carries-rev? answer) (render-wire answer))
+        ((context-answer? answer) (render-context answer tail))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'text))
          (let ((text (cadadr answer)))

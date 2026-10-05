@@ -962,6 +962,104 @@ Rules of the library:
 - `evidence-for/2` -- v verifies c currently, or implements it
 - `hard/4` -- what context must show for t: the block h, its role, and the block it is about
 
+### `context`
+
+    (context "--for" <id> "--budget" <tokens> ("--all-validity"))
+
+`context --for <id> --budget <tokens>` answers the material to read before
+working on a block, within a budget, with the receipt a commit gives back.
+`--for` takes any live block T; its UNIT is T and everything under it, its
+SCOPE the unit and what the unit depends on, transitively. It writes
+nothing, reads no log, runs no user code and keeps nothing between
+requests. An unknown or deleted id is answered as `read` answers it.
+
+What MUST be shown is the answer of five queries of the query language,
+run in one session with T's id written into each:
+
+    (and (hard T ?h ?role ?about) (validity ?h ?v))
+    (and (hard T ?h _ _) (validity-reason ?h ?why ?by))
+    (and (unsettled-for T ?d) (decision-state ?d ?s))
+    (and (unsettled-for T ?d) (decision-state ?d review) (moved ?i implements ?d ?end))
+    (and (scope-of T ?a) (contradicts ?a ?b))
+
+The hard sections and the notes are built from their rows and from the
+records of the blocks the first one names, and from nothing else. Each
+hard block is in exactly one place, read from the top:
+
+| the block is | it is entered in |
+|---|---|
+| T itself | `for`, whatever its class or validity |
+| not in force (superseded or refuted) | `to-verify` |
+| in force, authoritative | `constraints` |
+| in force, not authoritative | `evidence` |
+
+Every entry carries each why it has -- `(why unit)`, `(why member)`, `(why
+unsettled <state>)`, `(why supersedes <m>)`, `(why cause <m>)`, `(why
+implementer <d> <end>)` -- and, when it is not valid, `(validity <v> (<why>
+<by>) ...)`. `notes` hold `(nogood <a> <b> conflicts-with)` once for each
+pair that contradicts in the scope.
+
+What else fits follows, never in a hard section and never in the receipt,
+each candidate once, an earlier step winning: in `background`, the
+definitions of the names a hard code block in force uses, one step, each
+of several candidates for one name marked `(ambiguous)`; in `background`,
+the blocks that verify or implement a constraint; in `counterexamples`, the
+blocks a constraint superseded or refuted that are not in force; in
+`background`, the blocks that rest on a hard block, the blocks relevant to
+T's title and text by score, and the ancestors of hard blocks, nearest
+first. Without `--all-validity` only candidates in force are taken;
+with it the others are taken too, marked with their validity.
+
+An entry is shown at a level: `identity`, `(<id> (kind <k>) (title "<t>")
+(version <h>) (level identity) <why> ... [(validity ...)] [(names <n>
+...)])`; `summary`, which adds `(summary "<text>")`, the first 240 bytes of
+the block's text cut back to the end of a line; `full`, which adds `(block
+<record>)`, the record a plain `read` answers.
+
+THE BUDGET is tokens of four bytes over the answer as the wire renders it,
+every clause but `(cut ...)` counted; nine tenths of it are usable, and an
+`ok` answer without its cut is never larger. The envelope is reserved at
+its largest first, from the request and the hard set alone: the whole
+receipt, the notes, the budget clause at the budget's own digits,
+`insufficient` at twenty of the longest hard entries, and the six excluded
+counters at six digits, and the `(incomplete ...)` clause the
+dispatcher appends when a writer could not be read, which a caller
+receives too. A budget that cannot hold that and T is refused with
+`(error budget-too-small (minimum <tokens>))`, the smallest budget that
+can. A hard block that cannot be hashed has no premise to give, and the
+answer is refused with `(error unhashable-hard-block (id <id> ...))`. Then, greedily and in
+one pass: the hard blocks at identity in HARD ORDER -- T; the rest of the
+unit in document order; the other members by distance from the unit over
+depends edges, ties by id; then the others by role (unsettled, supersedes,
+cause, implementer), by id -- one that does not fit named in
+`(insufficient (missing ((<id> <bytes>) ...)) [(more <n> (bytes <b>))])`,
+at most twenty named, every later one still tried; then one pass of
+upgrades in hard order, to full when it fits, else to summary; then the
+preferred material in what room is left, one that does not fit at identity
+counted in `(excluded (definitions <n>) (evidence <n>) (counterexamples
+<n>) (dependents <n>) (relevant <n>) (ancestors <n>))`. Which hard blocks
+are shown, and at which level, depends on nothing but the rows of the five
+queries, the hard blocks' records and the request.
+
+    (ok (for <entry>)
+        (constraints (<entry> ...)) (evidence (<entry> ...))
+        (to-verify (<entry> ...)) (counterexamples (<entry> ...))
+        (background (<entry> ...)) (notes (<nogood> ...))
+        [(insufficient ...)] (excluded ...)
+        (budget (tokens <t>) (used <u>) (reserve <r>))
+        (receipt <premise> ...) (cut <cut>) (versions (...))
+        [(name-use syntactic)])
+
+`used` is the answer's own size in tokens and `reserve` the tenth held
+back, so used plus reserve is at most tokens. THE RECEIPT, `(receipt
+(premise <id> <h>) ... (premise (query <goal>) <digest>) ...)`, holds a
+block premise for EVERY hard block, shown or named as missing, and the
+five goals with their digests; `commit --premises` takes it verbatim, and
+refuses it once anything that decides the hard material has changed. The
+preferred entries are not in it; their versions are in `(versions ...)`,
+as on every read. `(name-use syntactic)` says the definitions step
+consulted name use.
+
 ## Following a store
 
 ### `subscribe`
@@ -1327,7 +1425,9 @@ Every committed write -- `insert`, `set`, `move`, `del`, `link`, `unlink`,
 apply` -- takes `--premises <datum>`, a list of `(premise <id> <version>)`
 and `(premise (query <goal>) <digest>)`, and the clauses a read answers,
 given back as they came: `(versions ((<id> . <version>) ...))`, `(cut ...)`
-and `(receipt ...)`. A form the store cannot check is refused
+and `(receipt ...)`. A `(receipt ...)` clause given alone, exactly as a
+read printed it, is taken as the list of its forms. A form the store
+cannot check is refused
 `(error bad-request premise-not-understood (form "<spelling>"))`, and two
 versions for one block `premise-inconsistent`, before anything else of the
 request is looked at.

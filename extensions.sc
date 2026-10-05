@@ -26,7 +26,7 @@
 ;;; flag-options (library . name)).
 (library (theourgia extensions)
   (export extension-verbs commitments-usage tasks-usage template-usage names-usage uses-usage
-          query-usage)
+          query-usage context-usage)
   (import (rnrs base))
 
   (define commitments-usage
@@ -46,6 +46,9 @@
 
   ;; One goal, as a datum in one argument; or the relations, with --relations.
   (define query-usage '(query [<goal>] ["--relations"]))
+
+  ;; The block to read for and the size of the answer, in tokens.
+  (define context-usage '(context "--for" <id> "--budget" <tokens> ["--all-validity"]))
 
   (define extension-verbs
     (list
@@ -82,4 +85,9 @@
             "Answer one goal of the query language over the committed state: every binding of its variables, one row each, sorted by their bytes, with a digest of the rows. A goal is a fact relation, a rule of the library, a test, or (and <goal> ...). --relations lists the fact relations and the rules."
             #f 'daemon
             '() '("--relations")
-            '((theourgia query) . query-verb)))))
+            '((theourgia query) . query-verb))
+      (list 'context context-usage
+            "The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back."
+            #f 'daemon
+            '("--for" "--budget") '("--all-validity")
+            '((theourgia context) . context-verb)))))

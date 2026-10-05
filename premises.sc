@@ -75,7 +75,9 @@
            (for-each form! (cdr f)))
           (else (not-understood f))))
       (unless (list? datum) (not-understood datum))
-      (for-each form! datum)
+      ;; A RECEIPT GIVEN BACK AS IT WAS PRINTED, `(receipt <form> ...)`, is the
+      ;; list of its forms; any other datum is a list of forms itself.
+      (for-each form! (if (and (pair? datum) (eq? (car datum) 'receipt)) (cdr datum) datum))
       ;; ONE VERSION PER BLOCK: the same pair twice is one premise, two
       ;; versions for one block are refused before anything is read.
       (let loop ((ps (reverse premises)) (seen '()) (out '()))

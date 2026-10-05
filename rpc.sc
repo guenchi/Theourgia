@@ -795,6 +795,7 @@
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((count-argument) count-argument)
       ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
+      ((read) (cdr (assq 'read (verb-table))))
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 
   ;; ONE INTENT, ONE WRITE SESSION. OPTIONS are the handler's, for the

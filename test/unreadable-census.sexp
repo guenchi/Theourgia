@@ -304,6 +304,16 @@
    unrelated a
    "a goal argument that does not read as a datum answers not-a-goal; the text is the request's argument, never a file"
    (e (#t (quote unreadable))))
+  ("context.sc" (version-of) 1 guard
+   (#t)
+   unrelated a
+   "a block that cannot be hashed has no version; a hard one refuses the answer by name; the state is already in memory, never a file"
+   (e (#t #f)))
+  ("context.sc" (context-verb) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a refusal of one of the five queries, raised as a record from where it is found, becomes the answer; nothing else is caught"
+   (e ((refusal? e) (refusal-answer e))))
   ("name-use.sc" (live-kind) 1 guard
    (#t)
    unrelated a

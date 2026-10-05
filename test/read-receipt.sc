@@ -156,6 +156,7 @@
     (diff "two cuts, not one state") (conflicts "conflicts, not a read of blocks")
     (check "the store's health") (describe "the catalogue")
     (query "answers its own cut and a digest of its rows")
+    (context "answers its own receipt: the premises of what it must show, its cut and its versions")
     (subscribe "a stream: its frames name their own cuts, and read --rev names the publication")))
 (define (census table-verbs)
   (let ((catalogue (map car (verb-catalogue))))
@@ -446,6 +447,7 @@
         (list 'describe (lambda () (run 'describe)))
         (list 'template (lambda () (run 'template "apply" "memory")))
         (list 'query (lambda () (run 'query "(kind ?x section)")))
+        (list 'context (lambda () (run 'context "--for" T "--budget" "100000")))
         (list 'del (lambda () (run 'del probe)))))
 (define none-not-run
   '((adopt "binds a store written on another machine; this store has one writer, its own")
@@ -459,7 +461,10 @@
       (in-order (symbols-sorted (map car none)) (length none)))
 ;; A VERB WHOSE OWN ANSWER ALREADY SAID ITS CUT, before receipts existed:
 ;; snapshot names the cut it froze. That clause is the verb's, not a receipt.
-(define own-cut '(snapshot query))
+(define own-cut '(snapshot query context))
+;; AND ONE WHOSE OWN ANSWER SAYS ITS VERSIONS: context's receipt is its own,
+;; the versions of what it shows beside it.
+(define own-versions '(context))
 (for-each
   (lambda (c)
     (want (format "C48a-4 ~a, classified none, answers a success (rpc-ok?) with no (versions ...) clause, and no (cut ...) unless the verb's own" (car c))
@@ -468,7 +473,7 @@
             ;; or an import with one failing intent, is not one.
             (in-order (if (rpc-ok? a) #f (list 'NOT-A-SUCCESS a))
                       (and (clause a 'cut) #t) (and (clause a 'versions) #t)))
-          (list #f (and (memq (car c) own-cut) #t) #f)))
+          (list #f (and (memq (car c) own-cut) #t) (and (memq (car c) own-versions) #t))))
   none-calls)
 
 ;; ---- the dispatcher's (incomplete ...) follows the receipt -------------------------------

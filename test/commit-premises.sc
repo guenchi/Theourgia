@@ -839,6 +839,29 @@
 ;; has no input that reaches it today; a row is written when a verb writes a
 ;; resolution record.
 
+;; A RECEIPT GIVEN BACK AS IT WAS PRINTED: a datum whose head is `receipt` is
+;; the list of its forms -- accepted when they hold, refused premise-changed
+;; when they do not -- and a datum headed by any other symbol, even the head
+;; of a form the set takes inside its list, is still not understood. Exactly
+;; one head is accepted.
+(want "a datum headed receipt is its forms: accepted when they hold, premise-changed when stale; any other head is not understood"
+      (let ((now (format "(receipt (premise ~s ~s))" A (ver A)))
+            (old (format "(receipt (premise ~s ~s))" A A-old)))
+        (map (lambda (text)
+               (let ((a (run 'commit "--writer" W "--premises" text)))
+                 (cond ((not (pair? a)) a)
+                       ((not (eq? (car a) 'error)) (list (car a)))
+                       (else (list (car a) (cadr a) (and (pair? (cddr a)) (if (pair? (caddr a)) (car (caddr a)) (caddr a))))))))
+             (list now old
+                   (format "(frobnicate (premise ~s ~s))" A (ver A))
+                   (format "(versions ((~s . ~s)))" A (ver A))
+                   (format "(premise ~s ~s)" A (ver A)))))
+      (list '(ok)
+            '(error premise-changed block)
+            '(error bad-request premise-not-understood)
+            '(error bad-request premise-not-understood)
+            '(error bad-request premise-not-understood)))
+
 ;; ON DEMAND: the premises library is loaded by a request that carries a
 ;; set, and by nothing else -- not by a refused verb, not by a write
 ;; without the option (store.sc and rpc.sc test the gate and the option

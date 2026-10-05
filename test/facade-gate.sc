@@ -976,6 +976,7 @@
                            (census-ask st 'tasks))))
     (cons 'template (seeded (lambda (st x s) (census-ask st 'template "apply" "project"))))
     (cons 'query (seeded (lambda (st x s) (census-ask st 'query "(kind ?x section)"))))
+    (cons 'context (seeded (lambda (st x s) (census-ask st 'context "--for" (census-get s 'B) "--budget" "100000"))))
     ;; init is given a directory nothing has initialised
     (cons 'init (lambda (st x) (census-ask st 'init)))
     (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))
@@ -1230,7 +1231,7 @@
       '(read))
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
-      '(batch check del describe discard export-code export-md import-md init insert
+      '(batch check context del describe discard export-code export-md import-md init insert
         link move outline publish reach restore set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
@@ -1247,7 +1248,7 @@
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)
-      '((batch . batch) (check . check) (del . ok) (describe . ok) (discard . ok)
+      '((batch . batch) (check . check) (context . ok) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
         (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (restore . ok) (set . ok)
         (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))
