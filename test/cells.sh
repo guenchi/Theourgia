@@ -69,7 +69,7 @@ say "cells start $(date '+%H:%M:%S') on $(uname -sm); node $("$NODE" --version);
 
 if [ -z "$TGZ" ]; then
   (cd "$here" && npm pack --pack-destination "$W" > "$R/pack.out" 2> "$R/pack.err")
-  TGZ=$W/theourgia-1.0.0.tgz
+  TGZ=$W/theourgia-1.1.0.tgz
 fi
 [ -f "$TGZ" ] || { say "FAIL no tarball"; exit 1; }
 PKGBIN_DIR=$(bindir chez); ln -sf "$REAL" "$PKGBIN_DIR/$(basename "$REAL")"
@@ -98,7 +98,7 @@ if has N1; then
     const files = require("fs").readFileSync(process.argv[2], "utf8").split("\n");
     const want = (c, m) => { if (!c) { console.log("package.json: " + m); process.exitCode = 1; } };
     want(p.name === "theourgia", "name");
-    want(p.version === "1.0.0", "version");
+    want(p.version === "1.1.0", "version");
     want(JSON.stringify(p.os) === JSON.stringify(["darwin", "linux"]), "os");
     want(JSON.stringify(p.cpu) === JSON.stringify(["arm64", "x64"]), "cpu");
     want(p.engines && p.engines.node === ">=18", "engines");
@@ -109,7 +109,7 @@ if has N1; then
     want(p.scripts && p.scripts.postinstall === "node scripts/postinstall.js", "scripts.postinstall");
     want(p.scripts && p.scripts.prepublishOnly === "node scripts/prepublish.js", "scripts.prepublishOnly");
     want(p.scripts && p.scripts.prepack === "node scripts/source-pin.js", "scripts.prepack");
-    want(JSON.stringify(p.dependencies) === JSON.stringify({ igropyr: "1.8.1" }), "dependencies: igropyr 1.8.1, exactly");
+    want(JSON.stringify(p.dependencies) === JSON.stringify({ igropyr: "1.8.2" }), "dependencies: igropyr 1.8.2, exactly");
     for (const k of ["devDependencies", "optionalDependencies", "peerDependencies",
       "bundleDependencies", "bundledDependencies"]) want(!(k in p), "no " + k);
     want(files.includes("README.md") && files.includes("LICENSE"), "README.md and LICENSE at the root");
@@ -157,7 +157,7 @@ if has P1; then
   verdict $v "P1 pack from a fresh clone: rc $prc, $(wc -l < "$R/P1-files.txt" | tr -d ' ') files, list diff $(wc -l < "$R/P1-diff.txt" | tr -d ' ') lines; theourgia/ files $sub; test/, vendor/ or .so $forbidden"
 fi
 
-# ---- P2 an install into an empty prefix pulls igropyr 1.8.1 from npm, found from
+# ---- P2 an install into an empty prefix pulls igropyr 1.8.2 from npm, found from
 # the package as require finds it, and a store answers; the second run
 # compiles nothing (N4 reads the cache's mtimes in full).
 if has P2; then
@@ -169,7 +169,7 @@ if has P2; then
    "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/P2-second.out" 2> "$R/P2-second.err"; echo $? > "$R/P2-second.rc")
   b2=$(grep -c 'compiling once' "$R/P2-second.err")
   a1=$(grep -c '(ok (store' "$R/P2-first.out"); a2=$(grep -c '^(ok' "$R/P2-second.out")
-  [ $irc = 0 ] && [ "${ver%% *}" = 1.8.1 ] && [ "$(cat "$R/P2-first.rc")" = 0 ] && [ "$(cat "$R/P2-second.rc")" = 0 ] && [ "$b2" = 0 ] &&
+  [ $irc = 0 ] && [ "${ver%% *}" = 1.8.2 ] && [ "$(cat "$R/P2-first.rc")" = 0 ] && [ "$(cat "$R/P2-second.rc")" = 0 ] && [ "$b2" = 0 ] &&
     [ "$a1" = 1 ] && [ "$a2" = 1 ]; v=$?
   verdict $v "P2 install: rc $irc; igropyr $ver; init rc $(cat "$R/P2-first.rc") answered $a1, outline rc $(cat "$R/P2-second.rc") answered $a2, builds on the second run $b2"
   stop_daemons
@@ -498,7 +498,7 @@ if has P5; then
            grep -c '/build\.ss\]$' "$T/chez.log" > "$R/P5-$1.builds"; }
   dirs() { ls "$XDG_CACHE_HOME/theourgia" | grep -v '^\.' | wc -l | tr -d ' '; }
   run5 a; d1=$(dirs)
-  node -e 'const f = process.argv[1]; const p = require(f); p.version = "1.8.1-p5"; require("fs").writeFileSync(f, JSON.stringify(p))' "$M"
+  node -e 'const f = process.argv[1]; const p = require(f); p.version = "1.8.2-p5"; require("fs").writeFileSync(f, JSON.stringify(p))' "$M"
   run5 b; d2=$(dirs)
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({ theourgia: "0".repeat(40) }))' "$P/lib/node_modules/theourgia/source.json"
   run5 c; d3=$(dirs)

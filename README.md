@@ -13,8 +13,8 @@ under the same license.
   input and output.
 - `theourgiad`: the daemon program, started by the other two.
 
-The package carries the sources of Theourgia 1.0.0, and installs igropyr
-1.8.1 from npm as its one dependency. It does not carry Chez Scheme or
+The package carries the sources of Theourgia 1.1.0, and installs igropyr
+1.8.2 from npm as its one dependency. It does not carry Chez Scheme or
 libuv.
 
 ## Requirements
