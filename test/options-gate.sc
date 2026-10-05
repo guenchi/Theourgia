@@ -1339,7 +1339,7 @@
 ;; that it existed somewhere.
 (want "GATE-C the verbs whose form is written in more than one place"
       (length compared)
-      32)
+      31)
 
 (want "GATE-C no verb's two spellings of its usage form disagree"
       disagreeing
@@ -1364,6 +1364,7 @@
 ;;   insert   rpc.sc:505  `insert-usage`
 ;;   eval     rpc.sc      `eval-usage`
 ;;   supply   rpc.sc:586  `supply-usage`
+;;   import-code rpc.sc  `import-code-usage`
 ;;   subscribe rpc.sc     `subscribe-usage`
 ;;     Each is reached from the catalogue entry and from the `(usage <name>)`
 ;;     sites BY NAME, so several arrivals are one place to edit.
@@ -1398,7 +1399,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit commitments context eval insert names outline query read serve subscribe supply tasks template uses))
+      '(commit commitments context eval import-code insert names outline query read serve subscribe supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found

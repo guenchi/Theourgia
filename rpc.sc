@@ -699,6 +699,11 @@
   (define supply-usage
     '(supply <kind> <file> ["--for" <writer>] ["--clear"]))
 
+  ;; IMPORT-CODE'S FORM, written once: the catalogue and the handler's
+  ;; usage answer use it.
+  (define import-code-usage
+    '(import-code <dir> ["--allow-delete"] ["--datum"] ["--symbols" <symbols-file>] ["--premises" <datum>]))
+
   ;; --under IS OPTIONAL, and its absence is root (parse-insert); the usage
   ;; says so by bracketing it like every other optional part.
   ;; LINK'S AND UNLINK'S FORMS, written once: the catalogue and `parse-edge`,
@@ -1075,8 +1080,8 @@
             "Carry out several changes as one request." #f 'daemon)
       (list 'split-suggest '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])
             "Propose where a long file could be divided into blocks. With --symbols, the cuts come from an editor's list of the file's top-level symbols instead of the language's definition patterns; the answer's cuts-from says which." #f 'daemon)
-      (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"] ["--premises" <datum>])
-            "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL."
+      (list 'import-code import-code-usage
+            "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. With --symbols, a file an editor's symbols file names is split on its first import at those symbols' ranges, every start and every end a cut, as a marked import of the same cuts would split it; a file that already carries markers follows them, and the answer lists it as symbols-ignored. A file whose cuts the scanner does not see at the top level is not imported, and the answer lists it with its refusal as symbols-refused."
             #f 'daemon)
       (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])
             "Write the store's source back out to a directory." #f 'daemon)
@@ -1433,15 +1438,22 @@
                                                      (argument-option options "--output")
                                                      (argument-option options "--symbols"))))
                   (usage '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])))))
+      ;; --symbols SPLITS A TEXT IMPORT, so with --datum, which reads forms and
+      ;; has no text to cut, it is refused before anything is read.
       (cons 'import-code
             (lambda (store actor args req options state writer cwd)
-              (if (= 1 (length args))
-                  (guarded (lambda ()
-                    (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
-                      (if (argument-option options "--datum") (import-datum store (car args) actor req (list check finish run))
-                          (import-code store (car args) actor req
-                                       (argument-option options "--allow-delete") (list check finish run))))))
-                  (usage '(import-code <dir> ["--allow-delete"] ["--datum"] ["--premises" <datum>])))))
+              (cond
+                ((not (= 1 (length args))) (usage import-code-usage))
+                ((and (argument-option options "--datum") (argument-option options "--symbols"))
+                 '(error bad-request incompatible-import-options))
+                (else
+                 (guarded (lambda ()
+                   (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
+                     (if (argument-option options "--datum") (import-datum store (car args) actor req (list check finish run))
+                         (import-code store (car args) actor req
+                                      (argument-option options "--allow-delete") (list check finish run)
+                                      (let ((path (argument-option options "--symbols")))
+                                        (and path (cons (read-import-symbols path) import-symbol-cuts))))))))))))
       (cons 'export-code
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))

@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia code-suggest)
-  (export suggest-boundaries split-suggest)
+  (export suggest-boundaries split-suggest read-import-symbols import-symbol-cuts)
   (import (rnrs) (theourgia languages) (theourgia text-code) (theourgia regex)
           (only (theourgia markers) mark-length after-mark)
           (theourgia code-project) (theourgia code-markers) (theourgia trace)
@@ -211,13 +211,16 @@
                 (integer? end) (exact? end) (>= end 0)
                 (< start end)
                 (list start end (list-ref d 3))))))
+  ;; The symbols file's lines as data, `unread` for a line that does not read.
+  (define (symbols-data path)
+    (let ((raw (read-code-bytes path)))
+      (map (lambda (row)
+             (let ((text (safe-utf8 (byte-slice raw (car row) (cadr row)))))
+               (if text (guard (e (#t unread)) (string->sexpr-extended text)) unread)))
+           (byte-lines raw))))
   ;; -> (source starts kinds), or raises one of the refusals above.
   (define (read-symbols symbols-path bytes)
-    (let* ((raw (read-code-bytes symbols-path))
-           (data (map (lambda (row)
-                        (let ((text (safe-utf8 (byte-slice raw (car row) (cadr row)))))
-                          (if text (guard (e (#t unread)) (string->sexpr-extended text)) unread)))
-                      (byte-lines raw)))
+    (let* ((data (symbols-data symbols-path))
            (header (and (pair? data) (symbols-header (car data))))
            (symbols
              (if (not header)
@@ -226,12 +229,17 @@
                    (cond
                      ((null? ds) (reverse out))
                      ((symbol-line (car ds)) => (lambda (sym) (loop (cdr ds) (+ n 1) (cons sym out))))
-                     (else (symbols-refusal 'symbols-malformed (list 'line n)))))))
-           (found (bytevector->hex (sha256 bytes)))
-           (size (bytevector-length bytes)))
+                     (else (symbols-refusal 'symbols-malformed (list 'line n))))))))
+      (checked-symbols (car header) symbols bytes)
+      (list (cadr header) (map car symbols) (map caddr symbols))))
+  ;; THE CHECKS ON ONE FILE'S SYMBOLS, in the order above from the digest
+  ;; on: -> the symbols, or raises the first refusal.
+  (define (checked-symbols digest symbols bytes)
+    (let ((found (bytevector->hex (sha256 bytes)))
+          (size (bytevector-length bytes)))
       (define (continuation? i) (and (< i size) (= #x80 (bitwise-and (bytevector-u8-ref bytes i) #xC0))))
-      (unless (string=? (car header) found)
-        (symbols-refusal 'symbols-stale (list 'digest-expected (car header)) (list 'digest-found found)))
+      (unless (string=? digest found)
+        (symbols-refusal 'symbols-stale (list 'digest-expected digest) (list 'digest-found found)))
       (when (null? symbols) (symbols-refusal 'symbols-empty))
       (for-each (lambda (sym)
                   (cond ((>= (car sym) size) (symbols-refusal 'symbols-past-end (list 'at (car sym))))
@@ -254,7 +262,97 @@
                   (unless (or (= 0 (car sym)) (= 10 (bytevector-u8-ref bytes (- (car sym) 1))))
                     (symbols-refusal 'symbols-not-a-line-start (list 'at (car sym)))))
                 symbols)
-      (list (cadr header) (map car symbols) (map caddr symbols))))
+      symbols))
+
+  ;; ---- the symbols file of an import -----------------------------------------
+  ;;
+  ;; `import-code <dir> --symbols <file>` reads one file for the whole
+  ;; directory: one SECTION per source file, a header that names the file
+  ;; by its path under the directory, as the walk spells it,
+  ;;   (symbols (path "<path>") (digest "<sha256 of the file's bytes>")
+  ;;            (source (vscode "<version>" "<languageId>")) (top-level #t))
+  ;; then that file's symbol lines, as split-suggest's symbols file has
+  ;; them. Sections follow one another in any order.
+  ;;
+  ;; NEVER: A FILE THAT CANNOT BE READ AS SECTIONS REFUSES THE REQUEST, before
+  ;; the directory is read: a line that does not read or is neither a header
+  ;; nor a symbol line, a symbol line before any header, a path that is not
+  ;; a plain relative path, and a second section for a path already given,
+  ;; each symbols-malformed with its line; and a file with no section at
+  ;; all, symbols-empty. What one section says about its own file is judged
+  ;; with that file (import-symbol-cuts).
+  ;; -> ((<path> <digest> <line> <symbols>) ...), in the file's order.
+  (define (read-import-symbols path)
+    (let loop ((ds (symbols-data path)) (n 1) (current #f) (out '()))
+      (define (close) (if current (cons (list (car current) (cadr current) (caddr current) (reverse (cadddr current))) out) out))
+      (cond
+        ((null? ds)
+         (when (and (not current) (null? out)) (symbols-refusal 'symbols-empty))
+         (reverse (close)))
+        ((import-symbols-header (car ds))
+         => (lambda (h)
+              (when (or (and current (string=? (car current) (car h)))
+                        (assoc (car h) out))
+                (symbols-refusal 'symbols-malformed (list 'line n)))
+              (loop (cdr ds) (+ n 1) (list (car h) (cadr h) n '()) (close))))
+        ((and current (symbol-line (car ds)))
+         => (lambda (sym) (loop (cdr ds) (+ n 1) (list (car current) (cadr current) (caddr current) (cons sym (cadddr current))) out)))
+        (else (symbols-refusal 'symbols-malformed (list 'line n))))))
+  ;; -> (<path> <digest>) for a section's header, else #f.
+  (define (import-symbols-header d)
+    (and (list? d) (= 5 (length d)) (eq? (car d) 'symbols)
+         (let ((p (cadr d)))
+           (and (list? p) (= 2 (length p)) (eq? (car p) 'path) (code-safe-path? (cadr p))
+                (let ((h (symbols-header (cons 'symbols (cddr d)))))
+                  (and h (list (cadr p) (car h))))))))
+
+  ;; THE CUTS A FIRST IMPORT MAKES FROM ONE FILE'S SECTION. Every start is a
+  ;; cut, and every end is taken to the start of the line after it (an end
+  ;; already there stays), so what follows a symbol on its last line stays
+  ;; with it. Between two symbols, and before the first and after the last,
+  ;; what is left is a block of its own: the blocks are the file's bytes cut
+  ;; at those places, and they run together to the file. A cut AT the
+  ;; protected prefix's end is dropped, the prefix staying with the first
+  ;; block, as split-suggest drops one.
+  ;;
+  ;; NEVER: A CUT THE SCANNER DOES NOT SEE AT THE TOP LEVEL IS REFUSED, not
+  ;; moved and not dropped. After the section's own checks (checked-symbols),
+  ;; the first failure in this order is raised for the file:
+  ;;   symbols-unchecked (reason no-language-entry | no-suggest-profile):
+  ;;     no scanner can say what is top level in this file;
+  ;;   symbols-in-prefix (at <byte>): a cut inside the shebang, coding line
+  ;;     or byte-order mark;
+  ;;   symbols-unscanned (reason <r>) (at <byte>): the scanner cannot follow
+  ;;     the file -- unbalanced, an unclosed quote, a token it cannot judge;
+  ;;   symbols-not-top-level (at <byte>): the first cut inside a body, a
+  ;;     string, a block comment or an open bracket.
+  ;; -> the cuts, 0 and the file's size included.
+  (define (import-symbol-cuts section bytes entry)
+    (let* ((symbols (checked-symbols (cadr section) (cadddr section) bytes))
+           (size (bytevector-length bytes))
+           (line-after (lambda (e)
+                         (if (or (= e size) (= 10 (bytevector-u8-ref bytes (- e 1)))) e
+                             (let loop ((i e))
+                               (cond ((= i size) size)
+                                     ((= 10 (bytevector-u8-ref bytes i)) (+ i 1))
+                                     (else (loop (+ i 1))))))))
+           (inner (let loop ((ns (list-sort < (append (map car symbols) (map (lambda (s) (line-after (cadr s))) symbols))))
+                             (out '()))
+                    (cond ((null? ns) (reverse out))
+                          ((or (= (car ns) 0) (= (car ns) size) (and (pair? out) (= (car ns) (car out)))) (loop (cdr ns) out))
+                          (else (loop (cdr ns) (cons (car ns) out))))))
+           (prefix (source-prefix-size bytes)))
+      (cond ((not entry) (symbols-refusal 'symbols-unchecked '(reason no-language-entry)))
+            ((not (usable-profile? entry)) (symbols-refusal 'symbols-unchecked '(reason no-suggest-profile))))
+      (cond ((find (lambda (n) (< n prefix)) inner) => (lambda (n) (symbols-refusal 'symbols-in-prefix (list 'at n)))))
+      (let* ((cuts (filter (lambda (n) (> n prefix)) inner))
+             (scan (suggest-boundaries entry bytes cuts))
+             (said (cadr scan)))
+        (cond
+          ((and (pair? said) (eq? (caar said) 'code))
+           (symbols-refusal 'symbols-unscanned (list 'reason (cadr (car said))) (list 'at (cadddr (car said)))))
+          ((pair? said) (symbols-refusal 'symbols-not-top-level (cadr (car said)))))
+        (append (list 0) cuts (list size)))))
 
   ;; WITHOUT A PROFILE THE SCANNER CAN FOLLOW -- no language entry, or an
   ;; entry with no suggest profile -- the editor's starts are the only

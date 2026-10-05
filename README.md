@@ -1567,7 +1567,7 @@ lost blocks only. The clause is absent when there is nothing to name.
 
 ### `import-code`
 
-    (import-code <dir> ("--allow-delete") ("--datum") ("--premises" <datum>))
+    (import-code <dir> ("--allow-delete") ("--datum") ("--symbols" <symbols-file>) ("--premises" <datum>))
 
 Reads a directory of source into the store. `--datum` reads it as data --
 one block per top-level form -- rather than as text. With `--datum`, the
@@ -1589,6 +1589,61 @@ start of a file is text: the file is imported, its bytes stored as they
 are, mark included. With `--datum` a file that begins
 with a mark is refused `invalid-utf8`, as it always was.
 In text mode, a file that carries the projection header `export-code` writes is matched back to its file block and children. A child the file no longer holds is refused `(error projection-invalid (reason would-delete) (ids (<id> ...)))` until `--allow-delete` is given, which deletes it. A file with no header, whether hand-written or exported `--raw`, is always imported as a new file block, even when another block already holds its path. `--allow-delete` has no effect with `--datum`.
+
+**`--symbols`: a first import split at an editor's symbols.** Without
+markers a text file is imported as one block; `split-suggest` writes a
+review copy with marker lines, and importing that copy splits it.
+`--symbols <symbols-file>` takes the manual step out of a FIRST import: a
+file the symbols file names, and that carries no marker line, is split at
+its symbols into code blocks under its file block, exactly the blocks a
+marked import of the same cuts makes. A file the symbols file does not name
+imports as before. A file that carries marker lines -- one `export-code`
+wrote, whose file block exists, or a review copy -- follows its markers and
+nothing else: identity is proved by markers alone, and names and order
+still only suggest. Such a file is listed in the answer's
+`(symbols-ignored (<path> ...))`. A code block's name is derived from its
+source, as for any text block; the symbol's name is not stored.
+
+The symbols file is `split-suggest`'s, one section per file: each section
+is a header that names its file by its path under `<dir>`, as the walk
+spells it, then that file's symbol lines.
+
+    (symbols (path "<path>") (digest "<sha256 of the file>") (source (vscode "<version>" "<languageId>")) (top-level #t))
+    (symbol <start> <end> <kind> "<name>")
+
+Every start is a cut, and every end is taken to the start of the line
+after it, so what follows a symbol on its last line stays with it. What
+lies before the first symbol, between two, or after the last is a block of
+its own: the blocks' bytes run together to the file. A cut at the end of
+the protected prefix (a shebang, a coding line, a byte-order mark) is
+dropped, the prefix staying with the first block.
+
+A file's section is checked with the file, as `split-suggest` checks its
+symbols file (`symbols-stale`, `symbols-empty`, `symbols-past-end`,
+`symbols-not-a-boundary`, `symbols-unordered`, `symbols-overlap`,
+`symbols-not-a-line-start`), and then every cut is put to the language's
+scanner. The first failure, in this order, refuses that file:
+`(error symbols-unchecked (reason no-language-entry | no-suggest-profile))`
+when no scanner can say what is top level in it; `(error symbols-in-prefix
+(at <n>))` for a cut inside the protected prefix; `(error
+symbols-unscanned (reason <r>) (at <n>))` when the scanner cannot follow
+the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`); and
+`(error symbols-not-top-level (at <n>))` for the first cut inside a body,
+a string, a block comment or an open bracket. A refused file is not
+imported at all -- no block is written for it -- and the import of the
+other files goes on; the answer lists it with its refusal in
+`(symbols-refused ((<path> <refusal>) ...))`, with, after the walk's
+files, a section that names no text file the walk found, as `(<path>
+(error symbols-no-file))`. Both clauses are there only when they list
+something, and only on an answer that succeeded, as `skipped` is.
+
+The symbols file itself is read before the directory, and a file that
+cannot be read as sections refuses the request: `(error symbols-malformed
+(line <n>))` for a line that does not read or is neither a header nor a
+symbol line, a symbol line before any header, a path that is not a plain
+relative path, or a second section for a path; `(error symbols-empty)` for
+a file with no section. `--symbols` with `--datum` is refused `(error
+bad-request incompatible-import-options)`.
 
 With `--datum`, a file WITHOUT a projection header, whose path an alive
 datum library in the store already holds, updates that library rather

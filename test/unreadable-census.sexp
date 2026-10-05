@@ -79,7 +79,7 @@
    unrelated a
    "socket forwarding"
    (e (#t (quote unreadable))))
-  ("code-suggest.sc" (read-symbols) 1 guard
+  ("code-suggest.sc" (symbols-data) 1 guard
    (#t)
    unrelated a
    "a symbols-file line the datum reader cannot parse: the body reads a string already in memory, not a file, and the line is then refused by name as symbols-malformed"
@@ -160,6 +160,11 @@
    "catches error lists only, never a condition"
    (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e)))
   ("code-project.sc" (capture-import) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "error lists only: a file's refusal by its symbols, raised by the cutter from what is already in memory, listed as symbols-refused; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) (set! refused (cons (list rel e) refused)) #f)))
+  ("code-project.sc" (capture-import) 2 guard
    (#t)
    propagate c
    "K2: capture-import lets incomplete-reduction and unreadable-entry through"

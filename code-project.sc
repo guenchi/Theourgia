@@ -97,13 +97,42 @@
   ;; is read. Reading every file first answered an unreadable later file
   ;; where the base had refused an earlier one's header.
   ;; Each entry is (rel bytes input), input #f for a skipped file.
-  (define (capture-import store dir allow-delete?)
-    (let* ((files (map (lambda (rel)
+  ;;
+  ;; AN EDITOR'S SYMBOLS SPLIT A FIRST IMPORT, AND ONLY THAT. `symbols` is #f,
+  ;; or (sections . cuts-of): the sections of `--symbols` by path, and the
+  ;; procedure that turns a section and a file's bytes and language entry
+  ;; into the cuts, or raises the file's refusal (code-suggest.sc,
+  ;; import-symbol-cuts). A file a section names is split at those cuts
+  ;; when it carries no marker line -- no file block holds it yet -- into
+  ;; the blocks a marked first import of the same cuts makes. A file that
+  ;; carries markers follows them and nothing else, so identity is proved
+  ;; by markers alone, and is listed as symbols-ignored. A file whose cuts
+  ;; are refused is not imported at all, and is listed with its refusal as
+  ;; symbols-refused, as is a section that names no text file the walk
+  ;; found; the rest of the import goes on.
+  (define (capture-import store dir allow-delete? symbols)
+    (let* ((ignored '()) (refused '()) (used '())
+           (by-symbols
+             (lambda (rel b input)
+               (let ((section (and symbols input (assoc rel (car symbols)))))
+                 (if (not section) input
+                     (let ((parsed (caddr input)))
+                       (set! used (cons rel used))
+                       (if (or (car parsed) (not (= 1 (length (cadr parsed)))) (not (equal? (cadar (cadr parsed)) b)))
+                           (begin (set! ignored (cons rel ignored)) input)
+                           (guard (e ((and (pair? e) (eq? (car e) 'error))
+                                      (set! refused (cons (list rel e) refused)) #f))
+                             (let ((cuts ((cdr symbols) section b (cadr input))))
+                               (list rel (cadr input)
+                                     (list #f (map (lambda (from to) (list "new" (byte-slice b from to)))
+                                                   (reverse (cdr (reverse cuts))) (cdr cuts)))
+                                     b)))))))))
+           (files (map (lambda (rel)
                          (unless (relative-safe? rel) (projection-failure 'unsafe-path))
                          (let ((b (read-code-bytes (string-append dir "/" rel))))
-                           (list rel b (and (import-text? b) (projection-input rel b)))))
+                           (list rel b (and (import-text? b) (by-symbols rel b (projection-input rel b))))))
                        (directory-files dir)))
-           (skipped (map car (filter (lambda (f) (not (caddr f))) files)))
+           (skipped (map car (filter (lambda (f) (not (or (caddr f) (assoc (car f) refused)))) files)))
            (inputs (map caddr (filter caddr files)))
            (seen-files '()) (seen-ids '()) (baselines '()) (memberships '()) (intents '()))
       (define (emit! x) (set! intents (append intents (list x))) (- (length intents) 1))
@@ -165,7 +194,14 @@
                           (unless unchanged-order? (emit! (list 'move id parent previous)))
                           (set! previous id))))) entries)))) inputs)
       (list intents baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs)
-            (list 'skipped skipped))))
+            (list 'skipped skipped)
+            (list 'symbols-ignored (reverse ignored))
+            (list 'symbols-refused
+                  (append (reverse refused)
+                          (if symbols
+                              (map (lambda (section) (list (car section) '(error symbols-no-file)))
+                                   (filter (lambda (section) (not (member (car section) used))) (car symbols)))
+                              '()))))))
   ;; A text packet's tagged slot after the fourth, or #f: a packet captured
   ;; before the slot existed has four.
   (define (text-packet-extra captured tag)
@@ -176,14 +212,17 @@
   ;; asked before this verb's own, finish is given the answer of the write --
   ;; only of the write, so a refusal made before it carries no clause -- and
   ;; run holds the part from the write on, so a raise inside it says so.
+  ;; SYMBOLS, the optional argument after premises (#f for none), is what
+  ;; capture-import takes: the sections of `--symbols` and their cutter.
   (define (import-code store dir actor req allow-delete? . premises)
     (answer
       (lambda ()
         (let* ((given (and (pair? premises) (car premises)))
+               (symbols (and (pair? premises) (pair? (cdr premises)) (cadr premises)))
                (pc (and given (car given)))
                (finish (if given (cadr given) (lambda (a) a)))
                (run (if given (caddr given) (lambda (thunk) (thunk))))
-               (packet (frozen-operation store req (lambda () (capture-import store dir allow-delete?))))
+               (packet (frozen-operation store req (lambda () (capture-import store dir allow-delete? symbols))))
                (captured (cadr packet)))
           (run
             (lambda ()
@@ -196,12 +235,16 @@
                                                (caddr captured)))))
                                #t)))
                 ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED,
-                ;; and only on an answer that succeeded.
+                ;; and only on an answer that succeeded; so are the two
+                ;; clauses of `--symbols`, each only when it lists something.
                 (finish
                   (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
                       (append (list 'ok (cons 'items results))
-                              (let ((skipped (text-packet-extra captured 'skipped)))
-                                (if (pair? skipped) (list (list 'skipped skipped)) '())))
+                              (apply append
+                                     (map (lambda (tag)
+                                            (let ((listed (text-packet-extra captured tag)))
+                                              (if (pair? listed) (list (list tag listed)) '())))
+                                          '(skipped symbols-ignored symbols-refused))))
                       (if (= (length results) 1) (car results) (batch-answer results)))))))))))
 ;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's

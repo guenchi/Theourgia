@@ -107,6 +107,8 @@
         ((move) '("--after"))
         ((outline) '("--depth"))
         ((split-suggest) '("--output" "--symbols"))
+        ;; An editor's symbols file, which splits a first text import.
+        ((import-code) '("--symbols"))
         ((def) '("--under"))
         ((commit) '("--writer" "--working-version"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
