@@ -262,6 +262,26 @@
             ((> k (div ms 25)) (list 'still-running-after ms))
             (else (sleep-ms 25) (wait (+ k 1)))))))
 
+;; THE CURRENT SEGMENT OF A TAGGED DAEMON'S STORE, the highest-numbered
+;; segment of its one writer, as (name . path), or #f.
+(define (tagged-current-segment d)
+  (let* ((st (car d))
+         (ws (filter (lambda (n) (not (char=? (string-ref n 0) #\.)))
+                     (directory-list (string-append st "/writers"))))
+         (wdir (and (= 1 (length ws)) (string-append st "/writers/" (car ws))))
+         (segs (if wdir
+                   (filter (lambda (n) (and (= 11 (string-length n))
+                                            (string=? ".sexp" (substring n 6 11))
+                                            (for-all char-numeric? (string->list (substring n 0 6)))))
+                           (directory-list wdir))
+                   '())))
+    (and (pair? segs)
+         (let ((name (car (list-sort string>? segs))))
+           (cons name (string-append wdir "/" name))))))
+(define (file-bytes p)
+  (call-with-port (open-file-input-port p)
+    (lambda (i) (let ((b (get-bytevector-all i))) (if (eof-object? b) #vu8() b)))))
+
 (define (tagged-store d) (car d))
 (define (tagged-socket d) (cadr d))
 (define (tagged-log d) (file-text (cadddr d)))
@@ -530,6 +550,104 @@
               (list 'never-came-up 'exited-not-zero
                     (list (list (string-append "the daemon tagged " pid-text "-nevercomes comes up and creates its socket")
                                 'never-came-up)))))
+
+      ;; ---- the store replaced under the daemon -----------------------------
+      ;;
+      ;; NEVER: A DAEMON DOES NOT WRITE ON A STORE SWAPPED UNDER IT. The rows
+      ;; do what `git checkout` of an older commit does to a store kept in
+      ;; git: the current segment is replaced by a new file holding its
+      ;; bytes as they were after the first of two writes. A read after the
+      ;; swap makes the daemon read the store again; the next write is still
+      ;; refused, naming the segment, and the segment holds the swapped bytes
+      ;; and nothing more. Before the swap the same daemon's writes land,
+      ;; which is the twin.
+      (let* ((d (start-tagged-daemon! "swapped" #f))
+             (st (tagged-store d))
+             ;; the first write makes the segment if init did not
+             (first-write (ask-tagged d "insert \"--title\" \"BEFORE-SWAP-ONE\"" 8000))
+             (current (tagged-current-segment d))
+             (seg-name (and current (car current)))
+             (seg (and current (cdr current)))
+             (earlier (and seg (file-bytes seg)))
+             (second-write (ask-tagged d "insert \"--title\" \"BEFORE-SWAP-TWO\"" 8000))
+             (full (and seg (file-bytes seg)))
+             (swap (string-append scratch-base "/dmn-swap-" pid-text ".sexp")))
+        (when seg
+          (call-with-port (open-file-output-port swap (file-options no-fail))
+            (lambda (o) (put-bytevector o earlier)))
+          (system (string-append "mv " swap " " seg)))
+        (let* ((read-after (ask-tagged d "outline" 8000))
+               (refused (ask-tagged d "insert \"--title\" \"AFTER-SWAP-ONE\"" 8000))
+               (again (ask-tagged d "insert \"--title\" \"AFTER-SWAP-TWO\"" 8000))
+               (after (and seg (file-bytes seg)))
+               ;; THE REFUSAL LATCHES: a new file holding the segment's bytes as
+               ;; the daemon last published them -- the length it knows -- is
+               ;; put back, and the next write is still refused.
+               (put-back (and seg
+                              (begin
+                                (call-with-port (open-file-output-port swap (file-options no-fail))
+                                  (lambda (o) (put-bytevector o full)))
+                                (system (string-append "mv " swap " " seg))
+                                #t)))
+               (latched (ask-tagged d "insert \"--title\" \"AFTER-PUT-BACK\"" 8000)))
+          (stop-tagged-daemon! d)
+          (want "D-SWAP TWIN: before the swap the daemon's writes land"
+                (list (and seg #t)
+                      (and (string? (cadr first-write)) (starts-with? (cadr first-write) "(ok"))
+                      (and (string? (cadr second-write)) (starts-with? (cadr second-write) "(ok")))
+                '(#t #t #t))
+          (want "D-SWAP after the current segment is replaced by a shorter file, a write is refused store-replaced, naming the segment, a read in between notwithstanding"
+                (list (and (string? (cadr read-after)) (starts-with? (cadr read-after) "(ok"))
+                      (and (string? (cadr refused)) (starts-with? (cadr refused) "(error refused store-replaced (segment "))
+                      (and (string? (cadr refused)) seg-name (contains? (cadr refused) seg-name))
+                      (and (string? (cadr refused)) (contains? (cadr refused) "(remedy restart-the-daemon)")))
+                '(#t #t #t #t))
+          (want "D-SWAP the next write is refused the same way, and the segment holds the swapped bytes and nothing appended"
+                (list (and (string? (cadr again)) (starts-with? (cadr again) "(error refused store-replaced"))
+                      (equal? after earlier))
+                '(#t #t))
+          (want "D-SWAP the refusal latches: with a file of the known length put back, the next write is still refused"
+                (list put-back
+                      (and (string? (cadr latched)) (starts-with? (cadr latched) "(error refused store-replaced")))
+                '(#t #t))))
+
+      ;; ---- a torn tail the daemon repairs is not a swap ---------------------
+      ;;
+      ;; NEVER: THE DAEMON'S OWN REPAIR IS NOT A STORE REPLACED UNDER IT. A
+      ;; process killed mid-append leaves a line with no newline; the
+      ;; daemon's next fold publishes the segment with it, and its next
+      ;; write cuts it back before appending. With the residue longer than
+      ;; the record, the segment ends shorter than it was published, by
+      ;; this process's own doing: both writes after it land.
+      (let* ((d (start-tagged-daemon! "torn" #f))
+             (first-write (ask-tagged d "insert \"--title\" \"BEFORE-TORN\"" 8000))
+             (current (tagged-current-segment d))
+             (seg (and current (cdr current)))
+             (residue (make-string 2000 #\x)))
+        (when seg
+          (call-with-port (open-file-output-port (string-append scratch-base "/dmn-torn-" pid-text ".txt")
+                                                 (file-options no-fail))
+            (lambda (o) (put-bytevector o (string->utf8 residue))))
+          (system (string-append "cat " scratch-base "/dmn-torn-" pid-text ".txt >> " seg)))
+        (let* ((size-torn (and seg (bytevector-length (file-bytes seg))))
+               (read-after (ask-tagged d "outline" 8000))
+               ;; the read asks for the fold; its publication, the third
+               ;; (start, the first insert, the fold), is waited for, so the
+               ;; residue is in what the daemon knows before the next write
+               (folded (wait-for-publication d 3 5000))
+               (repaired (ask-tagged d "insert \"--title\" \"AFTER-TORN-ONE\"" 8000))
+               (size-repaired (and seg (bytevector-length (file-bytes seg))))
+               (next (ask-tagged d "insert \"--title\" \"AFTER-TORN-TWO\"" 8000)))
+          (stop-tagged-daemon! d)
+          (want "D-TORN a torn tail longer than the next record: the write that repairs it and the one after both land"
+                (list (and seg #t)
+                      (and (string? (cadr first-write)) (starts-with? (cadr first-write) "(ok"))
+                      (and (string? (cadr read-after)) (starts-with? (cadr read-after) "(ok"))
+                      folded
+                      (and size-torn size-repaired (< size-repaired size-torn))
+                      (and (string? (cadr repaired)) (starts-with? (cadr repaired) "(ok"))
+                      (and (string? (cadr next)) (starts-with? (cadr next) "(ok")))
+                '(#t #t #t published #t #t #t))))
 
       ;; ---- D-01 TWIN: the build said nothing ---------------------------
       ;;

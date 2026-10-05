@@ -1264,6 +1264,10 @@ is not removed by it.
 
 Defines one datum by name inside a datum library block, adding it after the library's last child. `<source>` must be exactly one form, and that form must define `<name>`; otherwise it is refused `expected-one-form` or `name-mismatch`. Without `--under`, the store's only datum library is used; if there is not exactly one, the request is refused `library-required`. A name one of the library's children already defines is refused `(error name-exists (name <name>) (ids (<id> ...)))`: `def` does not replace a definition.
 
+A datum block takes no draft: `write` and `commit` refuse one with
+`draft-on-datum-unsupported` and `(use def)`, because a draft is text and would
+land as a src beside the body that export, `whereis` and `eval` read.
+
 ### `outline`
 
     (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"])
@@ -1328,6 +1332,13 @@ Puts a draft in that writer's slot for that block. A draft's version is
 the name of its content -- `sha256(bytes || based-on || cut)` -- so the
 same bytes written twice are the same version. A write into a slot that already holds a live draft keeps that draft's `based-on` and cut. `--rebase` moves a draft onto the committed version the caller merged onto, which it must name with both `--based-on <version>` and `--working-cut <cut>`, or it is refused `(error bad-request rebase-needs-baseline)`. A named baseline that cannot be checked is refused `(error invalid-working-baseline (reason cut-unusable|block-not-at-cut|hash-not-at-cut))`. The answer is `(ok (saved <block>) (writer <w>) (version <v>) (based-on <v>))`.
 
+A draft is text, and a datum block's code is its body, not a src: `write` on a
+block whose mode is `datum` is refused `(error bad-request
+draft-on-datum-unsupported (block <id>) (use def))`, and `commit` refuses a draft
+whose block has become a datum block the same way, naming the first such block
+and writing nothing. The refusal points to `def`, the verb that writes a datum
+definition.
+
 ### `restore`
 
     (restore <version> ("--writer" <name>))
@@ -1347,7 +1358,8 @@ one writer and restorable by another.
 the committed side and the drafts are the ones `eval --working` uses (no
 `--cut`, no `--latest`). Two things differ today: a code block's text keeps
 its stored bytes in the files where eval reads it as a string, and a datum
-block's draft is written as its body, which eval does not do yet. The
+block's draft -- one written before `write` refused a datum block -- is written
+as its body, which eval does not do. The
 committed side is PINNED the same way as eval's -- it
 is the state at the join of the writer's own drafts' cuts, so a commit
 another writer made after those drafts is not in the files -- and every
@@ -1803,7 +1815,11 @@ refuses it, so the verdict says it. An applied `link` or `unlink` record
 under a reserved relation name (`ref`, `uses`, `calls`, `guards`), written
 before the names were reserved, is listed under
 `(reserved-relations ((<from> <rel> <to> (event <writer> <seq>)) ...))`,
-again only when there is one; it does not change the verdict. The verdict
+again only when there is one; it does not change the verdict. A live block
+whose mode is `datum` and which carries a `src` -- a draft committed onto it
+before `commit` refused one -- is listed under `(datum-with-src (<id> ...))`,
+only when there is one; nothing that runs or exports it reads that src, and the
+verdict is unchanged. The verdict
 is `damaged` when a writer's log fails its integrity check, the reduction
 could not apply a record, or the registry is inside the store; otherwise
 `duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
@@ -2042,7 +2058,11 @@ members made. Before it writes anything, the retry checks that nobody else has
 written a block a missing member would write since the request was admitted, and,
 for a commit, that the block's hash is still the one the draft started from. If
 either fails it writes none of them and answers `stale-baseline`, bare, as a fresh
-commit does, with a `(completion (plan <event>) (present <index> ...) (of <n>))` clause
+commit does; and, first, a commit's member that would set the src of a block that
+is now a datum block -- a plan written before `commit` refused such a draft -- is
+refused as a fresh commit refuses it, `(error bad-request
+draft-on-datum-unsupported (block <id>) (use def))`, and nothing is written. Each
+refusal comes with a `(completion (plan <event>) (present <index> ...) (of <n>))` clause
 naming the members that are applied. The refusal is about the store as it is now:
 each retry is judged again, and completes once the other record has been taken
 back. A client that will not wait rebases the drafts the answer names and sends
@@ -2781,6 +2801,31 @@ A `--socket` given by hand is not given a directory. An empty one answers
 exist answers `(error socket-dir-missing (dir <dir>))`. Both exit 2,
 before `--detach` and before anything is created. Only the default
 socket's directory is made by the daemon.
+
+**A store replaced under it.** Stop the daemon before switching the git
+branch of a repository that holds its store, or restoring the store's files
+in any other way: the daemon holds the store, and a swap under it makes the
+working tree's store and the branch's fork. The guard for when it was not is
+one rule. The daemon remembers each writer's current segment as it last
+published it, by path. A write asks first, under the store's lock, about the
+writer it appends for: when that segment, at that path, is no longer the same
+file and is shorter than it was, the write is refused before anything is
+appended,
+
+    (error refused store-replaced (segment "<path>") (remedy restart-the-daemon))
+
+and every write for that writer after it is refused the same way -- even after
+a read has made the daemon read the store again, and even if the segment grows
+past its old size -- until the daemon is started again on the store as it now
+is. A publication whose current segment for a writer is another path, and
+an earlier segment replaced, are not seen by this rule; neither is a writer
+that takes no appends. Appends by another process only make the segment
+longer, and a rotation leaves it as it was, so neither is taken for a swap.
+Nor is the daemon's own write that cuts a torn tail back before it appends:
+what the daemon itself left is what it knows. Any other process that puts a
+shorter segment at that path -- a repair that replaces it whole, say --
+changes the store under the daemon as a checkout does, and is refused the
+same way, with no exemption: run such tools with the daemon stopped.
 
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or

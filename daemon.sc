@@ -67,6 +67,8 @@
           (only (theourgia store) store-publish-hook! obtain-state seal-state
                 store-withhold-hook!)
           (only (theourgia log) store-state-snapshot snapshot-unreadable-notes
+                snapshot-current-segments segment-shrank? segment-version-now log-append-guard!
+                segment-version-readable?
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 unreadable-behind incomplete-clause)
           (only (theourgia reduce) reduce-applied-cut)
@@ -1009,7 +1011,63 @@
           (frame! old state seq)
           (set! published-sets #f))
       (set! published (vector state seq snapshot (list seq daemon-token)))
+      (note-known-segments! snapshot)
       (trace-event! 'published seq #f)))
+
+  ;; NEVER: A WRITER'S CURRENT SEGMENT GROWN SHORTER UNDER THE DAEMON IS NOT
+  ;; WRITTEN ON. Switching a git branch while a daemon serves the store can put
+  ;; a shorter segment where the daemon's was; a reload would follow it and
+  ;; the next write would build on it, so the worktree's store and the
+  ;; branch's fork. By contract the daemon is stopped first; this is the
+  ;; guard for when it was not, and it is that one rule: the appending
+  ;; writer's current segment, the same path, a different file, shorter.
+  ;;
+  ;; KNOWN, PER WRITER, IS ITS CURRENT SEGMENT AS PUBLISHED, (writer path .
+  ;; version), set in one place, know-segment!. A publication replaces it,
+  ;; unless the new version of the same path is a different file shorter
+  ;; than the known one, or is no version a size can be read from while the
+  ;; known one is: those are kept, so neither a reload nor a read that
+  ;; failed makes the swap the known state. A publication whose current
+  ;; segment is another path replaces it unchecked. The log asks the guard
+  ;; under the store's lock before a write's first append (log.sc,
+  ;; log-append-guard!): when the known segment on the disk now is shorter
+  ;; and not the same file, the write is refused, naming the segment. The
+  ;; refusal LATCHES for the writer, once seen, until the daemon is started
+  ;; again: a segment that grows past the known size afterwards is still
+  ;; not the file the daemon published.
+  (define known-segments '())
+  (define replaced-writers '())
+  ;; JUDGE-SHRINK? says a shorter version of the same path is judged a swap;
+  ;; this process's own repair is not (note-own-repair!).
+  (define (know-segment! writer path version judge-shrink?)
+    (let ((old (assoc writer known-segments)))
+      (unless (and old
+                   (or (and judge-shrink? (equal? (cadr old) path) (segment-shrank? (cddr old) version))
+                       (and (segment-version-readable? (cddr old))
+                            (not (segment-version-readable? version)))))
+        (set! known-segments
+          (cons (cons writer (cons path version))
+                (filter (lambda (k) (not (equal? (car k) writer))) known-segments))))))
+  (define (note-known-segments! snapshot)
+    (for-each (lambda (e) (know-segment! (car e) (cadr e) (cddr e) #t))
+              (snapshot-current-segments snapshot)))
+
+  ;; THIS PROCESS'S OWN REPAIR IS KNOWN AS IT LEFT THE SEGMENT. The log calls
+  ;; this under the lock right after it cut a torn tail back (log.sc,
+  ;; log-append-guard!): the segment is then shorter than the version
+  ;; published with the residue, and that version must not be kept against
+  ;; it.
+  (define (note-own-repair! store writer path)
+    (know-segment! writer path (segment-version-now path) #f))
+  (define (segment-replaced store writer)
+    (or (let ((latched (assoc writer replaced-writers))) (and latched (cdr latched)))
+        (let* ((k (assoc writer known-segments))
+               (refusal (and k
+                             (segment-shrank? (cddr k) (segment-version-now (cadr k)))
+                             (list 'store-replaced (list 'segment (cadr k))))))
+          (when refusal
+            (set! replaced-writers (cons (cons writer refusal) replaced-writers)))
+          refusal)))
 
   ;; ---- the change stream: subscribers, frames, the ring ---------------------
   ;;
@@ -1317,6 +1375,8 @@
     ;; store-here?, so a signal can arrive while main is STARTING (the
     ;; startup-exit design R6).
     (hold-point! 'store-start)
+    ;; every write this process makes asks it first (see segment-replaced)
+    (log-append-guard! segment-replaced note-own-repair!)
     ;; A RAISE BEFORE ANY REPORT (F100b D15), armed by
     ;; `THEOURGIA_FAULT=store-raise-early@report`: a plain condition, outside
     ;; the scope below, so no startup-failed message is sent and main

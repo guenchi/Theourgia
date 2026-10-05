@@ -342,6 +342,8 @@
             ((not writer) (invalid-writer))
             ((not (safe-id? id)) '(error bad-request invalid-block-id))
             ((not (state-read state id)) (list 'error 'unknown-id id))
+            ;; a datum block's code is its body; a draft is text (store.sc)
+            ((datum-mode-block? state id) (draft-on-datum-refusal id))
             ((and (or parent-writer parent-version)
                   (not (and parent-writer parent-version hash cut-text (safe-id? parent-writer))))
              '(error invalid-working-baseline))
@@ -832,6 +834,11 @@
     (let ((bad (filter values
                  (map (lambda (e) (baseline-refusal state (list-ref e 3) (list-ref e 5) (list-ref e 6))) entries))))
       (cond ((pair? missing) (list 'error 'no-draft (cons 'blocks missing)))
+            ;; A DRAFT WOULD LAND AS A SRC BESIDE A DATUM BLOCK'S BODY, which
+            ;; nothing that runs the block reads (store.sc): the first such
+            ;; draft, in the order read, is named and nothing is written.
+            ((find (lambda (e) (datum-mode-block? state (list-ref e 3))) entries)
+             => (lambda (e) (draft-on-datum-refusal (list-ref e 3))))
             ;; EVERY NAMED VERSION MUST BE THE ONE ON DISK. A draft the
             ;; client did not name the current version of has moved
             ;; under them since they read it.

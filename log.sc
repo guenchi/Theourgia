@@ -93,7 +93,9 @@
           atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory retired-successor retired-of
-          store-state-snapshot
+          store-state-snapshot snapshot-current-segments segment-shrank? segment-version-now
+          segment-version-readable?
+          log-append-guard!
           barrier-artefacts barrier-required run-barrier! publish-durable?
           uncertain-path uncertain-derived uncertain-load uncertain-write!
           enumerate-segment-files
@@ -438,6 +440,63 @@
               (directory-snapshot (string-append dir "/damaged"))
               (directory-snapshot (string-append dir "/incoming")))))))
         (store-writers store))))
+
+;; EACH WRITER'S CURRENT SEGMENT IN A SNAPSHOT, as (writer path . version):
+  ;; the entry store-state-snapshot takes of the highest-numbered segment.
+  ;; A writer read as a marker, or with no segment, has none.
+  (define (snapshot-current-segments snapshot)
+    (if (not (pair? snapshot))
+        '()
+        (fold-right
+          (lambda (entry acc)
+            (if (and (pair? entry) (string? (car entry)) (list? (cdr entry))
+                     (= 5 (length (cdr entry)))
+                     (pair? (list-ref (cdr entry) 2))
+                     (string? (car (list-ref (cdr entry) 2))))
+                (let ((current (list-ref (cdr entry) 2)))
+                  (cons (cons (car entry) current) acc))
+                acc))
+          '()
+          (cdr snapshot))))
+
+  ;; The version a path has now, as a snapshot takes it: #f when absent.
+  (define (segment-version-now path) (cdr (path-snapshot path)))
+
+  ;; NEVER: A SEGMENT THAT IS NOT THE FILE IT WAS, AND IS SHORTER THAN IT WAS,
+  ;; HAS NOT BEEN APPENDED TO. An append only adds bytes to the current
+  ;; segment and a rotation leaves it as it was; a version that changed with
+  ;; a size below the known one is a file put in its place -- what `git
+  ;; checkout` does to a store kept in git -- or the same file cut back.
+  ;; WAS is a version a snapshot took; NOW one taken since, #f for a file
+  ;; that is gone (length 0). A marker for a path that cannot be read is
+  ;; neither, and is left to the readers that name it.
+  (define (version-size v)
+    (and (list? v) (= 7 (length v)) (integer? (list-ref v 6)) (list-ref v 6)))
+  ;; A version a reader could take a size from: not #f, not a marker.
+  (define (segment-version-readable? v) (and (version-size v) #t))
+  (define (segment-shrank? was now)
+    (let ((known (version-size was))
+          (size (if (not now) 0 (version-size now))))
+      (and known size (not (equal? was now)) (< size known))))
+
+  ;; THE APPEND GUARD: a procedure of the store and the writer, asked under
+  ;; the store's lock before a session's first append, answering #f or the
+  ;; refusal's reason and detail. A process that knows more than one write
+  ;; session can -- the daemon, which remembers what it published -- sets it
+  ;; once; every other process leaves it answering #f.
+  ;;
+  ;; AND WHAT THIS PROCESS ITSELF DID TO A SEGMENT IS TOLD TO IT: NOTED is
+  ;; called with the store, the writer and the segment's path right after
+  ;; maintenance cut a torn tail back, still under the lock. That is the one
+  ;; thing this process does that leaves a segment shorter than it was, and
+  ;; it is this process's own repair, not a file put in its place. An append
+  ;; only lengthens a segment, and a rotation writes a new path, which the
+  ;; next publication takes as it is, so neither is told.
+  (define append-guard (lambda (store writer) #f))
+  (define append-noted (lambda (store writer path) (if #f #f)))
+  (define (log-append-guard! proc . noted)
+    (set! append-guard proc)
+    (when (pair? noted) (set! append-noted (car noted))))
 
   ;; EVERY MARKER IN A SNAPSHOT, AS NOTES (F77c, design reviews r2 and r3):
   ;; `(writer path reason)` triples, the form load-unreadable gives, one per
@@ -5786,8 +5845,15 @@
       ;; look; the sequence number and the append target both come from
       ;; what is on disk now, not from what was there at log-begin.
       (trace-event! 'catch-up writer #f)
-      (let ((p (discover-prefix store writer 'held-exclusive)))
+      (let ((p (discover-prefix store writer 'held-exclusive))
+            ;; asked before the session's first append only: its own
+            ;; appends are what the guard's snapshot does not hold yet
+            (guarded (and (not (session-write-started s)) (append-guard store writer))))
         (cond
+          ;; THE STORE WAS REPLACED UNDER THE PROCESS THAT HOLDS IT. What it
+          ;; published is not on the disk any more, and an append would
+          ;; continue a history this process never read.
+          (guarded (cons 'refused-before-reserve guarded))
           ;; THE FORK IN THIS WRITER'S OWN HISTORY. Its predecessors are
           ;; no longer history, so an append that continues from them
           ;; would be building on a prefix the store has disavowed.
@@ -5913,10 +5979,17 @@
             ;; unwind, because a tail that was not repaired means the
             ;; next write lands after a partial record.
             (when (and torn (eqv? (car torn) seg))
+              ;; THE REPAIR IS THIS PROCESS'S OWN, AND IT IS SAID AT ONCE,
+              ;; inside the thunk, right after the cut: a failure after it --
+              ;; the close in the unwind, the rotation's probe, the
+              ;; reservation -- would otherwise leave the shortened segment
+              ;; unnoted, and the next write would read it as replaced.
               (let ((fd (fd-open path '(write))))
                 (dynamic-wind
                   (lambda () (if #f #f))
-                  (lambda () (ftruncate! fd (cadr torn) path))
+                  (lambda ()
+                    (ftruncate! fd (cadr torn) path)
+                    (append-noted store writer path))
                   (lambda () (fd-close fd)))))
             (let* ((rotated (maybe-rotate! store writer seg path p line))
                    (target (car rotated))

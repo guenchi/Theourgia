@@ -28,7 +28,9 @@
 ;; store. F119-06 and F119-07 call with-store-write in this process: they
 ;; need a planned request carrying an intent no command line can spell.
 
-(import (chezscheme) (theourgia store) (theourgia reduce))
+(import (chezscheme) (theourgia store) (theourgia reduce)
+        (only (theourgia wire) storable-encode sexpr->string-extended)
+        (only (theourgia log) writer-directory))
 
 (define bad 0)
 (define rows 0)
@@ -215,6 +217,93 @@
       (list (contains? (format "~s" empty-answer) "malformed-intent")
             (and (pair? empty-answer) (eq? (car empty-answer) 'RAISED)))
       '(#t #f))
+
+;; ---- a draft on a datum block is refused, by write and by commit -------------
+;;
+;; NEVER: AN EDIT REPORTED SAVED TAKES EFFECT. A datum block's code is its
+;; body; a draft is text, and committed it landed as a src beside the body,
+;; which export-code --datum, whereis and eval do not read. write refuses a
+;; datum block by name, commit refuses a draft that would land on one, and
+;; check names a datum block that already carries a src. A store of its own.
+(define store3 (string-append here "/store3"))
+(system (string-append "mkdir -p " store3))
+(set! current-store store3)
+(cli "init")
+(define datum-src (fresh-dir "datum-src"))
+(put! (string-append datum-src "/d.sc") "(define (dval) 'datumcommitted)\n")
+(cli "import-code" "--datum" datum-src)
+(define text3-src (fresh-dir "text3-src"))
+(put! (string-append text3-src "/t.sc") "(define (tval) 'textcommitted)\n")
+(cli "import-code" text3-src)
+(define datum-id
+  (let ((d (find-headed (data-of (cli "whereis" "dval")) 'def)))
+    (and d (pair? (cdr d)) (cadr d))))
+(define text3-id (block-holding "textcommitted"))
+;; THE ANSWER IS THE LAST DATUM PRINTED: the command line's stderr is merged
+;; into this text, and a line it writes there, such as the machine home it
+;; announces, comes before the answer.
+(define (refusal-of text n)
+  (let ((d (data-of text)))
+    (and (pair? d)
+         (let ((answer (car (reverse d))))
+           (and (list? answer) (>= (length answer) n) (list-head answer n))))))
+(define (draft-on-datum id)
+  (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block id) '(use def)))
+
+(want "DD-00 PREMISE: a datum block and a text-mode block, each in its mode"
+      (list (and (string? datum-id) (contains? (cli "read" datum-id) "(mode . datum)"))
+            (and (string? text3-id) (contains? (cli "read" text3-id) "(mode . text)")))
+      '(#t #t))
+(want "DD-01 write on a datum block is refused by name, and no draft is saved"
+      (let ((a (cli "write" "--writer" "w4" datum-id "(define (dval) 'datumedited)\n")))
+        (list (refusal-of a 5)
+              (contains? (cli "drafts" "--writer" "w4") datum-id)))
+      (list (draft-on-datum datum-id) #f))
+;; A DRAFT AN EARLIER BUILD WROTE ON A DATUM BLOCK, at the block's baseline
+;; now (forge-draft.ss): the commit's check is the one thing left to refuse
+;; it, and the commit would land it as a src beside the body.
+;; NEVER: NOT A TEXT-MODE BLOCK. A block's mode, once set, is refused a
+;; change (mode-mismatch), so a text-mode block never becomes a datum block;
+;; a block `insert` made carries a src and no mode, and takes one.
+(include "forge-draft.ss")
+(cli "insert" "--title" "Legacy" "--text" "legacythreeplaceholder")
+(define legacy3-id (block-holding "legacythreeplaceholder"))
+(define dd-mode
+  (with-store-write store3
+    (lambda (state view)
+      (list (list 'set legacy3-id 'kind 'code)
+            (list 'set legacy3-id 'mode 'datum)
+            (list 'set legacy3-id 'body '(define (legacy) 'committed))))
+    "test"))
+(define dd-version (forge-fresh-draft! store3 "w5" legacy3-id "(define (legacy) 'edited)\n"))
+(define dd-drafts (cli "drafts" "--writer" "w5"))
+(define dd-commit (cli "commit" "--writer" "w5" legacy3-id))
+(want "DD-02 commit of a fresh draft on a datum block is refused by name, and writes nothing"
+      (list (and (list? dd-mode) (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) dd-mode))
+            (contains? (cli "read" legacy3-id) "(mode . datum)")
+            (and (contains? dd-drafts dd-version) (contains? dd-drafts "(fresh #t)"))
+            (refusal-of dd-commit 5)
+            (read-src legacy3-id)
+            (contains? (cli "drafts" "--writer" "w5") legacy3-id))
+      (list #t #t #t (draft-on-datum legacy3-id) "legacythreeplaceholder" #t))
+(want "DD-02 TWIN: a text-mode block takes a draft, and its commit lands"
+      (let* ((w (cli "write" "--writer" "w7" text3-id "(define (tval) 'textedited)\n"))
+             (c (cli "commit" "--writer" "w7" text3-id)))
+        (list (contains? w "(ok (saved") (contains? c "(ok (items (ok") (read-src text3-id)))
+      '(#t #t "(define (tval) 'textedited)\n"))
+(want "DD-03 check names the datum block that already carries a src"
+      (find-headed (data-of (cli "check")) 'datum-with-src)
+      (list 'datum-with-src (list legacy3-id)))
+;; The clause reports and does not judge: nothing that runs or exports the
+;; block reads that src, so the store is not damaged by it.
+(want "DD-03 and check's verdict beside the clause stays ok"
+      (let ((d (data-of (cli "check"))))
+        (list (and (find-headed d 'datum-with-src) #t) (find-headed d 'verdict)))
+      '(#t (verdict ok)))
+(set! current-store store)
+(want "DD-03 TWIN: on the store whose text-mode block took its commit, check has no such clause"
+      (find-headed (data-of (cli "check")) 'datum-with-src)
+      #f)
 
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\ncommit-text-mode complete\n" rows bad)

@@ -29,6 +29,7 @@
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
+          datum-mode-block? draft-on-datum-refusal
           store-check store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator
           make-write-request write-request? store-successors store-intervals
@@ -2787,7 +2788,18 @@
       ;; instance.sexp until adopt mints one.
       ((integrity registry-ahead missing-generation no-instance) 'adopt)
       ((registry-inside-store) 'move-the-registry-outside-the-store)
+      ;; the store's files were replaced under a daemon (daemon.sc,
+      ;; segment-replaced): it serves what it no longer holds
+      ((store-replaced) 'restart-the-daemon)
       (else #f)))
+
+  ;; THE DETAIL A REASON KEEPS in the answer, after the reason and before the
+  ;; remedy. Every other reason is answered by its name alone, as it always
+  ;; was; store-replaced names the segment that was replaced.
+  (define (detail-for why outcome)
+    (case why
+      ((store-replaced) (if (pair? (cdr outcome)) (cddr outcome) '()))
+      (else '())))
 
   ;; THE TWO HALVES OF ONE OUTCOME GET TWO ANSWERS, because they state
   ;; opposite facts. `reserved-not-written` says the log is untouched, so
@@ -2818,6 +2830,7 @@
       ((eq? (car outcome) 'refused-before-reserve)
        (let ((why (if (pair? (cdr outcome)) (cadr outcome) '())))
          (append (list 'error 'refused why)
+                 (detail-for why outcome)
                  (let ((r (remedy-for why)))
                    (if r (list (list 'remedy r)) '())))))
       ((eq? (car outcome) 'reserved-not-written)
@@ -4695,6 +4708,30 @@
                              ((and (pair? (car is)) (eq? (car (car is)) 'ok))
                               (loop (cdr is) (+ n 1)))
                              (else (loop (cdr is) n)))))))))))
+;; NEVER: A DRAFT IS TEXT, AND A DATUM BLOCK'S CODE IS ITS BODY. A draft
+  ;; committed to a block whose mode is datum landed as a src beside the
+  ;; body: the editor showed the text, while export-code --datum, whereis
+  ;; and eval read the body, so an edit reported saved never took effect.
+  ;; `write` and `commit` refuse such a block by this one predicate and this
+  ;; one refusal, and `check` names a datum block that already has a src.
+  (define (datum-mode-block? state id)
+    (let* ((b (state-read state id))
+           (fs (and b (assq (quote fields) b)))
+           (m (and fs (assq (quote mode) (cdr fs)))))
+      (and m (eq? (cdr m) (quote datum)))))
+  (define (draft-on-datum-refusal id)
+    (list (quote error) (quote bad-request) (quote draft-on-datum-unsupported)
+          (list (quote block) id) (list (quote use) (quote def))))
+  ;; The live datum blocks that carry a src, in the store's order.
+  (define (datum-blocks-with-src state)
+    (filter (lambda (id)
+              (let ((b (state-read state id)))
+                (and b (not (cdr (assq (quote deleted) b)))
+                     (datum-mode-block? state id)
+                     (assq (quote src) (cdr (assq (quote fields) b)))
+                     #t)))
+            (map cadr (state-datum state))))
+
   (define (store-check store)
     (let ((ls (log-open store)))
       (dynamic-wind
@@ -4756,6 +4793,11 @@
            ;; the same name. Present only when there is one; the verdict is
            ;; unchanged by it.
            (reserved (state-reserved-relation-records state))
+           ;; A DATUM BLOCK THAT CARRIES A SRC is reported, and it is not
+           ;; damage: its src was committed as a draft before commit refused
+           ;; one, and nothing that runs or exports the block reads it.
+           ;; Present only when there is one; the verdict is unchanged.
+           (datum-src (datum-blocks-with-src state))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4797,6 +4839,7 @@
             (list 'notes notes))
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
+        (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

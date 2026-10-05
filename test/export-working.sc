@@ -29,7 +29,11 @@
 ;; others; W11-export-working uses two draft EDITS, a Markdown section's
 ;; text and a code block's source.
 
-(import (chezscheme))
+(import (chezscheme)
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia reduce) block-hash reduce-applied-cut draft-version)
+        (only (theourgia wire) storable-encode sexpr->string-extended)
+        (only (theourgia log) writer-directory))
 
 (define bad 0)
 (define rows 0)
@@ -85,12 +89,16 @@
                  "'"))
 
 (define (cli . args)
+  (apply cli-reading "/dev/null" args))
+;; THE SAME, WITH STANDARD INPUT FROM A FILE: `batch` reads its intents
+;; there, and an argument in their place is answered with its usage.
+(define (cli-reading input . args)
   (let ((out (string-append here "/out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
               "scheme --script ../core.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
-              "--store " store " --wire > " out " 2>&1"))
+              "--store " store " --wire < " input " > " out " 2>&1"))
     (file-text out)))
 
 ;; Every datum the answer holds, or the text itself when it does not read.
@@ -114,11 +122,18 @@
   (let ((m (find-headed (data-of (cli "grep" needle)) 'match)))
     (and m (pair? (cdr m)) (string? (cadr m)) (cadr m))))
 
+;; THE ANSWER, the last datum printed: stderr is merged into the text, and a
+;; line the command line writes there, such as the machine home it
+;; announces, can come before it. #f when nothing reads.
+(define (answer-of text)
+  (let ((d (data-of text)))
+    (and (pair? d) (car (reverse d)))))
+
 ;; An answer's own clause, read as a datum: `(cut ...)`, `(working #t)`.
 (define (clause-of text head)
-  (let ((d (data-of text)))
-    (and (pair? d) (pair? (car d)) (memq (caar d) '(ok error))
-         (let ((c (assq head (filter pair? (cdar d))))) c))))
+  (let ((a (answer-of text)))
+    (and (pair? a) (memq (car a) '(ok error))
+         (assq head (filter pair? (cdr a))))))
 
 ;; Every regular file under `dir`, as (relative-path . text), sorted.
 (define (tree-of dir)
@@ -177,9 +192,10 @@
     (and d (pair? (cdr d)) (string? (cadr d)) (cadr d))))
 
 ;; NEVER: THE PREMISE IS CHECKED, NOT ASSUMED. Every row below writes a draft
-;; on one of four blocks; if two markers landed in one block, or grep named
-;; none, the rows would be about something else and could still read green.
-(want "F17-00 PREMISE: the five blocks the rows write drafts on are five different blocks"
+;; on one of these blocks, or is refused one on the datum block; if two
+;; markers landed in one block, or grep named none, the rows would be about
+;; something else and could still read green.
+(want "F17-00 PREMISE: the five blocks the rows write drafts on, or try to, are five different blocks"
       (let ((ids (list alpha-id beta-id one-id two-id h-id)))
         (if (and (for-all string? ids)
                  (= 5 (length (fold-left (lambda (acc x) (if (member x acc) acc (cons x acc))) '() ids))))
@@ -367,38 +383,56 @@
 
 ;; ---- a datum block's draft ------------------------------------------------------
 ;;
-;; NEVER: A DATUM BLOCK'S DRAFT IS READ AS ITS BODY (design 7.5.21), not left out of
-;; the view. It stores no src, so an overlay that replaced only src would
-;; write the committed body under --working and say nothing.
-(cli "write" "--writer" "w5" h-id "(define (h) 'datumdraft)")
+;; NEVER: A DATUM BLOCK TAKES NO DRAFT. A draft is text and a datum block's
+;; code is its body, so `write` refuses one by name (store.sc,
+;; draft-on-datum-refusal), and the working view of a datum block is its
+;; committed body. Before that refusal a draft could be written on one, and
+;; its view read it as the body (design 7.5.21): F17-07 keeps that reading
+;; for a draft written then.
+(define datum-write (cli "write" "--writer" "w5" h-id "(define (h) 'datumdraft)"))
 (define datum-work (fresh-dir "datum-work"))
 (define datum-plain (fresh-dir "datum-plain"))
 (define datum-work-answer (cli "export-code" datum-work "--datum" "--working" "--writer" "w5"))
 (cli "export-code" datum-plain "--datum")
 
-(want "F17-06 export-code --datum --working writes a datum block's draft as its body"
-      (let ((t (all-text datum-work)))
-        (list (contains? t "datumdraft") (contains? t "datumcommitted")
+(want "F17-06 write on a datum block is refused by name, and export-code --datum --working writes its committed body"
+      (let ((t (all-text datum-work)) (a (answer-of datum-write)))
+        (list (and (list? a) (>= (length a) 3) (list-head a 3))
+              (contains? t "datumdraft") (contains? t "datumcommitted")
               (clause-of datum-work-answer 'working)))
-      '(#t #f (working #t)))
+      '((error bad-request draft-on-datum-unsupported) #f #t (working #t)))
 
 (want "F17-06 TWIN: plain export-code --datum writes the committed body"
       (let ((t (all-text datum-plain)))
         (list (contains? t "datumdraft") (contains? t "datumcommitted")))
       '(#f #t))
 
+;; A DRAFT AN EARLIER BUILD WROTE ON THE DATUM BLOCK, at its baseline now
+;; (forge-draft.ss): the view is pinned to the draft's cut, where the block
+;; is the datum block it is, so the draft is read as its body.
+;;
 ;; NEVER: A DRAFT THAT DOES NOT READ AS ONE FORM IS REFUSED BY NAME, with the
 ;; block and the reader's reason, and nothing is written.
-(cli "write" "--writer" "w6" h-id "(define (h) 'broken")
+(include "forge-draft.ss")
+(forge-fresh-draft! store "w6" h-id "(define (h) 'broken")
 (define datum-broken (fresh-dir "datum-broken"))
 (want "F17-07 an unreadable datum draft is refused as working-draft-unreadable, naming the block"
       (let* ((answer (cli "export-code" datum-broken "--datum" "--working" "--writer" "w6"))
-             (d (data-of answer)))
-        (list (and (pair? d) (pair? (car d)) (list (car (car d)) (and (pair? (cdar d)) (cadr (car d)))))
+             (a (answer-of answer)))
+        (list (and (pair? a) (list (car a) (and (pair? (cdr a)) (cadr a))))
               (clause-of answer 'block)
               (and (clause-of answer 'reason) #t)
               (tree-of datum-broken)))
       (list '(error working-draft-unreadable) (list 'block h-id) #t '()))
+;; TWIN: such a draft that reads as one form is written as the block's body.
+(forge-fresh-draft! store "w8" h-id "(define (h) 'legacydraft)")
+(define datum-legacy (fresh-dir "datum-legacy"))
+(want "F17-07 TWIN a datum draft written then, that reads, is written as the body under --working"
+      (let ((answer (cli "export-code" datum-legacy "--datum" "--working" "--writer" "w8")))
+        (list (clause-of answer 'working)
+              (contains? (all-text datum-legacy) "legacydraft")
+              (contains? (all-text datum-legacy) "datumcommitted")))
+      '((working #t) #t #f))
 
 ;; ---- NO-DRAFTS TWIN -------------------------------------------------------------
 ;;

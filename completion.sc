@@ -44,7 +44,9 @@
 (library (theourgia completion)
   (export completion-run)
   (import (rnrs) (theourgia reduce)
-          (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine))
+          (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine)
+          ;; the mode check a fresh commit asks, asked of a completion too
+          (only (theourgia store) datum-mode-block? draft-on-datum-refusal))
 
   ;; A marker is a position, the parent or the sibling of an insert or a
   ;; move, holding ("#%new" k): the block member k of the plan makes. The
@@ -165,6 +167,26 @@
     (let ((u (declared-intent e)))
       (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (cadr u))))
 
+  ;; NEVER: A COMPLETION LANDS NO DRAFT ON A DATUM BLOCK EITHER. A fresh
+  ;; commit refuses a draft whose block is a datum block (store.sc,
+  ;; datum-mode-block?), before its plan is written; a plan written before
+  ;; that refusal existed can still hold such a member, and finishing it
+  ;; would land the draft as a src beside the body. One rule for both paths:
+  ;; the first member that sets the src of a block the plan's consumes names
+  ;; and that is a datum block now is refused by name, before anything is
+  ;; written and before the stale judgement. -> the refusal, or #f.
+  (define (datum-refusal state consumes intents)
+    (let ((items (if consumes (caddr consumes) '())))
+      (let loop ((is intents))
+        (if (null? is)
+            #f
+            (let ((u (declared-intent (car is))))
+              (if (and (eq? (declared-kind (car is)) 'set) (pair? (cdr u)) (pair? (cddr u))
+                       (eq? (caddr u) 'src) (assoc (cadr u) items)
+                       (datum-mode-block? state (cadr u)))
+                  (draft-on-datum-refusal (cadr u))
+                  (loop (cdr is))))))))
+
   ;; -> the refusal for the stale targets among INTENTS, or #f.
   (define (stale-judgement state plan-event plan-cut consumes intents)
     (let* ((items (if consumes (caddr consumes) '()))
@@ -229,7 +251,9 @@
                 ;; a plan this completion cannot see applied is answered
                 ;; unknown with not-applied, as after a write.
                 (plan-cut (state-event-cut state plan-event))
-                (refused (and plan-cut (stale-judgement state plan-event plan-cut consumes run))))
+                (refused (and plan-cut
+                              (or (datum-refusal state consumes run)
+                                  (stale-judgement state plan-event plan-cut consumes run)))))
            (cond
              ((not plan-cut)
               (list (finish (list 'error 'unknown (list 'not-applied plan-event)))))
