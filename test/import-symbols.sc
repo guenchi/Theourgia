@@ -71,6 +71,15 @@
             (else (loop (+ i 1)))))))
 (define (clause a key)
   (let ((p (and (pair? a) (list? a) (assq key (filter pair? (cdr a)))))) (and p (cadr p))))
+;; NEVER: A ROW'S SETUP CANNOT END THE FILE. What a setup reads from a
+;; product answer or from the store is read through `setup`, which turns a
+;; raise into a marker the row's first want reads as red; on a tree whose
+;; import-code does not take --symbols the rows after it still run and say
+;; their red.
+(define-syntax setup
+  (syntax-rules ()
+    ((_ e) (guard (x (#t (list 'SETUP-RAISED (if (and (condition? x) (message-condition? x)) (condition-message x) x))))
+             e))))
 
 ;; ---- the symbols file ------------------------------------------------------------
 (define (lines . ls) (apply string-append (map (lambda (l) (string-append l "\n")) ls)))
@@ -255,19 +264,24 @@
 ;; children, beta's src edited, and a.js listed as symbols-ignored.
 (let* ((c (case! (list (cons "a.js" two)) (apply section "a.js" two two-symbols)))
        (first (local (car c) "import-code" (cadr c) "--symbols" (caddr c)))
-       (before (children-of (car c) "a.js"))
+       (before (setup (children-of (car c) "a.js")))
        (out (string-append root "/case-" (number->string cases) "/out"))
        (exported (begin (sh "mkdir -p " (quoted out)) (local (car c) "export-code" out)))
        (path (string-append out "/a.js"))
-       (edited (let* ((t (file-text path)) (at (offset-of t "return 2;")))
-                 (string-append (substring t 0 at) "return 22;" (substring t (+ at 9) (string-length t)))))
+       (at (setup (offset-of (file-text path) "return 2;")))
+       ;; NO EXPORTED a.js, NO EDIT: with nothing to find, the file stays
+       ;; as it is and the first want below reads `at` as red.
+       (edited (let ((t (file-text path)))
+                 (if (integer? at)
+                     (string-append (substring t 0 at) "return 22;" (substring t (+ at 9) (string-length t)))
+                     t)))
        (symbols (string-append root "/case-" (number->string cases) "/again.sexp")))
   (write! path edited)
   (write! symbols (section "a.js" edited (sym 0 (bytes-of edited) 'module "whole")))
   (let ((a (local (car c) "import-code" out "--symbols" symbols)))
     (want "IS6 the re-import answers ok and lists a.js as symbols-ignored"
-          (list (car first) (car exported) (car a) (clause a 'symbols-ignored))
-          '(ok ok ok ("a.js")))
+          (list (car first) (car exported) (integer? at) (car a) (clause a 'symbols-ignored))
+          '(ok ok #t ok ("a.js")))
     (want "IS6 the same two children, by id, and beta's src is the edited one"
           (list (equal? (children-of (car c) "a.js") before) (files-of (car c)))
           (list #t (list (list "a.js" (car two-blocks) "function beta() {\n  return 22;\n}\n"))))))
