@@ -1,23 +1,54 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-05
 
-*9 commits since 1.0.0, on master and not yet released.* What the next release will carry so far.
+*26 commits.* Queries and context for agents, read receipts and write premises, class and validity, a change stream, runners for five more languages, and a measured row for macOS on x86_64.
 
-### Added
+### New verbs
 
-- `commitments` lists the decisions still owed, and a verb can be registered as data rather than in the core's own table.
-- `read <id> --cut <cut>` reads a block as it was at a causal cut, and every `log` entry gives the event's cut.
-- The project template: `init --template`, `template apply` and `template export`, and the `tasks` verb.
-- Name use: the names a code block uses, and the blocks that use a name.
+- `query <goal>` answers every binding of a goal's variables over the committed state at one cut. Its facts are twenty relations the store already answers, combined by nineteen rules kept as data; `query --relations` lists both. A query reads no log, runs no code and writes nothing; one whose new work passes a million tuples is refused, never answered in part.
+- `context --for <id> --budget <tokens>` answers what to read before working on a block, within a budget counted as four bytes a token of the answer as the wire prints it, its cut left out, with a receipt that a commit can be given back as its premises.
+- `subscribe changes <rev> [<token>]` keeps a connection to the daemon and prints one line for each publication: blocks added and removed, fields, positions and parents changed, conflicts entered and resolved, edges added and removed. A commit made outside the daemon reaches subscribers within about a second. The MCP shell does not offer it, and without a daemon it answers `needs-daemon`.
+- `commitments` lists the decisions still owed: a decision is open until a live block implements it (a task only once it is done) or its status is done or dropped. `--drifted` names implementations whose content has changed since the link, unless a later link or edit of the decision has seen the change; status, batch, keywords, class and slug do not count.
+- `init --template` or `--template-file`, `template apply` and `template export` make a store from a template of document roots and relations, or give one to a store; the built-in templates are `project` and `memory`. `tasks` lists blocks of kind task.
+- `names <id>` lists the names a code block uses and the libraries a library block imports; `uses <name>` lists the live code blocks that use a name.
+
+### New options and clauses
+
+- `read <id> --cut <cut>` reads a block at a causal cut, written out or as a tag; every `log` entry gives the event's `cut` and `past`.
+- `read --rev` adds the daemon publication the answer was read from, `(rev <n> (daemon "<token>"))`, so a subscriber can apply frames by revision.
+- Read receipts: `(cut ...)`, the state a read was answered from, and `(versions ...)`, the version of each block it shows or lists, at the end of an answer. `read`, `refs`, `commitments`, `tasks`, `names` and `uses` carry both; `search`, `grep` and `whereis` add the versions; `outline` and `reach` carry the cut.
+- `--premises <datum>` on every committed write -- insert, set, move, del, link, unlink, tag, batch, commit, import-code, import-md, def and template apply -- with a list of block versions and query digests, or a `receipt` as `context` prints it. When they no longer hold, nothing is written and the write is refused by name.
+- A block's `class`: observation, inference, ruling, verification or external. The relations supersedes, refutes, depends-on, implements, verifies and conflicts-with decide whether a block is valid, superseded, refuted or needs review. A plain `read` of a block that is not valid adds `(validity ...)`; `search`, `grep` and `whereis` leave out superseded and refuted blocks, and `--all-validity` keeps them.
+- `eval --lang` has default runners for `typescript` (node), `go` (go run), `rust` and `c` (compiled, then run) and `java` (single-file launch). `THEOURGIA_RUNNER_TYPESCRIPT`, `THEOURGIA_RUNNER_GO`, `THEOURGIA_RUNNER_RUST`, `THEOURGIA_RUNNER_C` and `THEOURGIA_RUNNER_JAVA` each replace one with a whole runner. Runners still need `THEOURGIA_RUNNERS=on`.
+
+### Platforms
+
+- macOS on x86_64 has its own measured row, read under Rosetta, and is no longer refused; there `stat` and `lstat` bind their `$INODE64` symbols.
+
+### Changed behaviour you may notice
+
+- When validity leaves out every hit, the human output of `search`, `grep` and `whereis` now prints the `(excluded ...)` line instead of nothing. A script that took empty output to mean no match should read `--wire`.
+- `write` on a block whose mode is datum is refused `draft-on-datum-unsupported`, and `commit` refuses a draft that would put text on one. Both used to answer ok, and the edit never took effect. Change a datum block with `def`; `check` reports a datum block that already carries text.
+- A daemon refuses every later write to a writer's log once the segment it was appending to is replaced by a shorter one -- a git checkout of another branch under a running daemon -- until it is restarted. Restart the daemon after switching the store's branch.
+- The answers of `read`, `refs`, `commitments`, `tasks`, `names`, `uses`, `search`, `grep`, `whereis`, `outline` and `reach` end with receipt clauses. The human output is unchanged except for plain `read` and `reach`, which print whole; a script that compares whole `--wire` answers will see the new clauses at the end.
+- Superseded and refuted blocks are left out of `search`, `grep` and `whereis` by default in a store that links those relations. Ask with `--all-validity` to see them.
+- Starting from source takes about 1% longer: the code the premises check adds is compiled at every start (1.1%, the median of three runs of 40 interleaved pairs); the commitments registry added 0.5% before it.
 
 ### Fixed
 
-- The daemon samples a publication's snapshot no later than its state.
+- The daemon sampled a publication's snapshot after its fold had released the store's lock, so a commit by another process in between could go unseen until something else changed.
+- A retry that completes an interrupted plan -- a commit, an import, a def -- wrote its missing members over what other requests had written to the same blocks since, and answered ok. It now checks first and answers `stale-baseline` when a block has moved. An interrupted import that created a file can now be completed; it used to answer `malformed-intent`.
+- `import-md` replaced bytes that were not UTF-8 with U+FFFD and imported the file changed. A file that is not valid UTF-8, or holds a NUL byte, is now skipped and listed under `(skipped ...)`, as `import-code` does.
+- `read --cut` could answer ok from a smaller cut when a record was quarantined between the cut check and the replay; it now refuses `cut-moved`.
+- A code block whose derived fields raised when shown was answered `(error internal ...)` with no block named; the answer now names it.
+- A value written once that merely had a conflict's shape was read as a conflict by `search`, `grep`, references, `commitments` and `tasks`; a field is contested now only when two or more of its candidates survive.
+- A record definition with a malformed field spec could raise when the store read a block's names; it now binds only its type's names. The name walk's shape rules follow what Chez accepts.
 
 ### Documentation
 
 - README corrected against the code, with a new opening line.
+- The agent-memory guide, `docs/claude-code-memory.md`, checked against the code.
 
 ## 1.0.0 — 2026-09-30
 

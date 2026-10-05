@@ -6,7 +6,7 @@ Requirements: Chez Scheme, igropyr, and libuv. No build step when run from sourc
 
 Chez Scheme 10.1.0, 10.3.0, 10.4.0 or 10.4.1 (the datum printer is measured identical on these; any other version refuses the verbs that print a datum with `(error unsupported-printer-version)`).
 
-Platforms: the ones with a measured row in `platform-numbers.sc` -- macOS on arm64, Linux on x86_64 and on aarch64 with glibc, and FreeBSD on amd64 (the row was measured on FreeBSD 15, and it is chosen by machine type alone, so another FreeBSD release on amd64 gets it too). On any other platform (another architecture, macOS on x86_64 or under Rosetta, a Linux with musl) every program writes `(error platform-unmeasured ...)` and exits 75 before it does anything else.
+Platforms: the ones with a measured row in `platform-numbers.sc` -- macOS on arm64 and on x86_64, Linux on x86_64 and on aarch64 with glibc, and FreeBSD on amd64 (the row was measured on FreeBSD 15, and it is chosen by machine type alone, so another FreeBSD release on amd64 gets it too). On any other platform (another architecture, macOS on x86_64 or under Rosetta, a Linux with musl) every program writes `(error platform-unmeasured ...)` and exits 75 before it does anything else.
 
 macOS: `brew install chezscheme libuv`
 Debian / Ubuntu: `apt install chezscheme libuv1-dev`
@@ -151,6 +151,10 @@ Every verb answers with one line: an S-expression that begins with ok or error. 
 
 A read of the committed store ends with a receipt: `(cut <cut>)`, the state the answer was read from, and `(versions ((<id> . "<hash>") ...))`, the version of each block it shows. A version is the token `--if-unchanged` compares, so a block read and written back with it is refused if it changed in between. `read` (plain, `--md`, `--recursive`), `refs`, `commitments`, `tasks`, `names` and `uses` carry both clauses; `search`, `grep` and `whereis`, which already give their cut, add the versions; `outline` and `reach` carry the cut only. A working read, a draft listing, `log`, `diff`, `conflicts`, `check`, `diagnostics`, `describe` and the exports carry none. The human output shows the receipt only for a plain `read` and for `reach`. Recall does not need either clause; a write that must not overwrite a later change does.
 
+### Premises
+
+A committed write can say what it rests on with `--premises`: a list of block versions and query digests, or the `receipt` that `context` prints; README gives the forms. Every committed write takes the option: insert, set, move, del, link, unlink, tag, batch, commit, import-code, import-md, def and template apply. The store checks the premises under its lock before the write's first record, and when they no longer hold, nothing is written and the write is refused by name. A retry of a request that was already written is not checked again, and its answer says `(premises not-checked ...)`.
+
 ### Class and validity
 
 A block's `class` says what kind of statement it is: `observation`, `inference`, `ruling`, `verification` or `external`. With no class, a decision is a ruling and anything else an observation. Observations, rulings and verifications are authoritative; inferences and external material are not.
@@ -158,6 +162,12 @@ A block's `class` says what kind of statement it is: `observation`, `inference`,
 Blocks are linked with six relations: `supersedes`, `refutes`, `depends-on`, `implements`, `verifies` and `conflicts-with`. From those links each block has a validity, `valid`, `needs-review`, `superseded` or `refuted`; README's "Class and validity" gives the rules. Only an authoritative block can supersede or refute another. From any other block, `supersedes`, `refutes` and `conflicts-with` are only proposals.
 
 A plain `read` of a block that is not valid adds a `(validity ...)` clause, and `read` never hides a block. `search`, `grep` and `whereis` leave out superseded and refuted blocks; the `(excluded ...)` clause that counts them is in the `--wire` answer only, and the human output shows the hits in force and nothing else -- nothing at all when every hit was left out, except an `(incomplete ...)` line if the store missed a writer. `--all-validity` leaves nothing out and names every hit that is not valid. A store that links none of the six relations answers as before.
+
+### Queries and context
+
+`query <goal>` answers every binding of a goal's variables over the committed state at one cut. Its facts are twenty relations the store already answers -- a block's kind, class, validity, version, title and fields, edges, parents and text references, libraries, definitions, name use, the lifecycle's reasons and states, and search scores -- and nineteen rules kept as data combine them; `query --relations` lists both. A query reads no log, runs no code and writes nothing, and one whose new work passes a million tuples is refused, never answered in part. An answer carries a digest of its rows, which a write can give back as a premise.
+
+`context --for <id> --budget <tokens>` answers what to read before working on a block, within a budget counted as four bytes a token of the answer as the wire prints it, its cut left out: the blocks it must show, with their roles and validity, the decisions still unsettled for the block, implementations in review and contradictions in its scope, then definitions, evidence, dependents and ancestors as the budget allows. Its receipt holds a premise for every block it had to show and the digests of the five queries that chose them, so a commit given that receipt is refused if any of that has changed; what it adds as the budget allows is not in the receipt.
 
 ### Writers
 
@@ -178,6 +188,10 @@ One store per project or per person, on one machine. The machine registry tracks
 ### The daemon
 
 Every verb can run standalone: open the store, answer, exit. For a session that sends many verbs, serve holds the store open and answers over a unix socket. The client finds the socket by the same rule the daemon used to create it, so nothing needs to be told where it is. The daemon's answer is the CLI's answer, byte for byte; both call the same dispatcher, and no verb or answer shape exists in one and not the other, except eval: the daemon does not run it -- sent over the socket, it is answered unknown-verb -- and the CLI runs it in core.sc as its own child. When no daemon is running, the CLI starts one beside itself and asks again; `THEOURGIA_LOCAL=1` skips the socket and answers in process, for debugging. The daemon answers reads from the state it last folded, and can be one commit behind an outside change: a read that notices a record appended by another process, or a segment a git pull brought in, is still answered from that state and asks for a fresh fold, and the reads after the fold see the change. A write is never answered from that state: it is decided on the store as it stands under the lock. While a daemon serves a store, write through it.
+
+### The change stream
+
+A client of the daemon can follow what changes. `theourgia subscribe changes 0` prints an acceptance, then one line for every publication the daemon makes: blocks added and removed, fields, positions and parents changed, conflicts entered and resolved, edges added and removed. A commit made by another process reaches subscribers within about a second. Subscribe first, then read what you follow with `read --rev`, which names the publication the answer came from, and apply each frame whose revision is the next one; a frame further ahead is a gap, and the remedy is to read again. A resume, `subscribe changes <rev> <token>`, replays the frames the daemon still holds: at most the last 256, and only publications made while someone was subscribed; a resume that would skip one is refused `window`. The MCP shell is request and response and does not offer the stream; without a daemon, `subscribe` answers `needs-daemon`.
 
 ### Put the store in git
 
@@ -225,14 +239,14 @@ $ theourgia insert --store store --under root --title "..."
 
 > **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. A clone that carries another copy's instance.sexp is refused for the mismatch, as above; a clone without one -- what the .gitignore init writes gives -- is refused `(error refused no-instance (remedy adopt))`. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
-## 43 verbs
+## 46 verbs
 
 Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, daemon over the socket, or child: a process the caller runs itself, so the store's server never runs user code.
 
 ### Reading a store
 
 ```
-read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info] [--signature] [--cut <cut>]
+read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info] [--signature] [--cut <cut>] [--rev]
 ```
 
 Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. With --cut, the block as it was at a causal cut (a literal or a tag name): the same answer over that cut's state, or unknown-id where the block did not exist yet. (daemon)
@@ -274,7 +288,7 @@ outline [--depth <n>] [--with-keywords] [--with-signatures]
 List the blocks as a tree of titles. (daemon)
 
 ```
-tag [<name>]
+tag [<name>] [--premises <datum>]
 ```
 
 Name the current cut, or list the names already given. (daemon)
@@ -315,6 +329,26 @@ uses <name> [--under <id>]
 
 The live code blocks that use a name, compared whole and exactly, one row per block with its library and mode; with --under, those inside that block. It is not find-references: a use is listed whether or not anything defines the name, and a text block that defines the name also lists it. (daemon)
 
+```
+query [<goal>] [--relations]
+```
+
+Answer one goal of the query language over the committed state: every binding of its variables, one row each, sorted by their bytes, with a digest of the rows. A goal is a fact relation, a rule of the library, a test, or (and <goal> ...). --relations lists the fact relations and the rules. (daemon)
+
+```
+context --for <id> --budget <tokens> [--all-validity]
+```
+
+The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back. (daemon)
+
+### Following a store
+
+```
+subscribe <stream> <rev> [<token>]
+```
+
+Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave. (stream)
+
 ### Making and changing blocks
 
 ```
@@ -324,49 +358,49 @@ init [--template <name>] [--template-file <template-file>]
 Create a store in this directory; with --template (a built-in such as project) or --template-file, then apply that template to it. (local)
 
 ```
-template <action> [<name>] [--file <template-file>]
+template <action> [<name>] [--file <template-file>] [--premises <datum>]
 ```
 
 Apply a template to this store (apply <name>, or apply --file <template-file>): create the template block and each document root the store lacks, changing nothing that exists. Or print the store's template (export). (daemon)
 
 ```
-insert [--under <id>] [--after <id>] --title <text> [--text <text>] [--keywords <text>]
+insert [--under <id>] [--after <id>] --title <text> [--text <text>] [--keywords <text>] [--premises <datum>]
 ```
 
 Add a block under a parent, with a title and optional text. (daemon)
 
 ```
-set <id> <field> <value> [--if-unchanged <version>] [--based-on <version>]
+set <id> <field> <value> [--if-unchanged <version>] [--based-on <version>] [--premises <datum>]
 ```
 
 Replace one field of one block. (daemon)
 
 ```
-move <id> <parent> [--after <id>]
+move <id> <parent> [--after <id>] [--premises <datum>]
 ```
 
 Move a block to another parent, optionally after a sibling. (daemon)
 
 ```
-del <id>
+del <id> [--premises <datum>]
 ```
 
 Retire a block. Its history stays. (daemon)
 
 ```
-link <from> <rel> <to>
+link <from> <rel> <to> [--premises <datum>]
 ```
 
 Record a named relation between two blocks. (daemon)
 
 ```
-unlink <from> <rel> <to>
+unlink <from> <rel> <to> [--premises <datum>]
 ```
 
 Remove a named relation between two blocks. (daemon)
 
 ```
-def <name> [--under <library>] <source>
+def <name> [--under <library>] <source> [--premises <datum>]
 ```
 
 Define or replace one named definition. (daemon)
@@ -398,7 +432,7 @@ discard <block> [--writer <name>]
 Throw away a writer's draft of a block. (daemon)
 
 ```
-commit [<block> ...] [--writer <name>] [--working-version <block>=<version>]
+commit [<block> ...] [--writer <name>] [--working-version <block>=<version>] [--premises <datum>]
 ```
 
 Install a writer's drafts into the store as one change. (daemon)
@@ -406,7 +440,7 @@ Install a writer's drafts into the store as one change. (daemon)
 ### Importing, exporting, splitting
 
 ```
-import-md <dir> [--allow-delete]
+import-md <dir> [--allow-delete] [--premises <datum>]
 ```
 
 Read a directory of markdown into the store. (daemon)
@@ -418,7 +452,7 @@ export-md <dir> [--with-ids] [--working] [--writer <name>]
 Write the store out as markdown. (daemon)
 
 ```
-import-code <dir> [--allow-delete] [--datum]
+import-code <dir> [--allow-delete] [--datum] [--premises <datum>]
 ```
 
 Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. (daemon)
@@ -468,7 +502,7 @@ publish <writer> <segment> <file> [<sha256>]
 Publish a segment of a writer's log. (daemon)
 
 ```
-batch <intents>
+batch <intents> [--premises <datum>]
 ```
 
 Carry out several changes as one request. (daemon)
@@ -528,6 +562,11 @@ A request that reaches a server naming `--store`, `--actor`, `--wire` or `--sock
 | `THEOURGIA_EVAL_SLOTS` | How many evaluations one run root runs at once. Falls back to the number of online processors |
 | `THEOURGIA_RUNNERS` | `on` turns on `eval --lang`'s runners for another language |
 | `THEOURGIA_RUNNER_CHEZ` | The operator's runner for `eval --lang chez`, replacing the language table's fields |
+| `THEOURGIA_RUNNER_TYPESCRIPT` | The operator's runner for `eval --lang typescript`, a whole runner in place of the default |
+| `THEOURGIA_RUNNER_GO` | The operator's runner for `eval --lang go`, a whole runner in place of the default |
+| `THEOURGIA_RUNNER_RUST` | The operator's runner for `eval --lang rust`, a whole runner in place of the default |
+| `THEOURGIA_RUNNER_C` | The operator's runner for `eval --lang c`, a whole runner in place of the default |
+| `THEOURGIA_RUNNER_JAVA` | The operator's runner for `eval --lang java`, a whole runner in place of the default |
 | `THEOURGIA_TRACE` | `1` writes filesystem and dispatch events to stderr |
 
 ## Working with agents
@@ -658,7 +697,7 @@ An agent reads the facts through MCP; from the command line they come back from 
 
 ### Platforms
 
-Packages are built for macOS on Apple Silicon and on Intel, and Linux on x86_64 and arm64. The core has no measured row for macOS on Intel yet, so there the extension installs but the core refuses to start (`platform-unmeasured`). The extension takes a file lock through a small native module (`flock`) built on each target's own runner. There is no Windows package.
+Packages are built for macOS on Apple Silicon and on Intel, and Linux on x86_64 and arm64. The core has a measured row for each of them. The extension takes a file lock through a small native module (`flock`) built on each target's own runner. There is no Windows package.
 
 ## Limits
 
@@ -666,9 +705,9 @@ Two agents on one writer id: silent overwrite, no detection. The rule is in the 
 
 Two machines on one store: not supported. A store belongs to one machine's registry; moving it to another requires adopt.
 
-Platforms: only those with a measured row run -- macOS on arm64, Linux on x86_64 and aarch64 with glibc, FreeBSD on amd64 (measured on FreeBSD 15; the row is chosen by machine type, not by release). Anything else exits 75 with platform-unmeasured; the remedy is to run test/probe/layout.c there and add its row.
+Platforms: only those with a measured row run -- macOS on arm64 and on x86_64, Linux on x86_64 and aarch64 with glibc, FreeBSD on amd64 (measured on FreeBSD 15; the row is chosen by machine type, not by release). Anything else exits 75 with platform-unmeasured; the remedy is to run test/probe/layout.c there and add its row.
 
 Exports at a cut: export-md and export-code take no --cut. They write the committed state, or with --working the writer's working view; only a --working export's answer names the cut its view stands on, and an earlier cut has no export.
 
-Runners (--lang): the Scheme evaluator runs in a sandboxed child process with no filesystem and no network. A runner for another language (node, python3, sh, or chez, which runs Scheme outside the sandbox with the store's libraries on its path) gets a projected copy of the store's code files in a temporary directory and the machine's own interpreter, so it has the reach of a local script. Runners are off by default (THEOURGIA_RUNNERS=on).
+Runners (--lang): the Scheme evaluator runs in a sandboxed child process with no filesystem and no network. A runner for another language (javascript and typescript with node, python with python3, shell with sh, go with go run, rust and c compiled and then run, java with its single-file launch, or chez, which runs Scheme outside the sandbox with the store's libraries on its path) gets a projected copy of the store's code files in a temporary directory and the machine's own tools, so it has the reach of a local script. Runners are off by default (THEOURGIA_RUNNERS=on).
 
