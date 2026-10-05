@@ -218,6 +218,20 @@
         (list (car a) (clause a 'symbols-refused) (files-of (car c)))
         (list 'ok '(("a.js" (error symbols-not-top-level (at 19)))) (list (cons "b.js" two-blocks)))))
 
+;; ---- IS3b: a section whose digest is not the file's refuses that file ---------------
+;; a.js's header carries the digest of other bytes; the section's own checks
+;; refuse it before any cut is made. b.js is cut as IS1's.
+(let* ((c (case! (list (cons "a.js" two) (cons "b.js" two))
+                 (string-append (section "a.js" "other bytes" (sym 0 32 'function "alpha") (sym 33 64 'function "beta"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS3b a.js is refused symbols-stale with both digests and not imported; b.js is imported cut at 33"
+        (list (car a) (clause a 'symbols-refused) (files-of (car c)))
+        (list 'ok
+              (list (list "a.js" (list 'error 'symbols-stale (list 'digest-expected (digest-of "other bytes"))
+                                       (list 'digest-found (digest-of two)))))
+              (list (cons "b.js" two-blocks)))))
+
 ;; ---- IS4: a file the scanner cannot follow is refused with the byte ----------------
 (let* ((c (case! (list (cons "o.js" open-text) (cons "b.js" two))
                  (string-append (section "o.js" open-text (sym 0 30 'function "alpha") (sym 32 63 'function "beta"))

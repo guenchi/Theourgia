@@ -1612,7 +1612,9 @@ spells it, then that file's symbol lines.
     (symbol <start> <end> <kind> "<name>")
 
 Every start is a cut, and every end is taken to the start of the line
-after it, so what follows a symbol on its last line stays with it. What
+after it, so what follows a symbol on its last line stays with it. Ends
+are normalised and starts are not: a start must already be the first byte
+of its line, or the file is refused `symbols-not-a-line-start`. What
 lies before the first symbol, between two, or after the last is a block of
 its own: the blocks' bytes run together to the file. A cut at the end of
 the protected prefix (a shebang, a coding line, a byte-order mark) is
