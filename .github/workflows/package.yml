@@ -113,14 +113,14 @@ jobs:
           esac
       # The vsce of the lockfile, not whatever version npx would fetch.
       - name: Package
-        run: ./node_modules/.bin/vsce package --target ${{ matrix.target }} --out theourgia-${{ matrix.target }}.vsix
+        run: ./node_modules/.bin/vsce package --target ${{ matrix.target }} --out theourgos-${{ matrix.target }}.vsix
       # A package once shipped without the goeteia reader and never
       # activated: these are the files activate() loads, by their place in
       # the vsix (the list scripts/package-gate.js checks).
       - name: The package carries what activate() loads
         shell: bash
         run: |
-          listing="$(unzip -Z1 theourgia-${{ matrix.target }}.vsix)"
+          listing="$(unzip -Z1 theourgos-${{ matrix.target }}.vsix)"
           echo "$listing" | wc -l
           missing=0
           for f in extension/package.json extension/out/src/extension.js extension/out/src/native/lease.node \
@@ -131,7 +131,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ matrix.target }}
-          path: theourgia-${{ matrix.target }}.vsix
+          path: theourgos-${{ matrix.target }}.vsix
           if-no-files-found: error
 
   unit:

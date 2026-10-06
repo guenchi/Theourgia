@@ -289,7 +289,7 @@ describe('the extension inside an editor', function () {
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-host', vscode.ConfigurationTarget.Global);
-    const extension = vscode.extensions.getExtension('theourgia.theourgia');
+    const extension = vscode.extensions.getExtension('theourgia.theourgos');
     assert.ok(extension !== undefined, 'the extension is not installed in this host');
     await extension?.activate();
     await settingsTaken(store.store, 'vscode-host');
@@ -328,7 +328,7 @@ describe('the extension inside an editor', function () {
   });
 
   it('registers every command its manifest declares', async () => {
-    const extension = vscode.extensions.getExtension('theourgia.theourgia');
+    const extension = vscode.extensions.getExtension('theourgia.theourgos');
     const declared = (
       extension?.packageJSON?.contributes?.commands as Array<{ command: string }> | undefined
     )?.map((c) => c.command);
@@ -1016,7 +1016,7 @@ describe('a retry whose store changed while it was in flight', function () {
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-retry', vscode.ConfigurationTarget.Global);
-    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await vscode.extensions.getExtension('theourgia.theourgos')?.activate();
     await settingsTaken(store.store, 'vscode-retry');
   });
 
@@ -1196,7 +1196,7 @@ describe('what the status reports when the settings are unusable', function () {
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-broken', vscode.ConfigurationTarget.Global);
-    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await vscode.extensions.getExtension('theourgia.theourgos')?.activate();
     await settingsTaken(store.store, 'vscode-broken');
   });
 
@@ -1273,7 +1273,7 @@ describe('plugin-r2 T1 the extension reaches the core through a daemon', functio
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-daemon', vscode.ConfigurationTarget.Global);
-    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await vscode.extensions.getExtension('theourgia.theourgos')?.activate();
     await settingsTaken(store.store, 'vscode-daemon');
   });
 
@@ -1378,7 +1378,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-nodaemon', vscode.ConfigurationTarget.Global);
-    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await vscode.extensions.getExtension('theourgia.theourgos')?.activate();
     await settingsTaken(store.store, 'vscode-nodaemon');
   });
 

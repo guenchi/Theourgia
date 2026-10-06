@@ -2,6 +2,17 @@
 
 ## 1.1.0 — 2026-10-06
 
+* The extension is Theourgos, package name theourgos under the publisher
+  theourgia: its id is `theourgia.theourgos`, and its packages are named
+  `theourgos-<target>.vsix`. Its commands, settings and views keep their
+  `theourgia.` names. This is the id the Marketplace has listed since
+  1.0.0, so an extension installed from the Marketplace updates in place.
+  A 1.0.0 installed by hand from a `.vsix` built before this change has
+  the id `theourgia.theourgia`, which VS Code treats as another
+  extension: let its pending saves go through (or discard them), then
+  uninstall it before installing 1.1.0, since both register the same
+  commands.
+
 * The core is pinned at theourgia 1.1.0 (3a4ac93), which adds `read --rev`,
   the `subscribe` change stream, `context` and `query`, and prints an
   `(excluded ...)` line on the human route when every hit was out of force.

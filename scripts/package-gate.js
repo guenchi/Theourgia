@@ -45,7 +45,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const EDITOR_VERSION = '1.138.0';
-const EXTENSION_ID = 'theourgia.theourgia';
+const EXTENSION_ID = 'theourgia.theourgos';
 const MARK = `gate line ${process.pid}`;
 
 /*

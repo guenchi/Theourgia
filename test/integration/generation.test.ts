@@ -220,7 +220,7 @@ describe('a setting that changes while a request is in flight', function () {
   let core: FakeCore;
 
   before(async () => {
-    const extension = vscode.extensions.getExtension('theourgia.theourgia');
+    const extension = vscode.extensions.getExtension('theourgia.theourgos');
     assert.ok(extension !== undefined);
     await extension?.activate();
   });
