@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-06
 
 * The core is pinned at theourgia 1.1.0 (3a4ac93), which adds `read --rev`,
   the `subscribe` change stream, `context` and `query`, and prints an
