@@ -1,4 +1,4 @@
-# theourgia
+# Theourgia
 
 A block-graph store where agents and people write together: the `theourgia` command,
 its daemon, and an MCP shell, packaged for npm. Licensed under the Apache
