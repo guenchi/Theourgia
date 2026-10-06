@@ -660,10 +660,10 @@ Each request runs the core's client as a child process, `<scheme> --script <core
 Install the `.vsix` package for your platform from the command line:
 
 ```
-code --install-extension theourgia-darwin-arm64.vsix
+code --install-extension theourgos-darwin-arm64.vsix
 ```
 
-The packages are named `theourgia-<target>.vsix`. The Visual Studio Marketplace listing arrives when the extension is published there.
+The packages are named `theourgos-<target>.vsix`. On the Visual Studio Marketplace the extension's id is `theourgia.theourgos` -- publisher `theourgia`, package `theourgos` -- and it installs with `code --install-extension theourgia.theourgos`. Its commands and settings keep the `theourgia.` prefix, and its view and activity-bar container keep their theourgia names.
 
 ### What it does
 
