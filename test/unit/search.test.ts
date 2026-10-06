@@ -2100,7 +2100,7 @@ describe('plugin-r2 a refusal this build cannot read is not a refusal', function
 
 /*
  * A SEARCH WHOSE EVERY HIT WAS LEFT OUT. On the human route the pinned core
- * (6593f78) prints its `(excluded ...)` line when every hit was in a
+ * (3a4ac93, as from 6593f78) prints its `(excluded ...)` line when every hit was in a
  * superseded or refuted block, a line that is not a hit, on which the
  * human-route reader would throw "the store did not answer the search"; an
  * older core (5c28e42) printed nothing, so this client said "nothing in the

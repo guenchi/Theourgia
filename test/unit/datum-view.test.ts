@@ -34,6 +34,8 @@ import { DatumScratch, datumViewOf, isDatumBlock } from '../../src/datum-view';
 import { Composed, DocumentTexts, documentQuery, readDocumentQuery } from '../../src/document-view';
 import { readProjection } from '../../src/markers';
 import { initWire, parseAnswers, wire } from '../../src/wire';
+import { DatumBlockRefused, Working, datumDraftSentence } from '../../src/working';
+import { refusalNotice } from '../../src/status';
 
 const HEADER = '(code-projection 1 "s0000001" "d.1" (("w" . 2)) datum 0)';
 const FILE =
@@ -551,5 +553,49 @@ describe('a read that does not show text leaves no record saying text', function
 
   it('records text when the overtaking read also shows text (the control)', () => {
     assert.strictEqual(schedule('race-text').mode, 'text');
+  });
+});
+
+/*
+ * A DRAFT THE CORE REFUSES ON A DATUM BLOCK, ON THE WRITE PATH. A save writes
+ * the draft first, and from theourgia 13c1637 the core refuses that write
+ * when the block became a datum after this file recorded it as text -- so
+ * the recorded mode let the save through the gate unasked. The write is
+ * refused as the gate refuses one, carrying the core's sentence, and the
+ * notice says that sentence, not "the working note was not confirmed saved".
+ */
+describe('a working write the core refuses on a datum block', function () {
+  before(async () => {
+    await initWire();
+  });
+
+  it('is refused as a datum block with the one sentence, and the notice says it', async () => {
+    const sent: string[][] = [];
+    const client = new Client({
+      kind: 'test',
+      send: async (verb: string, args: string[]) => {
+        sent.push([verb, ...args]);
+        return {
+          argv: [verb, ...args],
+          rc: 1,
+          stdout: '(error bad-request draft-on-datum-unsupported (block "a.2") (use def))\n',
+          stderr: ''
+        };
+      }
+    });
+    let caught: unknown = null;
+    try {
+      await new Working(client, 'window-w').write('a.2', 'body\n', '', false, undefined, 'text');
+    } catch (error) {
+      caught = error;
+    }
+    assert.deepStrictEqual(sent.map((s) => s[0]), ['write'], 'the write path was not the one driven');
+    assert.ok(caught instanceof DatumBlockRefused, `the refusal was not read as a datum block: ${String(caught)}`);
+    assert.strictEqual((caught as DatumBlockRefused).block, 'a.2');
+    assert.strictEqual((caught as DatumBlockRefused).said, datumDraftSentence('a.2'));
+    assert.deepStrictEqual(refusalNotice('a.2', '/w/a.2.js', { because: 'datum-block', said: datumDraftSentence('a.2') }), {
+      level: 'error',
+      text: `a.2: ${datumDraftSentence('a.2')}. Your file is kept.`
+    });
   });
 });

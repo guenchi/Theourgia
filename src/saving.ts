@@ -62,9 +62,11 @@ export type Refusal =
   | { because: 'working-unavailable'; detail:string }
   /*
    * The block is a datum: its code is not the text this file holds, and
-   * this editor cannot write one (src/datum-view.ts). Nothing was sent.
+   * this editor cannot write one (src/datum-view.ts). Nothing was sent --
+   * or, with `said`, the core refused the working write itself, in those
+   * words (src/working.ts, datumDraftSentence).
    */
-  | { because: 'datum-block' }
+  | { because: 'datum-block'; said?: string }
   | { because: 'byte-order-mark' }
   | { because: 'not-utf8' }
   | { because: 'disk-differs-from-snapshot' }

@@ -412,7 +412,7 @@ describe('S6 an answer is sorted by what it says about the store', () => {
    *     said. Kept, under the same request id, as every `unknown` is; the
    *     core judges each retry again. This is the bare form, answered when
    *     the plan cannot be seen applied before anything is written
-   *     (completion.sc:235); after a written member the stop comes inside a
+   *     (completion.sc:259); after a written member the stop comes inside a
    *     `batch`, and that is a commit's, in sending.test.ts.
    *   - `(error stale-baseline ... (completion (plan <event>) (present
    *     <index> ...) (of <n>)))`: another record touched a block a missing
@@ -1870,7 +1870,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
     /*
      * AND IT SAYS THE REMEDY IT WAS GIVEN, not one it knows: 877f0da's
      * `remedy-for` names another one for a registry inside the store
-     * (store.sc:2789).
+     * (store.sc:2790).
      */
     const other = rig([
       {
@@ -1885,12 +1885,80 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
   });
 
   /*
+   * A DRAFT ON A DATUM BLOCK, SAID BY NAME. From theourgia 13c1637 write and
+   * commit refuse one; the mode gate stops it before sending unless the
+   * block became a datum after this editor recorded it as text, so the
+   * answer is rare, and it is said as the gate says it, with the core's
+   * block, not as a bad request.
+   */
+  it('says a draft refused on a datum block by name, with the block the core named', async () => {
+    const r = rig([
+      { match: ['set'], stdout: '(error bad-request draft-on-datum-unsupported (block "a.2") (use def))\n', rc: 1 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'refused');
+    assert.match(outcome.message, /a\.2 is a datum block/);
+    assert.match(outcome.message, /draft-on-datum-unsupported/);
+    assert.doesNotMatch(outcome.message, /refused the write: bad-request/, `it was said as a bad request: ${outcome.message}`);
+    assert.strictEqual(outcome.keptForAPerson, undefined, 'the refusal was kept for a person');
+    assert.strictEqual(r.outbox.entries.length, 0, 'the refused save was not settled out of the queue');
+    core.dispose();
+    /*
+     * AND ON A PLAN COMPLETED ON A RETRY, the completion clause completion.sc
+     * appends is kept after the sentence.
+     */
+    const retried = rig([
+      {
+        match: ['set'],
+        stdout:
+          '(error bad-request draft-on-datum-unsupported (block "a.2") (use def) ' +
+          '(completion (plan ("w" . 4)) (present 1) (of 2)))\n',
+        rc: 1
+      }
+    ]);
+    core = retried.core;
+    const again = await retried.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(again.status, 'refused');
+    assert.match(again.message, /a\.2 is a datum block/);
+    assert.match(again.message, /\(completion \(plan \("w" \. 4\)\) \(present 1\) \(of 2\)\)/, `the completion was dropped: ${again.message}`);
+    assert.strictEqual(again.keptForAPerson, undefined);
+    assert.strictEqual(retried.outbox.entries.length, 0);
+  });
+
+  /*
+   * A STORE REPLACED UNDER ITS DAEMON, SAID WITH ITS REMEDY IN WORDS. From
+   * theourgia 13c1637 a daemon that finds a log segment it knew replaced on
+   * disk by a shorter one refuses that writer's writes until it is
+   * restarted, naming the segment and the remedy.
+   */
+  it('says a store replaced under its daemon with the segment and restarting the daemon', async () => {
+    const r = rig([
+      {
+        match: ['set'],
+        stdout: '(error refused store-replaced (segment "/s/writers/w1/seg-1") (remedy restart-the-daemon))\n',
+        rc: 1
+      }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'refused');
+    assert.match(outcome.message, /refused store-replaced/);
+    assert.match(outcome.message, /\/s\/writers\/w1\/seg-1/);
+    assert.match(outcome.message, /Restart the store's daemon, then save again/);
+    assert.doesNotMatch(outcome.message, /restart-the-daemon/, `the remedy was printed as a name: ${outcome.message}`);
+    assert.strictEqual(outcome.keptForAPerson, undefined, 'the refusal was kept for a person');
+    assert.strictEqual(r.outbox.entries.length, 0, 'the refused save was not settled out of the queue');
+    core.dispose();
+  });
+
+  /*
    * KEY: A REMEDY THIS CLIENT CANNOT PUT INTO WORDS IS PRINTED, NOT DROPPED.
    * No such shape comes from 877f0da; the rule is that nothing after the
    * name disappears, and this is the case where the first version broke it.
    *
    * NOTE: `(remedy #f)` TOO (queue item 20). 877f0da's remedies are all
-   * names (`remedy-for`, store.sc:2784, and the other places that build
+   * names (`remedy-for`, store.sc:2785, and the other places that build
    * one), never a boolean; the cell pins the client's rule -- what can be
    * said is said, what cannot is printed as written -- for an answer to
    * come, not today's shape. A boolean taken as sayable (measured on
@@ -1913,7 +1981,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
   /*
    * KEY: THE ONE SENTENCE WRITTEN FOR A NAME CARRIES THE REST AS WELL.
    * `(error changed (current ...))` is what store.sc makes of a stale
-   * expectation (store.sc:2563).
+   * expectation (store.sc:2564).
    *
    * NOTE: AND EVERY CLAUSE, NOT ONLY THE FIRST (queue item 20). 877f0da's
    * `changed` has exactly one clause, `(current <hash>)`; the second answer
@@ -1975,7 +2043,7 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
   it('settles a reason at position 2 that is not an instance clause as it always did', async () => {
     /*
      * Three of the other reasons 877f0da puts after `refused`, the first
-     * two a symbol that merely begins like the family (log.sc:5841, 5847).
+     * two a symbol that merely begins like the family (log.sc:5907, 5913).
      */
     for (const reason of ['instance-malformed', 'no-instance', 'integrity']) {
       const r = rig([{ match: ['set'], stdout: `(error refused ${reason})\n`, rc: 1 }]);
@@ -2103,7 +2171,7 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
    * local is what could not be read, not the listing. Limiting that sentence
    * to stores with more than one writer (measured on 87f7115: survived this
    * file) gave the others the listing's sentence. 877f0da never sends
-   * `(local-writer #f)` -- store.sc:4786-4787 leave the clause out when there is
+   * `(local-writer #f)` -- store.sc:4828-4829 leave the clause out when there is
    * no local writer -- so these answers pin the client's rule for an answer
    * to come, not today's shape.
    */

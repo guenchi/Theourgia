@@ -834,7 +834,7 @@ export class StoreModel {
    *
    * NEVER: A PROGRAM READS THE WIRE ANSWER. The human output is for a
    * person. When every hit was in a superseded or refuted block, the pinned
-   * core (6593f78) prints its `(excluded ...)` line there, which, read line
+   * core (3a4ac93, as from 6593f78) prints its `(excluded ...)` line there, which, read line
    * by line as hits, would throw "the store did not answer the search"; an
    * older core (5c28e42) printed nothing, which this read as "nothing in the
    * store matches", the same as words found nowhere. Asked with `--wire`, the

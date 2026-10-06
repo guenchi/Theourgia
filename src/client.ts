@@ -20,7 +20,7 @@
  *
  * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. The thin client exits
  * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
- * the answer is a success (daemon.sc:2487, relayed by `deliver!` in
+ * the answer is a success (daemon.sc:2547, relayed by `deliver!` in
  * theourgia.sc); `init`, which the thin client runs in-process through
  * `core.sc` (`local-verbs`, theourgia.sc:72), exits by the same predicate
  * there (core.sc:767) -- and that

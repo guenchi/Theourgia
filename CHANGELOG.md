@@ -2,9 +2,25 @@
 
 ## Unreleased
 
-* The core is pinned at theourgia 6593f78, which adds `read --rev`, the
-  `subscribe` change stream, `context` and `query`, and prints an
+* The core is pinned at theourgia 1.1.0 (3a4ac93), which adds `read --rev`,
+  the `subscribe` change stream, `context` and `query`, and prints an
   `(excluded ...)` line on the human route when every hit was out of force.
+  It also refuses a draft written or committed on a datum block, `(error
+  bad-request draft-on-datum-unsupported (block <id>) (use def))`. And a
+  daemon that finds, before a session's first append, a log segment it knew
+  replaced on disk by a shorter one refuses that writer's writes, `(error
+  refused store-replaced (segment ...) (remedy restart-the-daemon))`, until
+  it is restarted.
+* A save the core refuses because its block is a datum block -- one that
+  became a datum after the file was opened as text -- now says the block is
+  a datum block and opens read-only, whether the core refused the draft's
+  write or its commit, and the block is then recorded as datum. Before, the
+  write's refusal said "the working note was not confirmed saved" and the
+  commit's "the core refused the write: bad-request".
+* A save refused because a log segment of the store was replaced on disk
+  under its daemon now says so, with the segment, and says to restart the
+  store's daemon and save again, instead of naming the core's remedy as a
+  token.
 
 * Intel macOS: the package for macOS on x86_64 now passes its unit suite
   against the core it is pinned to (theourgia 5c28e42, which measured that

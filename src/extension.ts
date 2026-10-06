@@ -2568,11 +2568,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           /*
            * A BLOCK THE GATE FOUND NOT TEXT IS NOT SAVED, AND EVERY RECORD OF
            * IT THIS SESSION HOLDS LEARNS IT: datum, refused next time without
-           * asking the store; no mode, asked again.
+           * asking the store; no mode, asked again. A draft the core itself
+           * refused on a datum block learns datum the same way, and is said
+           * with the core's sentence (working.ts, datumDraftSentence).
            */
           if (error instanceof DatumBlockRefused) {
             publisher.recordModeOfBlock(path.dirname(file),'datum');
-            return {decision:{send:false as const,refusal:{because:'datum-block' as const}}};
+            return {decision:{send:false as const,refusal:{because:'datum-block' as const,
+              ...(error.said!==null?{said:error.said}:{})}}};
           }
           if (error instanceof ModeNotKnown) publisher.recordModeOfBlock(path.dirname(file),null);
           return {decision:{send:false as const,refusal:{because:'working-unavailable' as const,detail:String(error)}}};

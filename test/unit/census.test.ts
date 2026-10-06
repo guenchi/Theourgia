@@ -149,7 +149,11 @@ const AT_LEAST: Array<[string, number]> = [
    * open, reconciliation and gate; a queued write and its control; two
    * opens racing and its control).
    */
-  ['datum-view.test.ts', 29],
+  /*
+   * RAISED 29 -> 30 with the re-pin to theourgia 1.1.0: a working write the
+   * core refuses on a datum block is refused as one, with the one sentence.
+   */
+  ['datum-view.test.ts', 30],
   ['decoding.test.ts', 12],
   /*
    * RAISED 14 -> 17 with the re-pin to theourgia 06a348b: a name defined
@@ -393,7 +397,12 @@ const AT_LEAST: Array<[string, number]> = [
    * that stopped `unknown` is kept, and one refused `stale-baseline` is a
    * refusal, both read by name with their `completion` clause.
    */
-  ['saver.test.ts', 96],
+  /*
+   * RAISED 96 -> 97 with the re-pin to theourgia 1.1.0: a draft refused on
+   * a datum block is said by name. And 97 -> 98: a store replaced under its
+   * daemon is said with restarting the daemon.
+   */
+  ['saver.test.ts', 98],
   ['saving.test.ts', 34],
   /*
    * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five

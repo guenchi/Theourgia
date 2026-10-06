@@ -707,7 +707,7 @@ export function refusalNotice(
   refusal:
     | { because: 'document-dirty' }
     | { because: 'working-unavailable'; detail:string }
-    | { because: 'datum-block' }
+    | { because: 'datum-block'; said?: string }
     | { because: 'byte-order-mark' }
     | { because: 'not-utf8' }
     | { because: 'disk-differs-from-snapshot' }
@@ -724,6 +724,13 @@ export function refusalNotice(
      * and only this sentence says the store has none of it.
      */
     case 'datum-block':
+      /*
+       * SENT AND REFUSED, the core's own sentence: the block became a datum
+       * after this file recorded it as text.
+       */
+      if (refusal.said !== undefined) {
+        return { level: 'error', text: `${id}: ${refusal.said}. Your file is kept.` };
+      }
       return {
         level: 'error',
         text:

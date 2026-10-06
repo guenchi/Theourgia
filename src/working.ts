@@ -7,12 +7,45 @@ import {Datum, answerOf, isList, isSym, wire} from './wire';
 /*
  * A WORKING WRITE REFUSED BECAUSE THE BLOCK IS A DATUM. Its code is `body`;
  * a working write writes `src` beside it and changes nothing the store runs
- * (src/datum-view.ts). Nothing was sent.
+ * (src/datum-view.ts). From the mode gate, nothing was sent, and `said` is
+ * null; from the core's refusal of the write itself, `said` is the
+ * sentence that refusal is said with (datumDraftSentence).
  */
 export class DatumBlockRefused extends Error {
-  constructor(public readonly block: string) {
-    super(`${block} is a datum block, and this editor cannot write one yet`);
+  constructor(public readonly block: string, public readonly said: string|null = null) {
+    super(said ?? `${block} is a datum block, and this editor cannot write one yet`);
   }
+}
+
+/*
+ * THE CORE'S REFUSAL OF A DRAFT ON A DATUM BLOCK (theourgia 13c1637): `(error
+ * bad-request draft-on-datum-unsupported (block <id>) (use def))`, from
+ * `write` (working.sc, the write's own check) and from `commit`. -> the
+ * block it names, '' when it names none it can read, or null when the
+ * answer is not that refusal.
+ */
+export function draftOnDatumBlockOf(datum: Datum): string|null {
+  if (answerOf(datum,'error',{at:1,is:'bad-request'})===null) return null;
+  const form=answerOf(datum,'error',{at:2,is:'draft-on-datum-unsupported'});
+  if (form===null) return null;
+  const block=form.value('block');
+  return block.read && typeof block.value==='string' ? block.value : '';
+}
+
+/*
+ * THE ONE SENTENCE FOR IT, whichever request the core refused: the save's
+ * working write (Working.write) or its commit (saver.ts, describeRefusal).
+ * The mode gate refuses a block recorded or read as datum before anything
+ * is sent; this is said only when the block became a datum after this
+ * editor recorded it as text -- another writer re-imported it with
+ * `--datum` -- and the recorded mode let the save through.
+ */
+export function datumDraftSentence(block: string): string {
+  return (
+    `the core refused the write: ${block===''?'the block':block} is a datum block, whose code the store keeps ` +
+    'as a datum, so a draft of its text is refused (draft-on-datum-unsupported). Open it from the outline ' +
+    'to see it read-only as the datum export writes it; the core changes it with def'
+  );
 }
 
 /*
@@ -94,6 +127,13 @@ export class Working {
     const answer=await this.client.request('write',[block,body,'--writer',this.writer,
       ...rebase?['--rebase']:baseline?['--based-on',baseline.basedOn as string,'--working-cut',baseline.cut as string,
         ...baseline.kind==='working'?['--working-parent-writer',baseline.writer,'--working-parent',baseline.version]:[]]:[]]);
+    /*
+     * A DRAFT THE CORE REFUSES BECAUSE THE BLOCK IS NOW A DATUM is refused as
+     * the gate refuses one, so its caller records the block as datum, and
+     * said with the one sentence, not as a working note not confirmed saved.
+     */
+    const onDatum=!answer.ok&&answer.answers.length===1?draftOnDatumBlockOf(answer.answers[0]):null;
+    if (onDatum!==null) throw new DatumBlockRefused(block,datumDraftSentence(onDatum===''?block:onDatum));
     const saved=answer.ok&&answer.answers.length>0?answerOf(answer.answers[0],'ok'):null;
     const confirmedBlock=saved===null?null:saved.value('saved');
     const confirmedWriter=saved===null?null:saved.value('writer');

@@ -253,7 +253,7 @@ describe('the hover says what the store holds about the name under the pointer',
    * A NAME WHOSE EVERY MENTION IS IN A BLOCK NOT IN FORCE. The grep is asked
    * with `--wire`, through the client that opens the envelope: its items are
    * none, and the `excluded` clause beside them is not a match. On the human
-   * route the pinned core (6593f78) prints that clause as a line of its own,
+   * route the pinned core (3a4ac93, as from 6593f78) prints that clause as a line of its own,
    * on which the hover would fail; an older core (5c28e42) printed nothing.
    */
   it('mentions nothing, and does not fail, when the store left out every match', async () => {
