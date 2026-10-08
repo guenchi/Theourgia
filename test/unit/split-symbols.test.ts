@@ -440,7 +440,16 @@ describe('P4 a refused split is shown as the core said it, and not sent again', 
  * reads (test/support/core-refusals.ss); without that, the refusal census
  * would be silent about all eight.
  */
-describe('P4 the census scanner finds the eight in the pinned core', () => {
+/*
+ * AND THE IMPORT'S FOUR (theourgia be42914): the cuts of `import-code
+ * --symbols` are put to the language's scanner, which refuses a file through
+ * the same constructor. They are not a split's answer (split-suggest keeps
+ * its lenient test); src/saver.ts holds them with the import's
+ * symbols-no-file among the kinds that are not a write's answer.
+ */
+const IMPORT_FOUR = ['symbols-unchecked', 'symbols-in-prefix', 'symbols-unscanned', 'symbols-not-top-level'];
+
+describe('P4 the census scanner finds the eight and the import\'s four in the pinned core', () => {
   it('lists every symbols refusal the core makes, from code-suggest.sc', () => {
     const directory = process.env.THEOURGIA_CORE;
     assert.ok(directory !== undefined && directory.length > 0, 'THEOURGIA_CORE is not set');
@@ -455,7 +464,7 @@ describe('P4 the census scanner finds the eight in the pinned core', () => {
       .map((row) => row.split('\t')[1])
       .filter((k) => k !== undefined && k.startsWith('symbols-'))
       .sort();
-    assert.deepStrictEqual(found, [...EIGHT].sort());
+    assert.deepStrictEqual(found, [...EIGHT, ...IMPORT_FOUR].sort());
   });
 });
 

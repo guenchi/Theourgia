@@ -909,8 +909,10 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'incomplete.sc:123 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
     'refused only to a verb that does not declare it accepts one: rpc.sc:2343 `undeclared-verbs` (export-code ' +
-    'export-md import-md import-code def snapshot, and supply). Of these this extension sends only export-code and ' +
-    'supply, from the supply commands, which show the refusal by name (src/supply.ts); no save sends one, and ' +
+    'export-md import-md import-code def snapshot, and supply). Of these this extension sends export-code and ' +
+    'supply from the supply commands, which show the refusal by name (src/supply.ts), and import-code and ' +
+    'export-code from Import with Symbols, which shows a refusal of the whole import as the core wrote it ' +
+    '(src/import-symbols.ts); no save sends one, and ' +
     'every verb a save sends declares, and is answered with an `(incomplete ...)` clause instead',
   'working-draft-unreadable':
     "working.sc:685, `draft-body` -- a writer's draft whose datum does not read, reached through " +
@@ -963,6 +965,30 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'assemble, context.sc:250 -- `context --for` when a hard block of the scope cannot be hashed; only `context`',
   'budget-too-small':
     'budgeted, context.sc:379 -- `context --budget` below what the answer must show; only `context`',
+  /*
+   * NOTE: THE IMPORT'S OWN SYMBOLS REFUSALS (theourgia be42914). Each comes
+   * only inside `import-code --symbols`'s `(symbols-refused ((<path>
+   * <refusal>) ...))` clause, for one file, never as the answer to a request
+   * and never to a save; Import with Symbols shows it at that file, with the
+   * line and column of the byte it names (src/import-symbols.ts).
+   * split-suggest keeps its lenient test and does not make the four scanner
+   * refusals.
+   */
+  'symbols-unchecked':
+    'code-suggest.sc:418, the import\'s cuts -- no scanner can say what is top level in the file (no language ' +
+    'entry, or no suggest profile); per file, in import-code\'s symbols-refused clause, never a save\'s answer',
+  'symbols-in-prefix':
+    'code-suggest.sc:420, the import\'s cuts -- a cut inside the protected prefix (a shebang, a coding line, a ' +
+    'byte-order mark); per file, in import-code\'s symbols-refused clause, never a save\'s answer',
+  'symbols-unscanned':
+    'code-suggest.sc:426, the import\'s cuts -- the scanner could not follow the file (unbalanced, an unclosed ' +
+    'quote, lexically uncertain); per file, in import-code\'s symbols-refused clause, never a save\'s answer',
+  'symbols-not-top-level':
+    'code-suggest.sc:427, the import\'s cuts -- a cut inside a body, a string, a block comment, an open bracket ' +
+    'or after a continuation; per file, in import-code\'s symbols-refused clause, never a save\'s answer',
+  'symbols-no-file':
+    'code-project.sc:207, the import -- a section of the symbols file that names no text file the walk found; ' +
+    'per section, in import-code\'s symbols-refused clause, never a save\'s answer',
   'cut-moved':
     'store-state-at-cut, store.sc:2238 -- `read --cut` whose replay did not reach the cut asked for; this ' +
     'extension sends no `--cut`, and a write never reads at a cut',
