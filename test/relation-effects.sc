@@ -424,12 +424,17 @@
 (ask S7 'relation "documents" "--as" "nothing")
 (ask S7 'link a7 "documents" b7)
 (ask S7 'set b7 "src" "changed after the link")
-(want "RE-7 nothing declares a listed edge: the relation fact names it, it has no effect, and the fast path holds"
+;; `nothing` IS ONE OF THE SEVEN KINDS (D1): relation-kind answers it for
+;; documents, so edge-kind lists the edge under it, and it has no effect.
+(want "RE-7 nothing declares a listed edge: the relation fact names it, edge-kind lists it as nothing, it has no effect, and the fast path holds"
       (list (by-print (map cdr (items-of (ask S7 'query "(relation ?n ?k)"))))
             (lifecycle-fast? (lifecycle (open-and-reduce S7)))
-            (items-of (ask S7 'query "(edge-kind ?a ?k ?b)"))
+            (map cdr (items-of (ask S7 'query "(edge-kind ?a ?k ?b)")))
+            ((reducer 'relation-kind) (open-and-reduce S7) 'documents)
+            (validity-of (lifecycle (open-and-reduce S7)) a7)
             (map (lambda (r) (cdr r)) (items-of (ask S7 'query "(edge ?a ?r ?b)"))))
-      (list (by-print (append six '((documents nothing)))) #t '() (list (list a7 'documents b7))))
+      (list (by-print (append six '((documents nothing)))) #t (list (list a7 'nothing b7)) 'nothing '(valid)
+            (list (list a7 'documents b7))))
 
 ;; ---- RE-8: the template -------------------------------------------------------------
 
@@ -570,5 +575,94 @@
       '((ok ok) (error #t)))
 
 (printf "rows: ~a\n~a failures\nrelation-effects complete\n" rows bad)
+;; ---- the first review's findings ---------------------------------------------------
+
+;; RE-12 AN UNCHANGED DECLARATION INSIDE A TRACKED BATCH: each item of a
+;; tracked batch writes the record its receipt declared, so the shortcut
+;; (ok (unchanged)) is not taken there -- taken, it wrote nothing and the next
+;; item's position no longer matched (receipt-timetable).
+(define S12 (fresh-store!))
+(define w12 (writer-of (ask S12 'init)))
+(ask S12 'relation "cites" "--as" "depends-on")
+(define (count12) (cdr (assoc w12 (reduce-applied-cut (open-and-reduce S12)))))
+(define before12 (count12))
+(define-caught b12
+  (ask S12 'batch "((relation cites (depends-on () ())) (insert root #f ((title . \"after the declaration\"))))"
+       "--req" "re-12-batch" "--cursor" (string-append w12 ":" (number->string before12))))
+(want "RE-12 a tracked batch holding the declaration in force and an insert: both items ok, both written, the name still in force"
+      (list (and (pair? b12) (car b12))
+            (and (pair? b12) (pair? (cdr b12)) (list? (cadr b12)) (map (lambda (i) (and (pair? i) (car i))) (cadr b12)))
+            (>= (- (count12) before12) 2)
+            (declaration (open-and-reduce S12) 'cites))
+      '(batch (ok ok) #t (in-force (depends-on () ()))))
+(want "RE-12 CONTROL: outside a tracked batch the same declaration still answers unchanged and writes nothing"
+      (let ((n (count12))) (list (ask S12 'relation "cites" "--as" "depends-on") (= n (count12))))
+      '((ok (unchanged)) #t))
+
+;; RE-13 A PROPAGATED REASON NAMES THE DECLARED RELATION: A cites B, B
+;; depends-on C, C moved past its edge. B needs review for C through a
+;; built-in edge (no clause); A needs review for B through cites, and its
+;; reason says so.
+(define S13 (fresh-store!))
+(ask S13 'init)
+(ask S13 'relation "cites" "--as" "depends-on")
+(define a13 (new-id (ask S13 'insert "--title" "Citing thirteen")))
+(define b13 (new-id (ask S13 'insert "--title" "Cited thirteen")))
+(define c13 (new-id (ask S13 'insert "--title" "Premise thirteen")))
+(ask S13 'link a13 "cites" b13)
+(ask S13 'link b13 "depends-on" c13)
+(ask S13 'set c13 "src" "changed after the link")
+(want "RE-13 the propagated reason carries (relation cites); the built-in one below it does not"
+      (let ((L (lifecycle (open-and-reduce S13))))
+        (list (validity-of L a13) (validity-of L b13)))
+      (list (list 'needs-review (list 'premise-needs-review b13 '(relation cites)))
+            (list 'needs-review (list 'premise-moved c13))))
+
+;; RE-14 DESCRIBE PRINTS THE DECLARED TABLE (D4), and only when it is not
+;; empty: a store with no declaration -- never declared, or every name
+;; retired -- has no such clause, so describe reads as it did.
+(define S14 (fresh-store!))
+(ask S14 'init)
+(define (declared-clause a) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) 'declared-relations))) (cdr a))))
+(define-caught d14-empty (ask S14 'describe))
+(ask S14 'relation "cites" "--as" "depends-on")
+(ask S14 'relation "answers" "--as" "implements" "--to" "(kind decision)")
+(define-caught d14-declared (ask S14 'describe))
+(ask S14 'relation "cites" "--retire")
+(ask S14 'relation "answers" "--retire")
+(define-caught d14-retired (ask S14 'describe))
+(want "RE-14 describe appends the declared table, a selector only when it is given"
+      (declared-clause d14-declared)
+      '(declared-relations (answers implements (to ((kind decision)))) (cites depends-on)))
+(want "RE-14 with no declaration in force describe has no such clause, and is the same answer before and after"
+      (list (declared-clause d14-empty) (declared-clause d14-retired) (equal? d14-empty d14-retired))
+      '(#f #f #t))
+
+;; RE-15 THE STATED LIMIT OF CONTEXT (D4, ruled): context builds a hard
+;; block's validity from the rows of its five queries, whose validity-reason
+;; fact is (id why by); so context prints the kind's reason WITHOUT the
+;; (relation <name>) clause, while a validity read prints it.
+(define S15 (fresh-store!))
+(ask S15 'init)
+(ask S15 'relation "cites" "--as" "depends-on")
+(define t15 (new-id (ask S15 'insert "--title" "Context fifteen task")))
+(ask S15 'set t15 "kind" "task")
+(define m15 (new-id (ask S15 'insert "--title" "Member fifteen")))
+(define n15 (new-id (ask S15 'insert "--title" "Cited fifteen")))
+(define r15 (new-id (ask S15 'insert "--title" "Refuter fifteen")))
+(ask S15 'link t15 "depends-on" m15)
+(ask S15 'link m15 "cites" n15)
+(ask S15 'link r15 "refutes" n15)
+(want "RE-15 the member's validity read names cites; its context entry carries the kind's reason without the clause"
+      (let* ((a (ask S15 'context "--for" t15 "--budget" "100000"))
+             (entries (apply append (map (lambda (n) (let ((c (find (lambda (c) (and (pair? c) (eq? (car c) n))) (cdr a))))
+                                                       (if (and c (list? (cadr c))) (cadr c) '())))
+                                         '(constraints evidence to-verify))))
+             (e (find (lambda (e) (and (pair? e) (equal? (car e) m15))) entries)))
+        (list (validity-of (lifecycle (open-and-reduce S15)) m15)
+              (and e (find (lambda (c) (and (pair? c) (eq? (car c) 'validity))) (cdr e)))))
+      (list (list 'needs-review (list 'premise-refuted n15 '(relation cites)))
+            (list 'validity 'needs-review (list 'premise-refuted n15))))
+
 (system (string-append "rm -rf '" root "'"))
 (exit (if (= bad 0) 0 1))
