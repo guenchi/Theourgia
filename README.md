@@ -37,8 +37,10 @@ are built by the repository's workflow, `.github/workflows/package.yml`,
 each on its own platform, and one is published only when the unit suite has
 passed on every target, against a real core. The core measured Intel macOS
 in theourgia 5c28e42. The unit suite runs on each of the four targets
-against the core it is pinned to (theourgia 1.1.0, 3a4ac93), and a version is
-published for all four when it passes on every one. There is no Windows package:
+against the core it is pinned to (theourgia be42914, ten commits after 1.1.0),
+and a version is published for all four when it passes on every one; at
+be42914 it passed on all four in the workflow's run 37816045917. There is no
+Windows package:
 the lock uses `flock`, and a Windows lock is a piece of work of its own.
 
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
