@@ -538,6 +538,13 @@
       (one-file "x.sh" "echo \\|\necho a|\nf() { :; }\n" (sym 0 7 'variable "e1") (sym 8 15 'variable "e2") (sym 16 27 'function "f"))
       (list 'ok (list (list "x.sh" '(error symbols-not-top-level (at 16)))) '()))
 
+;; IS32: IN A PARENTHESISED LANGUAGE NO OPERATOR CONTINUES A LINE. "-", "+" and
+;; "." are identifier characters in Scheme; a top-level datum ending in one is
+;; complete, and a line continues only through an open bracket.
+(want "IS32 a Scheme top-level datum ending in x- is complete: the cut after it is taken"
+      (one-file "s.scm" "(define a 1)\nx-\n(define (f) 2)\n" (sym 0 12 'variable "a") (sym 16 30 'function "f"))
+      (list 'ok #f (list (list "s.scm" "(define a 1)\n" "x-\n" "(define (f) 2)\n"))))
+
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that
 ;; splits, and IS7's malformed file, each forwarded. The store is read after

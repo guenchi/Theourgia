@@ -130,6 +130,9 @@
             ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
               (quote-delimiters ("\"")) (escaped-character "\\")
               (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+              ;; no operator continues a line here: "-", "+", "." and the rest
+              ;; are identifier characters, and an open bracket is the stack's
+              (continuation-tokens ())
               (fallback "whole-file-with-warning") (prefix-lines ())))
           (name-vectors
             ("(define (f x) x)"
@@ -316,6 +319,8 @@
              ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
                (quote-delimiters ("\"")) (escaped-character "\\")
                (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+               ;; as scheme's: no operator continues a line
+               (continuation-tokens ())
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("(define (f x) x)"

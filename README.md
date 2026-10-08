@@ -1637,7 +1637,9 @@ a string, a block comment or an open bracket. Two more cuts are inside: one
 after a line whose code ends in a continuation token (`=>`, `=`, `+`, `-`,
 `*`, `/`, `.`, `,`, `(`, `[`, `{`, `&&`, `||`, `?`, `:`, or the language's
 escape, `\` in Python; in the shell only `|`, `&&`, `||` and `\`, since `/`,
-`=`, `:` and `*` end ordinary shell words such as `cd /`) -- the code read
+`=`, `:` and `*` end ordinary shell words such as `cd /`; in Scheme only the escape, since
+`-`, `+` and `.` are identifier characters and a line continues only through an
+open bracket) -- the code read
 without its line comment, and a line that ends in a string, or inside or at
 the close of a block comment, not continuing, so `// The end.` before a
 definition is no continuation. A token counts only as a whole operator: the
