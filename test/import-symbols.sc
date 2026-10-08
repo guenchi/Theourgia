@@ -484,7 +484,7 @@
 (want "IS21 a token before an inline line comment continues: the code is read without its comment"
       (one-file "c.js" "const x = 1 + // note\n  2;\nfunction f() {\n}\n" (sym 0 21 'variable "x") (sym 27 44 'function "f"))
       (list 'ok (list (list "c.js" '(error symbols-not-top-level (at 22)))) '()))
-(want "IS22 a block comment opened after an operator and closed on the next line: the cut inside it is refused"
+(want "IS22 a cut inside a block comment opened after an operator is refused by the comment, before any token test"
       (one-file "k.js" "const y = 1 + /* note\n more */ 2;\nfunction f() {\n}\n" (sym 0 21 'variable "y") (sym 34 51 'function "f"))
       (list 'ok (list (list "k.js" '(error symbols-not-top-level (at 22)))) '()))
 (want "IS23 Markdown is prose: a line ending in : before a heading does not continue"
@@ -493,6 +493,33 @@
 (want "IS24 two blank-line cuts inside a body: the refusal names the first in the file, 19"
       (one-file "o.py" "def f():\n    a = 1\n\n\n    return a\n" (sym 0 18 'function "f") (sym 20 33 'variable "rest"))
       (list 'ok (list (list "o.py" '(error symbols-not-top-level (at 19)))) '()))
+
+;; ---- IS25-IS29: the ellipsis, the escape's literal, a comment's close, the tokens --
+(want "IS25 a stub-style def ending in Python's ... does not continue: the next definition's cut is taken"
+      (one-file "q.py" "def f(self) -> int: ...\ndef g():\n    pass\n" (sym 0 23 'function "f") (sym 24 42 'function "g"))
+      (list 'ok #f (list (list "q.py" "def f(self) -> int: ...\n" "def g():\n    pass\n"))))
+;; THE LAST CHARACTER IS LITERAL ONLY IF THE ESCAPE MADE IT SO: in `echo \\|`
+;; the escape takes the second backslash and the pipe is real.
+(want "IS26 a shell line ending in \\\\| ends in a real pipe and continues: the cut after it is refused"
+      (one-file "r.sh" "echo \\\\|\nf() { :; }\n" (sym 0 8 'variable "e") (sym 9 20 'function "f"))
+      (list 'ok (list (list "r.sh" '(error symbols-not-top-level (at 9)))) '()))
+(want "IS26 a shell line ending in \\\\ ends in a literal backslash and does not continue: the cut after it is taken"
+      (one-file "b.sh" "echo \\\\\nf() { :; }\n" (sym 0 7 'variable "e") (sym 8 19 'function "f"))
+      (list 'ok #f (list (list "b.sh" "echo \\\\\n" "f() { :; }\n"))))
+(want "IS27 a line ending at a block comment's close does not continue, whatever the code before it: the cut after it is taken"
+      (one-file "z.js" "const z = 1 + /* note */\nfunction f() {\n}\n" (sym 0 24 'variable "z") (sym 25 42 'function "f"))
+      (list 'ok #f (list (list "z.js" "const z = 1 + /* note */\n" "function f() {\n}\n"))))
+;; THE TOKENS THEMSELVES: each continues, and the cut after it is refused.
+(want "IS28 the shell's | and && continue"
+      (list (one-file "l.sh" "ls |\nwc -l\nf() { :; }\n" (sym 0 4 'variable "ls") (sym 11 22 'function "f"))
+            (one-file "t.sh" "true &&\nfalse\nf() { :; }\n" (sym 0 7 'variable "t") (sym 14 25 'function "f")))
+      (list (list 'ok (list (list "l.sh" '(error symbols-not-top-level (at 5)))) '())
+            (list 'ok (list (list "t.sh" '(error symbols-not-top-level (at 8)))) '())))
+(want "IS29 a binary - and a : continue"
+      (list (one-file "m.js" "const m = 1 -\n  2;\nfunction f() {\n}\n" (sym 0 13 'variable "m") (sym 19 36 'function "f"))
+            (one-file "n.js" "const t = c ? a :\n  b;\nfunction f() {\n}\n" (sym 0 17 'variable "t") (sym 23 40 'function "f")))
+      (list (list 'ok (list (list "m.js" '(error symbols-not-top-level (at 14)))) '())
+            (list 'ok (list (list "n.js" '(error symbols-not-top-level (at 18)))) '())))
 
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that

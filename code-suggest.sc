@@ -85,7 +85,7 @@
                (prefix-patterns (map regex-compile (get 'prefix-lines '())))
                (stack '()) (quoted #f) (comment-depth 0) (continued? #f)
                (fence #f) (pending #f) (boundaries '(0))
-               (last-kind 'none) (code-end 0) (continues? #f) (blank-starts '())
+               (last-kind 'none) (code-end 0) (last-escaped #f) (continues? #f) (blank-starts '())
                (continuation-tokens
                  (append (get 'continuation-tokens '("=>" "=" "+" "-" "*" "/" "." "," "(" "[" "{" "&&" "||" "?" ":"))
                          (list escape)))
@@ -94,8 +94,10 @@
           ;; index after the last code character, `string`, `comment`, or
           ;; `none` for a line with no code.
           (define (code! i) (set! last-kind 'code) (set! code-end (+ i 1)))
-          ;; A WHOLE OPERATOR, NOT THE END OF A LONGER TOKEN: "x++", "1." and an
-          ;; escaped "\|" end in a token's character and do not continue.
+          ;; A WHOLE OPERATOR, NOT THE END OF A LONGER TOKEN: "x++", "1." and
+          ;; Python's "..." end in a token's character and do not continue. (A
+          ;; line whose last character the escape made literal is not asked:
+          ;; see `last-escaped` where the line is read.)
           (define (continuation? code)
             (exists (lambda (t)
                       (let ((n (string-length t)) (m (string-length code)))
@@ -103,9 +105,8 @@
                              (let ((before (and (> m n) (string-ref code (- m n 1)))))
                                (not (and before
                                          (or (and (member t '("+" "-")) (char=? before (string-ref t 0)))
-                                             (and (string=? t ".") (char-numeric? before))
-                                             (and (not (string=? t escape))
-                                                  (string=? (string before) escape)))))))))
+                                             (and (string=? t ".")
+                                                  (or (char-numeric? before) (char=? before #\.))))))))))
                     continuation-tokens))
           (define (at-any s i tokens) (find (lambda (t) (string-prefix-at? s t i)) tokens))
           (define (fence-run line)
@@ -117,6 +118,7 @@
           (define (scan-line line offset)
             (set! continued? #f)
             (set! last-kind 'none)
+            (set! last-escaped #f)
             (let loop ((i 0))
               (if (= i (string-length line))
                   (begin
@@ -154,6 +156,7 @@
                        (if (= (+ i (string-length escape)) (string-length line)) (set! continued? #t)
                            ;; the escaped character is code, as written
                            (begin (code! (+ i (string-length escape)))
+                                  (set! last-escaped (+ i (string-length escape)))
                                   (loop (min (string-length line) (+ i (string-length escape) 1))))))
                       (else (unless (char-whitespace? c) (code! i)) (loop (+ i 1))))))))
           (unless (usable-profile? entry)
@@ -213,7 +216,11 @@
                         ((and top? (not (> comment-depth 0))) (set! pending #f)))
                       (scan-line line offset)
                       (unless (string=? trimmed "")
-                        (set! continues? (and (eq? last-kind 'code) (continuation? (substring line 0 code-end)))))))))
+                        ;; a line that ends in a character the escape made
+                        ;; literal ends in that character, not in an operator
+                        (set! continues? (and (eq? last-kind 'code)
+                                              (not (eqv? last-escaped (- code-end 1)))
+                                              (continuation? (substring line 0 code-end)))))))))
             (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
           (when (or (pair? stack) quoted (> comment-depth 0) continued? fence)
             (fallback 'unbalanced (bytevector-length bytes)))

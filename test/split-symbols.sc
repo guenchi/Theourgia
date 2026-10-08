@@ -323,6 +323,21 @@
         (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
         '((0 19 34) ((symbol-kinds function variable function)))))
 
+;; S16: A LINE OF SPACES IS NOT BLANK FOR SPLIT-SUGGEST. Only the import's
+;; strict test reads it as blank and asks the next non-blank line; split-suggest
+;; keeps the old test, under which a start there is not at the top level.
+(define s16 "def f():\n    a = 1\n    \ndef g():\n    pass\n")
+(want "S16 setup: the text's offsets (the line of spaces, g, the length)"
+      (list (offset-of s16 "    \ndef") (offset-of s16 "def g") (bytevector-length (string->utf8 s16)))
+      '(19 24 42))
+(let ((r (suggest "s16.py" s16 (lines (header (digest-of s16) s15-source)
+                                      (symbol-line 0 18 'function "f")
+                                      (symbol-line 19 23 'variable "gap")
+                                      (symbol-line 24 42 'function "g")))))
+  (want "S16 a start at a line of spaces is not a cut for split-suggest and is warned symbol-not-top-level"
+        (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
+        '((0 24) ((symbol-not-top-level (at 19)) (symbol-kinds function variable function)))))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsplit-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
