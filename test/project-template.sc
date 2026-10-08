@@ -705,9 +705,16 @@
 (want "D CONTROL: the same count sees a verb that does touch the store"
       (> acts-2 acts-1)
       #t)
-(define (strip-template a) (if (pair? a) (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'template)))) a) a))
+;; THE STORE'S CLAUSES COME FROM THE STATE THE DAEMON HANDS DESCRIBE: the
+;; template, and the declared table, which a store made from the project
+;; template has (documents, as nothing). The rest is the catalogue.
+(want "D through the daemon describe carries the declared table: documents, as nothing"
+      (clause-of via-daemon 'declared-relations)
+      '((documents nothing)))
+(define (strip-store-clauses a)
+  (if (pair? a) (filter (lambda (x) (not (and (pair? x) (memq (car x) '(template declared-relations))))) a) a))
 (want "D the daemon's catalogue is the in-process one, registered verbs included, byte for byte"
-      (equal? (strip-template via-daemon) (run s1 'describe))
+      (equal? (strip-store-clauses via-daemon) (run s1 'describe))
       #t)
 ;; A WRITER THE DAEMON COULD NOT READ: describe at the connection adds neither the
 ;; template (read from part of a store) nor an incomplete clause (it did not ask
