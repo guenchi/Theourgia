@@ -303,7 +303,11 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED 22 -> 23 with the re-pin to theourgia 6593f78: a search whose
    * every hit was left out prints the excluded line on the human route.
    */
-  ['real-core.test.ts', 23],
+  /*
+   * RAISED 23 -> 25 with the re-pin to theourgia be42914: a first import
+   * split at the editor's symbols, and a marked file updated in place.
+   */
+  ['real-core.test.ts', 25],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them. RAISED 8 -> 14 when the

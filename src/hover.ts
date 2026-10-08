@@ -266,7 +266,7 @@ interface MatchRow {
  * and without case.
  *
  * NEVER: ASKED WITH `--wire`. On the human route, when every match was in a
- * superseded or refuted block, the pinned core (3a4ac93, as from 6593f78) prints its
+ * superseded or refuted block, the pinned core (be42914, as from 6593f78) prints its
  * `(excluded ...)` line, which is not a match and would fail the hover where
  * there is nothing to mention; an older core (5c28e42) printed nothing. The
  * wire answer's items are the matches on either core; what was left out is

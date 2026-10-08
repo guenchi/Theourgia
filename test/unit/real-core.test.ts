@@ -69,7 +69,8 @@ import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks
 import { StoreModel } from '../../src/model';
 import { gatherContext } from '../../src/hover';
 import { createHash } from 'crypto';
-import { nodeFileOps } from '../../src/fsops';
+import { nodeFileOps, scratchUnder } from '../../src/fsops';
+import { runImport } from '../../src/import-symbols';
 import { Sessions } from '../../src/sessions';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
@@ -1767,5 +1768,112 @@ describe('theourgia 6593f78: a search whose every hit was left out says so on bo
     const reading = await model.searchReading('osprey');
     assert.deepStrictEqual(reading.hits, []);
     assert.deepStrictEqual(reading.leftOut, { superseded: 1, refuted: 0 });
+  });
+});
+
+/*
+ * AN IMPORT SPLIT AT THE EDITOR'S SYMBOLS, ON A REAL STORE (theourgia
+ * be42914, `import-code --symbols`). The command's own steps (runImport)
+ * against the real client: the files on disk, the document as the editor
+ * would hold it, and the symbols the editor would give.
+ *
+ * A first import of a file with no marker line is split at its symbols: its
+ * answer is one record per intent of the plan, all inserts, so writtenIds
+ * names exactly the blocks it made, and each is placed at its lines, its
+ * bytes the file's. A file that carries markers -- the store's own export,
+ * edited -- follows its markers: it is listed as symbols-ignored, its
+ * blocks are updated in place under their ids, and it is never placed.
+ */
+describe('theourgia be42914: an import split at the editor\'s symbols, on a real store', function () {
+  this.timeout(180000);
+  let store: RealStore;
+  let pinned: CorePin | undefined;
+  const TWO = 'function alpha() {\n  return 1;\n}\nfunction beta() {\n  return 2;\n}\n';
+  let alphaId: string | null = null;
+
+  before(async () => {
+    pinned = pinCore();
+    await initWire();
+    store = await RealStore.make('vscode-symbols');
+  });
+
+  after(() => {
+    try {
+      store?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  const symbol = (name: string, start: [number, number], end: [number, number]): unknown => ({
+    name,
+    kind: 11,
+    range: { start: { line: start[0], character: start[1] }, end: { line: end[0], character: end[1] } }
+  });
+
+  const deps = (directory: string, rel: string, text: string, symbols: unknown[]): Parameters<typeof runImport>[0] => ({
+    client: store.client,
+    editorVersion: '1.138.0',
+    directory,
+    sources: [{ rel, bytesPath: path.join(directory, rel), uri: `file://${path.join(directory, rel)}` }],
+    readFile: (file) => new Uint8Array(fs.readFileSync(file)),
+    document: async () => ({ languageId: 'javascript', isDirty: () => false, version: () => 1, text: () => text }),
+    symbols: async () => symbols,
+    symbolsPath: () => path.join(store.root, `symbols-${Date.now()}.sexp`),
+    writeSymbols: (file, body) => fs.writeFileSync(file, body),
+    removeSymbols: (file) => fs.rmSync(file, { force: true }),
+    scratch: scratchUnder(path.join(store.root, 'import-scratch'))
+  });
+
+  it('splits a first import at its symbols and places each block it made at its lines', async () => {
+    const directory = fs.mkdtempSync(path.join(store.root, 'first-'));
+    fs.writeFileSync(path.join(directory, 'a.js'), TWO);
+    const outcome = await runImport(deps(directory, 'a.js', TWO, [symbol('alpha', [0, 0], [2, 1]), symbol('beta', [3, 0], [5, 1])]));
+    assert.strictEqual(outcome.done, 'imported', JSON.stringify(outcome));
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual([outcome.ignored, outcome.refused, outcome.skipped], [[], [], []], JSON.stringify(outcome));
+    assert.strictEqual(outcome.split.length, 1);
+    const placed = outcome.split[0].placed;
+    assert.ok(!('why' in placed), `the file was not placed: ${JSON.stringify(placed)}`);
+    if ('why' in placed) {
+      return;
+    }
+    assert.deepStrictEqual(
+      placed.blocks.map((b) => [b.range.start.line, b.range.start.character, b.range.end.line, b.range.end.character]),
+      [
+        [0, 0, 3, 0],
+        [3, 0, 6, 0]
+      ],
+      `the blocks are not at the symbols' lines: ${JSON.stringify(placed.blocks)}`
+    );
+    alphaId = placed.blocks[0].id;
+  });
+
+  it('follows the markers of an exported file, updates its blocks in place, and does not place it', async () => {
+    assert.ok(alphaId !== null, 'the first import placed nothing, so there is no block to update');
+    const exported = fs.mkdtempSync(path.join(store.root, 'export-'));
+    const answer = await store.client.request('export-code', [exported]);
+    assert.strictEqual(answer.ok, true, answer.text);
+    const file = path.join(exported, 'a.js');
+    const marked = fs.readFileSync(file, 'utf8');
+    assert.ok(marked.includes('return 1;'), `the export does not hold the first import's text: ${marked}`);
+    const edited = marked.replace('return 1;', 'return 10;');
+    fs.writeFileSync(file, edited);
+    const lines = edited.split('\n');
+    const at = lines.findIndex((l) => l.startsWith('function alpha'));
+    const outcome = await runImport(deps(exported, 'a.js', edited, [symbol('alpha', [at, 0], [at + 2, 1])]));
+    assert.strictEqual(outcome.done, 'imported', JSON.stringify(outcome));
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual(outcome.ignored, ['a.js'], `the marked file was not listed as symbols-ignored: ${JSON.stringify(outcome)}`);
+    assert.deepStrictEqual(outcome.split, [], `the marked file was placed: ${JSON.stringify(outcome.split)}`);
+    assert.deepStrictEqual(outcome.refused, []);
+    const block = await new StoreModel(store.client).blockOf(alphaId as string);
+    const src = block?.fields.get('src');
+    const text = src instanceof Uint8Array ? Buffer.from(src).toString('utf8') : src;
+    assert.ok(typeof text === 'string' && text.includes('return 10;'), `the block was not updated in place: ${String(text)}`);
   });
 });

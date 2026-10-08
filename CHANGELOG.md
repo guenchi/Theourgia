@@ -9,6 +9,8 @@
   output channel places each new block at its lines, and gives a file the
   core refused to split with the line and column of the byte it names. A
   file with unsaved edits stops the command before anything is sent.
+* The core is pinned at theourgia be42914, which adds `import-code
+  --symbols`, the core half of Import with Symbols.
 
 ## 1.1.0 — 2026-10-06
 

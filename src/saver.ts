@@ -303,7 +303,7 @@ export interface SaverOptions {
  * entry it could not read, WHEREVER in the verb that happened -- including
  * reads after the append -- so it did not say whether the write landed.
  * On f5ebd58 (F100b) the answer is made at the translation point,
- * `rpc-dispatch-parsed` (rpc.sc:2272-2314), by answers.sc's table: a bare
+ * `rpc-dispatch-parsed` (rpc.sc:2284-2326), by answers.sc's table: a bare
  * `unreadable` (now with an `errno` clause) means the request had changed
  * NOTHING, and a failure after something had changed is `incomplete`,
  * which is taken the same way. Keeping `unreadable` here is kept on
@@ -852,7 +852,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia 3a4ac93; re-read row by row at
+ * is made in the pinned core (theourgia be42914; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
@@ -869,8 +869,9 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
  * ad0bd47 in archive/theourgia-vsc-repin-ad0bd47-2026-10-02/
  * relocation-ad0bd47.md with checks-resolved.txt, and from ad0bd47 to
  * 59e69f3 the same way, and from 59e69f3 to 3aad6fd, from 3aad6fd to
- * 06a348b, from 06a348b to 5c28e42, from 5c28e42 to 6593f78 and from
- * 6593f78 to 3a4ac93 the same way, by each cited line's text). The
+ * 06a348b, from 06a348b to 5c28e42, from 5c28e42 to 6593f78, from 6593f78
+ * to 3a4ac93 and from 3a4ac93 to be42914 the same way, by each cited
+ * line's text). The
  * reason is the provenance, not a guess about intent: if the grep does
  * not find it, the row says so rather than inventing a story.
  *
@@ -907,7 +908,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'incomplete-reduction':
     'incomplete.sc:123 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
-    'refused only to a verb that does not declare it accepts one: rpc.sc:2331 `undeclared-verbs` (export-code ' +
+    'refused only to a verb that does not declare it accepts one: rpc.sc:2343 `undeclared-verbs` (export-code ' +
     'export-md import-md import-code def snapshot, and supply). Of these this extension sends only export-code and ' +
     'supply, from the supply commands, which show the refusal by name (src/supply.ts); no save sends one, and ' +
     'every verb a save sends declares, and is answered with an `(incomplete ...)` clause instead',
@@ -974,14 +975,14 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'position-mismatch': 'match-sections, project.sc:1234 -- the markdown import path',
   'would-delete': 'import-md, project.sc:735 -- the markdown import path',
   'invalid-candidate': 'publish-validated!, log.sc:4381 -- publication, not a block write',
-  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1541 -- a log segment candidate that is not there; this extension never sends `publish`',
-  'unknown-verb': 'dispatch-verb, rpc.sc:2425 -- dispatch, before any verb runs',
+  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1553 -- a log segment candidate that is not there; this extension never sends `publish`',
+  'unknown-verb': 'dispatch-verb, rpc.sc:2437 -- dispatch, before any verb runs',
   /*
    * NOTE: NINE KINDS FIRST READ ON f34d84f, the project template. Each is
    * made in template.sc and answers only the `template` verb (`template
    * apply`, `template export`, template.sc:53 `template-verb`) or `init
-   * --template` or `init --template-file` (rpc.sc:760 `init-with-template`;
-   * the file reaches template-datum-for at rpc.sc:1350). This extension sends
+   * --template` or `init --template-file` (rpc.sc:765 `init-with-template`;
+   * the file reaches template-datum-for at rpc.sc:1355). This extension sends
    * neither verb; the tripwire cell "sends no `template` and no `init`" in
    * refusals.test.ts is red the day it does.
    */
@@ -1045,14 +1046,14 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.sc:340 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
-    'rpc-dispatch-parsed, rpc.sc:2272-2314, by answers.sc\'s table (`guarded`, rpc.sc:109, now ' +
+    'rpc-dispatch-parsed, rpc.sc:2284-2326, by answers.sc\'s table (`guarded`, rpc.sc:109, now ' +
     're-raises it) -- an entry the verb could not read, named by `failure-kind` (answers.sc:97). ' +
     'answers.sc:106 answers it bare only when the ' +
     'verb had written nothing; after an append it is `(error incomplete (failed ...) (written ...))` ' +
     '(answers.sc:107). `saysNobodyKnows` still takes the bare one before settlement, exactly as ' +
     '`transport-unknown`: pending, same request id, sent again, which a replay answers either way',
   'unknown-name':
-    'whereis, rpc.sc:1819 -- a read verb naming the nearest names it could place; not a ' +
+    'whereis, rpc.sc:1831 -- a read verb naming the nearest names it could place; not a ' +
     'write and not a verb a save sends',
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
@@ -1142,7 +1143,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'metadata-unreadable':
     'log.sc:999, `unreadable-discovery` -- the record of a writer whose metadata could not be read, listed ' +
     'in the `(incomplete ...)` clause, returned, never raised. As a head it is only `adopt`\'s refusal ' +
-    '(log.sc:5236 and 5299, turned into `(error ...)` at rpc.sc:1503), and this extension sends no `adopt`',
+    '(log.sc:5236 and 5299, turned into `(error ...)` at rpc.sc:1515), and this extension sends no `adopt`',
   'retired-malformed': 'log.sc:1173, `validate` (`cut!`) -- an integrity record, returned, never raised',
   'retired-missing-segment': 'log.sc:1269, `validate` (`note!`) -- an integrity record, returned, never raised',
   'retired-mismatch': 'log.sc:1283, `validate` (`note!`) -- an integrity record, returned, never raised',
@@ -1151,23 +1152,23 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'log.sc:1325, `validate` (`cut!`) -- the cut of a writer at a segment it cannot read, returned, never ' +
     'raised; a session refused for it answers `writer-unreadable` (log.sc:2214, ' +
     '`segment-unreadable-refusal`), not this kind. As a head it is only `adopt`\'s refusal (log.sc:5299, ' +
-    'turned into `(error ...)` at rpc.sc:1503), and this extension sends no `adopt`',
+    'turned into `(error ...)` at rpc.sc:1515), and this extension sends no `adopt`',
   /*
    * NOTE: ADOPT'S OWN REFUSALS (read on 9f806bb when the census learned its
-   * `(list 'refused <kind> ...)` lists). rpc.sc:1503 answers `adopt` with
+   * `(list 'refused <kind> ...)` lists). rpc.sc:1515 answers `adopt` with
    * `(cons 'error (cdr a))`. This extension lists `adopt` among the verbs it
    * may send but sends it nowhere; the tripwire in refusals.test.ts is red
    * the day it does.
    */
   'owner-unreadable':
-    'log.sc:3000, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1503); a write refused ' +
+    'log.sc:3000, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1515); a write refused ' +
     'for it answers `(error refused owner-unreadable ...)` (store.sc:2830), whose head is `refused`. This ' +
     'extension sends no `adopt`',
   'registry-unreadable':
-    'log.sc:5235, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1503); this ' +
+    'log.sc:5235, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1515); this ' +
     'extension sends no `adopt`',
   'not-needed':
-    'log.sc:5319, `adopt-decided!` -- `adopt`\'s answer that nothing needs adopting (rpc.sc:1503); this ' +
+    'log.sc:5319, `adopt-decided!` -- `adopt`\'s answer that nothing needs adopting (rpc.sc:1515); this ' +
     'extension sends no `adopt`',
   /*
    * NOTE: READ ONCE THE CENSUS READ QUASIQUOTE (9f806bb). The thin client
