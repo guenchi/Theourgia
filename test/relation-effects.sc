@@ -666,6 +666,50 @@
       (list (list 'needs-review (list 'premise-refuted n15 '(relation cites)))
             (list 'validity 'needs-review (list 'premise-refuted n15))))
 
+;; RE-16 THE HASH COVERS THE DECLARED TABLE: a state, and the same rows
+;; with the declaration rows left out, differ in the table and nothing
+;; else, and hash apart; read back whole, they hash alike.
+(want "RE-16 the state hash covers the declared table: the rows without the declarations hash apart, the rows whole alike"
+      (let* ((st (open-and-reduce (store-of B))) (rows (state->rows st))
+             (bare (rows->state (filter (lambda (r) (not (and (pair? r) (eq? (car r) 'relation)))) rows))))
+        (list (null? (declared-table bare)) (equal? (state-hash bare) (state-hash st))
+              (equal? (state-hash (rows->state rows)) (state-hash st))))
+      '(#t #f #t))
+
+;; RE-17 TWO NAMES OF ONE KIND BETWEEN THE SAME TWO BLOCKS: an end has moved
+;; when it moved past every edge of the kind. The implementer changes after
+;; its implements edge and before its answers edge: the decision is
+;; implemented; changed again, past both, it is in review.
+(define S17 (fresh-store!))
+(ask S17 'init)
+(ask S17 'relation "answers" "--as" "implements")
+(define d17 (new-id (ask S17 'insert "--title" "Decision seventeen")))
+(ask S17 'set d17 "kind" "decision")
+(define i17 (new-id (ask S17 'insert "--title" "Implementer seventeen")))
+(ask S17 'link i17 "implements" d17)
+(ask S17 'set i17 "src" "changed after the implements link")
+(ask S17 'link i17 "answers" d17)
+(want "RE-17 moved past one of two edges of the kind the decision is implemented; past both, in review"
+      (let ((before (decision-state-of (lifecycle (open-and-reduce S17)) d17)))
+        (ask S17 'set i17 "src" "changed after both links")
+        (list before (decision-state-of (lifecycle (open-and-reduce S17)) d17)))
+      (list '(implemented) (list 'review (list i17 'source))))
+
+;; RE-18 MOVED IS OVER THE EDGES WITH AN EFFECT: a nothing edge whose end
+;; moved is not listed; an effect edge between the same blocks is.
+(define S18 (fresh-store!))
+(ask S18 'init)
+(ask S18 'relation "documents" "--as" "nothing")
+(ask S18 'relation "cites" "--as" "depends-on")
+(define a18 (new-id (ask S18 'insert "--title" "Source eighteen")))
+(define b18 (new-id (ask S18 'insert "--title" "Target eighteen")))
+(ask S18 'link a18 "documents" b18)
+(ask S18 'link a18 "cites" b18)
+(ask S18 'set b18 "src" "changed after the links")
+(want "RE-18 moved lists the cites edge whose target moved, not the documents edge beside it"
+      (map cdr (items-of (ask S18 'query "(moved ?a ?r ?b ?end)")))
+      (list (list a18 'cites b18 'target)))
+
 (printf "rows: ~a\n~a failures\nrelation-effects complete\n" rows bad)
 (system (string-append "rm -rf '" root "'"))
 (exit (if (= bad 0) 0 1))
