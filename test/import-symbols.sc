@@ -448,6 +448,52 @@
           (and (pair? a) (list (car a) (cadr a))))
         '(error symbols-empty)))
 
+;; ---- IS16-IS24: the strict test, token by token -----------------------------------
+;; One file each, named by its symbols. -> (answer refused files): the answer's
+;; head, its symbols-refused clause, and the store's files.
+(define (one-file name text . symbols)
+  (let* ((c (case! (list (cons name text)) (apply section name text symbols)))
+         (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+    (list (if (pair? a) (car a) a) (clause a 'symbols-refused) (setup (files-of (car c))))))
+;; A TOKEN IS A WHOLE OPERATOR: "x++" ends a statement, "1." ends a number, and
+;; the shell's "/" ends a word; none of them continues the line.
+(want "IS16 a line ending in x++ does not continue: the cut after it is taken"
+      (one-file "a.js" "let x = 0;\nx++\nfunction f() {\n}\n" (sym 0 10 'variable "x") (sym 15 32 'function "f"))
+      (list 'ok #f (list (list "a.js" "let x = 0;\n" "x++\n" "function f() {\n}\n"))))
+(want "IS17 a line ending in the number 1. does not continue: the cut after it is taken"
+      (one-file "f.py" "x = 1.\ndef f():\n    pass\n" (sym 0 6 'variable "x") (sym 7 25 'function "f"))
+      (list 'ok #f (list (list "f.py" "x = 1.\n" "def f():\n    pass\n"))))
+(want "IS18 a shell line ending in cd / does not continue: the shell's tokens are |, && and || only"
+      (one-file "s.sh" "cd /\nf() { :; }\n" (sym 0 4 'variable "cd") (sym 5 16 'function "f"))
+      (list 'ok #f (list (list "s.sh" "cd /\n" "f() { :; }\n"))))
+;; THE ESCAPED CHARACTER IS CODE: after "&&\x" the line ends in x, not in &&.
+(want "IS19 a shell line ending in &&\\x ends in the escaped x, and does not continue"
+      (one-file "e.sh" "true &&\\x\nf() { :; }\n" (sym 0 9 'variable "t") (sym 10 21 'function "f"))
+      (list 'ok #f (list (list "e.sh" "true &&\\x\n" "f() { :; }\n"))))
+(want "IS19 CONTROL an escaped pipe is a literal character: a line ending in \\| does not continue"
+      (one-file "p.sh" "echo a\\|\nf() { :; }\n" (sym 0 8 'variable "e") (sym 9 20 'function "f"))
+      (list 'ok #f (list (list "p.sh" "echo a\\|\n" "f() { :; }\n"))))
+;; A LINE OF SPACES IS BLANK, judged by the next non-blank line.
+(want "IS20 a line of spaces before top-level code is the top level: the cut at it is taken"
+      (one-file "w.py" "def f():\n    return 1\n    \ndef g():\n    return 2\n" (sym 0 21 'function "f") (sym 27 48 'function "g"))
+      (list 'ok #f (list (list "w.py" "def f():\n    return 1\n" "    \n" "def g():\n    return 2\n"))))
+(want "IS20 CONTROL a line of spaces before indented code is inside: refused at it"
+      (one-file "v.py" "def f():\n    a = 1\n    \n    return a\n" (sym 0 18 'function "f"))
+      (list 'ok (list (list "v.py" '(error symbols-not-top-level (at 19)))) '()))
+;; COMMENTS, PROSE AND ORDER.
+(want "IS21 a token before an inline line comment continues: the code is read without its comment"
+      (one-file "c.js" "const x = 1 + // note\n  2;\nfunction f() {\n}\n" (sym 0 21 'variable "x") (sym 27 44 'function "f"))
+      (list 'ok (list (list "c.js" '(error symbols-not-top-level (at 22)))) '()))
+(want "IS22 a block comment opened after an operator and closed on the next line: the cut inside it is refused"
+      (one-file "k.js" "const y = 1 + /* note\n more */ 2;\nfunction f() {\n}\n" (sym 0 21 'variable "y") (sym 34 51 'function "f"))
+      (list 'ok (list (list "k.js" '(error symbols-not-top-level (at 22)))) '()))
+(want "IS23 Markdown is prose: a line ending in : before a heading does not continue"
+      (one-file "m.md" "Example:\n# Next\ntext\n" (sym 0 8 'string "Example") (sym 9 21 'string "Next"))
+      (list 'ok #f (list (list "m.md" "Example:\n" "# Next\ntext\n"))))
+(want "IS24 two blank-line cuts inside a body: the refusal names the first in the file, 19"
+      (one-file "o.py" "def f():\n    a = 1\n\n\n    return a\n" (sym 0 18 'function "f") (sym 20 33 'variable "rest"))
+      (list 'ok (list (list "o.py" '(error symbols-not-top-level (at 19)))) '()))
+
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that
 ;; splits, and IS7's malformed file, each forwarded. The store is read after

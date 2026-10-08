@@ -46,8 +46,12 @@
   ;; STRICT, the optional argument after `starts`, is the import's test of a
   ;; cut (import-symbol-cuts); split-suggest does not ask it. Two more lines
   ;; are then not at the top level, as the scanner's state reads them:
-  ;;   - a line after one whose CODE ends in a continuation token (=>, =, +,
-  ;;     -, *, /, ., ",", (, [, {, &&, ||, ?, :, or the profile's escape).
+  ;;   - a line after one whose CODE ends in a continuation token: the
+  ;;     profile's `continuation-tokens`, else =>, =, +, -, *, /, ., ",", (,
+  ;;     [, {, &&, ||, ?, :, and the profile's escape in either case. A token
+  ;;     counts only as a whole operator: not a "+" or "-" that ends "++" or
+  ;;     "--", not a "." that ends a number ("1."), not a character the
+  ;;     escape makes literal ("\|").
   ;;     The code is the line without its line comment, and a line that ends
   ;;     in a string, or inside or at the close of a block comment, does not
   ;;     continue: "// The end." or "x = 'a:'" before a definition is not
@@ -55,7 +59,8 @@
   ;;   - in an indent profile, a blank line whose next non-blank line is
   ;;     indented: a blank line inside a body has no indentation of its own,
   ;;     and is judged by what follows it. A blank line between two
-  ;;     top-level definitions still is the top level.
+  ;;     top-level definitions still is the top level. A line of spaces or
+  ;;     tabs only is a blank line here.
   (define (suggest-boundaries entry bytes . rest)
     (define starts (and (pair? rest) (car rest)))
     (define strict (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
@@ -81,16 +86,26 @@
                (stack '()) (quoted #f) (comment-depth 0) (continued? #f)
                (fence #f) (pending #f) (boundaries '(0))
                (last-kind 'none) (code-end 0) (continues? #f) (blank-starts '())
-               (continuation-tokens (list "=>" "=" "+" "-" "*" "/" "." "," "(" "[" "{" "&&" "||" "?" ":" escape))
+               (continuation-tokens
+                 (append (get 'continuation-tokens '("=>" "=" "+" "-" "*" "/" "." "," "(" "[" "{" "&&" "||" "?" ":"))
+                         (list escape)))
                (prefix (source-prefix-size bytes)))
           ;; WHAT A LINE'S CODE LAST WAS, for the strict test: `code` with the
           ;; index after the last code character, `string`, `comment`, or
           ;; `none` for a line with no code.
           (define (code! i) (set! last-kind 'code) (set! code-end (+ i 1)))
+          ;; A WHOLE OPERATOR, NOT THE END OF A LONGER TOKEN: "x++", "1." and an
+          ;; escaped "\|" end in a token's character and do not continue.
           (define (continuation? code)
             (exists (lambda (t)
                       (let ((n (string-length t)) (m (string-length code)))
-                        (and (>= m n) (string=? (substring code (- m n) m) t))))
+                        (and (>= m n) (string=? (substring code (- m n) m) t)
+                             (let ((before (and (> m n) (string-ref code (- m n 1)))))
+                               (not (and before
+                                         (or (and (member t '("+" "-")) (char=? before (string-ref t 0)))
+                                             (and (string=? t ".") (char-numeric? before))
+                                             (and (not (string=? t escape))
+                                                  (string=? (string before) escape)))))))))
                     continuation-tokens))
           (define (at-any s i tokens) (find (lambda (t) (string-prefix-at? s t i)) tokens))
           (define (fence-run line)
@@ -137,7 +152,9 @@
                        (code! i) (set! stack (cdr stack)) (loop (+ i 1)))
                       ((string-prefix-at? line escape i)
                        (if (= (+ i (string-length escape)) (string-length line)) (set! continued? #t)
-                           (loop (min (string-length line) (+ i (string-length escape) 1)))))
+                           ;; the escaped character is code, as written
+                           (begin (code! (+ i (string-length escape)))
+                                  (loop (min (string-length line) (+ i (string-length escape) 1))))))
                       (else (unless (char-whitespace? c) (code! i)) (loop (+ i 1))))))))
           (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
@@ -159,7 +176,10 @@
                      (line (safe-utf8 (byte-slice bytes offset (+ prefix (cadr row)))))
                      (trimmed (trim-left line))
                      (top? (and (null? stack) (not quoted) (zero? comment-depth) (not continued?)
-                                (or (not (string=? kind "indent")) (string=? line trimmed)))))
+                                (or (not (string=? kind "indent")) (string=? line trimmed)
+                                    ;; strict: a line of spaces only is blank,
+                                    ;; judged by the next non-blank line below
+                                    (and strict (string=? trimmed ""))))))
                 (if (string=? kind "fence")
                     (let ((run (fence-run line)))
                       (cond

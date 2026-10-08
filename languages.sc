@@ -273,6 +273,9 @@
                (escaped-character "\\") (nested-block-comment #f)
                (uncertain-tokens
                  ("<<" "$(" "`" "case " "if " "for " "while "))
+               ;; "/", "=", ":" and "*" end ordinary shell words (cd /, x=):
+               ;; only these continue a shell line (code-suggest.sc, strict)
+               (continuation-tokens ("|" "&&" "||"))
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("f() { :; }" "function g { :; }" "function h() { :; }")))

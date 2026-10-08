@@ -1636,12 +1636,16 @@ the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`); and
 a string, a block comment or an open bracket. Two more cuts are inside: one
 after a line whose code ends in a continuation token (`=>`, `=`, `+`, `-`,
 `*`, `/`, `.`, `,`, `(`, `[`, `{`, `&&`, `||`, `?`, `:`, or the language's
-escape, `\` in Python) -- the code read without its line comment, and a line
-that ends in a string, or inside or at the close of a block comment, not
-continuing, so `// The end.` before a definition is no continuation; and,
-in an indented language such as Python, a blank line whose next non-blank
-line is indented, since a blank line inside a body has no indentation of
-its own. A blank line between two top-level definitions is the top level.
+escape, `\` in Python; in the shell only `|`, `&&`, `||` and `\`, since `/`,
+`=`, `:` and `*` end ordinary shell words such as `cd /`) -- the code read
+without its line comment, and a line that ends in a string, or inside or at
+the close of a block comment, not continuing, so `// The end.` before a
+definition is no continuation. A token counts only as a whole operator: the
+`+` of `x++`, the `.` of `1.` and a character the escape makes literal do not
+continue. And, in an indented language such as Python, a blank line -- empty,
+or spaces and tabs only -- whose next non-blank line is indented, since a
+blank line inside a body has no indentation of its own. A blank line between
+two top-level definitions is the top level.
 The continuation test is not made in Markdown, which is prose. A
 refused file is not
 imported at all -- no block is written for it -- and the import of the
