@@ -54,7 +54,7 @@
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested?)
+          (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
           (only (theourgia store) search-state sealed-state? sealed-state-notes)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
@@ -71,7 +71,7 @@
     (list `(and (hard ,t ?h ?role ?about) (validity ?h ?v))
           `(and (hard ,t ?h _ _) (validity-reason ?h ?why ?by))
           `(and (unsettled-for ,t ?d) (decision-state ?d ?s))
-          `(and (unsettled-for ,t ?d) (decision-state ?d review) (moved ?i implements ?d ?end))
+          `(and (unsettled-for ,t ?d) (decision-state ?d review) (moved-kind ?i implements ?d ?end))
           `(and (scope-of ,t ?a) (contradicts ?a ?b))))
 
   ;; A refusal from the query library is the verb's answer, raised to the top.
@@ -285,8 +285,8 @@
                                    others)))
       (cons t (append (filter (lambda (id) (not (equal? id t))) unit-order) member-order other-order))))
 
-  ;; Breadth first from the unit over each record's depends-on and implements
-  ;; edges, to members only.
+  ;; Breadth first from the unit over each record's edges of kind depends-on
+  ;; and implements, under any name, to members only.
   (define (member-distances view unit members)
     (let ((d (make-hashtable string-hash string=?)))
       (let loop ((frontier unit) (k 1))
@@ -296,7 +296,7 @@
                                (map (lambda (id)
                                       (let ((row (state-read view id)))
                                         (filter (lambda (to) (and (member to members) (not (hashtable-ref d to #f))))
-                                                (map cdr (filter (lambda (e) (memq (car e) '(depends-on implements)))
+                                                (map cdr (filter (lambda (e) (memq (relation-kind view (car e)) '(depends-on implements)))
                                                                  (cdr (assq 'edges row)))))))
                                     frontier)))))
             (for-each (lambda (id) (hashtable-set! d id k)) next)
@@ -497,7 +497,7 @@
                                             (or (< (rank ca) (rank cb)) (and (= (rank ca) (rank cb)) (string<? (car a) (car b))))))
                             (append (evidence (rows-of S `(and (hard ,t ?c _ _) (verified-by ?c ?v))) 'verifies)
                                     (evidence (map (lambda (r) (list (cadr r) (car r)))
-                                                   (rows-of S `(and (hard ,t ?c _ _) (edge ?v implements ?c))))
+                                                   (rows-of S `(and (hard ,t ?c _ _) (edge-kind ?v implements ?c))))
                                               'implements)))
                         admitted?))
            ;; 3: the blocks a constraint replaced, when they are not in force.
@@ -505,7 +505,7 @@
                        (map (lambda (r) (list (cadr r) (list 'why why (car r))))
                             (filter (lambda (r) (and (member (car r) constraints)
                                                      (memq (car (lc:validity-of L (cadr r))) '(superseded refuted))))
-                                    (rows-of S `(and (hard ,t ?c _ _) (edge ?c ,rel ?o)))))))
+                                    (rows-of S `(and (hard ,t ?c _ _) (edge-kind ?c ,rel ?o)))))))
            (step3 (take (by (lambda (a b) (let ((ca (caddr (cadr a))) (cb (caddr (cadr b))))
                                             (or (< (rank ca) (rank cb)) (and (= (rank ca) (rank cb)) (string<? (car a) (car b))))))
                             (append (replaced 'supersedes 'superseded-by) (replaced 'refutes 'refuted-by)))

@@ -126,6 +126,8 @@
         ;; whose table it fills; "-" when absent.
         ((supply) '("--for"))
         ((reach) '("--rel" "--depth"))
+        ;; A relation's declaration: its kind, and the selectors of its ends.
+        ((relation) '("--as" "--from" "--to"))
         ;; NOTE: ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
@@ -138,7 +140,7 @@
       ;; THE PREMISES A COMMITTED WRITE IS ACCEPTED ON: every verb that writes
       ;; a record takes them; a registered one declares them in its entry.
       (case verb
-        ((insert set move del link unlink tag batch commit import-code import-md def) '("--premises"))
+        ((insert set move del link unlink relation tag batch commit import-code import-md def) '("--premises"))
         (else '()))
       (extension-options-of verb car)))
 
@@ -194,6 +196,7 @@
       ((export-code) '("--raw" "--datum" "--working"))
       ((export-md) '("--with-ids" "--working"))
       ((supply) '("--clear"))
+      ((relation) '("--retire"))
       (else '()))
       (extension-options-of verb cadr))))
 

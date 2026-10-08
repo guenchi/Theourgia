@@ -32,7 +32,7 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia reduce) state-read state-block-ids state-field-contested?)
+          (only (theourgia reduce) state-read state-block-ids state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
           (only (theourgia field-reading) field-of field-missing? lenient-status task-statuses
                 written-text rows-left-out)
@@ -71,7 +71,7 @@
   (define (task-row state id)
     (let ((row (state-read state id)))
       (and row (not (cdr (assq 'deleted row))) (eq? (field-of row 'kind) 'task)
-           (let* ((targets (map cdr (filter (lambda (e) (eq? (car e) 'implements))
+           (let* ((targets (map cdr (filter (lambda (e) (eq? (relation-kind state (car e)) 'implements))
                                             (cdr (assq 'edges row)))))
                   (implements (map (lambda (to) (list to (if (live? state to) 'live 'tombstoned))) targets))
                   ;; AN EDGE TO A DELETED BLOCK, OR TO ONE THAT IS NOT A

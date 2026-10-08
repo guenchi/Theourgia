@@ -58,7 +58,8 @@
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
-                reduce-applied-cut state-field-contested?)
+                reduce-applied-cut state-field-contested? relation-kind effect-relation-names
+                state-declared-relations)
           (only (theourgia store) library-locator defs-index search-state field-strings)
           (only (theourgia md) md-refs)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
@@ -95,6 +96,8 @@
       (title 2 "a block whose title is a settled string, and that title")
       (field 3 "every settled field of a live block: its name, and its value as stored")
       (edge 3 "every surviving edge between two live blocks: from, relation, to")
+      (edge-kind 3 "an edge whose relation has an effect kind, built-in or declared: from, that kind, to")
+      (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included")
       (under 2 "a live block and its settled parent, \"root\" at the top")
       (ref 2 "a text reference [[id]] in a live block's text to a live block")
       (library 2 "a library block and its name")
@@ -106,23 +109,27 @@
       (validity-reason 3 "each reason of a block that is not valid, and the block that causes it")
       (decision-state 2 "a live decision, and its state: closed, open, review, verified or implemented")
       (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end")
+      (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved")
       (verified-by 2 "a live block, and a live block with a current verifies edge to it")
       (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required")))
 
   (define tests '((= 2) (/= 2) (string< 2) (member 2)))
 
   ;; THE RULE LIBRARY, one table of data. Each rule is (<head> <goal> ...).
+  ;; A RULE ABOUT AN EFFECT ASKS THE KIND (edge-kind, moved-kind), so an edge
+  ;; under a declared name is read as its kind's; `edge` stays the literal
+  ;; fact, and a query by a declared name still works.
   (define rule-library
-    '(((depends ?a ?b) (edge ?a depends-on ?b))
-      ((depends ?a ?b) (edge ?a implements ?b))
+    '(((depends ?a ?b) (edge-kind ?a depends-on ?b))
+      ((depends ?a ?b) (edge-kind ?a implements ?b))
       ((depends* ?a ?b) (depends ?a ?b))
       ((depends* ?a ?b) (depends ?a ?c) (depends* ?c ?b))
       ((under* ?a ?b) (under ?a ?b))
       ((under* ?a ?b) (under ?a ?c) (under* ?c ?b))
       ((within ?d ?m) (under ?d ?m))
       ((within ?d ?m) (under ?c ?m) (within ?d ?c))
-      ((supersedes* ?a ?b) (edge ?a supersedes ?b))
-      ((supersedes* ?a ?b) (edge ?a supersedes ?c) (supersedes* ?c ?b))
+      ((supersedes* ?a ?b) (edge-kind ?a supersedes ?b))
+      ((supersedes* ?a ?b) (edge-kind ?a supersedes ?c) (supersedes* ?c ?b))
       ((affects ?a ?b) (depends* ?b ?a))
       ((in-force ?x) (validity ?x ?v) (member ?v (valid needs-review)))
       ((authoritative ?x) (class ?x ?c) (member ?c (observation ruling verification)))
@@ -140,21 +147,21 @@
       ((def-for ?b ?name ?d) (in-library ?b none) (uses-name ?b ?name) (def ?d none ?name)
                              (/= ?b ?d) (lang ?b ?l) (lang ?d ?l) (in-force ?d) (authoritative ?d))
       ((ambiguous ?b ?name) (def-for ?b ?name ?x) (def-for ?b ?name ?y) (string< ?x ?y))
-      ((contradicts ?a ?b) (edge ?a conflicts-with ?b) (in-force ?a) (in-force ?b)
+      ((contradicts ?a ?b) (edge-kind ?a conflicts-with ?b) (in-force ?a) (in-force ?b)
                            (authoritative ?a) (authoritative ?b))
-      ((contradicts ?a ?b) (edge ?b conflicts-with ?a) (in-force ?a) (in-force ?b)
+      ((contradicts ?a ?b) (edge-kind ?b conflicts-with ?a) (in-force ?a) (in-force ?b)
                            (authoritative ?a) (authoritative ?b))
-      ((replaces ?c ?o) (edge ?c supersedes ?o))
-      ((replaces ?c ?o) (edge ?c refutes ?o))
+      ((replaces ?c ?o) (edge-kind ?c supersedes ?o))
+      ((replaces ?c ?o) (edge-kind ?c refutes ?o))
       ((evidence-for ?c ?v) (verified-by ?c ?v))
-      ((evidence-for ?c ?v) (edge ?v implements ?c))
+      ((evidence-for ?c ?v) (edge-kind ?v implements ?c))
       ((hard ?t ?h unit ?t) (unit ?t ?h))
       ((hard ?t ?h member ?t) (scope-of ?t ?h))
       ((hard ?t ?d unsettled ?t) (unsettled-for ?t ?d))
       ((hard ?t ?x supersedes ?m) (scope-of ?t ?m) (supersedes* ?x ?m))
       ((hard ?t ?b cause ?m) (scope-of ?t ?m) (validity-reason ?m _ ?b) (kind ?b _))
       ((hard ?t ?i implementer ?d) (unsettled-for ?t ?d) (decision-state ?d review)
-                                   (moved ?i implements ?d _))))
+                                   (moved-kind ?i implements ?d _))))
 
   ;; The one line each rule relation is described by.
   (define rule-lines
@@ -444,10 +451,13 @@
                                                                 (cdr (lc:validity-of (provider S) id))))
                                               ids)))
         ((decision-state) (filter values (map (lambda (id) (let ((s (lc:decision-state-of (provider S) id))) (and s (list id (car s))))) ids)))
+        ((relation) (append (map (lambda (n) (list n n)) effect-relation-names)
+                            (map (lambda (d) (list (car d) (cadr d)))
+                                 (filter (lambda (d) (symbol? (cadr d))) (state-declared-relations st)))))
         ((moved) (let ((live (live-table S)) (A (attestation S)))
                    (apply append
                           (map (lambda (e)
-                                 (let ((w (and (memq (cadr e) lc:effect-relations) (hashtable-ref live (car e) #f)
+                                 (let ((w (and (relation-kind st (cadr e)) (hashtable-ref live (car e) #f)
                                                (hashtable-ref live (caddr e) #f) (at:edge-watch A (car e) (cadr e) (caddr e)))))
                                    (if (and w (eq? (car w) 'moved))
                                        (map (lambda (end) (list (car e) (cadr e) (caddr e) end)) (cdr w))
@@ -457,6 +467,28 @@
                                                            (filter (lambda (v) (eq? (cadr v) 'current)) (lc:verified-by (provider S) x))))
                                           ids)))
         (else (assertion-violation 'query "no provider" rel)))))
+
+  ;; A VIEW OVER A BUILD: its tuples with the relation in the second place
+  ;; replaced by that relation's kind, those of no kind left out, each once.
+  ;; edge-kind is this over the edge build and moved-kind over the moved
+  ;; build: the view shares the build and its charge and is charged nothing
+  ;; of its own, so a query over edge-kind costs what the same query over
+  ;; edge costs.
+  (define (kind-view S rel)
+    (let ((key (list 'kind-view rel)))
+      (or (hashtable-ref (session-memo S) key #f)
+          (let* ((st (session-state S))
+                 (seen (make-hashtable equal-hash equal?))
+                 (ts (filter values
+                             (map (lambda (t)
+                                    (let ((k (relation-kind st (cadr t))))
+                                      (and k
+                                           (let ((v (cons (car t) (cons k (cddr t)))))
+                                             (and (not (hashtable-ref seen v #f))
+                                                  (begin (hashtable-set! seen v #t) v))))))
+                                  (all-tuples S rel)))))
+            (hashtable-set! (session-memo S) key ts)
+            ts))))
 
   (define (live-table S)
     (let ((t (make-hashtable string-hash string=?)))
@@ -498,6 +530,8 @@
                                   (ts (if h (list (list (car args) h)) '())))
                              (count! S rel (length ts))
                              (filter-by args ts))))
+                      ((edge-kind) (filter-by args (kind-view S 'edge)))
+                      ((moved-kind) (filter-by args (kind-view S 'moved)))
                       (else (filter-by args (all-tuples S rel))))))
             (hashtable-set! (session-memo S) key ts)
             ts))))
@@ -746,9 +780,17 @@
 
   (define (query-verb store actor args req options state writer cwd)
     (cond
+      ;; A THIRD TABLE AFTER THE TWO: the store's declared relations,
+      ;; (declared <name> <kind> (from <selector>) (to <selector>)), or
+      ;; (declared <name> (contested)); none in a store with no declaration.
       ((argument-option options "--relations")
        (if (null? args)
-           ((dispatch-helper 'items) (query-relations-items))
+           ((dispatch-helper 'guarded)
+            (lambda ()
+              ((dispatch-helper 'items)
+               (append (query-relations-items)
+                       (map (lambda (d) (cons 'declared d))
+                            (state-declared-relations ((dispatch-helper 'reduction-for) store state)))))))
            ((dispatch-helper 'usage) query-usage)))
       ((not (= 1 (length args))) ((dispatch-helper 'usage) query-usage))
       (else

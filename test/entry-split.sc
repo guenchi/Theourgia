@@ -102,7 +102,7 @@
 ;; from outside the core table, taken from their registry's own data.
 (define verbs-line
   (string-append
-    "(verbs describe init insert set move del link unlink write restore commit drafts diagnostics discard batch split-suggest import-code export-code supply def import-md export-md adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts subscribe"
+    "(verbs describe init insert set move del link unlink relation write restore commit drafts diagnostics discard batch split-suggest import-code export-code supply def import-md export-md adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts subscribe"
     (apply string-append (map (lambda (e) (string-append " " (symbol->string (car e)))) extension-verbs))
     ")"))
 (let ((d (row-dir!)))

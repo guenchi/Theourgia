@@ -100,7 +100,8 @@ decision or doc → one it shows is wrong), `verifies` (a test → the code or d
 `conflicts-with` (two decisions that cannot both hold) and `documents` (a doc → the code or
 decision it explains). Each is a name `link` accepts; the reserved names (`ref`, `uses`, `calls`,
 `guards`) are not among them. Any other relation name still links; these are the ones the template
-names. `describe`, answered by the daemon, lists the store's roots and relations, and the
+names. The first six have an effect of their own; the template declares `documents` as a listed
+edge with no effect (see [`relation`](#relation)). `describe`, answered by the daemon, lists the store's roots and relations, and the
 MCP tools that write carry the roots' sentences after the writing protocol.
 
 `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
@@ -646,11 +647,12 @@ refused when the entry is registered.
 It answers:
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
-      | (nested-document <id>) | (duplicate-path <path> (ids (<id> ...)))
+      | (nested-document <id>) | (relation-contested <name> (candidates (<value> <w> <seq>) ...))
+      | (duplicate-path <path> (ids (<id> ...)))
       | (unknown-verb (event <w> <seq>) (verb <v>)) | (malformed-record (event <w> <seq>) (reason ...))
       | (cut <writer> <path> <kind> <after>)
 
-A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`.
+A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`. A relation name whose declarations disagree is listed as `relation-contested` with every surviving declaration (see [`relation`](#relation)).
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
 parent was deleted or never arrived, and records still waiting for premises. A record
@@ -831,6 +833,15 @@ relation is only an edge.
 | `verifies` | check -> subject | positive evidence while the subject has not changed since |
 | `conflicts-with` | block <-> block | none, unless proposed |
 
+A store may give another name one of these effects by declaring it (see
+[`relation`](#relation)): `relation cites --as depends-on` makes a `cites` edge
+read as `depends-on`, so a review needs review when a cited paper is refuted
+or changed since; `answers` declared as `implements` discharges a decision (a
+task's done is still its stored status). The edge keeps its name -- edges,
+queries and answers print it -- and the rules read its kind. A name declared
+`nothing` is a listed edge with no effect. A name never declared, retired, or
+contested is a plain edge.
+
 **Changed since** is causal, not a matter of clocks: an end of an edge has changed since
 the edge when no single link of the edge, and no single content write of the other end,
 was made by a writer who had seen all of that end's current content. Linking again is
@@ -843,7 +854,9 @@ A block's **validity** is one of `superseded`, `refuted`, `needs-review` and `va
 that order of precedence, with its reasons, each `(<why> <block>)`: `superseded-by`,
 `refuted-by`, `refutation-moved`, the three `proposed-` reasons, `premise-gone`,
 `premise-superseded`, `premise-refuted`, `premise-needs-review`, `premise-moved` and
-`implementation-moved`. A decision's state is one of `closed`, `open`, `review`,
+`implementation-moved`. A reason caused through a declared name carries it, `(<why>
+<block> (relation <name>))`, for example `(premise-moved <id> (relation cites))`; one
+caused through one of the six is as above. A decision's state is one of `closed`, `open`, `review`,
 `verified` and `implemented`, the first that holds in that order.
 
 A plain `read` of a block that is not valid adds `(validity <v> (<why> <block>) ...)`
@@ -862,7 +875,7 @@ superseded or refuted block (a name the store does not know is `unknown-name` in
 and for a `search` or a `grep` whose every hit was left out, where one that matched
 nothing prints nothing. The `validity` clause, and `excluded` beside a hit, are in the
 `--wire` answer only. The human output is for a person: a program reads these verbs,
-and every other, with `--wire`. These clauses come before the receipt. A store that links none of the six relations answers every read and
+and every other, with `--wire`. These clauses come before the receipt. A store that links none of the six relations, and no name declared as one of them, answers every read and
 search exactly as before.
 
 ### `query`
@@ -912,8 +925,18 @@ block (28570 tuples) takes 394 ms, against 376 ms before every read asked
 the reducer whether a field is contested. `depends*` was measured empty on
 both: neither store holds a link.
 
-`query --relations` lists the two tables below as items. This section is
-generated from them, and docs-check compares the two.
+`query --relations` lists the two tables below as items, and then the
+store's declared relations, one `(declared <name> <kind> (from <selector>)
+(to <selector>))` each, or `(declared <name> (contested))`. This section is
+generated from the two tables, and docs-check compares the two.
+
+A rule about an effect asks the edge's KIND: `edge-kind` and `moved-kind`
+answer an edge under a declared name as its kind, so `depends`, `supersedes*`,
+`contradicts`, `replaces`, `evidence-for` and `hard` read a `cites` declared as
+`depends-on` as they read `depends-on`. `edge` and `moved` are the literal
+facts: a query by the declared name still finds its edges. `edge-kind` and
+`moved-kind` are views of the `edge` and `moved` builds and cost what those
+cost.
 
 Fact relations:
 
@@ -924,6 +947,8 @@ Fact relations:
 - `title/2` -- a block whose title is a settled string, and that title
 - `field/3` -- every settled field of a live block: its name, and its value as stored
 - `edge/3` -- every surviving edge between two live blocks: from, relation, to
+- `edge-kind/3` -- an edge whose relation has an effect kind, built-in or declared: from, that kind, to
+- `relation/2` -- every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included
 - `under/2` -- a live block and its settled parent, "root" at the top
 - `ref/2` -- a text reference [[id]] in a live block's text to a live block
 - `library/2` -- a library block and its name
@@ -935,6 +960,7 @@ Fact relations:
 - `validity-reason/3` -- each reason of a block that is not valid, and the block that causes it
 - `decision-state/2` -- a live decision, and its state: closed, open, review, verified or implemented
 - `moved/4` -- an edge of an effect-bearing relation one of whose ends moved, and that end
+- `moved-kind/4` -- a moved edge with its relation's kind in place of its name, and the end that moved
 - `verified-by/2` -- a live block, and a live block with a current verifies edge to it
 - `score/3` -- exactly the hits search <text> returns with no cap, each with its score; text required
 
@@ -979,7 +1005,7 @@ run in one session with T's id written into each:
     (and (hard T ?h ?role ?about) (validity ?h ?v))
     (and (hard T ?h _ _) (validity-reason ?h ?why ?by))
     (and (unsettled-for T ?d) (decision-state ?d ?s))
-    (and (unsettled-for T ?d) (decision-state ?d review) (moved ?i implements ?d ?end))
+    (and (unsettled-for T ?d) (decision-state ?d review) (moved-kind ?i implements ?d ?end))
     (and (scope-of T ?a) (contradicts ?a ?b))
 
 The hard sections and the notes are built from their rows and from the
@@ -1139,7 +1165,9 @@ across two verbs.
 Creates a store in the directory named by `--store`, and answers with the
 store's id and the writer the caller was given. With `--template` (a built-in: `project` or
 `memory`) or `--template-file`, it then applies that template, as `template apply` does, and the
-answer also carries `(template <name>)` and `(created (<slug> <id>) ...)`. A template that cannot be
+answer also carries `(template <name>)` and `(created (<slug> <id>) ...)`. Each relation the template
+names that is not one of the six and not reserved is declared `nothing`, as `template apply` does. A
+store made without a template has only the six. A template that cannot be
 used is refused before any store is made. A filesystem failure while the template is applied is
 answered like any other, and the new store may exist; a refusal of the template's roots carries
 `(store-created)`. It also writes
@@ -1158,7 +1186,9 @@ the root's path is the root, and is kept. Anything else refuses and creates noth
 `template-present`, `slug-conflict` (two live blocks with the slug), `template-mismatch` (the block
 with the slug is not a top-level document at that path) or `path-occupied` (a top-level document
 without the slug holds the path). Deleted blocks do not count. A name is only ever a built-in's
-name; a file is named with `--file`.
+name; a file is named with `--file`. Each relation the template names that is not one of the six
+with an effect and not reserved, and that the store has not declared, is declared `nothing` in the
+same request: `project` declares `documents`.
 
 `template export` prints the store's template block. The template is data in that block: change it
 with `write` and `commit` like any block, and insert a new root's document; nothing else needs to
@@ -1257,6 +1287,39 @@ the store can see -- but the answer says what it found: `(matched 1)` when
 the edge was there, `(matched 0)` when it was not. A `(matched 0)` unlink
 is still recorded: an edge another writer made that this one has not seen
 is not removed by it.
+
+### `relation`
+
+    (relation <name> ("--as" <kind>) ("--from" <selector>) ("--to" <selector>) ("--retire")
+              ("--premises" <datum>))
+
+Declares what a relation name does in this store. `--as` takes one of the six
+relations with an effect (`supersedes`, `refutes`, `depends-on`, `implements`,
+`verifies`, `conflicts-with`): the name's edges then follow that relation's
+rules, and a reason they cause names the relation. `--as nothing` declares a
+listed edge with no effect. `--retire` makes the name a plain edge again. The
+six are never declared: `(error relation-is-built-in (relation <name>))`; a
+reserved name is refused `(error reserved-relation (relation <rel>))`; a kind
+outside the seven is refused `(error bad-request kind-not-known (kind
+"<spelling>") (known (...)))`.
+
+`--from` and `--to` say which blocks each end is meant for, as the clauses
+of a selector: `(kind doc)`, or `(kind doc) (field slot "result")`. They are
+stored with the declaration and printed by `query --relations`; this version
+does not refuse a link whose ends they do not match.
+
+A declaration is a record: a replay, a rebuild and a snapshot give the same
+table. Its value is the whole declaration -- the kind and both selectors, or
+retired. The same value as the one in force answers `(ok (unchanged))` and
+writes nothing (a retirement of a name with none in force too); another value
+is a new record, in force from it on, and an edge linked before it takes its
+effect from then on. Two writers who declare one name differently without
+seeing each other, or retire it beside a declaration, leave it CONTESTED,
+whatever the order the records arrive in: it has no effect, `conflicts` lists
+it with every surviving declaration, and `query --relations` prints it
+`(contested)`, until a writer who has seen them all declares it again. In a
+request of several intents (a `batch` of more than one, a template) a
+declaration is written as given.
 
 ### `def`
 

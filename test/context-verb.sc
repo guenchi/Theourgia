@@ -235,7 +235,7 @@
               (list `(and (hard ,T ?h ?role ?about) (validity ?h ?v))
                     `(and (hard ,T ?h _ _) (validity-reason ?h ?why ?by))
                     `(and (unsettled-for ,T ?d) (decision-state ?d ?s))
-                    `(and (unsettled-for ,T ?d) (decision-state ?d review) (moved ?i implements ?d ?end))
+                    `(and (unsettled-for ,T ?d) (decision-state ?d review) (moved-kind ?i implements ?d ?end))
                     `(and (scope-of ,T ?a) (contradicts ?a ?b))))))
 (want "C1 a commit giving the receipt back at once is accepted"
       (car (commit-with c1s c1a))

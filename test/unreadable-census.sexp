@@ -984,6 +984,11 @@
    unrelated a
    "batch parse"
    (e (#t (quote unreadable))))
+  ("rpc.sc" (parse-relation selector) 1 guard
+   (#t)
+   unrelated a
+   "relation selector parse"
+   (e (#t (quote unreadable))))
   ("store.sc" (stored->payload) 1 guard
    (#t)
    unrelated a

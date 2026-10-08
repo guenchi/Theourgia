@@ -985,6 +985,7 @@
     (cons 'del (seeded (lambda (st x s) (census-ask st 'del (census-get s 'E)))))
     (cons 'link (seeded (lambda (st x s) (census-ask st 'link (census-get s 'E) "explains" (census-get s 'B)))))
     (cons 'unlink (seeded (lambda (st x s) (census-ask st 'unlink (census-get s 'B) "explains" (census-get s 'E)))))
+    (cons 'relation (seeded (lambda (st x s) (census-ask st 'relation "explains" "--as" "depends-on"))))
     (cons 'write (seeded (lambda (st x s)
                            (census-ask st 'write (census-get s 'E) "a draft of echo"
                                        "--writer" (census-get s 'writer)))))
@@ -1232,7 +1233,7 @@
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check context del describe discard export-code export-md import-md init insert
-        link move outline publish reach restore set snapshot split-suggest supply template unlink write))
+        link move outline publish reach relation restore set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt subscribe))
@@ -1250,7 +1251,7 @@
       (census-detail 'not-items)
       '((batch . batch) (check . check) (context . ok) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
-        (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (restore . ok) (set . ok)
+        (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (set . ok)
         (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))
 
 ;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A

@@ -2079,6 +2079,9 @@
         ;; the template behaves as if there were none, and this says why.
         (let ((problem (template-problem state)))
           (if problem (list (list (quote template) problem)) (quote ())))
+        ;; A RELATION NAME TWO WRITERS DECLARED DIFFERENTLY, neither having
+        ;; seen the other: its edges have no effect until one declares again.
+        (state-relation-contested state)
         ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
         ;; alive text files, that an export would write to the same file.
         (state-duplicated-paths state)
@@ -2770,6 +2773,22 @@
              ;; dangling; only an id nobody has ever seen is an error.
              ((not (known? state to)) (missing to))
              (else (list (car i) from (caddr i) to)))))
+        ;; A DECLARATION NAMES NO BLOCK. A built-in's kind is its own and a
+        ;; reserved name is never an edge, so neither is declared; a kind
+        ;; outside the seven is refused with them, as a block's kind is.
+        ;; The rest of the value's shape is the reducer's (payload-reason).
+        ((relation)
+         (let ((name (cadr i)) (value (caddr i)))
+           (cond
+             ((memq name effect-relation-names)
+              (list 'error 'relation-is-built-in (list 'relation name)))
+             ((memq name reserved-relation-names)
+              (list 'error 'reserved-relation (list 'relation name)))
+             ((and (pair? value) (not (memq (car value) declaration-kinds)))
+              (list 'error 'malformed-intent
+                    (list 'kind-not-known (list 'kind (datum-spelling (car value)))
+                          (list 'known declaration-kinds))))
+             (else (list 'relation name value)))))
         ;; SPELLED, FOR THE SAME REASON AS THE OTHER ONE. An intent's verb
         ;; is whatever the caller wrote, so the refusal that names it must
         ;; not be the thing that carries it back.
@@ -3656,7 +3675,7 @@
                       ;; answered `no-such-intent`, and the caller was
                       ;; told one of its own blocks had never been asked
                       ;; for.
-                      (let ((ev (cadr (assq 'events (cdr answer)))))
+                      (let ((ev (let ((e (assq 'events (cdr answer)))) (and e (cadr e)))))
                         (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
                             (cons (cons k (block-id (car (car ev)) (cdr (car ev)))) made)
                             made))
@@ -4071,7 +4090,7 @@
   ;; `(set id field value)` -- and three is the shorter.
   (define intent-arity
     '((insert . 4) (set . 3) (del . 2) (move . 4)
-      (link . 4) (unlink . 4) (tag . 2)))
+      (link . 4) (unlink . 4) (tag . 2) (relation . 3)))
 
   ;; AND THE POSITIONS WHOSE TYPE IS FIXED. Arity alone still lets
   ;; `(set <id> ((title . "x")))` through -- the right length, the wrong
@@ -4085,7 +4104,7 @@
   ;; and those already have answers further in; duplicating that
   ;; judgement here would be a second place for it to live.
   (define intent-symbol-positions
-    '((set . (2)) (link . (2)) (unlink . (2))))
+    '((set . (2)) (link . (2)) (unlink . (2)) (relation . (1))))
 
   ;; THE PAYLOAD IS CHECKED WITH THE REDUCER'S OWN PREDICATE, not with a
   ;; second copy of its rules living here. `payload-reason` is exported by
@@ -4339,7 +4358,7 @@
                       ;; answered `no-such-intent`, and the caller was
                       ;; told one of its own blocks had never been asked
                       ;; for.
-                      (let ((ev (cadr (assq 'events (cdr answer)))))
+                      (let ((ev (let ((e (assq 'events (cdr answer)))) (and e (cadr e)))))
                         (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
                             (cons (cons n (block-id (car (car ev)) (cdr (car ev)))) made)
                             made))
@@ -4376,6 +4395,16 @@
                        => (lambda (why)
                             (list 'error 'malformed-intent
                                   (if (pair? why) why (list why)))))
+                      ;; LOCAL ADMISSION: a declaration whose whole value is
+                      ;; the one in force -- or a retirement of a name with
+                      ;; none in force -- writes nothing. Not inside a plan,
+                      ;; whose sub-operations were declared before it ran.
+                      ((and (eq? (car payload) 'relation) (not (actor-plan-event actor))
+                            (equal? (caddr payload)
+                                    (let ((d (state-declaration state (cadr payload))))
+                                      (if (and d (eq? (car d) 'in-force)) (cadr d)
+                                          (and (or (not d) (eq? (car d) 'retired)) 'retired)))))
+                       '(ok (unchanged)))
                       (else
                         (let* ((deps (deps-for-payload state writer payload))
                                ;; COUNTED BEFORE THE RECORD IS APPLIED: what the

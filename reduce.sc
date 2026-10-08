@@ -45,6 +45,8 @@
           reduce-applied-cut reduce-trace reduce-gates
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
+          declaration-kinds relation-kind state-declared-relations state-relation-contested
+          state-declaration
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
@@ -127,6 +129,7 @@
   ;; pending  -- records whose premises have not all arrived
   ;; trace    -- event-ids in the order they were applied
   ;; noted    -- integrity observations this layer made while applying
+  ;; declared-relations -- alist of a declared relation name to its candidates
   (define-record-type reduction
     (fields (mutable blocks)
             (mutable links)
@@ -137,7 +140,8 @@
             (mutable trace)
             (mutable noted) (mutable history) (mutable gates)
             (mutable admission-index)
-            (mutable consumption)))
+            (mutable consumption)
+            (mutable declared-relations)))
 
   ;; ---- the name of a draft's content ---------------------------------------
   ;;
@@ -577,7 +581,7 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption)))
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '()))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
@@ -698,6 +702,7 @@
       (reduction-blocks-set! r '())
       (reduction-links-set! r '())
       (reduction-tags-set! r '())
+      (reduction-declared-relations-set! r '())
       (reduction-pasts-set! r '())
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
@@ -1163,6 +1168,10 @@
   ;; write. A refusal about an unwritable datum was therefore unreadable
   ;; whenever it was right. Keeping what was found here is what makes the
   ;; echo unnecessary.
+  (define (datum-symbols x)
+    (cond ((symbol? x) (list x))
+          ((pair? x) (append (datum-symbols (car x)) (datum-symbols (cdr x))))
+          (else '())))
   (define (symbol-field-reason payload)
     (define (bad? x) (and (symbol? x) (not (wire-safe-symbol? x))))
     (define (say where x)
@@ -1174,6 +1183,11 @@
              ((link unlink)
               (and (pair? (cdr args)) (bad? (cadr args))
                    (say 'relation (cadr args))))
+             ((relation)
+              (cond ((and (pair? args) (bad? (car args))) (say 'relation (car args)))
+                    ((and (pair? args) (pair? (cdr args)) (find bad? (datum-symbols (cadr args))))
+                     => (lambda (x) (say 'selector x)))
+                    (else #f)))
              ((set)
               (and (pair? (cdr args)) (bad? (cadr args))
                    (say 'field-name (cadr args))))
@@ -1358,6 +1372,11 @@
                 (and (not (symbol? (cadr args))) 'relation-not-a-symbol)))
            ((tag) (or (args-reason args 2)
                       (and (not (string? (car args))) 'tag-name-not-a-string)))
+           ;; A DECLARATION: a relation name and its whole value
+           ;; (declaration-reason).
+           ((relation) (or (args-reason args 2)
+                           (and (not (symbol? (car args))) 'relation-not-a-symbol)
+                           (declaration-reason (car args) (cadr args))))
            ;; A PLAN IS CHECKED HERE TOO, and until now it was not: the
            ;; arm below answered #f for it, so a plan carrying a
            ;; malformed `consumes` was applied in silence and the index
@@ -1429,6 +1448,7 @@
          ((link) (do-link! r event-id (cdr payload)))
          ((unlink) (do-unlink! r event-id past (cdr payload)))
          ((tag) (do-tag! r event-id past (cdr payload)))
+         ((relation) (do-relation! r event-id past (cdr payload)))
          ;; bookkeeping: understood, and deliberately without effect
          ((plan batch resolve) (if #f #f))
          (else (note-verb! r event-id (car payload)))))))
@@ -1506,6 +1526,15 @@
       (reduction-tags-set!
         r (cons (cons name (put-candidate past have cut event-id))
                 (remp (lambda (e) (equal? (car e) name)) (reduction-tags r))))))
+
+  ;; A DECLARATION IS A CANDIDATE OF ITS NAME, as a write is of a field: the
+  ;; ones this record has seen are superseded, a concurrent one survives.
+  (define (do-relation! r event-id past args)
+    (let* ((name (car args))
+           (have (let ((e (assq name (reduction-declared-relations r)))) (if e (cdr e) '()))))
+      (reduction-declared-relations-set!
+        r (cons (cons name (put-candidate past have (copy-datum (cadr args)) event-id))
+                (remp (lambda (e) (eq? (car e) name)) (reduction-declared-relations r))))))
 
   ;; ---- ordering (design 9.5) ------------------------------------------------
 
@@ -1694,9 +1723,10 @@
               (hashtable-set! by e (cons (cadddr l) (or seen '())))
               (loop (cdr ls) (if seen order (cons e order))))))))
 
-  ;; Whether any surviving edge carries an effect-bearing relation.
+  ;; Whether any surviving edge carries a relation of an effect kind, a
+  ;; built-in or a declared one.
   (define (state-effect-relation? r)
-    (exists (lambda (l) (memq (cadr l) effect-relation-names)) (reduction-links r)))
+    (exists (lambda (l) (relation-kind r (cadr l))) (reduction-links r)))
 
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
@@ -1953,6 +1983,107 @@
   ;; library: a store that links none of them takes the fast path.
   (define effect-relation-names '(supersedes refutes depends-on implements verifies conflicts-with))
 
+  ;; ---- declared relations ---------------------------------------------------
+  ;;
+  ;; A DECLARED RELATION binds a name, in one store, to one EFFECT KIND: one
+  ;; of the six above, or `nothing`, a listed edge with no effect. The
+  ;; record is `(relation <name> <value>)`, the value the WHOLE declaration,
+  ;; `(<kind> <from> <to>)`, or `retired`. Each end is a selector: () for
+  ;; any block, else `((kind <k>))` or `((kind <k>) (field <name> <value>))`.
+  ;; The ends are stored and printed; nothing here enforces them.
+  ;;
+  ;; THE DECLARATIONS OF A NAME ARE CANDIDATES, as a field's writes are: one
+  ;; a later record has seen is superseded (do-relation!). They are read BY
+  ;; VALUE, which a field is not: the name is in force when every surviving
+  ;; candidate holds one value, and CONTESTED when two values survive -- two
+  ;; writers' declarations, or a retirement beside a declaration, neither
+  ;; having seen the other. A contested name has no effect until a writer
+  ;; who has seen every candidate declares it again. A function of the
+  ;; applied set, whatever the arrival order.
+  ;;
+  ;; THE EDGE KEEPS ITS NAME; THE RULES READ ITS KIND. relation-kind is the
+  ;; one accessor every reader of an effect asks.
+  (define declaration-kinds (append effect-relation-names '(nothing)))
+
+  (define (selector-reason s)
+    (define (scalar? v)
+      (or (string? v) (symbol? v) (and (integer? v) (exact? v))))
+    (cond ((null? s) #f)
+          ((not (and (list? s) (<= 1 (length s) 2))) 'selector-malformed)
+          ((not (let ((k (car s))) (and (list? k) (= 2 (length k)) (eq? (car k) 'kind) (kind-known? (cadr k)))))
+           'selector-malformed)
+          ((null? (cdr s)) #f)
+          ((not (let ((f (cadr s)))
+                  (and (list? f) (= 3 (length f)) (eq? (car f) 'field) (symbol? (cadr f)) (scalar? (caddr f)))))
+           'selector-malformed)
+          (else #f)))
+
+  ;; NEVER: A BUILT-IN NAME IS NOT DECLARED. Its kind is itself, always; a
+  ;; record that declares one is malformed, and the write path refuses it
+  ;; as relation-is-built-in.
+  (define (declaration-reason name value)
+    (cond ((memq name effect-relation-names) 'relation-is-built-in)
+          ((eq? value 'retired) #f)
+          ((not (and (list? value) (= 3 (length value)))) 'declaration-malformed)
+          ((not (memq (car value) declaration-kinds)) 'declaration-malformed)
+          (else (or (selector-reason (cadr value)) (selector-reason (caddr value))))))
+
+  (define (relation-candidates r name)
+    (let ((e (assq name (reduction-declared-relations r)))) (if e (cdr e) '())))
+
+  ;; -> the kind of a relation name: a built-in's own, a declared name's in
+  ;; force, or #f for a plain edge -- a name never declared, retired,
+  ;; contested, or declared `nothing`.
+  (define (relation-kind r name)
+    (cond ((memq name effect-relation-names) name)
+          (else
+           (let ((cs (relation-candidates r name)))
+             (and (pair? cs)
+                  (let ((v (car (car cs))))
+                    (and (pair? v) (for-all (lambda (c) (equal? (car c) v)) (cdr cs))
+                         (not (eq? (car v) 'nothing)) (car v))))))))
+
+  ;; -> #f for a name never declared; else (in-force <value>), (retired), or
+  ;; (contested (<value> <writer> <seq>) ...), every surviving candidate.
+  (define (state-declaration r name)
+    (let ((cs (relation-candidates r name)))
+      (and (pair? cs)
+           (let ((v (car (car cs))))
+             (cond ((not (for-all (lambda (c) (equal? (car c) v)) (cdr cs)))
+                    (cons 'contested
+                          (list-sort candidate<?
+                                     (map (lambda (c) (list (copy-datum (car c)) (car (cdr c)) (cdr (cdr c)))) cs))))
+                   ((eq? v 'retired) '(retired))
+                   (else (list 'in-force (copy-datum v))))))))
+
+  (define (declared-names r)
+    (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+               (map car (reduction-declared-relations r))))
+
+  ;; -> the declared table, by name: (<name> <kind> (from <selector>) (to
+  ;; <selector>)) for a name in force, (<name> (contested)) for one contested.
+  ;; A retired name is a plain edge again and is not listed.
+  (define (state-declared-relations r)
+    (filter values
+            (map (lambda (name)
+                   (let ((d (state-declaration r name)))
+                     (case (car d)
+                       ((in-force) (let ((v (cadr d)))
+                                     (list name (car v) (list 'from (cadr v)) (list 'to (caddr v)))))
+                       ((contested) (list name '(contested)))
+                       (else #f))))
+                 (declared-names r))))
+
+  ;; -> ((relation-contested <name> (candidates (<value> <writer> <seq>) ...))
+  ;; ...), by name, for `conflicts`.
+  (define (state-relation-contested r)
+    (filter values
+            (map (lambda (name)
+                   (let ((d (state-declaration r name)))
+                     (and (eq? (car d) 'contested)
+                          (list 'relation-contested name (cons 'candidates (cdr d))))))
+                 (declared-names r))))
+
   ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
   ;; records were accepted, for every APPLIED link or unlink record whose
   ;; relation is reserved.
@@ -2005,9 +2136,15 @@
              (sha256 (string->utf8
                        (sexpr->string-extended (storable-encode (block->datum r id (cdr e))))))))))
 
+  ;; THE DECLARATIONS ARE PART OF THE STATE, after the blocks, a name's
+  ;; candidates by event; a store with none hashes the blocks alone, as it
+  ;; always has.
   (define (state-hash r)
-    (bytevector->hex
-      (sha256 (string->utf8 (sexpr->string-extended (storable-encode (state-datum r)))))))
+    (let ((ds (map (lambda (name) (list 'relation name (candidates->datum (relation-candidates r name))))
+                   (declared-names r))))
+      (bytevector->hex
+        (sha256 (string->utf8 (sexpr->string-extended
+                                (storable-encode (if (null? ds) (state-datum r) (append (state-datum r) ds)))))))))
 
 
   ;; ---- derived structure (design 9.2) ---------------------------------------
@@ -2388,7 +2525,10 @@
       ;; damaged record that is still on disk, and the store looked
       ;; healthier for having been snapshotted.
       (map (lambda (n) (list 'noted n)) (reduction-noted r))
-      (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))))
+      (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))
+      ;; A DECLARATION'S CANDIDATES, one row a name; none in a store with
+      ;; no declaration, whose rows are as they were.
+      (map (lambda (e) (list 'relation (car e) (cdr e))) (reduction-declared-relations r))))
 
   (define (rows->state rows)
     (let ((r (reduce-empty))
@@ -2427,6 +2567,9 @@
             ((tag)
              (reduction-tags-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-tags r))))
+            ((relation)
+             (reduction-declared-relations-set!
+               r (cons (cons (cadr row) (caddr row)) (reduction-declared-relations r))))
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))

@@ -710,6 +710,8 @@
   ;; which answers both, use these.
   (define link-usage '(link <from> <rel> <to> ["--premises" <datum>]))
   (define unlink-usage '(unlink <from> <rel> <to> ["--premises" <datum>]))
+  (define relation-usage
+    '(relation <name> ["--as" <kind>] ["--from" <selector>] ["--to" <selector>] ["--retire"] ["--premises" <datum>]))
 
   (define insert-usage
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
@@ -904,6 +906,38 @@
                    (list verb (car args) (string->symbol (cadr args)) (caddr args))
                    req options)))
 
+  ;; `relation <name> --as <kind> [--from <selector>] [--to <selector>]`, or
+  ;; `relation <name> --retire`: one declaration record, whose value is the
+  ;; whole declaration (reduce.sc, declared relations). A selector is
+  ;; written as its clauses and read as data, `(kind doc)` or `(kind doc)
+  ;; (field slot "result")`; an end not given is any block.
+  (define (parse-relation store actor args req options)
+    (let ((as (argument-option options "--as"))
+          (from (argument-option options "--from"))
+          (to (argument-option options "--to"))
+          (retire (argument-option options "--retire")))
+      (define (selector text)
+        (if (not text)
+            '()
+            (guard (e (#t 'unreadable))
+              (let ((in (open-string-input-port text)))
+                (let loop ((out '()))
+                  (let ((d (get-datum in)))
+                    (if (eof-object? d) (reverse out) (loop (cons d out)))))))))
+      (cond
+        ((not (= 1 (length args))) (usage relation-usage))
+        ((if retire (or as from to) (not as)) (usage relation-usage))
+        (retire (one-write store actor (list 'relation (string->symbol (car args)) 'retired) req options))
+        ((not (memq (string->symbol as) declaration-kinds))
+         (list 'error 'bad-request 'kind-not-known (list 'kind as) (list 'known declaration-kinds)))
+        (else
+         (let ((f (selector from)) (t (selector to)))
+           (if (or (eq? f 'unreadable) (eq? t 'unreadable))
+               '(error malformed-intent (selector-malformed))
+               (one-write store actor
+                          (list 'relation (string->symbol (car args)) (list (string->symbol as) f t))
+                          req options)))))))
+
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the
   ;; bytes, handed here as a list of intents; running them one at a time
   ;; through separate sessions would let another writer interleave, and
@@ -1038,6 +1072,9 @@
             "Record a named relation between two blocks." #f 'daemon)
       (list 'unlink unlink-usage
             "Remove a named relation between two blocks." #f 'daemon)
+      (list 'relation relation-usage
+            "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for, stored and listed, not enforced. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
+            #f 'daemon)
       ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
       ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the
       ;; handler's refusal named `--working-cut`, `--working-parent-writer`
@@ -1371,6 +1408,7 @@
                   (guarded (lambda () (one-write store actor (list 'del (car args)) req options))))))
       (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req options)))))
       (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req options)))))
+      (cons 'relation (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-relation store actor args req options)))))
       (cons 'write
             (lambda (store actor args req options state writer cwd)
               (if (= 2 (length args))
@@ -2149,7 +2187,7 @@
 
   (define (tracked-request? verb args)
     (case verb
-      ((insert set move del link unlink batch commit import-code def) #t)
+      ((insert set move del link unlink relation batch commit import-code def) #t)
       ((tag) (= 1 (length args)))
       (else #f)))
 

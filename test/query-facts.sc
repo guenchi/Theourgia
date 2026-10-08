@@ -390,7 +390,7 @@
         (in-order (length (filter (lambda (i) (eq? (car i) 'fact)) items))
                   (length (filter (lambda (i) (eq? (car i) 'rule)) items))
                   (string-contains? (file-text "../README.md") (query-relations-text))))
-      '(20 19 #t))
+      '(23 19 #t))
 (define child (string-append root "/ondemand.sc"))
 (write-file! child
   (string-append

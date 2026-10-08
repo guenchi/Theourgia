@@ -24,6 +24,14 @@
 ;;; none of them without loading this library; the two must name the same
 ;;; relations, and this library refuses to load when they do not.
 ;;;
+;;; THE RULES READ AN EDGE'S KIND, NOT ITS NAME. A store may declare a name
+;;; as one of the six (reduce.sc, declared relations): its edges then take
+;;; that relation's effect, and a reason they cause names the relation,
+;;; (<why> <by> (relation <name>)). Every reader here asks relation-kind;
+;;; the witnesses of an edge are still looked up by its own name (attest).
+;;; Edges of one kind from one block to another under several names are
+;;; read as one: an end has moved past them when it moved past each.
+;;;
 ;;;   supersedes      newer -> older       the older block is superseded
 ;;;   refutes         evidence -> claim    the claim is refuted while the
 ;;;                                        edge is current, needs review
@@ -60,7 +68,8 @@
           read-validity-clause listed-validity-clause search-clauses search-filter whereis-split)
   (import (rnrs)
           (only (theourgia reduce) state-read state-edges state-effect-relation?
-                effect-relation-names known-classes state-field-contested?)
+                effect-relation-names known-classes state-field-contested?
+                relation-kind declaration-kinds cut-join)
           (prefix (theourgia attest) attest:)
           (only (theourgia field-reading) field-of lenient-status decision-statuses task-statuses))
 
@@ -82,9 +91,12 @@
   ;; and the table lacks would take the slow path for nothing.
   ;; A definition, not an expression: a library body's definitions come
   ;; first, and this one is evaluated when the library is.
+  ;; AND A DECLARED NAME TAKES ONE OF THESE KINDS OR NONE: the reducer's
+  ;; declaration kinds are this table's relations and `nothing`.
   (define effect-table-checked
     (or (and (for-all (lambda (n) (memq n effect-relation-names)) effect-relations)
-             (for-all (lambda (n) (memq n effect-relations)) effect-relation-names))
+             (for-all (lambda (n) (memq n effect-relations)) effect-relation-names)
+             (equal? declaration-kinds (append effect-relations '(nothing))))
         (assertion-violation 'lifecycle "the effect table and the reducer's effect-relation names differ"
                              effect-relations effect-relation-names)))
 
@@ -115,7 +127,7 @@
       (new-provider state (attest:make-attestation state) fast
                     (make-hashtable string-hash string=?)
                     (if fast '() ((if (pair? order) (car order) (lambda (es) es))
-                                  (filter (lambda (e) (memq (cadr e) effect-relations))
+                                  (filter (lambda (e) (relation-kind state (cadr e)))
                                           (state-edges state))))
                     #f #f (make-hashtable equal-hash equal?))))
 
@@ -135,34 +147,72 @@
     (let ((row (row-of L id))) (and row (not (cdr (assq 'deleted row))))))
 
   (define (contested? L id field row) (state-field-contested? (provider-state L) id field (field-of row field)))
+  (define (kind-of L rel) (relation-kind (provider-state L) rel))
   (define (authority? L id) (let ((row (row-of L id))) (authoritative? (effective-class row (contested? L id 'class row)))))
 
-  ;; The edges of one relation to one block, from an index of the edges by
-  ;; target built once, on first use.
-  (define (edges-to L id rel)
+  ;; The edges of one KIND to one block, under any name of that kind, from
+  ;; an index of the edges by target built once, on first use.
+  (define (edges-to L id kind)
     (let ((t (or (provider-targets L)
                  (let ((t (make-hashtable equal-hash equal?)))
                    (for-each (lambda (e) (hashtable-set! t (caddr e) (cons e (hashtable-ref t (caddr e) '()))))
                              (reverse (provider-by-target L)))
                    (provider-targets-set! L t)
                    t))))
-      (filter (lambda (e) (eq? (cadr e) rel)) (hashtable-ref t id '()))))
+      (filter (lambda (e) (eq? (kind-of L (cadr e)) kind)) (hashtable-ref t id '()))))
+
+  (define (name<? x y) (string<? (symbol->string x) (symbol->string y)))
+
+  ;; -> ((<source> <name> ...) ...): each block with an edge of KIND to id,
+  ;; once, by id, with the names of those edges, sorted.
+  (define (sources-to L id kind)
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (e)
+                  (let ((ns (hashtable-ref t (car e) '())))
+                    (unless (memq (cadr e) ns) (hashtable-set! t (car e) (cons (cadr e) ns)))))
+                (edges-to L id kind))
+      (map (lambda (a) (cons a (list-sort name<? (hashtable-ref t a '()))))
+           (list-sort string<? (vector->list (hashtable-keys t))))))
 
   (define (edge-watch L a rel b) (attest:edge-watch (provider-attestation L) a rel b))
+
+  ;; edge-watch over the edges of one kind from a to b, by their NAMES: an
+  ;; end has moved when it moved past every one of them.
+  (define (kind-watch L a names b)
+    (if (null? (cdr names))
+        (edge-watch L a (car names) b)
+        (let ((ws (map (lambda (n) (edge-watch L a n b)) names)))
+          (if (memq (car (car ws)) '(self gone))
+              (car ws)
+              (let ((ends (filter (lambda (end)
+                                    (for-all (lambda (w) (and (eq? (car w) 'moved) (memq end (cdr w)) #t)) ws))
+                                  '(source target))))
+                (if (null? ends) '(current) (cons 'moved ends)))))))
 
   ;; ---- validity -----------------------------------------------------------------
 
   ;; THE REASONS, in the order a reason list is sorted by. Each is (<why>
-  ;; <by>), <by> being the block that causes it.
+  ;; <by>), <by> being the block that causes it, and (<why> <by> (relation
+  ;; <name>)) when the edge that causes it carries a declared name.
   (define reason-order
     '(superseded-by refuted-by refutation-moved
       proposed-supersedes proposed-refutes proposed-conflicts-with
       premise-gone premise-superseded premise-refuted premise-needs-review premise-moved
       implementation-moved))
 
+  (define (reason-relation r) (if (pair? (cddr r)) (symbol->string (cadr (caddr r))) ""))
+
   (define (reason<? x y)
     (let ((i (length (memq (car x) reason-order))) (j (length (memq (car y) reason-order))))
-      (or (> i j) (and (= i j) (string<? (cadr x) (cadr y))))))
+      (or (> i j)
+          (and (= i j)
+               (or (string<? (cadr x) (cadr y))
+                   (and (string=? (cadr x) (cadr y)) (string<? (reason-relation x) (reason-relation y))))))))
+
+  ;; A REASON CAUSED THROUGH A DECLARED NAME SAYS WHICH; one caused through
+  ;; a built-in's own name is as it always was.
+  (define (reason why by rel kind)
+    (if (eq? rel kind) (list why by) (list why by (list 'relation rel))))
 
   (define (sorted-reasons rs) (list-sort reason<? rs))
 
@@ -189,41 +239,44 @@
               (else #f)))
       ;; THE DIRECT EFFECTS: superseded and refuted read no other block's
       ;; validity, so they are settled in one pass, before the fixed point.
+      ;; THE CASE IS ON THE EDGE'S KIND; the edge's own name is what the
+      ;; witnesses are found by, and what a reason names.
       (for-each
         (lambda (e)
-          (let ((a (car e)) (rel (cadr e)) (b (caddr e)))
+          (let* ((a (car e)) (rel (cadr e)) (b (caddr e)) (k (kind-of L rel))
+                 (because (lambda (why by) (reason why by rel k))))
             (when (and (not (equal? a b)) (live? L a))
               (let ((auth (authority? L a)))
                 ;; A TARGET THAT IS GONE TAKES NO EFFECT, ruling or proposal:
                 ;; its dependents answer premise-gone, and nothing else.
-                (case (if (and (memq rel '(supersedes refutes conflicts-with)) (attest:end-gone? A b)) 'none rel)
+                (case (if (and (memq k '(supersedes refutes conflicts-with)) (attest:end-gone? A b)) 'none k)
                   ((supersedes)
-                   (if auth (add! sup b (list 'superseded-by a)) (add! nr b (list 'proposed-supersedes a))))
+                   (if auth (add! sup b (because 'superseded-by a)) (add! nr b (because 'proposed-supersedes a))))
                   ((refutes)
-                   (cond ((not auth) (add! nr b (list 'proposed-refutes a)))
-                         ((attest:target-moved? A a rel b) (add! nr b (list 'refutation-moved a)))
-                         (else (add! ref b (list 'refuted-by a)))))
+                   (cond ((not auth) (add! nr b (because 'proposed-refutes a)))
+                         ((attest:target-moved? A a rel b) (add! nr b (because 'refutation-moved a)))
+                         (else (add! ref b (because 'refuted-by a)))))
                   ((conflicts-with)
-                   (unless auth (add! nr b (list 'proposed-conflicts-with a))))
+                   (unless auth (add! nr b (because 'proposed-conflicts-with a))))
                   ((depends-on implements)
                    (hashtable-set! dependents b (cons a (hashtable-ref dependents b '())))
                    (if (attest:end-gone? A b)
-                       (add! nr a (list 'premise-gone b))
+                       (add! nr a (because 'premise-gone b))
                        (begin
-                         (when (attest:target-moved? A a rel b) (add! nr a (list 'premise-moved b)))
-                         (when (and (eq? rel 'implements) (attest:source-moved? A a rel b))
-                           (add! nr a (list 'implementation-moved b))))))
+                         (when (attest:target-moved? A a rel b) (add! nr a (because 'premise-moved b)))
+                         (when (and (eq? k 'implements) (attest:source-moved? A a rel b))
+                           (add! nr a (because 'implementation-moved b))))))
                   (else #f))))))
         (provider-by-target L))
       ;; A premise superseded or refuted is a reason of its dependent's.
       (for-each
         (lambda (e)
-          (let ((a (car e)) (rel (cadr e)) (b (caddr e)))
-            (when (and (memq rel '(depends-on implements)) (not (equal? a b)) (live? L a)
+          (let* ((a (car e)) (rel (cadr e)) (b (caddr e)) (k (kind-of L rel)))
+            (when (and (memq k '(depends-on implements)) (not (equal? a b)) (live? L a)
                        (not (attest:end-gone? A b)))
               (case (direct-validity b)
-                ((superseded) (add! nr a (list 'premise-superseded b)))
-                ((refuted) (add! nr a (list 'premise-refuted b)))
+                ((superseded) (add! nr a (reason 'premise-superseded b rel k)))
+                ((refuted) (add! nr a (reason 'premise-refuted b rel k)))
                 (else #f)))))
         (provider-by-target L))
       ;; THE FIXED POINT: a block whose validity is needs-review gives each
@@ -340,11 +393,12 @@
         ((task) (eq? 'done (lenient-status (field-of row 'status) task-statuses (contested? L source 'status row))))
         (else #t))))
 
-  (define (implements-sources L d)
-    (let ((seen (make-hashtable string-hash string=?)))
-      (list-sort string<?
-                 (filter (lambda (a) (and (not (hashtable-ref seen a #f)) (hashtable-set! seen a #t) #t))
-                         (map car (edges-to L d 'implements))))))
+  ;; WHEN THE EDGE WAS STATED, over the edges of one kind from a to d: the
+  ;; join of each name's, which is that name's own when there is one.
+  (define (said-of A a names d)
+    (if (null? (cdr names))
+        (attest:said A a (car names) d)
+        (fold-left (lambda (acc n) (cut-join acc (attest:said A a n d))) '() names)))
 
   ;; -> ((implemented-by (<source> <said>) ...) (drifted (<source> <changed>)
   ;; ...) (deleted <source> ...)), sources by id. A drifted implementer is one
@@ -355,25 +409,27 @@
     (let* ((A (provider-attestation L))
            ;; A DECISION THAT IS GONE IS IMPLEMENTED BY NOTHING: it takes no
            ;; effect, as a gone target of any relation does.
-           (sources (if (attest:end-gone? A d) '() (implements-sources L d)))
-           (deleted (filter (lambda (a) (attest:end-gone? A a)) sources))
-           (live (filter (lambda (a) (not (member a deleted))) sources)))
-      (list (cons 'implemented-by (map (lambda (a) (list a (attest:said A a 'implements d))) live))
-            (cons 'drifted (map (lambda (a) (list a (attest:changed A a)))
-                                (filter (lambda (a) (and (not (equal? a d)) (attest:source-moved? A a 'implements d)))
+           (sources (if (attest:end-gone? A d) '() (sources-to L d 'implements)))
+           (deleted (filter (lambda (s) (attest:end-gone? A (car s))) sources))
+           (live (filter (lambda (s) (not (memq s deleted))) sources)))
+      (list (cons 'implemented-by (map (lambda (s) (list (car s) (said-of A (car s) (cdr s) d))) live))
+            (cons 'drifted (map (lambda (s) (list (car s) (attest:changed A (car s))))
+                                (filter (lambda (s) (and (not (equal? (car s) d))
+                                                         (for-all (lambda (n) (attest:source-moved? A (car s) n d)) (cdr s))))
                                         live)))
-            (cons 'deleted deleted))))
+            (cons 'deleted (map car deleted)))))
 
   ;; -> the live blocks with a verifies edge to id, by id, each (<v> current)
   ;; or (<v> moved): moved when id changed past every witness of the edge. A
   ;; subject that is deleted or unknown is gone, and verified by nothing.
   (define (verified-by L id)
-    (let ((A (provider-attestation L)) (seen (make-hashtable string-hash string=?)))
-      (if (attest:end-gone? A id) '() (map (lambda (v) (list v (if (attest:target-moved? A v 'verifies id) 'moved 'current)))
-           (list-sort string<?
-                      (filter (lambda (v) (and (not (equal? v id)) (live? L v)
-                                               (not (hashtable-ref seen v #f)) (hashtable-set! seen v #t) #t))
-                              (map car (edges-to L id 'verifies))))))))
+    (let ((A (provider-attestation L)))
+      (if (attest:end-gone? A id)
+          '()
+          (map (lambda (s) (list (car s) (if (for-all (lambda (n) (attest:target-moved? A (car s) n id)) (cdr s))
+                                             'moved 'current)))
+               (filter (lambda (s) (and (not (equal? (car s) id)) (live? L (car s))))
+                       (sources-to L id 'verifies))))))
 
   ;; -> #f for a block that is not a decision, or one that is gone; otherwise
   ;; the first of these that holds, in this order:
@@ -388,14 +444,15 @@
     (let ((row (row-of L d)))
       (and row (not (cdr (assq 'deleted row))) (eq? (field-of row 'kind) 'decision)
            (let ((status (lenient-status (field-of row 'status) decision-statuses (contested? L d 'status row)))
-                 (live (cdr (assq 'implemented-by (implementation-of L d)))))
+                 (live (cdr (assq 'implemented-by (implementation-of L d))))
+                 (names (sources-to L d 'implements)))
              (cond
                ((or (eq? status 'done) (eq? status 'dropped)) (list 'closed status))
                ((not (exists (lambda (i) (edge-discharges? L (car i))) live)) '(open))
                (else
                 (let ((moved (filter pair?
                                      (map (lambda (i)
-                                            (let ((w (edge-watch L (car i) 'implements d)))
+                                            (let ((w (kind-watch L (car i) (cdr (assoc (car i) names)) d)))
                                               (and (eq? (car w) 'moved) (cons (car i) (cdr w)))))
                                           live)))
                       (verifiers (map car (filter (lambda (v) (eq? (cadr v) 'current)) (verified-by L d)))))

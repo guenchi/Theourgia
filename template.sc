@@ -32,6 +32,11 @@
 ;;; A path root (docs/, code/) names where things go and is not a block, so
 ;;; there is nothing to create for it. Deleted blocks do not count.
 ;;;
+;;; A RELATION THE TEMPLATE NAMES IS DECLARED unless it is one of the six
+;;; with an effect, which need none, or a reserved name: as `nothing`, a
+;;; listed edge with no effect, after the roots. A name the store already
+;;; declares, in any state, is left as it is.
+;;;
 ;;; Entered on dispatch of `template` and by `init --template`, never at a
 ;;; start that does neither.
 (library (theourgia template)
@@ -40,11 +45,12 @@
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia store) open-and-reduce with-store-write premises-preflight)
-          (only (theourgia reduce) state-read state-block-ids block-id)
+          (only (theourgia reduce) state-read state-block-ids block-id
+                effect-relation-names reserved-relation-names state-declaration)
           (only (theourgia field-reading) field-of written-text)
           (only (theourgia ffi) entry-bytes)
           (only (theourgia templates) built-in-template built-in-template-names)
-          (only (theourgia template-read) parse-template-text template-block-ids template-roots
+          (only (theourgia template-read) parse-template-text template-block-ids template-roots template-relations
                 slug-block-ids root-slug root-kind root-path root-insert-payload template-problem)
           (only (theourgia extensions) template-usage))
 
@@ -169,7 +175,8 @@
                          (set! inner p)
                          (if (eq? (car p) 'refuse)
                              (begin (set! late (cadr p)) '())
-                             (map (lambda (c) (list 'insert 'root #f (cadr c))) (cdr p)))))
+                             (append (map (lambda (c) (list 'insert 'root #f (cadr c))) (cdr p))
+                                     (declarations state datum)))))
                      actor req check))
                  (made (if (and inner (eq? (car inner) 'create)) (map car (cdr inner)) '())))
             (cond
@@ -178,7 +185,19 @@
                (list 'error 'template-apply-failed (cons 'answers answers)))
               (else
                (list 'ok (cons 'created
-                               (map (lambda (slug a) (list slug (event-block-id a))) made answers))))))))))))
+                               (map (lambda (slug a) (list slug (event-block-id a)))
+                                    made (first-of (length made) answers)))))))))))))
+
+  ;; The template's relations that are not the six and not reserved, and
+  ;; that the store has not declared, each as a declaration of `nothing`.
+  (define (declarations state datum)
+    (map (lambda (name) (list 'relation name '(nothing () ())))
+         (filter (lambda (name)
+                   (not (or (memq name effect-relation-names) (memq name reserved-relation-names)
+                            (state-declaration state name))))
+                 (map car (template-relations datum)))))
+
+  (define (first-of n l) (if (= n 0) '() (cons (car l) (first-of (- n 1) (cdr l)))))
 
   (define (event-block-id answer)
     (let ((ev (assq 'events (cdr answer))))

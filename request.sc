@@ -1471,6 +1471,8 @@
            ((set) (equal? intent payload))
            ((del) (equal? intent payload))
            ((link unlink) (equal? intent payload))
+           ;; (relation <name> <value>) -> the same, verbatim
+           ((relation) (equal? intent payload))
            ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
            ((move)
             (and (eq? (car payload) (quote move))
