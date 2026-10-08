@@ -354,10 +354,172 @@ describe('an import split at the editor\'s symbols', () => {
       { 'a.js': TWO },
       { 'a.js': editorDocument(TWO) },
       { 'a.js': [symbol('alpha', [0, 0], [2, 1])] },
-      { 'import-code': { stdout: '(error symbols-malformed (line 1))\n', rc: 1 } }
+      {
+        'import-code': {
+          stdout:
+            '(error refused integrity ' +
+            '(incomplete (unreadable (writer "w0000003") (path "/s/w3") (reason "Permission denied"))))\n',
+          rc: 1
+        }
+      }
     );
     const outcome = await runImport(r.deps);
     assert.strictEqual(outcome.done, 'refused');
     assert.deepStrictEqual(r.removed, ['/tmp/symbols.sexp']);
+    /*
+     * AND THE WRITERS IT COULD NOT READ GO WITH IT: the client takes the
+     * (incomplete ...) clause out of the refusal into its notes.
+     */
+    if (outcome.done === 'refused') {
+      assert.deepStrictEqual(outcome.notes?.map((n) => n.writer), ['w0000003']);
+    }
+  });
+
+  /*
+   * THE CORE'S OWN SHAPE OF A CODE BLOCK'S SRC: a bytevector, `#vu8(...)`, as
+   * a real read answers it (bytes.test.ts); the cell above gives strings.
+   */
+  it('places blocks whose src the read answers as bytevectors', async () => {
+    const alpha = 'function alpha() {\n  return 1;\n}\n';
+    const beta = 'function beta() {\n  return 2;\n}\n';
+    const vu8 = (text: string): string => `#vu8(${[...Buffer.from(text, 'utf8')].join(' ')})`;
+    const r = twoFunctionRig(`(src . ${vu8(alpha)})`, `(src . ${vu8(beta)})`);
+    const outcome = await runImport(r.deps);
+    assert.strictEqual(outcome.done, 'imported');
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual(outcome.split.map((f) => f.placed), [
+      {
+        fileId: 'w.1',
+        blocks: [
+          { id: 'w.2', range: { start: { line: 0, character: 0 }, end: { line: 3, character: 0 } } },
+          { id: 'w.3', range: { start: { line: 3, character: 0 }, end: { line: 6, character: 0 } } }
+        ]
+      }
+    ]);
+  });
+
+  /*
+   * BLOCKS OF THE SAME LENGTH AND OTHER BYTES are not placed: the ranges would
+   * be right in number and wrong in what they hold.
+   */
+  it('does not place blocks whose bytes are not the file\'s, though their length is', async () => {
+    const r = twoFunctionRig(`(src . ${quoted('function alpha() {\n  return 7;\n}\n')})`, `(src . ${quoted('function beta() {\n  return 2;\n}\n')})`);
+    const outcome = await runImport(r.deps);
+    assert.strictEqual(outcome.done, 'imported');
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual(outcome.split.map((f) => f.placed), [{ why: 'the blocks of w.1, run together, are not the bytes of a.js' }]);
+  });
+
+  /*
+   * AN IMPORT THAT WROTE NOTHING FOR A FILE does not report a split of blocks
+   * the store already held: the file block the export shows is not among the
+   * ids the import's records made, and the file is said to be already there.
+   */
+  it('says a file whose blocks the import did not write is already present, and reads nothing for it', async () => {
+    const r = twoFunctionRig('(src . "x")', '(src . "y")', '(ok (items))\n');
+    const outcome = await runImport(r.deps);
+    assert.strictEqual(outcome.done, 'imported');
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual(outcome.split.map((f) => f.placed), [
+      { why: 'the store already held w.1 for a.js, and this import wrote none of its blocks' }
+    ]);
+    assert.deepStrictEqual(r.sent.map((s) => s[0]), ['import-code', 'export-code']);
+  });
+
+  /*
+   * A FILE THE CORE SKIPPED IS NOT PLACED: a file holding a NUL byte is UTF-8
+   * to this client, so it has a section, and is not text to the core.
+   */
+  it('does not place a file the core skipped, and exports nothing for it', async () => {
+    const r = twoFunctionRig('(src . "x")', '(src . "y")', '(ok (items) (skipped ("a.js")))\n');
+    const outcome = await runImport(r.deps);
+    assert.strictEqual(outcome.done, 'imported');
+    if (outcome.done !== 'imported') {
+      return;
+    }
+    assert.deepStrictEqual([outcome.skipped, outcome.split], [['a.js'], []]);
+    assert.deepStrictEqual(r.sent.map((s) => s[0]), ['import-code']);
+  });
+
+  /*
+   * THE CONVERSION ON THE VECTORS A REVIEW TRIED: a CRLF (both its bytes are
+   * the end of their line), a lone CR, a character outside the basic plane,
+   * a decomposed accent (a letter and a combining mark, two units), and
+   * positions past a line's end.
+   */
+  it('counts and reads back CRLF, a lone CR, an astral character, a decomposed accent and a position past the line end', () => {
+    const at = (text: string) => {
+      const saved = savedText(Buffer.from(text, 'utf8'));
+      assert.ok(saved !== null);
+      const starts = lineStarts(saved.text);
+      return {
+        byte: (line: number, character: number) => byteOffset(saved, starts, { line, character }),
+        position: (byte: number) => positionAtByte(saved, starts, byte)
+      };
+    };
+    const crlf = at('ab\r\ncd\r\n');
+    assert.deepStrictEqual([crlf.position(2), crlf.position(3), crlf.position(4)], [
+      { line: 0, character: 2 },
+      { line: 0, character: 2 },
+      { line: 1, character: 0 }
+    ]);
+    assert.deepStrictEqual([crlf.byte(0, 2), crlf.byte(1, 0), crlf.byte(0, 9)], [2, 4, 2]);
+    const cr = at('ab\rcd');
+    assert.deepStrictEqual([cr.position(2), cr.position(3)], [{ line: 0, character: 2 }, { line: 1, character: 0 }]);
+    assert.deepStrictEqual([cr.byte(1, 0), cr.byte(1, 2)], [3, 5]);
+    const astral = at('x\u{1F600}y');
+    assert.deepStrictEqual([astral.position(1), astral.position(3), astral.position(5)], [
+      { line: 0, character: 1 },
+      { line: 0, character: 1 },
+      { line: 0, character: 3 }
+    ]);
+    assert.deepStrictEqual([astral.byte(0, 1), astral.byte(0, 2), astral.byte(0, 3)], [1, 5, 5]);
+    const accent = at('e\u0301x');
+    assert.deepStrictEqual([accent.position(1), accent.position(2), accent.position(3)], [
+      { line: 0, character: 1 },
+      { line: 0, character: 1 },
+      { line: 0, character: 2 }
+    ]);
+    assert.deepStrictEqual([accent.byte(0, 1), accent.byte(0, 2)], [1, 3]);
+    const past = at('ab\ncd\n');
+    assert.deepStrictEqual([past.byte(0, 99), past.byte(9, 0), past.position(99)], [2, 6, { line: 2, character: 0 }]);
   });
 });
+
+/*
+ * THE TWO-FUNCTION IMPORT WITH ITS READ'S SRCS AND THE IMPORT'S ANSWER GIVEN:
+ * the projection places w.2 and w.3 under w.1, and by default the import's
+ * records made all three.
+ */
+function twoFunctionRig(alphaSrc: string, betaSrc: string, importAnswer?: string): Rig {
+  const alpha = 'function alpha() {\n  return 1;\n}\n';
+  const beta = 'function beta() {\n  return 2;\n}\n';
+  return rig(
+    { 'a.js': TWO },
+    { 'a.js': editorDocument(TWO) },
+    { 'a.js': [symbol('alpha', [0, 0], [2, 1]), symbol('beta', [3, 0], [5, 1])] },
+    {
+      'import-code': {
+        stdout: importAnswer ?? '(ok (items (ok (event ("w" . 1))) (ok (event ("w" . 2))) (ok (event ("w" . 3)))))\n'
+      },
+      'export-code': { stdout: '(ok (files 1))\n' },
+      'read w.1': {
+        stdout:
+          '(ok (items ' +
+          record('w.1', null, '(kind . file) (mode . text) (path . "a.js")') +
+          ' ' +
+          record('w.2', 'w.1', `(kind . code) (mode . text) ${alphaSrc}`) +
+          ' ' +
+          record('w.3', 'w.1', `(kind . code) (mode . text) ${betaSrc}`) +
+          '))\n'
+      }
+    },
+    { 'a.js': projection('w.1', [['w.2', alpha], ['w.3', beta]]) }
+  );
+}

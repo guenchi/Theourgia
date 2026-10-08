@@ -603,8 +603,11 @@ output channel: each split file's file block and each of its blocks with the lin
 that already carries markers, which follows them and ignores its symbols (`symbols-ignored`); a file the
 core refused to split, which is not imported, with its refusal and, when it names a byte, the line and
 column of that byte; and a file the core skipped as not UTF-8 text. The blocks are placed by exporting
-the store to a scratch directory and reading the split file's block back; when that cannot be done (a
-path the store holds twice, for one) the import stands and the report says why.
+the store to a scratch directory and reading the split file's block back, and only blocks this import's
+own records made are placed, their bytes compared with the file's; a file whose blocks were already in
+the store is said to be, and when placing cannot be done (a path the store holds twice, for one) the
+import stands and the report says why. A refusal of the whole import is shown as the core wrote it,
+with the writers it could not read.
 
 **Supplying what the editor knows.** Three commands hand the store facts the editor's language
 support computes, which the core keeps beside the store and never in its log (the core's README,

@@ -46,7 +46,7 @@
  * needs, and the command in extension.ts hands it the editor's.
  */
 
-import { Answer, Client } from './client';
+import { Answer, Client, Note } from './client';
 import { readBlock } from './blocks';
 import { readProjection } from './markers';
 import {
@@ -62,7 +62,7 @@ import {
   topLevelSymbols
 } from './split-symbols';
 import { TransportError } from './transport';
-import { Datum, answerOf, asInteger, isList, isSym, wire } from './wire';
+import { Datum, answerOf, asInteger, isList, isSym, readEvent, wire } from './wire';
 
 /*
  * ONE FILE UNDER THE DIRECTORY: its path as the core's walk spells it (`/`
@@ -121,6 +121,7 @@ export interface ImportDeps {
  */
 interface Section {
   rel: string;
+  bytes: Uint8Array;
   digest: string;
   languageId: string;
   symbols: FileSymbol[];
@@ -164,7 +165,7 @@ export type ImportOutcome =
       left: number;
       argv: string[];
     }
-  | { done: 'refused'; refusal: Datum; argv: string[] }
+  | { done: 'refused'; refusal: Datum; notes: Note[] | null; argv: string[] }
   | { done: 'stopped'; why: string };
 
 export const UNSAVED = 'has unsaved edits, and the core imports the file on disk: save it first; nothing was imported';
@@ -217,7 +218,16 @@ export function positionAtByte(saved: SavedText, starts: number[], byte: number)
   while (line + 1 < starts.length && starts[line + 1] <= unit) {
     line += 1;
   }
-  return { line, character: unit - starts[line] };
+  /*
+   * NEVER: A POSITION INSIDE A LINE'S END. Both bytes of a CRLF, as a lone
+   * CR or LF, are the end of their line: the LF of "a\r\nb" is not column 2
+   * of a line whose text ends at column 1.
+   */
+  let end = line + 1 < starts.length ? starts[line + 1] : saved.text.length;
+  while (end > starts[line] && (saved.text.charCodeAt(end - 1) === 10 || saved.text.charCodeAt(end - 1) === 13)) {
+    end -= 1;
+  }
+  return { line, character: Math.min(unit, end) - starts[line] };
 }
 
 /*
@@ -251,18 +261,56 @@ function names(items: Datum[], clause: string, text: string): string[] {
 }
 
 /*
+ * THE BLOCKS THE IMPORT WROTE, by id: each item of its answer is the answer
+ * of one record, `(ok (event (<writer> . <seq>)))` or `(ok (events
+ * ((<writer> . <seq>) ...)) ...)`, and a block made by a record has the id
+ * `<writer>.<seq in base 36>`, as a save names the block it made.
+ */
+export function writtenIds(items: Datum[]): Set<string> {
+  const ids = new Set<string>();
+  const add = (value: Datum): void => {
+    const event = readEvent(value);
+    if (event !== null) {
+      ids.add(`${event.writer}.${event.seq.toString(36)}`);
+    }
+  };
+  for (const item of items) {
+    const form = answerOf(item, 'ok');
+    if (form === null) {
+      continue;
+    }
+    const one = form.value('event');
+    if (one.read) {
+      add(one.value);
+    }
+    const many = form.value('events');
+    if (many.read && isList(many.value)) {
+      many.value.forEach(add);
+    }
+  }
+  return ids;
+}
+
+/*
  * WHERE EACH BLOCK OF A SPLIT FILE LIES. The export names the file's block
  * and its blocks in order (markers.ts, readProjection); a recursive read of
  * the file block gives each block's src; the srcs run together to the file,
- * so each block's range is the sum of the lengths before it. A count that
- * does not come to the file's length is said, not shown as ranges.
+ * so each block's range is the sum of the lengths before it.
+ *
+ * NEVER: BLOCKS THIS IMPORT DID NOT WRITE. The export shows the store as it
+ * is, so a file block the import did not make -- one already there under
+ * the path -- would be placed as though it had just been split; a file
+ * whose block, or any of whose blocks, is not among the ids the import's
+ * own records made is said to be already present. And the blocks' bytes,
+ * run together, are compared with the file's bytes, not only counted: the
+ * same length with other content would place wrong ranges.
  */
 async function place(
   client: Client,
   exported: string,
   scratch: ImportScratch,
   section: Section,
-  length: number
+  written: Set<string>
 ): Promise<SplitFile['placed']> {
   let bytes: Uint8Array;
   try {
@@ -275,11 +323,14 @@ async function place(
     return { why: `the export of ${section.rel} does not read: ${reading.why}` };
   }
   const { fileId, blocks } = reading.projection;
+  if (![fileId, ...blocks].every((id) => written.has(id))) {
+    return { why: `the store already held ${fileId} for ${section.rel}, and this import wrote none of its blocks` };
+  }
   const answer: Answer = await client.request('read', [fileId, '--recursive', '--wire']);
   if (!answer.ok) {
     return { why: `the store would not read ${fileId}: ${answer.text.trim()}` };
   }
-  const lengths = new Map<string, number>();
+  const srcs = new Map<string, Uint8Array>();
   for (const item of answer.answers) {
     const block = readBlock(item);
     if (block === null) {
@@ -287,27 +338,29 @@ async function place(
     }
     const src = block.fields.get('src');
     if (src instanceof Uint8Array) {
-      lengths.set(block.id, src.length);
+      srcs.set(block.id, src);
     } else if (typeof src === 'string') {
-      lengths.set(block.id, Buffer.byteLength(src, 'utf8'));
+      srcs.set(block.id, Buffer.from(src, 'utf8'));
     }
   }
   const starts = lineStarts(section.saved.text);
   const placed: Array<{ id: string; range: EditorRange }> = [];
+  const held: Uint8Array[] = [];
   let at = 0;
   for (const id of blocks) {
-    const n = lengths.get(id);
-    if (n === undefined) {
+    const src = srcs.get(id);
+    if (src === undefined) {
       return { why: `the read of ${fileId} did not give the src of ${id}` };
     }
     placed.push({
       id,
-      range: { start: positionAtByte(section.saved, starts, at), end: positionAtByte(section.saved, starts, at + n) }
+      range: { start: positionAtByte(section.saved, starts, at), end: positionAtByte(section.saved, starts, at + src.length) }
     });
-    at += n;
+    held.push(src);
+    at += src.length;
   }
-  if (at !== length) {
-    return { why: `the blocks of ${fileId} hold ${at} bytes and ${section.rel} holds ${length}` };
+  if (!Buffer.concat(held).equals(Buffer.from(section.bytes))) {
+    return { why: `the blocks of ${fileId}, run together, are not the bytes of ${section.rel}` };
   }
   return { fileId, blocks: placed };
 }
@@ -359,7 +412,7 @@ export async function runImport(deps: ImportDeps): Promise<ImportOutcome> {
       return { done: 'stopped', why: CHANGED_WHILE_COLLECTING };
     }
     if (symbols.length > 0) {
-      sections.push({ rel: source.rel, digest: digestOf(bytes), languageId: document.languageId, symbols, saved, left });
+      sections.push({ rel: source.rel, bytes, digest: digestOf(bytes), languageId: document.languageId, symbols, saved, left });
     }
   }
   if (sections.length === 0) {
@@ -378,7 +431,7 @@ export async function runImport(deps: ImportDeps): Promise<ImportOutcome> {
   if (!answer.ok) {
     const datum = answer.answers.length > 0 ? answer.answers[0] : null;
     if (datum !== null && answerOf(datum, 'error') !== null) {
-      return { done: 'refused', refusal: datum, argv };
+      return { done: 'refused', refusal: datum, notes: answer.notes ?? null, argv };
     }
     throw new TransportError('unreadable', 'the core refused the import without saying why', answer.text);
   }
@@ -402,18 +455,24 @@ export async function runImport(deps: ImportDeps): Promise<ImportOutcome> {
       at: byte === null || section === undefined ? null : positionAtByte(section.saved, lineStarts(section.saved.text), byte)
     });
   }
-  const splitSections = sections.filter((s) => !ignored.includes(s.rel) && !refused.some((r) => r.rel === s.rel));
+  /*
+   * A FILE THE CORE SKIPPED IS NOT PLACED: one holding a NUL byte is UTF-8
+   * to this client and not text to the core.
+   */
+  const splitSections = sections.filter(
+    (s) => !ignored.includes(s.rel) && !skipped.includes(s.rel) && !refused.some((r) => r.rel === s.rel)
+  );
+  const made = writtenIds(answer.answers);
   const split: SplitFile[] = [];
   if (splitSections.length > 0) {
     const exported = deps.scratch.make();
     try {
       const projection = await deps.client.request('export-code', [exported]);
       for (const section of splitSections) {
-        const length = section.saved.bom + Buffer.byteLength(section.saved.text, 'utf8');
         split.push({
           rel: section.rel,
           placed: projection.ok
-            ? await place(deps.client, exported, deps.scratch, section, length)
+            ? await place(deps.client, exported, deps.scratch, section, made)
             : { why: `the store would not write its export: ${projection.text.trim()}` }
         });
       }

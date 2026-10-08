@@ -349,9 +349,13 @@ const AT_LEAST: Array<[string, number]> = [
    * imported and placed, a document with unsaved edits, a document that is
    * not the disk, no symbols, a refusal at its line, a file that followed
    * its markers and one skipped, and a refusal of the whole import, plus the
-   * setup row that pins the offsets.
+   * setup row that pins the offsets. RAISED 10 -> 15 by a review: blocks
+   * whose src is a bytevector, blocks of the right length and other bytes,
+   * a file whose blocks the import did not write, a file the core skipped,
+   * and the conversion on CRLF, CR, astral, decomposed and past-the-end
+   * vectors.
    */
-  ['import-symbols.test.ts', 10],
+  ['import-symbols.test.ts', 15],
   /*
    * ADDED in plugin-r3: what `check` says about a store's condition, read
    * whatever its exit code, and the one sentence said about it; then the

@@ -1387,7 +1387,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const asked = generation;
     const folder = files.isDirectory(uri.fsPath);
     let directory = uri.fsPath;
-    let copy: string | null = null;
+    let copy: { path: string; text: string } | null = null;
     let sources: ImportSource[];
     if (folder) {
       sources = filesUnder(uri.fsPath)
@@ -1403,14 +1403,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       directory = path.join(storage, 'import', randomUUID());
-      files.makeDirectory(directory);
-      copy = path.join(directory, path.basename(uri.fsPath));
-      files.writeText(copy, bytes.toString('utf8'));
-      sources = [{ rel: path.basename(uri.fsPath), bytesPath: copy, uri: uri.toString() }];
+      copy = { path: path.join(directory, path.basename(uri.fsPath)), text: bytes.toString('utf8') };
+      sources = [{ rel: path.basename(uri.fsPath), bytesPath: copy.path, uri: uri.toString() }];
     }
     const symbolsDirectory = path.join(storage, 'symbols');
     let outcome;
     try {
+      /*
+       * THE COPY IS MADE INSIDE THE TRY, so that a write that fails after the
+       * directory was made still has the directory removed.
+       */
+      if (copy !== null) {
+        files.makeDirectory(directory);
+        files.writeText(copy.path, copy.text);
+      }
       outcome = await runImport({
         client: using,
         editorVersion: vscode.version,
@@ -1458,7 +1464,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (outcome.done === 'refused') {
-      vscode.window.showErrorMessage(`Theourgia: the core refused the import: ${wire().write(outcome.refusal)}`);
+      /*
+       * THE WRITERS THE CORE COULD NOT READ GO WITH ITS REFUSAL: the client
+       * takes the (incomplete ...) clause out of the answer into its notes.
+       */
+      const notes = outcome.notes === null || outcome.notes.length === 0 ? '' : ` ${incompleteWarning(outcome.notes)}`;
+      vscode.window.showErrorMessage(`Theourgia: the core refused the import: ${wire().write(outcome.refusal)}.${notes}`);
       return;
     }
     channel.appendLine(`Import with symbols: ${outcome.argv.join(' ')}`);
