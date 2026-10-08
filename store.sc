@@ -4397,9 +4397,13 @@
                                   (if (pair? why) why (list why)))))
                       ;; LOCAL ADMISSION: a declaration whose whole value is
                       ;; the one in force -- or a retirement of a name with
-                      ;; none in force -- writes nothing. Not inside a plan,
-                      ;; whose sub-operations were declared before it ran.
-                      ((and (eq? (car payload) 'relation) (not (actor-plan-event actor))
+                      ;; none in force -- writes nothing. Not for a tracked
+                      ;; request: a plan's sub-operations, and a tracked
+                      ;; batch's items, were declared before they ran, and
+                      ;; each writes the record its receipt counts on. The
+                      ;; record of the same value is harmless: agreement is
+                      ;; by value.
+                      ((and (eq? (car payload) 'relation) (not (request-actor? actor))
                             (equal? (caddr payload)
                                     (let ((d (state-declaration state (cadr payload))))
                                       (if (and d (eq? (car d) 'in-force)) (cadr d)

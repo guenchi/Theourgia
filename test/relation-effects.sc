@@ -624,13 +624,16 @@
 (define S14 (fresh-store!))
 (ask S14 'init)
 (define (declared-clause a) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) 'declared-relations))) (cdr a))))
-(define-caught d14-empty (ask S14 'describe))
+;; describe never opens a store: its store clauses come from the state the
+;; caller hands it, as the daemon does, so the row hands it.
+(define (describe14) (rpc-dispatch S14 '(describe) "test" (open-and-reduce S14)))
+(define-caught d14-empty (describe14))
 (ask S14 'relation "cites" "--as" "depends-on")
 (ask S14 'relation "answers" "--as" "implements" "--to" "(kind decision)")
-(define-caught d14-declared (ask S14 'describe))
+(define-caught d14-declared (describe14))
 (ask S14 'relation "cites" "--retire")
 (ask S14 'relation "answers" "--retire")
-(define-caught d14-retired (ask S14 'describe))
+(define-caught d14-retired (describe14))
 (want "RE-14 describe appends the declared table, a selector only when it is given"
       (declared-clause d14-declared)
       '(declared-relations (answers implements (to ((kind decision)))) (cites depends-on)))

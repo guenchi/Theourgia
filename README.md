@@ -101,7 +101,7 @@ decision or doc → one it shows is wrong), `verifies` (a test → the code or d
 decision it explains). Each is a name `link` accepts; the reserved names (`ref`, `uses`, `calls`,
 `guards`) are not among them. Any other relation name still links; these are the ones the template
 names. The first six have an effect of their own; the template declares `documents` as a listed
-edge with no effect (see [`relation`](#relation)). `describe`, answered by the daemon, lists the store's roots and relations, and the
+edge with no effect (see [`relation`](#relation)). `describe`, answered by the daemon, lists the store's roots and relations, the store's declared relations as `(declared-relations (<name> <kind> [(from <selector>)] [(to <selector>)]) ...)` when it has any, and the
 MCP tools that write carry the roots' sentences after the writing protocol.
 
 `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
@@ -855,8 +855,11 @@ that order of precedence, with its reasons, each `(<why> <block>)`: `superseded-
 `refuted-by`, `refutation-moved`, the three `proposed-` reasons, `premise-gone`,
 `premise-superseded`, `premise-refuted`, `premise-needs-review`, `premise-moved` and
 `implementation-moved`. A reason caused through a declared name carries it, `(<why>
-<block> (relation <name>))`, for example `(premise-moved <id> (relation cites))`; one
-caused through one of the six is as above. A decision's state is one of `closed`, `open`, `review`,
+<block> (relation <name>))`, for example `(premise-moved <id> (relation cites))`, and so
+does a `premise-needs-review` passed on through a declared name; one caused through one
+of the six is as above. `context` builds a block's validity from the rows of its five
+queries, whose `validity-reason` fact is the reason without the clause, so its sections
+print the kind's reason without `(relation <name>)`. A decision's state is one of `closed`, `open`, `review`,
 `verified` and `implemented`, the first that holds in that order.
 
 A plain `read` of a block that is not valid adds `(validity <v> (<why> <block>) ...)`
@@ -947,7 +950,7 @@ Fact relations:
 - `title/2` -- a block whose title is a settled string, and that title
 - `field/3` -- every settled field of a live block: its name, and its value as stored
 - `edge/3` -- every surviving edge between two live blocks: from, relation, to
-- `edge-kind/3` -- an edge whose relation has an effect kind, built-in or declared: from, that kind, to
+- `edge-kind/3` -- an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to
 - `relation/2` -- every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included
 - `under/2` -- a live block and its settled parent, "root" at the top
 - `ref/2` -- a text reference [[id]] in a live block's text to a live block
@@ -1317,9 +1320,11 @@ effect from then on. Two writers who declare one name differently without
 seeing each other, or retire it beside a declaration, leave it CONTESTED,
 whatever the order the records arrive in: it has no effect, `conflicts` lists
 it with every surviving declaration, and `query --relations` prints it
-`(contested)`, until a writer who has seen them all declares it again. In a
-request of several intents (a `batch` of more than one, a template) a
-declaration is written as given.
+`(contested)`, until a writer who has seen them all declares it again. A
+tracked request -- one sent with `--req`, a tracked `batch`'s items and a
+plan's members among them -- writes a declaration as given, since its
+receipt counts each record; the same value written again changes nothing,
+agreement being by value.
 
 ### `def`
 

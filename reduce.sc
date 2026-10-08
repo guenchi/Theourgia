@@ -1724,9 +1724,9 @@
               (loop (cdr ls) (if seen order (cons e order))))))))
 
   ;; Whether any surviving edge carries a relation of an effect kind, a
-  ;; built-in or a declared one.
+  ;; built-in or a declared one: `nothing` is a kind with no effect.
   (define (state-effect-relation? r)
-    (exists (lambda (l) (relation-kind r (cadr l))) (reduction-links r)))
+    (exists (lambda (l) (memq (relation-kind r (cadr l)) effect-relation-names)) (reduction-links r)))
 
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
@@ -2031,25 +2031,30 @@
   (define (relation-candidates r name)
     (let ((e (assq name (reduction-declared-relations r)))) (if e (cdr e) '())))
 
+  ;; THE ONE AGREEMENT RULE (r5-4), for declarations and nothing else -- a
+  ;; field keeps its own rule: -> the value every surviving candidate holds,
+  ;; or #f when there is none or more than one distinct value survives.
+  (define (candidates-agreed cs)
+    (and (pair? cs)
+         (let ((v (car (car cs))))
+           (and (for-all (lambda (c) (equal? (car c) v)) (cdr cs)) v))))
+
   ;; -> the kind of a relation name: a built-in's own, a declared name's in
-  ;; force, or #f for a plain edge -- a name never declared, retired,
-  ;; contested, or declared `nothing`.
+  ;; force -- `nothing` included, one of the seven kinds -- or #f for a plain
+  ;; edge: a name never declared, retired, or contested.
   (define (relation-kind r name)
     (cond ((memq name effect-relation-names) name)
           (else
-           (let ((cs (relation-candidates r name)))
-             (and (pair? cs)
-                  (let ((v (car (car cs))))
-                    (and (pair? v) (for-all (lambda (c) (equal? (car c) v)) (cdr cs))
-                         (not (eq? (car v) 'nothing)) (car v))))))))
+           (let ((v (candidates-agreed (relation-candidates r name))))
+             (and (pair? v) (car v))))))
 
   ;; -> #f for a name never declared; else (in-force <value>), (retired), or
   ;; (contested (<value> <writer> <seq>) ...), every surviving candidate.
   (define (state-declaration r name)
     (let ((cs (relation-candidates r name)))
       (and (pair? cs)
-           (let ((v (car (car cs))))
-             (cond ((not (for-all (lambda (c) (equal? (car c) v)) (cdr cs)))
+           (let ((v (candidates-agreed cs)))
+             (cond ((not v)
                     (cons 'contested
                           (list-sort candidate<?
                                      (map (lambda (c) (list (copy-datum (car c)) (car (cdr c)) (cdr (cdr c)))) cs))))

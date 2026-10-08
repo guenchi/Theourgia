@@ -127,7 +127,7 @@
       (new-provider state (attest:make-attestation state) fast
                     (make-hashtable string-hash string=?)
                     (if fast '() ((if (pair? order) (car order) (lambda (es) es))
-                                  (filter (lambda (e) (relation-kind state (cadr e)))
+                                  (filter (lambda (e) (memq (relation-kind state (cadr e)) effect-relation-names))
                                           (state-edges state))))
                     #f #f (make-hashtable equal-hash equal?))))
 
@@ -259,7 +259,7 @@
                   ((conflicts-with)
                    (unless auth (add! nr b (because 'proposed-conflicts-with a))))
                   ((depends-on implements)
-                   (hashtable-set! dependents b (cons a (hashtable-ref dependents b '())))
+                   (hashtable-set! dependents b (cons (list a rel k) (hashtable-ref dependents b '())))
                    (if (attest:end-gone? A b)
                        (add! nr a (because 'premise-gone b))
                        (begin
@@ -291,11 +291,15 @@
               (for-each
                 (lambda (b)
                   (for-each
-                    (lambda (a)
-                      (unless (equal? a b)
-                        (add! nr a (list 'premise-needs-review b))
-                        (when (and (needs-review? a) (not (hashtable-ref queued a #f)) (not (member a next)))
-                          (set! next (cons a next)))))
+                    ;; A DEPENDENT IS KEPT WITH THE EDGE IT DEPENDS BY, so the
+                    ;; reason it is given names a declared relation as the
+                    ;; direct reasons do.
+                    (lambda (d)
+                      (let ((a (car d)) (rel (cadr d)) (k (caddr d)))
+                        (unless (equal? a b)
+                          (add! nr a (reason 'premise-needs-review b rel k))
+                          (when (and (needs-review? a) (not (hashtable-ref queued a #f)) (not (member a next)))
+                            (set! next (cons a next))))))
                     (hashtable-ref dependents b '())))
                 work)
               (loop next)))))

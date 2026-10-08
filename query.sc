@@ -457,7 +457,7 @@
         ((moved) (let ((live (live-table S)) (A (attestation S)))
                    (apply append
                           (map (lambda (e)
-                                 (let ((w (and (relation-kind st (cadr e)) (hashtable-ref live (car e) #f)
+                                 (let ((w (and (memq (relation-kind st (cadr e)) effect-relation-names) (hashtable-ref live (car e) #f)
                                                (hashtable-ref live (caddr e) #f) (at:edge-watch A (car e) (cadr e) (caddr e)))))
                                    (if (and w (eq? (car w) 'moved))
                                        (map (lambda (end) (list (car e) (cadr e) (caddr e) end)) (cdr w))

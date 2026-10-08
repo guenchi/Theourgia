@@ -1277,6 +1277,28 @@
   ;; A SEALED STATE'S NOTES ARE ALL OF ITS NOTES -- the reduction's own and
   ;; what the daemon's probe found since -- so a sealed state is asked for
   ;; those, and a bare one for its own.
+;; THE DECLARED TABLE, from the same state and under the same rule as the
+  ;; template above: a state handed in, and complete; never a store opened.
+  ;; -> (declared-relations (<name> <kind> [(from <selector>)] [(to
+  ;; <selector>)]) ...), a selector only when it is given and a contested
+  ;; name as (<name> (contested)); #f when the table is empty, so describe
+  ;; reads as it did for a store with no declaration.
+  (define (describe-declared state)
+    (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
+                       (else state)))
+           (complete (cond ((sealed-state? state) (null? (sealed-state-notes state)))
+                           (view (null? (unreadable-behind view)))
+                           (else #f)))
+           (table (if (and view complete (reduction? view)) (state-declared-relations view) '())))
+      (and (pair? table)
+           (cons 'declared-relations
+                 (map (lambda (d)
+                        (if (symbol? (cadr d))
+                            (append (list (car d) (cadr d))
+                                    (filter (lambda (c) (pair? (cadr c))) (cddr d)))
+                            d))
+                      table)))))
+
   (define (describe-template state)
     (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
                        (else state)))
@@ -1377,8 +1399,8 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(describe))
-                  (let ((t (describe-template state)))
-                    (if t (append (describe-answer) (list t)) (describe-answer))))))
+                  (let ((t (describe-template state)) (d (describe-declared state)))
+                    (append (describe-answer) (if t (list t) '()) (if d (list d) '()))))))
       (cons 'init
             (lambda (store actor args req options state writer cwd)
               (let ((name (argument-option options "--template"))
