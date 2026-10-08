@@ -96,7 +96,7 @@
       (title 2 "a block whose title is a settled string, and that title")
       (field 3 "every settled field of a live block: its name, and its value as stored")
       (edge 3 "every surviving edge between two live blocks: from, relation, to")
-      (edge-kind 3 "an edge whose relation has an effect kind, built-in or declared: from, that kind, to")
+      (edge-kind 3 "an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to")
       (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included")
       (under 2 "a live block and its settled parent, \"root\" at the top")
       (ref 2 "a text reference [[id]] in a live block's text to a live block")
