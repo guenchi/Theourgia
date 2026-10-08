@@ -26,6 +26,7 @@
 ;; below is red: the command line does not take the option.
 (import (chezscheme) (theourgia rpc)
         (only (theourgia store) open-and-reduce)
+        (only (theourgia reduce) reduce-applied-cut)
         (only (theourgia code-project) code-files code-children code-field)
         (only (theourgia digest) sha256 bytevector->hex))
 
@@ -416,6 +417,36 @@
   (want "IS14 a review copy's markers decide: two blocks without the marker lines, and r.js listed as symbols-ignored"
         (list (car a) (clause a 'symbols-ignored) (files-of (car c)))
         (list 'ok '("r.js") (list (cons "r.js" two-blocks)))))
+
+;; ---- IS15: a captured request replays from its packet, not from the symbols file ---
+;; NEVER: THE SYMBOLS FILE IS AN INPUT OF THE CAPTURE. A request with an
+;; identity (--req and --cursor) is captured once, in the operation packet;
+;; a retry of the same request replays the packet. The symbols file is read
+;; inside the capture, so emptying it after the first try changes nothing:
+;; the retry answers ok, writes nothing more, and the file is not read
+;; (empty, it would be refused symbols-empty).
+(let* ((c (case! (list (cons "a.js" two)) (apply section "a.js" two two-symbols)))
+       ;; a request's cursor names a writer; a fresh store has none, so one
+       ;; section is written first (files-of reads code files only)
+       (seeded (setup (rpc-dispatch (car c) '(insert "--title" "seed") "test")))
+       (cursor (let ((v (setup (let ((e (car (reduce-applied-cut (open-and-reduce (car c))))))
+                                 (string-append (car e) ":" (number->string (cdr e)))))))
+                 (if (string? v) v "no-cursor:0")))
+       (first (local (car c) "import-code" (cadr c) "--symbols" (caddr c) "--req" "replay-once" "--cursor" cursor))
+       (held (setup (list (files-of (car c)) (reduce-applied-cut (open-and-reduce (car c))))))
+       (emptied (write! (caddr c) ""))
+       (retry (local (car c) "import-code" (cadr c) "--symbols" (caddr c) "--req" "replay-once" "--cursor" cursor))
+       (after (setup (list (files-of (car c)) (reduce-applied-cut (open-and-reduce (car c)))))))
+  (want "IS15 the first try splits a.js at 33"
+        (list (car first) (car held))
+        (list 'ok (list (cons "a.js" two-blocks))))
+  (want "IS15 with the symbols file emptied, the same request replays: ok, the same blocks, the cut unchanged"
+        (list (car retry) (equal? after held))
+        '(ok #t))
+  (want "IS15 CONTROL a new request with the emptied symbols file is refused symbols-empty"
+        (let ((a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+          (and (pair? a) (list (car a) (cadr a))))
+        '(error symbols-empty)))
 
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that

@@ -292,6 +292,37 @@
               (clause (car twin) 'boundaries) (clause (car twin) 'warnings))
         '((0 53 129) ((symbol-kinds function function function)) (0 53 129) ())))
 
+;; ---- S14, S15: split-suggest keeps the lenient top-level test ------------------
+;; NEVER: THE IMPORT'S STRICT TEST IS NOT SPLIT-SUGGEST'S. import-code --symbols
+;; refuses a cut after a line whose code ends in a continuation token, and, in
+;; an indent profile, a cut at a blank line whose next non-blank line is
+;; indented (code-suggest.sc, the strict flag). split-suggest writes a review
+;; copy a person reads before anything is imported, and keeps its old test:
+;; both starts below are cuts, and neither is warned symbol-not-top-level.
+(define s14 "const f = x =>\n  x + 1;\nfunction g() {\n}\n")
+(want "S14 setup: the text's offsets (the arrow body's line, g, the length)"
+      (list (offset-of s14 "  x + 1;") (offset-of s14 "function g") (bytevector-length (string->utf8 s14)))
+      '(15 24 41))
+(let ((r (suggest "s14.js" s14 (lines (header (digest-of s14) header-source)
+                                      (symbol-line 0 14 'variable "f")
+                                      (symbol-line 15 23 'function "body")
+                                      (symbol-line 24 41 'function "g")))))
+  (want "S14 a start on the line after one ending in => is a cut for split-suggest, with no symbol-not-top-level warning"
+        (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
+        '((0 15 24) ((symbol-kinds variable function function)))))
+(define s15 "def f():\n    a = 1\n\n    return a\n\ndef g():\n    pass\n")
+(define s15-source '(vscode "1.138.0" "python"))
+(want "S15 setup: the text's offsets (the blank line inside f, g, the length)"
+      (list (offset-of s15 "\n\n    return") (offset-of s15 "def g") (bytevector-length (string->utf8 s15)))
+      '(18 34 52))
+(let ((r (suggest "s15.py" s15 (lines (header (digest-of s15) s15-source)
+                                      (symbol-line 0 19 'function "f")
+                                      (symbol-line 19 33 'variable "rest")
+                                      (symbol-line 34 52 'function "g")))))
+  (want "S15 a start at a blank line whose next line is indented is a cut for split-suggest, with no symbol-not-top-level warning"
+        (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
+        '((0 19 34) ((symbol-kinds function variable function)))))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsplit-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
