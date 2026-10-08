@@ -34,6 +34,18 @@ import { initWire } from '../../src/wire';
 const TWO = 'function alpha() {\n  return 1;\n}\nfunction beta() {\n  return 2;\n}\n';
 const CJK = "// 漢字\nfunction 名前() {\n  return '😀';\n}\n";
 
+/*
+ * THE IMPORT'S ANSWER AS THE CORE'S WRITE PATH GIVES IT for a first import of
+ * one file split in two: one item per record of its plan (store.sc,
+ * run-intents!), the file block's insert and its two blocks', each naming
+ * its record's event, the block it wrote with its version, and the cursor.
+ */
+const RECORDS =
+  '(ok (items ' +
+  '(ok (events (("w" . 1))) (state (("w.1" . "h1"))) (cursor ("w" . 1)) (replay #f)) ' +
+  '(ok (events (("w" . 2))) (state (("w.2" . "h2"))) (cursor ("w" . 2)) (replay #f)) ' +
+  '(ok (events (("w" . 3))) (state (("w.3" . "h3"))) (cursor ("w" . 3)) (replay #f))))\n';
+
 function digest(text: string): string {
   return createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
 }
@@ -229,7 +241,7 @@ describe('an import split at the editor\'s symbols', () => {
       { 'a.js': editorDocument(TWO) },
       { 'a.js': [symbol('alpha', [0, 0], [2, 1]), symbol('beta', [3, 0], [5, 1])] },
       {
-        'import-code': { stdout: '(ok (items (ok (event ("w" . 1))) (ok (event ("w" . 2))) (ok (event ("w" . 3)))))\n' },
+        'import-code': { stdout: RECORDS },
         'export-code': { stdout: '(ok (files 1))\n' },
         'read w.1': {
           stdout:
@@ -506,7 +518,7 @@ function twoFunctionRig(alphaSrc: string, betaSrc: string, importAnswer?: string
     { 'a.js': [symbol('alpha', [0, 0], [2, 1]), symbol('beta', [3, 0], [5, 1])] },
     {
       'import-code': {
-        stdout: importAnswer ?? '(ok (items (ok (event ("w" . 1))) (ok (event ("w" . 2))) (ok (event ("w" . 3)))))\n'
+        stdout: importAnswer ?? RECORDS
       },
       'export-code': { stdout: '(ok (files 1))\n' },
       'read w.1': {

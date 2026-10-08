@@ -262,9 +262,20 @@ function names(items: Datum[], clause: string, text: string): string[] {
 
 /*
  * THE BLOCKS THE IMPORT WROTE, by id: each item of its answer is the answer
- * of one record, `(ok (event (<writer> . <seq>)))` or `(ok (events
- * ((<writer> . <seq>) ...)) ...)`, and a block made by a record has the id
- * `<writer>.<seq in base 36>`, as a save names the block it made.
+ * of one record, `(ok (events ((<writer> . <seq>))) (state ((<id> . <hash>)
+ * ...)) (cursor (<writer> . <seq>)) (replay #f))` as the core's write path
+ * gives it for each intent of the import's plan (store.sc, run-intents!),
+ * and a block made by an insert has the id `<writer>.<seq in base 36>` of
+ * its record, as the core itself names it there and a save names the block
+ * it made. `(event ...)` is read as well, the shape of a single record.
+ *
+ * NOTE: ONLY CREATES ARE ASKED ABOUT. A set, move or delete of a block the
+ * store holds has an event that is no block's id, so it adds nothing a file
+ * is looked up by. That is enough: the only files placed are ones the
+ * symbols split, and the core splits a file only on its first import, one
+ * with no marker line, whose file block and blocks are all inserted. A file
+ * that carries markers -- an export, a re-import -- is updated in place and
+ * listed as symbols-ignored, and is never placed.
  */
 export function writtenIds(items: Datum[]): Set<string> {
   const ids = new Set<string>();
