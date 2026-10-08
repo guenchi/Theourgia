@@ -166,8 +166,9 @@ describe('an import split at the editor\'s symbols', () => {
 
   /*
    * CJK BEFORE AND INSIDE A SYMBOL, AND AN EMOJI. The editor counts lines and
-   * UTF-16 units; the core counts bytes of the file. 漢字 is six bytes and two
-   * units, 名前 the same, the emoji four bytes and two units.
+   * UTF-16 units; the core counts bytes of the file. The two CJK characters of
+   * the comment are six bytes and two units, the two of the name the same,
+   * the emoji four bytes and two units.
    */
   it('counts the editor\'s positions as bytes of the file, and turns bytes back into positions, with CJK and an emoji', () => {
     const saved = savedText(Buffer.from(CJK, 'utf8'));
@@ -179,8 +180,8 @@ describe('an import split at the editor\'s symbols', () => {
     assert.deepStrictEqual(positionAtByte(saved, starts, 48), { line: 3, character: 1 });
     assert.deepStrictEqual(positionAtByte(saved, starts, 30), { line: 2, character: 0 });
     /*
-     * A BYTE INSIDE A CHARACTER IS THAT CHARACTER'S START: byte 4 is inside 漢
-     * (bytes 3 to 5), which is unit 3 of line 0.
+     * A BYTE INSIDE A CHARACTER IS THAT CHARACTER'S START: byte 4 is inside the
+     * comment's first CJK character (bytes 3 to 5), which is unit 3 of line 0.
      */
     assert.deepStrictEqual(positionAtByte(saved, starts, 4), { line: 0, character: 3 });
     /*
