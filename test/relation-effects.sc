@@ -710,6 +710,33 @@
       (map cdr (items-of (ask S18 'query "(moved ?a ?r ?b ?end)")))
       (list (list a18 'cites b18 'target)))
 
+;; RE-19 THE MEMBER WALK READS THE KIND: context orders the hard members by
+;; their distance from the unit over depends-on and implements edges under
+;; any name, a member with a distance before one without. M is at distance 1
+;; through cites, P at 1 and Q at 2 through depends-on: Q comes last. A walk
+;; by the edge's name would leave M with no distance, after Q.
+(define S19 (fresh-store!))
+(ask S19 'init)
+(ask S19 'relation "cites" "--as" "depends-on")
+(define t19 (new-id (ask S19 'insert "--title" "Context nineteen task")))
+(ask S19 'set t19 "kind" "task")
+(define m19 (new-id (ask S19 'insert "--title" "Cited nineteen")))
+(define p19 (new-id (ask S19 'insert "--title" "Premise nineteen")))
+(define q19 (new-id (ask S19 'insert "--title" "Second premise nineteen")))
+(ask S19 'link t19 "cites" m19)
+(ask S19 'link t19 "depends-on" p19)
+(ask S19 'link p19 "depends-on" q19)
+(want "RE-19 the member reached through cites is ordered by its distance, before the member two steps away"
+      (let* ((a (ask S19 'context "--for" t19 "--budget" "100000"))
+             (ids (apply append
+                         (map (lambda (n)
+                                (let ((c (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) n))) (cdr a)))))
+                                  (if (and c (pair? (cdr c)) (list? (cadr c))) (map (lambda (e) (and (pair? e) (car e))) (cadr c)) '())))
+                              context-sections)))
+             (order (filter (lambda (x) (member x (list m19 p19 q19))) ids)))
+        (list (length order) (and (= 3 (length order)) (equal? (caddr order) q19))))
+      '(3 #t))
+
 (printf "rows: ~a\n~a failures\nrelation-effects complete\n" rows bad)
 (system (string-append "rm -rf '" root "'"))
 (exit (if (= bad 0) 0 1))
