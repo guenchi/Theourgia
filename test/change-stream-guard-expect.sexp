@@ -6,5 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the timer and the window rows change no scripted answer.
-()
+;; describe: import-code's catalogue entry gains ["--symbols" <symbols-file>]
+;; and its description the sentences on a first import split at an editor's
+;; symbols, so the script's describe answer differs from the base's.
+((describe "import-code gains --symbols"))
