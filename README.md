@@ -1641,7 +1641,7 @@ escape, `\` in Python; in the shell only `|`, `&&`, `||` and `\`, since `/`,
 without its line comment, and a line that ends in a string, or inside or at
 the close of a block comment, not continuing, so `// The end.` before a
 definition is no continuation. A token counts only as a whole operator: the
-`+` of `x++`, the `.` of `1.` or of Python's `...`, and a line whose last
+`+` of `x++`, the `.` of `1.` or of Python's `...` (Rust's `0..` does continue), and a line whose last
 character the escape makes literal (`echo a\|`, but not `echo \\|`, whose pipe
 is real) do not continue. And, in an indented language such as Python, a blank line -- empty,
 or spaces and tabs only -- whose next non-blank line is indented, since a

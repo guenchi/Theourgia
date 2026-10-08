@@ -95,7 +95,8 @@
           ;; `none` for a line with no code.
           (define (code! i) (set! last-kind 'code) (set! code-end (+ i 1)))
           ;; A WHOLE OPERATOR, NOT THE END OF A LONGER TOKEN: "x++", "1." and
-          ;; Python's "..." end in a token's character and do not continue. (A
+          ;; Python's "..." end in a token's character and do not continue;
+          ;; Rust's open range "0.." does. (A
           ;; line whose last character the escape made literal is not asked:
           ;; see `last-escaped` where the line is read.)
           (define (continuation? code)
@@ -106,7 +107,9 @@
                                (not (and before
                                          (or (and (member t '("+" "-")) (char=? before (string-ref t 0)))
                                              (and (string=? t ".")
-                                                  (or (char-numeric? before) (char=? before #\.))))))))))
+                                                  (or (char-numeric? before)
+                                                      ;; Python's ellipsis; Rust's ".." range continues
+                                                      (and (>= m 3) (string=? (substring code (- m 3) m) "...")))))))))))
                     continuation-tokens))
           (define (at-any s i tokens) (find (lambda (t) (string-prefix-at? s t i)) tokens))
           (define (fence-run line)

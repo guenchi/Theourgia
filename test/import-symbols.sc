@@ -510,16 +510,33 @@
       (one-file "z.js" "const z = 1 + /* note */\nfunction f() {\n}\n" (sym 0 24 'variable "z") (sym 25 42 'function "f"))
       (list 'ok #f (list (list "z.js" "const z = 1 + /* note */\n" "function f() {\n}\n"))))
 ;; THE TOKENS THEMSELVES: each continues, and the cut after it is refused.
-(want "IS28 the shell's | and && continue"
+(want "IS28 the shell's |, && and || continue"
       (list (one-file "l.sh" "ls |\nwc -l\nf() { :; }\n" (sym 0 4 'variable "ls") (sym 11 22 'function "f"))
-            (one-file "t.sh" "true &&\nfalse\nf() { :; }\n" (sym 0 7 'variable "t") (sym 14 25 'function "f")))
+            (one-file "t.sh" "true &&\nfalse\nf() { :; }\n" (sym 0 7 'variable "t") (sym 14 25 'function "f"))
+            (one-file "o.sh" "false ||\ntrue\nf() { :; }\n" (sym 0 8 'variable "o") (sym 14 25 'function "f")))
       (list (list 'ok (list (list "l.sh" '(error symbols-not-top-level (at 5)))) '())
-            (list 'ok (list (list "t.sh" '(error symbols-not-top-level (at 8)))) '())))
+            (list 'ok (list (list "t.sh" '(error symbols-not-top-level (at 8)))) '())
+            (list 'ok (list (list "o.sh" '(error symbols-not-top-level (at 9)))) '())))
 (want "IS29 a binary - and a : continue"
       (list (one-file "m.js" "const m = 1 -\n  2;\nfunction f() {\n}\n" (sym 0 13 'variable "m") (sym 19 36 'function "f"))
             (one-file "n.js" "const t = c ? a :\n  b;\nfunction f() {\n}\n" (sym 0 17 'variable "t") (sym 23 40 'function "f")))
       (list (list 'ok (list (list "m.js" '(error symbols-not-top-level (at 14)))) '())
             (list 'ok (list (list "n.js" '(error symbols-not-top-level (at 18)))) '())))
+
+;; IS30: RUST'S OPEN RANGE CONTINUES. Only "..." (Python's ellipsis) ends a line;
+;; "0.." at a line's end is the range operator, and the cut after it is inside.
+(want "IS30 a Rust line ending in the range 0.. continues: the cut after it is refused"
+      (one-file "r.rs" "const R: Range = 0..\n10;\nfn f() {\n}\n" (sym 0 20 'constant "R") (sym 25 36 'function "f"))
+      (list 'ok (list (list "r.rs" '(error symbols-not-top-level (at 21)))) '()))
+;; IS31: WHAT THE ESCAPE MADE LITERAL IS ASKED OF ITS OWN LINE ONLY. The first
+;; line ends in an escaped "|" at index 6, the second in a real "|" at the same
+;; index: the first cut is taken, the second refused. (A multi-character escape
+;; cannot be rowed here: the import runs in a child process, where a language
+;; registered in this fixture does not exist, and every built-in escape is one
+;; character.)
+(want "IS31 an escaped | on one line does not make the next line's | at the same index a literal"
+      (one-file "x.sh" "echo \\|\necho a|\nf() { :; }\n" (sym 0 7 'variable "e1") (sym 8 15 'variable "e2") (sym 16 27 'function "f"))
+      (list 'ok (list (list "x.sh" '(error symbols-not-top-level (at 16)))) '()))
 
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that
