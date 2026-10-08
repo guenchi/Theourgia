@@ -319,6 +319,104 @@
         (list (car a) (clause a 'symbols-refused) (files-of (car c)))
         (list 'ok '(("missing.js" (error symbols-no-file))) (list (cons "a.js" two-blocks)))))
 
+;; ---- IS10: a cut inside a body that only the normalised end makes ---------------
+;; Both starts are at the top level; alpha's end, one line short, at the end
+;; of `function alpha() {`, is taken to the start of the line after it, 19,
+;; which is inside alpha's braces. A scanner asked only about the starts
+;; would pass this file.
+(let* ((c (case! (list (cons "a.js" two) (cons "b.js" two))
+                 (string-append (section "a.js" two (sym 0 18 'function "alpha") (sym 33 64 'function "beta"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS10 an end one line short puts the cut at 19, inside alpha's body: a.js is refused symbols-not-top-level at 19; b.js imports"
+        (list (car a) (clause a 'symbols-refused) (map car (files-of (car c))))
+        (list 'ok '(("a.js" (error symbols-not-top-level (at 19)))) '("b.js"))))
+
+;; ---- IS11: what the scanner's state says is still inside -------------------------
+;; PY-BLANK: f's end, one line short, is taken to the blank line inside its
+;; body (19); the blank line has no indentation, and the line after it does.
+;; ARROW: inc's end at the end of its first line is taken to the line of its
+;; expression body (19), and the line before ends in =>. DEF: f's end at the
+;; end of `def f():` is taken to its indented body (9).
+(define py-blank "def f():\n    a = 1\n\n    return a\n\ndef g():\n    return 2\n")
+(define arrow "const inc = (x) =>\n  x + 1;\nfunction g() {\n  return 2;\n}\n")
+(define def-colon "def f():\n    return 1\n")
+(want "IS0 setup: PY-BLANK's, ARROW's and DEF's offsets (the blank line in f, g, the expression body, g, the body, the lengths)"
+      (list (+ 1 (offset-of py-blank "\n\n    return a")) (offset-of py-blank "def g") (bytes-of py-blank)
+            (+ 1 (offset-of arrow "\n  x + 1")) (offset-of arrow "function g") (bytes-of arrow)
+            (+ 1 (offset-of def-colon "\n")) (bytes-of def-colon))
+      '(19 34 56 19 28 57 9 22))
+(for-each
+  (lambda (c)
+    (let* ((name (car c)) (text (cadr c))
+           (k (case! (list (cons name text) (cons "b.js" two))
+                     (string-append (apply section name text (caddr c)) (apply section "b.js" two two-symbols))))
+           (a (local (car k) "import-code" (cadr k) "--symbols" (caddr k))))
+      (want (string-append "IS11 " (cadddr c) ": " name " is refused symbols-not-top-level at "
+                           (number->string (list-ref c 4)) ", not imported; b.js imports")
+            (list (car a) (clause a 'symbols-refused) (map car (files-of (car k))))
+            (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at (list-ref c 4))))) '("b.js")))))
+  (list (list "f.py" py-blank (list (sym 0 18 'function "f") (sym 34 55 'function "g"))
+              "a blank line inside a Python body, the next line indented" 19)
+        (list "inc.js" arrow (list (sym 0 18 'variable "inc") (sym 28 56 'function "g"))
+              "an arrow function's expression body on the next line, after =>" 19)
+        (list "d.py" def-colon (list (sym 0 8 'function "f"))
+              "the line after def f():, its indented body" 9)))
+
+;; ---- IS12: boundaries the stricter test still takes --------------------------------
+;; A blank line between two top-level Python definitions; a comment line
+;; ending in `.` before a symbol; a line ending in a string that holds `:`.
+(define py-gap "def f():\n    return 1\n\ndef g():\n    return 2\n")
+(define comment-end "// The end.\nfunction f() {\n  return 1;\n}\n")
+(define string-end "x = 'a:'\nfunction f() {\n  return 1;\n}\n")
+(want "IS0 setup: PY-GAP's, COMMENT-END's and STRING-END's offsets (the blank line, g, f, x's line end, f, the lengths)"
+      (list (+ 1 (offset-of py-gap "\n\ndef g")) (offset-of py-gap "def g") (bytes-of py-gap)
+            (offset-of comment-end "function f") (bytes-of comment-end)
+            (offset-of string-end "\nfunction") (offset-of string-end "function f") (bytes-of string-end))
+      '(22 23 45 12 41 8 9 38))
+(for-each
+  (lambda (c)
+    (let* ((name (car c)) (text (cadr c))
+           (k (case! (list (cons name text)) (apply section name text (caddr c))))
+           (a (local (car k) "import-code" (cadr k) "--symbols" (caddr k))))
+      (want (string-append "IS12 CONTROL " (cadddr c) ": " name " imports, cut where the symbols say")
+            (list (car a) (clause a 'symbols-refused) (files-of (car k)))
+            (list 'ok #f (list (cons name (map (lambda (r) (slice text (car r) (cadr r))) (list-ref c 4))))))))
+  (list (list "g.py" py-gap (list (sym 0 21 'function "f") (sym 23 44 'function "g"))
+              "a blank line between two top-level definitions" '((0 22) (22 23) (23 45)))
+        (list "c.js" comment-end (list (sym 12 40 'function "f"))
+              "a comment line ending in . before a definition" '((0 12) (12 41)))
+        (list "s.js" string-end (list (sym 0 8 'variable "x") (sym 9 37 'function "f"))
+              "a line ending in a string that holds :" '((0 9) (9 38)))))
+
+;; ---- IS13: a symbols file that does not read wins over a directory that is not there
+;; The sections are read before the directory: with no directory, a malformed
+;; or empty symbols file is still what is refused. CONTROL: a symbols file
+;; that reads, with no directory, is refused for the directory.
+(let* ((missing (string-append root "/no-such-directory"))
+       (c (case! (list (cons "a.js" two)) (lines (sym 0 32 'function "alpha"))))
+       (e (case! (list (cons "a.js" two)) ""))
+       (v (case! (list (cons "a.js" two)) (apply section "a.js" two two-symbols))))
+  (want "IS13 with no directory, a symbol line before any header is still symbols-malformed at line 1, and an empty file symbols-empty"
+        (list (local (car c) "import-code" missing "--symbols" (caddr c))
+              (local (car e) "import-code" missing "--symbols" (caddr e)))
+        '((error symbols-malformed (line 1)) (error symbols-empty)))
+  (want "IS13 CONTROL with no directory and a symbols file that reads, the refusal is the directory's"
+        (local (car v) "import-code" missing "--symbols" (caddr v))
+        '(error projection-invalid (reason not-a-directory))))
+
+;; ---- IS14: a file with markers and no header follows its markers -------------------
+;; split-suggest's review copy: a `// @block new` line before each block and
+;; no file header. Its section would make one block of the whole file. It is
+;; a first import by its markers: alpha and beta, without the marker lines,
+;; and it is listed as symbols-ignored.
+(define review (string-append "// @block new pad 0\n" (car two-blocks) "// @block new pad 0\n" (cadr two-blocks)))
+(let* ((c (case! (list (cons "r.js" review)) (section "r.js" review (sym 0 (bytes-of review) 'module "whole"))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS14 a review copy's markers decide: two blocks without the marker lines, and r.js listed as symbols-ignored"
+        (list (car a) (clause a 'symbols-ignored) (files-of (car c)))
+        (list 'ok '("r.js") (list (cons "r.js" two-blocks)))))
+
 ;; ---- IS9: the same through a daemon ------------------------------------------------
 ;; One store and one daemon: IS1's split, IS3's refusal next to a file that
 ;; splits, and IS7's malformed file, each forwarded. The store is read after

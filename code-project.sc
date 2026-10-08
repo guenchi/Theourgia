@@ -99,10 +99,14 @@
   ;; Each entry is (rel bytes input), input #f for a skipped file.
   ;;
   ;; AN EDITOR'S SYMBOLS SPLIT A FIRST IMPORT, AND ONLY THAT. `symbols` is #f,
-  ;; or (sections . cuts-of): the sections of `--symbols` by path, and the
-  ;; procedure that turns a section and a file's bytes and language entry
-  ;; into the cuts, or raises the file's refusal (code-suggest.sc,
-  ;; import-symbol-cuts). A file a section names is split at those cuts
+  ;; or (read-sections . cuts-of): the reader of `--symbols`' sections by
+  ;; path, and the procedure that turns a section and a file's bytes and
+  ;; language entry into the cuts, or raises the file's refusal
+  ;; (code-suggest.sc, read-import-symbols and import-symbol-cuts). The
+  ;; sections are read here, in the capture and before the directory, so a
+  ;; symbols file that does not read refuses the request before anything
+  ;; else is read, and a request already captured is replayed from its
+  ;; packet whatever the symbols file holds now. A file a section names is split at those cuts
   ;; when it carries no marker line -- no file block holds it yet -- into
   ;; the blocks a marked first import of the same cuts makes. A file that
   ;; carries markers follows them and nothing else, so identity is proved
@@ -111,10 +115,11 @@
   ;; symbols-refused, as is a section that names no text file the walk
   ;; found; the rest of the import goes on.
   (define (capture-import store dir allow-delete? symbols)
-    (let* ((ignored '()) (refused '()) (used '())
+    (let* ((sections (and symbols ((car symbols))))
+           (ignored '()) (refused '()) (used '())
            (by-symbols
              (lambda (rel b input)
-               (let ((section (and symbols input (assoc rel (car symbols)))))
+               (let ((section (and symbols input (assoc rel sections))))
                  (if (not section) input
                      (let ((parsed (caddr input)))
                        (set! used (cons rel used))
@@ -200,7 +205,7 @@
                   (append (reverse refused)
                           (if symbols
                               (map (lambda (section) (list (car section) '(error symbols-no-file)))
-                                   (filter (lambda (section) (not (member (car section) used))) (car symbols)))
+                                   (filter (lambda (section) (not (member (car section) used))) sections))
                               '()))))))
   ;; A text packet's tagged slot after the fourth, or #f: a packet captured
   ;; before the slot existed has four.
@@ -213,7 +218,7 @@
   ;; only of the write, so a refusal made before it carries no clause -- and
   ;; run holds the part from the write on, so a raise inside it says so.
   ;; SYMBOLS, the optional argument after premises (#f for none), is what
-  ;; capture-import takes: the sections of `--symbols` and their cutter.
+  ;; capture-import takes: the reader of `--symbols`' sections and their cutter.
   (define (import-code store dir actor req allow-delete? . premises)
     (answer
       (lambda ()

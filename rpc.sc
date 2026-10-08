@@ -1453,7 +1453,7 @@
                          (import-code store (car args) actor req
                                       (argument-option options "--allow-delete") (list check finish run)
                                       (let ((path (argument-option options "--symbols")))
-                                        (and path (cons (read-import-symbols path) import-symbol-cuts))))))))))))
+                                        (and path (cons (lambda () (read-import-symbols path)) import-symbol-cuts))))))))))))
       (cons 'export-code
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))

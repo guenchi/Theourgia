@@ -43,8 +43,22 @@
            (member (language-property profile 'top-level #f) '("paren" "brace" "indent" "fence"))
            #t)))
 
+  ;; STRICT, the optional argument after `starts`, is the import's test of a
+  ;; cut (import-symbol-cuts); split-suggest does not ask it. Two more lines
+  ;; are then not at the top level, as the scanner's state reads them:
+  ;;   - a line after one whose CODE ends in a continuation token (=>, =, +,
+  ;;     -, *, /, ., ",", (, [, {, &&, ||, ?, :, or the profile's escape).
+  ;;     The code is the line without its line comment, and a line that ends
+  ;;     in a string, or inside or at the close of a block comment, does not
+  ;;     continue: "// The end." or "x = 'a:'" before a definition is not
+  ;;     the middle of a statement. Not in a fence profile, which is prose.
+  ;;   - in an indent profile, a blank line whose next non-blank line is
+  ;;     indented: a blank line inside a body has no indentation of its own,
+  ;;     and is judged by what follows it. A blank line between two
+  ;;     top-level definitions still is the top level.
   (define (suggest-boundaries entry bytes . rest)
     (define starts (and (pair? rest) (car rest)))
+    (define strict (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
     (define not-top-level '())
     (define (definition? offset trimmed)
       (if starts (and (memv offset starts) #t) (definition-name entry trimmed)))
@@ -66,7 +80,18 @@
                (prefix-patterns (map regex-compile (get 'prefix-lines '())))
                (stack '()) (quoted #f) (comment-depth 0) (continued? #f)
                (fence #f) (pending #f) (boundaries '(0))
+               (last-kind 'none) (code-end 0) (continues? #f) (blank-starts '())
+               (continuation-tokens (list "=>" "=" "+" "-" "*" "/" "." "," "(" "[" "{" "&&" "||" "?" ":" escape))
                (prefix (source-prefix-size bytes)))
+          ;; WHAT A LINE'S CODE LAST WAS, for the strict test: `code` with the
+          ;; index after the last code character, `string`, `comment`, or
+          ;; `none` for a line with no code.
+          (define (code! i) (set! last-kind 'code) (set! code-end (+ i 1)))
+          (define (continuation? code)
+            (exists (lambda (t)
+                      (let ((n (string-length t)) (m (string-length code)))
+                        (and (>= m n) (string=? (substring code (- m n) m) t))))
+                    continuation-tokens))
           (define (at-any s i tokens) (find (lambda (t) (string-prefix-at? s t i)) tokens))
           (define (fence-run line)
             (let* ((s (trim-left line)) (indent (- (string-length line) (string-length s))))
@@ -76,14 +101,18 @@
                          (and (>= i 3) (list (string-ref s 0) i (substring s i (string-length s)))))))))
           (define (scan-line line offset)
             (set! continued? #f)
+            (set! last-kind 'none)
             (let loop ((i 0))
               (if (= i (string-length line))
-                  (when (and quoted (not continued?) (not (member quoted multiline))) (fallback 'unclosed-quote (+ offset (bytevector-length (string->utf8 line)))))
+                  (begin
+                    (when (> comment-depth 0) (set! last-kind 'comment))
+                    (when (and quoted (not continued?) (not (member quoted multiline))) (fallback 'unclosed-quote (+ offset (bytevector-length (string->utf8 line))))))
                   (let ((c (string-ref line i)))
                     (cond
                       ((> comment-depth 0)
                        (cond ((string-prefix-at? line (cadr block) i)
-                              (set! comment-depth (- comment-depth 1)) (loop (+ i (string-length (cadr block)))))
+                              (set! comment-depth (- comment-depth 1)) (set! last-kind 'comment)
+                              (loop (+ i (string-length (cadr block)))))
                              ((and (get 'nested-block-comment #f) (string-prefix-at? line (car block) i))
                               (set! comment-depth (+ comment-depth 1)) (loop (+ i (string-length (car block)))))
                              (else (loop (+ i 1)))))
@@ -93,23 +122,23 @@
                                   (set! continued? #t)
                                   (loop (min (string-length line) (+ i (string-length escape) 1)))))
                              ((string-prefix-at? line quoted i)
-                              (let ((n (string-length quoted))) (set! quoted #f) (loop (+ i n))))
+                              (let ((n (string-length quoted))) (set! quoted #f) (set! last-kind 'string) (loop (+ i n))))
                              (else (loop (+ i 1)))))
                       ((at-any line i (comment-prefixes entry)) (if #f #f))
                       ((and block (string-prefix-at? line (car block) i))
-                       (set! comment-depth 1) (loop (+ i (string-length (car block)))))
+                       (set! comment-depth 1) (set! last-kind 'comment) (loop (+ i (string-length (car block)))))
                       ((at-any line i uncertain) (fallback 'lexically-uncertain (+ offset (bytevector-length (string->utf8 (substring line 0 i))))))
-                      ((at-any line i quotes) => (lambda (q) (set! quoted q) (loop (+ i (string-length q)))))
+                      ((at-any line i quotes) => (lambda (q) (set! quoted q) (set! last-kind 'string) (loop (+ i (string-length q)))))
                       ((exists (lambda (p) (char=? c (string-ref p 0))) pairs)
                        (let ((p (find (lambda (p) (char=? c (string-ref p 0))) pairs)))
-                         (set! stack (cons (string-ref p 1) stack)) (loop (+ i 1))))
+                         (code! i) (set! stack (cons (string-ref p 1) stack)) (loop (+ i 1))))
                       ((exists (lambda (p) (char=? c (string-ref p 1))) pairs)
                        (unless (and (pair? stack) (char=? c (car stack))) (fallback 'unbalanced (+ offset i)))
-                       (set! stack (cdr stack)) (loop (+ i 1)))
+                       (code! i) (set! stack (cdr stack)) (loop (+ i 1)))
                       ((string-prefix-at? line escape i)
                        (if (= (+ i (string-length escape)) (string-length line)) (set! continued? #t)
                            (loop (min (string-length line) (+ i (string-length escape) 1)))))
-                      (else (loop (+ i 1))))))))
+                      (else (unless (char-whitespace? c) (code! i)) (loop (+ i 1))))))))
           (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
           ;; NEVER: A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT. The whole
@@ -143,6 +172,14 @@
                          (when (> offset (car boundaries)) (set! boundaries (cons offset boundaries))))))
                     (begin
                       (unless top? (symbol-not-top-level! offset))
+                      (when strict
+                        (when continues? (symbol-not-top-level! offset))
+                        (when (string=? kind "indent")
+                          (cond ((string=? trimmed "")
+                                 (when (and starts (memv offset starts)) (set! blank-starts (cons offset blank-starts))))
+                                (else
+                                 (unless (string=? line trimmed) (for-each symbol-not-top-level! blank-starts))
+                                 (set! blank-starts '())))))
                       (cond
                         ((and top? (definition? offset trimmed))
                          (let ((start (or pending offset)))
@@ -154,13 +191,19 @@
                          (unless pending (set! pending offset)))
                         ((and top? (string=? trimmed "")) (set! pending #f))
                         ((and top? (not (> comment-depth 0))) (set! pending #f)))
-                      (scan-line line offset)))))
+                      (scan-line line offset)
+                      (unless (string=? trimmed "")
+                        (set! continues? (and (eq? last-kind 'code) (continuation? (substring line 0 code-end)))))))))
             (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
           (when (or (pair? stack) quoted (> comment-depth 0) continued? fence)
             (fallback 'unbalanced (bytevector-length bytes)))
           ;; A protected prefix belongs to the first actual block.
+          ;; In file order: the strict blank-line test names a cut only when the
+          ;; line after it is read.
           (list (filter (lambda (n) (or (= n 0) (> n prefix))) (reverse boundaries))
-                (reverse not-top-level))))))
+                (if strict
+                    (list-sort (lambda (a b) (< (cadadr a) (cadadr b))) (reverse not-top-level))
+                    (reverse not-top-level)))))))
 
   ;; ---- the symbols file ---------------------------------------------------
   ;;
@@ -346,7 +389,7 @@
             ((not (usable-profile? entry)) (symbols-refusal 'symbols-unchecked '(reason no-suggest-profile))))
       (cond ((find (lambda (n) (< n prefix)) inner) => (lambda (n) (symbols-refusal 'symbols-in-prefix (list 'at n)))))
       (let* ((cuts (filter (lambda (n) (> n prefix)) inner))
-             (scan (suggest-boundaries entry bytes cuts))
+             (scan (suggest-boundaries entry bytes cuts #t))
              (said (cadr scan)))
         (cond
           ((and (pair? said) (eq? (caar said) 'code))

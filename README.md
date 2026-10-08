@@ -1611,8 +1611,10 @@ spells it, then that file's symbol lines.
     (symbols (path "<path>") (digest "<sha256 of the file>") (source (vscode "<version>" "<languageId>")) (top-level #t))
     (symbol <start> <end> <kind> "<name>")
 
-Every start is a cut, and every end is taken to the start of the line
-after it, so what follows a symbol on its last line stays with it. Ends
+Every start is a cut, and every end is taken to the first line start at
+or after it, or the file's end, so what follows a symbol on its last line
+stays with it; an end already at a line start or at the file's end stays
+where it is. Ends
 are normalised and starts are not: a start must already be the first byte
 of its line, or the file is refused `symbols-not-a-line-start`. What
 lies before the first symbol, between two, or after the last is a block of
@@ -1631,7 +1633,17 @@ when no scanner can say what is top level in it; `(error symbols-in-prefix
 symbols-unscanned (reason <r>) (at <n>))` when the scanner cannot follow
 the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`); and
 `(error symbols-not-top-level (at <n>))` for the first cut inside a body,
-a string, a block comment or an open bracket. A refused file is not
+a string, a block comment or an open bracket. Two more cuts are inside: one
+after a line whose code ends in a continuation token (`=>`, `=`, `+`, `-`,
+`*`, `/`, `.`, `,`, `(`, `[`, `{`, `&&`, `||`, `?`, `:`, or the language's
+escape, `\` in Python) -- the code read without its line comment, and a line
+that ends in a string, or inside or at the close of a block comment, not
+continuing, so `// The end.` before a definition is no continuation; and,
+in an indented language such as Python, a blank line whose next non-blank
+line is indented, since a blank line inside a body has no indentation of
+its own. A blank line between two top-level definitions is the top level.
+The continuation test is not made in Markdown, which is prose. A
+refused file is not
 imported at all -- no block is written for it -- and the import of the
 other files goes on; the answer lists it with its refusal in
 `(symbols-refused ((<path> <refusal>) ...))`, with, after the walk's
