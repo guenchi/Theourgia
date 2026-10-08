@@ -574,7 +574,6 @@
                 (list (car (car r)) (equal? (car r) (cadr r))))))
       '((ok ok) (error #t)))
 
-(printf "rows: ~a\n~a failures\nrelation-effects complete\n" rows bad)
 ;; ---- the first review's findings ---------------------------------------------------
 
 ;; RE-12 AN UNCHANGED DECLARATION INSIDE A TRACKED BATCH: each item of a
@@ -667,5 +666,6 @@
       (list (list 'needs-review (list 'premise-refuted n15 '(relation cites)))
             (list 'validity 'needs-review (list 'premise-refuted n15))))
 
+(printf "rows: ~a\n~a failures\nrelation-effects complete\n" rows bad)
 (system (string-append "rm -rf '" root "'"))
 (exit (if (= bad 0) 0 1))
