@@ -93,6 +93,10 @@
         "title": "Theourgia: Suggest a Split of This File"
       },
       {
+        "command": "theourgia.importWithSymbols",
+        "title": "Theourgia: Import with Symbols"
+      },
+      {
         "command": "theourgia.supplySignatures",
         "title": "Theourgia: Supply Signatures and Keywords"
       },
@@ -129,6 +133,12 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "theourgia.importWithSymbols",
+          "group": "theourgia"
+        }
+      ],
       "view/title": [
         {
           "command": "theourgia.search",

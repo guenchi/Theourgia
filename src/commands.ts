@@ -147,6 +147,15 @@ export const SUGGEST_SPLIT: CommandName = {
 };
 
 /*
+ * AN IMPORT OF A FOLDER OR A FILE, SPLIT AT THE EDITOR'S SYMBOLS. See
+ * `src/import-symbols.ts`.
+ */
+export const IMPORT_WITH_SYMBOLS: CommandName = {
+  id: 'theourgia.importWithSymbols',
+  title: 'Theourgia: Import with Symbols'
+};
+
+/*
  * FACTS THE EDITOR COMPUTES, SUPPLIED TO THE STORE, one kind per command. See
  * `src/supply.ts`.
  */
@@ -180,6 +189,7 @@ export const COMMANDS: CommandName[] = [
   SUPPLY_CALLS,
   SUPPLY_DIAGNOSTICS,
   SUGGEST_SPLIT,
+  IMPORT_WITH_SYMBOLS,
   SHOW_FILES,
   SHOW_OUTLINE,
   NEW_FILE_HERE,

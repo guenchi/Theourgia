@@ -65,11 +65,13 @@ import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, re
 import { HOVER_COMMANDS, HoverPlace, HoverService, blockAt as hoverBlockAt, hoverMarkdown, isSchemeLang, listEntries, nameUnder, readsSchemeNames } from './hover';
 import { blockLang, datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
 import { projectionNameFor } from './projection-name';
-import { runSplit, splitRefusalNotice } from './split-symbols';
+import { runSplit, savedText, splitRefusalNotice } from './split-symbols';
+import { ImportSource, importReport, runImport } from './import-symbols';
 import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
 import {
   HOVER_MORE,
   SUGGEST_SPLIT,
+  IMPORT_WITH_SYMBOLS,
   SUPPLY_CALLS,
   SUPPLY_DIAGNOSTICS,
   SUPPLY_SIGNATURES,
@@ -126,7 +128,7 @@ import {
   wrongStoreNotice
 } from './status';
 import { TransportError } from './transport';
-import { initWire } from './wire';
+import { initWire, wire } from './wire';
 
 function readConfig(): CoreConfig {
   const settings = vscode.workspace.getConfiguration('theourgia');
@@ -1245,6 +1247,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const datumScratch = scratchUnder(path.join(storage, 'datum-view'));
   /*
+   * THE EXPORT AN IMPORT WITH SYMBOLS PLACES ITS NEW BLOCKS BY, and the copy
+   * of a single file it imports alone (src/import-symbols.ts).
+   */
+  const importScratch = scratchUnder(path.join(storage, 'import'));
+  /*
    * THE TEXT A RESTORED DATUM TAB IS GIVEN: the datum export of the store its
    * address names, which DocumentTexts has compared with the configured one.
    */
@@ -1255,6 +1262,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const views = new DocumentViews(
     new DocumentTexts(() => (client === null ? null : { client, store: config.store }), documentOf, composeDatum)
   );
+
+  /*
+   * A SYMBOLS FILE A SPLIT OR AN IMPORT WROTE, REMOVED once its request has
+   * ended. A file that never came to exist -- the write failed before
+   * creating it -- is nothing to remove, and is not reported.
+   */
+  function removeSymbolsFile(written: string): void {
+    try {
+      files.unlink(written);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        vscode.window.showWarningMessage(`Theourgia: the symbols file ${written} could not be removed: ${String(e)}`);
+      }
+    }
+  }
 
   /*
    * A SPLIT OF THE SOURCE FILE IN THE EDITOR. The steps are in
@@ -1306,19 +1328,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             files.makeDirectory(symbolsDirectory);
             files.writeText(written, text);
           },
-          /*
-           * A file that never came to exist -- the write failed before
-           * creating it -- is nothing to remove, and is not reported.
-           */
-          removeSymbols: (written) => {
-            try {
-              files.unlink(written);
-            } catch (e) {
-              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-                vscode.window.showWarningMessage(`Theourgia: the symbols file ${written} could not be removed: ${String(e)}`);
-              }
-            }
-          }
+          removeSymbols: removeSymbolsFile
         }
       );
     } catch (e) {
@@ -1340,6 +1350,126 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const review = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.review));
     await vscode.window.showTextDocument(review, { preview: false });
     vscode.window.showInformationMessage(`Theourgia: ${outcome.notice}.`);
+  }
+
+  /*
+   * AN IMPORT SPLIT AT THE EDITOR'S SYMBOLS, of a folder or of one file. The
+   * steps are in `src/import-symbols.ts` (`runImport`); this hands them the
+   * files, the editor's documents and symbol providers, the disk and the
+   * core, and writes what came of it to the output channel.
+   *
+   * A FOLDER is imported as the core walks it: every file under it, a name
+   * that starts with a dot not entered. ONE FILE is imported alone, from a
+   * scratch directory holding a copy of it under its own name, so that its
+   * siblings are not imported with it; its path in the store is that name.
+   * The copy is made only of a file that is UTF-8 text, so it is the same
+   * bytes, and it is removed however the import ends.
+   *
+   * NOTE: A REAL FILE OR FOLDER ONLY, outside this extension's storage, as
+   * for a split.
+   */
+  async function importWithSymbols(target?: vscode.Uri): Promise<void> {
+    const uri = target ?? vscode.window.activeTextEditor?.document.uri;
+    if (uri === undefined || uri.scheme !== 'file') {
+      vscode.window.showWarningMessage('Theourgia: choose a folder or a source file on disk to import.');
+      return;
+    }
+    const within = path.relative(storage, uri.fsPath);
+    if (!within.startsWith('..') && !path.isAbsolute(within)) {
+      vscode.window.showWarningMessage("Theourgia: a block's own file or a document view is not imported; choose a source file or folder.");
+      return;
+    }
+    const using = client;
+    if (using === null) {
+      vscode.window.showWarningMessage('Theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const asked = generation;
+    const folder = files.isDirectory(uri.fsPath);
+    let directory = uri.fsPath;
+    let copy: string | null = null;
+    let sources: ImportSource[];
+    if (folder) {
+      sources = filesUnder(uri.fsPath)
+        .filter((rel) => !rel.split('/').some((part) => part.startsWith('.')))
+        .map((rel) => {
+          const file = path.join(uri.fsPath, ...rel.split('/'));
+          return { rel, bytesPath: file, uri: vscode.Uri.file(file).toString() };
+        });
+    } else {
+      const bytes = files.readBytes(uri.fsPath);
+      if (savedText(bytes) === null) {
+        vscode.window.showWarningMessage(`Theourgia: ${path.basename(uri.fsPath)} is not UTF-8 text, so the editor's symbols cannot be counted in it; nothing was imported.`);
+        return;
+      }
+      directory = path.join(storage, 'import', randomUUID());
+      files.makeDirectory(directory);
+      copy = path.join(directory, path.basename(uri.fsPath));
+      files.writeText(copy, bytes.toString('utf8'));
+      sources = [{ rel: path.basename(uri.fsPath), bytesPath: copy, uri: uri.toString() }];
+    }
+    const symbolsDirectory = path.join(storage, 'symbols');
+    let outcome;
+    try {
+      outcome = await runImport({
+        client: using,
+        editorVersion: vscode.version,
+        directory,
+        sources,
+        readFile: (file) => files.readBytes(file),
+        /*
+         * A file the editor will not open as text is not one it gives symbols
+         * for; it is imported as the core imports it, without a section.
+         */
+        document: (source) =>
+          Promise.resolve(vscode.workspace.openTextDocument(vscode.Uri.parse(source.uri))).then(
+            (opened) => ({
+              languageId: opened.languageId,
+              isDirty: () => opened.isDirty,
+              version: () => opened.version,
+              text: () => opened.getText()
+            }),
+            () => null
+          ),
+        symbols: (source) =>
+          Promise.resolve(vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', vscode.Uri.parse(source.uri))),
+        symbolsPath: () => path.join(symbolsDirectory, `${randomUUID()}.sexp`),
+        writeSymbols: (written, text) => {
+          files.makeDirectory(symbolsDirectory);
+          files.writeText(written, text);
+        },
+        removeSymbols: removeSymbolsFile,
+        scratch: importScratch
+      });
+    } catch (e) {
+      reportFailure(e);
+      return;
+    } finally {
+      if (copy !== null) {
+        importScratch.remove(directory);
+      }
+    }
+    if (asked !== generation) {
+      vscode.window.showInformationMessage('Theourgia: the import ended after the store setting changed; its report is not shown.');
+      return;
+    }
+    if (outcome.done === 'stopped') {
+      vscode.window.showWarningMessage(`Theourgia: ${outcome.why}.`);
+      return;
+    }
+    if (outcome.done === 'refused') {
+      vscode.window.showErrorMessage(`Theourgia: the core refused the import: ${wire().write(outcome.refusal)}`);
+      return;
+    }
+    channel.appendLine(`Import with symbols: ${outcome.argv.join(' ')}`);
+    for (const line of importReport(outcome)) {
+      channel.appendLine(line);
+    }
+    channel.show(true);
+    vscode.window.showInformationMessage(
+      `Theourgia: imported; ${outcome.split.length} file${outcome.split.length === 1 ? '' : 's'} split at their symbols, ` +
+        `${outcome.ignored.length} followed their markers, ${outcome.refused.length} refused. The report is in the output channel.`
+    );
   }
 
   /*
@@ -2777,6 +2907,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),
+    command(IMPORT_WITH_SYMBOLS.id, importWithSymbols),
     command(SUPPLY_SIGNATURES.id, () => supplyFacts('signatures')),
     command(SUPPLY_CALLS.id, () => supplyFacts('calls')),
     command(SUPPLY_DIAGNOSTICS.id, () => supplyFacts('diagnostics')),

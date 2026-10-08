@@ -250,7 +250,7 @@ export function mergeNotes(...lists: Array<Note[] | null | undefined>): Note[] |
   return out.length === 0 ? null : out;
 }
 
-const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff', 'whereis', 'grep']);
+const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff', 'whereis', 'grep', 'import-code']);
 
 /*
  * THE CRITERION IS "APPENDS A RECORD", not "is a verb I thought of".
@@ -349,6 +349,15 @@ const KNOWN_VERBS = new Set([
    */
   'export-code',
   'supply',
+  /*
+   * `import-code` is sent by the import with the editor's symbols
+   * (src/import-symbols.ts), always with `--wire`: its answer is `(ok (items
+   * ...) ...)`, one item per record it wrote, and the clauses after the
+   * items are what the command reads. It is not in ALWAYS_WRITE_VERBS: an
+   * import that finds every file as the store already holds it writes
+   * nothing, and its empty item list is an answer, not a fault.
+   */
+  'import-code',
   /*
    * NOTE: `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
    * An unknown verb throws out of `answerKind`, the caller that asks

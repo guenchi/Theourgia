@@ -759,23 +759,23 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * visible to `search` or `grep` (core F61, not fixed). The only signal is
    * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
    * grep answer (store.sc:1461 `search-report`, store.sc:1916 `report`).
-   * This extension sends neither import verb today, so the symptom is out of
-   * its reach. The day it grows a command that imports a file or a
-   * directory, that command ships with a reading of that count -- the user
-   * imported the file, sees it in the tree and cannot find it by searching,
-   * and nothing else says why -- or it ships saying that it cannot explain
-   * this. The cell is the tripwire for that day, not a measurement.
+   * The import with the editor's symbols (src/import-symbols.ts) sends
+   * `import-code`, in text mode, and that symptom is out of its reach: the
+   * core's text import no longer stores such a file. It skips a file that is
+   * not UTF-8 text or that holds a NUL byte and lists it in the answer's
+   * `skipped` clause (the core's README, `import-code`), which the command
+   * reads and says, file by file. So that file is the one sender, and it
+   * reads `skipped`; `import-md` stays unsent.
    */
-  it('sends no `import-code` or `import-md` (queue item 13: an import ships with the unreadable-blocks count)', () => {
+  it('sends `import-code` only from the import with symbols, which says what the core skipped, and no `import-md`', () => {
     const { verbs, unread } = verbsSent();
     assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
     assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
     const imports = ['import-code', 'import-md'].filter((verb) => verbs.has(verb));
-    assert.deepStrictEqual(
-      imports,
-      [],
-      'this extension now sends an import verb: read and show (scanned ... (unreadable-blocks m)) with it, or say it cannot (queue item 13)'
-    );
+    assert.deepStrictEqual(imports, ['import-code'], 'an import verb other than import-code is sent, or import-code is not');
+    const senders = sources().filter(({ text }) => /\.request\(\s*'import-code'/.test(text));
+    assert.deepStrictEqual(senders.map(({ name }) => path.basename(name)), ['import-symbols.ts'], 'import-code is sent from somewhere else');
+    assert.ok(/'skipped'/.test(senders[0].text), 'the import does not read the skipped clause, so a file the core skipped goes unsaid');
   });
 
   /*
@@ -795,10 +795,13 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * read-only view of a datum block sends `export-code --datum` too, and
    * says the store's refusal as the core wrote it (src/datum-view.ts; the
    * cell "says the store's refusal of the export" in datum-view.test.ts).
-   * Those, from those two files only, are the expected ones; any other is
-   * red.
+   * The import with the editor's symbols sends `import-code` and, to place
+   * the blocks it made, `export-code`, and says a refusal of either as the
+   * core wrote it (src/import-symbols.ts; the cells in
+   * import-symbols.test.ts). Those, from those three files only, are the
+   * expected ones; any other is red.
    */
-  it('sends of the core\'s undeclared verbs only export-code and supply, from the supply commands and the datum view', () => {
+  it('sends of the core\'s undeclared verbs only export-code, import-code and supply, from the supply commands, the datum view and the import', () => {
     const rpc = readFileSync(path.join(coreSources().directory, 'rpc.sc'), 'utf8');
     const listed = /\(define undeclared-verbs '\(([^)]*)\)\)/.exec(rpc);
     assert.ok(listed !== null, 'the pinned core defines no undeclared-verbs list this cell can read');
@@ -809,13 +812,17 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
     assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
     assert.deepStrictEqual(
       undeclared.filter((verb) => verbs.has(verb)).sort(),
-      ['export-code', 'supply'],
-      'this extension sends a verb the core refuses with incomplete-reduction on a store missing a writer other than the supply commands\' two: sort that refusal and show its notes'
+      ['export-code', 'import-code', 'supply'],
+      'this extension sends a verb the core refuses with incomplete-reduction on a store missing a writer other than the three expected: sort that refusal and show its notes'
     );
     const senders = sources()
-      .filter(({ text }) => /\.request\(\s*'(export-code|supply)'/.test(text))
+      .filter(({ text }) => /\.request\(\s*'(export-code|import-code|supply)'/.test(text))
       .map(({ name }) => path.basename(name));
-    assert.deepStrictEqual(senders, ['datum-view.ts', 'supply.ts'], 'export-code or supply is sent from somewhere other than src/supply.ts and src/datum-view.ts');
+    assert.deepStrictEqual(
+      senders,
+      ['datum-view.ts', 'import-symbols.ts', 'supply.ts'],
+      'export-code, import-code or supply is sent from somewhere other than src/supply.ts, src/datum-view.ts and src/import-symbols.ts'
+    );
   });
 
   /*

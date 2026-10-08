@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+* Import with Symbols: a folder or a source file is imported into the
+  store with the core's `import-code --symbols`, and the first import of
+  each file is split at the editor's top-level symbols into a file block
+  and its code blocks, without a review copy first. The report in the
+  output channel places each new block at its lines, and gives a file the
+  core refused to split with the line and column of the byte it names. A
+  file with unsaved edits stops the command before anything is sent.
+
 ## 1.1.0 — 2026-10-06
 
 * The extension is Theourgos, package name theourgos under the publisher

@@ -312,8 +312,17 @@ export function symbolsFileText(digest: string, version: string, languageId: str
     [w.sym('source'), [w.sym('vscode'), version, languageId]],
     [w.sym('top-level'), true]
   ]);
-  const lines = symbols.map((s) => w.write([w.sym('symbol'), BigInt(s.start), BigInt(s.end), w.sym(s.kind), s.name]));
-  return [header, ...lines].map((l) => `${l}\n`).join('');
+  return [header, ...symbols.map(symbolLine)].map((l) => `${l}\n`).join('');
+}
+
+/*
+ * ONE SYMBOL LINE, `(symbol <start> <end> <kind> "<name>")`, for this file's
+ * symbols file and for an import's (src/import-symbols.ts), which has the
+ * same lines under a header per file.
+ */
+export function symbolLine(s: FileSymbol): string {
+  const w = wire();
+  return w.write([w.sym('symbol'), BigInt(s.start), BigInt(s.end), w.sym(s.kind), s.name]);
 }
 
 /*

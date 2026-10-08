@@ -587,6 +587,25 @@ above a definition goes with it, as without symbols. A file whose lines end in C
 symbols: the core takes a line start to follow a line feed, and refuses (`symbols-not-a-line-start`). Which provider named a symbol cannot be said: the
 editor merges them.
 
+**Import with symbols.** "Theourgia: Import with Symbols", on a folder or a source file in the
+explorer (or on the file in the editor), imports it with the core's `import-code <dir> --symbols
+<file>`, and the first import of each file is split at the editor's own top-level symbols, with no
+review copy in between. A folder is imported as the core walks it, every file under it, a name that
+starts with a dot not entered; one file is imported alone, from a copy in this extension's storage, so
+its path in the store is its name. For each file that is UTF-8 text the editor's symbol providers are
+asked, and the symbols are counted in the file as it is on disk, as for a split: each at the start of
+its line, a range ending where the editor's ends, not past the next one (the core takes an end to the
+start of the line after it). What no symbol covers -- a comment above a definition, a blank line between
+two -- is a block of its own, and the blocks run together to the file. A file with unsaved edits stops
+the command, named, and nothing is sent: the core imports the disk. A file not named, because the
+editor gave it no symbols, is imported as before, as one block. The report goes to the "Theourgia"
+output channel: each split file's file block and each of its blocks with the lines it holds; a file
+that already carries markers, which follows them and ignores its symbols (`symbols-ignored`); a file the
+core refused to split, which is not imported, with its refusal and, when it names a byte, the line and
+column of that byte; and a file the core skipped as not UTF-8 text. The blocks are placed by exporting
+the store to a scratch directory and reading the split file's block back; when that cannot be done (a
+path the store holds twice, for one) the import stands and the report says why.
+
 **Supplying what the editor knows.** Three commands hand the store facts the editor's language
 support computes, which the core keeps beside the store and never in its log (the core's README,
 "Derived data from an editor"): "Theourgia: Supply Signatures and Keywords" and "Theourgia: Supply

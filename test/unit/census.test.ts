@@ -344,6 +344,15 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['run-root.test.ts', 9],
   /*
+   * ADDED with the import split at the editor's symbols: the byte offsets
+   * with CJK and an emoji and with a byte-order mark, a two-function file
+   * imported and placed, a document with unsaved edits, a document that is
+   * not the disk, no symbols, a refusal at its line, a file that followed
+   * its markers and one skipped, and a refusal of the whole import, plus the
+   * setup row that pins the offsets.
+   */
+  ['import-symbols.test.ts', 10],
+  /*
    * ADDED in plugin-r3: what `check` says about a store's condition, read
    * whatever its exit code, and the one sentence said about it; then the
    * eight that drive `IntegrityWatch`, when to ask and when to tell. RAISED
