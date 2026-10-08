@@ -1084,7 +1084,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
    * CORE'S BATCH E (first read on theourgia 3017e45); the sites below are
-   * re-read on the pinned core, cba98ae (f5ebd58's and 877f0da's before).
+   * re-read on the pinned core (be42914).
    *
    * NEVER: THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
    * STRUCTURAL REASON, not because they look unlikely: `eval` is not a

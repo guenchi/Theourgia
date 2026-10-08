@@ -538,7 +538,7 @@ export class StoreModel {
      * drawn as an ordinary child with no warning on it at all.
      *
      * A NESTED DOCUMENT ARRIVES THIS WAY TOO. The pinned core
-     * (cba98ae) returns it in its parent's recursive read like any other
+     * (be42914) returns it in its parent's recursive read like any other
      * block and reports it under `conflicts`, so it comes out of here as a
      * child carrying `nested-document`, as does any child the store
      * reports under `conflicts` for another reason. (An older core's walk

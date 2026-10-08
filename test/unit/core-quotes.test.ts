@@ -24,8 +24,8 @@ import * as path from 'path';
 
 /*
  * THE ONE CORE FILE STILL NAMED `.ss`. The core renamed its sources to `.sc`
- * (276d9f2); its build script kept its name, and the pinned core (877f0da,
- * then f5ebd58 and cba98ae) still calls it `build.ss`. Every other `<name>.ss` in src/ is a quotation
+ * (276d9f2); its build script kept its name, and the pinned core (be42914)
+ * still calls it `build.ss`. Every other `<name>.ss` in src/ is a quotation
  * of a file that is `.sc` now, or gone.
  *
  * NOTE: A BARE `.ss` IS NOT A FILE NAME and is not looked for: the library
