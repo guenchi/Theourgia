@@ -27,7 +27,8 @@
         (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows
               reduce-empty reduce-apply! reduce-gates)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia log) writer-directory)
+        (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
+              view-revision view-epoch view-writer view-expect-seq session-written-events)
         (only (theourgia trace) trace-enable!))
 
 (define bad 0)
@@ -62,6 +63,7 @@
 ;; The names this change adds are looked up when called, so on a tree
 ;; without them the rows run and say what is missing.
 (define (reduce-clone r) ((eval 'reduce-clone (environment '(theourgia reduce))) r))
+(define (session-dry-clone s) ((eval 'session-dry-clone (environment '(theourgia log))) s))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/rule-check-" (number->string (get-process-id))))
 (system (string-append "rm -rf '" root "'; mkdir -p '" root "/home'"))
@@ -313,6 +315,33 @@
       (in-order (equal? (state-hash original) (state-hash copy)) (equal? (state->rows original) (state->rows copy))
                 (equal? (reduce-gates original) (reduce-gates copy)))
       '(#t #t #t))
+
+;; ---- the dry session stops where the real one stops -------------------------------------------
+;;
+;; A frame bound to a sequence the view does not expect: the dry session
+;; refuses it as the real one does, before anything is reserved; a fresh dry
+;; copy hands the right frame the sequence the view expects, and the real
+;; session has written nothing.
+(define dry-readings
+  (tolerant
+    (let ((s (log-begin S (lambda args 'applied))))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda ()
+          (let* ((v (session-view s))
+                 (frame-at (lambda (seq) (make-frame (view-revision v) (view-epoch v) (view-writer v) seq
+                                                     "author" '() '(put ((kind . section))))))
+                 (wrong (frame-at (+ 5 (view-expect-seq v))))
+                 (dry-answer (session-append! (session-dry-clone s) wrong))
+                 (real-answer (session-append! s wrong))
+                 (right (session-append! (session-dry-clone s) (frame-at (view-expect-seq v)))))
+            (list dry-answer real-answer
+                  (list (car right) (= (cadr right) (view-expect-seq v)) (caddr right))
+                  (session-written-events s))))
+        (lambda () (log-end! s))))))
+(want "D a dry session refuses a frame bound to an unexpected sequence as the real one does, and numbers the right one as the view expects"
+      dry-readings
+      '((refused-before-reserve expect-seq) (refused-before-reserve expect-seq) (committed #t #f) ()))
 
 ;; ---- one judgement, one caller, every route --------------------------------------------------
 ;;
