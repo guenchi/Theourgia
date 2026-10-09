@@ -218,8 +218,12 @@
         ((and (pair? raced) (eq? (car raced) 'all))
          (list 'all-written (= (cadr raced) n) (equal? got payload)))
         ((and (pair? raced) (eq? (car raced) 'raised) (eqv? (cadr raced) EAGAIN))
-         (list 'eagain #t (equal? got (let ((b (make-bytevector (bytevector-length got))))
-                                        (bytevector-copy! payload 0 b 0 (bytevector-length got)) b))))
+         ;; THE FAR END HOLDS EXACTLY WHAT WAS WRITTEN: as many bytes as the
+         ;; write reported, and they are the payload's first ones.
+         (list 'eagain
+               (and (number? (caddr raced)) (= (bytevector-length got) (caddr raced)))
+               (equal? got (let ((b (make-bytevector (bytevector-length got))))
+                             (bytevector-copy! payload 0 b 0 (bytevector-length got)) b))))
         (else (list 'NEITHER raced)))
       (if (and (pair? raced) (eq? (car raced) 'all))
           '(all-written #t #t)
