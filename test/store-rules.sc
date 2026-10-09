@@ -18,8 +18,8 @@
 ;; Two things a later build judges writes with, here only written, kept and
 ;; read back: a batch can create a block and link it in one request, and a
 ;; store can hold rules -- declared, checked when declared, kept as
-;; candidates of their names, listed by describe, check and conflicts. No
-;; write is judged by a rule in this build.
+;; candidates of their names, listed by describe, check and conflicts. A
+;; write judged by the rules is test/rule-check.sc's.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia reduce) block-id reduce-applied-cut state-hash
@@ -177,14 +177,13 @@
 (want "R a built-in is enabled by name"
       (assq 'cover (state-declared-rules (state)))
       '(cover ((builtin citation-coverage))))
-(want "R describe lists the rules in force, check lists each as skipped, a built-in as a write rule, verdict unchanged"
+(want "R describe lists the rules in force; check skips each write rule, a built-in as one, audits the state rule (which holds here), verdict unchanged"
       (in-order (map car (cdr (assq 'declared-rules (describe-of S))))
                 (cdr (assq 'rules (cdr (run 'check))))
                 (cadr (assq 'verdict (cdr (run 'check)))))
       (list '(cover reviews-carry sections-titled)
             '((rule-skipped (rule cover) (reason write-rule))
-              (rule-skipped (rule reviews-carry) (reason write-rule))
-              (rule-skipped (rule sections-titled) (reason not-evaluated)))
+              (rule-skipped (rule reviews-carry) (reason write-rule)))
             'ok))
 (tolerant (run 'rule "cover" "--retire"))
 (want "R a retired rule is no longer in force or listed"

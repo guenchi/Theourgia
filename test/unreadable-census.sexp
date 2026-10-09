@@ -1334,6 +1334,39 @@
    unrelated a
    "one datum read from a daemon's rendered text in memory (the channel's answers, the --results text, the MCP shell's catalogue and transport refusals, the thin client's stream terminal, the start-up reports): text outside the shape write prints for plain data, or that does not read as one datum, is no datum, and each caller answers as before; not a filesystem read"
    (e (#t (eof-object))))
+  ("rules.sc" (rule-refusal judge) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a rule asked of one block of a write: the query's own refusal makes the write's refusal rule-unevaluable, naming the rule and the block, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
+                     (list 'reason (refusal-answer e)))))))
+  ("rules.sc" (rule-refusal) 1 guard
+   ((refusal? e))
+   unrelated a
+   "the per-write facts read for a write's write rules: a query's refusal while reading them makes the write's refusal rule-unevaluable, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (return (list 'error 'refused 'rule-unevaluable
+                     (list 'rule (car (car write-rules))) (list 'block (car targets))
+                     (list 'reason (refusal-answer e)))))))
+  ("rules.sc" (state-audit) 1 guard
+   ((refusal? e))
+   unrelated a
+   "check's audit lists the store's blocks by kind: a query's refusal there leaves every state rule unevaluable, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e) #f)))
+  ("rules.sc" (state-audit) 2 guard
+   ((refusal? e))
+   unrelated a
+   "check's audit asks a state rule of one block: a query's refusal lists the rule as unevaluable at that block, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (list 'unevaluable
+             (list 'rule-unevaluable (list 'rule (car p)) (list 'block (car ids))
+                   (list 'reason (refusal-answer e)))))))
+  ("rules.sc" (state-audit) 3 guard
+   ((refusal? e))
+   unrelated a
+   "check's audit of typed edges: a query's refusal lists the audit as unevaluable, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e) (list (list 'relation-endpoint-unevaluable (list 'reason (refusal-answer e)))))))
   )
 
 (raw-accessors
