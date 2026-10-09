@@ -1333,7 +1333,7 @@
    (#t)
    unrelated a
    "a rule's goal text, read as one datum from memory: text that does not read is refused goal-unreadable"
-   (e (#t (quote unreadable))))
+   (e (#t unreadable)))
   ("query.sc" (rule-value-check goal-refusal) 1 guard
    ((refusal? e))
    unrelated a
