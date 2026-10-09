@@ -1334,6 +1334,11 @@
    unrelated a
    "one datum read from a daemon's rendered text in memory (the channel's answers, the --results text, the MCP shell's catalogue and transport refusals, the thin client's stream terminal, the start-up reports): text outside the shape write prints for plain data, or that does not read as one datum, is no datum, and each caller answers as before; not a filesystem read"
    (e (#t (eof-object))))
+  ("log.sc" (dry-append!) 1 guard
+   (#t)
+   unrelated a
+   "a dry session's append encodes the record as the real append does, writing nothing: a record the codec cannot encode is refused unframable, as the real append refuses it; not a filesystem read"
+   (e (#t #f)))
   ("rules.sc" (write-judgement ask) 1 guard
    ((refusal? e))
    unrelated a

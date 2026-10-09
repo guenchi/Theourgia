@@ -5653,10 +5653,12 @@
 
   ;; A DRY APPEND REFUSES WHAT THE REAL ONE REFUSES ON LOGICAL GROUNDS -- a
   ;; stopped writer, a pending reset, a frame bound to another view, epoch,
-  ;; writer or sequence -- and otherwise hands out the coordinates the real
-  ;; reservation would: the frame's expected sequence, which the binding
-  ;; check has just made the view's. It has no physical step, so nothing
-  ;; physical can refuse it, and no segment, so it names none.
+  ;; writer or sequence, a record the codec cannot encode (frame-and-write!,
+  ;; the same encoding with nothing written) -- and otherwise hands out the
+  ;; coordinates the real reservation would: the frame's expected sequence,
+  ;; which the binding check has just made the view's. It has no physical
+  ;; step, so nothing physical can refuse it, and no segment, so it names
+  ;; none.
   (define (dry-append! s frame)
     (when (session-poisoned s)
       (raise (make-log-error 'writer-stopped #f #f #f
@@ -5668,6 +5670,10 @@
            (cons 'refused-before-reserve (session-reset-pending s))
            (list 'refused-before-reserve 'reset-pending)))
       ((binding-refusal s frame) => (lambda (why) (list 'refused-before-reserve why)))
+      ((not (guard (e (#t #f))
+              (encode-record (frame-expect-seq frame) 0 (frame-actor frame) (frame-deps frame)
+                             (storable-encode (frame-payload frame)))))
+       (list 'refused-before-reserve 'unframable))
       (else
        (let ((seq (frame-expect-seq frame)))
          (append-transition! s seq)

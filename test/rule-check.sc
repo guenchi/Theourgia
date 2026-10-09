@@ -251,6 +251,10 @@
       (run 'link D1 "answers" D2)
       (list 'error 'bad-request 'relation-endpoint
             (list 'failures (list '(relation answers) (list 'edge D1 'answers D2) '(end to) '(expected ((kind decision)))))))
+(want "E a link to a deleted block is judged too: its end holds no kind, and the selector is not matched"
+      (run 'link D1 "answers" V)
+      (list 'error 'bad-request 'relation-endpoint
+            (list 'failures (list '(relation answers) (list 'edge D1 'answers V) '(end to) '(expected ((kind decision)))))))
 (define made-q (tolerant (batch (list 'insert 'root #f '((kind . decision) (title . "Q")))
                                 (list 'link D1 'answers '(from 0)))))
 (define Q (tolerant (car (item-ids made-q))))
@@ -319,6 +323,18 @@
       (in-order (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates copy)))) (and p (cdr p)))) '("aaa00000" "bbb00000"))
                 (equal? (state-hash original) hash-0) (equal? (state->rows original) rows-0) (reduce-gates original))
       '((plan-conflict plan-conflict) #t #t ()))
+;; The admission tables are the copy's own: with them shared, a claim reduced
+;; into the original after two claims of the same identity in the copy would
+;; meet them there and be gated.
+(define orig2 (tolerant (let ((r (reduce-empty))) (reduce-apply! r "a" 1 '() '(put ((kind . section)))) r)))
+(define copy2 (tolerant (reduce-clone orig2)))
+(tolerant (reduce-apply! copy2 "aaa00000" 1 '() '(put ((kind . section))) (claim-actor)))
+(tolerant (reduce-apply! copy2 "bbb00000" 1 '() '(put ((kind . section))) (claim-actor)))
+(tolerant (reduce-apply! orig2 "ccc00000" 1 '() '(put ((kind . section))) (claim-actor)))
+(want "K a copy's admission is its own: two claims in the copy conflict there; one in the original after them finds none"
+      (in-order (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates copy2)))) (and p (cdr p)))) '("aaa00000" "bbb00000"))
+                (reduce-gates orig2))
+      '((plan-conflict plan-conflict) ()))
 (tolerant (reduce-apply! original "a" 3 '() '(set "a.1" title "q")))
 (tolerant (reduce-apply! original "aaa00000" 1 '() '(put ((kind . section))) (claim-actor)))
 (tolerant (reduce-apply! original "bbb00000" 1 '() '(put ((kind . section))) (claim-actor)))

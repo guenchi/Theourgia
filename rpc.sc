@@ -1154,10 +1154,10 @@
       (list 'unlink unlink-usage
             "Remove a named relation between two blocks." #f 'daemon)
       (list 'relation relation-usage
-            "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for, stored and listed, not enforced. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
+            "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for: a write that adds an edge whose end its selector does not match, or retypes such an end, is refused relation-endpoint. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       (list 'rule rule-usage
-            "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. In this build a rule is stored, listed by check and conflicts, and judges no write. The same rule again answers (ok (unchanged)) and writes nothing."
+            "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. Every committed write after it is judged before anything is written; a write that fails is refused rule-violation, naming every failing pair. The same rule again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
       ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the

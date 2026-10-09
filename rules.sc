@@ -36,7 +36,8 @@
   (import (rnrs)
           (only (theourgia query) make-query-session session-rows session-spent session-budget-set!
                 refusal? refusal-answer query-budget-default)
-          (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds relation-kind))
+          (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds relation-kind
+                state-edges))
 
   ;; At most this many witness rows are listed for a failing must-not; the
   ;; count beside them is exact.
@@ -57,6 +58,14 @@
             (else (loop (cdr xs) (cons (car xs) out))))))
 
   (define (as-symbol r) (if (string? r) (string->symbol r) r))
+
+  ;; EVERY EDGE THE STATE HOLDS, as (from relation to), an end at a deleted
+  ;; block included: a link to a retired block is a write the store accepts,
+  ;; and its typing and its citing are judged like any other. (The query
+  ;; facts' `edge` holds only edges between live blocks.)
+  (define (held-edges r) (map (lambda (e) (list (car e) (cadr e) (caddr e))) (state-edges r)))
+  (define (held-edges-at r id)
+    (filter (lambda (e) (or (equal? (car e) id) (equal? (caddr e) id))) (held-edges r)))
 
   ;; IN ORDER, because every query is charged to one budget and the one that
   ;; exhausts it is named: R6RS's map leaves the order of its calls open.
@@ -149,8 +158,8 @@
                     (unique
                       (append-map-in-order
                              (lambda (id)
-                                    (let* ((now (edges-at (post-S) id 'edge))
-                                           (before (edges-at (pre-S) id 'edge))
+                                    (let* ((now (held-edges-at post id))
+                                           (before (held-edges-at pre id))
                                            (all? (changed? id)))
                                       (filter (lambda (e) (and (typed-of (cadr e)) (or all? (not (member e before)))))
                                               now)))
@@ -252,7 +261,7 @@
                                                       (list 'rule (car (car write-rules))) (list 'block (car targets))
                                                       (list 'reason (refusal-answer e))))))
                                (make-query-session pre '() (remaining) #f
-                                                   (write-facts post targets receipt post-S pre-S ask edges-at)))))
+                                                   (write-facts pre post targets receipt post-S pre-S ask edges-at)))))
                       (write-failures
                         (if write-session
                             (append-map-in-order
@@ -276,7 +285,7 @@
   ;; any is read as its kind, so a second name for an existing dependence
   ;; cites; unread, a cited block the receipt does not hold; receipt-carried,
   ;; when the write carried one. -> ((<relation> <arity> <tuple> ...) ...).
-  (define (write-facts post targets receipt post-S pre-S ask edges-at)
+  (define (write-facts pre post targets receipt post-S pre-S ask edges-at)
     (let* ((kinds (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'kind id '?k))))
                                        targets))
            (fields (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'field id '?f '?v))))
@@ -286,11 +295,11 @@
            (cited (unique
                     (append-map-in-order
                                 (lambda (id)
-                                  (let* ((now (ask (post-S) (list 'edge id '?r '?s)))
-                                         (before (ask (pre-S) (list 'edge id '?r '?s))))
-                                    (map (lambda (row) (list id (cadr row)))
-                                         (filter (lambda (row) (and (not (member row before))
-                                                                    (eq? (relation-kind post (as-symbol (car row))) 'depends-on)))
+                                  (let* ((now (filter (lambda (e) (equal? (car e) id)) (held-edges post)))
+                                         (before (filter (lambda (e) (equal? (car e) id)) (held-edges pre))))
+                                    (map (lambda (e) (list id (caddr e)))
+                                         (filter (lambda (e) (and (not (member e before))
+                                                                  (eq? (relation-kind post (as-symbol (cadr e))) 'depends-on)))
                                                  now))))
                                 targets)))
            (unread (unique (map (lambda (c) (list (cadr c)))
@@ -368,7 +377,7 @@
                             typed
                             (list-sort (lambda (a b) (string<? (edge-key a) (edge-key b)))
                                        (filter (lambda (e) (assq (as-symbol (cadr e)) typed))
-                                               (ask S '(edge ?a ?r ?b))))
+                                               (unique (held-edges state))))
                             S kind-of field-values))))))
         (values rule-rows endpoint-rows))))
 )

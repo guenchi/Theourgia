@@ -1638,7 +1638,10 @@ the id the write would have given it. Every route answers these refusals as they
 are, as it answers a premise's; a `batch` does not put them in its items, a
 `template apply` not in `template-apply-failed`, an `import-md` not in its
 `import` clause. A contested or retired rule
-judges nothing, and a rule judges no write made before it.
+judges nothing, and a rule judges no write made before it. A write is judged by
+the rules and typed relations in force BEFORE it: one that declares or changes
+a rule or a relation is judged by those already there, and the writes after it
+by what it declared.
 
 `--builtin citation-coverage` is the rule
 `(must-not (and (receipt-carried) (cited ?w ?s) (unread ?s)))` on every kind: a

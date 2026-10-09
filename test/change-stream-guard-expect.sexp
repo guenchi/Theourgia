@@ -6,7 +6,5 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; The rule verb joins the catalogue, and the verb list an unknown verb is
-;; answered with.
-((describe "describe lists the rule verb")
- (no-such-verb "the unknown-verb refusal's verb list names rule"))
+;; The relation and rule verbs' descriptions say what they now enforce.
+((describe "describe tells that typed relations hold their ends and that rules judge writes"))
