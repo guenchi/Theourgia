@@ -252,18 +252,18 @@
            (call/cc
              (lambda (return)
                ;; A TARGET'S KIND AFTER THE WRITE, read once; a refusal reading it
-               ;; names the first rule and the block.
+               ;; names the rule P being evaluated and the block.
                (define kinds (make-hashtable equal-hash equal?))
-               (define (judge-kind id)
+               (define (judge-kind id p)
                  (or (hashtable-ref kinds id #f)
                      (let ((k (guard (e ((refusal? e)
-                                         (return (list 'error 'refused 'rule-unevaluable (list 'rule (car (car plans)))
+                                         (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p))
                                                        (list 'block id) (list 'reason (refusal-answer e))))))
                                 (kind-of (post-S) id))))
                        (hashtable-set! kinds id k)
                        k)))
                (define (judge S p id)
-                 (let ((k (judge-kind id)))
+                 (let ((k (judge-kind id p)))
                    (guard (e ((refusal? e)
                               (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
                                             (list 'reason (refusal-answer e))))))
@@ -272,16 +272,19 @@
                         (append-map-in-order
                           (lambda (id) (filter-map-in-order (lambda (p) (judge (post-S) p id)) state-rules))
                           targets))
-                      ;; THE WRITE RULES' TARGETS: those whose kind after the write
-                      ;; some write rule lists, the first pair of such a target and
-                      ;; rule named if reading their facts fails. No such target, no
-                      ;; write session.
+                      ;; THE PAIRS A WRITE RULE APPLIES TO BY KIND. With none there is
+                      ;; no write session. With one, the per-write facts are read for
+                      ;; EVERY target of the write -- a goal joins across them (an
+                      ;; edge+ to a block, that block's kind+) -- and a refusal reading
+                      ;; them names the first such pair.
                       (write-pairs
-                        (append-map-in-order
-                          (lambda (id)
-                            (let ((k (judge-kind id)))
-                              (map (lambda (p) (cons id p)) (filter (lambda (p) (memq k (caddr p))) write-rules))))
-                          targets))
+                        (if (null? write-rules)
+                            '()
+                            (append-map-in-order
+                              (lambda (id)
+                                (let ((k (judge-kind id (car write-rules))))
+                                  (map (lambda (p) (cons id p)) (filter (lambda (p) (memq k (caddr p))) write-rules))))
+                              targets)))
                       (write-targets (unique (map car write-pairs)))
                       (write-session
                         (and (pair? write-pairs)
@@ -290,7 +293,7 @@
                                                       (list 'rule (car (cdr (car write-pairs)))) (list 'block (car (car write-pairs)))
                                                       (list 'reason (refusal-answer e))))))
                                (make-query-session pre '() (remaining) #f
-                                                   (write-facts pre post write-targets receipt post-S pre-S ask edges-at)))))
+                                                   (write-facts pre post targets receipt post-S pre-S ask edges-at)))))
                       (write-failures
                         (if write-session
                             (append-map-in-order

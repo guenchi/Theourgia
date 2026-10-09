@@ -1362,9 +1362,9 @@
   ("rules.sc" (rule-refusal judge-kind) 1 guard
    ((refusal? e))
    unrelated a
-   "a target's kind after the write, read once for every rule: a query's refusal makes the write's refusal rule-unevaluable, naming the first rule and the block, and only that refusal is caught; not a filesystem read"
+   "a target's kind after the write, read once for every rule: a query's refusal makes the write's refusal rule-unevaluable, naming the rule being evaluated and the block, and only that refusal is caught; not a filesystem read"
    (e ((refusal? e)
-       (return (list 'error 'refused 'rule-unevaluable (list 'rule (car (car plans)))
+       (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p))
                      (list 'block id) (list 'reason (refusal-answer e)))))))
   ("rules.sc" (rule-refusal judge) 1 guard
    ((refusal? e))

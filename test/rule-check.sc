@@ -150,6 +150,14 @@
       (make 'doc "after")
       would-be)
 
+;; Two targets fail one rule in one write: both pairs, by block.
+(define two-ids (tolerant (let ((n (cdr (assoc writer (reduce-applied-cut (state))))))
+                            (list-sort string<? (list (block-id writer (+ n 1)) (block-id writer (+ n 2)))))))
+(want "J every failing pair is listed, by block: two untitled docs in one batch"
+      (let ((a (batch (list 'insert 'root #f '((kind . doc))) (list 'insert 'root #f '((kind . doc))))))
+        (and (pair? a) (eq? (car a) 'error) (map (lambda (f) (cadr (cadr f))) (cdr (list-ref a 3)))))
+      two-ids)
+
 ;; ---- a must-not and its witness -------------------------------------------------------------
 
 (tolerant (run 'rule "no-cites" "--on" "doc" "--must-not" "(edge ?w cites ?x)"))
@@ -162,6 +170,20 @@
 (want "J a retired rule judges nothing"
       (car (run 'link D1 "cites" D2))
       'ok)
+
+;; A must-not with more rows than the witness holds: the count exact, ten rows listed.
+(define H (tolerant (make 'doc "H")))
+(define spokes (tolerant (item-ids (apply batch (map (lambda (i) (list 'insert 'root #f (list '(kind . doc) (cons 'title (format "S~a" i)))))
+                                                     '(1 2 3 4 5 6 7 8 9 10 11))))))
+(tolerant (apply batch (map (lambda (x) (list 'link H 'cites x)) spokes)))
+(tolerant (run 'rule "hub-few" "--on" "doc" "--where" "(field ?w \"hub\" \"yes\")" "--must-not" "(edge ?w cites ?x)"))
+(want "J a must-not's count is exact and its witness at most ten rows"
+      (let ((a (run 'set H "hub" "yes")))
+        (and (pair? a) (eq? (car a) 'error)
+             (let ((f (car (cdr (list-ref a 3)))))
+               (in-order (assq 'rows f) (length (cdr (assq 'witness f)))))))
+      '((rows 11) 10))
+(tolerant (run 'rule "hub-few" "--retire"))
 
 ;; ---- the selector -----------------------------------------------------------------------------
 
@@ -278,6 +300,18 @@
 (want "E an edge that predates its relation's typing is listed by check"
       (cdr (or (assq 'relation-endpoints (cdr (run 'check))) '(relation-endpoints)))
       (list (list 'relation-endpoint '(relation asks) (list 'edge D1 'asks D2) '(end from) '(expected ((kind decision))))))
+
+;; A store with a typed relation and no rule is rehearsed and judged too.
+(define S4 (string-append root "/s4"))
+(tolerant (rpc-dispatch S4 '(init) "author"))
+(define (make4 kind title)
+  (car (item-ids (rpc-dispatch S4 (list 'batch (format "~s" (list (list 'insert 'root #f (list (cons 'kind kind) (cons 'title title)))))) "author"))))
+(define F1 (tolerant (make4 'doc "F1")))
+(define F2 (tolerant (make4 'doc "F2")))
+(tolerant (rpc-dispatch S4 '(relation "answers" "--as" "nothing" "--to" "(kind decision)") "author"))
+(want "E a store whose only judge is a typed relation refuses a link its selector does not match"
+      (head (rpc-dispatch S4 (list 'link F1 "answers" F2) "author") 3)
+      '(error bad-request relation-endpoint))
 
 ;; ---- citation coverage and the order of a write's checks --------------------------------------
 
