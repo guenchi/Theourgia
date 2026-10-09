@@ -675,12 +675,18 @@
       (dt-stop! p)
       (list (car r) (cadr r)))))
 (define (dt-stream-lost? r) (contains? (out-of (car r)) "lost-stream"))
-(want "DT-stream a terminal holding a character is read (a written value the old shape check refused): no lost stream"
-      (dt-stream-lost? (dt-stream "(error transport-unknown (reason #\\a))"))
-      #f)
+;; READ AS A TERMINAL, NOT MERELY "NOT LOST": the acceptance printed, the terminal
+;; line printed, no lost stream, and the run ended failed (exit non-zero) -- an
+;; empty run from a failed launch or the alarm says none of these.
+(define (dt-read-as-terminal r line)
+  (let ((o (out-of (car r))))
+    (list (contains? o "(ok (subscribed))") (contains? o line) (contains? o "lost-stream") (zero? (rc-of (car r))))))
+(want "DT-stream a terminal holding a character is read as the terminal (a written value the old shape check refused)"
+      (dt-read-as-terminal (dt-stream "(error transport-unknown (reason #\\a))") "(error transport-unknown (reason #\\a))")
+      '(#t #t #f #f))
 (want "DT-stream and one holding a bytevector"
-      (dt-stream-lost? (dt-stream "(error transport-unknown (reason #vu8(1 2)))"))
-      #f)
+      (dt-read-as-terminal (dt-stream "(error transport-unknown (reason #vu8(1 2)))") "(error transport-unknown (reason #vu8(1 2)))")
+      '(#t #t #f #f))
 (want "DT-stream a terminal with a datum label is refused: no terminal, a lost stream"
       (dt-stream-lost? (dt-stream "#0=(error transport-unknown . #0#)"))
       #t)
@@ -731,15 +737,25 @@
 (want "DT-plain what write prints for plain data reads back as itself"
       (let ((vs (list 'a "x\"y" #\" #\| #\; #\a #\space #vu8(1 2) (vector 1 "two" #\3)
                       (string->symbol "a\"b") (string->symbol "a b") 1/3 -2.5 #t #f '()
-                      (list 'quote 'x) (list "nested" (list 1 2) (vector)))))
+                      (list 'quote 'x) (list "nested" (list 1 2) (vector))
+                      ;; symbols write escapes with \x..; (client.sc, wire-safe-spelling?)
+                      (string->symbol ".") (string->symbol "-x") (string->symbol "1")
+                      (string->symbol "+inf.0") (string->symbol "@"))))
         (filter (lambda (v) (not (equal? (plain-datum (format "~s" v)) v))) vs))
       '())
 ;; DT-collect: collect-into reads a caller's --results with plain-datum.
-(want "DT-collect collect-into refuses --results holding #e1e100000, quickly"
-      (let ((r (dt-timed (lambda () (server dt-bound (string-append "collect-into x.1 --results '(results #e1e100000)' --store "
-                                                                   store " --wire"))))))
-        (list (contains? (out-of (car r)) "results-malformed") (< (cadr r) 15000)))
-      '(#t #t))
+;; The same well-formed results twice, a field's value 1 and #e1e100000: only the
+;; reader can tell them apart, so only the second is results-malformed.
+(define (dt-results value)
+  (string-append "(results (to \"someone\") (letter \"x.1\") (blocks (block \"b1\" (parent letter) "
+                 "(fields (title \"t\" " value ")))))"))
+(want "DT-collect collect-into refuses --results holding #e1e100000 where the same results with 1 pass the check, quickly"
+      (let ((bad (dt-timed (lambda () (server dt-bound (string-append "collect-into x.1 --results '" (dt-results "#e1e100000")
+                                                                     "' --store " store " --wire")))))
+            (good (server dt-bound (string-append "collect-into x.1 --results '" (dt-results "1") "' --store " store " --wire"))))
+        (list (contains? (out-of (car bad)) "results-malformed") (contains? (out-of good) "results-malformed")
+              (< (cadr bad) 15000)))
+      '(#t #f #t))
 
 ;; DT-census: every reader of a daemon's text in the programs that talk to one.
 ;; The envelope readers read with readable-shape? and the reader; the rendered
