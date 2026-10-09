@@ -1631,12 +1631,17 @@ and writing nothing. No other write leaves a datum block holding a src either:
 `set <id> src <text>` on a datum block and `set <id> mode datum` on a block
 holding a src are refused the same way, and an `insert` whose fields carry
 `(mode . datum)` and a src is refused the same way without the block clause,
-since it has no id yet; a `batch` holding any
-of these, in any order, is refused whole before anything is written (`set <id>
-src` with no value still runs and takes away a src written before the rule). A
-block the batch itself inserts has no id until it is written, so a `set` of src,
-or of mode datum, on an id the store does not hold is refused whole when an
-earlier insert in the batch made a datum block, or one holding a src.
+since it has no id yet. A `batch` is refused whole, before anything is written,
+when it holds such an intent or a pair of intents that could leave a datum block
+holding a src, in any order: a src given to a block another intent makes datum,
+or mode datum on a block another intent gives a src. A block the batch inserts
+is addressed with `(from k)`; a bare id the store does not hold counts as datum
+when an insert of the batch carries mode datum, and as holding a src when one
+carries a src. The batch is read as a set, so it refuses more than running it
+would: taking a block's src away and then making it datum takes two requests,
+and a batch that would have stopped earlier on another refusal answers this one.
+(`set <id> src` with no value still runs and takes away a src written before
+the rule.)
 `restore` of a revoked draft on a datum block is refused the same way and
 writes no draft. The refusal points to `def`, the verb
 that writes a datum definition.

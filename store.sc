@@ -4788,65 +4788,59 @@
            ((mode) (and (eq? (cadddr i) 'datum) (not (datum-mode-block? state (cadr i)))
                         (assq 'src (block-fields state (cadr i))) #t))
            (else #f))))
-  ;; A BATCH IS REFUSED WHOLE, before its first record, when one of its
-  ;; intents would be refused so. The intents are read in order, keeping
-  ;; what each earlier one did to a block -- made it datum, gave it a src,
-  ;; took its src away -- since a batch that sets a block's mode and then
-  ;; its src meets the second against a state the preflight never sees.
-  ;; Where resolve stops the batch first -- mode-mismatch on a block whose
-  ;; mode is another, unknown-id with no insert before it -- the scan stops
-  ;; too: nothing after that intent runs.
+  ;; A BATCH IS REFUSED WHOLE, before its first record, when it holds a
+  ;; pair of intents that could leave a datum block holding a src, IN ANY
+  ;; ORDER: a src given to a block the store holds as datum or that an
+  ;; intent of the batch makes datum; mode datum on a block that holds a
+  ;; src or that an intent of the batch gives one; an insert carrying both.
+  ;;
+  ;; NEVER: NOT A REPLAY OF RESOLVE. Following the batch intent by intent
+  ;; meant answering, for each intent, every question resolve asks of it --
+  ;; where it stops, what it refuses first -- and each one left out was a
+  ;; batch half written. The rule reads the batch as a set instead, and
+  ;; refuses more than resolve would: a batch that takes a block's src away
+  ;; and then makes it datum, which two requests do; and one resolve would
+  ;; have stopped earlier with another refusal, which now answers this one.
   ;;
   ;; A BLOCK THE BATCH ITSELF MAKES has no id here: the batch's own way to
   ;; address it is `(from k)`, and a bare id it will get is no contract. So
-  ;; an id the store does not hold, after an insert in the batch, starts as
-  ;; datum if any earlier insert made a datum block and as holding a src if
-  ;; any gave one, and is followed from there: the cautious answer, which
-  ;; may refuse a batch resolve would have taken.
-  ;; -> the refusal, or #f. A malformed intent is passed over here and left
-  ;; for the validator that refuses it.
+  ;; an id the store does not hold is taken as datum when an insert of the
+  ;; batch carries mode datum, and as holding a src when one carries a src.
+  ;; -> the refusal for the first intent of such a pair, or #f. A malformed
+  ;; intent is passed over here and left for the validator that refuses it.
   (define (datum-src-refusal state intents)
-    (define no-id '(error bad-request draft-on-datum-unsupported (use def)))
-    (define (other-mode? id)
-      (let ((m (assq 'mode (block-fields state id)))) (and m (not (eq? (cdr m) 'datum)))))
-    ;; seen: (id datum? . src?) for each block an earlier intent touched.
-    (let loop ((is (if (list? intents) intents '())) (seen '()) (inserted #f) (new-datum #f) (new-src #f))
-      (define (datum-now? id known)
-        (let ((e (assoc id seen))) (cond (e (cadr e)) (known (datum-mode-block? state id)) (else new-datum))))
-      (define (src-now? id known)
-        (let ((e (assoc id seen))) (cond (e (cddr e)) (known (and (assq 'src (block-fields state id)) #t)) (else new-src))))
-      (define (note id datum? src?) (cons (cons id (cons datum? src?)) (remp (lambda (e) (equal? (car e) id)) seen)))
-      (define (next seen) (loop (cdr is) seen inserted new-datum new-src))
-      (if (null? is)
-          #f
-          (let* ((x (car is))
-                 (i (if (and (pair? x) (eq? (car x) 'expect) (pair? (cdr x)) (pair? (cddr x))) (caddr x) x))
-                 (fields (and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
-                              (list? (cadddr i)) (for-all pair? (cadddr i)) (cadddr i)))
-                 (id (and (pair? i) (eq? (car i) 'set) (pair? (cdr i)) (string? (cadr i)) (pair? (cddr i)) (cadr i)))
-                 (field (and id (caddr i)))
-                 (valued? (and id (pair? (cdddr i))))
-                 (known (and id (known? state id))))
-            (cond
-              (fields
-               (if (datum-with-src-fields? fields)
-                   no-id
-                   (loop (cdr is) seen #t
-                         (or new-datum (equal? (assq 'mode fields) '(mode . datum)))
-                         (or new-src (and (assq 'src fields) #t)))))
-              ;; resolve answers unknown-id here, and the batch stops.
-              ((and id (not known) (not inserted)) #f)
-              ((and id (eq? field 'src) valued?)
-               (if (datum-now? id known) (draft-on-datum-refusal id) (next (note id (datum-now? id known) #t))))
-              ((and id (eq? field 'src))
-               (next (note id (datum-now? id known) #f)))
-              ((and id (eq? field 'mode) valued? (eq? (cadddr i) 'datum))
-               (cond
-                 ;; resolve answers mode-mismatch here, and the batch stops.
-                 ((and known (other-mode? id)) #f)
-                 ((and (not (datum-now? id known)) (src-now? id known)) (draft-on-datum-refusal id))
-                 (else (next (note id #t (src-now? id known))))))
-              (else (next seen)))))))
+    (let* ((is (map (lambda (x) (if (and (pair? x) (eq? (car x) 'expect) (pair? (cdr x)) (pair? (cddr x))) (caddr x) x))
+                    (if (list? intents) intents '())))
+           (fields-of (lambda (i) (and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
+                                       (list? (cadddr i)) (for-all pair? (cadddr i)) (cadddr i))))
+           ;; (id . field) for a set carrying a value, or #f.
+           (set-of (lambda (i) (and (pair? i) (eq? (car i) 'set) (pair? (cdr i)) (string? (cadr i))
+                                    (pair? (cddr i)) (pair? (cdddr i)) (cons (cadr i) (caddr i)))))
+           (src-set? (lambda (i) (let ((x (set-of i))) (and x (eq? (cdr x) 'src) (car x)))))
+           (datum-set? (lambda (i) (let ((x (set-of i))) (and x (eq? (cdr x) 'mode) (eq? (cadddr i) 'datum) (car x)))))
+           (given-src (filter values (map src-set? is)))
+           (made-datum (filter values (map datum-set? is)))
+           (inserted-datum (exists (lambda (i) (let ((f (fields-of i))) (and f (equal? (assq 'mode f) '(mode . datum))))) is))
+           (inserted-src (exists (lambda (i) (let ((f (fields-of i))) (and f (assq 'src f) #t))) is)))
+      (let loop ((is is))
+        (if (null? is)
+            #f
+            (let* ((i (car is)) (f (fields-of i)) (src-id (src-set? i)) (datum-id (datum-set? i)))
+              (cond
+                ((and f (datum-with-src-fields? f))
+                 '(error bad-request draft-on-datum-unsupported (use def)))
+                ((and src-id
+                      (if (known? state src-id)
+                          (or (datum-mode-block? state src-id) (member src-id made-datum))
+                          (or inserted-datum (member src-id made-datum))))
+                 (draft-on-datum-refusal src-id))
+                ((and datum-id
+                      (if (known? state datum-id)
+                          (and (not (datum-mode-block? state datum-id))
+                               (or (assq 'src (block-fields state datum-id)) (member datum-id given-src)))
+                          (or inserted-src (member datum-id given-src))))
+                 (draft-on-datum-refusal datum-id))
+                (else (loop (cdr is)))))))))
   ;; The live datum blocks that carry a src, in the store's order.
   (define (datum-blocks-with-src state)
     (filter (lambda (id)
