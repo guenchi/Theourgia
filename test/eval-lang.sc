@@ -229,14 +229,16 @@
         (list (head-of a) (clause-of a 'resource) (head-of b))
         (list '(error eval-limit) '(resource output) 'ok)))
 ;; NEVER: WHAT A RUNNER'S OUTPUT LIMIT CARRIES IS AT MOST THE LIMIT IN BYTES,
-;; cut on a character boundary: 600 two-byte characters (1200 bytes) at a
-;; 1024 quota carry no more than 1024 bytes and say (truncated #t).
-(let* ((a (ask ON S (two-byte-chars 600 0) "--lang" "shell" "--output-bytes" "1024"))
+;; cut on a character boundary: 600 two-byte characters (1200 bytes) at an
+;; ODD quota, 1025, carry exactly the 512 whole characters that fit in 1024
+;; bytes -- a cut in the middle of a character would carry a broken one --
+;; and say (truncated #t).
+(let* ((a (ask ON S (two-byte-chars 600 0) "--lang" "shell" "--output-bytes" "1025"))
        (out (clause-of a 'stdout))
        (text (and out (pair? (cdr out)) (string? (cadr out)) (cadr out))))
-  (want "L3 output cut: a runner's carried stdout is at most the quota in UTF-8 bytes, and the answer says (truncated #t)"
+  (want "L3 output cut: a runner's carried stdout is the whole characters that fit in the quota's bytes, and the answer says (truncated #t)"
         (list (head-of a) (clause-of a 'resource)
-              (and text (<= (bytevector-length (string->utf8 text)) 1024))
+              (and text (string=? text (make-string 512 (integer->char #xE9))))
               (clause-of a 'truncated))
         (list '(error eval-limit) '(resource output) #t '(truncated #t))))
 (let* ((t0 (real-time))
