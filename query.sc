@@ -239,7 +239,7 @@
       (if (and (pair? g) (eq? (car g) 'and)) (map car (cdr g)) (list (car g))))
     (define (goal-refusal g)
       (or (guard (e ((refusal? e) (refusal-answer e)))
-            (query-goals g (append rule-library rule-only-heads))
+            (query-goals g (append rule-library rule-only-heads) '(?w))
             #f)
           (let ((x (find relation-external? (goal-relations g))))
             (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))))
@@ -760,7 +760,9 @@
   ;; ---- one query ------------------------------------------------------------------------------
 
   ;; The goals of a query, the variables it reports, checked as A3 says.
-  (define (query-goals goal rules)
+  ;; BOUND, when given, names variables bound before the first goal: a rule's
+  ;; goals are asked with ?w bound to the target.
+  (define (query-goals goal rules . bound)
     (unless (and (pair? goal) (list? goal) (symbol? (car goal)))
       (refuse 'error 'bad-request 'not-a-goal (list 'goal goal)))
     (let ((goals (if (eq? (car goal) 'and) (cdr goal) (list goal))))
@@ -779,7 +781,7 @@
           (let ((bad (misplaced-term g)))
             (when bad (refuse 'error 'bad-request 'not-a-term (list 'term (car bad))))))
         goals)
-      (let loop ((gs goals) (seen '()))
+      (let loop ((gs goals) (seen (if (pair? bound) (car bound) '())))
         (unless (null? gs)
           (let ((g (car gs)))
             (if (assq (car g) tests)

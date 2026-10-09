@@ -1590,7 +1590,10 @@ CONTESTED -- not evaluated, and listed by `conflicts` as `(rule-contested <name>
 (candidates ...))` -- until a writer who has seen both declares it again. A
 tracked request (`--req`, a tracked `batch`'s items and a plan's members) writes
 a rule as given, since its receipt counts each record, as it does a
-declaration. A rule's value may not hold a plan's marker `("#%new" <k>)`. A
+declaration. A rule's value may not hold a plan's marker `("#%new" <k>)`, and is
+plain data: a goal written with a datum label (`#0=`), which makes shared or
+cyclic structure, is refused. `?w` is bound to the target before `where` and
+the goal are asked, so a test may name it first. A
 replay, a rebuild and a snapshot keep the rules. `describe`, answered by the
 daemon, lists the rules in force as `(declared-rules (<name> <value>) ...)` when
 there is one, and `check` lists each as `(rules (rule-skipped (rule <name>) (reason write-rule|not-evaluated))

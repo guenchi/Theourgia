@@ -253,6 +253,11 @@
                 (list-head (refusal "--on" "doc" "--must" "(title ?w \"#%new\" 0)") 3))
       '(ok (error bad-request (reason rule-value-holds-marker))))
 (run 'rule "names-new" "--retire")
+(want "R ?w is bound before a rule's goals are asked: a test may name it first; another variable a test names first is still refused"
+      (in-order (car (run 'rule "test-on-w" "--on" "doc" "--where" "(= ?w \"x\")" "--must" "(title ?w ?t)"))
+                (list-head (refusal "--on" "doc" "--must" "(= ?z \"x\")") 3))
+      '(ok (error bad-request test-variable-unbound)))
+(run 'rule "test-on-w" "--retire")
 (define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
 (want "R a rule intent in a batch is written in its one form, and refused with the form in another"
       (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
