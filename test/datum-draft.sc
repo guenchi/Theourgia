@@ -266,11 +266,19 @@
       '(batch #t (0) #t))
 (define holder (begin (run s1 'insert "--title" "Holder" "--text" "held text")
                       (the-one (ids-where s1 (lambda (fs) (equal? (assq 'title fs) '(title . "Holder")))))))
-(want "B9 a src taken away and then the block made datum, in one batch, is taken: the scan follows the removal"
-      (in-order (string? (field-of s1 holder 'src))
-                (clause-of (run s1 'batch (string-append "((set \"" holder "\" src) (set \"" holder "\" mode datum))")) 'done)
+(want "B9 SETUP: the holder block holds a src"
+      (string? (field-of s1 holder 'src))
+      #t)
+;; THE RULE READS THE BATCH AS A SET, NOT IN ORDER: a src taken away and then
+;; the block made datum is refused whole too, and takes two requests.
+(want "B9 a src taken away and then the block made datum, in one batch, is refused whole: the rule reads the batch in any order"
+      (append (batch-refused-whole? (string-append "((set \"" holder "\" src) (set \"" holder "\" mode datum))") (refusal holder))
+              (list (string? (field-of s1 holder 'src))))
+      '(batch #t (0) #t #t))
+(want "B9 TWIN: as two requests it is taken -- the src taken away, then the block made datum"
+      (in-order (car (run s1 'set holder "src")) (clause-of (run s1 'batch (string-append "((set \"" holder "\" mode datum))")) 'done)
                 (field-of s1 holder 'mode) (field-of s1 holder 'src))
-      '(#t (2) datum #f))
+      '(ok (1) datum #f))
 (want "B10 an insert that makes a datum block, then a src set on an id the store does not hold, is refused whole: the new block's id is the write's"
       (batch-refused-whole? (string-append "((insert root #f ((kind . code) (mode . datum) (body . (define (y) 2))))"
                                            " (set \"nosuch.1\" src \"x\"))")
@@ -281,25 +289,25 @@
                                            " (set \"nosuch.2\" mode datum) (set \"nosuch.2\" src \"x\"))")
                             (refusal "nosuch.2"))
       '(batch #t (0) #t))
-;; WHERE RESOLVE STOPS THE BATCH, THE SCAN DOES NOT GUESS PAST IT: a text-mode
-;; block cannot be made datum (mode-mismatch), so the src after it never runs
-;; and is not a datum refusal.
+;; A TEXT-MODE CODE BLOCK HOLDING A SRC, made datum: resolve would refuse it
+;; (datum-src-set? comes before mode-mismatch), and the batch is refused whole,
+;; before the insert beside it is written.
 (define s5 (fresh-dir "s"))
 (define s5-src (fresh-dir "js"))
 (write-file! (string-append s5-src "/t.js") "function t() { return 1; }\n")
 (run s5 'init)
 (run s5 'import-code s5-src)
-(define text-block (the-one (ids-where s5 (lambda (fs) (equal? (assq 'mode fs) '(mode . text))))))
-(define text-batch
-  (run s5 'batch (string-append "((set \"" text-block "\" src) (set \"" text-block "\" mode datum) (set \"" text-block "\" src \"x\"))")))
-(want "B12 a src taken away, then mode datum on a text-mode block: resolve's mode-mismatch stops the batch after one intent, no datum refusal"
-      (in-order (string? text-block)
-                ;; The last answer the batch gives is the one that stopped it.
-                (and (pair? text-batch) (pair? (cdr text-batch)) (pair? (cadr text-batch))
-                     (let ((stop (car (last-pair (cadr text-batch)))))
-                       (and (list? stop) (>= (length stop) 2) (list-head stop 2))))
-                (clause-of text-batch 'done))
-      '(#t (error mode-mismatch) (1)))
+(define text-block
+  (the-one (ids-where s5 (lambda (fs) (and (equal? (assq 'kind fs) '(kind . code)) (equal? (assq 'mode fs) '(mode . text)))))))
+(want "B12 an insert, then mode datum on a text-mode code block holding a src, is refused whole: the insert is not written"
+      (if (string? text-block)
+          (let* ((before (pins s5))
+                 (answer (run s5 'batch (string-append "((insert root #f ((title . \"N\"))) (set \"" text-block "\" mode datum))")))
+                 (after (pins s5)))
+            (list (and (pair? answer) (pair? (cdr answer)) (equal? (cadr answer) (list (refusal text-block))))
+                  (clause-of answer 'done) (same-reading? before after)))
+          (list 'NO-TEXT-BLOCK text-block))
+      '(#t (0) #t))
 (want "B8 CONTROL: mode datum on the bare block alone is taken"
       (in-order (clause-of (run s1 'batch (string-append "((set \"" bare "\" mode datum))")) 'done) (field-of s1 bare 'mode))
       '((1) datum))
