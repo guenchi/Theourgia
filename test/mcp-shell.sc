@@ -2258,7 +2258,12 @@
                                    0 "core")))
        (listing (lambda (reply)
                   (answering reply)
-                  (let* ((t0 (wall-ms)) (out (talk (list hello ready tools-list-frame) dstore dsock)) (ms (- (wall-ms) t0)))
+                  ;; A HARD BOUND ON THE SHELL: a reader stuck on a reply would hold
+                  ;; this drain until EOF, and nothing else ends it.
+                  (let* ((t0 (wall-ms))
+                         (out (talk* (list hello ready tools-list-frame) dstore dsock
+                                     "perl -e 'alarm shift; exec @ARGV' 20 " ""))
+                         (ms (- (wall-ms) t0)))
                     (stop)
                     (list (cadr out) ms)))))
   (want "DT-mcp a catalogue holding a character is read: the tool is listed (the old shape check made it unavailable)"

@@ -21,7 +21,7 @@
 ;; Every row that could be satisfied by the client working something out
 ;; for itself has a twin that says it did not.
 
-(import (chezscheme))
+(import (chezscheme) (only (theourgia client) plain-datum))
 
 (define bad 0)
 (define rows 0)
@@ -719,6 +719,28 @@
         (list (contains? o "unreadable-answer") (contains? o "(error refused (reason #\\a))")))
       '(#f #t))
 
+;; DT-plain: the reader itself, on the texts a scanner of the reader's syntax got
+;; wrong. Each is refused before it is read; what `write` prints for plain data
+;; reads back as itself.
+(want "DT-plain the allocating prefix and every way around a scan that named it are refused"
+      (map (lambda (t) (plain-datum t))
+           (list "#e1e100000" "#E1e100000" "#d#e1e100000" "#x#e1" "#0=#e1e100000" "#|c|##e1e10"
+                 (string-append "; \"" (string #\newline) "#e1e100000") "(\\\" #e1e100000)"
+                 "#;(x) 1" "(answer \\\" . #0=((x 1) . #0#))" "(x #0=(y) #0#)" "#!eof"))
+      '(#f #f #f #f #f #f #f #f #f #f #f #f))
+(want "DT-plain what write prints for plain data reads back as itself"
+      (let ((vs (list 'a "x\"y" #\" #\| #\; #\a #\space #vu8(1 2) (vector 1 "two" #\3)
+                      (string->symbol "a\"b") (string->symbol "a b") 1/3 -2.5 #t #f '()
+                      (list 'quote 'x) (list "nested" (list 1 2) (vector)))))
+        (filter (lambda (v) (not (equal? (plain-datum (format "~s" v)) v))) vs))
+      '())
+;; DT-collect: collect-into reads a caller's --results with plain-datum.
+(want "DT-collect collect-into refuses --results holding #e1e100000, quickly"
+      (let ((r (dt-timed (lambda () (server dt-bound (string-append "collect-into x.1 --results '(results #e1e100000)' --store "
+                                                                   store " --wire"))))))
+        (list (contains? (out-of (car r)) "results-malformed") (< (cadr r) 15000)))
+      '(#t #t))
+
 ;; DT-census: every reader of a daemon's text in the programs that talk to one.
 ;; The envelope readers read with readable-shape? and the reader; the rendered
 ;; datum is read only by plain-datum's callers; no other reader exists. A new
@@ -745,22 +767,36 @@
           (unless (null? ls)
             (let* ((t (dt-trim (car ls))) (name (or (dt-define-name t) name)))
               (unless (and (> (string-length t) 0) (char=? (string-ref t 0) #\;))
-                (when (contains? t "(read ")
-                  (set! seen (cons (list f name 'read) seen)))
+                (let ((k (+ (dt-count t "(read ") (dt-count t "(read)"))))
+                  (when (> k 0) (set! seen (cons (list f name 'read k) seen))))
                 (when (and (contains? t "(plain-datum ") (not (dt-prefix? t "(define (plain-datum")))
-                  (set! seen (cons (list f name 'plain-datum) seen))))
+                  (set! seen (cons (list f name 'plain-datum (dt-count t "(plain-datum ")) seen))))
               (loop (cdr ls) name)))))
       files)
-    (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
-               (let dedup ((xs seen) (out '())) (if (null? xs) out (dedup (cdr xs) (if (member (car xs) out) out (cons (car xs) out))))))))
+    ;; COUNTED, NOT ONLY NAMED: a second read inside a procedure already listed
+    ;; changes its count, so it cannot hide behind the first.
+    (let total ((xs seen) (out '()))
+      (if (null? xs)
+          (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b))) out)
+          (let* ((x (car xs)) (key (list-head x 3)) (have (find (lambda (o) (equal? (list-head o 3) key)) out)))
+            (total (cdr xs)
+                   (if have
+                       (cons (append key (list (+ (cadddr have) (cadddr x)))) (remove have out))
+                       (cons x out))))))))
+(define (dt-count t needle)
+  (let ((n (string-length needle)))
+    (let loop ((i 0) (k 0))
+      (cond ((> (+ i n) (string-length t)) k)
+            ((string=? (substring t i (+ i n)) needle) (loop (+ i n) (+ k 1)))
+            (else (loop (+ i 1) k))))))
 (want "DT-census the readers of a daemon's text: the envelope's with the reader, the rendered datum's only through plain-datum"
       (dt-census '("client.sc" "channel.sc" "core.sc" "theourgia.sc" "mcp/server.sc" "stream-client.sc"))
       (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
-                 '(("channel.sc" "collect-into-verb" plain-datum) ("channel.sc" "envelope-answer" plain-datum)
-                   ("channel.sc" "envelope-answer" read) ("client.sc" "line-datum" read) ("client.sc" "plain-datum" read)
-                   ("core.sc" "forward-then-exit!" read) ("mcp/server.sc" "catalogue" plain-datum)
-                   ("mcp/server.sc" "refusal-datum" plain-datum) ("mcp/server.sc" "unpack" read)
-                   ("theourgia.sc" "read-envelope" read) ("theourgia.sc" "stream-terminal" plain-datum))))
+                 '(("channel.sc" "collect-into-verb" plain-datum 1) ("channel.sc" "envelope-answer" plain-datum 1)
+                   ("channel.sc" "envelope-answer" read 1) ("client.sc" "line-datum" plain-datum 1) ("client.sc" "plain-datum" read 2)
+                   ("core.sc" "forward-then-exit!" read 1) ("mcp/server.sc" "catalogue" plain-datum 1)
+                   ("mcp/server.sc" "refusal-datum" plain-datum 1) ("mcp/server.sc" "unpack" read 1)
+                   ("theourgia.sc" "read-envelope" read 1) ("theourgia.sc" "stream-terminal" plain-datum 1))))
 
 ;; ---- P-19 an exit status this process cannot leave with -------------------
 ;;

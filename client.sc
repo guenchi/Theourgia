@@ -661,7 +661,7 @@
   ;; - A line that does not parse is skipped, not fatal.
   ;; - The report is the LAST line whose datum carries `(attempt T)`; none
   ;;   gives #f.
-  ;; - Each line is peer text and is asked readable-shape? first.
+  ;; - Each line is peer text and is read with plain-datum.
   (define (select-report bytes offset token)
     (let* ((n (bytevector-length bytes))
            (start (cond
@@ -685,20 +685,16 @@
   ;; NO GUARD AROUND THE DECODE (F111; F100b M3a r1's reading): Chez's
   ;; utf8->string never raises on invalid bytes, it gives U+FFFD for a lone
   ;; continuation byte, an overlong form and a truncated sequence. Outside a
-  ;; string, readable-shape? refuses a line holding one; inside a string it is
+  ;; string, plain-datum's shape check refuses a line holding one; inside a string it is
   ;; an ordinary character and the line reads as it did before (M3b review
   ;; r1, F3). A guard with no case behind it is not kept.
   (define (line-datum bytes from to)
     (let ((text (let ((b (make-bytevector (- to from))))
                   (bytevector-copy! bytes from b 0 (- to from))
                   (utf8->string b))))
-      (and (readable-shape? text)
-           (guard (e (#t #f))
-             (let* ((port (open-string-input-port text))
-                    (d (read port)))
-               (and (not (eof-object? d))
-                    (eof-object? (read port))
-                    d))))))
+      ;; A REPORT IS THE DAEMON'S RENDERED TEXT (written with `write`), so it
+      ;; is read as every such text is: plain-datum, one datum, plain data.
+      (plain-datum text)))
 
   ;; THE SHAPE THE DAEMON WRITES, AND ONLY IT (M2b1 review r1, F2):
   ;; `(error <kind> <clause> ...)`, each clause a list headed by a symbol,
@@ -898,30 +894,28 @@
   ;; structure, which every later walk would follow without end, and the
   ;; reader can also make objects that are not data. Asked of the datum, not
   ;; of the text, so no scanner of the text has to know the reader's syntax.
-  ;; NEVER: THE ONE PREFIX THE READER ALLOCATES ON BEFORE ANYTHING CAN JUDGE
-  ;; IT. `#e1e100000` is ten characters that read builds into a
-  ;; hundred-thousand-digit exact integer before the tree check runs; the
-  ;; socket is a file any local process can write to. `write` never prints
-  ;; `#e` (an exact number prints as its digits), so `#e`/`#E` outside a
-  ;; string is refused before reading. The scan knows the three places a
-  ;; quote does not open a string -- inside a string, a character literal
-  ;; (`#\"`), and a symbol written with bars (`|a"b|`) -- so a quote cannot
-  ;; hide one; an `#e` it meets anywhere else, a comment included, refuses.
-  ;; ONLY WHERE A NUMBER CAN START: at a token's start, or after another
-  ;; prefix (`#d#e1e100000`); a symbol like `a#e` holds no number.
-  (define (exactness-prefix? text)
-    (define (delimiter? c)
-      ;; spelled out: this library does not import (rnrs lists)
-      (or (char-whitespace? c) (char=? c #\() (char=? c #\)) (char=? c #\[) (char=? c #\])
-          (char=? c #\") (char=? c #\;) (char=? c #\') (char=? c #\`) (char=? c #\,)))
-    (define (number-may-start? i)
-      (or (= i 0)
-          (delimiter? (string-ref text (- i 1)))
-          (and (>= i 2) (char=? (string-ref text (- i 2)) #\#))))
+  ;; NEVER: A WHITELIST, FOR THE REASON readable-shape?'s NOTE GIVES. A scan
+  ;; that named what to refuse -- `#e`, the one prefix the reader allocates on
+  ;; before anything can judge it (`#e1e100000`: ten characters, a
+  ;; hundred-thousand-digit integer) -- was a blacklist, and was short at once:
+  ;; a line comment holding a quote, a label in front (`#0=#e...`), a block
+  ;; comment in front (`#|c|##e...`) each walked past it. So what `write`
+  ;; prints for plain data is listed, and everything else is refused unread:
+  ;; whitespace, parentheses, the symbol and number alphabet (symbol-char?),
+  ;; the quote abbreviations, a string, a symbol written with bars, and after
+  ;; `#` only `t`, `f`, a character (`#\` and the character, whatever it is),
+  ;; a vector `#(` and a bytevector `#vu8(`. A label, a comment, `#e`, an
+  ;; escape outside a string or bars, a radix prefix: refused. Refusing what
+  ;; the reader would have read is safe; reading what this does not model is
+  ;; not. The socket is a file any local process can write to.
+  (define (plain-shape? text)
     (let ((n (string-length text)))
+      (define (at? i s)
+        (let ((k (string-length s)))
+          (and (<= (+ i k) n) (string=? (substring text i (+ i k)) s))))
       (let scan ((i 0) (mode 'plain))
         (if (>= i n)
-            #f
+            (eq? mode 'plain)
             (let ((c (string-ref text i)))
               (case mode
                 ((string) (cond ((char=? c #\\) (scan (+ i 2) 'string))
@@ -931,20 +925,22 @@
                              ((char=? c #\|) (scan (+ i 1) 'plain))
                              (else (scan (+ i 1) 'bar))))
                 (else
-                 (cond ((char=? c #\") (scan (+ i 1) 'string))
+                 (cond ((or (char-whitespace? c) (char=? c #\() (char=? c #\)) (symbol-char? c)
+                            (char=? c #\') (char=? c #\`) (char=? c #\,))
+                        (scan (+ i 1) 'plain))
+                       ((char=? c #\") (scan (+ i 1) 'string))
                        ((char=? c #\|) (scan (+ i 1) 'bar))
-                       ((and (char=? c #\#) (< (+ i 1) n))
-                        (let ((d (string-ref text (+ i 1))))
-                          (cond ((and (or (char=? d #\e) (char=? d #\E)) (number-may-start? i)) #t)
-                                ;; a character literal: its next character is
-                                ;; the character, whatever it is
-                                ((char=? d #\\) (scan (+ i 3) 'plain))
-                                (else (scan (+ i 1) 'plain)))))
-                       (else (scan (+ i 1) 'plain))))))))))
+                       ((char=? c #\#)
+                        (cond ((at? i "#vu8(") (scan (+ i 5) 'plain))
+                              ((at? i "#(") (scan (+ i 2) 'plain))
+                              ((at? i "#\\") (and (< (+ i 2) n) (scan (+ i 3) 'plain)))
+                              ((or (at? i "#t") (at? i "#f")) (scan (+ i 2) 'plain))
+                              (else #f)))
+                       (else #f)))))))))
 
   (define (plain-datum text)
     (let ((d (guard (e (#t (eof-object)))
-               (when (exactness-prefix? text) (raise 'exactness-prefix))
+               (unless (plain-shape? text) (raise 'not-plain-shape))
                (let ((p (open-string-input-port text)))
                  (let ((x (read p)))
                    (if (eof-object? (read p)) x (eof-object)))))))
