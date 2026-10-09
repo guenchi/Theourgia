@@ -60,10 +60,12 @@
     ((_ name got expected)
      (want-1 name (caught got)
              ;; AN EXPECTED VALUE THAT RAISES is a FAIL line too, under a tag
-             ;; no computed value can equal: guarded with `caught`, two rows
-             ;; raising the same message would read as agreeing.
-             (guard (e (#t (list 'EXPECTED-RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+             ;; no computed value can equal (a fresh gensym, which no row can
+             ;; spell): guarded with `caught`, two rows raising the same
+             ;; message would read as agreeing.
+             (guard (e (#t (list expected-raised (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
                expected)))))
+(define expected-raised (gensym "expected-raised"))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
@@ -122,12 +124,18 @@
   (and (string? a) (string? b) (> (string-length a) 0) (string=? a b)))
 ;; The writers' segments by CONTENT (a checksum over them in a fixed order,
 ;; so an equal-length change shows) and the store's file list. There is at
-;; least one segment, or the reading fails.
+;; least one segment, or the reading fails. NO PIPE: a pipeline's status is
+;; its last command's, so each step writes a file and the next runs only
+;; when it succeeded.
 (define (segments-cmd store)
-  (string-append "cd '" store "' && find . -name '*.sexp' -path '*writers*' | LC_ALL=C sort > '" root "/segments.list'"
-                 " && test -s '" root "/segments.list' && xargs cat < '" root "/segments.list' | cksum"))
+  (let ((t (lambda (n) (string-append "'" root "/" n "'"))))
+    (string-append "cd '" store "' && find . -name '*.sexp' -path '*writers*' > " (t "seg.found")
+                   " && LC_ALL=C sort " (t "seg.found") " > " (t "seg.list")
+                   " && test -s " (t "seg.list") " && xargs cat < " (t "seg.list") " > " (t "seg.bytes")
+                   " && cksum < " (t "seg.bytes"))))
 (define (pins store)
-  (shell-reading "pins" (string-append (segments-cmd store) " && cd '" store "' && find . | LC_ALL=C sort")))
+  (shell-reading "pins" (string-append (segments-cmd store) " && cd '" store "' && find . > '" root "/all.found'"
+                                       " && LC_ALL=C sort '" root "/all.found'")))
 
 ;; A store with a datum library defining h, and a text block beside it.
 (define (datum-store!)
@@ -250,6 +258,18 @@
 (want "B7 an insert carrying mode datum and a src is refused whole, with no block clause: it has no id yet"
       (batch-refused-whole? "((insert root #f ((kind . code) (mode . datum) (body . (define (x) 1)) (src . \"ignored\"))))"
                             '(error bad-request draft-on-datum-unsupported (use def)))
+      '(batch #t (0) #t))
+(define holder (begin (run s1 'insert "--title" "Holder" "--text" "held text")
+                      (the-one (ids-where s1 (lambda (fs) (equal? (assq 'title fs) '(title . "Holder")))))))
+(want "B9 a src taken away and then the block made datum, in one batch, is taken: the scan follows the removal"
+      (in-order (string? (field-of s1 holder 'src))
+                (clause-of (run s1 'batch (string-append "((set \"" holder "\" src) (set \"" holder "\" mode datum))")) 'done)
+                (field-of s1 holder 'mode) (field-of s1 holder 'src))
+      '(#t (2) datum #f))
+(want "B10 an insert that makes a datum block, then a src set on an id the store does not hold, is refused whole: the new block's id is the write's"
+      (batch-refused-whole? (string-append "((insert root #f ((kind . code) (mode . datum) (body . (define (y) 2))))"
+                                           " (set \"nosuch.1\" src \"x\"))")
+                            (refusal "nosuch.1"))
       '(batch #t (0) #t))
 (want "B8 CONTROL: mode datum on the bare block alone is taken"
       (in-order (clause-of (run s1 'batch (string-append "((set \"" bare "\" mode datum))")) 'done) (field-of s1 bare 'mode))
@@ -423,7 +443,8 @@
 ;; were started on this store, and what they open for themselves is not a
 ;; write. The log's bytes and the drafts' slots are.
 (define (drafts-of store id)
-  (shell-reading "drafts" (string-append "cd '" store "' && find . -path '*/working/*' -name '" id "' | LC_ALL=C sort")))
+  (shell-reading "drafts" (string-append "cd '" store "' && find . -path '*/working/*' -name '" id "' > '" root "/drafts.found'"
+                                         " && LC_ALL=C sort '" root "/drafts.found'")))
 (want "R2 and none of them wrote: the log's bytes are as they were, and no writer holds a draft of the block"
       (in-order (same-reading? (log-bytes s3) log-before-routes) (drafts-of s3 h3))
       '(#t ""))
