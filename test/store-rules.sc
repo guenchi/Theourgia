@@ -26,9 +26,9 @@
               state-edges state-read state-datum state->rows reduce-empty reduce-apply! reduce-gates)
         (only (theourgia request) intent-produced?)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia store) open-and-reduce with-store-write make-write-request writer-directory)
+        (only (theourgia store) open-and-reduce with-store-write make-write-request)
         (only (theourgia wire) encode-record storable-encode sexpr->string-extended)
-        (only (theourgia log) log-publish! segment-sha)
+        (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia query) fact-relations))
 
 (define bad 0)

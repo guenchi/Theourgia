@@ -18,7 +18,7 @@ client-socket 39 42 9318138faaeae87270f452a3629e8790
 client-start 23 33 eddfbd5cce5fdb2b046f57a8daaf5252
 closures 21 29 83110b6994cf0e165f3683fe3b276641
 commit-consumes 25 28 e0dcd80c1c849b3472c9c4b64586da33
-commit-premises 88 92 d2f7c422024a311f5ab513d02ee1df67
+commit-premises 88 92 f7c0fe4d14313b67019aa83aa14297dc
 commit-text-mode 15 19 2326fa4f4811fff3fd80a067b47487e7
 commitments-verb 64 68 a7e974639c1f925ca4e15f76920d82c4
 completion-shapes 6 10 8344879e00b7a7b07d19beb9165fa118
@@ -144,7 +144,7 @@ split-symbols 36 40 fd6bd5522c88facad0ef2dbf3085e804
 stage-gate - 5 0f911587319ae008949660d0f4a59639
 startup-ratio 59 68 29a4dc943db18a8c3b05744b697f7cc9
 store-in-git 43 48 23289cee594b60db266cdc7d1fc2770a
-store-rules 34 38 3fa8f1371aaf7f51d58625b5059dc855
+store-rules 34 38 b691799e2261a69ae8af41a4252f7bbe
 store1 51 66 60ea5b7c1022ea51ccbdb9acef1bc037
 structure-strings 4 8 5403b357b58a7630fe2ac5ba6383cf26
 subtree 15 19 f89a5a8b5fda310b52497f5543d14aa4
