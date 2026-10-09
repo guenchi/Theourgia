@@ -925,35 +925,54 @@
            ;; the stale empty frame. A timing of the gap was not a witness:
            ;; when the subscriber saw a frame is not when the daemon published
            ;; it, and the old rule counts stillness per revision.
-           ;; NOTE: TWO OBSERVERS ARE NOT ONE: the witness starts a few
-           ;; milliseconds apart from the row's wait, so on a schedule where
-           ;; action 2 publishes within one 50 ms poll of the old rule's
-           ;; acceptance (about 350 ms after the empty frame) the two could
-           ;; choose differently. Here the empty frame stands about one whole
-           ;; reload (action 2's reload is queued behind the redundant one),
-           ;; and the first row asserts a reload of over 600 ms: action 2
-           ;; publishes at least 200 ms past that window, four polls clear.
+           ;; NOTE: TWO OBSERVERS ARE NOT ONE: the witness starts a moment apart
+           ;; from the row's wait, so on a schedule where action 2 publishes
+           ;; near the old rule's acceptance (6 still polls of the published
+           ;; revision, about 300-350 ms) another start could choose otherwise.
+           ;; The margin is measured on the old rule's own channel: having
+           ;; chosen, the witness keeps polling the published revision until
+           ;; it moves, so the empty frame stood at least 300 ms plus that
+           ;; time; the first row asserts the extra is over 300 ms -- an old
+           ;; wait started up to about 200 ms apart chooses the same.
+           ;; NOTE: NOTHING RUNS BETWEEN ACTION 2'S READ AND THE WITNESS'S START:
+           ;; the bound is taken before action 2 writes (load-factor runs a
+           ;; shell and a timed loop).
            ;; NOTE: ONE BOUND, taken once, and no shorter than the witness's own
-           ;; worst case by its counts -- 201 polls of the revision and 121 of
-           ;; the frames, each of those up to sub-lines' 3 s, under 400 s -- so
-           ;; the section never stops the daemon under a live witness.
+           ;; worst case by its counts -- 201 polls of the revision, 122 of the
+           ;; frames each up to sub-lines' 3 s, and 2001 polls after its choice:
+           ;; under 490 s -- so the section never stops the daemon under a live
+           ;; witness.
+           (witness-bound (scaled 600000 (load-factor)))
            (_ (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
                      (nudge!)))
-           (witness-bound (scaled 400000 (load-factor)))
            (old-rule (let ((me self) (from (or r1 seen)))
-                       (spawn (lambda () (send me (list 'old-choice (stillness-settled d sub from)))))))
+                       (spawn (lambda ()
+                                (let* ((choice (stillness-settled d sub from))
+                                       (t-chose (real-time))
+                                       (rev (frame-rev choice))
+                                       ;; how much longer the chosen revision stayed the
+                                       ;; last published, polled as the old rule polls
+                                       (extra (and rev
+                                                   (let poll ((k 0))
+                                                     (let ((p (last-published d)))
+                                                       (cond ((and p (> p rev)) (- (real-time) t-chose))
+                                                             ((> k 2000) (list 'never-moved rev))
+                                                             (else (sleep-ms 50) (poll (+ k 1)))))))))
+                                  (send me (list 'old-choice choice extra)))))))
            (f2 (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1)))
-           (old-choice (receive (after witness-bound 'no-old-choice)
-                                (`(old-choice ,f) f)))
+           (witnessed (receive (after witness-bound '(no-old-choice #f))
+                               (`(old-choice ,f ,extra) (list f extra))))
+           (old-choice (car witnessed))
+           (extra (cadr witnessed))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
                             (frames-of (sub-lines sub)))))
-      (printf "the slow reload: a reload took ~s ms; the old rule chose rev ~s, the wait rev ~s~%"
-              reload-ms (frame-rev old-choice) r2)
+      (printf "the slow reload: a reload took ~s ms; the old rule chose rev ~s, which stayed published ~s ms more; the wait rev ~s~%"
+              reload-ms (frame-rev old-choice) extra r2)
       (when (eq? old-choice 'no-old-choice)
         (wait-gave-out! "the witness (the old rule)" witness-bound witness-bound 1 'no-old-choice))
-      (want "F10-2 SLOW: a reload takes over 600 ms, and on this race the old rule took a stale empty frame, which came between the two actions' frames"
-            (list (and (number? reload-ms) (> reload-ms 600) #t)
+      (want "F10-2 SLOW: on this race the old rule took a stale empty frame, which stood over 300 ms past its choice, between the two actions' frames"
+            (list (and (number? extra) (> extra 300) #t)
                   (item-set old-choice)
                   (and (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between) #t))
             (list #t '() #t))
