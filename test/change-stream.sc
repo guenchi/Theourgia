@@ -925,11 +925,21 @@
            ;; the stale empty frame. A timing of the gap was not a witness:
            ;; when the subscriber saw a frame is not when the daemon published
            ;; it, and the old rule counts stillness per revision.
-           ;; NOTE: ONE BOUND, taken once: the old rule's own loops end by
-           ;; count, so its process ends by itself; the receive waits that long.
+           ;; NOTE: TWO OBSERVERS ARE NOT ONE: the witness starts a few
+           ;; milliseconds apart from the row's wait, so on a schedule where
+           ;; action 2 publishes within one 50 ms poll of the old rule's
+           ;; acceptance (about 350 ms after the empty frame) the two could
+           ;; choose differently. Here the empty frame stands about one whole
+           ;; reload (action 2's reload is queued behind the redundant one),
+           ;; and the first row asserts a reload of over 600 ms: action 2
+           ;; publishes at least 200 ms past that window, four polls clear.
+           ;; NOTE: ONE BOUND, taken once, and no shorter than the witness's own
+           ;; worst case by its counts -- 201 polls of the revision and 121 of
+           ;; the frames, each of those up to sub-lines' 3 s, under 400 s -- so
+           ;; the section never stops the daemon under a live witness.
            (_ (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
                      (nudge!)))
-           (witness-bound (scaled 60000 (load-factor)))
+           (witness-bound (scaled 400000 (load-factor)))
            (old-rule (let ((me self) (from (or r1 seen)))
                        (spawn (lambda () (send me (list 'old-choice (stillness-settled d sub from)))))))
            (f2 (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1)))
@@ -942,10 +952,11 @@
               reload-ms (frame-rev old-choice) r2)
       (when (eq? old-choice 'no-old-choice)
         (wait-gave-out! "the witness (the old rule)" witness-bound witness-bound 1 'no-old-choice))
-      (want "F10-2 SLOW: on this race the old rule took a stale empty frame, which came between the two actions' frames"
-            (list (item-set old-choice)
+      (want "F10-2 SLOW: a reload takes over 600 ms, and on this race the old rule took a stale empty frame, which came between the two actions' frames"
+            (list (and (number? reload-ms) (> reload-ms 600) #t)
+                  (item-set old-choice)
                   (and (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between) #t))
-            (list '() #t))
+            (list #t '() #t))
       (want "F10-2 action 1's frame is its own: (added mirrorsa.1)"
             (item-set f1) (expected-set (list 'added "mirrorsa.1")))
       (want "F10-2 action 2's frame is its own, not the stale empty one before it: (added mirrorsb.1)"
