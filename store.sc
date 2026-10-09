@@ -4023,12 +4023,22 @@
   ;; itself have been created two intents ago, and `after` is how the
   ;; caller says so. Resolving only the parent put every new section at
   ;; the end of its parent's children whatever the file said.
+  ;;
+  ;; AND EITHER END OF AN EDGE, so a write can create a block and link it
+  ;; in one request: a rule about the new block can then see its edges.
+  ;;
+  ;; NEVER: ONE TABLE SAYS WHERE A REFERENCE MAY STAND, by intent kind and
+  ;; position (0 is the verb), and every reader of references reads it:
+  ;; the resolver below, the plan's declared intents (declared-intent), and
+  ;; the completion's binding of a plan's markers (completion.sc). A
+  ;; position known to one of them and not the others is a reference one
+  ;; route resolves and another hands on unbound.
+  (define intent-ref-positions
+    '((insert 1 2) (move 2 3) (link 1 3) (unlink 1 3)))
+
   (define (intent-refs intent)
-    (let ((i (unwrap intent)))
-      (case (car i)
-        ((insert) (list (cadr i) (caddr i)))
-        ((move) (list (caddr i) (cadddr i)))
-        (else '()))))
+    (let* ((i (unwrap intent)) (e (assq (car i) intent-ref-positions)))
+      (if e (map (lambda (k) (list-ref i k)) (cdr e)) '())))
 
   ;; THE WRAPPER SURVIVES THE REWRITE. This rewrites an intent's
   ;; references and used to hand back the bare intent, dropping any
@@ -4044,11 +4054,14 @@
   ;; because the caller writes its code as though it had it.
   (define (intent-with-refs intent parent after)
     (let* ((i (unwrap intent))
+           (e (assq (car i) intent-ref-positions))
            (rewritten
-             (case (car i)
-               ((insert) (list 'insert parent after (cadddr i)))
-               ((move) (list 'move (cadr i) parent after))
-               (else i))))
+             (if e
+                 (let loop ((l i) (k 0) (vs (list parent after)))
+                   (cond ((null? l) '())
+                         ((and (pair? vs) (memv k (cdr e))) (cons (car vs) (loop (cdr l) (+ k 1) (cdr vs))))
+                         (else (cons (car l) (loop (cdr l) (+ k 1) vs)))))
+                 i)))
       (if (and (pair? intent) (eq? (car intent) 'expect))
           (list 'expect (cadr intent) rewritten)
           rewritten)))
@@ -4146,11 +4159,12 @@
   ;; diagnostic, exactly as `(del 7)` had. The reason I gave for the
   ;; wide check was a reason I had not measured.
   ;;
-  ;; BACK-REFERENCES ARE RESOLVED IN TWO POSITIONS ONLY -- an insert's
-  ;; parent and predecessor, and a move's -- because those are the two
-  ;; `intent-refs` rewrites. A `(from n)` anywhere else is never
-  ;; substituted and reaches the reader as a list.
+  ;; BACK-REFERENCES ARE RESOLVED ONLY WHERE `intent-ref-positions` SAYS --
+  ;; an insert's parent and predecessor, a move's, and either end of a link
+  ;; or an unlink. A `(from n)` anywhere else is never substituted and
+  ;; reaches the reader as a list.
   (define (plain-id? x) (string? x))
+  (define (end-id? x) (or (string? x) (and (pair? x) (eq? (car x) 'from))))
   (define (parent-id? x)
     (or (string? x) (eq? x 'root) (and (pair? x) (eq? (car x) 'from))))
   (define (after-id? x)
@@ -4163,8 +4177,8 @@
           (cons 'move (list (cons 1 plain-id?) (cons 2 parent-id?) (cons 3 after-id?)))
           (cons 'set (list (cons 1 plain-id?)))
           (cons 'del (list (cons 1 plain-id?)))
-          (cons 'link (list (cons 1 plain-id?) (cons 3 plain-id?)))
-          (cons 'unlink (list (cons 1 plain-id?) (cons 3 plain-id?)))))
+          (cons 'link (list (cons 1 end-id?) (cons 3 end-id?)))
+          (cons 'unlink (list (cons 1 end-id?) (cons 3 end-id?)))))
 
   ;; THEY ANSWER WHICH POSITION, NOT WHETHER. A refusal has to be able to
   ;; say what it is about, and the only place that knows is the test that

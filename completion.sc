@@ -46,11 +46,12 @@
   (import (rnrs) (theourgia reduce)
           (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine)
           ;; the mode check a fresh commit asks, asked of a completion too
-          (only (theourgia store) datum-mode-block? draft-on-datum-refusal))
+          (only (theourgia store) datum-mode-block? draft-on-datum-refusal intent-ref-positions))
 
-  ;; A marker is a position, the parent or the sibling of an insert or a
-  ;; move, holding ("#%new" k): the block member k of the plan makes. The
-  ;; same list in a member's value is data.
+  ;; A marker is a reference position -- the parent or the sibling of an
+  ;; insert or a move, either end of a link or an unlink: the store's one
+  ;; table, intent-ref-positions -- holding ("#%new" k): the block member k
+  ;; of the plan makes. The same list in a member's value is data.
   (define (plan-marker? x)
     (and (pair? x) (equal? (car x) "#%new") (pair? (cdr x)) (null? (cddr x))))
 
@@ -66,38 +67,35 @@
     (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
   (define (declared-kind e)
     (let ((u (declared-intent e))) (and (pair? u) (symbol? (car u)) (car u))))
-  ;; Where an entry's references start: an insert's parent is its element
-  ;; 1, a move's its element 2; the sibling follows the parent.
-  (define (refs-start e)
-    (case (declared-kind e) ((insert) 1) ((move) 2) (else #f)))
-  ;; -> the references the entry has: its parent, then its sibling, each
-  ;; read on its own through the pairs that reach it, so an entry that
-  ;; ends after its parent has one and an entry that ends before it has
-  ;; none. A plan the reducer admits can declare an insert or a move
-  ;; shorter or longer than the four parts the store writes; a marker in
-  ;; any reference it has is still a marker, and is still checked.
+  ;; Where an entry's references stand: the store's table, by kind.
+  (define (ref-positions e)
+    (let ((x (assq (declared-kind e) intent-ref-positions))) (if x (cdr x) '())))
+  ;; -> the references the entry has, in the table's order, each read on
+  ;; its own through the pairs that reach it, so an entry that ends after
+  ;; its first reference has one and an entry that ends before it has
+  ;; none. A plan the reducer admits can declare an intent shorter or
+  ;; longer than the parts the store writes; a marker in any reference it
+  ;; has is still a marker, and is still checked.
   (define (declared-refs e)
-    (let ((k (refs-start e)))
-      (if (not k)
-          '()
-          (let take ((l (declared-intent e)) (i 0) (out '()))
-            (cond ((or (not (pair? l)) (= i (+ k 2))) (reverse out))
-                  ((>= i k) (take (cdr l) (+ i 1) (cons (car l) out)))
-                  (else (take (cdr l) (+ i 1) out)))))))
-  ;; L with its elements from K on replaced by VS, as many as VS has, the
-  ;; rest of its pairs and its tail as they were.
-  (define (with-elements l k vs)
+    (let ((ks (ref-positions e)))
+      (let take ((l (declared-intent e)) (i 0) (out '()))
+        (cond ((not (pair? l)) (reverse out))
+              ((memv i ks) (take (cdr l) (+ i 1) (cons (car l) out)))
+              (else (take (cdr l) (+ i 1) out))))))
+  ;; L with its elements at the positions KS replaced by VS in order, as
+  ;; many as VS has, the rest of its pairs and its tail as they were.
+  (define (with-elements l ks vs)
     (let loop ((l l) (i 0) (vs vs))
       (cond ((not (pair? l)) l)
-            ((and (>= i k) (pair? vs)) (cons (car vs) (loop (cdr l) (+ i 1) (cdr vs))))
+            ((and (memv i ks) (pair? vs)) (cons (car vs) (loop (cdr l) (+ i 1) (cdr vs))))
             (else (cons (car l) (loop (cdr l) (+ i 1) vs))))))
   ;; The entry with its references replaced in place by VS, one for each
   ;; reference declared-refs read: the rest of the entry, and its wrapper,
   ;; are kept as declared, and the run judges them as it judges any entry.
   (define (declared-with-refs e vs)
     (let* ((u (declared-intent e))
-           (r (with-elements u (refs-start e) vs)))
-      (if (eq? u e) r (with-elements e 2 (list r)))))
+           (r (with-elements u (ref-positions e) vs)))
+      (if (eq? u e) r (with-elements e '(2) (list r)))))
 
   ;; A member of this plan: a record whose actor names this plan event with
   ;; an integer index. A record that claims the request's identity without
