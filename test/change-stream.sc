@@ -862,12 +862,17 @@
     ;; NOTE: THE STORE GROWS UNTIL ONE RELOAD TAKES OVER 600 MS (twice that
     ;; 300 ms), doubling the bulk up to five times; the first row says what it
     ;; measured, so a green below cannot be one where the race never happened.
+    ;; NOTE: THE READS HERE ARE OF ONE BLOCK, not poke!'s outline: an outline
+    ;; of thousands of blocks takes seconds to answer, so a second outline
+    ;; came only after the first reload had published, and queued nothing
+    ;; (measured: the second read was routed two seconds after the first).
     (printf "~%== F10-2: a slow reload behind a stale empty frame ==~%")
     (let* ((d (start-daemon! "f2s" ""))
+           (nudge! (lambda () (ask d 'read "mirrorb1.1")))
            (timed-reload
              (lambda ()
                (let ((p0 (last-published d)) (t0 (real-time)))
-                 (poke! d)
+                 (nudge!)
                  (let wait ((k 0))
                    (let ((p (last-published d)))
                      (cond ((and p (or (not p0) (> p p0))) (- (real-time) t0))
@@ -881,12 +886,12 @@
            (sub (spawn-subscriber! d '("changes" "0")))
            (seen (current-of (acceptance-of (await-lines sub 1 (scaled 5000 (load-factor))))))
            (f1 (begin (mirror! d "mirrorsa" 1 '() '(put ((kind . section) (title . "first") (parent . root) (ord . 1))))
-                      (poke! d)
-                      (poke! d)
+                      (nudge!)
+                      (nudge!)
                       (frame-settled d sub seen (cons "mirrorsa" 1))))
            (r1 (frame-rev f1))
            (f2 (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
-                      (poke! d)
+                      (nudge!)
                       (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1))))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
