@@ -21,7 +21,7 @@
 ;; Every row that could be satisfied by the client working something out
 ;; for itself has a twin that says it did not.
 
-(import (chezscheme) (only (theourgia client) plain-datum))
+(import (chezscheme))
 
 (define bad 0)
 (define rows 0)
@@ -728,6 +728,10 @@
       (let ((o (out-of (car (dt-scope "(error refused (reason #\\a))")))))
         (list (contains? o "unreadable-answer") (contains? o "(error refused (reason #\\a))")))
       '(#f #t))
+
+;; plain-datum, LOOKED UP WHEN CALLED: a tree without it in (theourgia client)
+;; reads these rows red one by one, rather than failing to load this file.
+(define (plain-datum text) ((eval 'plain-datum (environment '(theourgia client))) text))
 
 ;; DT-plain: the reader itself, on the texts a scanner of the reader's syntax got
 ;; wrong. Each is refused before it is read; what `write` prints for plain data
