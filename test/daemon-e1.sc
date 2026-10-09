@@ -302,13 +302,19 @@
            (n (guard (e (#t #f)) (read (open-string-input-port t)))))
       (and (number? n) n))))
 (define cores (max 1 (or (shell-number "sysctl -n hw.ncpu || nproc") 1)))
+;; NOTE: THE FALLBACK IS INSIDE THE PIPE: `a | awk || b` runs b only when awk
+;; fails, and awk does not fail on empty input. sysctl prints "{ 1.2 3.4 5.6 }"
+;; (macOS, FreeBSD), /proc/loadavg "1.2 3.4 5.6 ..." (Linux).
 (define (load1)
-  (or (shell-number "sysctl -n vm.loadavg | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg") 0))
+  (or (shell-number "{ sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg; } | tr -d '{}' | awk '{print $1}'") 0))
+;; NOTE: THE STEP IS TENS OF MILLISECONDS, AND THE BASE IS A MEDIAN OF THREE:
+;; a step of a few milliseconds read a ratio of 4 on an idle machine, the
+;; clock's millisecond rounding being most of what it measured.
 (define (step-ms)
   (let ((t0 (real-time)))
-    (let loop ((i 0) (a 0)) (when (< i 3000000) (loop (+ i 1) (fxlogxor a i))))
+    (let loop ((i 0) (a 0)) (when (< i 20000000) (loop (+ i 1) (fxlogxor a i))))
     (max 1 (- (real-time) t0))))
-(define base-step (step-ms))
+(define base-step (let ((ms (list-sort < (list (step-ms) (step-ms) (step-ms))))) (cadr ms)))
 (define (load-factor)
   (min 8 (max 1 (+ 1 (/ (load1) cores)) (/ (step-ms) base-step))))
 ;; A base bound in ms, scaled by FACTOR, as the exact integer the waits take.
@@ -1406,7 +1412,7 @@
              (outside (commit-from-outside! (tagged-store d) "OUTSIDE-CANARY"
                                             (string-append pid-text "-extern")))
              (triggering (said-red "D-18 the triggering outline" (ask-tagged d "outline" ask-bound)))
-             (waited (let ((t0 (real-time)) (w (wait-for-publication d 2 (scaled 2000 factor))))
+             (waited (let* ((t0 (real-time)) (w (wait-for-publication d 2 (scaled 2000 factor))))
                        (unless (eq? w 'published)
                          (wait-gave-out! "D-18 the reload's publication" (- (real-time) t0) (scaled 2000 factor) factor
                                          (list w 'log-tail (log-tail d 6))))

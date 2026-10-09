@@ -111,13 +111,19 @@
            (n (guard (e (#t #f)) (read (open-string-input-port t)))))
       (and (number? n) n))))
 (define cores (max 1 (or (shell-number "sysctl -n hw.ncpu || nproc") 1)))
+;; NOTE: THE FALLBACK IS INSIDE THE PIPE: `a | awk || b` runs b only when awk
+;; fails, and awk does not fail on empty input. sysctl prints "{ 1.2 3.4 5.6 }"
+;; (macOS, FreeBSD), /proc/loadavg "1.2 3.4 5.6 ..." (Linux).
 (define (load1)
-  (or (shell-number "sysctl -n vm.loadavg | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg") 0))
+  (or (shell-number "{ sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg; } | tr -d '{}' | awk '{print $1}'") 0))
+;; NOTE: THE STEP IS TENS OF MILLISECONDS, AND THE BASE IS A MEDIAN OF THREE:
+;; a step of a few milliseconds read a ratio of 4 on an idle machine, the
+;; clock's millisecond rounding being most of what it measured.
 (define (step-ms)
   (let ((t0 (real-time)))
-    (let loop ((i 0) (a 0)) (when (< i 3000000) (loop (+ i 1) (fxlogxor a i))))
+    (let loop ((i 0) (a 0)) (when (< i 20000000) (loop (+ i 1) (fxlogxor a i))))
     (max 1 (- (real-time) t0))))
-(define base-step (step-ms))
+(define base-step (let ((ms (list-sort < (list (step-ms) (step-ms) (step-ms))))) (cadr ms)))
 (define (load-factor)
   (min 8 (max 1 (+ 1 (/ (load1) cores)) (/ (step-ms) base-step))))
 ;; A base bound in ms, scaled by FACTOR, as the exact integer the waits take.
@@ -890,14 +896,32 @@
                       (nudge!)
                       (frame-settled d sub seen (cons "mirrorsa" 1))))
            (r1 (frame-rev f1))
-           (f2 (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
-                      (nudge!)
-                      (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1))))
+           ;; THE WITNESS, TIMED: after action 2's read, when the stale empty
+           ;; frame and action 2's own frame first reach the subscriber. The
+           ;; old wait took the empty one exactly when it stood alone for
+           ;; over 300 ms, so that gap is what the first row asserts.
+           (gap (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
+                       (nudge!)
+                       (let ((t0 (real-time)) (bound (scaled 60000 (load-factor))))
+                         (let poll ((t-empty #f))
+                           (let* ((now (real-time))
+                                  (fs (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 (> r r1))))
+                                              (frames-of (sub-lines sub))))
+                                  (own (find (lambda (f) (covers? f (cons "mirrorsb" 1))) fs))
+                                  (empty (find (lambda (f) (and (not (covers? f (cons "mirrorsb" 1)))
+                                                                (equal? (clause 'items f) '())))
+                                               fs))
+                                  (t-empty (or t-empty (and empty now))))
+                             (cond (own (and t-empty (- now t-empty)))
+                                   ((> (- now t0) bound) (list 'never-own t-empty))
+                                   (else (sleep-ms 20) (poll t-empty))))))))
+           (f2 (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1)))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
                             (frames-of (sub-lines sub)))))
-      (want "F10-2 SLOW: a reload of this store takes over 600 ms, and a stale empty frame came between the two actions' frames"
-            (list (and (number? reload-ms) (> reload-ms 600) #t)
+      (printf "the slow reload: a reload took ~s ms; the stale empty frame stood ~s ms before action 2's~%" reload-ms gap)
+      (want "F10-2 SLOW: a stale empty frame came between the two actions' frames and stood alone for over 300 ms before action 2's"
+            (list (and (number? gap) (> gap 300) #t)
                   (and (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between) #t))
             (list #t #t))
       (want "F10-2 action 1's frame is its own: (added mirrorsa.1)"
