@@ -528,8 +528,12 @@
 ;; test's own, not a committed-write site. Those files are pinned by name
 ;; below and counted in the output; a product source the reader cannot read
 ;; is a failure, not a file with no calls.
+;; channel.sc's collect-into-write holds TWO calls, its two writes (the
+;; results, then their about links), so it has two entries.
 (define census
-  '((("code-project.sc" import-code) premises)
+  '((("channel.sc" collect-into-write) (exempt "collect-into's first write, the results under the letter: it takes no --premises; the plan is made from the state at the locked point, which is what makes a retry safe"))
+    (("channel.sc" collect-into-write) (exempt "collect-into's second write, the about links the logical edge set lacks: it takes no --premises; planned from the state at the locked point"))
+    (("code-project.sc" import-code) premises)
     (("datum-project.sc" execute) premises)
     (("project.sc" import-md-report) premises)
     (("rpc.sc" one-write) premises)
