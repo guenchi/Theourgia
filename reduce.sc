@@ -1665,14 +1665,15 @@
                        ;; with the deletion -- but a reader asking what
                        ;; the block says should not be told about a field
                        ;; that was removed.
-                       (filter
-                         (lambda (f) (not (eq? (cdr f) 'omit)))
-                         (map (lambda (f)
-                                (let ((cs (cdr f)))
-                                  (cons (car f)
-                                        (cond
-                                          ((and (= 1 (length cs)) (absent? (car (car cs))))
-                                           'omit)
+                       ;; NEVER: BY THE CANDIDATE, NOT BY A VALUE. The field was
+                       ;; mapped to the symbol `omit` and then dropped for being
+                       ;; `omit`, so a field SET to the symbol omit read as
+                       ;; absent. Absence is the reducer's own marker (absent?),
+                       ;; asked of the one candidate before anything is mapped.
+                       (map (lambda (f)
+                              (let ((cs (cdr f)))
+                                (cons (car f)
+                                      (cond
                                           ((= 1 (length cs)) (copy-datum (car (car cs))))
                                           (else
                                            (list 'conflict
@@ -1682,7 +1683,8 @@
                                                                          (car (cdr c))
                                                                          (cdr (cdr c))))
                                                                  cs))))))))
-                              (blk-fields b)))))
+                            (filter (lambda (f) (not (and (= 1 (length (cdr f))) (absent? (car (car (cdr f)))))))
+                                    (blk-fields b)))))
                  (cons 'position
                        (let ((cs (blk-position b)))
                          (if (= 1 (length cs))
