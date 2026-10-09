@@ -1473,6 +1473,9 @@
            ((link unlink) (equal? intent payload))
            ;; (relation <name> <value>) -> the same, verbatim
            ((relation) (equal? intent payload))
+           ;; (rule <name> <value>) -> the same, verbatim: the store writes
+           ;; a rule only in its one form (store.sc).
+           ((rule) (equal? intent payload))
            ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
            ((move)
             (and (eq? (car payload) (quote move))

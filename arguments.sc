@@ -132,6 +132,8 @@
         ((reach) '("--rel" "--depth"))
         ;; A relation's declaration: its kind, and the selectors of its ends.
         ((relation) '("--as" "--from" "--to"))
+        ;; A rule: the kinds it is on, its selector, its goal, or a built-in.
+        ((rule) '("--on" "--where" "--must" "--must-not" "--builtin"))
         ;; NOTE: ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
@@ -144,7 +146,7 @@
       ;; THE PREMISES A COMMITTED WRITE IS ACCEPTED ON: every verb that writes
       ;; a record takes them; a registered one declares them in its entry.
       (case verb
-        ((insert set move del link unlink relation tag batch commit import-code import-md def) '("--premises"))
+        ((insert set move del link unlink relation rule tag batch commit import-code import-md def) '("--premises"))
         (else '()))
       (extension-options-of verb car)))
 
@@ -166,7 +168,7 @@
   ;; wrote.
   ;; A scope's roots are a set too, one `--roots` per root.
   (define (repeatable-options verb)
-    (case verb ((commit) '("--working-version")) ((scope) '("--roots")) (else '())))
+    (case verb ((commit) '("--working-version")) ((scope) '("--roots")) ((rule) '("--on")) (else '())))
 
   (define (flag-options verb)
     (cons "--wire" (append (case verb
@@ -201,7 +203,7 @@
       ((export-code) '("--raw" "--datum" "--working"))
       ((export-md) '("--with-ids" "--working"))
       ((supply) '("--clear"))
-      ((relation) '("--retire"))
+      ((relation rule) '("--retire"))
       (else '()))
       (extension-options-of verb cadr))))
 

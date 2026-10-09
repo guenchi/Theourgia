@@ -17,7 +17,7 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also
+  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
@@ -2082,6 +2082,9 @@
         ;; A RELATION NAME TWO WRITERS DECLARED DIFFERENTLY, neither having
         ;; seen the other: its edges have no effect until one declares again.
         (state-relation-contested state)
+        ;; A RULE TWO WRITERS DECLARED DIFFERENTLY: not evaluated until one
+        ;; declares it again.
+        (state-rule-contested state)
         ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
         ;; alive text files, that an export would write to the same file.
         (state-duplicated-paths state)
@@ -2789,6 +2792,20 @@
                     (list 'kind-not-known (list 'kind (datum-spelling (car value)))
                           (list 'known declaration-kinds))))
              (else (list 'relation name value)))))
+        ;; A RULE NAMES NO BLOCK EITHER. Its value is checked by the query
+        ;; library's own reading of a goal (query.sc, rule-value-check),
+        ;; entered on use, so the verb and a batch's intent are judged by
+        ;; the same procedure. THE VALUE MUST BE IN ITS ONE FORM, the class
+        ;; included: the record is the intent, so a plan's member is the
+        ;; intent it declared (request.sc, intent-produced?), and a value in
+        ;; another order is refused with the form it would have.
+        ((rule)
+         (let ((v ((eval 'rule-value-check (environment '(theourgia query))) (caddr i))))
+           (cond
+             ((and (pair? v) (eq? (car v) 'error)) v)
+             ((not (equal? v (caddr i)))
+              (list 'error 'bad-request 'rule-not-in-its-form (list 'form v)))
+             (else (list 'rule (cadr i) v)))))
         ;; SPELLED, FOR THE SAME REASON AS THE OTHER ONE. An intent's verb
         ;; is whatever the caller wrote, so the refusal that names it must
         ;; not be the thing that carries it back.
@@ -4103,7 +4120,7 @@
   ;; `(set id field value)` -- and three is the shorter.
   (define intent-arity
     '((insert . 4) (set . 3) (del . 2) (move . 4)
-      (link . 4) (unlink . 4) (tag . 2) (relation . 3)))
+      (link . 4) (unlink . 4) (tag . 2) (relation . 3) (rule . 3)))
 
   ;; AND THE POSITIONS WHOSE TYPE IS FIXED. Arity alone still lets
   ;; `(set <id> ((title . "x")))` through -- the right length, the wrong
@@ -4117,7 +4134,7 @@
   ;; and those already have answers further in; duplicating that
   ;; judgement here would be a second place for it to live.
   (define intent-symbol-positions
-    '((set . (2)) (link . (2)) (unlink . (2)) (relation . (1))))
+    '((set . (2)) (link . (2)) (unlink . (2)) (relation . (1)) (rule . (1))))
 
   ;; THE PAYLOAD IS CHECKED WITH THE REDUCER'S OWN PREDICATE, not with a
   ;; second copy of its rules living here. `payload-reason` is exported by
@@ -4417,9 +4434,11 @@
                       ;; each writes the record its receipt counts on. The
                       ;; record of the same value is harmless: agreement is
                       ;; by value.
-                      ((and (eq? (car payload) 'relation) (not (request-actor? actor))
+                      ((and (memq (car payload) '(relation rule)) (not (request-actor? actor))
                             (equal? (caddr payload)
-                                    (let ((d (state-declaration state (cadr payload))))
+                                    (let ((d (if (eq? (car payload) 'rule)
+                                                 (state-rule state (cadr payload))
+                                                 (state-declaration state (cadr payload)))))
                                       (if (and d (eq? (car d) 'in-force)) (cadr d)
                                           (and (or (not d) (eq? (car d) 'retired)) 'retired)))))
                        '(ok (unchanged)))
@@ -4856,6 +4875,13 @@
            ;; one, and nothing that runs or exports the block reads it.
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
+           ;; THE RULES IN FORCE, each listed once: a write rule is never
+           ;; evaluated here (no write is in hand), and this build does not
+           ;; evaluate a state rule yet.
+           (rules (map (lambda (r)
+                         (list 'rule-skipped (list 'rule (car r))
+                               (list 'reason (if (equal? (assq 'class (cadr r)) '(class write)) 'write-rule 'not-evaluated))))
+                       (filter (lambda (r) (not (assq 'builtin (cadr r)))) (state-declared-rules state))))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4898,6 +4924,7 @@
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
+        (if (pair? rules) (list (cons 'rules rules)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.
