@@ -410,6 +410,28 @@
                  (wait-gave-out! "frame-settled" (- (real-time) t0) bound factor seen)
                  (list 'no-frame seen)))
               (else (sleep-ms 50) (look)))))))
+;; THE RULE THIS FIXTURE USED UNTIL IT WAITED FOR THE ACTION'S RECORD, KEPT
+;; ONLY AS THE WITNESS'S MODEL of the wait that gave way: the slow-reload
+;; section runs it beside frame-settled, on the same race, and asserts that it
+;; took the stale empty frame -- so a green there is a run on which the old
+;; wait failed, not one on which a timing proxy said it would have.
+;; NEVER: NO ROW WAITS WITH IT.
+(define (stillness-settled d sub after)
+  (let* ((target (let wait ((k 0) (last #f) (still 0))
+                   (let ((p (last-published d)))
+                     (cond ((and p (> p after) (equal? p last) (>= still 6)) p)
+                           ((> k 200) p)
+                           (else (sleep-ms 50) (wait (+ k 1) p (if (equal? p last) (+ still 1) 0))))))))
+    (let look ((k 0))
+      (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r target (> r after) (<= r target))))
+                         (frames-of (sub-lines sub))))
+             (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) fs)))
+        (cond ((and target (= (length fs) (- target after)))
+               (cond ((null? said) (car (reverse fs)))
+                     ((null? (cdr said)) (car said))
+                     (else (list 'several-frames-with-items (map frame-rev said)))))
+              ((> k 120) (list 'no-frame target (map frame-rev fs)))
+              (else (sleep-ms 50) (look (+ k 1))))))))
 ;; The record a request's answer says it wrote, (<writer> . <seq>).
 (define (mark-of answer)
   (let ((ev (and (pair? answer) (assq 'events (cdr answer)))))
@@ -896,45 +918,34 @@
                       (nudge!)
                       (frame-settled d sub seen (cons "mirrorsa" 1))))
            (r1 (frame-rev f1))
-           ;; THE WITNESS, TIMED BESIDE THE WAIT: after action 2's read, a
-           ;; process of its own notes when the stale empty frame and action
-           ;; 2's own frame first reach the subscriber, while the row waits
-           ;; for action 2's frame as it always does. The old wait took the
-           ;; empty one exactly when it stood alone for over 300 ms, so that
-           ;; gap is what the first row asserts.
-           ;; NEVER: NOT BEFORE THE WAIT. A witness that first waited for
-           ;; action 2's frame handed the wait both frames at once, and the
-           ;; old wait then chose right: the race was gone (measured: the
-           ;; mutant restoring the old wait survived).
+           ;; THE WITNESS IS THE OLD WAIT ITSELF, ON THIS RACE: after action
+           ;; 2's read, a process of its own runs the old rule
+           ;; (stillness-settled) while the row waits with frame-settled, both
+           ;; from the same revision. The first row asserts the old rule took
+           ;; the stale empty frame. A timing of the gap was not a witness:
+           ;; when the subscriber saw a frame is not when the daemon published
+           ;; it, and the old rule counts stillness per revision.
+           ;; NOTE: ONE BOUND, taken once: the old rule's own loops end by
+           ;; count, so its process ends by itself; the receive waits that long.
            (_ (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
                      (nudge!)))
-           (timer (let ((me self) (bound (scaled 60000 (load-factor))))
-                    (spawn
-                      (lambda ()
-                        (let ((t0 (real-time)))
-                          (let poll ((t-empty #f))
-                            (let* ((now (real-time))
-                                   (fs (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 (> r r1))))
-                                               (frames-of (sub-lines sub))))
-                                   (own (find (lambda (f) (covers? f (cons "mirrorsb" 1))) fs))
-                                   (empty (find (lambda (f) (and (not (covers? f (cons "mirrorsb" 1)))
-                                                                 (equal? (clause 'items f) '())))
-                                                fs))
-                                   (t-empty (or t-empty (and empty now))))
-                              (cond (own (send me (list 'gap (and t-empty (- now t-empty)))))
-                                    ((> (- now t0) bound) (send me (list 'gap (list 'never-own t-empty))))
-                                    (else (sleep-ms 20) (poll t-empty))))))))))
+           (witness-bound (scaled 60000 (load-factor)))
+           (old-rule (let ((me self) (from (or r1 seen)))
+                       (spawn (lambda () (send me (list 'old-choice (stillness-settled d sub from)))))))
            (f2 (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1)))
-           (gap (receive (after (scaled 60000 (load-factor)) 'no-gap-reading)
-                         (`(gap ,g) g)))
+           (old-choice (receive (after witness-bound 'no-old-choice)
+                                (`(old-choice ,f) f)))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
                             (frames-of (sub-lines sub)))))
-      (printf "the slow reload: a reload took ~s ms; the stale empty frame stood ~s ms before action 2's~%" reload-ms gap)
-      (want "F10-2 SLOW: a stale empty frame came between the two actions' frames and stood alone for over 300 ms before action 2's"
-            (list (and (number? gap) (> gap 300) #t)
+      (printf "the slow reload: a reload took ~s ms; the old rule chose rev ~s, the wait rev ~s~%"
+              reload-ms (frame-rev old-choice) r2)
+      (when (eq? old-choice 'no-old-choice)
+        (wait-gave-out! "the witness (the old rule)" witness-bound witness-bound 1 'no-old-choice))
+      (want "F10-2 SLOW: on this race the old rule took a stale empty frame, which came between the two actions' frames"
+            (list (item-set old-choice)
                   (and (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between) #t))
-            (list #t #t))
+            (list '() #t))
       (want "F10-2 action 1's frame is its own: (added mirrorsa.1)"
             (item-set f1) (expected-set (list 'added "mirrorsa.1")))
       (want "F10-2 action 2's frame is its own, not the stale empty one before it: (added mirrorsb.1)"
