@@ -2696,6 +2696,9 @@
               (list 'error 'deleted parent))
              ((nested-document? state parent fields)
               (list 'error 'doc-must-be-top-level (list 'parent parent)))
+             ;; A DATUM BLOCK BORN WITH A SRC (datum-src-refusal).
+             ((datum-with-src-fields? fields)
+              (list 'error 'bad-request 'draft-on-datum-unsupported '(block new) '(use def)))
              (else
               (let ((ord (ord-for state parent after)))
                 (if (and (pair? ord) (memq (car ord) '(error refused)))
@@ -2730,6 +2733,11 @@
                    (equal? (assq 'kind (block-fields state id)) '(kind . code))
                    (equal? (assq 'mode (block-fields state id)) '(mode . datum)))
               (list 'error 'derived-field (list 'field (caddr i))))
+             ;; A DATUM BLOCK GIVEN A SRC, from either side: a src on a
+             ;; datum block, or mode datum on a block holding a src
+             ;; (datum-src-refusal). Here, against the state this intent
+             ;; meets, every entrance is asked, whatever its spelling.
+             ((datum-src-set? state i) (draft-on-datum-refusal id))
              ((and (eq? (caddr i) 'mode) (assq 'mode (block-fields state id))
                    (not (equal? (cdr (assq 'mode (block-fields state id)))
                                 (and (pair? (cdddr i)) (cadddr i)))))
@@ -4804,24 +4812,57 @@
   (define (draft-on-datum-refusal id)
     (list (quote error) (quote bad-request) (quote draft-on-datum-unsupported)
           (list (quote block) id) (list (quote use) (quote def))))
-  ;; `set <id> src <text>` IS THE OTHER ROUTE TO A SRC, and a `batch` holding
-  ;; one: refused the same way before the first record, so a batch is
-  ;; refused whole. `set <id> src` with no value still runs, since it takes
-  ;; away a src written before the rule.
-  ;;
-  ;; The block a `set` of src with a value would give a src, when it is a
-  ;; datum block; #f otherwise. A malformed intent is #f here and is left
-  ;; for the validator that refuses it.
-  (define (datum-src-target state x)
-    (let ((i (if (and (list? x) (= 3 (length x)) (eq? (car x) 'expect)) (caddr x) x)))
-      (and (list? i) (= 4 (length i)) (eq? (car i) 'set) (eq? (caddr i) 'src)
-           (string? (cadr i)) (datum-mode-block? state (cadr i))
-           (cadr i))))
-  ;; The refusal for the first intent that would give a datum block a src,
-  ;; or #f.
+  ;; NEVER: NO WRITE LEAVES A DATUM BLOCK HOLDING A SRC. Besides a draft
+  ;; (write, commit, restore), three intents would: `set <id> src <text>` on
+  ;; a datum block, `set <id> mode datum` on a block holding a src, and an
+  ;; insert whose fields carry both. `resolve` refuses each, against the
+  ;; state the intent meets, so every entrance is asked whatever the
+  ;; intent's spelling (an `expect` wrapper, arguments past the value).
+  ;; `set <id> src` with no value still runs: it takes away a src written
+  ;; before the rule.
+  (define (datum-with-src-fields? fields)
+    (and (list? fields) (for-all pair? fields)
+         (equal? (assq 'mode fields) '(mode . datum))
+         (assq 'src fields)
+         #t))
+  ;; Read as `resolve` reads a set: id, field, and the value when present.
+  (define (datum-src-set? state i)
+    (and (pair? (cdr i)) (string? (cadr i)) (pair? (cddr i)) (pair? (cdddr i))
+         (known? state (cadr i))
+         (case (caddr i)
+           ((src) (datum-mode-block? state (cadr i)))
+           ((mode) (and (eq? (cadddr i) 'datum) (not (datum-mode-block? state (cadr i)))
+                        (assq 'src (block-fields state (cadr i))) #t))
+           (else #f))))
+  ;; A BATCH IS REFUSED WHOLE, before its first record, when one of its
+  ;; intents would be refused so: the intents are read in order, with what
+  ;; the earlier ones make datum or give a src, since a batch that sets a
+  ;; block's mode and then its src meets the second against a state the
+  ;; preflight never sees. -> the refusal, or #f. A malformed intent is
+  ;; passed over here and left for the validator that refuses it.
   (define (datum-src-refusal state intents)
-    (let ((hit (and (list? intents) (find (lambda (x) (datum-src-target state x)) intents))))
-      (and hit (draft-on-datum-refusal (datum-src-target state hit)))))
+    (let loop ((is (if (list? intents) intents '())) (datum '()) (with-src '()))
+      (if (null? is)
+          #f
+          (let* ((x (car is))
+                 (i (if (and (pair? x) (eq? (car x) 'expect) (pair? (cdr x)) (pair? (cddr x))) (caddr x) x))
+                 (set-of (and (pair? i) (eq? (car i) 'set) (pair? (cdr i)) (string? (cadr i))
+                              (pair? (cddr i)) (pair? (cdddr i)) (cadr i))))
+            (cond
+              ((and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
+                    (datum-with-src-fields? (cadddr i)))
+               (list 'error 'bad-request 'draft-on-datum-unsupported '(block new) '(use def)))
+              ((and set-of (eq? (caddr i) 'src))
+               (if (or (member set-of datum) (and (known? state set-of) (datum-mode-block? state set-of)))
+                   (draft-on-datum-refusal set-of)
+                   (loop (cdr is) datum (cons set-of with-src))))
+              ((and set-of (eq? (caddr i) 'mode) (eq? (cadddr i) 'datum))
+               (if (or (member set-of with-src)
+                       (and (known? state set-of) (not (datum-mode-block? state set-of))
+                            (assq 'src (block-fields state set-of))))
+                   (draft-on-datum-refusal set-of)
+                   (loop (cdr is) (cons set-of datum) with-src)))
+              (else (loop (cdr is) datum with-src)))))))
   ;; The live datum blocks that carry a src, in the store's order.
   (define (datum-blocks-with-src state)
     (filter (lambda (id)
