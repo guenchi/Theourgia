@@ -134,8 +134,11 @@ byte for byte. The daemon never runs user code, and the shell loads no core.
   same argv. A caller's own `--writer v` still wins. Its cwd is the shell's.
 * **The transport is not the caller's to name.** An argv that parses with
   an option `--store`, `--actor`, `--wire` or `--socket` answers
-  `(error bad-request transport-option-in-rpc)` as a result and runs
-  nothing, as the daemon's route does. Positional text that only spells one,
+  `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to
+  shell))`, naming the first one written, as a result and runs nothing -- the
+  same datum the daemon's route answers. Every tool's description says the
+  tool is bound to one store and actor, and the query tool's shows a goal
+  form, `(score ?b "<text>" ?s)`. Positional text that only spells one,
   and anything after `--`, is not refused. A NUL byte in an argument or in
   `stdin` answers `(error bad-request nul-in-argument)` and runs nothing.
 * **Its input is the call's.** The tool's `stdin` becomes its standard

@@ -2537,8 +2537,7 @@
         ((not entry)
          (list 'error 'unknown-verb (list 'spelling (datum-spelling verb))
                (cons 'verbs (rpc-verbs))))
-        ((exists (lambda (o) (argument-option options o)) transport-options)
-         '(error bad-request transport-option-in-rpc))
+        ((transport-option-refusal options) => (lambda (e) e))
         ;; NEVER: ONLY THE SHAPE THAT USED TO BE SILENT. A verb whose input is
         ;; simply absent answers its own usage line and always has; the one
         ;; that needed saying is an unfilled `-`, which was stored as the

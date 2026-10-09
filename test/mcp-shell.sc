@@ -2106,6 +2106,20 @@
                 (and (member "theourgia_serve" names) #t)
                 (let ((d (tool-description (cadr out) "theourgia_eval"))) (and (string? d) (contains? d "--lang"))))
           '(1 #f #f #t))
+    ;; THE DESCRIPTIONS SAY WHAT A MODEL WOULD OTHERWISE GUESS: every tool is
+    ;; bound to one store and actor (a model called a tool with --store and
+    ;; got a bare refusal), and the query tool shows a goal, not a word.
+    (want "X1 every tool's description says it is bound to one store and actor and names the four options"
+          (let ((ds (map (lambda (n) (tool-description (cadr out) n)) names)))
+            (list (> (length names) 10)
+                  (filter (lambda (n) (let ((d (tool-description (cadr out) n)))
+                                        (not (and (string? d)
+                                                  (contains? d "This tool is bound to one store and actor; --store, --actor, --socket and --wire are not accepted here.")))))
+                          names)))
+          '(#t ()))
+    (want "X1 the query tool's description shows a goal form: (score ?b \"<text>\" ?s)"
+          (let ((d (tool-description (cadr out) "theourgia_query"))) (and (string? d) (contains? d "(score ?b \"<text>\" ?s)")))
+          #t)
     (want "X1 initialize's instructions no longer say eval is only in the local CLI"
           (let ((t (field (car out) "result" "instructions")))
             (if (string? t) (contains? t "only in the local CLI") 'no-instructions))
@@ -2173,13 +2187,25 @@
        (passed (stub-talk d "" (list hello ready
                                      (eval-call '("(display \"--store y\")"))
                                      (eval-call '("--" "--store")))))
-       (daemon-route (talk (list hello ready (call-tool "theourgia_read" '("--store" "elsewhere" "x.1"))))))
-  (want "X4 --store, --actor, --wire and --socket each answer transport-option-in-rpc as a result, and no child ran"
+       (daemon-route (talk (list hello ready
+                                 (call-tool "theourgia_read" '("--store" "elsewhere" "x.1"))
+                                 (call-tool "theourgia_read" '("--actor" "someone" "x.1"))
+                                 (call-tool "theourgia_read" '("--wire" "x.1"))
+                                 (call-tool "theourgia_read" '("--socket" "elsewhere.sock" "x.1")))))
+       (named (lambda (o) (string-append "(error bad-request transport-option-in-rpc (option \"" o "\") (belongs-to shell))\n")))
+       (four '("--store" "--actor" "--wire" "--socket")))
+  ;; THE REFUSAL NAMES THE OPTION AND WHERE IT BELONGS, the same datum on both
+  ;; routes: a bare `transport-option-in-rpc` left a model to guess which
+  ;; argument to drop.
+  (want "X4 --store, --actor, --wire and --socket each answer the refusal naming that option as a result, and no child ran"
         (list (map (lambda (l) (list (is-error-of l) (text-of l))) (cdr refused)) lines-then)
-        (list (map (lambda (x) (list #f "(error bad-request transport-option-in-rpc)\n")) '(1 2 3 4)) 0))
-  (want "X4 the daemon route answers the same datum for --store (a control)"
-        (text-of (cadr daemon-route))
-        "(error bad-request transport-option-in-rpc)\n")
+        (list (map (lambda (o) (list #f (named o))) four) 0))
+  (want "X4 the daemon route answers each of the four with the same datum, byte for byte"
+        (map (lambda (l) (text-of l)) (cdr daemon-route))
+        (map named four))
+  (want "X4 the first transport option written is the one named"
+        (text-of (cadr (talk (list hello ready (call-tool "theourgia_read" '("--wire" "--store" "elsewhere" "x.1"))))))
+        (named "--wire"))
   (want "X4 a positional that only spells --store, and --store after --, reach the child as the caller wrote them"
         (map (lambda (l) (let ((dt (text-datum l)))
                            (and (pair? dt) (let ((a (assq 'argv (cdr dt)))) (and a (cadr a))))))

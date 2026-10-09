@@ -259,11 +259,23 @@
 ;; flag on each entry -- and not a list kept here. A list kept here would
 ;; be a third place that knows which tool descriptions carry the
 ;; protocol.
+;;
+;; NOTE: EVERY TOOL SAYS IT IS BOUND, and the query tool shows a goal. A model
+;; that called a tool with --store got `transport-option-in-rpc` and guessed
+;; its way out on the next call; one handed a bare word for `query` tries it
+;; first. The sentences are this shell's, not the catalogue's: the binding is
+;; the shell's, and `describe` answers as it did.
+(define bound-sentence
+  "This tool is bound to one store and actor; --store, --actor, --socket and --wire are not accepted here.")
+(define query-example
+  "A goal is a form, not a word: for example (score ?b \"<text>\" ?s).")
 (define (description-of entry protocol)
-  (let ((plain (or (entry-field entry 'description) "")))
+  (let* ((plain (or (entry-field entry 'description) ""))
+         (plain (if (eq? (car entry) 'query) (string-append plain " " query-example) plain))
+         (body (string-append plain " " bound-sentence)))
     (if (entry-field entry 'protocol)
-        (string-append protocol "\n" plain)
-        plain)))
+        (string-append protocol "\n" body)
+        body)))
 
 ;; ---- the JSON-RPC envelope ---------------------------------------------------
 
@@ -666,9 +678,8 @@
       ;; option NODE counts, so positional text that merely spells one, or
       ;; anything after `--`, is not refused. A parse ERROR is not this
       ;; shell's to answer: the child answers it, as the command line would.
-      ((and (not (parse-error? nodes))
-            (exists (lambda (o) (argument-option nodes o)) transport-options))
-       (list 'result-datum '(error bad-request transport-option-in-rpc)))
+      ((and (not (parse-error? nodes)) (transport-option-refusal nodes))
+       => (lambda (e) (list 'result-datum e)))
       (else
        (let ((core (beside-this-program "core.sc")))
          (if (not (eq? (entry-type core) 'regular))

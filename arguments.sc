@@ -46,7 +46,7 @@
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin argument-wants-stdin?
           argument-stdin-placeholder? working-id? parse-shell-arguments
-          transport-options set-extension-options!)
+          transport-options transport-option-refusal set-extension-options!)
   (import (rnrs base) (rnrs lists))
 
   ;; THE OPTIONS OF VERBS REGISTERED FROM OUTSIDE THE CORE, as
@@ -154,6 +154,18 @@
   ;; the dispatcher's check and the MCP shell's check on `eval` read this one
   ;; list, and the refusal is `transport-option-in-rpc` on both.
   (define transport-options '("--store" "--actor" "--wire" "--socket"))
+
+  ;; THE REFUSAL, ONE DATUM FOR BOTH ROUTES: the first transport option the
+  ;; caller wrote, as written, and where it belongs -- a bare
+  ;; `transport-option-in-rpc` left a caller (a model, through the MCP shell)
+  ;; to guess which argument to drop. NODES are parsed arguments in the
+  ;; caller's order. -> the refusal, or #f when none is named.
+  (define (transport-option-refusal nodes)
+    (let ((n (find (lambda (n) (and (pair? n) (memq (car n) '(option flag)) (pair? (cdr n))
+                                    (member (cadr n) transport-options)))
+                   nodes)))
+      (and n (list 'error 'bad-request 'transport-option-in-rpc
+                   (list 'option (cadr n)) '(belongs-to shell)))))
 
   ;; AN OPTION THAT MAY BE GIVEN MORE THAN ONCE.
   ;;

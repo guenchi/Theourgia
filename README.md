@@ -145,7 +145,7 @@ were somehow special to each one.
 is there. NOTE: It is a debugging path: it skips the daemon rather than
 doing something the daemon cannot.
 
-`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent; a request that reaches a server still naming one (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc)`.
+`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent; a request that reaches a server still naming one (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to shell))`, naming the first one written. Every MCP tool's description says the tool is bound to one store and actor.
 
 ## Writing for agents
 
