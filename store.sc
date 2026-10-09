@@ -4934,34 +4934,58 @@
                         (assq 'src (block-fields state (cadr i))) #t))
            (else #f))))
   ;; A BATCH IS REFUSED WHOLE, before its first record, when one of its
-  ;; intents would be refused so: the intents are read in order, with what
-  ;; the earlier ones make datum or give a src, since a batch that sets a
-  ;; block's mode and then its src meets the second against a state the
-  ;; preflight never sees. -> the refusal, or #f. A malformed intent is
-  ;; passed over here and left for the validator that refuses it.
+  ;; intents would be refused so. The intents are read in order, keeping
+  ;; what each earlier one did to a block -- made it datum, gave it a src,
+  ;; took its src away -- since a batch that sets a block's mode and then
+  ;; its src meets the second against a state the preflight never sees.
+  ;;
+  ;; A BLOCK THE BATCH ITSELF MAKES has no id here (a set reaches it by the
+  ;; id its insert will get, which only the write knows). So a set of src,
+  ;; or of mode datum, on an id the store does not hold is refused whole
+  ;; when an earlier insert in the batch made a datum block, or one holding
+  ;; a src: the cautious answer, refusing a batch resolve might have taken.
+  ;; -> the refusal, or #f. A malformed intent is passed over here and left
+  ;; for the validator that refuses it.
   (define (datum-src-refusal state intents)
-    (let loop ((is (if (list? intents) intents '())) (datum '()) (with-src '()))
+    (define no-id '(error bad-request draft-on-datum-unsupported (use def)))
+    ;; seen: (id datum? . src?) for each block an earlier intent touched.
+    (define (datum-now? seen id)
+      (let ((e (assoc id seen))) (if e (cadr e) (datum-mode-block? state id))))
+    (define (src-now? seen id)
+      (let ((e (assoc id seen))) (if e (cddr e) (and (assq 'src (block-fields state id)) #t))))
+    (define (note seen id datum? src?) (cons (cons id (cons datum? src?)) (remp (lambda (e) (equal? (car e) id)) seen)))
+    (let loop ((is (if (list? intents) intents '())) (seen '()) (new-datum #f) (new-src #f))
       (if (null? is)
           #f
           (let* ((x (car is))
                  (i (if (and (pair? x) (eq? (car x) 'expect) (pair? (cdr x)) (pair? (cddr x))) (caddr x) x))
-                 (set-of (and (pair? i) (eq? (car i) 'set) (pair? (cdr i)) (string? (cadr i))
-                              (pair? (cddr i)) (pair? (cdddr i)) (cadr i))))
+                 (fields (and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
+                              (list? (cadddr i)) (for-all pair? (cadddr i)) (cadddr i)))
+                 (id (and (pair? i) (eq? (car i) 'set) (pair? (cdr i)) (string? (cadr i)) (pair? (cddr i)) (cadr i)))
+                 (field (and id (caddr i)))
+                 (valued? (and id (pair? (cdddr i))))
+                 (known (and id (known? state id))))
             (cond
-              ((and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
-                    (datum-with-src-fields? (cadddr i)))
-               (list 'error 'bad-request 'draft-on-datum-unsupported '(use def)))
-              ((and set-of (eq? (caddr i) 'src))
-               (if (or (member set-of datum) (and (known? state set-of) (datum-mode-block? state set-of)))
-                   (draft-on-datum-refusal set-of)
-                   (loop (cdr is) datum (cons set-of with-src))))
-              ((and set-of (eq? (caddr i) 'mode) (eq? (cadddr i) 'datum))
-               (if (or (member set-of with-src)
-                       (and (known? state set-of) (not (datum-mode-block? state set-of))
-                            (assq 'src (block-fields state set-of))))
-                   (draft-on-datum-refusal set-of)
-                   (loop (cdr is) (cons set-of datum) with-src)))
-              (else (loop (cdr is) datum with-src)))))))
+              (fields
+               (cond ((datum-with-src-fields? fields) no-id)
+                     (else (loop (cdr is) seen
+                                 (or new-datum (equal? (assq 'mode fields) '(mode . datum)))
+                                 (or new-src (and (assq 'src fields) #t))))))
+              ((and id (eq? field 'src) valued?)
+               (cond ((and known (datum-now? seen id)) (draft-on-datum-refusal id))
+                     ((and (not known) new-datum) (draft-on-datum-refusal id))
+                     (known (loop (cdr is) (note seen id (datum-now? seen id) #t) new-datum new-src))
+                     (else (loop (cdr is) seen new-datum new-src))))
+              ((and id (eq? field 'src))
+               (if known
+                   (loop (cdr is) (note seen id (datum-now? seen id) #f) new-datum new-src)
+                   (loop (cdr is) seen new-datum new-src)))
+              ((and id (eq? field 'mode) valued? (eq? (cadddr i) 'datum))
+               (cond ((and known (not (datum-now? seen id)) (src-now? seen id)) (draft-on-datum-refusal id))
+                     ((and (not known) new-src) (draft-on-datum-refusal id))
+                     (known (loop (cdr is) (note seen id #t (src-now? seen id)) new-datum new-src))
+                     (else (loop (cdr is) seen new-datum new-src))))
+              (else (loop (cdr is) seen new-datum new-src)))))))
   ;; The live datum blocks that carry a src, in the store's order.
   (define (datum-blocks-with-src state)
     (filter (lambda (id)

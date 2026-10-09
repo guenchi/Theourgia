@@ -64,10 +64,12 @@
     ((_ name got expected)
      (want-1 name (caught got)
              ;; AN EXPECTED VALUE THAT RAISES is a FAIL line too, under a tag
-             ;; no computed value can equal: guarded with `caught`, two rows
-             ;; raising the same message would read as agreeing.
-             (guard (e (#t (list 'EXPECTED-RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+             ;; no computed value can equal (a fresh gensym, which no row can
+             ;; spell): guarded with `caught`, two rows raising the same
+             ;; message would read as agreeing.
+             (guard (e (#t (list expected-raised (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
                expected)))))
+(define expected-raised (gensym "expected-raised"))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
