@@ -37,9 +37,10 @@
   (syntax-rules ()
     ((_) '())
     ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
-;; A VALUE THE ROWS READ IS COMPUTED UNDER A GUARD: on a tree without this
-;; change a top-level definition that raises would stop the file before any
-;; row; under the guard it is (RAISED ...), and the rows that read it fail.
+;; EVERY TOP-LEVEL VALUE AND STEP IS COMPUTED UNDER A GUARD, but the paths
+;; and the closing lines: on a tree without this change, or with a store that
+;; answers wrongly, a top-level form that raises would stop the file before
+;; its rows; under the guard it is (RAISED ...), and the rows that read it fail.
 (define-syntax tolerant
   (syntax-rules ()
     ((_ e) (guard (x (#t (list 'RAISED (if (and (condition? x) (message-condition? x)) (condition-message x) x))))
@@ -91,10 +92,10 @@
 ;; it is handed one.
 (define (describe-of store) (cdr (rpc-dispatch store '(describe) "author" (open-and-reduce store))))
 
-(run 'init)
-(define Y (new-id (run 'insert "--title" "Y")))
+(tolerant (run 'init))
+(define Y (tolerant (new-id (run 'insert "--title" "Y"))))
 ;; The store's own writer is in the cut once it has written a record.
-(define writer (car (car (reduce-applied-cut (state)))))
+(define writer (tolerant (car (car (reduce-applied-cut (state))))))
 
 ;; A PLAN'S MEMBER DECLARED UNDER AN EXPECT WRAPPER is the record of the intent
 ;; inside it. The insert row is about the tree before this change too: it read
@@ -118,16 +119,16 @@
 
 ;; ---- back-references at a link's and an unlink's ends ------------------------------
 
-(define b1b (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "X")))
+(define b1b (tolerant (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "X")))
                                            (list 'link '(from 0) 'relates Y)
-                                           (list 'link Y 'relates '(from 0))))))
+                                           (list 'link Y 'relates '(from 0)))))))
 (define X (tolerant (car (item-ids b1b))))
 (want "B a batch creates a block and links it, from and to, through (from 0)"
       (in-order (car b1b) (edges X) (and (member (cons 'relates X) (edges Y)) #t))
       (list 'batch (list (cons 'relates Y)) #t))
-(define b2 (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "Z")))
+(define b2 (tolerant (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "Z")))
                                           (list 'link '(from 0) 'relates Y)
-                                          (list 'unlink '(from 0) 'relates Y)))))
+                                          (list 'unlink '(from 0) 'relates Y))))))
 (want "B a link then an unlink of the same new block in one batch leaves no edge"
       (in-order (car b2) (edges (car (item-ids b2))))
       '(batch ()))
@@ -144,10 +145,10 @@
 (define (cursor) (string-append writer ":" (number->string (cdr (assoc writer (reduce-applied-cut (state)))))))
 (define tracked (format "~s" (list '(insert root #f ((kind . section) (title . "T")))
                                    (list 'link '(from 0) 'relates Y))))
-(define c0 (cursor))
-(define t1 (run 'batch tracked "--req" "RULES-T1" "--cursor" c0))
-(define after-t1 (events))
-(define t2 (run 'batch tracked "--req" "RULES-T1" "--cursor" c0))
+(define c0 (tolerant (cursor)))
+(define t1 (tolerant (run 'batch tracked "--req" "RULES-T1" "--cursor" c0)))
+(define after-t1 (tolerant (events)))
+(define t2 (tolerant (run 'batch tracked "--req" "RULES-T1" "--cursor" c0)))
 (want "B a tracked batch with a link through (from 0): written once, and the same request again writes nothing"
       (in-order (car t1) (edges (car (item-ids t1))) (- (events) after-t1)
                 (conflict-items))
@@ -155,24 +156,24 @@
 
 ;; ---- the rule verb -------------------------------------------------------------------
 
-(define before-rule (events))
-(define r1 (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)"))
+(define before-rule (tolerant (events)))
+(define r1 (tolerant (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)")))
 (want "R a rule is written as one record, in its one form, a state rule"
       (in-order (car r1) (- (events) before-rule) (state-declared-rules (state)))
       (list 'ok 1 '((sections-titled ((class state) (on section) (must (title ?w ?t)))))))
-(define r2 (run 'rule "reviews-carry" "--on" "doc" "--on" "section" "--where" "(field+ ?w \"slot\" \"review\")" "--must" "(receipt-carried)"))
+(define r2 (tolerant (run 'rule "reviews-carry" "--on" "doc" "--on" "section" "--where" "(field+ ?w \"slot\" \"review\")" "--must" "(receipt-carried)")))
 (want "R a goal that names a fact only a rule check has makes a write rule; --on repeats; where comes before must"
       (in-order (car r2) (assq 'reviews-carry (state-declared-rules (state))))
       (list 'ok '(reviews-carry ((class write) (on doc section) (where (field+ ?w "slot" "review")) (must (receipt-carried))))))
-(define n-before (events))
+(define n-before (tolerant (events)))
 (want "R the same rule again answers unchanged and writes nothing"
       (in-order (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)") (- (events) n-before))
       '((ok (unchanged)) 0))
-(run 'rule "sections-titled" "--on" "section" "--must-not" "(title ?w \"forbidden\")")
+(tolerant (run 'rule "sections-titled" "--on" "section" "--must-not" "(title ?w \"forbidden\")"))
 (want "R another value replaces the one in force"
       (assq 'sections-titled (state-declared-rules (state)))
       '(sections-titled ((class state) (on section) (must-not (title ?w "forbidden")))))
-(run 'rule "cover" "--builtin" "citation-coverage")
+(tolerant (run 'rule "cover" "--builtin" "citation-coverage"))
 (want "R a built-in is enabled by name"
       (assq 'cover (state-declared-rules (state)))
       '(cover ((builtin citation-coverage))))
@@ -185,7 +186,7 @@
               (rule-skipped (rule reviews-carry) (reason write-rule))
               (rule-skipped (rule sections-titled) (reason not-evaluated)))
             'ok))
-(run 'rule "cover" "--retire")
+(tolerant (run 'rule "cover" "--retire"))
 (want "R a retired rule is no longer in force or listed"
       (in-order (map car (state-declared-rules (state)))
                 (map car (cdr (assq 'declared-rules (describe-of S)))))
@@ -207,9 +208,9 @@
            '("(kind+ ?w doc)" "(field+ ?w \"a\" \"b\")" "(edge+ ?w cites ?x)" "(edge-kind+ ?w cites doc)"
              "(cited ?w ?s)" "(unread ?s)" "(receipt-carried)" "(title ?w ?t)"))
       '(write write write write write write write state))
-(run 'rule "cls" "--retire")
-(define before-refusals (events))
-(define bytes-before-refusals (log-bytes S writer))
+(tolerant (run 'rule "cls" "--retire"))
+(define before-refusals (tolerant (events)))
+(define bytes-before-refusals (tolerant (log-bytes S writer)))
 (want "R a goal naming a relation that reads outside the log is refused, as a fact and through a rule"
       (map (lambda (g) (refusal "--on" "code" "--must" g))
            '("(score ?w \"x\" ?s)" "(uses-name ?w ?n)" "(def ?w ?l ?n)" "(def-for ?w ?n ?d)" "(ambiguous ?w ?n)"))
@@ -252,18 +253,18 @@
       (in-order (car (run 'rule "names-new" "--on" "doc" "--must" "(title ?w \"#%new\")"))
                 (list-head (refusal "--on" "doc" "--must" "(title ?w \"#%new\" 0)") 3))
       '(ok (error bad-request (reason rule-value-holds-marker))))
-(run 'rule "names-new" "--retire")
+(tolerant (run 'rule "names-new" "--retire"))
 (want "R ?w is bound before a rule's goals are asked: a test may name it first; another variable a test names first is still refused"
       (in-order (car (run 'rule "test-on-w" "--on" "doc" "--where" "(= ?w \"x\")" "--must" "(title ?w ?t)"))
                 (list-head (refusal "--on" "doc" "--must" "(= ?z \"x\")") 3))
       '(ok (error bad-request test-variable-unbound)))
-(run 'rule "test-on-w" "--retire")
+(tolerant (run 'rule "test-on-w" "--retire"))
 (define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
 (want "R a rule intent in a batch is written in its one form, and refused with the form in another"
       (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
                 (list-head (batch-first (list (list 'rule 'out-of-order '((must (title ?w ?t)) (on section))))) 3))
       '(ok (error bad-request rule-not-in-its-form)))
-(define bytes-before-long (log-bytes S writer))
+(define bytes-before-long (tolerant (log-bytes S writer)))
 (want "R a rule intent with a part past its value is refused, not written shortened, and the log is as long as before"
       (in-order (list-head (batch-first (list (list 'rule 'long '((class state) (on section) (must (title ?w ?t))) 'extra))) 3)
                 (- (log-bytes S writer) bytes-before-long))
@@ -273,18 +274,18 @@
 
 ;; A second writer's rule of the same name, concurrent with the local one:
 ;; its record depends on the local writer only up to before the local rule.
-(define before-local (cdr (assoc writer (reduce-applied-cut (state)))))
-(run 'rule "contested-one" "--on" "section" "--must" "(title ?w ?t)")
-(define forged
+(define before-local (tolerant (cdr (assoc writer (reduce-applied-cut (state))))))
+(tolerant (run 'rule "contested-one" "--on" "section" "--must" "(title ?w ?t)"))
+(define forged (tolerant
   (encode-record 1 1789000000001 "peer" (list (cons writer before-local))
-                 (storable-encode (list 'rule 'contested-one '((class state) (on doc) (must (title ?w ?t)))))))
-(log-publish! S "rulezzzz" 1 forged (segment-sha forged))
+                 (storable-encode (list 'rule 'contested-one '((class state) (on doc) (must (title ?w ?t))))))))
+(tolerant (log-publish! S "rulezzzz" 1 forged (segment-sha forged)))
 (want "C two writers' concurrent rules of one name: contested, not in force, listed by conflicts with both"
       (in-order (assq 'contested-one (state-declared-rules (state)))
                 (let ((c (find (lambda (x) (and (pair? x) (eq? (car x) 'rule-contested))) (conflict-items))))
                   (and c (list (cadr c) (length (cdr (caddr c)))))))
       '(#f (contested-one 2)))
-(run 'rule "contested-one" "--on" "decision" "--must" "(title ?w ?t)")
+(tolerant (run 'rule "contested-one" "--on" "decision" "--must" "(title ?w ?t)"))
 (want "C a writer who has seen both declares again, and the rule is in force"
       (in-order (assq 'contested-one (state-declared-rules (state)))
                 (find (lambda (x) (and (pair? x) (eq? (car x) 'rule-contested))) (conflict-items)))
@@ -337,11 +338,11 @@
           (symbols-in (cdr arm))))
 (define provider-arms (tolerant
   (append (case-arms (find-define query-forms 'build))
-          (filter (lambda (a) (and (pair? (car a)) (memq 'score (car a))))
-                  (case-arms (find-define query-forms 'fact-tuples))))))
+          (case-arms (find-define query-forms 'fact-tuples)))))
 (define read-outside (tolerant
   (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
-             (apply append (map (lambda (a) (if (and (pair? (car a)) (reads-outside? a)) (car a) '())) provider-arms)))))
+             (fold-left (lambda (acc x) (if (memq x acc) acc (cons x acc))) '()
+                        (apply append (map (lambda (a) (if (and (pair? (car a)) (reads-outside? a)) (car a) '())) provider-arms))))))
 (want "M the facts marked external are exactly those whose providers read outside the log"
       (in-order read-outside
                 (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
@@ -349,14 +350,14 @@
       '((def score uses-name) (def score uses-name)))
 (want "M CONTROL: every fact has a provider arm the census read, and the library's rules over them are external too"
       (in-order (filter (lambda (name) (not (exists (lambda (a) (and (pair? (car a)) (memq name (car a)))) provider-arms)))
-                        (map car (filter (lambda (f) (not (memq (car f) '(edge-kind moved-kind)))) fact-relations)))
+                        (map car fact-relations))
                 (map relation-external? '(def-for ambiguous scope-name depends title)))
       '(() (#t #t #f #f #f)))
 
 ;; ---- a store made from the project template holds no rule ---------------------------
 
 (define P (string-append root "/project"))
-(rpc-dispatch P '(init "--template" "project") "author")
+(tolerant (rpc-dispatch P '(init "--template" "project") "author"))
 (want "P a fresh project store has no rule record at all, retired or not, and describe and check list none"
       (in-order (length (filter (lambda (row) (eq? (car row) 'rule)) (state->rows (open-and-reduce P))))
                 (assq 'declared-rules (describe-of P))
@@ -398,9 +399,9 @@
 ;; still declared. A store of its own, so the plan left incomplete here
 ;; touches no other row.
 (define S3 (string-append root "/s3"))
-(rpc-dispatch S3 '(init) "author")
-(define Y3 (new-id (rpc-dispatch S3 '(insert "--title" "Y3") "author")))
-(define writer3 (car (car (reduce-applied-cut (open-and-reduce S3)))))
+(tolerant (rpc-dispatch S3 '(init) "author"))
+(define Y3 (tolerant (new-id (rpc-dispatch S3 '(insert "--title" "Y3") "author"))))
+(define writer3 (tolerant (car (car (reduce-applied-cut (open-and-reduce S3))))))
 (define planned
   (tolerant
     (with-store-write S3
