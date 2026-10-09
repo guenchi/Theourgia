@@ -636,7 +636,8 @@
                                (hashtable-copy (consumption-by-seen-plan c) #t)
                                (hashtable-copy (consumption-by-member c) #t))))
 
-  (define (reduce-rehearsal? r) (reduction-rehearsal? r))
+  ;; Whether R is a rehearsal's copy; #f for anything that is not a reduction.
+  (define (reduce-rehearsal? r) (and (reduction? r) (reduction-rehearsal? r)))
 
   ;; THE RECORDS ONE WRITER ADDED FROM SEQ FROM UP TO SEQ TO (exclusive), in
   ;; sequence order: ((<seq> . <payload>) ...), applied or gated, as the

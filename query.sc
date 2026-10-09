@@ -53,7 +53,7 @@
   (export query-verb fact-relations rule-library rule-relations check-rules
           rule-only-facts relation-external? rule-value-check builtin-rules
           make-query-session session-query session-answer session-expansions session-spent session-passes query-relations-items
-          session-budget-set! refusal? refusal-answer
+          session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
           query-budget-default)
   (import (rnrs) (rnrs mutable-pairs)
@@ -890,6 +890,14 @@
                          (loop (cdr l) (cons (bytevector->u8-list (car (car l)))
                                              (if (null? acc) acc (cons '(10) acc))))))))
       (values (map cdr unique) (bytevector->hex (sha256 (u8-list->bytevector joined))))))
+
+  ;; -> the rows of GOAL as an answer would hold them -- sorted, unique, and
+  ;; each one renderable, a row that is not raising the query's refusal
+  ;; (unrenderable) -- for a caller that counts or lists rows itself.
+  (define (session-rows S goal)
+    (let-values (((rows vars) (session-query S goal)))
+      (let-values (((sorted digest) (canonical rows vars (query-goals goal (session-rules S) '() (session-write-facts S)))))
+        sorted)))
 
   ;; -> (ok <rows sorted> <vars> <digest>), or the refusal's answer.
   (define (session-answer S goal)

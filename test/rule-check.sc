@@ -24,7 +24,7 @@
 ;; the copy of a reduction sharing nothing it could change.
 
 (import (chezscheme) (theourgia rpc)
-        (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows
+        (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read
               reduce-empty reduce-apply! reduce-gates)
         (only (theourgia store) open-and-reduce)
         (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
@@ -183,6 +183,8 @@
 (tolerant (run 'rule "locked-no-in" "--retire"))
 (tolerant (run 'rule "locked-no-out" "--retire"))
 (tolerant (run 'rule "keep-victim" "--on" "doc" "--where" "(title ?w \"victim\")" "--must" "(field ?w \"kept\" \"yes\")"))
+;; A SANITY ROW, not a discriminating one: a deleted block holds no facts, so
+;; no rule applies to it whether or not it is a target.
 (want "J a block the write deletes is no target: a rule it would fail does not refuse its deletion"
       (car (run 'del V))
       'ok)
@@ -208,11 +210,13 @@
                       3)
                 (- (events) prefix-events))
       '((error refused rule-violation) 0))
-(want "J one whose prefix holds writes the prefix and answers as it did: the first item ok, the second refused, done 1"
+(define p1-events (tolerant (events)))
+(want "J one whose prefix holds writes the prefix and answers as it did: the first item ok, the second refused, done 1; one record, the block there"
       (let ((a (batch (list 'insert 'root #f '((kind . doc) (title . "P1")))
                       (list 'expect stale (list 'set D1 'title "z")))))
-        (in-order (car a) (car (car (cadr a))) (car (cadr (cadr a))) (caddr a)))
-      '(batch ok error (done 1)))
+        (in-order (car a) (car (car (cadr a))) (car (cadr (cadr a))) (caddr a) (- (events) p1-events)
+                  (let ((id (new-id (car (cadr a))))) (and id (cdr (assq 'title (cdr (assq 'fields (state-read (state) id)))))))))
+      '(batch ok error (done 1) 1 "P1"))
 
 ;; ---- a commit's plan -------------------------------------------------------------------------
 
@@ -277,6 +281,12 @@
                 (car (run 'link C1 "depends-on" C2)))
       '(ok ok ok))
 (tolerant (run 'unlink C1 "depends-on" C2))
+(tolerant (run 'relation "leans-on" "--as" "depends-on"))
+(want "C an edge under a second name of kind depends-on cites, though the block already depends on the same one"
+      (in-order (car (run 'link C1 "depends-on" C2 "--premises" (premise-of C2)))
+                (head (run 'link C1 "leans-on" C2 "--premises" (premise-of C1)) 3))
+      '(ok (error refused rule-violation)))
+(tolerant (run 'unlink C1 "depends-on" C2))
 (want "C a batch that links then unlinks cites nothing"
       (car (run 'batch (format "~s" (list (list 'link C1 'depends-on C2) (list 'unlink C1 'depends-on C2)))
                 "--premises" (premise-of C1)))
@@ -306,8 +316,9 @@
 (tolerant (reduce-apply! copy "aaa00000" 1 '() '(put ((kind . section))) (claim-actor)))
 (tolerant (reduce-apply! copy "bbb00000" 1 '() '(put ((kind . section))) (claim-actor)))
 (want "K reducing into the copy changes nothing its original holds: a block's field, the admission gates, the rows"
-      (in-order (equal? (state-hash original) hash-0) (equal? (state->rows original) rows-0) (reduce-gates original))
-      '(#t #t ()))
+      (in-order (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates copy)))) (and p (cdr p)))) '("aaa00000" "bbb00000"))
+                (equal? (state-hash original) hash-0) (equal? (state->rows original) rows-0) (reduce-gates original))
+      '((plan-conflict plan-conflict) #t #t ()))
 (tolerant (reduce-apply! original "a" 3 '() '(set "a.1" title "q")))
 (tolerant (reduce-apply! original "aaa00000" 1 '() '(put ((kind . section))) (claim-actor)))
 (tolerant (reduce-apply! original "bbb00000" 1 '() '(put ((kind . section))) (claim-actor)))
@@ -315,6 +326,16 @@
       (in-order (equal? (state-hash original) (state-hash copy)) (equal? (state->rows original) (state->rows copy))
                 (equal? (reduce-gates original) (reduce-gates copy)))
       '(#t #t #t))
+
+;; ---- an import's refusal is answered bare ----------------------------------------------------
+
+(define md-dir (string-append root "/md"))
+(tolerant (system (string-append "mkdir -p '" md-dir "' && printf '# Bad\\nbody\\n' > '" md-dir "/bad.md'")))
+(tolerant (run 'rule "no-bad" "--on" "doc" "--must-not" "(title ?w \"Bad\")"))
+(want "J import-md answers a rule's refusal as it is, not inside its import clause"
+      (head (run 'import-md md-dir) 3)
+      '(error refused rule-violation))
+(tolerant (run 'rule "no-bad" "--retire"))
 
 ;; ---- the dry session stops where the real one stops -------------------------------------------
 ;;

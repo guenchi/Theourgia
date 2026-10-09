@@ -820,11 +820,16 @@
   ;; query, 15 in total, identical in both. A counter that moved with the
   ;; evaluation order would have been noise rather than a diagnostic, and
   ;; would have been changed to count blocks instead.
-  (define (decoded-text bv)
+  ;; COUNT?, when #f, leaves the counter alone: a rehearsal's copy of a state
+  ;; is read by a rule check of a write that may never happen, and a
+  ;; diagnostic of the store's readers does not count it.
+  (define (decoded-text bv . count?)
     (let ((text (utf8->string bv)))
       (if (bytevector=? (string->utf8 text) bv)
           text
-          (begin (set! text-decode-skipped (+ text-decode-skipped 1)) #f))))
+          (begin (when (or (null? count?) (car count?))
+                   (set! text-decode-skipped (+ text-decode-skipped 1)))
+                 #f))))
 
   ;; THE TEXTS OF ONE FIELD OF A BLOCK: a string, a UTF-8 bytevector decoded,
   ;; or, for a field two writers left at once, each candidate's. STATE and ID
@@ -838,7 +843,7 @@
         ((not e) (quote ()))
         ((string? (cdr e)) (list (cdr e)))
         ((bytevector? (cdr e))
-         (let ((text (decoded-text (cdr e))))
+         (let ((text (decoded-text (cdr e) (not (reduce-rehearsal? state)))))
            (if text (list text) (quote ()))))
         ((and (state-field-contested? state id name (cdr e)) (conflict-candidates (cdr e)))
          => (lambda (cs)
@@ -847,7 +852,7 @@
                   ((null? l) (reverse out))
                   ((string? (car (car l))) (loop (cdr l) (cons (car (car l)) out)))
                   ((bytevector? (car (car l)))
-                   (let ((text (decoded-text (car (car l)))))
+                   (let ((text (decoded-text (car (car l)) (not (reduce-rehearsal? state)))))
                      (loop (cdr l) (if text (cons text out) out))))
                   (else (loop (cdr l) out))))))
         (else (quote ())))))
@@ -3348,7 +3353,7 @@
   ;; apply does not wrap it in template-apply-failed.
   (define (judgement-refusal? a)
     (and (list? a) (>= (length a) 3) (eq? (car a) 'error)
-         (or (and (eq? (cadr a) 'refused) (memq (caddr a) '(rule-violation rule-unevaluable)) #t)
+         (or (and (eq? (cadr a) 'refused) (memq (caddr a) '(rule-violation rule-unevaluable relation-endpoint-unevaluable)) #t)
              (and (eq? (cadr a) 'bad-request) (eq? (caddr a) 'relation-endpoint)))))
 
   (define (rehearsal-live? state)
@@ -3377,31 +3382,31 @@
             receipt))))
 
   ;; THE TARGETS OF A WRITE: every block whose records it adds -- created,
-  ;; set, moved, and either end of a linked or unlinked edge -- that is live
-  ;; after it. A block it deletes is no target (rules speak of live blocks),
-  ;; so neither is one it creates and deletes. EVENTS are the write's own,
-  ;; ((<writer> . <seq>) ...), one writer's and consecutive. -> ids, sorted.
+  ;; set, moved, deleted, and either end of a linked or unlinked edge -- that
+  ;; is live after it, read from the state it produced: a block it deletes is
+  ;; no target (rules speak of live blocks), and neither is one it creates and
+  ;; deletes, but a deletion the reduction did not apply leaves its block a
+  ;; target. EVENTS are the write's own, ((<writer> . <seq>) ...), one
+  ;; writer's and consecutive. -> ids, sorted.
   (define (write-targets post events)
     (let loop ((rs (if (null? events) '()
                        (state-written-records post (car (car events)) (cdr (car events))
                                               (+ 1 (cdr (list-ref events (- (length events) 1)))))))
-               (ids '()) (deleted '()) (writer (and (pair? events) (car (car events)))))
+               (ids '()) (writer (and (pair? events) (car (car events)))))
       (if (null? rs)
           (list-sort string<?
                      (filter (lambda (id)
-                               (and (not (member id deleted))
-                                    (let ((row (state-read post id)))
-                                      (and row (not (cdr (assq 'deleted row)))))))
+                               (let ((row (state-read post id)))
+                                 (and row (not (cdr (assq 'deleted row))))))
                              ids))
           (let* ((seq (caar rs)) (p (cdar rs))
                  (add (lambda (xs) (fold-left (lambda (acc x) (if (and (string? x) (not (member x acc))) (cons x acc) acc))
                                               ids xs))))
             (case (and (pair? p) (car p))
-              ((put) (loop (cdr rs) (add (list (block-id writer seq))) deleted writer))
-              ((set move) (loop (cdr rs) (add (list (cadr p))) deleted writer))
-              ((del) (loop (cdr rs) ids (cons (cadr p) deleted) writer))
-              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) deleted writer))
-              (else (loop (cdr rs) ids deleted writer)))))))
+              ((put) (loop (cdr rs) (add (list (block-id writer seq))) writer))
+              ((set move del) (loop (cdr rs) (add (list (cadr p))) writer))
+              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) writer))
+              (else (loop (cdr rs) ids writer)))))))
 
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))

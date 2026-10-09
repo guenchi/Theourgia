@@ -1541,7 +1541,9 @@ nothing and is refused with every mismatch in one answer,
       (failures ((relation <name>) (edge <from> <name> <to>) (end from|to) (expected <selector>)) ...))
 
 judged on the state the write would produce, so a block created and linked in
-one `batch` is judged with the kind the batch gives it. An edge that predates
+one `batch` is judged with the kind the batch gives it. A query that cannot be
+evaluated while they are judged refuses the write `(error refused
+relation-endpoint-unevaluable (reason <the refusal>))`. An edge that predates
 the declaration is listed by `check`.
 
 A declaration is a record: a replay, a rebuild and a snapshot give the same
@@ -1634,7 +1636,8 @@ refusal -- refuses the write `(error refused rule-unevaluable (rule <name>)
 (block <id>) (reason <the refusal>))`, never as ok. A created block is named by
 the id the write would have given it. Every route answers these refusals as they
 are, as it answers a premise's; a `batch` does not put them in its items, a
-`template apply` not in `template-apply-failed`. A contested or retired rule
+`template apply` not in `template-apply-failed`, an `import-md` not in its
+`import` clause. A contested or retired rule
 judges nothing, and a rule judges no write made before it.
 
 `--builtin citation-coverage` is the rule

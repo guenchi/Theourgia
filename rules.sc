@@ -34,9 +34,9 @@
 (library (theourgia rules)
   (export write-judgement state-audit)
   (import (rnrs)
-          (only (theourgia query) make-query-session session-query session-spent session-budget-set!
+          (only (theourgia query) make-query-session session-rows session-spent session-budget-set!
                 refusal? refusal-answer query-budget-default)
-          (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds))
+          (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds relation-kind))
 
   ;; At most this many witness rows are listed for a failing must-not; the
   ;; count beside them is exact.
@@ -67,6 +67,10 @@
   (define (filter-map-in-order f xs) (filter values (map-in-order f xs)))
 
   ;; ---- the judgement ----------------------------------------------------------------------------
+  ;;
+  ;; ASK answers a goal's rows as an answer would hold them (session-rows):
+  ;; sorted, unique, each renderable -- a row that cannot be rendered is the
+  ;; query's refusal, as it is to a reader.
 
   ;; PRE and POST are reductions, TARGETS the write's target ids (live in
   ;; POST, sorted), RECEIPT the block ids of the write's premise set or #f
@@ -83,9 +87,14 @@
       ;; values of the goal's variables, in the order they first appear.
       (define (ask S goal)
         (session-budget-set! S remaining)
-        (let-values (((rows vars) (session-query S goal)))
-          (set! remaining (- remaining (session-spent S)))
-          rows))
+        ;; WHAT A QUERY SPENT IS SPENT, whether it answered or was refused:
+        ;; a query the budget stopped has spent what was left.
+        (guard (e ((refusal? e)
+                   (set! remaining (max 0 (- remaining (session-spent S))))
+                   (raise e)))
+          (let ((rows (session-rows S goal)))
+            (set! remaining (- remaining (session-spent S)))
+            rows)))
       (define (kind-of S id)
         (let ((rows (ask S (list 'kind id '?k))))
           (if (pair? rows) (car (car rows)) 'none)))
@@ -97,8 +106,10 @@
                (in (ask S (list rel '?a '?r id))))
           (unique (append (map (lambda (row) (list id (car row) (cadr row))) out)
                           (map (lambda (row) (list (car row) (cadr row) id)) in)))))
-      (or (endpoint-refusal pre post targets post-S pre-S kind-of field-values edges-at)
-          (rule-refusal pre targets receipt post-S pre-S ask kind-of edges-at
+      (or (guard (e ((refusal? e)
+                     (list 'error 'refused 'relation-endpoint-unevaluable (list 'reason (refusal-answer e)))))
+            (endpoint-refusal pre post targets post-S pre-S kind-of field-values edges-at))
+          (rule-refusal pre post targets receipt post-S pre-S ask kind-of edges-at
                         (lambda () remaining)))))
 
   ;; ---- typed endpoints --------------------------------------------------------------------------
@@ -128,8 +139,11 @@
                   (typed-of (lambda (r) (assq (as-symbol r) typed)))
                   (changed?
                     (lambda (id)
-                      (or (not (eq? (kind-of (pre-S) id) (kind-of (post-S) id)))
-                          (exists (lambda (f) (not (equal? (field-values (pre-S) id f) (field-values (post-S) id f))))
+                      (or (let* ((before (kind-of (pre-S) id)) (after (kind-of (post-S) id)))
+                            (not (eq? before after)))
+                          (exists (lambda (f)
+                                    (let* ((before (field-values (pre-S) id f)) (after (field-values (post-S) id f)))
+                                      (not (equal? before after))))
                                   selector-fields))))
                   (judged
                     (unique
@@ -213,7 +227,7 @@
                                               (if (or (null? rs) (= n witness-limit)) '()
                                                   (cons (car rs) (take (cdr rs) (+ n 1)))))))))))))))
 
-  (define (rule-refusal pre targets receipt post-S pre-S ask kind-of edges-at remaining)
+  (define (rule-refusal pre post targets receipt post-S pre-S ask kind-of edges-at remaining)
     (let* ((rules (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                              (state-declared-rules pre)))
            (plans (map (lambda (r) (rule-plan (car r) (cadr r))) rules))
@@ -238,7 +252,7 @@
                                                       (list 'rule (car (car write-rules))) (list 'block (car targets))
                                                       (list 'reason (refusal-answer e))))))
                                (make-query-session pre '() (remaining) #f
-                                                   (write-facts targets receipt post-S pre-S ask edges-at)))))
+                                                   (write-facts post targets receipt post-S pre-S ask edges-at)))))
                       (write-failures
                         (if write-session
                             (append-map-in-order
@@ -256,11 +270,13 @@
                       (list 'error 'refused 'rule-violation (cons 'failures failures)))))))))
 
   ;; THE PER-WRITE FACTS, read for the targets: kind+, field+, edge+ and
-  ;; edge-kind+ from the state the write produces; cited, the depends-on
-  ;; edges from a target that the write adds; unread, a cited block the
-  ;; receipt does not hold; receipt-carried, when the write carried one.
-  ;; -> ((<relation> <arity> <tuple> ...) ...).
-  (define (write-facts targets receipt post-S pre-S ask edges-at)
+  ;; edge-kind+ from the state the write produces; cited, each edge from a
+  ;; target under a relation of kind depends-on that the state after holds
+  ;; and the state before does not -- edges compared as edges, by name, before
+  ;; any is read as its kind, so a second name for an existing dependence
+  ;; cites; unread, a cited block the receipt does not hold; receipt-carried,
+  ;; when the write carried one. -> ((<relation> <arity> <tuple> ...) ...).
+  (define (write-facts post targets receipt post-S pre-S ask edges-at)
     (let* ((kinds (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'kind id '?k))))
                                        targets))
            (fields (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'field id '?f '?v))))
@@ -270,10 +286,12 @@
            (cited (unique
                     (append-map-in-order
                                 (lambda (id)
-                                  (let* ((now (ask (post-S) (list 'edge-kind id 'depends-on '?s)))
-                                         (before (ask (pre-S) (list 'edge-kind id 'depends-on '?s))))
-                                    (map (lambda (row) (list id (car row)))
-                                         (filter (lambda (row) (not (member row before))) now))))
+                                  (let* ((now (ask (post-S) (list 'edge id '?r '?s)))
+                                         (before (ask (pre-S) (list 'edge id '?r '?s))))
+                                    (map (lambda (row) (list id (cadr row)))
+                                         (filter (lambda (row) (and (not (member row before))
+                                                                    (eq? (relation-kind post (as-symbol (car row))) 'depends-on)))
+                                                 now))))
                                 targets)))
            (unread (unique (map (lambda (c) (list (cadr c)))
                                 (filter (lambda (c) (not (and receipt (member (cadr c) receipt)))) cited)))))
@@ -300,9 +318,14 @@
            (S (make-query-session state '())))
       (define (ask S goal)
         (session-budget-set! S remaining)
-        (let-values (((rows vars) (session-query S goal)))
-          (set! remaining (- remaining (session-spent S)))
-          rows))
+        ;; WHAT A QUERY SPENT IS SPENT, whether it answered or was refused:
+        ;; a query the budget stopped has spent what was left.
+        (guard (e ((refusal? e)
+                   (set! remaining (max 0 (- remaining (session-spent S))))
+                   (raise e)))
+          (let ((rows (session-rows S goal)))
+            (set! remaining (- remaining (session-spent S)))
+            rows)))
       (define (kind-of S id)
         (let ((rows (ask S (list 'kind id '?k))))
           (if (pair? rows) (car (car rows)) 'none)))

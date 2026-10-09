@@ -821,8 +821,10 @@
     (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
       (run (lambda ()
              (let ((r (import-md-report store dir actor (argument-option options "--allow-delete") check)))
-               (finish (append (list 'import (car r))
-                               (filter (lambda (c) c) (cdr r)))))))))
+               (finish (if (and (list? (car r)) (= 1 (length (car r))) (judgement-refusal? (car (car r))))
+                           (car (car r))
+                           (append (list 'import (car r))
+                                   (filter (lambda (c) c) (cdr r))))))))))
 
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.

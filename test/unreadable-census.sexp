@@ -1334,6 +1334,26 @@
    unrelated a
    "one datum read from a daemon's rendered text in memory (the channel's answers, the --results text, the MCP shell's catalogue and transport refusals, the thin client's stream terminal, the start-up reports): text outside the shape write prints for plain data, or that does not read as one datum, is no datum, and each caller answers as before; not a filesystem read"
    (e (#t (eof-object))))
+  ("rules.sc" (write-judgement ask) 1 guard
+   ((refusal? e))
+   unrelated a
+   "one query of a write's judgement: a refusal charges what the query spent to the write's budget and is raised on, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (set! remaining (max 0 (- remaining (session-spent S))))
+       (raise e))))
+  ("rules.sc" (write-judgement) 1 guard
+   ((refusal? e))
+   unrelated a
+   "the typed endpoints of a write: a query's refusal while judging them refuses the write relation-endpoint-unevaluable, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (list 'error 'refused 'relation-endpoint-unevaluable (list 'reason (refusal-answer e))))))
+  ("rules.sc" (state-audit ask) 1 guard
+   ((refusal? e))
+   unrelated a
+   "one query of check's audit: a refusal charges what the query spent to the audit's budget and is raised on, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (set! remaining (max 0 (- remaining (session-spent S))))
+       (raise e))))
   ("rules.sc" (rule-refusal judge) 1 guard
    ((refusal? e))
    unrelated a

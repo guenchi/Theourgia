@@ -47,7 +47,7 @@
           (only (theourgia arguments) parse-arguments argument-option argument-option-list)
           (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum)
           (only (theourgia ffi) entry-type)
-          (only (theourgia store) with-store-write)
+          (only (theourgia store) with-store-write judgement-refusal?)
           (only (theourgia reduce) state-read state-outline outline-subtree state-datum
                 caller-payload-reason caller-fields-reason reserved-relation-names
                 block-creation event-actor state-put-events block-id state-event-past cut-covers?
@@ -557,7 +557,7 @@
                to #f #f)))
       (cond
         (refused refused)
-        ((not (all-ok first)) (cons 'batch (list first)))
+        ((not (all-ok first)) (if (and (= 1 (length first)) (judgement-refusal? (car first))) (car first) (cons 'batch (list first))))
         (else
          (let ((second
                  (with-store-write store
@@ -599,7 +599,7 @@
                    to #f #f)))
            (cond
              (refused refused)
-             ((not (all-ok second)) (cons 'batch (list second)))
+             ((not (all-ok second)) (if (and (= 1 (length second)) (judgement-refusal? (car second))) (car second) (cons 'batch (list second))))
              (else
               (append (list 'ok (list 'inserted inserted) (list 'linked linked) (list 'already already))
                       (reverse unresolved)
