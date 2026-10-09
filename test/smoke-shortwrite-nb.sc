@@ -203,16 +203,22 @@
 ;; ---- NB2: the race, both outcomes named -------------------------------------------------
 (define dir2 (test-dir "pipework"))
 (system (string-append "mkfifo " dir2 "/f"))
-(system (string-append "cat " dir2 "/f > " dir2 "/out.dat &"))
+;; THE READER IS JOINED before the far end is read: it marks done once cat
+;; has seen the end of the pipe, and the row waits for that mark.
+(system (string-append "sh -c 'cat " dir2 "/f > " dir2 "/out.dat; touch " dir2 "/cat.done' > /dev/null 2>&1 &"))
 (define fd2 (fd-open (string-append dir2 "/f") (list 'write)))
 (define nb2 (make-nonblocking! fd2))
 (define raced (if nb2 (write-nonblocking fd2) 'NOT-NONBLOCKING))
 (fd-close fd2)
-(sleep (make-time 'time-duration 0 1))
+(define cat-done
+  (let wait ((k 0))
+    (cond ((file-exists? (string-append dir2 "/cat.done")) #t)
+          ((>= k 100) #f)
+          (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define got
   (let ((p (open-file-input-port (string-append dir2 "/out.dat"))))
     (let ((b (get-bytevector-all p))) (close-port p) (if (eof-object? b) (make-bytevector 0) b))))
-(printf "NB2 reading: ~s (non-blocking: ~a); out.dat ~a bytes\n" raced nb2 (bytevector-length got))
+(printf "NB2 reading: ~s (non-blocking: ~a); out.dat ~a bytes; reader done: ~a\n" raced nb2 (bytevector-length got) cat-done)
 (want "NB2 a non-blocking pipe with a reader: either every byte, through short writes and identical at the far end, or EAGAIN as in NB1; never anything else"
       (cond
         ((and (pair? raced) (eq? (car raced) 'all))
