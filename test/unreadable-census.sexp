@@ -1329,6 +1329,16 @@
    unrelated a
    "eval-admission: the evaluation admission's slot, released before the mark's failure goes on"
    (x (#t #f)))
+  ("rpc.sc" (parse-rule goal) 1 guard
+   (#t)
+   unrelated a
+   "a rule's goal text, read as one datum from memory: text that does not read is refused goal-unreadable"
+   (e (#t (quote unreadable))))
+  ("query.sc" (rule-value-check goal-refusal) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a rule's goal checked as a query's goals are: the query's own refusal is the rule's answer, and only that refusal is caught"
+   (e ((refusal? e) (refusal-answer e))))
   ("channel.sc" (envelope-answer) 1 guard
    (#t)
    unrelated a

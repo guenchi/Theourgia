@@ -648,11 +648,12 @@ It answers:
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
       | (nested-document <id>) | (relation-contested <name> (candidates (<value> <w> <seq>) ...))
+      | (rule-contested <name> (candidates (<value> <w> <seq>) ...))
       | (duplicate-path <path> (ids (<id> ...)))
       | (unknown-verb (event <w> <seq>) (verb <v>)) | (malformed-record (event <w> <seq>) (reason ...))
       | (cut <writer> <path> <kind> <after>)
 
-A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`. A relation name whose declarations disagree is listed as `relation-contested` with every surviving declaration (see [`relation`](#relation)).
+A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`. A relation name whose declarations disagree is listed as `relation-contested` with every surviving declaration (see [`relation`](#relation)), and a rule as `rule-contested` (see [`rule`](#rule)).
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
 parent was deleted or never arrived, and records still waiting for premises. A record
@@ -1549,6 +1550,54 @@ plan's members among them -- writes a declaration as given, since its
 receipt counts each record; the same value written again changes nothing,
 agreement being by value.
 
+### `rule`
+
+    (rule <name> ("--on" <kind>) ("--where" <goal>) ("--must" <goal>) ("--must-not" <goal>)
+          ("--builtin" <name>) ("--retire") ("--premises" <datum>))
+
+Declares a rule of this store: a statement about the blocks a write touches,
+written as goals of the query language (see `query`) in which `?w` stands for
+the block. `--on` names a kind the rule is about, once per kind; `--where`, when
+given, selects among those blocks (a block the selector does not match is not
+judged); `--must` says the goal has at least one row for the block, `--must-not`
+that it has none. Exactly one of the two. `--builtin citation-coverage` enables
+the one built-in rule by name; `--retire` ends a rule.
+
+    rule review-cites --on doc --where '(field ?w "slot" "review")' --must '(edge ?w cites ?s)'
+
+The goals are checked when the rule is declared, as a query's are: an unknown
+relation, a wrong arity or a misplaced term is refused, and so is a relation
+that reads anything outside the store's records -- `score`, `uses-name`, `def`
+and the rules over them (`def-for`, `ambiguous`): `(error bad-request
+rule-relation-not-allowed (relation <r>))`. A rule's answer is then a function
+of the records and the rules alone. A kind outside the store's kinds is refused
+`kind-not-known`. A rule is of one of two classes, decided by its goals and
+stored with it: a WRITE rule names a fact only a rule check has -- `kind+`,
+`field+`, `edge+`, `edge-kind+` (the write's own view of the blocks it
+touches), `cited`, `unread`, `receipt-carried` -- and a STATE rule names none.
+
+A rule is a record, its value the whole rule in one form:
+
+    (rule <name> ((class state|write) (on <kind> ...) [(where <goal>)] (must <goal>)|(must-not <goal>)))
+
+or `((builtin <name>))`, or `retired`. A `rule` intent in a `batch` is written
+only in that form, the class included, and one in any other is refused
+`(error bad-request rule-not-in-its-form (form <the form>))`. Liveness and
+conflict are a declared relation's: the same rule again answers `(ok
+(unchanged))` and writes nothing, another value replaces the one in force, and
+two writers who declare one name differently without seeing each other leave it
+CONTESTED -- not evaluated, and listed by `conflicts` as `(rule-contested <name>
+(candidates ...))` -- until a writer who has seen both declares it again. A
+tracked request (`--req`, a tracked `batch`'s items and a plan's members) writes
+a rule as given, since its receipt counts each record, as it does a
+declaration. A rule's value may not hold a plan's marker `("#%new" <k>)`. A
+replay, a rebuild and a snapshot keep the rules. `describe` lists the rules in
+force as `(declared-rules (<name> <value>) ...)` when there is one, and `check`
+lists each as `(rules (rule-skipped (rule <name>) (reason write-rule|not-evaluated))
+...)`, a built-in as a write rule.
+
+In this version a rule is stored and listed, and judges no write.
+
 ### `def`
 
     (def <name> ("--under" <library>) <source> ("--premises" <datum>))
@@ -2186,7 +2235,10 @@ again only when there is one; it does not change the verdict. A live block
 whose mode is `datum` and which carries a `src` -- a draft committed onto it
 before `commit` refused one -- is listed under `(datum-with-src (<id> ...))`,
 only when there is one; nothing that runs or exports it reads that src, and the
-verdict is unchanged. The verdict
+verdict is unchanged. The rules in force are listed under `(rules
+(rule-skipped (rule <name>) (reason write-rule|not-evaluated)) ...)`, only when
+there is one: a write rule is never evaluated here, since no write is in hand,
+and this version evaluates no state rule; the verdict is unchanged. The verdict
 is `damaged` when a writer's log fails its integrity check, the reduction
 could not apply a record, or the registry is inside the store; otherwise
 `duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
@@ -2461,7 +2513,7 @@ Text that does not read as data is `(error bad-request unreadable-intents)`. Int
 
 A field is a **pair**: `(title . "One")`. Written `(title "One")` the value is
 the list `("One")`, which is a different thing and is stored as one.
-`(from <n>)` names the block made by intent `<n>` of the same batch, counted from 0. It is accepted only as an `insert`'s or a `move`'s parent or predecessor. A reference that is not `(from <index>)` is `malformed-intent` (`back-reference-not-a-form`, `back-reference-not-an-index`), and one naming no intent that made a block is `(error no-such-intent <n>)`.
+`(from <n>)` names the block made by intent `<n>` of the same batch, counted from 0. It is accepted as an `insert`'s or a `move`'s parent or predecessor, and as either end of a `link` or an `unlink`, so one batch can create a block and link it. A reference that is not `(from <index>)` is `malformed-intent` (`back-reference-not-a-form`, `back-reference-not-an-index`), and one naming no intent that made a block is `(error no-such-intent <n>)`.
 
 An intent is the shape the library takes, not a shorthand, and each verb has
 its own:

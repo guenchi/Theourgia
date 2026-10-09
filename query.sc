@@ -51,6 +51,7 @@
 ;;; sha256 of the rows joined by newlines. The cut is not in the digest.
 (library (theourgia query)
   (export query-verb fact-relations rule-library rule-relations check-rules
+          rule-only-facts relation-external? rule-value-check builtin-rules
           make-query-session session-query session-answer session-expansions session-spent session-passes query-relations-items
           query-relations-text
           query-budget-default)
@@ -59,7 +60,7 @@
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
-                state-declared-relations)
+                state-declared-relations kind-known? known-kinds)
           (only (theourgia store) library-locator defs-index search-state field-strings)
           (only (theourgia md) md-refs)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
@@ -87,31 +88,39 @@
 
   ;; ---- the tables ---------------------------------------------------------------------
 
-  ;; (<relation> <arity> "<one line>"). The provider of each is in fact-tuples.
+  ;; (<relation> <arity> "<one line>" stored|external). The provider of each
+  ;; is in fact-tuples. THE FOURTH COLUMN SAYS WHETHER A FACT IS A FUNCTION OF
+  ;; THE RECORDS ALONE (stored) or reads something outside the log (external):
+  ;; `score` the keyword hook and the editor-supplied signature tables,
+  ;; `uses-name` the name-use table, which consults the language catalogue
+  ;; and the known-forms registry, both replaceable at run time, `def` the
+  ;; defs index through the text view, which asks the language catalogue. A
+  ;; rule may name only stored facts and rules over them, so its answer is a
+  ;; function of the records and the rules (rule-value-check).
   (define fact-relations
-    '((kind 2 "every live block, and its settled kind, else none, conflict or unreadable")
-      (class 2 "every live block, and its effective class")
-      (validity 2 "every live block, and its validity: valid, needs-review, refuted or superseded")
-      (version 2 "every live block that can be hashed, and its version")
-      (title 2 "a block whose title is a settled string, and that title")
-      (field 3 "every settled field of a live block: its name, and its value as stored")
-      (edge 3 "every surviving edge between two live blocks: from, relation, to")
-      (edge-kind 3 "an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to")
-      (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included")
-      (under 2 "a live block and its settled parent, \"root\" at the top")
-      (ref 2 "a text reference [[id]] in a live block's text to a live block")
-      (library 2 "a library block and its name")
-      (in-library 2 "every code block, and the name of the library containing it, or none; nothing under a library whose name is contested")
-      (imports 2 "a library, by name, and a library name it imports")
-      (def 3 "a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested")
-      (uses-name 2 "a code block and a name it uses (name use, syntactic)")
-      (lang 2 "a code block's language")
-      (validity-reason 3 "each reason of a block that is not valid, and the block that causes it")
-      (decision-state 2 "a live decision, and its state: closed, open, review, verified or implemented")
-      (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end")
-      (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved")
-      (verified-by 2 "a live block, and a live block with a current verifies edge to it")
-      (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required")))
+    '((kind 2 "every live block, and its settled kind, else none, conflict or unreadable" stored)
+      (class 2 "every live block, and its effective class" stored)
+      (validity 2 "every live block, and its validity: valid, needs-review, refuted or superseded" stored)
+      (version 2 "every live block that can be hashed, and its version" stored)
+      (title 2 "a block whose title is a settled string, and that title" stored)
+      (field 3 "every settled field of a live block: its name, and its value as stored" stored)
+      (edge 3 "every surviving edge between two live blocks: from, relation, to" stored)
+      (edge-kind 3 "an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to" stored)
+      (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included" stored)
+      (under 2 "a live block and its settled parent, \"root\" at the top" stored)
+      (ref 2 "a text reference [[id]] in a live block's text to a live block" stored)
+      (library 2 "a library block and its name" stored)
+      (in-library 2 "every code block, and the name of the library containing it, or none; nothing under a library whose name is contested" stored)
+      (imports 2 "a library, by name, and a library name it imports" stored)
+      (def 3 "a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested" external)
+      (uses-name 2 "a code block and a name it uses (name use, syntactic)" external)
+      (lang 2 "a code block's language" stored)
+      (validity-reason 3 "each reason of a block that is not valid, and the block that causes it" stored)
+      (decision-state 2 "a live decision, and its state: closed, open, review, verified or implemented" stored)
+      (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end" stored)
+      (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved" stored)
+      (verified-by 2 "a live block, and a live block with a current verifies edge to it" stored)
+      (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required" external)))
 
   (define tests '((= 2) (/= 2) (string< 2) (member 2)))
 
@@ -184,6 +193,94 @@
       (replaces "c supersedes or refutes o")
       (evidence-for "v verifies c currently, or implements it")
       (hard "what context must show for t: the block h, its role, and the block it is about")))
+
+;; ---- rules of the store: what their goals may name ------------------------------------
+  ;;
+  ;; THE FACTS ONLY A RULE CHECK HAS, with their arities: the write's view of
+  ;; its targets (the `+` facts) and the write's own evidence. No query,
+  ;; context or premise session has them; a rule naming one is a WRITE rule.
+  (define rule-only-facts
+    '((kind+ 2) (field+ 3) (edge+ 3) (edge-kind+ 3) (cited 2) (unread 1) (receipt-carried 0)))
+  ;; As heads with no body, so query-goals knows their arities when it checks
+  ;; a rule's goals; never added to a session.
+  (define rule-only-heads
+    (map (lambda (f)
+           (list (cons (car f) (let loop ((k (cadr f)) (out '()))
+                                 (if (= k 0) out (loop (- k 1) (cons (string->symbol (string-append "?a" (number->string k))) out)))))))
+         rule-only-facts))
+
+  ;; A relation is EXTERNAL when it is a fact marked so, or a rule of the
+  ;; library one of whose bodies names an external relation, through any
+  ;; depth of rules.
+  (define (relation-external? rel)
+    (let walk ((rel rel) (seen '()))
+      (cond
+        ((assq rel fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
+        ((memq rel seen) #f)
+        (else
+         (exists (lambda (rule)
+                   (and (eq? (car (car rule)) rel)
+                        (exists (lambda (g) (walk (car g) (cons rel seen))) (cdr rule))))
+                 rule-library)))))
+
+  ;; THE BUILT-IN RULES a store may enable by name.
+  (define builtin-rules '(citation-coverage))
+
+  ;; A RULE'S VALUE, as the `rule` verb or a batch's intent gives it, checked
+  ;; and put in its one form: (class state|write) (on <kind> ...) [(where
+  ;; <goal>)] (must <goal>)|(must-not <goal>), the class computed from the
+  ;; goals; or ((builtin <name>)); or retired. -> the value, or a refusal
+  ;; (error bad-request ...). Each goal is checked as a query's goals are,
+  ;; with the rule-only facts known, and a relation that reads outside the
+  ;; log is refused.
+  (define (rule-value-check value)
+    (define (clause k) (assq k value))
+    (define (goal-relations g)
+      (if (and (pair? g) (eq? (car g) 'and)) (map car (cdr g)) (list (car g))))
+    (define (goal-refusal g)
+      (or (guard (e ((refusal? e) (refusal-answer e)))
+            (query-goals g (append rule-library rule-only-heads))
+            #f)
+          (let ((x (find relation-external? (goal-relations g))))
+            (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))))
+    ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every ("#%new" k)
+    ;; in a member it declares (request.sc, bind-new), so a rule value holding
+    ;; one would not be the record it was declared as.
+    (define (holds-marker? x)
+      (and (pair? x) (or (equal? (car x) "#%new") (holds-marker? (car x)) (holds-marker? (cdr x)))))
+    (cond
+      ((eq? value 'retired) 'retired)
+      ;; THE SHAPE FIRST, so no clause is read before it is known to be one.
+      ((not (and (list? value) (pair? value)
+                 (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) '(class on where must must-not builtin))))
+                          value)))
+       '(error bad-request rule-malformed))
+      ((holds-marker? value) '(error bad-request (reason rule-value-holds-marker)))
+      ((clause 'builtin)
+       (let ((b (clause 'builtin)))
+         (if (and (= 1 (length value)) (= 2 (length b)) (memq (cadr b) builtin-rules))
+             value
+             (list 'error 'bad-request 'builtin-rule-not-known
+                   (list 'builtin (if (= 2 (length b)) (cadr b) (cdr b))) (list 'known builtin-rules)))))
+      ((not (let ((o (clause 'on))) (and o (pair? (cdr o)) (for-all symbol? (cdr o)))))
+       '(error bad-request (reason rule-needs-kinds)))
+      ((find (lambda (k) (not (kind-known? k))) (cdr (clause 'on)))
+       => (lambda (k) (list 'error 'bad-request 'kind-not-known (list 'kind k) (list 'known known-kinds))))
+      ((not (= 1 (length (filter (lambda (c) (memq (car c) '(must must-not))) value))))
+       '(error bad-request (reason rule-needs-one-of-must-must-not)))
+      ((exists (lambda (k) (let ((c (clause k))) (and c (not (= 2 (length c)))))) '(where must must-not))
+       '(error bad-request rule-malformed))
+      (else
+       ;; EVERY GOAL GIVEN IS CHECKED, whatever its value: a goal of #f is a
+       ;; goal the query language refuses (not-a-goal), not an absent one.
+       (let* ((goals (map cadr (filter values (map clause '(where must must-not)))))
+              (bad (exists goal-refusal goals)))
+         (or bad
+             (let ((write? (exists (lambda (g) (exists (lambda (r) (assq r rule-only-facts)) (goal-relations g))) goals))
+                   (polarity (find (lambda (c) (memq (car c) '(must must-not))) value)))
+               (append (list (list 'class (if write? 'write 'state)) (clause 'on))
+                       (if (clause 'where) (list (clause 'where)) '())
+                       (list polarity))))))))
 
   ;; (<relation> <arity>) of every rule head, in the order first defined.
   (define (rule-relations rules)

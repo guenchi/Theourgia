@@ -1458,7 +1458,15 @@
   ;; reaches the payload at all. It is an argument to the ordering, and
   ;; the only trace it leaves is the `ord` this rule excludes. Listing it
   ;; would be listing a field the record does not have.
-  (define (intent-produced? intent payload)
+  ;; THE INTENT IS READ THROUGH ONE `expect` WRAPPER, as a completion reads it
+  ;; (completion.sc, declared-intent): the record never carries the wrapper,
+  ;; so a member declared as (expect <hash> <intent> ...) is the record of
+  ;; <intent>.
+  (define (intent-produced? declared payload)
+    (define intent
+      (if (and (pair? declared) (eq? (car declared) 'expect) (pair? (cdr declared)) (pair? (cddr declared)))
+          (caddr declared)
+          declared))
     (and (pair? intent) (pair? payload)
          (case (car intent)
            ;; (insert <parent> <after> <fields>) -> (put <fields + parent + ord>)
@@ -1473,6 +1481,9 @@
            ((link unlink) (equal? intent payload))
            ;; (relation <name> <value>) -> the same, verbatim
            ((relation) (equal? intent payload))
+           ;; (rule <name> <value>) -> the same, verbatim: the store writes
+           ;; a rule only in its one form (store.sc).
+           ((rule) (equal? intent payload))
            ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
            ((move)
             (and (eq? (car payload) (quote move))
