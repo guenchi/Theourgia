@@ -422,7 +422,7 @@
 
 (want "F64 each program's own verbs are read from its dispatch table, core.sc then theourgiad.sc"
       (list (own-verbs-of "../core.sc") (own-verbs-of "../theourgiad.sc"))
-      '((eval) (serve)))
+      '((eval scope collect) (serve)))
 
 (want "F64 a program with no own-verbs define is a raise naming the file, not an empty census"
       (guard (e (#t (list 'RAISED (condition-message e) (condition-irritants e))))
@@ -1304,7 +1304,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 48 48))
+      (list 52 52))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1366,6 +1366,11 @@
 ;;   supply   rpc.sc:586  `supply-usage`
 ;;   import-code rpc.sc  `import-code-usage`
 ;;   subscribe rpc.sc     `subscribe-usage`
+;;   scope, collect, review-results, collect-into  rpc.sc  `<verb>-usage`
+;;     The channel answers a request of the wrong shape with the word
+;;     `usage`, and the catalogue's form -- the binding -- is answered for
+;;     it: by core.sc for scope and collect (channel-program-and-exit!), by
+;;     the dispatcher for the other two (rpc.sc, channel-answer).
 ;;     Each is reached from the catalogue entry and from the `(usage <name>)`
 ;;     sites BY NAME, so several arrivals are one place to edit.
 ;;     `commit-usage` is never passed to `usage` at all -- `commit` appends
@@ -1399,7 +1404,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit commitments context eval import-code insert names outline query read relation serve subscribe supply tasks template uses))
+      '(collect collect-into commit commitments context eval import-code insert names outline query read relation review-results scope serve subscribe supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1734,7 +1739,7 @@
                                  (substring f (+ i 1) (string-length f)))
                                 (else (loop (- i 1))))))
                       source-file-list))
-      '("admission.sc" "answers.sc" "arguments.sc" "attest.sc" "baseline.sc" "client.sc"
+      '("admission.sc" "answers.sc" "arguments.sc" "attest.sc" "baseline.sc" "channel.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "context.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"

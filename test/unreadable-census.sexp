@@ -1329,6 +1329,16 @@
    unrelated a
    "eval-admission: the evaluation admission's slot, released before the mark's failure goes on"
    (x (#t #f)))
+  ("channel.sc" (envelope-answer) 1 guard
+   (#t)
+   unrelated a
+   "a daemon's answer envelope, read as data from bytes in memory: an unreadable one is answered transport-unknown (unreadable-answer)"
+   (e (#t #f)))
+  ("channel.sc" (plain-datum) 1 guard
+   (#t)
+   unrelated a
+   "one datum read from text in memory (a daemon's answer, the --results text): one that does not read is no datum, and the callers answer transport-unknown (unreadable-answer) or refuse results-malformed"
+   (e (#t (eof-object))))
   )
 
 (raw-accessors

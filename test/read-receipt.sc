@@ -157,7 +157,11 @@
     (check "the store's health") (describe "the catalogue")
     (query "answers its own cut and a digest of its rows")
     (context "answers its own receipt: the premises of what it must show, its cut and its versions")
-    (subscribe "a stream: its frames name their own cuts, and read --rev names the publication")))
+    (subscribe "a stream: its frames name their own cuts, and read --rev names the publication")
+    (scope "a write: the letter here and a new store; its answer names the cut it copied")
+    (collect "a write: the review results under the letter")
+    (collect-into "a write")
+    (review-results "a datum for collect-into, which plans from its own store at its own locked point")))
 (define (census table-verbs)
   (let ((catalogue (map car (verb-catalogue))))
     (list (filter (lambda (v) (not (memq v table-verbs))) catalogue)
@@ -449,6 +453,15 @@
         (list 'template (lambda () (run 'template "apply" "memory")))
         (list 'query (lambda () (run 'query "(kind ?x section)")))
         (list 'context (lambda () (run 'context "--for" T "--budget" "100000")))
+        ;; THE CHANNEL, in this order: the three after scope read or write
+        ;; what it made. Nothing in the scoped store was written by the
+        ;; letter's reader, so the results are empty. scope and collect are
+        ;; core.sc's programs, as eval is, and run through it.
+        (list 'scope (lambda () (cli-wire "scope" (string-append root "/scoped") "--cut" (format "~s" (reduce-applied-cut (state)))
+                                          "--roots" X "--for" "codex")))
+        (list 'review-results (lambda () (rpc-dispatch (string-append root "/scoped") '(review-results) "test")))
+        (list 'collect-into (lambda () (run 'collect-into X "--results" "(results (letter \"x\") (to \"codex\") (blocks))")))
+        (list 'collect (lambda () (cli-wire "collect" (string-append root "/scoped"))))
         (list 'del (lambda () (run 'del probe)))))
 (define none-not-run
   '((adopt "binds a store written on another machine; this store has one writer, its own")
@@ -462,7 +475,7 @@
       (in-order (symbols-sorted (map car none)) (length none)))
 ;; A VERB WHOSE OWN ANSWER ALREADY SAID ITS CUT, before receipts existed:
 ;; snapshot names the cut it froze. That clause is the verb's, not a receipt.
-(define own-cut '(snapshot query context))
+(define own-cut '(snapshot query context scope))
 ;; AND ONE WHOSE OWN ANSWER SAYS ITS VERSIONS: context's receipt is its own,
 ;; the versions of what it shows beside it.
 (define own-versions '(context))

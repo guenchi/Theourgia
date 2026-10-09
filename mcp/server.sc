@@ -624,17 +624,20 @@
 (define (answer-origin envelope)
   (answer-field envelope 'origin (lambda (x) #t)))
 
-;; ---- carrying out eval: the child route ------------------------------------
+;; ---- carrying out eval, scope and collect: the child route -----------------
 ;;
-;; KEY: THE CHILD IS THE COMMAND LINE'S OWN EVAL INVOCATION. `theourgia eval
+;; KEY: THE CHILD IS THE COMMAND LINE'S OWN INVOCATION. `theourgia eval
 ;; <argv>` execs `core.sc eval <argv>`; this shell runs the same program with
-;; the same argv as its CHILD and reads the answer, so it can answer the next
-;; call afterwards. The daemon never executes user code, and this process
-;; loads no core: the evaluation, its supervisor and its limits are core.sc's.
+;; the same verb and argv as its CHILD and reads the answer, so it can answer
+;; the next call afterwards. The daemon never executes user code, and this
+;; process loads no core: the evaluation, its supervisor and its limits are
+;; core.sc's. `scope` and `collect` are child verbs for another reason: each
+;; sends stores their own requests, and must not run inside a daemon.
 ;;
 ;; NEVER: THE CHILD'S argv IS THE CALLER'S, VERBATIM AND ALONE. The store,
-;; the wire mode and this session's writer reach it through its
-;; environment -- THEOURGIA_STORE, THEOURGIA_WIRE=1, THEOURGIA_WRITER --
+;; the wire mode, this session's writer, and this shell's actor and daemon
+;; socket reach it through its environment -- THEOURGIA_STORE,
+;; THEOURGIA_WIRE=1, THEOURGIA_WRITER, THEOURGIA_ACTOR, THEOURGIA_SOCKET --
 ;; each REPLACING any binding of that name. Nothing is prepended to the
 ;; argv, so the child's parse of it is the caller-only parse, and every
 ;; refusal of that argv is the one the command line gives for it.
@@ -673,7 +676,7 @@
              (let ((dir (claim-call-directory store)))
                (if (not dir)
                    (list 'not-sent '(error scratch-unavailable))
-                   (run-child-in dir core argv stdin (child-budget-ms nodes))))))))))
+                   (run-child-in dir core verb argv stdin (child-budget-ms nodes))))))))))
 
 (define (parse-error? nodes) (and (pair? nodes) (eq? (car nodes) 'error)))
 
@@ -736,7 +739,10 @@
 (define (scheme-binary)
   (or (getenv "THEOURGIA_SCHEME") "scheme"))
 
-(define (run-child-in dir core argv stdin budget)
+;; NEVER: THE CHILD'S VERB IS THE TOOL'S. It was the word `eval`, written
+;; here, while eval was the only child verb; a second child verb then ran as
+;; an evaluation of its own arguments.
+(define (run-child-in dir core verb argv stdin budget)
   (let ((stdin-path (and (string? stdin) (string-append dir "/stdin")))
         (answer-path (string-append dir "/answer"))
         (diag-path (string-append dir "/diag")))
@@ -755,8 +761,10 @@
             (write-all! fd (string->utf8 stdin) stdin-path))
           (fd-close fd))))
     (let-values (((pid spawn-errno)
-                  (spawn-captured! (append (list (scheme-binary) "--script" core "eval") argv)
+                  (spawn-captured! (append (list (scheme-binary) "--script" core (symbol->string verb)) argv)
                                    (list (cons "THEOURGIA_STORE" serving-store)
+                                         (cons "THEOURGIA_ACTOR" serving-actor)
+                                         (cons "THEOURGIA_SOCKET" serving-socket)
                                          (cons "THEOURGIA_WIRE" "1")
                                          (cons "THEOURGIA_WRITER" (shell-writer)))
                                    stdin-path answer-path diag-path)))
@@ -768,8 +776,12 @@
               (remove-call-files! dir (list stdin-path answer-path diag-path))
               outcome))))))
 
-;; THE STORE THIS SHELL SERVES, as the child is told it.
+;; THE STORE THIS SHELL SERVES, as the child is told it, and the actor and
+;; the daemon socket the shell uses for it: a child that sends requests of
+;; its own (scope, collect) sends them as this shell would.
 (define serving-store #f)
+(define serving-actor #f)
+(define serving-socket #f)
 
 (define (now-ms)
   (let ((t (current-time 'time-monotonic)))
@@ -1395,6 +1407,8 @@
                                (socket-path store))))
                (set! session-writer (or env opt (derived-writer actor)))
                (set! serving-store store)
+               (set! serving-actor actor)
+               (set! serving-socket socket)
                (set! preparation-ms (preparation-from-environment))
                ;; NOTE: NO SCHEDULER. Reaching a daemon used to need one,
                ;; because the socket went through the actor system; the

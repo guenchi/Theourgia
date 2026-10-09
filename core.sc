@@ -526,6 +526,42 @@
     (set! admission-slot slot)
     refusal))
 
+;; ---- scope and collect -------------------------------------------------
+;;
+;; NEVER: THEY RUN HERE, A CLIENT OF EACH STORE THEY TOUCH, AND NEVER IN A
+;; DAEMON. Each sends a store its own requests, through that store's daemon
+;; when one serves it (channel.sc, routed); run inside a daemon, it would
+;; send that daemon a request and wait for an answer only that daemon could
+;; give. They are not dispatcher verbs, so a daemon asked for one answers
+;; unknown-verb, as for eval. The MCP shell runs this program as its child
+;; for them, as it does for eval: the store and the wire mode come from the
+;; environment there.
+;;
+;; A request of the wrong shape is answered with the catalogue's usage form,
+;; the one place it is written.
+(define (channel-program-and-exit! argv)
+  (let* ((verb (string->symbol (car argv)))
+         (nodes (parse-arguments verb (cdr argv)))
+         (wire? (or (and (member "--wire" argv) #t) (environment-wire?))))
+    (if (and (pair? nodes) (eq? (car nodes) 'error))
+        (finish nodes wire?)
+        (let* ((store (or (argument-option nodes "--store") (getenv "THEOURGIA_STORE") "."))
+               (actor (or (argument-option nodes "--actor") (environment-actor)))
+               (options (argument-remove nodes transport-options))
+               (args (argument-positionals options))
+               ;; `--socket` names the main store's daemon, as it does for a
+               ;; forwarded request, else THEOURGIA_SOCKET (the MCP shell
+               ;; sets it for the child it runs); the store's default path
+               ;; otherwise.
+               (socket (or (argument-option nodes "--socket") (env-or "THEOURGIA_SOCKET")))
+               (answer (if (eq? verb 'scope)
+                           ((later '(theourgia channel) 'scope-verb) store actor args options (current-directory) socket)
+                           ((later '(theourgia channel) 'collect-verb) store actor args (current-directory) socket))))
+          (finish (if (eq? answer 'usage)
+                      (list 'usage (cadr (assq verb (verb-catalogue))))
+                      answer)
+                  wire?)))))
+
 (define (eval-and-exit! argv)
   (let ((nodes (parse-arguments 'eval (cdr argv))))
     (if (and (pair? nodes) (eq? (car nodes) 'error))
@@ -664,7 +700,9 @@
 ;; rather than skip it, so a verb written some other way is a red census,
 ;; not a missing one.
 (define own-verbs
-  (list (cons 'eval eval-and-exit!)))
+  (list (cons 'eval eval-and-exit!)
+        (cons 'scope channel-program-and-exit!)
+        (cons 'collect channel-program-and-exit!)))
 
 (define (main argv)
   ;; NEVER: ONCE, BEFORE ANYTHING IS PRINTED. Every answer this program gives

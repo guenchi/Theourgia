@@ -1155,6 +1155,229 @@ arriving for 5 s, prints `(error transport-error lost-stream)` and exits 1; a
 line past the answer limit prints `(error transport-error answer-too-large)`.
 A stream with nothing to say waits as long as it has to.
 
+## Mail and review between sessions
+
+Sessions on one machine -- of any vendor, through the command line or the
+MCP shell -- talk to each other through a store. There is no message verb
+and no message record: a message is a block, and reading one's mail is a
+query.
+
+### The mailbox
+
+A message is a block of kind `doc` with two fields: `to`, the reader's
+actor name as a string, and `status`, `"unread"` when it is sent and
+`"read"` once the reader has read it. An `about` edge may name the block it
+concerns. The sender writes `status` once, in the record that creates the
+block; after that only the reader sets it, so the reader's `"read"`
+supersedes the sender's `"unread"` in causal order. Reading one's mail is
+the goal
+
+    (and (field ?m "to" "codex") (field ?m "status" "unread"))
+
+given to `query`, with the reader's own name in place of `codex`. A status
+two of the reader's sessions set concurrently is contested: the message
+leaves this query (a contested field is no fact) and is listed by
+`conflicts` until the reader sets it again. It is not lost; its notice is
+late.
+
+### `scope`
+
+    (scope <dir> "--cut" <cut> "--roots" <id> "--for" <actor>)
+
+Makes a new store at `<dir>` for one reader, holding exactly what it is
+asked to review and nothing else. `--cut` is a causal cut, a literal or a
+tag name; `--roots` names a block, and is given once per root; `--for` is
+the reader's actor name. All three are required.
+
+The new store holds the LETTER COPY -- a `doc` with `to` (the reader),
+`status` `"unread"`, `cut` (the cut's literal, as text), `roots` (the root
+ids, a list of strings) and `scope` (the absolute path of `<dir>`) -- and
+then one block for each block under the roots as it was at the cut: the
+roots in the order `--roots` gives them, each at the top level after the
+letter copy, and under each root its blocks in outline order, each under its
+parent's copy. Each copy carries the block's settled fields
+and two more, `origin` (the block's id in this store) and `origin-cut`.
+A field contested at the cut is not copied, and is listed as `(contested
+<id> <field>)` -- read from the value's shape, so a field whose one value
+has exactly a contested field's shape is taken for one; the derived fields a code block's view adds (`name` and
+`doc` in text mode, `name` and `names` in datum mode) are not copied, and
+the new store derives them again. An edge between two copied blocks is
+copied between their copies; an edge from a copied block to one outside the
+roots is dropped and listed as `(dropped-edge <from> <rel> <to>)`. An edge
+into the roots from a block outside them is not read, and so is neither
+copied nor listed. Tags are not copied. Roots that overlap are refused
+(`roots-overlap`), and so is a root retired at the cut (`root-deleted`). A
+block whose position at the cut is part of a cycle is copied at the top
+level.
+
+The letter copy then gets `baseline`, the new store's applied cut once the
+copies are in, as text: `read --cut <baseline>` in the new store serves the
+copies as they were written, whatever the reader edits later. Last, ONE
+record is written in this store -- the LETTER, a top-level `doc` with the
+same `to`, `status`, `cut`, `roots` and `scope` -- and its id is set on the
+letter copy as `letter`. The answer is
+
+    (ok (scope <dir>) (cut <cut>) (letter <id>) (letter-copy <id>)
+        (baseline <cut>) (blocks <n>) (edges <n>) (dropped-edges <n>)
+        (contested-fields <n>) <dropped-edge> ... <contested> ...)
+
+An existing `<dir>` is refused with `(error scope-exists (dir <dir>))`
+before anything is read or written. The cut is read through this store's
+own route, so a cut it cannot serve is its refusal (`cut-moved`,
+`cut-unavailable`, `unknown-id`) and nothing is written anywhere. Every
+block and edge the scope would write is first put to the write's own
+validator, at the place it would be written (a `doc` only at the top
+level); one it would refuse refuses the whole scope as `(error
+scope-unwritable (items ...))`, and nothing is written. A failure after the
+new store exists leaves it as it is and answers `(error scope-failed (dir
+<dir>) (step import|baseline|letter) ...)`.
+
+`scope` is a program over ordinary requests, and like `eval` its route is
+`child`: it runs in the command line's own program, or as the MCP shell's
+child, and never in a daemon. It sends each store its own requests, through
+that store's daemon when one serves it and in process otherwise. It is not
+a verb a daemon has, so one asked for it answers `unknown-verb`. The MCP
+shell offers it as a tool; name `<dir>` by an absolute path there.
+
+### `review-results`
+
+    (review-results)
+
+In a store `scope` made: the reader's answer, as one datum. The letter copy
+is the first block the store made -- first causally: after an adoption the
+store has a second writer, and the letter copy is the one first put every
+other writer's first put has in its past. The RESULTS are every live block that
+has no `origin`, is not the letter copy, and was created by the letter's
+`to` -- the actor of the record that created it, not the writer, which
+adoption changes. So a block the author added to the scoped store is not a
+result, and neither is an edited copy.
+
+    (ok (results (letter <main-letter-id>) (to <actor>)
+                 (blocks (block <id> (parent <id>|letter)
+                                (fields ((<field> <value> <actor>) ...))
+                                (about ((origin <id>)|(scoped <id>) ...))) ...))
+        (no-about <id>) ... (missing <id> <field>) ...)
+
+Each result's fields are its settled ones, each with the actor of the
+record that set it; its `parent` is another result's id or `letter`; an
+`about` edge is given as `(origin <id>)` when its target is a copy, else
+`(scoped <id>)`. A VERDICT is a result directly under the letter copy and
+a FINDING a result under a verdict: a finding with no `about` edge is
+listed as `(no-about <id>)`, and a verdict without one of `model`,
+`approval`, `sandbox` and `effort` as `(missing <id> <field>)`. Nothing is
+refused for either. A store that `scope` did not make is refused
+(`not-a-scoped-store`), and so is one whose letter copy has no `letter`
+yet (`letter-not-set`).
+
+### `collect-into`
+
+    (collect-into <letter-id> "--results" <datum>)
+
+Writes a `review-results` datum under the letter `<letter-id>` in this
+store, in two writes, each planned from the store as it is when the write
+holds the lock. The first inserts every result not collected before,
+under the letter or under its parent's copy, with its fields and one more,
+`scoped-id`; the second links each `about` edge that is not already there,
+to the origin id itself, or to the copy of a result. A copy is found by
+the `scoped-id` of the record that created it, not by its current fields
+or place, so a moved copy, or one whose field was changed since, is still
+the same copy; two copies of one result refuse with `(error
+collect-ambiguous (scoped-id <id>) (copies (<id> ...)))`. The records are
+the reader's: their actor is the datum's `to`. Neither write carries the request's identity, as a
+tracked write does: the second would be read as a replay of the first and
+not run. What makes a retry safe is the plan each write makes from the
+store as it finds it under the lock. A result whose parent is a result
+collected in the same call goes after it, whatever order the datum lists
+them in. The answer is
+
+    (ok (inserted <n>) (linked <n>) (already <n>) (unresolved <id> <target>) ...
+        (foreign-field <id> <field> <actor>) ...)
+
+`already` counts the edges that were there; `unresolved` names an `about`
+target that has no copy here to link -- a block in the scoped store that is
+neither a copy nor a result, such as a reader block deleted before it was
+ever collected, or a block the author added there -- and nothing is linked
+for it; `foreign-field` names each
+field another actor set on a result in the scoped store, which travels
+here under the reader's name. A second `collect-into` with the same datum
+inserts and links nothing; one stopped between its two writes, run again,
+inserts nothing and links what is missing; two at once take the store's
+lock in turn.
+
+### `collect`
+
+    (collect <dir>)
+
+Asks the store at `<dir>` for its `review-results` and gives them to this
+store's `collect-into`, each request on its own store's route, and answers
+`collect-into`'s answer with the `no-about` and `missing` lists after it.
+It writes nothing in `<dir>`. Like `scope`, its route is `child`: it runs
+in the command line's program or as the MCP shell's child, never in a
+daemon.
+
+### A review round
+
+The author runs `scope <dir> --cut <cut> --roots <id> --for codex`, and
+writes the questions on the letter copy in `<dir>`. The reader, in a
+FRESH session pointed at `<dir>` (its MCP shell started with `--store
+<dir>`, or `THEOURGIA_STORE=<dir>`), reads the copies at the baseline,
+writes a verdict section under the letter copy, with `model`, `approval`,
+`sandbox` and `effort`, and a finding section under the verdict for each
+finding, each with an `about` edge to the copy it concerns. The author
+runs `collect <dir>` and finds the verdict and the findings under the
+letter, their `about` edges on the original blocks. A finding's block
+still holds at the head of this store when `read --cut <cut>` and a read
+at the head agree, for as long as this store can serve the cut.
+
+### Codex as a reader
+
+Codex reaches a store through the MCP shell: `codex mcp add theourgia --
+<the command that starts the shell>`, with `THEOURGIA_ACTOR=codex` in its
+environment, gives its sessions the store's verbs as tools. Three routes
+then carry one message to it, and each one missing leaves the others:
+
+- THE HOOKS. `contrib/codex-hooks.json` runs `contrib/codex-mail.sh` on
+  `PostToolUse` (during a turn) and `UserPromptSubmit` (at the start of
+  one). The script asks the store named by `THEOURGIA_STORE` for the
+  unread mail of `THEOURGIA_ACTOR` and prints the hook's answer naming
+  each block, or nothing when there is none. Copy the file to
+  `~/.codex/hooks.json` with the script's path filled in.
+- THE DOORBELL, for a Codex idle at its prompt, where no hook runs.
+  `contrib/doorbell.sh <store> <actor> <tmux-target>` subscribes to the
+  store's changes and, for every block added, or whose `to` changed, that
+  is addressed to `<actor>` at the frame's cut, types one line into the
+  tmux pane `<tmux-target>`: `mail: block <id> at <cut>`. The message
+  itself never travels this way; the reader reads it at that cut.
+- THE READER'S OWN QUERY, the goal above, at any time.
+
+`contrib/AGENTS.md` is the text for the reader's side: how to read and
+answer mail, and the discipline both sides follow.
+
+### What this does not protect against
+
+The scoped store keeps a COOPERATING reader from seeing more than its
+roots -- the authors' notes, ledgers and earlier rounds are not in it. It
+does not keep out a reader that opens the main store's directory, states
+another actor's name, or reads the filesystem: on one machine the user
+owns every session, and an actor is a stated name. That is a cooperation
+assumption, not a property of locality. A block's text or a field may
+name an id outside the roots as a string. A reader's edits to the copies
+are not collected; the baseline keeps the copies as they were written.
+
+### Where this runs
+
+| | this program | a hosted service |
+|---|---|---|
+| transport | a local socket and the local filesystem | a network socket, relayed |
+| participants | sessions on one host, of any vendor | sessions on any host |
+| a reader's scope | a scoped store on the local filesystem | a scoped store served to a remote writer |
+| liveness | the change stream over the local socket | the change stream relayed |
+| more than one machine | asynchronous: a store kept in git is read on any clone | live |
+
+Nothing here puts a network socket into this program. A store cloned by
+git onto a second machine is read there; writing to one store from two
+machines is not built.
+
 ## Making and changing blocks
 
 Every verb here writes, and every write is one request with one answer.
@@ -3103,7 +3326,8 @@ dispatch events as `(trace <op> <path> <detail>)` lines on stderr.
 
 `theourgia-mcp` speaks MCP `2025-11-25` over stdio in front of the same
 dispatcher, one tool per catalogue verb it can carry out -- those routed to
-the daemon, and `eval`, run as its own child. See
+the daemon, and the ones routed `child` (`eval`, `scope` and `collect`), run
+as its own child. See
 [`mcp/README.md`](mcp/README.md) -- what a tool returns, why a core
 refusal comes back as a successful result, and how the shell branches on
 the transport's tag rather than on the answer's text. A tool's result text is
@@ -3121,7 +3345,8 @@ Code at the store -- see
 |---|---|---|
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. No source file here reads them; `eval --lang` WRITES them for its launcher, from the running process's own library directories and extensions (see `--lang`). |
 | `THEOURGIA_STORE` | `theourgia.sc`, `core.sc`, `theourgiad.sc` | the store to use when `--store` (and, for `serve`, the positional) is absent. Falls back to `.`. The MCP shell sets it to its own store for the `eval` child it runs |
-| `THEOURGIA_ACTOR` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | who the requests are from when `--actor` is absent. Empty is unset. Falls back to `USER`, then `cli` |
+| `THEOURGIA_ACTOR` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | who the requests are from when `--actor` is absent. Empty is unset. Falls back to `USER`, then `cli`. The MCP shell sets it to its own actor for the child it runs |
+| `THEOURGIA_SOCKET` | `core.sc` | for `scope` and `collect`, the main store's daemon socket when `--socket` is absent. Empty is unset. The MCP shell sets it to its own socket for the child it runs, so the child reaches the daemon the shell does |
 | `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes, `eval --working`'s view included. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry (`instances.sexp`) and its lock live. Empty is unset. Falls back to `$HOME/.theourgia` (`/tmp/.theourgia` with no `HOME`). When set, every process announces it on stderr at load as `(theourgia machine-home <value>)`, since it lets a process ignore a rollback the registry exists to catch |
 | `THEOURGIA_RUN` | `client.sc` (for `theourgia.sc`, `theourgiad.sc`, the daemon and `mcp/server.sc`) | the run root holding daemon sockets, their logs and the MCP shell's `eval` call directories. Empty is unset. Falls back to `$HOME/.theourgia/run`, or `/tmp/.theourgia/run` with no `HOME` |

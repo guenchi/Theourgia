@@ -125,6 +125,10 @@
         ;; `--for` names whose view a supply was projected from, and so
         ;; whose table it fills; "-" when absent.
         ((supply) '("--for"))
+        ;; A scope names its cut, its roots and its reader.
+        ((scope) '("--cut" "--roots" "--for"))
+        ;; The datum review-results answered, as text.
+        ((collect-into) '("--results"))
         ((reach) '("--rel" "--depth"))
         ;; A relation's declaration: its kind, and the selectors of its ends.
         ((relation) '("--as" "--from" "--to"))
@@ -160,8 +164,9 @@
   ;; is `<block>=<version>`; a commit naming exactly one block may give
   ;; the bare version, which is what the single-block callers already
   ;; wrote.
+  ;; A scope's roots are a set too, one `--roots` per root.
   (define (repeatable-options verb)
-    (case verb ((commit) '("--working-version")) (else '())))
+    (case verb ((commit) '("--working-version")) ((scope) '("--roots")) (else '())))
 
   (define (flag-options verb)
     (cons "--wire" (append (case verb

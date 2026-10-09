@@ -710,6 +710,15 @@
   ;; which answers both, use these.
   (define link-usage '(link <from> <rel> <to> ["--premises" <datum>]))
   (define unlink-usage '(unlink <from> <rel> <to> ["--premises" <datum>]))
+  ;; THE REVIEW CHANNEL'S FORMS. scope and collect are core.sc's programs and
+  ;; answer these through the catalogue; review-results and collect-into
+  ;; through channel-answer below. A required option is written bare, as
+  ;; insert's --title is.
+  (define scope-usage '(scope <dir> "--cut" <cut> "--roots" <id> "--for" <actor>))
+  (define collect-usage '(collect <dir>))
+  (define review-results-usage '(review-results))
+  (define collect-into-usage '(collect-into <letter-id> "--results" <datum>))
+
   (define relation-usage
     '(relation <name> ["--as" <kind>] ["--from" <selector>] ["--to" <selector>] ["--retire"] ["--premises" <datum>]))
 
@@ -758,6 +767,22 @@
   ;; NEVER: APPLYING A TEMPLATE IS ENTERED ON USE, as (theourgia derived) is
   ;; above: init answers every start that names no template without it.
   (define (template-entry name) (eval name (environment '(theourgia template))))
+
+  ;; NEVER: THE REVIEW CHANNEL IS ENTERED ON USE, for the same reason: only
+  ;; its verbs need it. Two of them are here, review-results and
+  ;; collect-into; scope and collect are programs core.sc runs (their route
+  ;; is `child`), never this dispatcher: each sends a store its own requests,
+  ;; and one of those stores may be served by the daemon that would be
+  ;; running it.
+  (define (channel-entry name) (eval name (environment '(theourgia channel))))
+
+  ;; THE USAGE FORM IS THE CATALOGUE'S, written there once: the channel
+  ;; answers the bare word `usage` for a request of the wrong shape.
+  (define (channel-answer name thunk)
+    (guarded
+      (lambda ()
+        (let ((a (thunk)))
+          (if (eq? a 'usage) (list 'usage (usage-form-of name)) a)))))
 
   ;; A new store, then the template applied to it in this process. The
   ;; answer is init's with what was applied and what it made; plain init's
@@ -1163,6 +1188,14 @@
             "List blocks whose writers disagree." #f 'daemon)
       (list 'subscribe subscribe-usage
             "Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave." #f 'stream)
+      (list 'scope scope-usage
+            "Make a new store at <dir> holding a letter to <actor> and a copy of each block under the roots as it was at the cut, each copy carrying origin (the block's id here) and origin-cut; the edges between copies are copied, an edge leaving the roots is dropped and listed, and a contested field is listed and not copied. The letter copy's baseline is the new store's cut after the copies. --roots is given once per root. One record is written here: the letter, at the top level, with to, status, cut, roots and scope. An existing <dir> is refused before anything is written, and so is a block or edge the write would refuse. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
+      (list 'collect collect-usage
+            "Bring a scoped store's review results back under its letter here: the blocks the letter's reviewer created in <dir>, with their settled fields, under the reviewer's name, and their about edges, to the origin of a copy or to the collected block. A second collect writes nothing new. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
+      (list 'review-results review-results-usage
+            "In a scoped store, list the review results as one datum: each live block the letter's reviewer created that is not a copy, with its parent, settled fields and the actor of each, and its about targets; a finding with no about and a verdict missing a condition field are listed." #f 'daemon)
+      (list 'collect-into collect-into-usage
+            "Write a review-results datum under a letter: the blocks not collected before, then the about edges not present, as the reviewer's records. Answers how many were inserted, linked and already linked, and every field another actor set." #f 'daemon)
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
 
@@ -2077,7 +2110,15 @@
       (cons 'subscribe
             (lambda (store actor args req options state writer cwd)
               (or (subscribe-shape-error args)
-                  '(error bad-request (reason needs-daemon)))))))
+                  '(error bad-request (reason needs-daemon)))))
+      (cons 'review-results
+            (lambda (store actor args req options state writer cwd)
+              (channel-answer 'review-results
+                (lambda () ((channel-entry 'review-results-verb) (reduction-for store state) args)))))
+      (cons 'collect-into
+            (lambda (store actor args req options state writer cwd)
+              (channel-answer 'collect-into
+                (lambda () ((channel-entry 'collect-into-verb) store args options)))))))
 
   (define verbs (verb-table))
 

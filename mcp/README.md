@@ -77,9 +77,9 @@ from.
 ## Before you start it
 
 NOTE: **Create the store first.** This shell has no local route: everything it
-lists but eval, it sends to that store's daemon -- and it asks that daemon for
-the tool list even before an eval -- and a daemon for a store that does not
-exist cannot start. Run
+lists but its child verbs (eval, scope and collect), it sends to that store's
+daemon -- and it asks that daemon for the tool list even before an eval --
+and a daemon for a store that does not exist cannot start. Run
 
     theourgia init --store <path>
 
@@ -94,8 +94,8 @@ shell can see without a restart.
 
 NEVER: **A verb this shell cannot carry out is not offered.** `describe` marks each
 verb `daemon`, `local` or `child`. `daemon` verbs are sent to the store's
-server; the one `child` verb, `eval`, is run as this shell's own child (see
-"Eval" below); the ones marked `local` are the ones a client runs in its
+server; the `child` verbs, `eval`, `scope` and `collect`, are run as this
+shell's own child (see "Eval" below); the ones marked `local` are the ones a client runs in its
 own process, and this shell has no such route. `init` is the case that
 matters: offered as a tool it could never succeed, because it is what creates
 the store there would otherwise be no daemon for — and an agent reading the
@@ -110,6 +110,12 @@ tool list would have been told a capability existed.
   the way hands them to a shell.
 * `eval` is a tool, `theourgia_eval`, carried out as this shell's child
   (see "Eval").
+* `scope` and `collect` are tools too, carried out the same way: the child
+  is `core.sc scope` or `core.sc collect`, a client of every store it
+  touches, never the daemon. Its environment carries this shell's actor
+  (`THEOURGIA_ACTOR`) and daemon socket (`THEOURGIA_SOCKET`), so its
+  requests are this shell's. Name `<dir>` by an absolute path: the child
+  runs in a directory of this shell's own.
 
 ## Eval
 
@@ -118,10 +124,12 @@ program the command line execs for `theourgia eval`, and returns its answer
 byte for byte. The daemon never runs user code, and the shell loads no core.
 
 * **The child's argv is the caller's, verbatim and alone**:
-  `<THEOURGIA_SCHEME or scheme> --script <core.sc beside this program> eval
-  <argv>`. The store, the wire mode and this session's writer travel in its
-  environment -- `THEOURGIA_STORE`, `THEOURGIA_WIRE=1` and
-  `THEOURGIA_WRITER=<the session's writer>`, each replacing any binding of
+  `<THEOURGIA_SCHEME or scheme> --script <core.sc beside this program> <verb>
+  <argv>`, the verb being the tool's (`eval`, `scope`, `collect`). The
+  store, the wire mode, this session's writer and this shell's actor and
+  daemon socket travel in its environment -- `THEOURGIA_STORE`,
+  `THEOURGIA_WIRE=1`, `THEOURGIA_WRITER=<the session's writer>`,
+  `THEOURGIA_ACTOR` and `THEOURGIA_SOCKET`, each replacing any binding of
   that name -- so a parse refusal is the one the command line gives for the
   same argv. A caller's own `--writer v` still wins. Its cwd is the shell's.
 * **The transport is not the caller's to name.** An argv that parses with

@@ -57,6 +57,7 @@
         ;; own setups are built from.
         (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs register-verbs!)
         (only (theourgia ffi) mkdir-p!)
+        (only (theourgia arguments) parse-arguments argument-positionals)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia request) ev-actor ev-payload actor-sub)
@@ -898,6 +899,9 @@
     (putenv "THEOURGIA_HOME" home)
     (cons store ext)))
 (define (census-ask store . req) (rpc-dispatch store req "census"))
+(define (census-scope st x s)
+  (let ((nodes (parse-arguments 'scope (list (string-append x "/scoped") "--cut" "t1" "--roots" (census-get s 'B) "--for" "codex"))))
+    ((eval 'scope-verb (environment '(theourgia channel))) st "census" (argument-positionals nodes) nodes #f)))
 
 ;; THE COMMON SEED. Each step is here because some verb needs it:
 ;;   P, C, then P deleted     C is an orphan, for conflicts
@@ -1076,6 +1080,17 @@
                           (set! census-diff-block (census-get s 'B))
                           (census-ask st 'diff "t0" "t1"))))
     (cons 'conflicts (seeded (lambda (st x s) (census-ask st 'conflicts))))
+    ;; THE REVIEW CHANNEL'S TWO DISPATCHER VERBS: a scope of B at t1 into a
+    ;; fresh directory first (scope is core.sc's program, run here through
+    ;; its library). Nothing in the scoped store was written by the letter's
+    ;; reader, so the results are empty and collect-into writes nothing.
+    (cons 'review-results (seeded (lambda (st x s)
+                                    (census-scope st x s)
+                                    (census-ask (string-append x "/scoped") 'review-results))))
+    (cons 'collect-into (seeded (lambda (st x s)
+                                  (let* ((a (census-scope st x s)) (l (cadr (assq 'letter (cdr a)))))
+                                    (census-ask st 'collect-into l "--results"
+                                                (format "~s" (list 'results (list 'letter l) '(to "codex") '(blocks))))))))
     ;; RESTORE'S OWN SETUP, never the common seed's: a committed version,
     ;; then a second record claiming its identity in another writer's
     ;; stream, which revokes it. Built as test/revoke-restore.sc builds it.
@@ -1232,8 +1247,8 @@
       '(read))
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
-      '(batch check context del describe discard export-code export-md import-md init insert
-        link move outline publish reach relation restore set snapshot split-suggest supply template unlink write))
+      '(batch check collect-into context del describe discard export-code export-md import-md init insert
+        link move outline publish reach relation restore review-results set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt subscribe))
@@ -1249,9 +1264,9 @@
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)
-      '((batch . batch) (check . check) (context . ok) (del . ok) (describe . ok) (discard . ok)
+      '((batch . batch) (check . check) (collect-into . ok) (context . ok) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
-        (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (set . ok)
+        (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (review-results . ok) (set . ok)
         (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))
 
 ;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A

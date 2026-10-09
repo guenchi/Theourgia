@@ -52,7 +52,7 @@
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
           state-structure reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
-          cut-covers? state-put-events state-field-events state-field-contested? state-block-ids state-link-events
+          cut-covers? state-put-events block-creation event-actor state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version
@@ -2352,6 +2352,64 @@
                            (event-applied? r event))
                       (cons event out)
                       out))))))
+
+  ;; THE STATED NAME OF A RECORD'S ACTOR: the string itself, or, for a
+  ;; record a request wrote, the name the request stated (its first
+  ;; element; request.sc, request-actor?). #f for anything else.
+  (define (actor-name a)
+    (cond ((string? a) a)
+          ((request-actor? a) (list-ref a 0))
+          (else #f)))
+
+  ;; ONE PASS OVER THE HISTORY, KEPT FOR THE LAST REDUCTION ASKED. The two
+  ;; accessors below are asked once per block by a caller walking a whole
+  ;; store -- at a write's locked planning point, among others -- and a scan
+  ;; of the history per question is the square of the store. The tables are
+  ;; built once and kept while the reduction, its history and its applied
+  ;; cut are the ones they were built from: a record can be in the history
+  ;; before it is applied, so the history alone does not say the tables
+  ;; still hold. ONE SLOT, AND THAT IS WHY THIS LIBRARY STAYS PURE R6RS: a
+  ;; table per reduction would need a weak table to let go of reductions
+  ;; nobody holds, and R6RS has none; one slot keeps at most one such
+  ;; reduction alive.
+  (define history-tables #f)
+  (define (history-table r)
+    (let* ((h (reduction-history r)) (cut (reduce-applied-cut r))
+           (have history-tables))
+      (if (and have (eq? (vector-ref have 4) r) (eq? (vector-ref have 0) h) (equal? (vector-ref have 1) cut))
+          have
+          (let ((creations (make-hashtable string-hash string=?))
+                (actors (make-hashtable equal-hash equal?)))
+            (for-each
+              (lambda (rec)
+                (let ((event (cons (rec-writer rec) (rec-seq rec))))
+                  (when (event-applied? r event)
+                    (hashtable-set! actors event (actor-name (rec-actor rec)))
+                    (when (and (pair? (rec-payload rec)) (eq? 'put (car (rec-payload rec)))
+                               (not (payload-reason (rec-payload rec))))
+                      (hashtable-set! creations (block-id (rec-writer rec) (rec-seq rec))
+                                      (cons (actor-name (rec-actor rec)) (rec-payload rec)))))))
+              h)
+            (let ((built (vector h cut creations actors r)))
+              (set! history-tables built)
+              built)))))
+
+  ;; WHO CREATED A BLOCK, AND WITH WHAT: the actor's stated name and the
+  ;; payload of the applied creating put -- the record `state-put-events`
+  ;; selects, whose event names the block (block-id) -- or #f when no such
+  ;; put is applied. A block's identity and its author are what it was
+  ;; created with, read through the history the reduction keeps for the
+  ;; store's life, not a field that a later set can change. -> (actor .
+  ;; payload) or #f.
+  (define (block-creation r id)
+    (hashtable-ref (vector-ref (history-table r) 2) id #f))
+
+  ;; WHO WROTE AN APPLIED EVENT: its record's actor's stated name, or #f. A
+  ;; store has one log writer, so the event id names the store, not the
+  ;; session that asked for the write; the actor is what tells two writers
+  ;; of one block's fields apart.
+  (define (event-actor r event)
+    (hashtable-ref (vector-ref (history-table r) 3) event #f))
 
   ;; THE LINK EVENTS THAT STILL HOLD ONE EDGE UP, as event ids. An edge is
   ;; one set element however many links made it, and an unlink removes only

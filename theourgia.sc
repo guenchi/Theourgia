@@ -58,10 +58,13 @@
 ;; which is the server's business, and it travels through untouched.
 (define where-options '("--store" "--actor" "--socket"))
 
-;; NEVER: THESE THREE RUN HERE, NOT OVER A SOCKET. `init` has no daemon to
+;; NEVER: THESE RUN HERE, NOT OVER A SOCKET. `init` has no daemon to
 ;; talk to yet -- it is what creates the store. `serve` IS the daemon.
 ;; `eval` runs a child process under a supervisor that has to be this
 ;; process's child, and a daemon cannot hand that back down a socket.
+;; `scope` and `collect` are programs that send two stores their own
+;; requests, each through its own route; like `eval`, the catalogue routes
+;; them `child`.
 ;;
 ;; NOTE: THIS IS THE COMMAND LINE'S OWN BOOTSTRAP LIST, and it stays one. It
 ;; has to be known before anybody can be asked, so it is not read from the
@@ -69,7 +72,7 @@
 ;; is routed `local`, `eval` is routed `child` (the MCP shell runs core.sc
 ;; as its child; this program execs it) -- and `describe.sc` compares the
 ;; two.
-(define local-verbs '(init serve eval))
+(define local-verbs '(init serve eval scope collect))
 
 (define (local-by-name? verb) (memq verb local-verbs))
 

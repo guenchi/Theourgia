@@ -474,13 +474,16 @@
           (else (loop (cdr xs) (cons (list (car xs) 'routed-to-the-daemon) bad)))))
       '())
 
-;; NEVER: `child` IS ONE VERB'S ROUTE, AND IT IS NOT A DISPATCHER VERB. The
-;; exception DS-1 makes is this entry and nothing else: a second child
-;; entry, or eval also appearing in the dispatcher's table, turns this red
-;; and somebody decides.
-(want "DS-6 eval is in the catalogue with route child, is the only such entry, and is not a dispatcher verb"
-      (list catalogue-child (and (memq 'eval (rpc-verbs)) #t))
-      (list '("eval") #f))
+;; NEVER: `child` IS THREE VERBS' ROUTE, AND NONE OF THEM IS A DISPATCHER
+;; VERB. The exception DS-1 makes is these entries and nothing else: eval,
+;; and the review channel's two programs, scope and collect, which send
+;; stores their own requests and so must never run inside a daemon. A
+;; fourth child entry, or any of the three appearing in the dispatcher's
+;; table, turns this red and somebody decides.
+(want "DS-6 eval, scope and collect are the catalogue's child entries, and none is a dispatcher verb"
+      (list (list-sort string<? catalogue-child)
+            (filter (lambda (v) (memq v (rpc-verbs))) '(eval scope collect)))
+      (list '("collect" "eval" "scope") '()))
 
 ;; NEVER: AND A DAEMON STILL DOES NOT CARRY IT OUT. eval is advertised; the
 ;; dispatcher answers a request naming it as it answers any verb it does
@@ -489,6 +492,10 @@
       (let ((a (rpc-dispatch store '(eval "(+ 1 2)") "test")))
         (and (pair? a) (list (car a) (cadr a))))
       '(error unknown-verb))
+(want "DS-6 scope and collect sent to the dispatcher are unknown verbs too"
+      (map (lambda (req) (let ((a (rpc-dispatch store req "test"))) (and (pair? a) (list (car a) (cadr a)))))
+           '((scope "x" "--cut" "()" "--roots" "a" "--for" "b") (collect "x")))
+      '((error unknown-verb) (error unknown-verb)))
 
 ;; NEVER: AND THE EXEMPTION IS NOT A HOLE: the name it covers must really be
 ;; absent from the catalogue. If `serve` ever became a core verb this row
