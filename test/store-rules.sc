@@ -22,14 +22,14 @@
 ;; write is judged by a rule in this build.
 
 (import (chezscheme) (theourgia rpc)
-        (only (theourgia reduce) block-id reduce-applied-cut state-hash state-declared-rules
+        (only (theourgia reduce) block-id reduce-applied-cut state-hash
               state-edges state-read state-datum state->rows reduce-empty reduce-apply! reduce-gates)
         (only (theourgia request) intent-produced?)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia store) open-and-reduce)
         (only (theourgia wire) encode-record storable-encode sexpr->string-extended)
         (only (theourgia log) log-publish! segment-sha)
-        (only (theourgia query) fact-relations relation-external? rule-value-check))
+        (only (theourgia query) fact-relations))
 
 (define bad 0)
 (define rows 0)
@@ -67,6 +67,11 @@
 (define (one a key) (let ((c (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) key))) (cdr a))))) (and c (cadr c))))
 (define (edges id) (cdr (assq 'edges (state-read (state) id))))
 (define (conflict-items) (let ((a (run 'conflicts))) (cdr (assq 'items (cdr a)))))
+;; THE NAMES THIS CHANGE ADDS ARE LOOKED UP WHEN THEY ARE CALLED, not
+;; imported: on a tree without them the rows still run and say what is
+;; missing, instead of the whole file failing to load.
+(define (state-declared-rules r) ((eval 'state-declared-rules (environment '(theourgia reduce))) r))
+(define (relation-external? x) ((eval 'relation-external? (environment '(theourgia query))) x))
 ;; describe reads the declared tables from the state it is handed: in process
 ;; it is handed one.
 (define (describe-of store) (cdr (rpc-dispatch store '(describe) "author" (open-and-reduce store))))
@@ -74,6 +79,20 @@
 (run 'init)
 (define writer (car (car (reduce-applied-cut (state)))))
 (define Y (new-id (run 'insert "--title" "Y")))
+
+;; A PLAN'S MEMBER DECLARED UNDER AN EXPECT WRAPPER is the record of the intent
+;; inside it. The insert row is about the tree before this change too: it read
+;; such a member as not produced (no expect case in intent-produced?).
+(want "B a member declared as (expect h (insert ...)) is the record of the insert, and not of another"
+      (in-order (intent-produced? '(expect "h" (insert root #f ((kind . section) (title . "x"))))
+                                  '(put ((kind . section) (title . "x") (parent . root) (ord . 1))))
+                (intent-produced? '(expect "h" (insert root #f ((kind . section) (title . "x"))))
+                                  '(put ((kind . section) (title . "y") (parent . root) (ord . 1)))))
+      '(#t #f))
+(want "B a member declared as (expect h (link ...)) is the record of the link, and not of another"
+      (in-order (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "b"))
+                (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "c")))
+      '(#t #f))
 
 (want "N a store with no rule hashes as before: the blocks' datum alone"
       (let ((st (state)))
@@ -204,10 +223,6 @@
 (want "R a rule intent with a part past its value is refused, not written shortened"
       (list-head (batch-first (list (list 'rule 'long '((class state) (on section) (must (title ?w ?t))) 'extra))) 3)
       '(error malformed-intent (too-many-arguments (verb rule) (given 3) (needs 2))))
-(want "B a plan's member declared under an expect wrapper is the record of the intent inside it"
-      (in-order (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "b"))
-                (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "c")))
-      '(#t #f))
 
 ;; ---- liveness: the candidate rule a declaration has ------------------------------------
 
