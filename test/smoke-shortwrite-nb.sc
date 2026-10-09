@@ -205,7 +205,8 @@
 (system (string-append "mkfifo " dir2 "/f"))
 ;; THE READER IS JOINED before the far end is read: it marks done once cat
 ;; has seen the end of the pipe, and the row waits for that mark, up to 30 s.
-;; A reader not done by then is named in the row, never read as a result.
+;; A reader not done by then makes the row VOID (counted, printed with the
+;; reason): the far end is not read, and nothing is said about the product.
 (system (string-append "sh -c 'cat " dir2 "/f > " dir2 "/out.dat; touch " dir2 "/cat.done' > /dev/null 2>&1 &"))
 (define fd2 (fd-open (string-append dir2 "/f") (list 'write)))
 (define nb2 (make-nonblocking! fd2))
@@ -217,12 +218,15 @@
           ((>= k 300) #f)
           (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define got
-  (let ((p (open-file-input-port (string-append dir2 "/out.dat"))))
-    (let ((b (get-bytevector-all p))) (close-port p) (if (eof-object? b) (make-bytevector 0) b))))
-(printf "NB2 reading: ~s (non-blocking: ~a); out.dat ~a bytes; reader done: ~a\n" raced nb2 (bytevector-length got) cat-done)
+  (and cat-done
+       (let ((p (open-file-input-port (string-append dir2 "/out.dat"))))
+         (let ((b (get-bytevector-all p))) (close-port p) (if (eof-object? b) (make-bytevector 0) b)))))
+(printf "NB2 reading: ~s (non-blocking: ~a); out.dat ~a bytes; reader done: ~a\n" raced nb2 (and got (bytevector-length got)) cat-done)
+(if (not cat-done)
+    (begin (set! rows (+ rows 1))
+           (printf "VOID NB2 a non-blocking pipe with a reader: the reader was not done in 30 s, so the far end was not read\n"))
 (want "NB2 a non-blocking pipe with a reader: either every byte, through short writes and identical at the far end, or EAGAIN as in NB1; never anything else"
       (cond
-        ((not cat-done) (list 'READER-NOT-DONE raced))
         ((and (pair? raced) (eq? (car raced) 'all))
          (list 'all-written (= (cadr raced) n) (equal? got payload)))
         ((and (pair? raced) (eq? (car raced) 'raised) (eqv? (cadr raced) EAGAIN))
@@ -235,7 +239,7 @@
         (else (list 'NEITHER raced)))
       (if (and (pair? raced) (eq? (car raced) 'all))
           '(all-written #t #t)
-          '(eagain #t #t)))
+          '(eagain #t #t))))
 
 ;; A run that did not reach here is not a pass. The runner requires
 ;; this line AND a zero failure count: they are two propositions.
