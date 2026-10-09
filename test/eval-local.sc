@@ -406,6 +406,8 @@
             '(option "--output-bytes" (reason out-of-range) (range 128 1048576))))
 
 ;; ---- EV-15 no source at all is answered with the usage form --------------------
+;; KNOWN GAP, KEPT: with every slot of the pool held the answer is eval-busy,
+;; not usage, since the slot is taken before standard input is read.
 (define (cli-no-input . args)
   (let ((out (string-append here "/no-input.txt")))
     (system (string-append
