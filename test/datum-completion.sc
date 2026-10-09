@@ -77,9 +77,11 @@
 (define (src id)
   (let* ((b (state-read (state) id)) (p (and b (assq 'src (cdr (assq 'fields b))))))
     (and p (cdr p))))
-;; #t when WANTED is X or appears anywhere inside it.
+;; #t when X, or a list anywhere inside it, BEGINS with WANTED: a refusal
+;; carries clauses after its own (commit's answer appends its usage).
 (define (holds? x wanted)
-  (or (equal? x wanted) (and (pair? x) (or (holds? (car x) wanted) (holds? (cdr x) wanted)))))
+  (or (and (list? x) (>= (length x) (length wanted)) (equal? (list-head x (length wanted)) wanted))
+      (and (pair? x) (or (holds? (car x) wanted) (holds? (cdr x) wanted)))))
 
 ;; A text block T, and a datum definition D.
 (define T
@@ -127,7 +129,7 @@
   (encode-record 1 1789000000007 (list who (request-identity after "R7") 'plan fingerprint (list-ref a0 4) after)
                  plan-deps (storable-encode plan-payload)))
 (want "DC-SETUP the forged plan's past holds every writer of the store, it publishes, and D holds no src"
-      (let* ((covers (and (pair? plan-deps) (for-all (lambda (w) (assoc w plan-deps)) (list writer))))
+      (let* ((covers (and (pair? plan-deps) (assoc writer plan-deps) #t))
              (published (car (log-publish! store "planzzzz" 1 plan-record (segment-sha plan-record))))
              (d-src (src D)))
         (list covers published d-src))
