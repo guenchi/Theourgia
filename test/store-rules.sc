@@ -1,0 +1,275 @@
+#!r6rs
+;; Copyright 2018 - 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; RULES OF THE STORE, STORED AND LISTED; BACK-REFERENCES AT AN EDGE'S ENDS.
+;;
+;; Two things a later build judges writes with, here only written, kept and
+;; read back: a batch can create a block and link it in one request, and a
+;; store can hold rules -- declared, checked when declared, kept as
+;; candidates of their names, listed by describe, check and conflicts. No
+;; write is judged by a rule in this build.
+
+(import (chezscheme) (theourgia rpc)
+        (only (theourgia reduce) block-id reduce-applied-cut state-hash state-declared-rules
+              state-edges state-read)
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia wire) encode-record storable-encode)
+        (only (theourgia log) log-publish! segment-sha)
+        (only (theourgia query) fact-relations relation-external? rule-value-check))
+
+(define bad 0)
+(define rows 0)
+(define-syntax in-order
+  (syntax-rules ()
+    ((_) '())
+    ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
+(define (want-1 name got expected)
+  (set! rows (+ rows 1))
+  (if (equal? got expected)
+      (printf "ok   ~a\n" name)
+      (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
+(define-syntax want
+  (syntax-rules ()
+    ((_ name got expected)
+     (want-1 name
+             (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+                                             (condition-message e) e)
+                                 (if (and (condition? e) (irritants-condition? e)) (condition-irritants e) '()))))
+               got)
+             expected))))
+
+(define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/store-rules-" (number->string (get-process-id))))
+(system (string-append "rm -rf '" root "'; mkdir -p '" root "/home'"))
+(putenv "THEOURGIA_HOME" (string-append root "/home"))
+(define S (string-append root "/s"))
+(define (run . args) (rpc-dispatch S args "author"))
+(define (state) (open-and-reduce S))
+(define (events) (apply + (map cdr (reduce-applied-cut (state)))))
+(define (new-id a)
+  (let* ((ev (and (pair? a) (eq? (car a) 'ok) (assq 'events (cdr a))))
+         (e (and ev (pair? (cadr ev)) (car (cadr ev)))))
+    (and (pair? e) (block-id (car e) (cdr e)))))
+(define (item-ids a) (map new-id (cadr a)))
+(define (one a key) (let ((c (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) key))) (cdr a))))) (and c (cadr c))))
+(define (edges id) (cdr (assq 'edges (state-read (state) id))))
+(define (conflict-items) (let ((a (run 'conflicts))) (cdr (assq 'items (cdr a)))))
+
+(run 'init)
+(define writer (car (car (reduce-applied-cut (state)))))
+(define Y (new-id (run 'insert "--title" "Y")))
+
+;; ---- back-references at a link's and an unlink's ends ------------------------------
+
+(define b1b (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "X")))
+                                           (list 'link '(from 0) 'relates Y)
+                                           (list 'link Y 'relates '(from 0))))))
+(define X (car (item-ids b1b)))
+(want "B a batch creates a block and links it, from and to, through (from 0)"
+      (in-order (car b1b) (edges X) (and (member (cons 'relates X) (edges Y)) #t))
+      (list 'batch (list (cons 'relates Y)) #t))
+(define b2 (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "Z")))
+                                          (list 'link '(from 0) 'relates Y)
+                                          (list 'unlink '(from 0) 'relates Y)))))
+(want "B a link then an unlink of the same new block in one batch leaves no edge"
+      (in-order (car b2) (edges (car (item-ids b2))))
+      '(batch ()))
+(want "B a back-reference at a link's end naming no insert is no-such-intent; one that is not a form is malformed"
+      (in-order (let ((a (run 'batch (format "~s" (list (list 'link '(from 5) 'relates Y))))))
+                  (list-head (car (cadr a)) 3))
+                (let ((a (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "W")))
+                                                        (list 'link Y 'relates Y)
+                                                        (list 'link '(from 1) 'relates Y))))))
+                  (list-head (list-ref (cadr a) 2) 3))
+                (let ((a (run 'batch (format "~s" (list (list 'link '(from) 'relates Y))))))
+                  (list-head (car (cadr a)) 2)))
+      (list '(error no-such-intent 5) '(error no-such-intent 1) '(error malformed-intent)))
+(define (cursor) (string-append writer ":" (number->string (cdr (assoc writer (reduce-applied-cut (state)))))))
+(define tracked (format "~s" (list '(insert root #f ((kind . section) (title . "T")))
+                                   (list 'link '(from 0) 'relates Y))))
+(define c0 (cursor))
+(define t1 (run 'batch tracked "--req" "RULES-T1" "--cursor" c0))
+(define after-t1 (events))
+(define t2 (run 'batch tracked "--req" "RULES-T1" "--cursor" c0))
+(want "B a tracked batch with a link through (from 0): written once, and the same request again writes nothing"
+      (in-order (car t1) (edges (car (item-ids t1))) (- (events) after-t1)
+                (conflict-items))
+      (list 'batch (list (cons 'relates Y)) 0 '()))
+
+;; ---- the rule verb -------------------------------------------------------------------
+
+(define before-rule (events))
+(define r1 (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)"))
+(want "R a rule is written as one record, in its one form, a state rule"
+      (in-order (car r1) (- (events) before-rule) (state-declared-rules (state)))
+      (list 'ok 1 '((sections-titled ((class state) (on section) (must (title ?w ?t)))))))
+(define r2 (run 'rule "reviews-carry" "--on" "doc" "--on" "section" "--where" "(field+ ?w \"slot\" \"review\")" "--must" "(receipt-carried)"))
+(want "R a goal that names a fact only a rule check has makes a write rule; --on repeats; where comes before must"
+      (in-order (car r2) (assq 'reviews-carry (state-declared-rules (state))))
+      (list 'ok '(reviews-carry ((class write) (on doc section) (where (field+ ?w "slot" "review")) (must (receipt-carried))))))
+(define n-before (events))
+(want "R the same rule again answers unchanged and writes nothing"
+      (in-order (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)") (- (events) n-before))
+      '((ok (unchanged)) 0))
+(run 'rule "sections-titled" "--on" "section" "--must-not" "(title ?w \"forbidden\")")
+(want "R another value replaces the one in force"
+      (assq 'sections-titled (state-declared-rules (state)))
+      '(sections-titled ((class state) (on section) (must-not (title ?w "forbidden")))))
+(run 'rule "cover" "--builtin" "citation-coverage")
+(want "R a built-in is enabled by name"
+      (assq 'cover (state-declared-rules (state)))
+      '(cover ((builtin citation-coverage))))
+(want "R describe lists the rules in force, check lists each but the built-in as skipped, verdict unchanged"
+      (in-order (map car (cdr (assq 'declared-rules (cdr (run 'describe)))))
+                (cdr (assq 'rules (cdr (run 'check))))
+                (cadr (assq 'verdict (cdr (run 'check)))))
+      (list '(cover reviews-carry sections-titled)
+            '((rule-skipped (rule reviews-carry) (reason write-rule))
+              (rule-skipped (rule sections-titled) (reason not-evaluated)))
+            'ok))
+(run 'rule "cover" "--retire")
+(want "R a retired rule is no longer in force or listed"
+      (in-order (map car (state-declared-rules (state)))
+                (map car (cdr (assq 'declared-rules (cdr (run 'describe))))))
+      '((reviews-carry sections-titled) (reviews-carry sections-titled)))
+
+;; ---- what a rule may say ---------------------------------------------------------------
+
+(define (refusal . args) (let ((a (apply run 'rule "r" args))) (if (pair? a) (list-head a (min 4 (length a))) a)))
+(want "R a goal naming a relation that reads outside the log is refused, as a fact and through a rule"
+      (map (lambda (g) (refusal "--on" "code" "--must" g))
+           '("(score ?w \"x\" ?s)" "(uses-name ?w ?n)" "(def ?w ?l ?n)" "(def-for ?w ?n ?d)" "(ambiguous ?w ?n)"))
+      '((error bad-request rule-relation-not-allowed (relation score))
+        (error bad-request rule-relation-not-allowed (relation uses-name))
+        (error bad-request rule-relation-not-allowed (relation def))
+        (error bad-request rule-relation-not-allowed (relation def-for))
+        (error bad-request rule-relation-not-allowed (relation ambiguous))))
+(want "R an unknown relation, a wrong arity, an unknown kind and an unknown built-in are refused"
+      (in-order (list-head (refusal "--on" "section" "--must" "(nosuch ?w)") 3)
+                (list-head (refusal "--on" "section" "--must" "(title ?w)") 3)
+                (list-head (refusal "--on" "widget" "--must" "(title ?w ?t)") 3)
+                (list-head (refusal "--builtin" "nosuch") 3))
+      '((error bad-request unknown-relation) (error bad-request wrong-arity)
+        (error bad-request kind-not-known) (error bad-request builtin-rule-not-known)))
+(want "R a rule without --on, with both --must and --must-not, or with neither, answers usage"
+      (map (lambda (args) (car (apply run 'rule "r" args)))
+           '(("--must" "(title ?w ?t)") ("--on" "section" "--must" "(title ?w ?t)" "--must-not" "(title ?w ?t)")
+             ("--on" "section")))
+      '(usage usage usage))
+(want "R nothing was written by a refused rule"
+      (assq 'r (state-declared-rules (state)))
+      #f)
+(define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
+(want "R a rule intent in a batch is written in its one form, and refused with the form in another"
+      (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
+                (list-head (batch-first (list (list 'rule 'out-of-order '((must (title ?w ?t)) (on section))))) 3))
+      '(ok (error bad-request rule-not-in-its-form)))
+
+;; ---- liveness: the candidate rule a declaration has ------------------------------------
+
+;; A second writer's rule of the same name, concurrent with the local one:
+;; its record depends on the local writer only up to before the local rule.
+(define before-local (cdr (assoc writer (reduce-applied-cut (state)))))
+(run 'rule "contested-one" "--on" "section" "--must" "(title ?w ?t)")
+(define forged
+  (encode-record 1 1789000000001 "peer" (list (cons writer before-local))
+                 (storable-encode (list 'rule 'contested-one '((class state) (on doc) (must (title ?w ?t)))))))
+(log-publish! S "rulezzzz" 1 forged (segment-sha forged))
+(want "C two writers' concurrent rules of one name: contested, not in force, listed by conflicts with both"
+      (in-order (assq 'contested-one (state-declared-rules (state)))
+                (let ((c (find (lambda (x) (and (pair? x) (eq? (car x) 'rule-contested))) (conflict-items))))
+                  (and c (list (cadr c) (length (cdr (caddr c)))))))
+      '(#f (contested-one 2)))
+(run 'rule "contested-one" "--on" "decision" "--must" "(title ?w ?t)")
+(want "C a writer who has seen both declares again, and the rule is in force"
+      (in-order (assq 'contested-one (state-declared-rules (state)))
+                (find (lambda (x) (and (pair? x) (eq? (car x) 'rule-contested))) (conflict-items)))
+      '((contested-one ((class state) (on decision) (must (title ?w ?t)))) #f))
+
+;; ---- replay and snapshot keep the rules ----------------------------------------------
+
+(define rules-before (state-declared-rules (state)))
+(define hash-before (state-hash (state)))
+(want "K a snapshot and the state read from it hold the same rules and the same hash"
+      (in-order (car (run 'snapshot)) (equal? (state-declared-rules (state)) rules-before) (equal? (state-hash (state)) hash-before))
+      '(ok #t #t))
+(define S2 (string-append root "/s2"))
+(system (string-append "cp -R '" S "' '" S2 "' && rm -rf '" S2 "/snap'"))
+(want "K a replay of the log alone holds the same rules and the same hash"
+      (in-order (equal? (state-declared-rules (open-and-reduce S2)) rules-before) (equal? (state-hash (open-and-reduce S2)) hash-before))
+      '(#t #t))
+
+;; ---- the stored/external marking, against the providers ------------------------------
+;;
+;; A fact is external when its provider reads outside the log: the name-use
+;; table, the defs index, the keyword hook, the language catalogue or a
+;; derived table. The providers are read from query.sc as data -- the arms
+;; of `build` and of `fact-tuples` -- and the names they use compared with the
+;; table's fourth column.
+(define query-forms
+  (call-with-input-file "../query.sc"
+    (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
+(define (find-define forms name)
+  (let walk ((x forms))
+    (cond ((not (pair? x)) #f)
+          ((and (eq? (car x) 'define) (pair? (cdr x)) (pair? (cadr x)) (eq? (car (cadr x)) name)) x)
+          (else (or (walk (car x)) (walk (cdr x)))))))
+(define (case-arms form)
+  (let walk ((x form))
+    (cond ((not (pair? x)) '())
+          ((and (eq? (car x) 'case) (pair? (cdr x)) (eq? (cadr x) 'rel)) (cddr x))
+          (else (append (walk (car x)) (walk (cdr x)))))))
+(define (symbols-in x)
+  (cond ((symbol? x) (list x)) ((pair? x) (append (symbols-in (car x)) (symbols-in (cdr x)))) (else '())))
+(define outside-markers '("name-use" "defs-index" "keyword" "language" "derived" "view-read"))
+(define (reads-outside? arm)
+  (exists (lambda (sym)
+            (let ((t (symbol->string sym)))
+              (exists (lambda (m) (let ((n (string-length m)))
+                                    (let loop ((i 0)) (cond ((> (+ i n) (string-length t)) #f)
+                                                            ((string=? (substring t i (+ i n)) m) #t)
+                                                            (else (loop (+ i 1)))))))
+                      outside-markers)))
+          (symbols-in (cdr arm))))
+(define provider-arms
+  (append (case-arms (find-define query-forms 'build))
+          (filter (lambda (a) (and (pair? (car a)) (memq 'score (car a))))
+                  (case-arms (find-define query-forms 'fact-tuples)))))
+(define read-outside
+  (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+             (apply append (map (lambda (a) (if (and (pair? (car a)) (reads-outside? a)) (car a) '())) provider-arms))))
+(want "M the facts marked external are exactly those whose providers read outside the log"
+      (in-order read-outside
+                (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+                           (map car (filter (lambda (f) (eq? (list-ref f 3) 'external)) fact-relations))))
+      '((def score uses-name) (def score uses-name)))
+(want "M CONTROL: every fact has a provider arm the census read, and the library's rules over them are external too"
+      (in-order (filter (lambda (f) (not (exists (lambda (a) (and (pair? (car a)) (memq (car f) (car a)))) provider-arms)))
+                        (map car (filter (lambda (f) (not (memq (car f) '(edge-kind moved-kind)))) fact-relations)))
+                (map relation-external? '(def-for ambiguous scope-name depends title)))
+      '(() (#t #t #f #f #f)))
+
+;; ---- a store made from the project template holds no rule ---------------------------
+
+(define P (string-append root "/project"))
+(rpc-dispatch P '(init "--template" "project") "author")
+(want "P a fresh project store has no rule record, and describe and check list none"
+      (in-order (state-declared-rules (open-and-reduce P))
+                (assq 'declared-rules (cdr (rpc-dispatch P '(describe) "author")))
+                (assq 'rules (cdr (rpc-dispatch P '(check) "author"))))
+      '(() #f #f))
+
+(system (string-append "rm -rf '" root "'"))
+(printf "\n~a failures\nrows: ~a\nstore-rules complete\n" bad rows)
+(exit (if (= bad 0) 0 1))

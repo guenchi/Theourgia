@@ -6,7 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; The review channel's four verbs join the catalogue; the two the dispatcher
-;; carries join the verb list an unknown verb is answered with.
-((describe "describe lists scope, collect, review-results and collect-into")
- (no-such-verb "the unknown-verb refusal's verb list names review-results and collect-into"))
+;; The rule verb joins the catalogue, and the verb list an unknown verb is
+;; answered with.
+((describe "describe lists the rule verb")
+ (no-such-verb "the unknown-verb refusal's verb list names rule"))
