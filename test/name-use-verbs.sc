@@ -327,7 +327,7 @@
 (want "K10 this repository's own code: latest-parent-cut and datum-names, counted by hand"
       (in-order (datum-uses (internal-define "../working.sc" 'latest-parent-cut))
                 (datum-uses (internal-define "../datum-code.sc" 'datum-names)))
-      '((car cdr cut-covers? fold-left pair?)
+      '((car cdr cut-covers? fold-left for-all pair?)
         (= > >= append apply assq cadddr caddr cadr car cddr cdr eq? for-all
          length list list? map memq not pair? record-definition-shape?
          string->symbol string-append symbol->string symbol?)))

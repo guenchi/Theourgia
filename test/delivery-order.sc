@@ -32,10 +32,21 @@
 ;;        listing ordered by origin and then by the put's (writer, seq) --
 ;;        needs no delivery order.
 ;;   DO-3 the consumption index (fill-seen-from-history!,
-;;        rebuild-consumption-from-history!): keyed tables; its product
-;;        readers (state-consumed?, state-revoked, state-consumed-parent-cuts,
-;;        in working.sc) need no delivery order. state-seen keeps its
-;;        candidates newest-delivered first and has no product reader.
+;;        rebuild-consumption-from-history!): keyed tables; state-consumed?
+;;        needs no order; state-consumed-parent-cuts gives its cuts in
+;;        delivery order, compared here as a set -- its order is read by
+;;        DO-4. state-seen keeps its candidates newest-delivered first and
+;;        has no product reader.
+;;   DO-4 working's latest-parent-cut, over those cuts: the cut that covers
+;;        every other, wherever it stands in the list -- it gave up at the
+;;        first pair not ordered, so (A B C) and (C A B) answered apart.
+;;   DO-5 state-revoked: one plan event per version, the smallest by
+;;        (writer, seq) -- it kept the first met, in gate order, which is
+;;        delivery order; drafts prints it.
+;;   baseline-touching (baseline.sc) reads request-history and sorts it by
+;;        causal weight, writer and seq, a total order: needs none.
+;;   plan-members-applied (completion.sc) walks request-history; its readers
+;;        sort the member indices or look up by index: needs none.
 ;;   NOT HERE, DELIVERY ORDER BY DESIGN: rebuild-request-state! refolds the
 ;;        history as delivered (relation-effects RE-9's rebuild row,
 ;;        consumption-index CI-17), and state->rows / rows->state keep it
@@ -48,7 +59,8 @@
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia reduce) reduce-empty reduce-apply! block-id state-put-events
               state-reserved-relation-records state-consumed? state-revoked
-              state-consumed-parent-cuts state-seen))
+              state-consumed-parent-cuts state-seen reduce-gates)
+        (only (theourgia working) latest-parent-cut))
 
 (define bad 0)
 (define rows 0)
@@ -98,6 +110,10 @@
         (else #f)))
 (define (by-print xs) (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b))) xs))
 
+;; EACH READER ROW CARRIES ITS CONSTRUCTION: a store whose snapshot was not
+;; taken replays in full on both routes, and a reader row that did not ask
+;; would read green with the two orders never built.
+
 ;; ---- DO-1 check's reserved-relations clause -----------------------------------
 ;;
 ;; Records under a reserved relation name can only be another writer's (the
@@ -120,16 +136,17 @@
     ("aaaa0000.9" uses "bbbb0000.9" (event "aaaa0000" 2))
     ("bbbb0000.9" guards "aaaa0000.9" (event "bbbb0000" 1))))
 
+(define built1
+  (let ((a (state-reserved-relation-records seeded1)) (b (state-reserved-relation-records replayed1)))
+    (and (equal? (by-print a) (by-print b)) (not (equal? a b)) (= 3 (length a)))))
 (want "DO-1 THE CONSTRUCTION: the two routes hold the same reserved records in two delivery orders"
-      (let ((a (state-reserved-relation-records seeded1)) (b (state-reserved-relation-records replayed1)))
-        (list (equal? (by-print a) (by-print b)) (equal? a b) (length a)))
-      '(#t #f 3))
+      built1 #t)
 (want "DO-1 check prints the reserved-relations clause sorted by event, writer then seq, on the snapshot-seeded route"
-      (clause-in (ask-with S1 seeded1 'check) 'reserved-relations)
-      (list 'reserved-relations expected-reserved))
+      (list built1 (clause-in (ask-with S1 seeded1 'check) 'reserved-relations))
+      (list #t (list 'reserved-relations expected-reserved)))
 (want "DO-1 and the same clause, byte for byte, on the full replay"
-      (format "~s" (clause-in (ask-with S1copy replayed1 'check) 'reserved-relations))
-      (format "~s" (list 'reserved-relations expected-reserved)))
+      (list built1 (format "~s" (clause-in (ask-with S1copy replayed1 'check) 'reserved-relations)))
+      (list #t (format "~s" (list 'reserved-relations expected-reserved))))
 
 ;; ---- DO-2 commitments ---------------------------------------------------------
 ;;
@@ -150,16 +167,17 @@
 (define-caught seeded2 (open-and-reduce S2))
 (define-caught replayed2 (open-and-reduce S2copy))
 
+(define built2
+  (let ((a (state-put-events seeded2)) (b (state-put-events replayed2)))
+    (and (equal? (by-print a) (by-print b)) (not (equal? a b)))))
 (want "DO-2 THE CONSTRUCTION: the two routes give the same puts in two delivery orders"
-      (let ((a (state-put-events seeded2)) (b (state-put-events replayed2)))
-        (list (equal? (by-print a) (by-print b)) (equal? a b)))
-      '(#t #f))
+      built2 #t)
 (want "DO-2 commitments --all answers byte for byte alike on the two routes, three decisions"
       (let ((a (ask-with S2 seeded2 'commitments "--all")) (b (ask-with S2copy replayed2 'commitments "--all")))
-        (list (equal? (format "~s" a) (format "~s" b))
+        (list built2 (equal? (format "~s" a) (format "~s" b))
               (length (filter (lambda (x) (and (pair? x) (eq? (car x) 'decision)))
                               (let ((c (clause-in a 'items))) (if c (cdr c) '()))))))
-      '(#t 3))
+      '(#t #t 3))
 
 ;; ---- DO-3 the consumption index -----------------------------------------------
 ;;
@@ -185,17 +203,69 @@
 (define-caught a-first (delivered '("aaaa0000" "bbbb0000")))
 (define-caught b-first (delivered '("bbbb0000" "aaaa0000")))
 
+(define built3
+  (let ((a (map car (state-seen a-first "dw" "v1"))) (b (map car (state-seen b-first "dw" "v1"))))
+    (and (= 2 (length a)) (equal? (by-print a) (by-print b)) (not (equal? a b)))))
 (want "DO-3 THE CONSTRUCTION: the index saw both plans name the draft, in the two delivery orders"
-      (let ((a (map car (state-seen a-first "dw" "v1"))) (b (map car (state-seen b-first "dw" "v1"))))
-        (list (length a) (equal? (by-print a) (by-print b)) (equal? a b)))
-      '(2 #t #f))
-(want "DO-3 the index's product readers answer alike: consumed, revoked, the consumed parent cuts"
-      (list (equal? (state-consumed? a-first "dw" "v1") (state-consumed? b-first "dw" "v1"))
+      built3 #t)
+(want "DO-3 the index's readers answer alike: consumed, revoked, and the consumed parent cuts as a set"
+      (list built3
+            (equal? (state-consumed? a-first "dw" "v1") (state-consumed? b-first "dw" "v1"))
             (state-consumed? a-first "dw" "v1")
             (equal? (state-revoked a-first "dw") (state-revoked b-first "dw"))
-            (equal? (format "~s" (state-consumed-parent-cuts a-first "dw" "v1"))
-                    (format "~s" (state-consumed-parent-cuts b-first "dw" "v1"))))
-      '(#t #t #t #t))
+            (equal? (by-print (state-consumed-parent-cuts a-first "dw" "v1"))
+                    (by-print (state-consumed-parent-cuts b-first "dw" "v1")))
+            (length (state-consumed-parent-cuts a-first "dw" "v1")))
+      '(#t #t #t #t #t 2))
+
+;; ---- DO-4 latest-parent-cut ---------------------------------------------------
+;;
+;; A and B are not ordered; C covers both. The cut that covers every other
+;; is C, wherever it stands in the list.
+
+(define cut-a '(("aaaa0000" . 2)))
+(define cut-b '(("bbbb0000" . 2)))
+(define cut-c '(("aaaa0000" . 2) ("bbbb0000" . 2)))
+(want "DO-4 latest-parent-cut answers C, the cut that covers A and B, in every order of the three"
+      (map latest-parent-cut
+           (list (list cut-a cut-b cut-c) (list cut-c cut-a cut-b) (list cut-b cut-c cut-a)))
+      (list cut-c cut-c cut-c))
+(want "DO-4 TWIN: with no cut covering the others it answers #f, in either order"
+      (map latest-parent-cut (list (list cut-a cut-b) (list cut-b cut-a)))
+      '(#f #f))
+
+;; ---- DO-5 state-revoked -------------------------------------------------------
+;;
+;; consumption-index CI-15's shape: a plan consumes a draft, then a second
+;; record claims its member's slot, and both members are in conflict -- two
+;; gates, each naming the same version. Delivered with the second claim
+;; last and with it before the plan's own member.
+
+(define (dup-state order)
+  (let ((r (reduce-empty)) (key (cons "dupm0000" "d")) (after (cons "dupm0000" 0)))
+    (define plan
+      (list "dupm0000" 1 '()
+            (list 'plan "d" "fp" after
+                  (list (cons 0 (list 'set "dupm0000.9" 'src "D")))
+                  (list 'consumes "dw" (list (list "dupm0000.9" "vd" "h0" '()))))
+            (list "test" key 'plan "fp" #f after)))
+    (define member (list "dupm0000" 2 '() (list 'set "dupm0000.9" 'src "D") (list "test" key 0 "fp" (cons "dupm0000" 1) after)))
+    (define rival (list "dupn0000" 1 '() (list 'set "dupm0000.9" 'src "D") (list "test" key 0 "fp" (cons "dupm0000" 1) after)))
+    (for-each (lambda (rec) (apply reduce-apply! r rec))
+              (if (eq? order 'rival-last) (list plan member rival) (list plan rival member)))
+    r))
+(define-caught rival-last (dup-state 'rival-last))
+(define-caught rival-first (dup-state 'rival-first))
+(define built5
+  (let ((a (map car (reduce-gates rival-last))) (b (map car (reduce-gates rival-first))))
+    (and (= 2 (length a)) (equal? (by-print a) (by-print b)) (not (equal? a b)))))
+(want "DO-5 THE CONSTRUCTION: two members in conflict, their gates in two orders"
+      built5 #t)
+(want "DO-5 state-revoked names one plan event for the version, the smallest by (writer, seq), on both deliveries"
+      (list built5
+            (map (lambda (r) (list (cadr (car r)) (cadr r))) (state-revoked rival-last "dw"))
+            (map (lambda (r) (list (cadr (car r)) (cadr r))) (state-revoked rival-first "dw")))
+      (list #t '(("vd" ("dupm0000" . 2))) '(("vd" ("dupm0000" . 2)))))
 
 (printf "rows: ~a\n~a failures\ndelivery-order complete\n" rows bad)
 (system (string-append "rm -rf '" root "'"))

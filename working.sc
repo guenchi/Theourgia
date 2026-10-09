@@ -301,14 +301,19 @@
   ;; parent and the answer is #f, which sends the client to an explicit
   ;; `--rebase` rather than to a cut that is not after both.
   ;; THE PARENT AMONG SEVERAL COMMITTED CUTS: the one that covers every
-  ;; other, or #f when two of them are not ordered (or there are none).
+  ;; other, or #f when there is none (or there are no cuts).
+  ;; NEVER: NOT A FOLD THAT GIVES UP AT THE FIRST PAIR NOT ORDERED. That
+  ;; answered #f for (A B C) and C for (C A B) when C covers A and B, which
+  ;; are not ordered -- and the cuts come in the order the plans were
+  ;; delivered, which is the route's. The best so far is replaced only by a
+  ;; cut that covers it, and is the answer only if it covers every cut: the
+  ;; cut that covers all, wherever it stands, becomes the best when it is
+  ;; reached and stays it.
   (define (latest-parent-cut cuts)
     (and (pair? cuts)
-         (fold-left (lambda (best c)
-                      (and best (cond ((cut-covers? c best) c)
-                                      ((cut-covers? best c) best)
-                                      (else #f))))
-                    (car cuts) (cdr cuts))))
+         (let ((best (fold-left (lambda (best c) (if (cut-covers? c best) c best))
+                                (car cuts) (cdr cuts))))
+           (and (for-all (lambda (c) (cut-covers? best c)) cuts) best))))
 
   (define (committed-parent store state writer id version hash original-cut)
     (and writer version (safe-id? writer)

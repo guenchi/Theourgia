@@ -317,12 +317,24 @@
   ;; that mapped over the gates listed the same revoked draft twice --
   ;; and a person reading `drafts` would have seen one piece of work
   ;; described as two.
+  ;; ONE PER VERSION, AND WHICH ONE IS NOT THE DELIVERY'S: of the plans that
+  ;; name a version, the smallest plan event by (writer, seq); the versions
+  ;; in order. The first one met was the one kept, and the plans are met in
+  ;; gate order, which is delivery order -- two conflicting plans gave
+  ;; `drafts` a different plan event by route.
   (define (state-revoked r owner)
-    (let loop ((all (state-revoked-raw r owner)) (seen '()) (out '()))
-      (cond
-        ((null? all) (reverse out))
-        ((member (cadr (car (car all))) seen) (loop (cdr all) seen out))
-        (else (loop (cdr all) (cons (cadr (car (car all))) seen) (cons (car all) out))))))
+    (define (event<? a b)
+      (or (string<? (car a) (car b)) (and (string=? (car a) (car b)) (< (cdr a) (cdr b)))))
+    (define (version-of x) (cadr (car x)))
+    (let loop ((all (state-revoked-raw r owner)) (out '()))
+      (if (null? all)
+          (list-sort (lambda (x y) (string<? (format "~s" (version-of x)) (format "~s" (version-of y)))) out)
+          (let* ((x (car all))
+                 (have (find (lambda (o) (equal? (version-of o) (version-of x))) out)))
+            (loop (cdr all)
+                  (cond ((not have) (cons x out))
+                        ((event<? (cadr x) (cadr have)) (cons x (remq have out)))
+                        (else out)))))))
 
   (define (state-revoked-raw r owner)
     (let ((c (reduction-consumption r)))
