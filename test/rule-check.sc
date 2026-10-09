@@ -343,6 +343,18 @@
                 (equal? (reduce-gates original) (reduce-gates copy)))
       '(#t #t #t))
 
+;; ---- a declaration takes effect from its record on -----------------------------------------
+;;
+;; A write is judged by the rules in force before it: a batch that declares a
+;; rule and then breaks it is written; the next write that breaks it is not.
+(want "J a batch that declares a rule and breaks it is written; the next write that breaks it is refused"
+      (in-order (let ((a (batch (list 'rule 'task-titled '((class state) (on task) (must (title ?w ?t))))
+                                (list 'insert 'root #f '((kind . task))))))
+                  (and (pair? a) (eq? (car a) 'batch) (map car (cadr a))))
+                (head (batch (list 'insert 'root #f '((kind . task)))) 3))
+      '((ok ok) (error refused rule-violation)))
+(tolerant (run 'rule "task-titled" "--retire"))
+
 ;; ---- an import's refusal is answered bare ----------------------------------------------------
 
 (define md-dir (string-append root "/md"))
