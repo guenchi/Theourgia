@@ -2703,9 +2703,11 @@
               (list 'error 'deleted parent))
              ((nested-document? state parent fields)
               (list 'error 'doc-must-be-top-level (list 'parent parent)))
-             ;; A DATUM BLOCK BORN WITH A SRC (datum-src-refusal).
+             ;; A DATUM BLOCK BORN WITH A SRC (datum-src-refusal). It has no
+             ;; id yet, so the refusal carries no block clause: a consumer
+             ;; reading (block <id>) never meets a value that is not an id.
              ((datum-with-src-fields? fields)
-              (list 'error 'bad-request 'draft-on-datum-unsupported '(block new) '(use def)))
+              (list 'error 'bad-request 'draft-on-datum-unsupported '(use def)))
              (else
               (let ((ord (ord-for state parent after)))
                 (if (and (pair? ord) (memq (car ord) '(error refused)))
@@ -4948,7 +4950,7 @@
             (cond
               ((and (pair? i) (eq? (car i) 'insert) (pair? (cdr i)) (pair? (cddr i)) (pair? (cdddr i))
                     (datum-with-src-fields? (cadddr i)))
-               (list 'error 'bad-request 'draft-on-datum-unsupported '(block new) '(use def)))
+               (list 'error 'bad-request 'draft-on-datum-unsupported '(use def)))
               ((and set-of (eq? (caddr i) 'src))
                (if (or (member set-of datum) (and (known? state set-of) (datum-mode-block? state set-of)))
                    (draft-on-datum-refusal set-of)

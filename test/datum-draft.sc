@@ -247,9 +247,9 @@
       (append (batch-refused-whole? (string-append "((set \"" plain "\" mode datum))") (refusal plain))
               (list (field-of s1 plain 'mode)))
       '(batch #t (0) #t #f))
-(want "B7 an insert carrying mode datum and a src is refused whole"
+(want "B7 an insert carrying mode datum and a src is refused whole, with no block clause: it has no id yet"
       (batch-refused-whole? "((insert root #f ((kind . code) (mode . datum) (body . (define (x) 1)) (src . \"ignored\"))))"
-                            '(error bad-request draft-on-datum-unsupported (block new) (use def)))
+                            '(error bad-request draft-on-datum-unsupported (use def)))
       '(batch #t (0) #t))
 (want "B8 CONTROL: mode datum on the bare block alone is taken"
       (in-order (clause-of (run s1 'batch (string-append "((set \"" bare "\" mode datum))")) 'done) (field-of s1 bare 'mode))
