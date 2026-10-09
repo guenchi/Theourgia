@@ -45,7 +45,7 @@
           (only (chezscheme) format getenv current-directory iota)
           (only (theourgia rpc) rpc-dispatch-parsed)
           (only (theourgia arguments) parse-arguments argument-option argument-option-list)
-          (only (theourgia client) socket-path call! request-frame answer-field readable-shape?)
+          (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum)
           (only (theourgia ffi) entry-type)
           (only (theourgia store) with-store-write)
           (only (theourgia reduce) state-read state-outline outline-subtree state-datum
@@ -93,40 +93,8 @@
       (or (and out (plain-datum out))
           '(error transport-unknown (reason unreadable-answer)))))
 
-  ;; ONE DATUM OF PLAIN DATA FROM TEXT, or #f. The renderer is `write`
-  ;; (render.sc), so an answer can hold anything a field can: a bytevector,
-  ;; a character, a vector, a symbol written with bars. It is read with the
-  ;; reader that matches that writer, and what was read is then refused if it
-  ;; is not a tree of plain data: a datum label makes shared or cyclic
-  ;; structure, which every later walk would follow without end, and the
-  ;; reader can also make objects that are not data. Asked of the datum, not
-  ;; of the text, so no scanner of the text has to know the reader's syntax.
-  (define (plain-datum text)
-    (let ((d (guard (e (#t (eof-object)))
-               (let ((p (open-string-input-port text)))
-                 (let ((x (read p)))
-                   (if (eof-object? (read p)) x (eof-object)))))))
-      (and (not (eof-object? d)) (plain-tree? d) d)))
-
-  (define (plain-tree? d)
-    (let ((seen (make-eq-hashtable)))
-      (let walk ((todo (list d)))
-        (if (null? todo)
-            #t
-            (let ((x (car todo)) (rest (cdr todo)))
-              (cond
-                ((or (pair? x) (vector? x))
-                 (if (hashtable-ref seen x #f)
-                     #f
-                     (begin
-                       (hashtable-set! seen x #t)
-                       (walk (if (pair? x)
-                                 (cons (car x) (cons (cdr x) rest))
-                                 (append (vector->list x) rest))))))
-                ((or (null? x) (boolean? x) (number? x) (char? x) (string? x)
-                     (symbol? x) (bytevector? x))
-                 (walk rest))
-                (else #f)))))))
+  ;; plain-datum is (theourgia client)'s: every reader of a daemon's rendered
+  ;; text reads with the one rule.
 
   (define (ok? a) (and (pair? a) (eq? (car a) 'ok)))
   (define (clause a key)

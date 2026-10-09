@@ -48,7 +48,7 @@
         (only (theourgia render) answer-printing! render-wire)
         (only (theourgia client)
               socket-path serve-log-path request-frame call! ensure-daemon!
-              answer-field readable-shape?)
+              answer-field readable-shape? plain-datum)
         ;; NOTE: THESE NAMES WIDEN NOTHING: `(theourgia ffi)` is already in
         ;; this shell's closure through `(theourgia client)`, which is what
         ;; opens the socket and starts the daemon. The child route uses the
@@ -166,7 +166,7 @@
           ((and (eq? 'transport-refusal (car answer)) (refusal-datum (cadr answer)))
            => (lambda (d) (list 'refused d 'transport)))
           (else (list 'unavailable)))
-        (let ((datum (guard (e (#t #f))
+        (let ((datum (let ((inner (cadr answer)))
                        ;; NEVER: THE GUARD BELONGS TO THE READER, NOT TO THE
                        ;; ENVELOPE. The shape check ran over the envelope,
                        ;; where this text sat INSIDE a string and was never
@@ -174,9 +174,10 @@
                        ;; carries a cycle passed the outer check and hung
                        ;; the walk that follows. Every text a peer wrote is
                        ;; asked before it is read, wherever it was carried.
-                       (let ((inner (cadr answer)))
-                         (and (readable-shape? inner)
-                              (read (open-string-input-port inner)))))))
+                       ;; It is the daemon's rendered text, so it is read
+                       ;; with plain-datum (theourgia client), as every
+                       ;; reader of that text is.
+                       (and (string? inner) (plain-datum inner)))))
           (cond
             ;; A PARSED `(error ...)` IS THE CORE'S REFUSAL OF `describe`, NOT
             ;; AN UNREADABLE CATALOGUE (F100b E12): it is carried as
@@ -214,10 +215,10 @@
   (and (list? d) (>= (length d) 2) (eq? 'error (car d)) (symbol? (cadr d))))
 
 ;; The refusal datum a transport refusal's text carries, or #f. The text is
-;; peer text: it is asked before it is read.
+;; peer text: it is read with plain-datum, the one reader of rendered text.
 (define (refusal-datum text)
-  (and (string? text) (readable-shape? text)
-       (let ((d (guard (e (#t #f)) (read (open-string-input-port text)))))
+  (and (string? text)
+       (let ((d (plain-datum text)))
          (and (refusal-datum? d) d))))
 
 (define (tools-from entries protocol)

@@ -611,6 +611,157 @@
   (system (string-append "pkill -f " cpeer " 2>/dev/null")))
 
 
+;; ---- DT the daemon's rendered text: one reader, plain-datum ---------------------
+;;
+;; NEVER: EVERY READER OF A DAEMON'S RENDERED TEXT READS IT WITH plain-datum
+;; (theourgia client): Chez's reader, a pre-read scan that refuses the one
+;; prefix the reader allocates on (`#e`), and a check that what was read is a
+;; tree of plain data. The other readers used a shape check of the text that
+;; refused what `write` prints (a character, a bytevector) and was blind to
+;; what the reader makes. The envelope around the text -- a frame the daemon
+;; shapes -- is still read with readable-shape?. A fake daemon answers each
+;; request with bytes read from a file, so a row can hand any text to a
+;; reader.
+(define (dt-peer! name reply)
+  (let ((sock (string-append sock-here "/" name ".sock"))
+        (peer (string-append here "/" name "-peer.sc"))
+        (rf (string-append here "/" name ".reply")))
+    (call-with-output-file rf (lambda (p) (display reply p)) 'truncate)
+    (call-with-output-file peer
+      (lambda (port)
+        (for-each (lambda (l) (display l port) (newline port))
+          (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+                (string-append "(define reply (call-with-port (open-file-input-port \"" rf "\") get-bytevector-all))")
+                "(start-scheduler"
+                "  (lambda ()"
+                (string-append "    (listen! \"" sock "\" 16)")
+                "    (let serve ()"
+                "      (receive (after 20000 (exit 0))"
+                "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+                "               (`(data ,r ,bv) (conn-write! r reply 'last) (serve))"
+                "               (`(written ,r ,t ,st) (conn-close! r) (serve))"
+                "               (`(eof ,r) (serve))"
+                "               (`#(DOWN ,w ,y) (serve))))))")))
+      'truncate)
+    (system (string-append "rm -f " sock))
+    (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "scheme --script " peer " > /dev/null 2>&1 &"))
+    (let up ((k 0))
+      (cond ((file-exists? sock) 'up)
+            ((> k 300) 'never)
+            (else (system "sleep 0.05") (up (+ k 1)))))
+    (list sock peer)))
+(define (dt-stop! p)
+  (system (string-append "pkill -f " (cadr p) " 2>/dev/null"))
+  (system (string-append "rm -f " (car p))))
+;; An envelope as the daemon writes one, its stdout the given rendered text.
+(define (dt-envelope stdout exit-code)
+  (string-append "(answer (stdout " (format "~s" stdout) ") (stderr \"\") (exit "
+                 (number->string exit-code) ") (origin core))\n"))
+;; A HARD BOUND ON EVERY CHILD HERE: a reader that walked a cycle would print
+;; forever, so the row reads a killed run, not a hung fixture.
+(define dt-bound "perl -e 'alarm shift; exec @ARGV' 20")
+(define (dt-timed thunk)
+  (let* ((t0 (real-time)) (v (thunk))) (list v (- (real-time) t0))))
+
+;; DT-stream: the thin client's stream terminal. The acceptance line, then one
+;; terminal line, then the peer closes. A terminal the client reads ends the
+;; run with that line; one it refuses is no terminal, and the end is a lost
+;; stream.
+(define (dt-stream terminal)
+  (let ((p (dt-peer! "dts" (string-append (dt-envelope "(ok (subscribed))\n" 0) terminal "\n"))))
+    (let ((r (dt-timed (lambda () (client dt-bound (string-append "subscribe changes 0 --store " store
+                                                            " --socket " (car p) " --wire"))))))
+      (dt-stop! p)
+      (list (car r) (cadr r)))))
+(define (dt-stream-lost? r) (contains? (out-of (car r)) "lost-stream"))
+(want "DT-stream a terminal holding a character is read (a written value the old shape check refused): no lost stream"
+      (dt-stream-lost? (dt-stream "(error transport-unknown (reason #\\a))"))
+      #f)
+(want "DT-stream and one holding a bytevector"
+      (dt-stream-lost? (dt-stream "(error transport-unknown (reason #vu8(1 2)))"))
+      #f)
+(want "DT-stream a terminal with a datum label is refused: no terminal, a lost stream"
+      (dt-stream-lost? (dt-stream "#0=(error transport-unknown . #0#)"))
+      #t)
+;; A LABEL THAT SHARES WITHOUT A CYCLE is refused too: the tree check refuses
+;; any pair reached twice, and without it this terminal would read as one.
+(want "DT-stream a terminal whose datum label shares structure (no cycle) is refused: a lost stream"
+      (dt-stream-lost? (dt-stream "(error transport-unknown #0=(x) #0#)"))
+      #t)
+(want "DT-stream a terminal with #e1e100000 is refused, and quickly"
+      (let ((r (dt-stream "(error transport-unknown (reason #e1e100000))")))
+        (list (dt-stream-lost? r) (< (cadr r) 15000)))
+      '(#t #t))
+
+;; DT-channel: the review channel's read of a store's answer, through scope's
+;; first read at the cut (core.sc scope, the main store's socket named). An
+;; answer that is not ok is scope's answer as it is; one the reader refuses
+;; is `unreadable-answer`.
+(define (dt-scope stdout)
+  (let ((p (dt-peer! "dtc" (dt-envelope stdout 1))))
+    (let ((r (dt-timed (lambda () (server dt-bound (string-append "scope " here "/dt-review-" (number->string n-run)
+                                                            " --cut root --roots x.1 --for someone --store " store
+                                                            " --socket " (car p) " --wire"))))))
+      (dt-stop! p)
+      r)))
+(want "DT-channel an answer holding #e1e100000 is refused as unreadable, quickly, and no huge number is printed"
+      (let ((r (dt-scope "(error transport-unknown (reason #e1e100000))")))
+        (list (contains? (out-of (car r)) "unreadable-answer") (< (string-length (out-of (car r))) 2000) (< (cadr r) 15000)))
+      '(#t #t #t))
+;; NOTE: NO CYCLIC LABEL ON THIS ROUTE: a build without the tree check would
+;; print a cycle until the alarm; the shared label below reads the same check.
+(want "DT-channel an answer whose datum label shares structure (no cycle) is refused as unreadable"
+      (contains? (out-of (car (dt-scope "(error refused #0=(x) #0#)"))) "unreadable-answer")
+      #t)
+(want "DT-channel an answer holding a character is read and answered as it is"
+      (let ((o (out-of (car (dt-scope "(error refused (reason #\\a))")))))
+        (list (contains? o "unreadable-answer") (contains? o "(error refused (reason #\\a))")))
+      '(#f #t))
+
+;; DT-census: every reader of a daemon's text in the programs that talk to one.
+;; The envelope readers read with readable-shape? and the reader; the rendered
+;; datum is read only by plain-datum's callers; no other reader exists. A new
+;; `(read ` or a new caller of plain-datum turns this row red until it is
+;; named here.
+(define (dt-lines path)
+  (let ((t (file-text path)))
+    (let loop ((i 0) (start 0) (out '()))
+      (cond ((= i (string-length t)) (reverse (if (> i start) (cons (substring t start i) out) out)))
+            ((char=? (string-ref t i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring t start i) out)))
+            (else (loop (+ i 1) start out))))))
+(define (dt-trim s)
+  (let loop ((i 0)) (if (and (< i (string-length s)) (char-whitespace? (string-ref s i))) (loop (+ i 1)) (substring s i (string-length s)))))
+(define (dt-prefix? s p) (and (>= (string-length s) (string-length p)) (string=? (substring s 0 (string-length p)) p)))
+(define (dt-define-name t)
+  (and (dt-prefix? t "(define (")
+       (let loop ((i 9)) (if (or (= i (string-length t)) (memv (string-ref t i) '(#\space #\))))
+                             (substring t 9 i) (loop (+ i 1))))))
+(define (dt-census files)
+  (let ((seen '()))
+    (for-each
+      (lambda (f)
+        (let loop ((ls (dt-lines (string-append "../" f))) (name #f))
+          (unless (null? ls)
+            (let* ((t (dt-trim (car ls))) (name (or (dt-define-name t) name)))
+              (unless (and (> (string-length t) 0) (char=? (string-ref t 0) #\;))
+                (when (contains? t "(read ")
+                  (set! seen (cons (list f name 'read) seen)))
+                (when (and (contains? t "(plain-datum ") (not (dt-prefix? t "(define (plain-datum")))
+                  (set! seen (cons (list f name 'plain-datum) seen))))
+              (loop (cdr ls) name)))))
+      files)
+    (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
+               (let dedup ((xs seen) (out '())) (if (null? xs) out (dedup (cdr xs) (if (member (car xs) out) out (cons (car xs) out))))))))
+(want "DT-census the readers of a daemon's text: the envelope's with the reader, the rendered datum's only through plain-datum"
+      (dt-census '("client.sc" "channel.sc" "core.sc" "theourgia.sc" "mcp/server.sc" "stream-client.sc"))
+      (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
+                 '(("channel.sc" "collect-into-verb" plain-datum) ("channel.sc" "envelope-answer" plain-datum)
+                   ("channel.sc" "envelope-answer" read) ("client.sc" "line-datum" read) ("client.sc" "plain-datum" read)
+                   ("core.sc" "forward-then-exit!" read) ("mcp/server.sc" "catalogue" plain-datum)
+                   ("mcp/server.sc" "refusal-datum" plain-datum) ("mcp/server.sc" "unpack" read)
+                   ("theourgia.sc" "read-envelope" read) ("theourgia.sc" "stream-terminal" plain-datum))))
+
 ;; ---- P-19 an exit status this process cannot leave with -------------------
 ;;
 ;; NEVER: MEASURED, AND IT WAS SILENT IN TWO DIRECTIONS. The field was checked

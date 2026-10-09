@@ -24,17 +24,17 @@
           call! answer-limit no-daemon-errno?
           socket-path-fits? path-too-long close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
-          request-frame envelope-version answer-field readable-shape?
+          request-frame envelope-version answer-field readable-shape? plain-datum
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
           next-attempt-token select-report)
-  (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
+  (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode) (rnrs hashtables)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
           ;; prints as its own spelling, rather than carrying a second
           ;; model of when Chez escapes one.
           (only (chezscheme) getenv guard raise sleep make-time
                 write call-with-string-output-port
-                read open-string-input-port eof-object? with-exception-handler
+                read open-string-input-port eof-object? eof-object with-exception-handler
                 parameterize char-whitespace? get-process-id
                 process close-port get-string-all)
           (only (theourgia ffi)
@@ -884,6 +884,91 @@
 
   (define (shape-delimiter? c)
     (or (char-whitespace? c) (char=? c #\() (char=? c #\)) (char=? c #\")))
+
+  ;; ONE DATUM OF PLAIN DATA FROM TEXT, or #f -- THE ONE READER OF A DAEMON'S
+  ;; RENDERED TEXT: the review channel, the MCP shell (describe's catalogue,
+  ;; a transport refusal) and the thin client's stream lines read with it.
+  ;; It was the channel's own, and the other two read with readable-shape?
+  ;; and the reader, a shape check of the text that refuses what `write`
+  ;; may print and does not see what the reader makes. The renderer is
+  ;; `write` (render.sc), so an answer can hold anything a field can: a bytevector,
+  ;; a character, a vector, a symbol written with bars. It is read with the
+  ;; reader that matches that writer, and what was read is then refused if it
+  ;; is not a tree of plain data: a datum label makes shared or cyclic
+  ;; structure, which every later walk would follow without end, and the
+  ;; reader can also make objects that are not data. Asked of the datum, not
+  ;; of the text, so no scanner of the text has to know the reader's syntax.
+  ;; NEVER: THE ONE PREFIX THE READER ALLOCATES ON BEFORE ANYTHING CAN JUDGE
+  ;; IT. `#e1e100000` is ten characters that read builds into a
+  ;; hundred-thousand-digit exact integer before the tree check runs; the
+  ;; socket is a file any local process can write to. `write` never prints
+  ;; `#e` (an exact number prints as its digits), so `#e`/`#E` outside a
+  ;; string is refused before reading. The scan knows the three places a
+  ;; quote does not open a string -- inside a string, a character literal
+  ;; (`#\"`), and a symbol written with bars (`|a"b|`) -- so a quote cannot
+  ;; hide one; an `#e` it meets anywhere else, a comment included, refuses.
+  ;; ONLY WHERE A NUMBER CAN START: at a token's start, or after another
+  ;; prefix (`#d#e1e100000`); a symbol like `a#e` holds no number.
+  (define (exactness-prefix? text)
+    (define (delimiter? c)
+      ;; spelled out: this library does not import (rnrs lists)
+      (or (char-whitespace? c) (char=? c #\() (char=? c #\)) (char=? c #\[) (char=? c #\])
+          (char=? c #\") (char=? c #\;) (char=? c #\') (char=? c #\`) (char=? c #\,)))
+    (define (number-may-start? i)
+      (or (= i 0)
+          (delimiter? (string-ref text (- i 1)))
+          (and (>= i 2) (char=? (string-ref text (- i 2)) #\#))))
+    (let ((n (string-length text)))
+      (let scan ((i 0) (mode 'plain))
+        (if (>= i n)
+            #f
+            (let ((c (string-ref text i)))
+              (case mode
+                ((string) (cond ((char=? c #\\) (scan (+ i 2) 'string))
+                                ((char=? c #\") (scan (+ i 1) 'plain))
+                                (else (scan (+ i 1) 'string))))
+                ((bar) (cond ((char=? c #\\) (scan (+ i 2) 'bar))
+                             ((char=? c #\|) (scan (+ i 1) 'plain))
+                             (else (scan (+ i 1) 'bar))))
+                (else
+                 (cond ((char=? c #\") (scan (+ i 1) 'string))
+                       ((char=? c #\|) (scan (+ i 1) 'bar))
+                       ((and (char=? c #\#) (< (+ i 1) n))
+                        (let ((d (string-ref text (+ i 1))))
+                          (cond ((and (or (char=? d #\e) (char=? d #\E)) (number-may-start? i)) #t)
+                                ;; a character literal: its next character is
+                                ;; the character, whatever it is
+                                ((char=? d #\\) (scan (+ i 3) 'plain))
+                                (else (scan (+ i 1) 'plain)))))
+                       (else (scan (+ i 1) 'plain))))))))))
+
+  (define (plain-datum text)
+    (let ((d (guard (e (#t (eof-object)))
+               (when (exactness-prefix? text) (raise 'exactness-prefix))
+               (let ((p (open-string-input-port text)))
+                 (let ((x (read p)))
+                   (if (eof-object? (read p)) x (eof-object)))))))
+      (and (not (eof-object? d)) (plain-tree? d) d)))
+
+  (define (plain-tree? d)
+    (let ((seen (make-eq-hashtable)))
+      (let walk ((todo (list d)))
+        (if (null? todo)
+            #t
+            (let ((x (car todo)) (rest (cdr todo)))
+              (cond
+                ((or (pair? x) (vector? x))
+                 (if (hashtable-ref seen x #f)
+                     #f
+                     (begin
+                       (hashtable-set! seen x #t)
+                       (walk (if (pair? x)
+                                 (cons (car x) (cons (cdr x) rest))
+                                 (append (vector->list x) rest))))))
+                ((or (null? x) (boolean? x) (number? x) (char? x) (string? x)
+                     (symbol? x) (bytevector? x))
+                 (walk rest))
+                (else #f)))))))
 
   (define (readable-shape? text)
     (let ((n (string-length text)))
