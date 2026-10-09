@@ -24,7 +24,7 @@
 ;; the copy of a reduction sharing nothing it could change.
 
 (import (chezscheme) (theourgia rpc)
-        (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read
+        (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read state-edges
               reduce-empty reduce-apply! reduce-gates)
         (only (theourgia store) open-and-reduce)
         (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
@@ -116,6 +116,9 @@
 (define S0 (tolerant (make 'section)))
 (tolerant (run 'set D5 "phase" "draft"))
 (tolerant (run 'link D1 "asks" D2))
+;; A doc deleted before any rule, an end for a typed link between deleted blocks.
+(define W (tolerant (make 'doc "W")))
+(tolerant (run 'del W))
 
 ;; ---- a store with no rule and no typed relation makes no copy -------------------------------
 
@@ -240,9 +243,10 @@
 
 ;; ---- the per-write facts are the rule check's only --------------------------------------------
 
-(want "J the per-write facts are unknown to query"
-      (in-order (head (run 'query "(cited ?a ?b)") 4) (head (run 'query "(kind+ ?a ?k)") 4))
-      '((error bad-request unknown-relation (relation cited)) (error bad-request unknown-relation (relation kind+))))
+(want "J the per-write facts are unknown to query, every one of them"
+      (map (lambda (g) (head (run 'query g) 3))
+           '("(kind+ ?a ?k)" "(field+ ?a ?f ?v)" "(edge+ ?a ?r ?b)" "(edge-kind+ ?a ?k ?b)" "(cited ?a ?b)" "(unread ?a)" "(receipt-carried)"))
+      (map (lambda (x) '(error bad-request unknown-relation)) '(1 2 3 4 5 6 7)))
 
 ;; ---- typed endpoints --------------------------------------------------------------------------
 
@@ -255,6 +259,11 @@
       (run 'link D1 "answers" V)
       (list 'error 'bad-request 'relation-endpoint
             (list 'failures (list '(relation answers) (list 'edge D1 'answers V) '(end to) '(expected ((kind decision)))))))
+(want "E a link between two deleted blocks is judged at both ends, though neither is a target"
+      (run 'link V "answers" W)
+      (list 'error 'bad-request 'relation-endpoint
+            (list 'failures (list '(relation answers) (list 'edge V 'answers W) '(end from) '(expected ((kind doc))))
+                            (list '(relation answers) (list 'edge V 'answers W) '(end to) '(expected ((kind decision)))))))
 (define made-q (tolerant (batch (list 'insert 'root #f '((kind . decision) (title . "Q")))
                                 (list 'link D1 'answers '(from 0)))))
 (define Q (tolerant (car (item-ids made-q))))
@@ -291,10 +300,12 @@
                 (head (run 'link C1 "leans-on" C2 "--premises" (premise-of C1)) 3))
       '(ok (error refused rule-violation)))
 (tolerant (run 'unlink C1 "depends-on" C2))
-(want "C a batch that links then unlinks cites nothing"
-      (car (run 'batch (format "~s" (list (list 'link C1 'depends-on C2) (list 'unlink C1 'depends-on C2)))
-                "--premises" (premise-of C1)))
-      'batch)
+(want "C a batch that links then unlinks cites nothing: both items written, no edge left"
+      (let ((a (run 'batch (format "~s" (list (list 'link C1 'depends-on C2) (list 'unlink C1 'depends-on C2)))
+                    "--premises" (premise-of C1))))
+        (in-order (car a) (and (pair? a) (list? (cadr a)) (map car (cadr a))) (caddr a)
+                  (filter (lambda (e) (and (equal? (car e) C1) (equal? (caddr e) C2))) (state-edges (state)))))
+      '(batch (ok ok) (done 2) ()))
 (tolerant (run 'relation "builds-on" "--as" "depends-on" "--to" "(kind decision)"))
 (want "O premises fail before the endpoints, the endpoints before the rules"
       (in-order (head (run 'link C1 "builds-on" C2 "--premises" (format "((premise ~s ~s))" C2 stale)) 2)

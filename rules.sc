@@ -132,10 +132,12 @@
                  (let ((f (cadr sel)))
                    (and (member (caddr f) (field-values S id (cadr f))) #t))))))
 
-  ;; THE EDGES JUDGED are the ones the write adds, and every typed edge at a
-  ;; target whose kind or a field some typed relation's selector names the
-  ;; write changes. Each end of each is held to its selector on the state
-  ;; the write produces; every mismatch is listed in one answer.
+  ;; THE EDGES JUDGED are every typed edge the write adds -- the state after
+  ;; holds it, the state before does not, whether or not its ends are live
+  ;; -- and every typed edge at a target whose kind or a field some typed
+  ;; relation's selector names the write changes. Each end of each is held to
+  ;; its selector on the state the write produces; every mismatch is listed
+  ;; in one answer.
   (define (endpoint-refusal pre post targets post-S pre-S kind-of field-values edges-at)
     (let ((typed (typed-relations pre)))
       (and (pair? typed)
@@ -154,16 +156,20 @@
                                     (let* ((before (field-values (pre-S) id f)) (after (field-values (post-S) id f)))
                                       (not (equal? before after))))
                                   selector-fields))))
+                  (added
+                    (let ((before (make-hashtable equal-hash equal?)))
+                      (for-each (lambda (e) (hashtable-set! before e #t)) (held-edges pre))
+                      (filter (lambda (e) (and (typed-of (cadr e)) (not (hashtable-ref before e #f))))
+                              (held-edges post))))
                   (judged
                     (unique
-                      (append-map-in-order
-                             (lambda (id)
-                                    (let* ((now (held-edges-at post id))
-                                           (before (held-edges-at pre id))
-                                           (all? (changed? id)))
-                                      (filter (lambda (e) (and (typed-of (cadr e)) (or all? (not (member e before)))))
-                                              now)))
-                             targets)))
+                      (append added
+                              (append-map-in-order
+                                (lambda (id)
+                                  (if (changed? id)
+                                      (filter (lambda (e) (typed-of (cadr e))) (held-edges-at post id))
+                                      '()))
+                                targets))))
                   (failures (endpoint-failures typed (list-sort (lambda (a b) (string<? (edge-key a) (edge-key b))) judged)
                                                (post-S) kind-of field-values)))
              (and (pair? failures)
@@ -245,28 +251,51 @@
       (and (pair? plans) (pair? targets)
            (call/cc
              (lambda (return)
+               ;; A TARGET'S KIND AFTER THE WRITE, read once; a refusal reading it
+               ;; names the first rule and the block.
+               (define kinds (make-hashtable equal-hash equal?))
+               (define (judge-kind id)
+                 (or (hashtable-ref kinds id #f)
+                     (let ((k (guard (e ((refusal? e)
+                                         (return (list 'error 'refused 'rule-unevaluable (list 'rule (car (car plans)))
+                                                       (list 'block id) (list 'reason (refusal-answer e))))))
+                                (kind-of (post-S) id))))
+                       (hashtable-set! kinds id k)
+                       k)))
                (define (judge S p id)
-                 (guard (e ((refusal? e)
-                            (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
-                                          (list 'reason (refusal-answer e))))))
-                   (pair-failure ask S p id (kind-of (post-S) id))))
+                 (let ((k (judge-kind id)))
+                   (guard (e ((refusal? e)
+                              (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
+                                            (list 'reason (refusal-answer e))))))
+                     (pair-failure ask S p id k))))
                (let* ((state-failures
                         (append-map-in-order
                           (lambda (id) (filter-map-in-order (lambda (p) (judge (post-S) p id)) state-rules))
                           targets))
+                      ;; THE WRITE RULES' TARGETS: those whose kind after the write
+                      ;; some write rule lists, the first pair of such a target and
+                      ;; rule named if reading their facts fails. No such target, no
+                      ;; write session.
+                      (write-pairs
+                        (append-map-in-order
+                          (lambda (id)
+                            (let ((k (judge-kind id)))
+                              (map (lambda (p) (cons id p)) (filter (lambda (p) (memq k (caddr p))) write-rules))))
+                          targets))
+                      (write-targets (unique (map car write-pairs)))
                       (write-session
-                        (and (pair? write-rules)
+                        (and (pair? write-pairs)
                              (guard (e ((refusal? e)
                                         (return (list 'error 'refused 'rule-unevaluable
-                                                      (list 'rule (car (car write-rules))) (list 'block (car targets))
+                                                      (list 'rule (car (cdr (car write-pairs)))) (list 'block (car (car write-pairs)))
                                                       (list 'reason (refusal-answer e))))))
                                (make-query-session pre '() (remaining) #f
-                                                   (write-facts pre post targets receipt post-S pre-S ask edges-at)))))
+                                                   (write-facts pre post write-targets receipt post-S pre-S ask edges-at)))))
                       (write-failures
                         (if write-session
                             (append-map-in-order
                               (lambda (id) (filter-map-in-order (lambda (p) (judge write-session p id)) write-rules))
-                              targets)
+                              write-targets)
                             '()))
                       (failures
                         (list-sort (lambda (a b)

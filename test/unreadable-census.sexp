@@ -1359,6 +1359,13 @@
    (e ((refusal? e)
        (set! remaining (max 0 (- remaining (session-spent S))))
        (raise e))))
+  ("rules.sc" (rule-refusal judge-kind) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a target's kind after the write, read once for every rule: a query's refusal makes the write's refusal rule-unevaluable, naming the first rule and the block, and only that refusal is caught; not a filesystem read"
+   (e ((refusal? e)
+       (return (list 'error 'refused 'rule-unevaluable (list 'rule (car (car plans)))
+                     (list 'block id) (list 'reason (refusal-answer e)))))))
   ("rules.sc" (rule-refusal judge) 1 guard
    ((refusal? e))
    unrelated a
@@ -1372,7 +1379,7 @@
    "the per-write facts read for a write's write rules: a query's refusal while reading them makes the write's refusal rule-unevaluable, and only that refusal is caught; not a filesystem read"
    (e ((refusal? e)
        (return (list 'error 'refused 'rule-unevaluable
-                     (list 'rule (car (car write-rules))) (list 'block (car targets))
+                     (list 'rule (car (cdr (car write-pairs)))) (list 'block (car (car write-pairs)))
                      (list 'reason (refusal-answer e)))))))
   ("rules.sc" (state-audit) 1 guard
    ((refusal? e))
