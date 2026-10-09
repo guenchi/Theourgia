@@ -930,6 +930,21 @@
                         (scan (+ i 1) 'plain))
                        ((char=? c #\") (scan (+ i 1) 'string))
                        ((char=? c #\|) (scan (+ i 1) 'bar))
+                       ;; AN ESCAPE INSIDE AN IDENTIFIER, ONLY AS WRITE PRINTS ONE:
+                       ;; `\x`, hex digits, `;` -- the symbol `.` is written
+                       ;; `\x2E;`, and `-x` as `\x2D;x`. Taken whole, so the
+                       ;; character it names cannot open a string here; any
+                       ;; other backslash outside a string or bars is refused.
+                       ((char=? c #\\)
+                        (and (< (+ i 1) n) (or (char=? (string-ref text (+ i 1)) #\x) (char=? (string-ref text (+ i 1)) #\X))
+                             (let hex ((j (+ i 2)))
+                               (cond ((>= j n) #f)
+                                     ((char=? (string-ref text j) #\;) (and (> j (+ i 2)) (scan (+ j 1) 'plain)))
+                                     ((let ((h (string-ref text j)))
+                                        (or (and (char<=? #\0 h) (char<=? h #\9)) (and (char<=? #\a h) (char<=? h #\f))
+                                            (and (char<=? #\A h) (char<=? h #\F))))
+                                      (hex (+ j 1)))
+                                     (else #f)))))
                        ((char=? c #\#)
                         (cond ((at? i "#vu8(") (scan (+ i 5) 'plain))
                               ((at? i "#(") (scan (+ i 2) 'plain))
