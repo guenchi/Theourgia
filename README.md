@@ -1591,9 +1591,9 @@ CONTESTED -- not evaluated, and listed by `conflicts` as `(rule-contested <name>
 tracked request (`--req`, a tracked `batch`'s items and a plan's members) writes
 a rule as given, since its receipt counts each record, as it does a
 declaration. A rule's value may not hold a plan's marker `("#%new" <k>)`. A
-replay, a rebuild and a snapshot keep the rules. `describe` lists the rules in
-force as `(declared-rules (<name> <value>) ...)` when there is one, and `check`
-lists each as `(rules (rule-skipped (rule <name>) (reason write-rule|not-evaluated))
+replay, a rebuild and a snapshot keep the rules. `describe`, answered by the
+daemon, lists the rules in force as `(declared-rules (<name> <value>) ...)` when
+there is one, and `check` lists each as `(rules (rule-skipped (rule <name>) (reason write-rule|not-evaluated))
 ...)`, a built-in as a write rule.
 
 In this version a rule is stored and listed, and judges no write.

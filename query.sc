@@ -248,8 +248,21 @@
     ;; one would not be the record it was declared as.
     (define (holds-marker? x)
       (and (pair? x) (or (equal? (car x) "#%new") (holds-marker? (car x)) (holds-marker? (cdr x)))))
+    ;; A FINITE TREE: no pair or vector reached twice, so no walk below can
+    ;; go round a cycle.
+    (define (tree? x)
+      (let ((seen (make-eq-hashtable)))
+        (let walk ((x x))
+          (cond ((or (pair? x) (vector? x))
+                 (and (not (hashtable-ref seen x #f))
+                      (begin (hashtable-set! seen x #t)
+                             (if (pair? x)
+                                 (and (walk (car x)) (walk (cdr x)))
+                                 (for-all walk (vector->list x))))))
+                (else #t)))))
     (cond
       ((eq? value 'retired) 'retired)
+      ((not (tree? value)) '(error bad-request rule-malformed))
       ;; THE SHAPE FIRST, so no clause is read before it is known to be one.
       ((not (and (list? value) (pair? value)
                  (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) '(class on where must must-not builtin))))

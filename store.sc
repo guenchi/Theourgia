@@ -4060,9 +4060,14 @@
   (define intent-ref-positions
     '((insert 1 2) (move 2 3) (link 1 3) (unlink 1 3)))
 
+  ;; A position the intent is too short to have reads as #f, so a plan is
+  ;; still written for it and its run answers too-few-arguments, as any
+  ;; run does.
   (define (intent-refs intent)
-    (let* ((i (unwrap intent)) (e (assq (car i) intent-ref-positions)))
-      (if e (map (lambda (k) (list-ref i k)) (cdr e)) '())))
+    (let* ((i (unwrap intent)) (e (and (pair? i) (assq (car i) intent-ref-positions))))
+      (if e
+          (map (lambda (k) (and (list? i) (< k (length i)) (list-ref i k))) (cdr e))
+          '())))
 
   ;; THE WRAPPER SURVIVES THE REWRITE. This rewrites an intent's
   ;; references and used to hand back the bare intent, dropping any

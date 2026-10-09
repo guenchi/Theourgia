@@ -26,7 +26,7 @@
               state-edges state-read state-datum state->rows reduce-empty reduce-apply! reduce-gates)
         (only (theourgia request) intent-produced?)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia store) open-and-reduce)
+        (only (theourgia store) open-and-reduce with-store-write make-write-request writer-directory)
         (only (theourgia wire) encode-record storable-encode sexpr->string-extended)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia query) fact-relations))
@@ -66,6 +66,14 @@
 (define (run . args) (rpc-dispatch S args "author"))
 (define (state) (open-and-reduce S))
 (define (events) (apply + (map cdr (reduce-applied-cut (state)))))
+;; The bytes of every log file this store's writer has: a refused write
+;; appends nothing, whether or not the reduction would apply it.
+(define (log-bytes store w)
+  (let ((dir (writer-directory store w)))
+    (apply + (map (lambda (f) (bytevector-length (call-with-port (open-file-input-port (string-append dir "/" f)) get-bytevector-all)))
+                  (filter (lambda (f) (and (> (string-length f) 5)
+                                           (string=? ".sexp" (substring f (- (string-length f) 5) (string-length f)))))
+                          (directory-list dir))))))
 (define (new-id a)
   (let* ((ev (and (pair? a) (eq? (car a) 'ok) (assq 'events (cdr a))))
          (e (and ev (pair? (cadr ev)) (car (cadr ev)))))
@@ -193,8 +201,15 @@
              ("--on" "doc" "--must-not" "(and (cited ?w ?s) (unread ?s))")
              ("--on" "doc" "--must" "(and (title ?w ?t) (kind ?w doc))")))
       '(write write state))
+(want "R each rule-only fact alone makes a write rule, and a goal naming none a state rule"
+      (map (lambda (g) (let ((a (run 'rule "cls" "--on" "doc" "--must" g)))
+                         (and (pair? a) (eq? (car a) 'ok) (cadr (assq 'class (cadr (assq 'cls (state-declared-rules (state)))))))))
+           '("(kind+ ?w doc)" "(field+ ?w \"a\" \"b\")" "(edge+ ?w cites ?x)" "(edge-kind+ ?w cites doc)"
+             "(cited ?w ?s)" "(unread ?s)" "(receipt-carried)" "(title ?w ?t)"))
+      '(write write write write write write write state))
 (run 'rule "cls" "--retire")
 (define before-refusals (events))
+(define bytes-before-refusals (log-bytes S writer))
 (want "R a goal naming a relation that reads outside the log is refused, as a fact and through a rule"
       (map (lambda (g) (refusal "--on" "code" "--must" g))
            '("(score ?w \"x\" ?s)" "(uses-name ?w ?n)" "(def ?w ?l ?n)" "(def-for ?w ?n ?d)" "(ambiguous ?w ?n)"))
@@ -220,17 +235,24 @@
                 (list-head (refusal "--on" "doc" "--where" "#f" "--must" "(title ?w ?t)") 3)
                 (list-head (refusal "--on" "doc" "--must" "(member ?w (\"#%new\" 0))") 3))
       '((error bad-request not-a-goal) (error bad-request not-a-goal) (error bad-request (reason rule-value-holds-marker))))
-(want "R nothing was written by a refused rule: no record, the log as long as before"
-      (in-order (assq 'r (state-declared-rules (state))) (- (events) before-refusals))
-      '(#f 0))
+(want "R a goal reading as the symbol absent or unreadable is a goal, and refused as one; so is a value that is not a finite tree"
+      (in-order (list-head (refusal "--on" "doc" "--where" "absent" "--must" "(title ?w ?t)") 3)
+                (list-head (refusal "--on" "doc" "--must" "unreadable") 3)
+                (list-head (refusal "--on" "doc" "--must" "#0=(title . #0#)") 3))
+      '((error bad-request not-a-goal) (error bad-request not-a-goal) (error bad-request rule-malformed)))
+(want "R nothing was written by a refused rule: no record, the log as long as before, in records and in bytes"
+      (in-order (assq 'r (state-declared-rules (state))) (- (events) before-refusals) (- (log-bytes S writer) bytes-before-refusals))
+      '(#f 0 0))
 (define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
 (want "R a rule intent in a batch is written in its one form, and refused with the form in another"
       (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
                 (list-head (batch-first (list (list 'rule 'out-of-order '((must (title ?w ?t)) (on section))))) 3))
       '(ok (error bad-request rule-not-in-its-form)))
-(want "R a rule intent with a part past its value is refused, not written shortened"
-      (list-head (batch-first (list (list 'rule 'long '((class state) (on section) (must (title ?w ?t))) 'extra))) 3)
-      '(error malformed-intent (too-many-arguments (verb rule) (given 3) (needs 2))))
+(define bytes-before-long (log-bytes S writer))
+(want "R a rule intent with a part past its value is refused, not written shortened, and the log is as long as before"
+      (in-order (list-head (batch-first (list (list 'rule 'long '((class state) (on section) (must (title ?w ?t))) 'extra))) 3)
+                (- (log-bytes S writer) bytes-before-long))
+      '((error malformed-intent (too-many-arguments (verb rule) (given 3) (needs 2))) 0))
 
 ;; ---- liveness: the candidate rule a declaration has ------------------------------------
 
@@ -346,6 +368,48 @@
                      '("aaa00000" "bbb00000"))
                 (state-declared-rules rebuilt))
       (list '(plan-conflict plan-conflict) (list (list 'kept kept))))
+(define (mentions? x y) (or (equal? x y) (and (pair? x) (or (mentions? (car x) y) (mentions? (cdr x) y)))))
+(want "K after the rebuild the retired rule is still stored, as its retirement"
+      (let ((row (find (lambda (row) (and (pair? row) (eq? (car row) 'rule) (pair? (cdr row)) (eq? (cadr row) 'gone)))
+                       (state->rows rebuilt))))
+        (and row (mentions? (cddr row) 'retired)))
+      #t)
+
+;; ---- a plan's declared references ------------------------------------------------------
+;;
+;; A plan holds each member as the run will read it: a well-formed (from k)
+;; at a link's end becomes the plan's marker, a malformed one is kept as
+;; written for the run to refuse, and a link too short for its ends is
+;; still declared. A store of its own, so the plan left incomplete here
+;; touches no other row.
+(define S3 (string-append root "/s3"))
+(rpc-dispatch S3 '(init) "author")
+(define Y3 (new-id (rpc-dispatch S3 '(insert "--title" "Y3") "author")))
+(define writer3 (car (car (reduce-applied-cut (open-and-reduce S3)))))
+(define planned
+  (tolerant
+    (with-store-write S3
+      (lambda (state view)
+        (list '(insert root #f ((kind . section) (title . "P")))
+              (list 'link '(from 0 extra) 'relates Y3)
+              (list 'link '(from) 'relates Y3)
+              (list 'link '(from 0) 'relates Y3)
+              (list 'link '(from 0) 'relates)))
+      "author"
+      (make-write-request "author" 'commit '() "RULESPLAN01"
+                          (cons writer3 (cdr (assoc writer3 (reduce-applied-cut (open-and-reduce S3))))))
+      #f #t)))
+(define plan-entries
+  (tolerant
+    (let ((row (find (lambda (rec) (let ((p (list-ref rec 3))) (and (pair? p) (eq? (car p) 'plan))))
+                     (cadr (assq 'request-history (state->rows (open-and-reduce S3)))))))
+      (list-ref (list-ref row 3) 4))))
+(want "B a plan keeps a malformed (from ...) at a link's end as written, marks a well-formed one, and declares a link too short for its ends"
+      (map (lambda (k) (cdr (assv k plan-entries))) '(1 2 3 4))
+      (list (list 'link '(from 0 extra) 'relates Y3)
+            (list 'link '(from) 'relates Y3)
+            (list 'link '("#%new" 0) 'relates Y3)
+            '(link ("#%new" 0) relates)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nstore-rules complete\n" bad rows)

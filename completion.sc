@@ -161,9 +161,9 @@
                             x))))
             (declared-with-refs e (map bind rs))))))
 
-;; A member's target is a block id; a link's from end can be the run's own
-  ;; back-reference instead, a block this completion creates, which did not
-  ;; exist at the plan's cut and has no baseline to be stale against.
+;; A member's target is a block id. A link's from end can be the run's own
+  ;; back-reference (from j) instead: before member j has run there is no
+  ;; block to judge, and after it bind-made has read it as the block's id.
   (define (member-target e)
     (let ((u (declared-intent e)))
       (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (string? (cadr u)) (cadr u))))
@@ -229,6 +229,19 @@
   ;; plan's consumes clause or #f. RUNNER is the store's: given the intents
   ;; to run and the procedure to call after each member that answers ok, it
   ;; runs them and answers their answers. -> the answers of the completion.
+;; A BLOCK THIS RUN HAS MADE IS A BLOCK NOW. RUN-MADE is ((j . <id>) ...),
+  ;; the blocks the run's members j made so far; a later member's (from j)
+  ;; naming one reads as that block's id, so the judgement between members
+  ;; sees a record touching it as it sees one touching any block.
+  (define (bind-made e run-made)
+    (let ((made-id (lambda (x)
+                     (and (pair? x) (eq? (car x) 'from) (pair? (cdr x)) (null? (cddr x))
+                          (let ((p (assv (cadr x) run-made))) (and p (cdr p)))))))
+      (let ((rs (declared-refs e)))
+        (if (exists made-id rs)
+            (declared-with-refs e (map (lambda (x) (or (made-id x) x)) rs))
+            e))))
+
   (define (completion-run state plan-event entries missing indices consumes runner)
     (let ((of (length entries))
           (finish (lambda (answer) (append answer (list (completion-clause state plan-event (length entries)))))))
@@ -261,7 +274,7 @@
              (refused
                (list (finish refused)))
              (else
-               (let ((cut-before (reduce-applied-cut state)))
+               (let ((cut-before (reduce-applied-cut state)) (run-made '()))
                  (runner run
                                (lambda (n answer)
                                  ;; EVERY OK ANSWER OF A MEMBER NAMES ITS RECORD:
@@ -277,6 +290,8 @@
                                  (let ((ev (let ((e (assq 'events (cdr answer))))
                                              (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
                                        (cut (reduce-applied-cut state)))
+                                   (when (and ev (eq? 'insert (declared-kind (list-ref run n))))
+                                     (set! run-made (cons (cons n (block-id (car ev) (cdr ev))) run-made)))
                                    (cond
                                      ((not (applied-in? cut plan-event))
                                       (finish (list 'error 'unknown (list 'not-applied plan-event))))
@@ -287,7 +302,8 @@
                                      ((and (< (+ n 1) (length run))
                                            (not (same-cut? cut (cut-advanced cut-before ev))))
                                       (let ((again (stale-judgement state plan-event plan-cut consumes
-                                                                    (list-tail run (+ n 1)))))
+                                                                    (map (lambda (e) (bind-made e run-made))
+                                                                         (list-tail run (+ n 1))))))
                                         (set! cut-before cut)
                                         (and again (finish again))))
                                      (else (set! cut-before cut) #f)))))))))))))
