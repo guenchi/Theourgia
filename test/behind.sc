@@ -300,6 +300,8 @@
       #t)
 (want "W11-behind TWIN: a replay carries no behind item"
       (behind-of replay-answer) #f)
+(want "W11-records TWIN: nor a behind-records item"
+      (records-of replay-answer) #f)
 
 ;; ---- two drafts, one baseline: the JOIN ------------------------------
 ;;
