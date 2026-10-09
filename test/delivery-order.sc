@@ -150,19 +150,22 @@
 
 ;; ---- DO-2 commitments ---------------------------------------------------------
 ;;
-;; Decisions made by two writers' puts, the same construction: A's first and
-;; B's first, a snapshot, A's second. state-put-events gives them in two
-;; orders; the commitments answer is the same.
+;; Decisions made by two writers' puts, not ordered against each other: B's
+;; before the snapshot, A's after it. The seeded state makes B's block
+;; first, the full replay (writer by writer) A's: listing's choice between
+;; the two must come from the puts' (writer, seq), not from that order.
+;; NOTE: A2 AFTER A1 DID NOT TELL: A1 and B1 were made in the same order on
+;; both routes, so a listing that took the first eligible in its input order
+;; answered alike (measured: the mutant without the tie-break survived).
 
 (define S2 (string-append root "/s2"))
 (define S2copy (string-append root "/s2-replayed"))
 (ask S2 'init)
 (define (decision-put title ord)
   (list 'put (list (cons 'kind 'decision) (cons 'title title) '(parent . root) (cons 'ord ord))))
-(forge! S2 "aaaa0000" 1 '() (decision-put "Decision A one" 1))
 (forge! S2 "bbbb0000" 1 '() (decision-put "Decision B one" 2))
 (define-caught snap2 (ask S2 'snapshot))
-(forge! S2 "aaaa0000" 2 '() (decision-put "Decision A two" 3))
+(forge! S2 "aaaa0000" 1 '() (decision-put "Decision A one" 1))
 (copy-without-snapshot! S2 S2copy)
 (define-caught seeded2 (open-and-reduce S2))
 (define-caught replayed2 (open-and-reduce S2copy))
@@ -172,12 +175,12 @@
     (and (equal? (by-print a) (by-print b)) (not (equal? a b)))))
 (want "DO-2 THE CONSTRUCTION: the two routes give the same puts in two delivery orders"
       built2 #t)
-(want "DO-2 commitments --all answers byte for byte alike on the two routes, three decisions"
+(want "DO-2 commitments --all answers byte for byte alike on the two routes, two decisions"
       (let ((a (ask-with S2 seeded2 'commitments "--all")) (b (ask-with S2copy replayed2 'commitments "--all")))
         (list built2 (equal? (format "~s" a) (format "~s" b))
               (length (filter (lambda (x) (and (pair? x) (eq? (car x) 'decision)))
                               (let ((c (clause-in a 'items))) (if c (cdr c) '()))))))
-      '(#t #t 3))
+      '(#t #t 2))
 
 ;; ---- DO-3 the consumption index -----------------------------------------------
 ;;
