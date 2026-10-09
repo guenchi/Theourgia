@@ -328,7 +328,7 @@
     (define (version-of x) (cadr (car x)))
     (let loop ((all (state-revoked-raw r owner)) (out '()))
       (if (null? all)
-          (list-sort (lambda (x y) (string<? (format "~s" (version-of x)) (format "~s" (version-of y)))) out)
+          (list-sort (lambda (x y) (string<? (version-of x) (version-of y))) out)
           (let* ((x (car all))
                  (have (find (lambda (o) (equal? (version-of o) (version-of x))) out)))
             (loop (cdr all)
