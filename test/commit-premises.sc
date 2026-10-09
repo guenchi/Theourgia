@@ -551,7 +551,7 @@
     (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
 (define (test-file? f) (and (>= (string-length f) 5) (string=? (substring f 0 5) "test/")))
 (define test-call-files
-  '("test/adopt1.sc" "test/code-import.sc" "test/commit-consumes.sc" "test/commit-premises.sc" "test/commit-text-mode.sc" "test/completion-stale.sc" "test/datum-import.sc" "test/datum-metadata1.sc" "test/doc-predicate.sc" "test/empty-plan.sc" "test/evidence-cli1-hang/holder.sc" "test/evidence-index1.sc" "test/md2.sc" "test/name-use-verbs.sc" "test/q7.sc" "test/q8.sc" "test/read1.sc" "test/resident.sc" "test/snap1.sc" "test/store1.sc" "test/unreadable-adopt.sc" "test/view-fields.sc" "test/view-rpc.sc"))
+  '("test/adopt1.sc" "test/code-import.sc" "test/commit-consumes.sc" "test/commit-premises.sc" "test/commit-text-mode.sc" "test/completion-stale.sc" "test/datum-import.sc" "test/datum-metadata1.sc" "test/doc-predicate.sc" "test/empty-plan.sc" "test/evidence-cli1-hang/holder.sc" "test/evidence-index1.sc" "test/md2.sc" "test/name-use-verbs.sc" "test/q7.sc" "test/q8.sc" "test/read1.sc" "test/resident.sc" "test/snap1.sc" "test/store-rules.sc" "test/store1.sc" "test/unreadable-adopt.sc" "test/view-fields.sc" "test/view-rpc.sc"))
 (define (calls-in form)
   (cond ((pair? form) (+ (if (eq? (car form) 'with-store-write) 1 0)
                          (let loop ((f form) (n 0)) (if (pair? f) (loop (cdr f) (+ n (calls-in (car f)))) n))))

@@ -24,10 +24,11 @@
 ;;
 ;; KEY: THE BOUND -- WHICH ENTRIES CAN REACH A COMPLETION.
 ;;
-;;   (a) What the store writes: an insert or a move of exactly four parts,
-;;       (insert <parent> <sibling> <fields>) and (move <id> <parent>
-;;       <sibling>), bare or inside a three-part wrapper (expect <hash>
-;;       <intent>).
+;;   (a) What the store writes: an insert, a move, a link or an unlink of
+;;       exactly four parts, (insert <parent> <sibling> <fields>), (move
+;;       <id> <parent> <sibling>), (link <from> <rel> <to>) and (unlink
+;;       <from> <rel> <to>), bare or inside a three-part wrapper (expect
+;;       <hash> <intent>).
 ;;
 ;;   (b) What the reducer admits beyond that. A plan record is admitted by
 ;;       request.sc's plan?, which asks of each entry only that it be a
@@ -43,13 +44,16 @@
 ;;       whose head is not a symbol, does not make a plan.
 ;;
 ;;   THE REFERENCE POSITIONS ARE FIXED: an insert's elements 1 (parent) and
-;;   2 (sibling), a move's elements 2 (parent) and 3 (sibling), each
-;;   counted only when the entry reaches it. The intent is read through ONE
+;;   2 (sibling), a move's elements 2 (parent) and 3 (sibling), a link's
+;;   and an unlink's elements 1 (from) and 3 (to), each counted only when
+;;   the entry reaches it. This file keeps its own copy of the positions
+;;   (ref-positions below), so it is a reading of the store's table and
+;;   not the table read back. The intent is read through ONE
 ;;   wrapper, as the store reads it: an entry (expect <a> <b> ...) has the
 ;;   intent <b>; an intent that is itself a wrapper is not an insert or a
 ;;   move, and has no references.
 ;;
-;; THE GENERATOR covers that bound: kind (insert, move) x parts after the
+;; THE GENERATOR covers that bound: kind (insert, move, link, unlink) x parts after the
 ;; head (0 to 5) x wrapper (none; (expect h I); (expect h I extra);
 ;; (expect h (expect h I))) x the intent ending properly or in a dotted tail
 ;; (under a wrapper; a bare entry must end properly) x the markers: one at
@@ -155,9 +159,10 @@
 (define valid '("#%new" 0))
 (define markers (list valid '("#%new" 9) '("#%new" 1)))
 (define (filler kind p)
-  (if (eq? kind 'insert)
-      (case p ((1) 'root) ((2) #f) ((3) section) (else 'extra))
-      (case p ((1) M) ((2) 'root) ((3) #f) (else 'extra))))
+  (case kind
+    ((insert) (case p ((1) 'root) ((2) #f) ((3) section) (else 'extra)))
+    ((move) (case p ((1) M) ((2) 'root) ((3) #f) (else 'extra)))
+    (else (case p ((1) M) ((2) 'relates) ((3) M) (else 'extra)))))
 ;; A PLACE is (intent p), (wrapper q) for the outer wrapper's element q, or
 ;; (inner 1) for the subject of a wrapper inside the wrapper. MARKS is a
 ;; list of (place . value).
@@ -186,10 +191,11 @@
 (define shapes '((none . #f) (w3 . #f) (w3 . #t) (w4 . #f) (w4 . #t) (wn . #f) (wn . #t)))
 
 ;; THE POSITIONS RULE, from how the entry was made.
-(define (start-of kind) (if (eq? kind 'insert) 1 2))
+(define (ref-positions kind)
+  (case kind ((insert) '(1 2)) ((move) '(2 3)) (else '(1 3))))
 (define (reference-place? kind wrapper place)
   (and (not (eq? wrapper 'wn)) (eq? (car place) 'intent)
-       (<= (start-of kind) (cadr place) (+ (start-of kind) 1))))
+       (memv (cadr place) (ref-positions kind)) #t))
 
 ;; -> (class entry expected): the class from the reference places among
 ;; MARKS. A bad marker at a reference refuses, the parent's first; valid
@@ -214,25 +220,26 @@
         (do ((n 0 (+ n 1))) ((> n 5))
           (for-each
             (lambda (shape)
-              (let ((wrapper (car shape)) (dotted (cdr shape)) (s (start-of kind)))
+              (let ((wrapper (car shape)) (dotted (cdr shape))
+                    (s (car (ref-positions kind))) (s2 (cadr (ref-positions kind))))
                 (add! (judged kind n wrapper dotted '()))
                 (for-each
                   (lambda (place)
                     (for-each (lambda (m) (add! (judged kind n wrapper dotted (list (cons place m))))) markers))
                   (places n wrapper))
                 ;; BOTH REFERENCE POSITIONS MARKED, when the entry has both.
-                (when (>= n (+ s 1))
+                (when (>= n s2)
                   (for-each
                     (lambda (m1)
                       (for-each
                         (lambda (m2)
                           (add! (judged kind n wrapper dotted
-                                        (list (cons (list 'intent s) m1) (cons (list 'intent (+ s 1)) m2)))))
+                                        (list (cons (list 'intent s) m1) (cons (list 'intent s2) m2)))))
                         markers))
                     markers))))
             shapes)))
-      '(insert move))
-    ;; Admitted shapes outside the two kinds: no references at all.
+      '(insert move link unlink))
+    ;; Admitted shapes outside the four kinds: no references at all.
     (add! (list 'no-marker-at-reference '(expect) '(expect)))
     (for-each
       (lambda (m)
@@ -249,9 +256,12 @@
 ;; whose entry has both reference positions (n >= start + 1) gives 9 more:
 ;; 7 shapes x 9 x (n from 2 to 5 for an insert, 3 to 5 for a move, 4 + 3
 ;; values). And 1 + 5 x 3 others.
+;; For each kind and each 0..5 parts: 37 + 21n entries over the seven
+;; shapes, and 63 more when both reference positions are reached (an
+;; insert from 2 parts, a move, a link and an unlink from 3).
 (define product
-  (+ (* 2 (let sum ((n 0) (acc 0)) (if (> n 5) acc (sum (+ n 1) (+ acc 37 (* 21 n))))))
-     (* 7 9 (+ 4 3))
+  (+ (* 4 (let sum ((n 0) (acc 0)) (if (> n 5) acc (sum (+ n 1) (+ acc 37 (* 21 n))))))
+     (* 7 9 (+ 4 3 3 3))
      1 (* 5 3)))
 
 ;; ---- the property ----------------------------------------------------------

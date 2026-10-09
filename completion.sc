@@ -46,11 +46,12 @@
   (import (rnrs) (theourgia reduce)
           (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine)
           ;; the mode check a fresh commit asks, asked of a completion too
-          (only (theourgia store) datum-mode-block? draft-on-datum-refusal))
+          (only (theourgia store) datum-mode-block? draft-on-datum-refusal intent-ref-positions))
 
-  ;; A marker is a position, the parent or the sibling of an insert or a
-  ;; move, holding ("#%new" k): the block member k of the plan makes. The
-  ;; same list in a member's value is data.
+  ;; A marker is a reference position -- the parent or the sibling of an
+  ;; insert or a move, either end of a link or an unlink: the store's one
+  ;; table, intent-ref-positions -- holding ("#%new" k): the block member k
+  ;; of the plan makes. The same list in a member's value is data.
   (define (plan-marker? x)
     (and (pair? x) (equal? (car x) "#%new") (pair? (cdr x)) (null? (cddr x))))
 
@@ -66,38 +67,35 @@
     (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
   (define (declared-kind e)
     (let ((u (declared-intent e))) (and (pair? u) (symbol? (car u)) (car u))))
-  ;; Where an entry's references start: an insert's parent is its element
-  ;; 1, a move's its element 2; the sibling follows the parent.
-  (define (refs-start e)
-    (case (declared-kind e) ((insert) 1) ((move) 2) (else #f)))
-  ;; -> the references the entry has: its parent, then its sibling, each
-  ;; read on its own through the pairs that reach it, so an entry that
-  ;; ends after its parent has one and an entry that ends before it has
-  ;; none. A plan the reducer admits can declare an insert or a move
-  ;; shorter or longer than the four parts the store writes; a marker in
-  ;; any reference it has is still a marker, and is still checked.
+  ;; Where an entry's references stand: the store's table, by kind.
+  (define (ref-positions e)
+    (let ((x (assq (declared-kind e) intent-ref-positions))) (if x (cdr x) '())))
+  ;; -> the references the entry has, in the table's order, each read on
+  ;; its own through the pairs that reach it, so an entry that ends after
+  ;; its first reference has one and an entry that ends before it has
+  ;; none. A plan the reducer admits can declare an intent shorter or
+  ;; longer than the parts the store writes; a marker in any reference it
+  ;; has is still a marker, and is still checked.
   (define (declared-refs e)
-    (let ((k (refs-start e)))
-      (if (not k)
-          '()
-          (let take ((l (declared-intent e)) (i 0) (out '()))
-            (cond ((or (not (pair? l)) (= i (+ k 2))) (reverse out))
-                  ((>= i k) (take (cdr l) (+ i 1) (cons (car l) out)))
-                  (else (take (cdr l) (+ i 1) out)))))))
-  ;; L with its elements from K on replaced by VS, as many as VS has, the
-  ;; rest of its pairs and its tail as they were.
-  (define (with-elements l k vs)
+    (let ((ks (ref-positions e)))
+      (let take ((l (declared-intent e)) (i 0) (out '()))
+        (cond ((not (pair? l)) (reverse out))
+              ((memv i ks) (take (cdr l) (+ i 1) (cons (car l) out)))
+              (else (take (cdr l) (+ i 1) out))))))
+  ;; L with its elements at the positions KS replaced by VS in order, as
+  ;; many as VS has, the rest of its pairs and its tail as they were.
+  (define (with-elements l ks vs)
     (let loop ((l l) (i 0) (vs vs))
       (cond ((not (pair? l)) l)
-            ((and (>= i k) (pair? vs)) (cons (car vs) (loop (cdr l) (+ i 1) (cdr vs))))
+            ((and (memv i ks) (pair? vs)) (cons (car vs) (loop (cdr l) (+ i 1) (cdr vs))))
             (else (cons (car l) (loop (cdr l) (+ i 1) vs))))))
   ;; The entry with its references replaced in place by VS, one for each
   ;; reference declared-refs read: the rest of the entry, and its wrapper,
   ;; are kept as declared, and the run judges them as it judges any entry.
   (define (declared-with-refs e vs)
     (let* ((u (declared-intent e))
-           (r (with-elements u (refs-start e) vs)))
-      (if (eq? u e) r (with-elements e 2 (list r)))))
+           (r (with-elements u (ref-positions e) vs)))
+      (if (eq? u e) r (with-elements e '(2) (list r)))))
 
   ;; A member of this plan: a record whose actor names this plan event with
   ;; an integer index. A record that claims the request's identity without
@@ -163,9 +161,12 @@
                             x))))
             (declared-with-refs e (map bind rs))))))
 
+;; A member's target is a block id. A link's from end can be the run's own
+  ;; back-reference (from j) instead: before member j has run there is no
+  ;; block to judge, and after it bind-made has read it as the block's id.
   (define (member-target e)
     (let ((u (declared-intent e)))
-      (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (cadr u))))
+      (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (string? (cadr u)) (cadr u))))
 
   ;; NEVER: A COMPLETION LANDS NO DRAFT ON A DATUM BLOCK EITHER. A fresh
   ;; commit refuses a draft whose block is a datum block (store.sc,
@@ -228,6 +229,19 @@
   ;; plan's consumes clause or #f. RUNNER is the store's: given the intents
   ;; to run and the procedure to call after each member that answers ok, it
   ;; runs them and answers their answers. -> the answers of the completion.
+;; A BLOCK THIS RUN HAS MADE IS A BLOCK NOW. RUN-MADE is ((j . <id>) ...),
+  ;; the blocks the run's members j made so far; a later member's (from j)
+  ;; naming one reads as that block's id, so the judgement between members
+  ;; sees a record touching it as it sees one touching any block.
+  (define (bind-made e run-made)
+    (let ((made-id (lambda (x)
+                     (and (pair? x) (eq? (car x) 'from) (pair? (cdr x)) (null? (cddr x))
+                          (let ((p (assv (cadr x) run-made))) (and p (cdr p)))))))
+      (let ((rs (declared-refs e)))
+        (if (exists made-id rs)
+            (declared-with-refs e (map (lambda (x) (or (made-id x) x)) rs))
+            e))))
+
   (define (completion-run state plan-event entries missing indices consumes runner)
     (let ((of (length entries))
           (finish (lambda (answer) (append answer (list (completion-clause state plan-event (length entries)))))))
@@ -260,7 +274,7 @@
              (refused
                (list (finish refused)))
              (else
-               (let ((cut-before (reduce-applied-cut state)))
+               (let ((cut-before (reduce-applied-cut state)) (run-made '()))
                  (runner run
                                (lambda (n answer)
                                  ;; EVERY OK ANSWER OF A MEMBER NAMES ITS RECORD:
@@ -276,6 +290,8 @@
                                  (let ((ev (let ((e (assq 'events (cdr answer))))
                                              (and e (pair? (cadr e)) (pair? (car (cadr e))) (car (cadr e)))))
                                        (cut (reduce-applied-cut state)))
+                                   (when (and ev (eq? 'insert (declared-kind (list-ref run n))))
+                                     (set! run-made (cons (cons n (block-id (car ev) (cdr ev))) run-made)))
                                    (cond
                                      ((not (applied-in? cut plan-event))
                                       (finish (list 'error 'unknown (list 'not-applied plan-event))))
@@ -286,7 +302,8 @@
                                      ((and (< (+ n 1) (length run))
                                            (not (same-cut? cut (cut-advanced cut-before ev))))
                                       (let ((again (stale-judgement state plan-event plan-cut consumes
-                                                                    (list-tail run (+ n 1)))))
+                                                                    (map (lambda (e) (bind-made e run-made))
+                                                                         (list-tail run (+ n 1))))))
                                         (set! cut-before cut)
                                         (and again (finish again))))
                                      (else (set! cut-before cut) #f)))))))))))))

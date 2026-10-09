@@ -722,6 +722,10 @@
   (define relation-usage
     '(relation <name> ["--as" <kind>] ["--from" <selector>] ["--to" <selector>] ["--retire"] ["--premises" <datum>]))
 
+  (define rule-usage
+    '(rule <name> ["--on" <kind>] ["--where" <goal>] ["--must" <goal>] ["--must-not" <goal>]
+           ["--builtin" <name>] ["--retire"] ["--premises" <datum>]))
+
   (define insert-usage
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
              ("--keywords" <text>) ("--premises" <datum>)))
@@ -963,6 +967,54 @@
                           (list 'relation (string->symbol (car args)) (list (string->symbol as) f t))
                           req options)))))))
 
+  ;; A RULE OF THE STORE: `rule <name> --on <kind> ... [--where <goal>] --must
+  ;; <goal> | --must-not <goal>`, `rule <name> --builtin <name>`, or `rule
+  ;; <name> --retire`. The value is put in its one form, its class computed
+  ;; from its goals, by the query library (rule-value-check), which the
+  ;; store asks again when it writes; a goal that reads outside the log, an
+  ;; unknown relation, a wrong arity or an unknown kind is refused here and
+  ;; nothing is written. In this build a rule is stored and listed, and no
+  ;; write is judged by it.
+  (define (parse-rule store actor args req options)
+    (let ((on (argument-option-list options "--on"))
+          (where (argument-option options "--where"))
+          (must (argument-option options "--must"))
+          (must-not (argument-option options "--must-not"))
+          (builtin (argument-option options "--builtin"))
+          (retire (argument-option options "--retire")))
+;; UNREADABLE IS NO DATUM a goal can read as: a goal that reads as the
+      ;; symbol unreadable is checked as any goal is.
+      (define unreadable (list 'unreadable))
+      (define (goal text)
+        (guard (e (#t unreadable))
+          (let* ((in (open-string-input-port text)) (d (get-datum in)))
+            (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
+      (define (write-rule value)
+        (let ((v ((eval 'rule-value-check (environment '(theourgia query))) value)))
+          (if (and (pair? v) (eq? (car v) 'error))
+              v
+              (one-write store actor (list 'rule (string->symbol (car args)) v) req options))))
+      (cond
+        ((not (= 1 (length args))) (usage rule-usage))
+        (retire
+         (if (or (pair? on) where must must-not builtin)
+             (usage rule-usage)
+             (one-write store actor (list 'rule (string->symbol (car args)) 'retired) req options)))
+        (builtin
+         (if (or (pair? on) where must must-not)
+             (usage rule-usage)
+             (write-rule (list (list 'builtin (string->symbol builtin))))))
+        ((or (null? on) (and must must-not) (not (or must must-not))) (usage rule-usage))
+        (else
+         ;; A given --where is checked whatever it reads as, #f and the
+         ;; symbol absent among them; only an absent one adds no clause.
+         (let ((w (and where (goal where))) (g (goal (or must must-not))))
+           (if (or (eq? w unreadable) (eq? g unreadable))
+               '(error bad-request (reason goal-unreadable))
+               (write-rule (append (list (cons 'on (map string->symbol on)))
+                                   (if where (list (list 'where w)) '())
+                                   (list (list (if must 'must 'must-not) g))))))))))
+
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the
   ;; bytes, handed here as a list of intents; running them one at a time
   ;; through separate sessions would let another writer interleave, and
@@ -1099,6 +1151,9 @@
             "Remove a named relation between two blocks." #f 'daemon)
       (list 'relation relation-usage
             "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for, stored and listed, not enforced. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
+            #f 'daemon)
+      (list 'rule rule-usage
+            "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. In this build a rule is stored, listed by check and conflicts, and judges no write. The same rule again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
       ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the
@@ -1332,6 +1387,18 @@
                             d))
                       table)))))
 
+;; THE RULES IN FORCE, under the same rule as the declared table: ->
+  ;; (declared-rules (<name> <value>) ...), or #f when there is none, so
+  ;; describe reads as it did for a store with no rule.
+  (define (describe-rules state)
+    (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
+                       (else state)))
+           (complete (cond ((sealed-state? state) (null? (sealed-state-notes state)))
+                           (view (null? (unreadable-behind view)))
+                           (else #f)))
+           (table (if (and view complete (reduction? view)) (state-declared-rules view) '())))
+      (and (pair? table) (cons 'declared-rules table))))
+
   (define (describe-template state)
     (let* ((view (cond ((sealed-state? state) (sealed-state-state state))
                        (else state)))
@@ -1432,8 +1499,8 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(describe))
-                  (let ((t (describe-template state)) (d (describe-declared state)))
-                    (append (describe-answer) (if t (list t) '()) (if d (list d) '()))))))
+                  (let ((t (describe-template state)) (d (describe-declared state)) (r (describe-rules state)))
+                    (append (describe-answer) (if t (list t) '()) (if d (list d) '()) (if r (list r) '()))))))
       (cons 'init
             (lambda (store actor args req options state writer cwd)
               (let ((name (argument-option options "--template"))
@@ -1464,6 +1531,7 @@
       (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req options)))))
       (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req options)))))
       (cons 'relation (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-relation store actor args req options)))))
+      (cons 'rule (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-rule store actor args req options)))))
       (cons 'write
             (lambda (store actor args req options state writer cwd)
               (if (= 2 (length args))
@@ -2250,7 +2318,7 @@
 
   (define (tracked-request? verb args)
     (case verb
-      ((insert set move del link unlink relation batch commit import-code def) #t)
+      ((insert set move del link unlink relation rule batch commit import-code def) #t)
       ((tag) (= 1 (length args)))
       (else #f)))
 

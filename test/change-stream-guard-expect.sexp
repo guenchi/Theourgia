@@ -6,7 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the review channel's verbs are in the base now, and this change
-;; (the transport refusal's datum, the MCP tools' descriptions) changes no
-;; scripted answer.
-()
+;; The rule verb joins the catalogue, and the verb list an unknown verb is
+;; answered with.
+((describe "describe lists the rule verb")
+ (no-such-verb "the unknown-verb refusal's verb list names rule"))

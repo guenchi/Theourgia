@@ -46,7 +46,7 @@
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           declaration-kinds relation-kind state-declared-relations state-relation-contested
-          state-declaration
+          state-declaration rule-value-reason state-rule state-declared-rules state-rule-contested
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
@@ -130,6 +130,7 @@
   ;; trace    -- event-ids in the order they were applied
   ;; noted    -- integrity observations this layer made while applying
   ;; declared-relations -- alist of a declared relation name to its candidates
+  ;; declared-rules -- alist of a rule name to its candidates, the same way
   (define-record-type reduction
     (fields (mutable blocks)
             (mutable links)
@@ -141,7 +142,8 @@
             (mutable noted) (mutable history) (mutable gates)
             (mutable admission-index)
             (mutable consumption)
-            (mutable declared-relations)))
+            (mutable declared-relations)
+            (mutable declared-rules)))
 
   ;; ---- the name of a draft's content ---------------------------------------
   ;;
@@ -593,7 +595,7 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '()))
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '()))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
@@ -715,6 +717,7 @@
       (reduction-links-set! r '())
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r '())
+      (reduction-declared-rules-set! r '())
       (reduction-pasts-set! r '())
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
@@ -1200,6 +1203,11 @@
                     ((and (pair? args) (pair? (cdr args)) (find bad? (datum-symbols (cadr args))))
                      => (lambda (x) (say 'selector x)))
                     (else #f)))
+             ((rule)
+              (cond ((and (pair? args) (bad? (car args))) (say 'rule (car args)))
+                    ((and (pair? args) (pair? (cdr args)) (find bad? (datum-symbols (cadr args))))
+                     => (lambda (x) (say 'rule-value x)))
+                    (else #f)))
              ((set)
               (and (pair? (cdr args)) (bad? (cadr args))
                    (say 'field-name (cadr args))))
@@ -1389,6 +1397,10 @@
            ((relation) (or (args-reason args 2)
                            (and (not (symbol? (car args))) 'relation-not-a-symbol)
                            (declaration-reason (car args) (cadr args))))
+           ;; A RULE: a name and its whole value (rule-value-reason).
+           ((rule) (or (args-reason args 2)
+                       (and (not (symbol? (car args))) 'rule-name-not-a-symbol)
+                       (rule-value-reason (cadr args))))
            ;; A PLAN IS CHECKED HERE TOO, and until now it was not: the
            ;; arm below answered #f for it, so a plan carrying a
            ;; malformed `consumes` was applied in silence and the index
@@ -1461,6 +1473,7 @@
          ((unlink) (do-unlink! r event-id past (cdr payload)))
          ((tag) (do-tag! r event-id past (cdr payload)))
          ((relation) (do-relation! r event-id past (cdr payload)))
+         ((rule) (do-rule! r event-id past (cdr payload)))
          ;; bookkeeping: understood, and deliberately without effect
          ((plan batch resolve) (if #f #f))
          (else (note-verb! r event-id (car payload)))))))
@@ -1539,14 +1552,19 @@
         r (cons (cons name (put-candidate past have cut event-id))
                 (remp (lambda (e) (equal? (car e) name)) (reduction-tags r))))))
 
-  ;; A DECLARATION IS A CANDIDATE OF ITS NAME, as a write is of a field: the
+;; A DECLARATION IS A CANDIDATE OF ITS NAME, as a write is of a field: the
   ;; ones this record has seen are superseded, a concurrent one survives.
-  (define (do-relation! r event-id past args)
+  ;; Relations and rules are two tables through this one procedure.
+  (define (put-declaration! table table-set! r event-id past args)
     (let* ((name (car args))
-           (have (let ((e (assq name (reduction-declared-relations r)))) (if e (cdr e) '()))))
-      (reduction-declared-relations-set!
+           (have (let ((e (assq name (table r)))) (if e (cdr e) '()))))
+      (table-set!
         r (cons (cons name (put-candidate past have (copy-datum (cadr args)) event-id))
-                (remp (lambda (e) (eq? (car e) name)) (reduction-declared-relations r))))))
+                (remp (lambda (e) (eq? (car e) name)) (table r))))))
+  (define (do-relation! r event-id past args)
+    (put-declaration! reduction-declared-relations reduction-declared-relations-set! r event-id past args))
+  (define (do-rule! r event-id past args)
+    (put-declaration! reduction-declared-rules reduction-declared-rules-set! r event-id past args))
 
   ;; ---- ordering (design 9.5) ------------------------------------------------
 
@@ -2065,15 +2083,7 @@
   ;; -> #f for a name never declared; else (in-force <value>), (retired), or
   ;; (contested (<value> <writer> <seq>) ...), every surviving candidate.
   (define (state-declaration r name)
-    (let ((cs (relation-candidates r name)))
-      (and (pair? cs)
-           (let ((v (candidates-agreed cs)))
-             (cond ((not v)
-                    (cons 'contested
-                          (list-sort candidate<?
-                                     (map (lambda (c) (list (copy-datum (car c)) (car (cdr c)) (cdr (cdr c)))) cs))))
-                   ((eq? v 'retired) '(retired))
-                   (else (list 'in-force (copy-datum v))))))))
+    (candidates-state (relation-candidates r name)))
 
   (define (declared-names r)
     (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
@@ -2102,6 +2112,77 @@
                      (and (eq? (car d) 'contested)
                           (list 'relation-contested name (cons 'candidates (cdr d))))))
                  (declared-names r))))
+
+;; ---- rules: the same candidate rule as declarations ----------------------
+  ;;
+  ;; A RULE'S VALUE, as a record carries it: `retired`, or a list of clauses
+  ;; -- (class state|write), (on <kind> ...), [(where <goal>)], and one of
+  ;; (must <goal>) or (must-not <goal>) -- or ((builtin <name>)). This is the
+  ;; SHAPE a replay accepts; what a goal says and whether a kind is known is
+  ;; the `rule` verb's to judge before it writes, as a block's kind is.
+  (define rule-clause-heads '(class on where must must-not builtin))
+  (define (rule-value-reason v)
+    (define (clause k) (assq k v))
+    (cond
+      ((eq? v 'retired) #f)
+      ((not (and (list? v) (pair? v)
+                 (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) rule-clause-heads))) v)))
+       'rule-malformed)
+      ((let dup ((cs v) (seen '()))
+         (cond ((null? cs) #f) ((memq (caar cs) seen) #t) (else (dup (cdr cs) (cons (caar cs) seen)))))
+       'rule-malformed)
+      ((clause 'builtin)
+       (if (and (= 1 (length v)) (= 2 (length (clause 'builtin))) (symbol? (cadr (clause 'builtin))))
+           #f
+           'rule-malformed))
+      ((not (= 1 (length (filter (lambda (c) (memq (car c) '(must must-not))) v)))) 'rule-malformed)
+      ((not (let ((o (clause 'on))) (and o (pair? (cdr o)) (for-all symbol? (cdr o))))) 'rule-malformed)
+      ((not (let ((c (clause 'class))) (and c (= 2 (length c)) (memq (cadr c) '(state write))))) 'rule-malformed)
+      ((exists (lambda (k) (let ((c (clause k))) (and c (not (= 2 (length c)))))) '(where must must-not))
+       'rule-malformed)
+      (else #f)))
+
+  (define (rule-candidates r name)
+    (let ((e (assq name (reduction-declared-rules r)))) (if e (cdr e) '())))
+
+  (define (rule-names r)
+    (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+               (map car (reduction-declared-rules r))))
+
+  ;; -> what a name's surviving candidates say, by the one agreement rule:
+  ;; #f for none, (in-force <value>), (retired), or (contested (<value>
+  ;; <writer> <seq>) ...). Declarations and rules read their candidates
+  ;; through this.
+  (define (candidates-state cs)
+    (and (pair? cs)
+         (let ((v (candidates-agreed cs)))
+           (cond ((not v)
+                  (cons 'contested
+                        (list-sort candidate<?
+                                   (map (lambda (c) (list (copy-datum (car c)) (car (cdr c)) (cdr (cdr c)))) cs))))
+                 ((eq? v 'retired) '(retired))
+                 (else (list 'in-force (copy-datum v)))))))
+
+  (define (state-rule r name) (candidates-state (rule-candidates r name)))
+
+  ;; -> the rules in force, by name: ((<name> <value>) ...). A retired or a
+  ;; contested rule is not among them: a contested rule is not evaluated.
+  (define (state-declared-rules r)
+    (filter values
+            (map (lambda (name)
+                   (let ((d (state-rule r name)))
+                     (and (eq? (car d) 'in-force) (list name (cadr d)))))
+                 (rule-names r))))
+
+  ;; -> ((rule-contested <name> (candidates (<value> <writer> <seq>) ...)) ...),
+  ;; by name, for `conflicts`.
+  (define (state-rule-contested r)
+    (filter values
+            (map (lambda (name)
+                   (let ((d (state-rule r name)))
+                     (and (eq? (car d) 'contested)
+                          (list 'rule-contested name (cons 'candidates (cdr d))))))
+                 (rule-names r))))
 
   ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
   ;; records were DELIVERED (as state-put-events: not application order, and
@@ -2159,9 +2240,13 @@
   ;; THE DECLARATIONS ARE PART OF THE STATE, after the blocks, a name's
   ;; candidates by event; a store with none hashes the blocks alone, as it
   ;; always has.
+  ;; The rules are a term of their own, after the declarations, only when
+  ;; the store has one: a store without rules hashes as it did.
   (define (state-hash r)
-    (let ((ds (map (lambda (name) (list 'relation name (candidates->datum (relation-candidates r name))))
-                   (declared-names r))))
+    (let ((ds (append (map (lambda (name) (list 'relation name (candidates->datum (relation-candidates r name))))
+                           (declared-names r))
+                      (map (lambda (name) (list 'rule name (candidates->datum (rule-candidates r name))))
+                           (rule-names r)))))
       (bytevector->hex
         (sha256 (string->utf8 (sexpr->string-extended
                                 (storable-encode (if (null? ds) (state-datum r) (append (state-datum r) ds)))))))))
@@ -2611,7 +2696,9 @@
       (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))
       ;; A DECLARATION'S CANDIDATES, one row a name; none in a store with
       ;; no declaration, whose rows are as they were.
-      (map (lambda (e) (list 'relation (car e) (cdr e))) (reduction-declared-relations r))))
+      (map (lambda (e) (list 'relation (car e) (cdr e))) (reduction-declared-relations r))
+      ;; A RULE'S CANDIDATES the same way, one row a name.
+      (map (lambda (e) (list 'rule (car e) (cdr e))) (reduction-declared-rules r))))
 
   (define (rows->state rows)
     (let ((r (reduce-empty))
@@ -2653,6 +2740,9 @@
             ((relation)
              (reduction-declared-relations-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-declared-relations r))))
+            ((rule)
+             (reduction-declared-rules-set!
+               r (cons (cons (cadr row) (caddr row)) (reduction-declared-rules r))))
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))

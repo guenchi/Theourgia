@@ -17,7 +17,7 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also
+  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
@@ -2082,6 +2082,9 @@
         ;; A RELATION NAME TWO WRITERS DECLARED DIFFERENTLY, neither having
         ;; seen the other: its edges have no effect until one declares again.
         (state-relation-contested state)
+        ;; A RULE TWO WRITERS DECLARED DIFFERENTLY: not evaluated until one
+        ;; declares it again.
+        (state-rule-contested state)
         ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
         ;; alive text files, that an export would write to the same file.
         (state-duplicated-paths state)
@@ -2789,6 +2792,22 @@
                     (list 'kind-not-known (list 'kind (datum-spelling (car value)))
                           (list 'known declaration-kinds))))
              (else (list 'relation name value)))))
+        ;; A RULE NAMES NO BLOCK EITHER. Its value is checked by the query
+        ;; library's own reading of a goal (query.sc, rule-value-check),
+        ;; entered on use, so the verb and a batch's intent are judged by
+        ;; the same procedure. THE VALUE MUST BE IN ITS ONE FORM, the class
+        ;; included: the record is the intent, so a plan's member is the
+        ;; intent it declared (request.sc, intent-produced?), and a value in
+        ;; another order is refused with the form it would have.
+        ((rule)
+         (let ((v (and (= (length i) 3) ((eval 'rule-value-check (environment '(theourgia query))) (caddr i)))))
+           (cond
+             ((not v)
+              (list 'error 'malformed-intent (list 'too-many-arguments (list 'verb 'rule) (list 'given (- (length i) 1)) '(needs 2))))
+             ((and (pair? v) (eq? (car v) 'error)) v)
+             ((not (equal? v (caddr i)))
+              (list 'error 'bad-request 'rule-not-in-its-form (list 'form v)))
+             (else (list 'rule (cadr i) v)))))
         ;; SPELLED, FOR THE SAME REASON AS THE OTHER ONE. An intent's verb
         ;; is whatever the caller wrote, so the refusal that names it must
         ;; not be the thing that carries it back.
@@ -3919,8 +3938,13 @@
           (unwrap intent)
           (intent-with-refs intent (as-marker (car rs)) (as-marker (cadr rs))))))
 
+  ;; ONLY A WELL-FORMED REFERENCE BECOMES A MARKER. A malformed one -- `(from)`,
+  ;; `(from 0 extra)`, `(from -1)` -- is kept as written, so the plan holds
+  ;; what the run refuses (resolve-from), and a completion cannot bind a
+  ;; reference the first run never accepted.
   (define (as-marker x)
-    (if (and (pair? x) (eq? (car x) 'from))
+    (if (and (pair? x) (eq? (car x) 'from) (pair? (cdr x)) (null? (cddr x))
+             (integer? (cadr x)) (exact? (cadr x)) (>= (cadr x) 0))
         (list "#%new" (cadr x))
         x))
 
@@ -4023,12 +4047,27 @@
   ;; itself have been created two intents ago, and `after` is how the
   ;; caller says so. Resolving only the parent put every new section at
   ;; the end of its parent's children whatever the file said.
+  ;;
+  ;; AND EITHER END OF AN EDGE, so a write can create a block and link it
+  ;; in one request: a rule about the new block can then see its edges.
+  ;;
+  ;; NEVER: ONE TABLE SAYS WHERE A REFERENCE MAY STAND, by intent kind and
+  ;; position (0 is the verb), and every reader of references reads it:
+  ;; the resolver below, the plan's declared intents (declared-intent), and
+  ;; the completion's binding of a plan's markers (completion.sc). A
+  ;; position known to one of them and not the others is a reference one
+  ;; route resolves and another hands on unbound.
+  (define intent-ref-positions
+    '((insert 1 2) (move 2 3) (link 1 3) (unlink 1 3)))
+
+  ;; A position the intent is too short to have reads as #f, so a plan is
+  ;; still written for it and its run answers too-few-arguments, as any
+  ;; run does.
   (define (intent-refs intent)
-    (let ((i (unwrap intent)))
-      (case (car i)
-        ((insert) (list (cadr i) (caddr i)))
-        ((move) (list (caddr i) (cadddr i)))
-        (else '()))))
+    (let* ((i (unwrap intent)) (e (and (pair? i) (assq (car i) intent-ref-positions))))
+      (if e
+          (map (lambda (k) (and (list? i) (< k (length i)) (list-ref i k))) (cdr e))
+          '())))
 
   ;; THE WRAPPER SURVIVES THE REWRITE. This rewrites an intent's
   ;; references and used to hand back the bare intent, dropping any
@@ -4044,11 +4083,17 @@
   ;; because the caller writes its code as though it had it.
   (define (intent-with-refs intent parent after)
     (let* ((i (unwrap intent))
+           (e (assq (car i) intent-ref-positions))
+           ;; THE INTENT IS REBUILT AT ITS FOUR PARTS, as the insert and move
+           ;; arms always rebuilt it: a part past the fourth is not carried
+           ;; into the resolved intent or the plan's declaration.
            (rewritten
-             (case (car i)
-               ((insert) (list 'insert parent after (cadddr i)))
-               ((move) (list 'move (cadr i) parent after))
-               (else i))))
+             (if e
+                 (let loop ((l i) (k 0) (vs (list parent after)))
+                   (cond ((or (null? l) (= k 4)) '())
+                         ((and (pair? vs) (memv k (cdr e))) (cons (car vs) (loop (cdr l) (+ k 1) (cdr vs))))
+                         (else (cons (car l) (loop (cdr l) (+ k 1) vs)))))
+                 i)))
       (if (and (pair? intent) (eq? (car intent) 'expect))
           (list 'expect (cadr intent) rewritten)
           rewritten)))
@@ -4090,7 +4135,7 @@
   ;; `(set id field value)` -- and three is the shorter.
   (define intent-arity
     '((insert . 4) (set . 3) (del . 2) (move . 4)
-      (link . 4) (unlink . 4) (tag . 2) (relation . 3)))
+      (link . 4) (unlink . 4) (tag . 2) (relation . 3) (rule . 3)))
 
   ;; AND THE POSITIONS WHOSE TYPE IS FIXED. Arity alone still lets
   ;; `(set <id> ((title . "x")))` through -- the right length, the wrong
@@ -4104,7 +4149,7 @@
   ;; and those already have answers further in; duplicating that
   ;; judgement here would be a second place for it to live.
   (define intent-symbol-positions
-    '((set . (2)) (link . (2)) (unlink . (2)) (relation . (1))))
+    '((set . (2)) (link . (2)) (unlink . (2)) (relation . (1)) (rule . (1))))
 
   ;; THE PAYLOAD IS CHECKED WITH THE REDUCER'S OWN PREDICATE, not with a
   ;; second copy of its rules living here. `payload-reason` is exported by
@@ -4146,11 +4191,12 @@
   ;; diagnostic, exactly as `(del 7)` had. The reason I gave for the
   ;; wide check was a reason I had not measured.
   ;;
-  ;; BACK-REFERENCES ARE RESOLVED IN TWO POSITIONS ONLY -- an insert's
-  ;; parent and predecessor, and a move's -- because those are the two
-  ;; `intent-refs` rewrites. A `(from n)` anywhere else is never
-  ;; substituted and reaches the reader as a list.
+  ;; BACK-REFERENCES ARE RESOLVED ONLY WHERE `intent-ref-positions` SAYS --
+  ;; an insert's parent and predecessor, a move's, and either end of a link
+  ;; or an unlink. A `(from n)` anywhere else is never substituted and
+  ;; reaches the reader as a list.
   (define (plain-id? x) (string? x))
+  (define (end-id? x) (or (string? x) (and (pair? x) (eq? (car x) 'from))))
   (define (parent-id? x)
     (or (string? x) (eq? x 'root) (and (pair? x) (eq? (car x) 'from))))
   (define (after-id? x)
@@ -4163,8 +4209,8 @@
           (cons 'move (list (cons 1 plain-id?) (cons 2 parent-id?) (cons 3 after-id?)))
           (cons 'set (list (cons 1 plain-id?)))
           (cons 'del (list (cons 1 plain-id?)))
-          (cons 'link (list (cons 1 plain-id?) (cons 3 plain-id?)))
-          (cons 'unlink (list (cons 1 plain-id?) (cons 3 plain-id?)))))
+          (cons 'link (list (cons 1 end-id?) (cons 3 end-id?)))
+          (cons 'unlink (list (cons 1 end-id?) (cons 3 end-id?)))))
 
   ;; THEY ANSWER WHICH POSITION, NOT WHETHER. A refusal has to be able to
   ;; say what it is about, and the only place that knows is the test that
@@ -4403,9 +4449,11 @@
                       ;; each writes the record its receipt counts on. The
                       ;; record of the same value is harmless: agreement is
                       ;; by value.
-                      ((and (eq? (car payload) 'relation) (not (request-actor? actor))
+                      ((and (memq (car payload) '(relation rule)) (not (request-actor? actor))
                             (equal? (caddr payload)
-                                    (let ((d (state-declaration state (cadr payload))))
+                                    (let ((d (if (eq? (car payload) 'rule)
+                                                 (state-rule state (cadr payload))
+                                                 (state-declaration state (cadr payload)))))
                                       (if (and d (eq? (car d) 'in-force)) (cadr d)
                                           (and (or (not d) (eq? (car d) 'retired)) 'retired)))))
                        '(ok (unchanged)))
@@ -4842,6 +4890,14 @@
            ;; one, and nothing that runs or exports the block reads it.
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
+           ;; THE RULES IN FORCE, each listed once: a write rule is never
+           ;; evaluated here (no write is in hand), and this build does not
+           ;; evaluate a state rule yet.
+           (rules (map (lambda (r)
+                         (list 'rule-skipped (list 'rule (car r))
+                               (list 'reason (if (or (equal? (assq 'class (cadr r)) '(class write)) (assq 'builtin (cadr r)))
+                                                 'write-rule 'not-evaluated))))
+                       (state-declared-rules state)))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4884,6 +4940,7 @@
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
+        (if (pair? rules) (list (cons 'rules rules)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.
