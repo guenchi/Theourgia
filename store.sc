@@ -4825,7 +4825,18 @@
            ;; applies; `refs` would now show it beside supplied facts under
            ;; the same name. Present only when there is one; the verdict is
            ;; unchanged by it.
-           (reserved (state-reserved-relation-records state))
+           ;; NEVER: NOT IN THE ORDER THE STATE HOLDS THEM. That is delivery
+           ;; order, and delivery order is the route's: a reduction seeded
+           ;; from a snapshot or kept by the daemon delivers what came after
+           ;; it, a fresh replay delivers writer by writer, so one store
+           ;; listed the same records in two orders. Sorted by event, writer
+           ;; then seq, the clause is the same on every route.
+           (reserved (list-sort
+                       (lambda (x y)
+                         (let ((a (cdr (list-ref x 3))) (b (cdr (list-ref y 3))))
+                           (or (string<? (car a) (car b))
+                               (and (string=? (car a) (car b)) (< (cadr a) (cadr b))))))
+                       (state-reserved-relation-records state)))
            ;; A DATUM BLOCK THAT CARRIES A SRC is reported, and it is not
            ;; damage: its src was committed as a draft before commit refused
            ;; one, and nothing that runs or exports the block reads it.
