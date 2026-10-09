@@ -243,13 +243,21 @@
             #f)
           (let ((x (find relation-external? (goal-relations g))))
             (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))))
-    ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every ("#%new" k)
-    ;; in a member it declares (request.sc, bind-new), so a rule value holding
-    ;; one would not be the record it was declared as.
+    ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every pair it reads
+    ;; as a marker in a member it declares (request.sc, bind-new: a pair
+    ;; headed "#%new" with a pair after it), so a rule value holding one would
+    ;; not be the record it was declared as. Exactly what bind-new rewrites is
+    ;; refused, and nothing else: the string "#%new" alone is data.
     (define (holds-marker? x)
-      (and (pair? x) (or (equal? (car x) "#%new") (holds-marker? (car x)) (holds-marker? (cdr x)))))
-    ;; A FINITE TREE: no pair or vector reached twice, so no walk below can
-    ;; go round a cycle.
+      (and (pair? x)
+           (or (and (equal? (car x) "#%new") (pair? (cdr x)))
+               (holds-marker? (car x))
+               (holds-marker? (cdr x)))))
+    ;; A TREE OF PLAIN DATA: no pair or vector reached twice. A cycle would
+    ;; send every walk below round it; shared structure, which a datum label
+    ;; makes as well, would let a short text stand for a value every walk
+    ;; reads exponentially many times. The same rule as a channel's datum
+    ;; (channel.sc, plain-datum).
     (define (tree? x)
       (let ((seen (make-eq-hashtable)))
         (let walk ((x x))
@@ -267,6 +275,11 @@
       ((not (and (list? value) (pair? value)
                  (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) '(class on where must must-not builtin))))
                           value)))
+       '(error bad-request rule-malformed))
+      ;; One clause of each kind, as the reducer reads a rule (reduce.sc,
+      ;; rule-value-reason): a second where would otherwise go unchecked.
+      ((let dup ((cs value) (seen '()))
+         (cond ((null? cs) #f) ((memq (caar cs) seen) #t) (else (dup (cdr cs) (cons (caar cs) seen)))))
        '(error bad-request rule-malformed))
       ((holds-marker? value) '(error bad-request (reason rule-value-holds-marker)))
       ((clause 'builtin)

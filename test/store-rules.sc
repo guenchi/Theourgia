@@ -240,9 +240,19 @@
                 (list-head (refusal "--on" "doc" "--must" "unreadable") 3)
                 (list-head (refusal "--on" "doc" "--must" "#0=(title . #0#)") 3))
       '((error bad-request not-a-goal) (error bad-request not-a-goal) (error bad-request rule-malformed)))
+(want "R a value with shared structure is refused as one with a cycle is; a clause given twice is refused"
+      (in-order (list-head (refusal "--on" "doc" "--must" "(and #0=(title ?w ?t) #0#)") 3)
+                ((eval 'rule-value-check (environment '(theourgia query)))
+                 '((on doc) (where (title ?w ?t)) (where (score ?w "x" ?s)) (must (title ?w ?u)))))
+      '((error bad-request rule-malformed) (error bad-request rule-malformed)))
 (want "R nothing was written by a refused rule: no record, the log as long as before, in records and in bytes"
       (in-order (assq 'r (state-declared-rules (state))) (- (events) before-refusals) (- (log-bytes S writer) bytes-before-refusals))
       '(#f 0 0))
+(want "R the string \"#%new\" alone is data; a pair a plan would read as its marker is refused"
+      (in-order (car (run 'rule "names-new" "--on" "doc" "--must" "(title ?w \"#%new\")"))
+                (list-head (refusal "--on" "doc" "--must" "(title ?w \"#%new\" 0)") 3))
+      '(ok (error bad-request (reason rule-value-holds-marker))))
+(run 'rule "names-new" "--retire")
 (define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
 (want "R a rule intent in a batch is written in its one form, and refused with the form in another"
       (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
