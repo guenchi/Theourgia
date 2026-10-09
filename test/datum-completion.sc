@@ -118,12 +118,20 @@
 (define fingerprint (commit-fingerprint who after D version))
 (define plan-payload
   (list 'plan "R7" fingerprint after (list (list 0 'set D 'src "(define (h) 'completed)"))))
+;; ITS PAST IS THE STORE AS IT STANDS: the dependencies are the applied cut,
+;; so D's history is inside the plan's cut and the stale judgement finds
+;; nothing changed since. A record with none would have only itself in its
+;; past, and the completion would be refused stale before resolve.
+(define plan-deps (reduce-applied-cut (state)))
 (define plan-record
-  (encode-record 1 1789000000007 (list who (request-identity after "R7") 'plan fingerprint (list-ref a0 4) after) '()
-                 (storable-encode plan-payload)))
-(want "DC-SETUP the forged plan publishes, and D holds no src"
-      (list (car (log-publish! store "planzzzz" 1 plan-record (segment-sha plan-record))) (src D))
-      '(published #f))
+  (encode-record 1 1789000000007 (list who (request-identity after "R7") 'plan fingerprint (list-ref a0 4) after)
+                 plan-deps (storable-encode plan-payload)))
+(want "DC-SETUP the forged plan's past holds every writer of the store, it publishes, and D holds no src"
+      (let* ((covers (and (pair? plan-deps) (for-all (lambda (w) (assoc w plan-deps)) (list writer))))
+             (published (car (log-publish! store "planzzzz" 1 plan-record (segment-sha plan-record))))
+             (d-src (src D)))
+        (list covers published d-src))
+      '(#t published #f))
 
 ;; ---- the retry completes it: resolve refuses the member ----
 (define retry (call 'commit D "--req" "R7" "--cursor" cursor "--working-version" (string-append D "=" version)))
