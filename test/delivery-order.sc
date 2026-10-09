@@ -59,7 +59,7 @@
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia reduce) reduce-empty reduce-apply! block-id state-put-events
               state-reserved-relation-records state-consumed? state-revoked
-              state-consumed-parent-cuts state-seen reduce-gates)
+              state-consumed-parent-cuts state-seen reduce-gates state-block-ids)
         (only (theourgia working) latest-parent-cut))
 
 (define bad 0)
@@ -170,10 +170,18 @@
 (define-caught seeded2 (open-and-reduce S2))
 (define-caught replayed2 (open-and-reduce S2copy))
 
+;; THE ORDER THE LISTING READS is the blocks' (commitment-rows walks
+;; state-block-ids), so that is the order asserted to differ, beside the
+;; puts' -- a history in two orders with blocks made alike would leave the
+;; reader row green and blind.
 (define built2
-  (let ((a (state-put-events seeded2)) (b (state-put-events replayed2)))
-    (and (equal? (by-print a) (by-print b)) (not (equal? a b)))))
-(want "DO-2 THE CONSTRUCTION: the two routes give the same puts in two delivery orders"
+  (let ((a (state-put-events seeded2)) (b (state-put-events replayed2))
+        (decisions (lambda (st) (filter (lambda (id) (or (string=? id "aaaa0000.1") (string=? id "bbbb0000.1")))
+                                        (state-block-ids st)))))
+    (and (equal? (by-print a) (by-print b)) (not (equal? a b))
+         (equal? (decisions seeded2) '("bbbb0000.1" "aaaa0000.1"))
+         (equal? (decisions replayed2) '("aaaa0000.1" "bbbb0000.1")))))
+(want "DO-2 THE CONSTRUCTION: the two routes give the same puts, and make the two decisions' blocks, in two orders"
       built2 #t)
 (want "DO-2 commitments --all answers byte for byte alike on the two routes, two decisions"
       (let ((a (ask-with S2 seeded2 'commitments "--all")) (b (ask-with S2copy replayed2 'commitments "--all")))
