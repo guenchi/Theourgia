@@ -1,5 +1,37 @@
 # Changelog
 
+## VS Code extension 1.1.1 — 2026-10-09
+
+*The extension's own version, `theourgia.theourgos`, published on the Marketplace for macOS on arm64 and x86_64 and Linux on x86_64 and arm64.* Import with Symbols, on a core pinned at theourgia be42914.
+
+### Added
+
+- Import with Symbols: a folder or a source file is imported into the store with the core's `import-code --symbols`, and the first import of each file is split at the editor's top-level symbols into a file block and its code blocks, with no review copy first. The report in the output channel places each new block at its lines, and gives a file the core refused to split with the line and column of the byte it names. A file with unsaved edits stops the command before anything is sent.
+
+### The core it runs
+
+- The core is pinned at theourgia be42914, ten commits after 1.1.0, which adds `import-code --symbols`.
+- The core checks every cut of a first import split at symbols: a cut must fall at the top level of the file, outside its protected prefix (a shebang, a coding line, a byte-order mark), so a symbol that starts inside a body, a string, a block comment or an open bracket refuses that file instead of cutting it. The report names the refusal: `symbols-not-top-level`, `symbols-unscanned`, `symbols-in-prefix`, `symbols-unchecked` or `symbols-no-file`.
+- The extension's unit suite passed against that core on darwin-arm64, darwin-x64, linux-x64 and linux-arm64 (CI run 37816045917).
+
+## VS Code extension 1.1.0 — 2026-10-06
+
+*The extension's own version, `theourgia.theourgos`, on the Marketplace for macOS on arm64 and x86_64 and Linux on x86_64 and arm64.* The core pinned at theourgia 1.1.0.
+
+### Changed
+
+- The extension is Theourgos: package `theourgos` under the publisher `theourgia`, id `theourgia.theourgos`, packages named `theourgos-<target>.vsix`. Its commands and settings keep their `theourgia.` names. A 1.0.0 installed by hand from a `.vsix` built before this change has the id `theourgia.theourgia`, which VS Code treats as another extension: let its pending saves go through, or discard them, then uninstall it before installing 1.1.0, since both register the same commands.
+- The core is pinned at theourgia 1.1.0 (3a4ac93).
+- The setting `theourgia.writer` is removed: each window has written its drafts under a name of its own since before 1.0.0, so it decided nothing. A `settings.json` that still sets it shows an unknown setting, and nothing changes.
+
+### Fixed
+
+- The search view answered "the store did not answer the search" for every query that found anything, since 1.0.0. A search now lists its hits.
+- A datum-mode block opened as an empty buffer, and an edit saved through it was answered as saved and never reached the code. It now opens read-only, as the datum export writes its library's file, and a file opened under 1.0.0 on a datum block is refused on save instead of appearing to save.
+- A save the core refuses because its block is a datum block, or because a log segment was replaced under the store's daemon, now says which, and for the second says to restart the store's daemon and save again.
+- Search and the hover's mentions ask the core with `--wire`. When every hit is in a superseded or refuted block, the search view says the words are found only in blocks that are not in force, rather than that nothing matches.
+- The package for macOS on x86_64 passes its unit suite against the core it is pinned to, and 1.1.0 is on the Marketplace for all four targets; 1.0.0 was packaged for Apple Silicon only.
+
 ## 1.1.0 — 2026-10-05
 
 *26 commits.* Queries and context for agents, read receipts and write premises, class and validity, a change stream, runners for five more languages, and a measured row for macOS on x86_64.
