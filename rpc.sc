@@ -1025,8 +1025,10 @@
     ;; the answer cannot be told from its shape
     (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises") #f)))
       (run (lambda ()
-             (finish (batch-answer (with-store-write store (lambda (state view) items) actor req preflight)
-                                   (null? items)))))))
+             (finish (let ((answers (with-store-write store (lambda (state view) items) actor req preflight)))
+                       (if (and (= 1 (length answers)) (judgement-refusal? (car answers)))
+                           (car answers)
+                           (batch-answer answers (null? items)))))))))
 
   (define (parse-batch store actor args req options)
     (if (not (= 1 (length args)))

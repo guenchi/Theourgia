@@ -32,7 +32,7 @@
 ;;; unevaluable, naming the rule and the block.
 
 (library (theourgia rules)
-  (export write-judgement)
+  (export write-judgement state-audit)
   (import (rnrs)
           (only (theourgia query) make-query-session session-query session-spent session-budget-set!
                 refusal? refusal-answer query-budget-default)
@@ -57,6 +57,14 @@
             (else (loop (cdr xs) (cons (car xs) out))))))
 
   (define (as-symbol r) (if (string? r) (string->symbol r) r))
+
+  ;; IN ORDER, because every query is charged to one budget and the one that
+  ;; exhausts it is named: R6RS's map leaves the order of its calls open.
+  (define (map-in-order f xs)
+    (let loop ((xs xs) (out '()))
+      (if (null? xs) (reverse out) (loop (cdr xs) (cons (f (car xs)) out)))))
+  (define (append-map-in-order f xs) (apply append (map-in-order f xs)))
+  (define (filter-map-in-order f xs) (filter values (map-in-order f xs)))
 
   ;; ---- the judgement ----------------------------------------------------------------------------
 
@@ -85,8 +93,10 @@
         (map car (ask S (list 'field id (symbol->string name) '?v))))
       ;; Every edge with ID at either end, as (from relation to).
       (define (edges-at S id rel)
-        (unique (append (map (lambda (row) (list id (car row) (cadr row))) (ask S (list rel id '?r '?b)))
-                        (map (lambda (row) (list (car row) (cadr row) id)) (ask S (list rel '?a '?r id))))))
+        (let* ((out (ask S (list rel id '?r '?b)))
+               (in (ask S (list rel '?a '?r id))))
+          (unique (append (map (lambda (row) (list id (car row) (cadr row))) out)
+                          (map (lambda (row) (list (car row) (cadr row) id)) in)))))
       (or (endpoint-refusal pre post targets post-S pre-S kind-of field-values edges-at)
           (rule-refusal pre targets receipt post-S pre-S ask kind-of edges-at
                         (lambda () remaining)))))
@@ -107,10 +117,7 @@
   ;; write changes. Each end of each is held to its selector on the state
   ;; the write produces; every mismatch is listed in one answer.
   (define (endpoint-refusal pre post targets post-S pre-S kind-of field-values edges-at)
-    (let ((typed (filter (lambda (d)
-                           (and (= (length d) 4)
-                                (or (pair? (cadr (caddr d))) (pair? (cadr (cadddr d))))))
-                         (state-declared-relations pre))))
+    (let ((typed (typed-relations pre)))
       (and (pair? typed)
            (let* ((selector-fields
                     (unique (apply append
@@ -126,27 +133,38 @@
                                   selector-fields))))
                   (judged
                     (unique
-                      (apply append
-                             (map (lambda (id)
-                                    (let ((now (edges-at (post-S) id 'edge))
-                                          (before (edges-at (pre-S) id 'edge))
-                                          (all? (changed? id)))
+                      (append-map-in-order
+                             (lambda (id)
+                                    (let* ((now (edges-at (post-S) id 'edge))
+                                           (before (edges-at (pre-S) id 'edge))
+                                           (all? (changed? id)))
                                       (filter (lambda (e) (and (typed-of (cadr e)) (or all? (not (member e before)))))
                                               now)))
-                                  targets))))
-                  (failures
-                    (apply append
-                           (map (lambda (e)
-                                  (let* ((d (typed-of (cadr e)))
-                                         (from (cadr (caddr d))) (to (cadr (cadddr d))))
-                                    (append
-                                      (if (selector-holds? from (post-S) (car e) kind-of field-values) '()
-                                          (list (list (list 'relation (car d)) (cons 'edge e) '(end from) (list 'expected from))))
-                                      (if (selector-holds? to (post-S) (caddr e) kind-of field-values) '()
-                                          (list (list (list 'relation (car d)) (cons 'edge e) '(end to) (list 'expected to)))))))
-                                (list-sort (lambda (a b) (string<? (edge-key a) (edge-key b))) judged)))))
+                             targets)))
+                  (failures (endpoint-failures typed (list-sort (lambda (a b) (string<? (edge-key a) (edge-key b))) judged)
+                                               (post-S) kind-of field-values)))
              (and (pair? failures)
                   (list 'error 'bad-request 'relation-endpoint (cons 'failures failures)))))))
+
+  ;; -> ((<relation> <edge> <end> <expected>) ...) for each end of each EDGE
+  ;; whose block its typed relation's selector does not hold, on S's state.
+  (define (endpoint-failures typed edges S kind-of field-values)
+    (append-map-in-order
+      (lambda (e)
+        (let* ((d (assq (as-symbol (cadr e)) typed))
+               (from (cadr (caddr d))) (to (cadr (cadddr d)))
+               (from-holds? (selector-holds? from S (car e) kind-of field-values))
+               (to-holds? (selector-holds? to S (caddr e) kind-of field-values)))
+          (append
+            (if from-holds? '() (list (list (list 'relation (car d)) (cons 'edge e) '(end from) (list 'expected from))))
+            (if to-holds? '() (list (list (list 'relation (car d)) (cons 'edge e) '(end to) (list 'expected to)))))))
+      edges))
+
+  (define (typed-relations state)
+    (filter (lambda (d)
+              (and (= (length d) 4)
+                   (or (pair? (cadr (caddr d))) (pair? (cadr (cadddr d))))))
+            (state-declared-relations state)))
 
   (define (edge-key e)
     (string-append (car e) " " (let ((r (cadr e))) (if (symbol? r) (symbol->string r) r)) " " (caddr e)))
@@ -171,6 +189,30 @@
              (if (assq 'must value) 'must 'must-not)
              #f))))
 
+;; ONE PAIR OF A RULE AND A BLOCK, on session S, the block's kind K: #f when
+  ;; the rule does not apply (a kind it does not list, a selector with no row
+  ;; for the block) or holds; else the failure, (rule) (block) (goal, ?w
+  ;; bound) (expected some|none) (rows n) and, for a must-not, at most ten
+  ;; witness rows. A query's refusal is raised to the caller.
+  (define (pair-failure ask S p id k)
+    (and (memq k (caddr p))
+         (or (not (cadddr p)) (pair? (ask S (bind-target (cadddr p) id))))
+         (let* ((goal (bind-target (list-ref p 4) id))
+                (rows (ask S goal)))
+           (case (list-ref p 5)
+             ((must)
+              (and (null? rows)
+                   (list (list 'rule (car p)) (list 'block id) (list 'goal goal) '(expected some) '(rows 0))))
+             (else
+              (and (pair? rows)
+                   (append (list (list 'rule (car p)) (list 'block id) (list 'goal goal)
+                                 '(expected none) (list 'rows (length rows)))
+                           (list (cons 'witness
+                                       (map (lambda (row) (if (list-ref p 6) ((list-ref p 6) id row) row))
+                                            (let take ((rs rows) (n 0))
+                                              (if (or (null? rs) (= n witness-limit)) '()
+                                                  (cons (car rs) (take (cdr rs) (+ n 1)))))))))))))))
+
   (define (rule-refusal pre targets receipt post-S pre-S ask kind-of edges-at remaining)
     (let* ((rules (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                              (state-declared-rules pre)))
@@ -184,29 +226,11 @@
                  (guard (e ((refusal? e)
                             (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
                                           (list 'reason (refusal-answer e))))))
-                   (and (memq (kind-of (post-S) id) (caddr p))
-                        (or (not (cadddr p)) (pair? (ask S (bind-target (cadddr p) id))))
-                        (let* ((goal (bind-target (list-ref p 4) id))
-                               (rows (ask S goal)))
-                          (case (list-ref p 5)
-                            ((must)
-                             (and (null? rows)
-                                  (list (list 'rule (car p)) (list 'block id) (list 'goal goal)
-                                        '(expected some) '(rows 0))))
-                            (else
-                             (and (pair? rows)
-                                  (append (list (list 'rule (car p)) (list 'block id) (list 'goal goal)
-                                                '(expected none) (list 'rows (length rows)))
-                                          (list (cons 'witness
-                                                      (map (lambda (row) (if (list-ref p 6) ((list-ref p 6) id row) row))
-                                                           (let take ((rs rows) (n 0))
-                                                             (if (or (null? rs) (= n witness-limit)) '()
-                                                                 (cons (car rs) (take (cdr rs) (+ n 1))))))))))))))))
+                   (pair-failure ask S p id (kind-of (post-S) id))))
                (let* ((state-failures
-                        (apply append
-                               (map (lambda (id)
-                                      (filter values (map (lambda (p) (judge (post-S) p id)) state-rules)))
-                                    targets)))
+                        (append-map-in-order
+                          (lambda (id) (filter-map-in-order (lambda (p) (judge (post-S) p id)) state-rules))
+                          targets))
                       (write-session
                         (and (pair? write-rules)
                              (guard (e ((refusal? e)
@@ -217,10 +241,9 @@
                                                    (write-facts targets receipt post-S pre-S ask edges-at)))))
                       (write-failures
                         (if write-session
-                            (apply append
-                                   (map (lambda (id)
-                                          (filter values (map (lambda (p) (judge write-session p id)) write-rules)))
-                                        targets))
+                            (append-map-in-order
+                              (lambda (id) (filter-map-in-order (lambda (p) (judge write-session p id)) write-rules))
+                              targets)
                             '()))
                       (failures
                         (list-sort (lambda (a b)
@@ -238,20 +261,20 @@
   ;; receipt does not hold; receipt-carried, when the write carried one.
   ;; -> ((<relation> <arity> <tuple> ...) ...).
   (define (write-facts targets receipt post-S pre-S ask edges-at)
-    (let* ((kinds (apply append (map (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'kind id '?k))))
-                                     targets)))
-           (fields (apply append (map (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'field id '?f '?v))))
-                                      targets)))
-           (edges (unique (apply append (map (lambda (id) (edges-at (post-S) id 'edge)) targets))))
-           (edge-kinds (unique (apply append (map (lambda (id) (edges-at (post-S) id 'edge-kind)) targets))))
+    (let* ((kinds (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'kind id '?k))))
+                                       targets))
+           (fields (append-map-in-order (lambda (id) (map (lambda (row) (cons id row)) (ask (post-S) (list 'field id '?f '?v))))
+                                        targets))
+           (edges (unique (append-map-in-order (lambda (id) (edges-at (post-S) id 'edge)) targets)))
+           (edge-kinds (unique (append-map-in-order (lambda (id) (edges-at (post-S) id 'edge-kind)) targets)))
            (cited (unique
-                    (apply append
-                           (map (lambda (id)
-                                  (let ((now (ask (post-S) (list 'edge-kind id 'depends-on '?s)))
-                                        (before (ask (pre-S) (list 'edge-kind id 'depends-on '?s))))
+                    (append-map-in-order
+                                (lambda (id)
+                                  (let* ((now (ask (post-S) (list 'edge-kind id 'depends-on '?s)))
+                                         (before (ask (pre-S) (list 'edge-kind id 'depends-on '?s))))
                                     (map (lambda (row) (list id (car row)))
                                          (filter (lambda (row) (not (member row before))) now))))
-                                targets))))
+                                targets)))
            (unread (unique (map (lambda (c) (list (cadr c)))
                                 (filter (lambda (c) (not (and receipt (member (cadr c) receipt)))) cited)))))
       (list (cons* 'kind+ 2 kinds)
@@ -261,4 +284,68 @@
             (cons* 'cited 2 cited)
             (cons* 'unread 1 unread)
             (cons* 'receipt-carried 0 (if receipt (list '()) '())))))
+;; ---- check's view ------------------------------------------------------------------------------
+
+  ;; THE CURRENT STATE AUDITED, no write in hand: every state rule over every
+  ;; live block of a kind it lists, under one budget for the audit; each write
+  ;; rule, a built-in among them, listed once as skipped; every typed edge
+  ;; whose end its selector does not hold. An evaluation that fails is listed
+  ;; as unevaluable for its rule, never as a violation, and the rule's other
+  ;; blocks are not asked. -> (values <rule rows> <endpoint rows>):
+  ;;   (rule-violation <failure clauses>) (rule-unevaluable (rule) (block)
+  ;;   (reason)) (rule-skipped (rule) (reason write-rule)) and
+  ;;   (relation-endpoint (relation) (edge) (end) (expected)).
+  (define (state-audit state)
+    (let* ((remaining query-budget-default)
+           (S (make-query-session state '())))
+      (define (ask S goal)
+        (session-budget-set! S remaining)
+        (let-values (((rows vars) (session-query S goal)))
+          (set! remaining (- remaining (session-spent S)))
+          rows))
+      (define (kind-of S id)
+        (let ((rows (ask S (list 'kind id '?k))))
+          (if (pair? rows) (car (car rows)) 'none)))
+      (define (field-values S id name)
+        (map car (ask S (list 'field id (symbol->string name) '?v))))
+      (let* ((rules (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
+                               (state-declared-rules state)))
+             (kinds (guard (e ((refusal? e) #f)) (ask S '(kind ?b ?k))))
+             (rule-rows
+               (append-map-in-order
+                 (lambda (r)
+                   (let ((p (rule-plan (car r) (cadr r))))
+                     (cond
+                       ((eq? (cadr p) 'write)
+                        (list (list 'rule-skipped (list 'rule (car p)) '(reason write-rule))))
+                       ((not kinds)
+                        (list (list 'rule-unevaluable (list 'rule (car p)) '(reason query-budget))))
+                       (else
+                        (let loop ((ids (list-sort string<? (map car (filter (lambda (row) (memq (cadr row) (caddr p))) kinds))))
+                                   (out '()))
+                          (if (null? ids)
+                              (reverse out)
+                              (let ((f (guard (e ((refusal? e)
+                                                  (list 'unevaluable
+                                                        (list 'rule-unevaluable (list 'rule (car p)) (list 'block (car ids))
+                                                              (list 'reason (refusal-answer e))))))
+                                         (pair-failure ask S p (car ids)
+                                                       (cadr (assoc (car ids) kinds))))))
+                                (cond ((not f) (loop (cdr ids) out))
+                                      ((eq? (car f) 'unevaluable) (reverse (cons (cadr f) out)))
+                                      (else (loop (cdr ids) (cons (cons 'rule-violation f) out)))))))))))
+                 rules))
+             (typed (typed-relations state))
+             (endpoint-rows
+               (if (null? typed)
+                   '()
+                   (guard (e ((refusal? e) (list (list 'relation-endpoint-unevaluable (list 'reason (refusal-answer e))))))
+                     (map (lambda (f) (cons 'relation-endpoint f))
+                          (endpoint-failures
+                            typed
+                            (list-sort (lambda (a b) (string<? (edge-key a) (edge-key b)))
+                                       (filter (lambda (e) (assq (as-symbol (cadr e)) typed))
+                                               (ask S '(edge ?a ?r ?b))))
+                            S kind-of field-values))))))
+        (values rule-rows endpoint-rows))))
 )

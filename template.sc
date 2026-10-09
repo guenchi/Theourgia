@@ -44,7 +44,7 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia store) open-and-reduce with-store-write premises-preflight)
+          (only (theourgia store) open-and-reduce with-store-write premises-preflight judgement-refusal?)
           (only (theourgia reduce) state-read state-block-ids block-id
                 effect-relation-names reserved-relation-names state-declaration)
           (only (theourgia field-reading) field-of written-text)
@@ -181,6 +181,7 @@
                  (made (if (and inner (eq? (car inner) 'create)) (map car (cdr inner)) '())))
             (cond
               (late late)
+              ((and (= 1 (length answers)) (judgement-refusal? (car answers))) (car answers))
               ((not (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers))
                (list 'error 'template-apply-failed (cons 'answers answers)))
               (else

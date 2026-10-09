@@ -18,6 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
+          judgement-refusal?
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
@@ -3340,6 +3341,16 @@
   ;; refusal is the write's answer and nothing is written. Otherwise the
   ;; branch runs again for real, under the same lock, and its answer is the
   ;; write's. A store with neither makes no copy and no dry session.
+;; A REFUSAL OF THE JUDGEMENT: a rule's (error refused rule-violation |
+  ;; rule-unevaluable ...) or a typed endpoint's (error bad-request
+  ;; relation-endpoint ...). Every route answers it as it is, as it answers a
+  ;; premise's refusal: a batch does not wrap it in its items, a template's
+  ;; apply does not wrap it in template-apply-failed.
+  (define (judgement-refusal? a)
+    (and (list? a) (>= (length a) 3) (eq? (car a) 'error)
+         (or (and (eq? (cadr a) 'refused) (memq (caddr a) '(rule-violation rule-unevaluable)) #t)
+             (and (eq? (cadr a) 'bad-request) (eq? (caddr a) 'relation-endpoint)))))
+
   (define (rehearsal-live? state)
     (or (pair? (state-declared-rules state))
         (exists (lambda (d) (and (= (length d) 4)
@@ -4971,14 +4982,17 @@
            ;; one, and nothing that runs or exports the block reads it.
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
-           ;; THE RULES IN FORCE, each listed once: a write rule is never
-           ;; evaluated here (no write is in hand), and this build does not
-           ;; evaluate a state rule yet.
-           (rules (map (lambda (r)
-                         (list 'rule-skipped (list 'rule (car r))
-                               (list 'reason (if (or (equal? (assq 'class (cadr r)) '(class write)) (assq 'builtin (cadr r)))
-                                                 'write-rule 'not-evaluated))))
-                       (state-declared-rules state)))
+           ;; THE RULES AND TYPED ENDPOINTS IN FORCE, AUDITED (theourgia rules,
+           ;; state-audit): each state rule over every live block of a kind it
+           ;; lists, a write rule listed once as skipped (no write is in
+           ;; hand), every typed edge whose end its selector does not hold.
+           ;; Reported, and not damage: the verdict is unchanged. A store with
+           ;; neither asks nothing.
+           (audit (and (rehearsal-live? state)
+                       (call-with-values (lambda () ((eval 'state-audit (environment '(theourgia rules))) state))
+                                         list)))
+           (rules (if audit (car audit) '()))
+           (endpoints (if audit (cadr audit) '()))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -5022,6 +5036,7 @@
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
         (if (pair? rules) (list (cons 'rules rules)) '())
+        (if (pair? endpoints) (list (cons 'relation-endpoints endpoints)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.
