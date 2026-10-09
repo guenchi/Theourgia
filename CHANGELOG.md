@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 — 2026-10-09
 
 * Import with Symbols: a folder or a source file is imported into the
   store with the core's `import-code --symbols`, and the first import of
@@ -11,6 +11,14 @@
   file with unsaved edits stops the command before anything is sent.
 * The core is pinned at theourgia be42914, which adds `import-code
   --symbols`, the core half of Import with Symbols.
+* The core checks every cut of a first import split at symbols against the
+  language's scanner: a cut must fall at the top level of the file, outside
+  its protected prefix (a shebang, a coding line, a byte-order mark), so a
+  symbol that starts inside a body, a string, a block comment or an open
+  bracket refuses that file instead of cutting it. The import's report names
+  the refusal: `symbols-not-top-level`, `symbols-unscanned` (the scanner
+  could not follow the file), `symbols-in-prefix`, `symbols-unchecked` (no
+  scanner for the file's language) or `symbols-no-file`.
 
 ## 1.1.0 — 2026-10-06
 
