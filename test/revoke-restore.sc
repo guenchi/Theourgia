@@ -348,28 +348,35 @@
 ;; consumption names a datum definition (D, imported at the start, while
 ;; the store still takes writes) -- and restore must refuse it by name
 ;; without writing a draft file.
-(define datum-version
-  "1111111122222222333333334444444455555555666666667777777788888888a")
+;;
+;; THE VERSION IS THE ONE RESTORE WOULD ACCEPT: computed from the declared
+;; text, baseline and cut by the rule restore checks (draft-version), so a
+;; restore without the datum refusal writes the draft, and the no-write
+;; reading below tells the refusal apart from a version mismatch.
+(define datum-text "(define (h) 'drafted)")
+(define datum-based-on (list-ref (car (caddr real-consumes)) 2))
+(define datum-cut (list-ref (car (caddr real-consumes)) 3))
+(define datum-version (draft-version (string->utf8 datum-text) datum-based-on datum-cut))
 (define datum-forged
   (encode-record 1 1789000000003 (ev-actor plan-ev) '()
                  (storable-encode
                    (list 'plan (list-ref (ev-payload plan-ev) 1) (list-ref (ev-payload plan-ev) 2)
                          (list-ref (ev-payload plan-ev) 3)
-                         (list (list 0 'set D 'src "(define (h) 'drafted)"))
+                         (list (list 0 'set D 'src datum-text))
                          (list 'consumes (cadr real-consumes)
-                               (list (list D datum-version
-                                           (list-ref (car (caddr real-consumes)) 2)
-                                           (list-ref (car (caddr real-consumes)) 3))))))))
+                               (list (list D datum-version datum-based-on datum-cut)))))))
 (want "RR-06 setup: a datum definition, and a forged consumption of a draft on it that the store lists as revoked"
-      (list (and (string? D) (car datum-import))
-            (car (log-publish! store "datumzzz" 1 datum-forged (segment-sha datum-forged)))
-            (exists (lambda (r) (equal? datum-version (cadr (car r)))) (state-revoked (state) writer)))
+      (let* ((imported (and (string? D) (car datum-import)))
+             (published (car (log-publish! store "datumzzz" 1 datum-forged (segment-sha datum-forged))))
+             (listed (exists (lambda (r) (equal? datum-version (cadr (car r)))) (state-revoked (state) writer))))
+        (list imported published listed))
       '(ok published #t))
 (define before-datum (draft-dir-state))
 (want "RR-06 restoring it is refused draft-on-datum-unsupported, naming the block, and no draft file is written"
-      (list (call 'restore datum-version)
-            (equal? (draft-dir-state) before-datum)
-            (file-exists? (string-append (writer-directory store writer) "/working/" D)))
+      (let* ((answer (call 'restore datum-version))
+             (unchanged (equal? (draft-dir-state) before-datum))
+             (slot (file-exists? (string-append (writer-directory store writer) "/working/" D))))
+        (list answer unchanged slot))
       (list (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block D) '(use def)) #t #f))
 
 (printf "rows: ~a\n~a failures\nrevoke-restore complete\n" rows bad)
