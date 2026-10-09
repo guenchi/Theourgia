@@ -78,7 +78,7 @@
           session-delivered? snapshot-unreadable-notes
           local-writer-of
           log-begin log-end! session? session-store session-epoch session-writer
-          session-append!
+          session-append! session-dry-clone session-dry?
           session-frontiers session-view session-view-refusal session-applied! session-load
           make-frame frame? frame-view-id frame-epoch frame-writer
           frame-expect-seq frame-actor frame-deps frame-payload
@@ -2044,7 +2044,9 @@
             ;; WHAT THE CALLER DECLARED (F77c): incomplete-accepted or #f.
             ;; A reload inside the session opens its load with the same
             ;; declaration the session was begun with.
-            declaration))
+            declaration
+            ;; A REHEARSAL'S SESSION (session-dry-clone), and only that.
+            dry?))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -2282,7 +2284,7 @@
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
                                         (and end (+ end 1)) #f
-                                        refusal declaration)))
+                                        refusal declaration #f)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -5601,10 +5603,85 @@
   ;; to do different things about them. "It failed" collapses "nothing
   ;; happened" together with "the bytes are on disk but unflushed", and
   ;; those differ by whether a retry can duplicate the record.
+  ;; ---- the dry session --------------------------------------------------------
+  ;;
+  ;; A REHEARSAL OF A WRITE RUNS THE STORE'S OWN WRITING CODE against a copy of
+  ;; the reduction and a DRY session: a copy of a real session's every field,
+  ;; on which every session operation is the real one but the two that touch
+  ;; the disk. Its append and its commit do only their LOGICAL transition --
+  ;; the fields the writing code reads -- through the same procedure the real
+  ;; methods call where they make it, so what the code can see of a dry
+  ;; session cannot drift from what it sees of a real one. The dry session
+  ;; owns nothing: its lock is a sentinel (the real session holds the lock),
+  ;; its load session is the real one's, read only, and a delivery to it
+  ;; raises, since nothing a rehearsal does may reach the live reduction.
+  ;; Every field the session's operations change is replaced, never mutated
+  ;; in place, so a copy shares nothing it could change. dry? is set here and
+  ;; nowhere else.
+  (define (session-dry-clone s)
+    (check-live! 'session-dry-clone s)
+    (make-session (session-store s) 'dry-session-holds-no-lock (session-load s)
+                  (lambda args
+                    (assertion-violation 'session-dry-clone "a delivery reached a dry session" args))
+                  (session-writer s)
+                  (session-epoch s) (session-applied s) (session-revision s)
+                  (session-ended s) (session-poisoned s)
+                  (session-next-seq s) (session-durable-seq s) (session-unconfirmed s)
+                  (session-versions s) (session-reset-pending s) (session-rejected s)
+                  (session-delivered s) (session-barriered s)
+                  (session-touched s)
+                  (session-authorised s)
+                  (session-pending-count s)
+                  (session-start-seq s) (session-write-started s)
+                  (session-unreadable-refusal s)
+                  (session-declaration s)
+                  #t))
+
+  ;; THE LOGICAL SUCCESS OF AN APPEND AT SEQ: the next sequence, the record
+  ;; waiting for its application, the revision, and that this session has
+  ;; started writing. The real append calls it where its record is written;
+  ;; the dry append is this.
+  (define (append-transition! s seq)
+    (session-write-started-set! s #t)
+    (session-next-seq-set! s (+ 1 seq))
+    (session-unconfirmed-set! s seq)
+    (session-revision-set! s (+ 1 (session-revision s))))
+
+  ;; THE LOGICAL SUCCESS OF A COMMIT: everything written is durable.
+  (define (commit-transition! s)
+    (session-durable-seq-set! s (- (session-next-seq s) 1)))
+
+  ;; A DRY APPEND REFUSES WHAT THE REAL ONE REFUSES ON LOGICAL GROUNDS -- a
+  ;; stopped writer, a pending reset, a frame bound to another view, epoch,
+  ;; writer or sequence -- and otherwise hands out the coordinates the real
+  ;; reservation would: the frame's expected sequence, which the binding
+  ;; check has just made the view's. It has no physical step, so nothing
+  ;; physical can refuse it, and no segment, so it names none.
+  (define (dry-append! s frame)
+    (when (session-poisoned s)
+      (raise (make-log-error 'writer-stopped #f #f #f
+                             (list (cons 'store (session-store s))
+                                   (cons 'remedy 'adopt)))))
+    (cond
+      ((session-reset-pending s)
+       (if (pair? (session-reset-pending s))
+           (cons 'refused-before-reserve (session-reset-pending s))
+           (list 'refused-before-reserve 'reset-pending)))
+      ((binding-refusal s frame) => (lambda (why) (list 'refused-before-reserve why)))
+      (else
+       (let ((seq (frame-expect-seq frame)))
+         (append-transition! s seq)
+         (list 'committed seq #f)))))
+
   (define (session-append! s frame)
     (check-live! 'session-append! s)
     (unless (frame? frame)
       (assertion-violation 'session-append! "not a frame" frame))
+    (if (session-dry? s)
+        (dry-append! s frame)
+        (real-append! s frame)))
+
+  (define (real-append! s frame)
     (when (session-poisoned s)
       (raise (make-log-error 'writer-stopped #f #f #f
                              (list (cons 'store (session-store s))
@@ -6139,10 +6216,8 @@
              (begin
                (close-quietly fd)
                (trace-event! 'apply (cons writer seq) #f)
-               (session-next-seq-set! s (+ 1 seq))
                (note-touched! s target)
-               (session-unconfirmed-set! s seq)
-               (session-revision-set! s (+ 1 (session-revision s)))
+               (append-transition! s seq)
                (list 'committed seq target))))))))
 
   (define (note-touched! s segment)
@@ -6159,6 +6234,11 @@
   ;; store's whole recovery closure on the way out of every refusal would
   ;; charge refusals for a promise they do not make.
   (define (session-commit! s)
+    (if (session-dry? s)
+        (begin (commit-transition! s) 'committed)
+        (real-commit! s)))
+
+  (define (real-commit! s)
     (let ((segments (session-touched s))
           (writer (session-writer s)))
       (if (null? segments)
@@ -6174,7 +6254,7 @@
             ;; behalf. One machine-lock section for the whole request --
             ;; a constant, not a cost that grows with the records.
             (note-written! s (- (session-next-seq s) 1))
-            (session-durable-seq-set! s (- (session-next-seq s) 1))
+            (commit-transition! s)
             'committed))))
 
   (define (note-written! s seq)

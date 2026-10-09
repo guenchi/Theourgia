@@ -1357,8 +1357,11 @@
   ;; causal availability (before plan filtering); deps may include their
   ;; transitive past. Validate each index using only earlier, unique valid
   ;; bindings, detect duplicates, THEN check execution order.
-  (define (request-gates evidence)
-    (for-each (lambda (e) (trace-event! 'identity-probe (ev-event e) #f)) evidence)
+  ;; REHEARSAL?, when given and true, marks the probes' trace lines
+  ;; (rehearsal): they were made reducing a rehearsal's copy of a reduction.
+  (define (request-gates evidence . rehearsal?)
+    (let ((mark (and (pair? rehearsal?) (car rehearsal?) '(rehearsal))))
+      (for-each (lambda (e) (trace-event! 'identity-probe (ev-event e) mark)) evidence))
     (apply append (map identity-gates (group-by-identity evidence))))
 
   (define (identity-gates es)

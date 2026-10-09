@@ -64,6 +64,7 @@
                 store-register!
                 uncertain-load run-barrier! retired-successor retired-of
                 session-commit! session-pending-count-set! note-written-for!
+                session-dry-clone session-dry?
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
@@ -2908,7 +2909,9 @@
 
   (define (state-section state payload writer seq)
     (guard (e (#t (list 'state 'unavailable (list 'reason (failure-text e)))))
-      (if (report-fault?)
+      ;; THE FAULT SEAM IS THE REAL RUN'S: a rehearsal does not consult it, so
+      ;; it cannot consume a fault meant for the write that follows.
+      (if (and (not (reduce-rehearsal? state)) (report-fault?))
           (list 'state 'unavailable (list 'reason "injected report failure"))
           (list 'state (state-report state (block-ids-of payload writer seq))))))
 
@@ -3299,12 +3302,14 @@
     (set! raise-answer-hook procedure))
 
   ;; A GATE is the premises' preflight: #(premises-gate <check> <enter>
-  ;; <also>), made by (theourgia premises). with-store-write calls ENTER once
-  ;; its session has begun, then asks CHECK; a plain procedure is still a
-  ;; preflight. A tagged vector, so nothing here loads the premises library.
-  (define (premises-gate? p) (and (vector? p) (= (vector-length p) 4) (eq? (vector-ref p 0) 'premises-gate)))
+  ;; <also> <blocks>), made by (theourgia premises). with-store-write calls
+  ;; ENTER once its session has begun, then asks CHECK; a plain procedure is
+  ;; still a preflight. BLOCKS are the block ids the set holds, which a rule
+  ;; check reads. A tagged vector, so nothing here loads the premises library.
+  (define (premises-gate? p) (and (vector? p) (= (vector-length p) 5) (eq? (vector-ref p 0) 'premises-gate)))
   (define (premises-gate-check p) (vector-ref p 1))
   (define (premises-gate-enter p) (vector-ref p 2))
+  (define (premises-gate-blocks p) (vector-ref p 4))
 
   ;; A SITE'S OWN CHECK, asked after the premises: the gate composes it
   ;; (keeping its entry); without a set, the plain composition.
@@ -3324,6 +3329,69 @@
         ((eval 'premises-faces (environment '(theourgia premises)))
          store text own (lambda (e) (raise-answer-hook e)))))
 
+;; ---- the rehearsal --------------------------------------------------------
+  ;;
+  ;; WHEN A RULE OR A TYPED DECLARATION IS IN FORCE, A WRITE RUNS TWICE
+  ;; THROUGH ONE CODE PATH. The rehearsal runs the writing branch against a
+  ;; copy of the reduction (reduce-clone) and a dry session
+  ;; (session-dry-clone): the same code, on equal inputs, handing out the
+  ;; same ids. What it produced -- the copy after the branch, which holds the
+  ;; prefix a failing expectation leaves -- is judged (theourgia rules); a
+  ;; refusal is the write's answer and nothing is written. Otherwise the
+  ;; branch runs again for real, under the same lock, and its answer is the
+  ;; write's. A store with neither makes no copy and no dry session.
+  (define (rehearsal-live? state)
+    (or (pair? (state-declared-rules state))
+        (exists (lambda (d) (and (= (length d) 4)
+                                 (or (pair? (cadr (caddr d))) (pair? (cadr (cadddr d))))))
+                (state-declared-relations state))))
+
+  (define rules-judgement #f)
+  (define (write-judgement-procedure)
+    (or rules-judgement
+        (begin (set! rules-judgement (eval 'write-judgement (environment '(theourgia rules))))
+               rules-judgement)))
+
+  ;; -> #f, or the refusal the write answers with.
+  (define (rehearsal-refusal state s branch receipt)
+    (and (rehearsal-live? state)
+         (let ((clone (reduce-clone state))
+               (dry (session-dry-clone s))
+               (before (session-written-events s)))
+           (trace-event! 'rehearsal (length before) '(rehearsal))
+           (branch clone dry)
+           ((write-judgement-procedure)
+            state clone
+            (write-targets clone (filter (lambda (e) (not (member e before))) (session-written-events dry)))
+            receipt))))
+
+  ;; THE TARGETS OF A WRITE: every block whose records it adds -- created,
+  ;; set, moved, and either end of a linked or unlinked edge -- that is live
+  ;; after it. A block it deletes is no target (rules speak of live blocks),
+  ;; so neither is one it creates and deletes. EVENTS are the write's own,
+  ;; ((<writer> . <seq>) ...), one writer's and consecutive. -> ids, sorted.
+  (define (write-targets post events)
+    (let loop ((rs (if (null? events) '()
+                       (state-written-records post (car (car events)) (cdr (car events))
+                                              (+ 1 (cdr (list-ref events (- (length events) 1)))))))
+               (ids '()) (deleted '()) (writer (and (pair? events) (car (car events)))))
+      (if (null? rs)
+          (list-sort string<?
+                     (filter (lambda (id)
+                               (and (not (member id deleted))
+                                    (let ((row (state-read post id)))
+                                      (and row (not (cdr (assq 'deleted row)))))))
+                             ids))
+          (let* ((seq (caar rs)) (p (cdar rs))
+                 (add (lambda (xs) (fold-left (lambda (acc x) (if (and (string? x) (not (member x acc))) (cons x acc) acc))
+                                              ids xs))))
+            (case (and (pair? p) (car p))
+              ((put) (loop (cdr rs) (add (list (block-id writer seq))) deleted writer))
+              ((set move) (loop (cdr rs) (add (list (cadr p))) deleted writer))
+              ((del) (loop (cdr rs) ids (cons (cadr p) deleted) writer))
+              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) deleted writer))
+              (else (loop (cdr rs) ids deleted writer)))))))
+
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
@@ -3336,6 +3404,9 @@
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty)))
       (let* ((s (log-begin store (deliver-into state #f)))
+             ;; THE RECEIPT A RULE CHECK READS: the blocks the write's premise
+             ;; set holds, or #f when it carried none.
+             (receipt (and (premises-gate? preflight) (premises-gate-blocks preflight)))
              ;; ENTERED: the session has begun. A gate is told so here, and
              ;; its check is the preflight from now on.
              (preflight (if (premises-gate? preflight)
@@ -3450,8 +3521,14 @@
                                         (or (and preflight (preflight state))
                                             (begin (announce-count! s intents)
                                                    (and req (cursor-unreachable store s req)))))))
-                          (cond
-                            (bad (list bad))
+                          ;; THE WRITING BRANCH, as one procedure of the reduction and
+                          ;; the session it writes through. It runs once for real;
+                          ;; when a rule or a typed declaration is live it runs first
+                          ;; against a copy of the reduction and a dry session, and
+                          ;; what that rehearsal produced is judged before anything
+                          ;; is written (rehearsal-refusal).
+                          (define (branch state s)
+                           (cond
                             ;; KEY: A PLAN THAT IS ALREADY PERSISTED IS
                             ;; FINISHED FROM THE PLAN. The premises are
                             ;; NOT checked again: the blocks this request
@@ -3494,7 +3571,11 @@
                             ;; then only ever say how far the whole batch
                             ;; got -- never which item.
                             (else
-                             (write-batch! s state req intents))))))))))))
+                             (write-batch! s state req intents))))
+                          (cond
+                            (bad (list bad))
+                            ((rehearsal-refusal state s branch receipt) => list)
+                            (else (branch state s))))))))))))
           (lambda () (guard (e (#t #f)) (log-end! s)))))))
 
   ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a
