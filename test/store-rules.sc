@@ -37,6 +37,13 @@
   (syntax-rules ()
     ((_) '())
     ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
+;; A VALUE THE ROWS READ IS COMPUTED UNDER A GUARD: on a tree without this
+;; change a top-level definition that raises would stop the file before any
+;; row; under the guard it is (RAISED ...), and the rows that read it fail.
+(define-syntax tolerant
+  (syntax-rules ()
+    ((_ e) (guard (x (#t (list 'RAISED (if (and (condition? x) (message-condition? x)) (condition-message x) x))))
+             e))))
 (define (want-1 name got expected)
   (set! rows (+ rows 1))
   (if (equal? got expected)
@@ -77,8 +84,9 @@
 (define (describe-of store) (cdr (rpc-dispatch store '(describe) "author" (open-and-reduce store))))
 
 (run 'init)
-(define writer (car (car (reduce-applied-cut (state)))))
 (define Y (new-id (run 'insert "--title" "Y")))
+;; The store's own writer is in the cut once it has written a record.
+(define writer (car (car (reduce-applied-cut (state)))))
 
 ;; A PLAN'S MEMBER DECLARED UNDER AN EXPECT WRAPPER is the record of the intent
 ;; inside it. The insert row is about the tree before this change too: it read
@@ -105,7 +113,7 @@
 (define b1b (run 'batch (format "~s" (list '(insert root #f ((kind . section) (title . "X")))
                                            (list 'link '(from 0) 'relates Y)
                                            (list 'link Y 'relates '(from 0))))))
-(define X (car (item-ids b1b)))
+(define X (tolerant (car (item-ids b1b))))
 (want "B a batch creates a block and links it, from and to, through (from 0)"
       (in-order (car b1b) (edges X) (and (member (cons 'relates X) (edges Y)) #t))
       (list 'batch (list (cons 'relates Y)) #t))
@@ -247,8 +255,8 @@
 
 ;; ---- replay and snapshot keep the rules ----------------------------------------------
 
-(define rules-before (state-declared-rules (state)))
-(define hash-before (state-hash (state)))
+(define rules-before (tolerant (state-declared-rules (state))))
+(define hash-before (tolerant (state-hash (state))))
 (want "K a snapshot and the state read from it hold the same rules and the same hash"
       (in-order (car (run 'snapshot)) (equal? (state-declared-rules (state)) rules-before) (equal? (state-hash (state)) hash-before))
       '(ok #t #t))
@@ -265,9 +273,9 @@
 ;; derived table. The providers are read from query.sc as data -- the arms
 ;; of `build` and of `fact-tuples` -- and the names they use compared with the
 ;; table's fourth column.
-(define query-forms
+(define query-forms (tolerant
   (call-with-input-file "../query.sc"
-    (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
+    (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))))
 (define (find-define forms name)
   (let walk ((x forms))
     (cond ((not (pair? x)) #f)
@@ -290,13 +298,13 @@
                                                             (else (loop (+ i 1)))))))
                       outside-markers)))
           (symbols-in (cdr arm))))
-(define provider-arms
+(define provider-arms (tolerant
   (append (case-arms (find-define query-forms 'build))
           (filter (lambda (a) (and (pair? (car a)) (memq 'score (car a))))
-                  (case-arms (find-define query-forms 'fact-tuples)))))
-(define read-outside
+                  (case-arms (find-define query-forms 'fact-tuples))))))
+(define read-outside (tolerant
   (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
-             (apply append (map (lambda (a) (if (and (pair? (car a)) (reads-outside? a)) (car a) '())) provider-arms))))
+             (apply append (map (lambda (a) (if (and (pair? (car a)) (reads-outside? a)) (car a) '())) provider-arms)))))
 (want "M the facts marked external are exactly those whose providers read outside the log"
       (in-order read-outside
                 (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
@@ -325,14 +333,14 @@
 ;; folded again from the records.
 (define (claim-actor) (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0)))
 (define kept '((class state) (on doc) (must (title ?w ?t))))
-(define rebuilt
+(define rebuilt (tolerant
   (let ((r (reduce-empty)))
     (reduce-apply! r "decl0000" 1 '() (list 'rule 'kept kept))
     (reduce-apply! r "decl0000" 2 '() (list 'rule 'gone kept))
     (reduce-apply! r "decl0000" 3 '() '(rule gone retired))
     (reduce-apply! r "aaa00000" 1 '() (list 'rule 'claimed kept) (claim-actor))
     (reduce-apply! r "bbb00000" 1 '() (list 'rule 'claimed kept) (claim-actor))
-    r))
+    r)))
 (want "K a rebuild after a retraction: both claims gated, a rule in force kept, a retired one still retired"
       (in-order (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates rebuilt)))) (and p (cdr p))))
                      '("aaa00000" "bbb00000"))
