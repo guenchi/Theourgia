@@ -2800,8 +2800,10 @@
         ;; intent it declared (request.sc, intent-produced?), and a value in
         ;; another order is refused with the form it would have.
         ((rule)
-         (let ((v ((eval 'rule-value-check (environment '(theourgia query))) (caddr i))))
+         (let ((v (and (= (length i) 3) ((eval 'rule-value-check (environment '(theourgia query))) (caddr i)))))
            (cond
+             ((not v)
+              (list 'error 'malformed-intent (list 'too-many-arguments (list 'verb 'rule) (list 'given (- (length i) 1)) '(needs 2))))
              ((and (pair? v) (eq? (car v) 'error)) v)
              ((not (equal? v (caddr i)))
               (list 'error 'bad-request 'rule-not-in-its-form (list 'form v)))
@@ -3936,8 +3938,13 @@
           (unwrap intent)
           (intent-with-refs intent (as-marker (car rs)) (as-marker (cadr rs))))))
 
+  ;; ONLY A WELL-FORMED REFERENCE BECOMES A MARKER. A malformed one -- `(from)`,
+  ;; `(from 0 extra)`, `(from -1)` -- is kept as written, so the plan holds
+  ;; what the run refuses (resolve-from), and a completion cannot bind a
+  ;; reference the first run never accepted.
   (define (as-marker x)
-    (if (and (pair? x) (eq? (car x) 'from))
+    (if (and (pair? x) (eq? (car x) 'from) (pair? (cdr x)) (null? (cddr x))
+             (integer? (cadr x)) (exact? (cadr x)) (>= (cadr x) 0))
         (list "#%new" (cadr x))
         x))
 
@@ -4072,10 +4079,13 @@
   (define (intent-with-refs intent parent after)
     (let* ((i (unwrap intent))
            (e (assq (car i) intent-ref-positions))
+           ;; THE INTENT IS REBUILT AT ITS FOUR PARTS, as the insert and move
+           ;; arms always rebuilt it: a part past the fourth is not carried
+           ;; into the resolved intent or the plan's declaration.
            (rewritten
              (if e
                  (let loop ((l i) (k 0) (vs (list parent after)))
-                   (cond ((null? l) '())
+                   (cond ((or (null? l) (= k 4)) '())
                          ((and (pair? vs) (memv k (cdr e))) (cons (car vs) (loop (cdr l) (+ k 1) (cdr vs))))
                          (else (cons (car l) (loop (cdr l) (+ k 1) vs)))))
                  i)))
@@ -4880,8 +4890,9 @@
            ;; evaluate a state rule yet.
            (rules (map (lambda (r)
                          (list 'rule-skipped (list 'rule (car r))
-                               (list 'reason (if (equal? (assq 'class (cadr r)) '(class write)) 'write-rule 'not-evaluated))))
-                       (filter (lambda (r) (not (assq 'builtin (cadr r)))) (state-declared-rules state))))
+                               (list 'reason (if (or (equal? (assq 'class (cadr r)) '(class write)) (assq 'builtin (cadr r)))
+                                                 'write-rule 'not-evaluated))))
+                       (state-declared-rules state)))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append

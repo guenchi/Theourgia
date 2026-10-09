@@ -1003,11 +1003,13 @@
              (write-rule (list (list 'builtin (string->symbol builtin))))))
         ((or (null? on) (and must must-not) (not (or must must-not))) (usage rule-usage))
         (else
-         (let ((w (and where (goal where))) (g (goal (or must must-not))))
+         ;; An absent --where is not a goal of #f: a given one is checked
+         ;; whatever it reads as.
+         (let ((w (if where (goal where) 'absent)) (g (goal (or must must-not))))
            (if (or (eq? w 'unreadable) (eq? g 'unreadable))
                '(error bad-request (reason goal-unreadable))
                (write-rule (append (list (cons 'on (map string->symbol on)))
-                                   (if w (list (list 'where w)) '())
+                                   (if (eq? w 'absent) '() (list (list 'where w)))
                                    (list (list (if must 'must 'must-not) g))))))))))
 
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the

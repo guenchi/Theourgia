@@ -23,9 +23,11 @@
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia reduce) block-id reduce-applied-cut state-hash state-declared-rules
-              state-edges state-read)
+              state-edges state-read state-datum state->rows reduce-empty reduce-apply! reduce-gates)
+        (only (theourgia request) intent-produced?)
+        (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia wire) encode-record storable-encode)
+        (only (theourgia wire) encode-record storable-encode sexpr->string-extended)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia query) fact-relations relation-external? rule-value-check))
 
@@ -65,10 +67,19 @@
 (define (one a key) (let ((c (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) key))) (cdr a))))) (and c (cadr c))))
 (define (edges id) (cdr (assq 'edges (state-read (state) id))))
 (define (conflict-items) (let ((a (run 'conflicts))) (cdr (assq 'items (cdr a)))))
+;; describe reads the declared tables from the state it is handed: in process
+;; it is handed one.
+(define (describe-of store) (cdr (rpc-dispatch store '(describe) "author" (open-and-reduce store))))
 
 (run 'init)
 (define writer (car (car (reduce-applied-cut (state)))))
 (define Y (new-id (run 'insert "--title" "Y")))
+
+(want "N a store with no rule hashes as before: the blocks' datum alone"
+      (let ((st (state)))
+        (equal? (state-hash st)
+                (bytevector->hex (sha256 (string->utf8 (sexpr->string-extended (storable-encode (state-datum st))))))))
+      #t)
 
 ;; ---- back-references at a link's and an unlink's ends ------------------------------
 
@@ -130,23 +141,33 @@
 (want "R a built-in is enabled by name"
       (assq 'cover (state-declared-rules (state)))
       '(cover ((builtin citation-coverage))))
-(want "R describe lists the rules in force, check lists each but the built-in as skipped, verdict unchanged"
-      (in-order (map car (cdr (assq 'declared-rules (cdr (run 'describe)))))
+(want "R describe lists the rules in force, check lists each as skipped, a built-in as a write rule, verdict unchanged"
+      (in-order (map car (cdr (assq 'declared-rules (describe-of S))))
                 (cdr (assq 'rules (cdr (run 'check))))
                 (cadr (assq 'verdict (cdr (run 'check)))))
       (list '(cover reviews-carry sections-titled)
-            '((rule-skipped (rule reviews-carry) (reason write-rule))
+            '((rule-skipped (rule cover) (reason write-rule))
+              (rule-skipped (rule reviews-carry) (reason write-rule))
               (rule-skipped (rule sections-titled) (reason not-evaluated)))
             'ok))
 (run 'rule "cover" "--retire")
 (want "R a retired rule is no longer in force or listed"
       (in-order (map car (state-declared-rules (state)))
-                (map car (cdr (assq 'declared-rules (cdr (run 'describe))))))
+                (map car (cdr (assq 'declared-rules (describe-of S)))))
       '((reviews-carry sections-titled) (reviews-carry sections-titled)))
 
 ;; ---- what a rule may say ---------------------------------------------------------------
 
 (define (refusal . args) (let ((a (apply run 'rule "r" args))) (if (pair? a) (list-head a (min 4 (length a))) a)))
+(want "R the class is write exactly when a goal names a rule-only fact: in where alone, in must alone, inside an and"
+      (map (lambda (args) (let ((a (apply run 'rule "cls" args)))
+                            (and (pair? a) (eq? (car a) 'ok) (cadr (assq 'class (cadr (assq 'cls (state-declared-rules (state)))))))))
+           '(("--on" "doc" "--where" "(kind+ ?w doc)" "--must" "(title ?w ?t)")
+             ("--on" "doc" "--must-not" "(and (cited ?w ?s) (unread ?s))")
+             ("--on" "doc" "--must" "(and (title ?w ?t) (kind ?w doc))")))
+      '(write write state))
+(run 'rule "cls" "--retire")
+(define before-refusals (events))
 (want "R a goal naming a relation that reads outside the log is refused, as a fact and through a rule"
       (map (lambda (g) (refusal "--on" "code" "--must" g))
            '("(score ?w \"x\" ?s)" "(uses-name ?w ?n)" "(def ?w ?l ?n)" "(def-for ?w ?n ?d)" "(ambiguous ?w ?n)"))
@@ -167,14 +188,26 @@
            '(("--must" "(title ?w ?t)") ("--on" "section" "--must" "(title ?w ?t)" "--must-not" "(title ?w ?t)")
              ("--on" "section")))
       '(usage usage usage))
-(want "R nothing was written by a refused rule"
-      (assq 'r (state-declared-rules (state)))
-      #f)
+(want "R a goal of #f, given as --must or as --where, is refused; so is a value holding a plan's marker"
+      (in-order (list-head (refusal "--on" "doc" "--must" "#f") 3)
+                (list-head (refusal "--on" "doc" "--where" "#f" "--must" "(title ?w ?t)") 3)
+                (list-head (refusal "--on" "doc" "--must" "(member ?w (\"#%new\" 0))") 3))
+      '((error bad-request not-a-goal) (error bad-request not-a-goal) (error bad-request (reason rule-value-holds-marker))))
+(want "R nothing was written by a refused rule: no record, the log as long as before"
+      (in-order (assq 'r (state-declared-rules (state))) (- (events) before-refusals))
+      '(#f 0))
 (define (batch-first intents) (car (cadr (run 'batch (format "~s" intents)))))
 (want "R a rule intent in a batch is written in its one form, and refused with the form in another"
       (in-order (car (batch-first (list (list 'rule 'in-batch '((class state) (on section) (must (title ?w ?t)))))))
                 (list-head (batch-first (list (list 'rule 'out-of-order '((must (title ?w ?t)) (on section))))) 3))
       '(ok (error bad-request rule-not-in-its-form)))
+(want "R a rule intent with a part past its value is refused, not written shortened"
+      (list-head (batch-first (list (list 'rule 'long '((class state) (on section) (must (title ?w ?t))) 'extra))) 3)
+      '(error malformed-intent (too-many-arguments (verb rule) (given 3) (needs 2))))
+(want "B a plan's member declared under an expect wrapper is the record of the intent inside it"
+      (in-order (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "b"))
+                (intent-produced? '(expect "h" (link "a" relates "b")) '(link "a" relates "c")))
+      '(#t #f))
 
 ;; ---- liveness: the candidate rule a declaration has ------------------------------------
 
@@ -255,7 +288,7 @@
                            (map car (filter (lambda (f) (eq? (list-ref f 3) 'external)) fact-relations))))
       '((def score uses-name) (def score uses-name)))
 (want "M CONTROL: every fact has a provider arm the census read, and the library's rules over them are external too"
-      (in-order (filter (lambda (f) (not (exists (lambda (a) (and (pair? (car a)) (memq (car f) (car a)))) provider-arms)))
+      (in-order (filter (lambda (name) (not (exists (lambda (a) (and (pair? (car a)) (memq name (car a)))) provider-arms)))
                         (map car (filter (lambda (f) (not (memq (car f) '(edge-kind moved-kind)))) fact-relations)))
                 (map relation-external? '(def-for ambiguous scope-name depends title)))
       '(() (#t #t #f #f #f)))
@@ -264,11 +297,32 @@
 
 (define P (string-append root "/project"))
 (rpc-dispatch P '(init "--template" "project") "author")
-(want "P a fresh project store has no rule record, and describe and check list none"
-      (in-order (state-declared-rules (open-and-reduce P))
-                (assq 'declared-rules (cdr (rpc-dispatch P '(describe) "author")))
+(want "P a fresh project store has no rule record at all, retired or not, and describe and check list none"
+      (in-order (length (filter (lambda (row) (eq? (car row) 'rule)) (state->rows (open-and-reduce P))))
+                (assq 'declared-rules (describe-of P))
                 (assq 'rules (cdr (rpc-dispatch P '(check) "author"))))
-      '(() #f #f))
+      '(0 #f #f))
+
+;; ---- a rebuild keeps the rules --------------------------------------------------------
+;;
+;; As relation-effects RE-9 forces one: two records claiming one request's
+;; identity; the first is applied, the second gates both, and the state is
+;; folded again from the records.
+(define (claim-actor) (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0)))
+(define kept '((class state) (on doc) (must (title ?w ?t))))
+(define rebuilt
+  (let ((r (reduce-empty)))
+    (reduce-apply! r "decl0000" 1 '() (list 'rule 'kept kept))
+    (reduce-apply! r "decl0000" 2 '() (list 'rule 'gone kept))
+    (reduce-apply! r "decl0000" 3 '() '(rule gone retired))
+    (reduce-apply! r "aaa00000" 1 '() (list 'rule 'claimed kept) (claim-actor))
+    (reduce-apply! r "bbb00000" 1 '() (list 'rule 'claimed kept) (claim-actor))
+    r))
+(want "K a rebuild after a retraction: both claims gated, a rule in force kept, a retired one still retired"
+      (in-order (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates rebuilt)))) (and p (cdr p))))
+                     '("aaa00000" "bbb00000"))
+                (state-declared-rules rebuilt))
+      (list '(plan-conflict plan-conflict) (list (list 'kept kept))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nstore-rules complete\n" bad rows)

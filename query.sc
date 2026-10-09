@@ -234,7 +234,7 @@
   ;; with the rule-only facts known, and a relation that reads outside the
   ;; log is refused.
   (define (rule-value-check value)
-    (define (clause k) (and (list? value) (assq k value)))
+    (define (clause k) (assq k value))
     (define (goal-relations g)
       (if (and (pair? g) (eq? (car g) 'and)) (map car (cdr g)) (list (car g))))
     (define (goal-refusal g)
@@ -243,17 +243,25 @@
             #f)
           (let ((x (find relation-external? (goal-relations g))))
             (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))))
+    ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every ("#%new" k)
+    ;; in a member it declares (request.sc, bind-new), so a rule value holding
+    ;; one would not be the record it was declared as.
+    (define (holds-marker? x)
+      (and (pair? x) (or (equal? (car x) "#%new") (holds-marker? (car x)) (holds-marker? (cdr x)))))
     (cond
       ((eq? value 'retired) 'retired)
+      ;; THE SHAPE FIRST, so no clause is read before it is known to be one.
+      ((not (and (list? value) (pair? value)
+                 (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) '(class on where must must-not builtin))))
+                          value)))
+       '(error bad-request rule-malformed))
+      ((holds-marker? value) '(error bad-request (reason rule-value-holds-marker)))
       ((clause 'builtin)
        (let ((b (clause 'builtin)))
          (if (and (= 1 (length value)) (= 2 (length b)) (memq (cadr b) builtin-rules))
              value
              (list 'error 'bad-request 'builtin-rule-not-known
-                   (list 'builtin (if (= 2 (length b)) (cadr b) b)) (list 'known builtin-rules)))))
-      ((not (and (list? value) (for-all (lambda (c) (and (list? c) (pair? c) (memq (car c) '(class on where must must-not))))
-                                        value)))
-       '(error bad-request rule-malformed))
+                   (list 'builtin (if (= 2 (length b)) (cadr b) (cdr b))) (list 'known builtin-rules)))))
       ((not (let ((o (clause 'on))) (and o (pair? (cdr o)) (for-all symbol? (cdr o)))))
        '(error bad-request (reason rule-needs-kinds)))
       ((find (lambda (k) (not (kind-known? k))) (cdr (clause 'on)))
@@ -263,7 +271,9 @@
       ((exists (lambda (k) (let ((c (clause k))) (and c (not (= 2 (length c)))))) '(where must must-not))
        '(error bad-request rule-malformed))
       (else
-       (let* ((goals (filter values (map (lambda (k) (let ((c (clause k))) (and c (cadr c)))) '(where must must-not))))
+       ;; EVERY GOAL GIVEN IS CHECKED, whatever its value: a goal of #f is a
+       ;; goal the query language refuses (not-a-goal), not an absent one.
+       (let* ((goals (map cadr (filter values (map clause '(where must must-not)))))
               (bad (exists goal-refusal goals)))
          (or bad
              (let ((write? (exists (lambda (g) (exists (lambda (r) (assq r rule-only-facts)) (goal-relations g))) goals))

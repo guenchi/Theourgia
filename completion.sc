@@ -161,9 +161,12 @@
                             x))))
             (declared-with-refs e (map bind rs))))))
 
+;; A member's target is a block id; a link's from end can be the run's own
+  ;; back-reference instead, a block this completion creates, which did not
+  ;; exist at the plan's cut and has no baseline to be stale against.
   (define (member-target e)
     (let ((u (declared-intent e)))
-      (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (cadr u))))
+      (and (memq (declared-kind e) '(set move del link unlink)) (pair? (cdr u)) (string? (cadr u)) (cadr u))))
 
   ;; NEVER: A COMPLETION LANDS NO DRAFT ON A DATUM BLOCK EITHER. A fresh
   ;; commit refuses a draft whose block is a datum block (store.sc,
