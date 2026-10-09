@@ -95,6 +95,36 @@
       (cond ((> (+ i n) m) k)
             ((string=? (substring text i (+ i n)) needle) (loop (+ i n) (+ k 1)))
             (else (loop (+ i 1) k))))))
+;; THE LOAD A BOUNDED WAIT IS UNDER, as a factor of at least 1 that its base
+;; bound is multiplied by: the larger of 1 + load1/cores (the machine's) and
+;; a measured step ratio -- a fixed unit of work timed now against the same
+;; unit timed when this file started. The load average lags a burst by a
+;; minute; the step does not. Capped at 8, so a wait that will never end
+;; still ends.
+;; NOTE: A WAIT THAT GIVES OUT SAYS SO, with how long it waited, its bound
+;; and what it saw (wait-gave-out!): the row's own FAIL line shows only the
+;; value, and "no frame" under load and "no frame" from a defect read alike.
+(define (shell-number command)
+  (let ((f (string-append scratch-base "/cs-" pid-text "-number")))
+    (system (string-append "(" command ") > '" f "' 2>/dev/null"))
+    (let* ((t (file-text f))
+           (n (guard (e (#t #f)) (read (open-string-input-port t)))))
+      (and (number? n) n))))
+(define cores (max 1 (or (shell-number "sysctl -n hw.ncpu || nproc") 1)))
+(define (load1)
+  (or (shell-number "sysctl -n vm.loadavg | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg") 0))
+(define (step-ms)
+  (let ((t0 (real-time)))
+    (let loop ((i 0) (a 0)) (when (< i 3000000) (loop (+ i 1) (fxlogxor a i))))
+    (max 1 (- (real-time) t0))))
+(define base-step (step-ms))
+(define (load-factor)
+  (min 8 (max 1 (+ 1 (/ (load1) cores)) (/ (step-ms) base-step))))
+;; A base bound in ms, scaled by FACTOR, as the exact integer the waits take.
+(define (scaled ms factor) (exact (ceiling (* ms factor))))
+(define (wait-gave-out! what waited bound factor observed)
+  (printf "WAIT GAVE OUT: ~a after ~a ms (bound ~a ms, load factor ~,2f, load1 ~a on ~a cores): saw ~s~%"
+          what waited (exact (round bound)) (inexact factor) (load1) cores observed))
 (define (read-all-data text)
   (let ((p (open-string-input-port text)))
     (let loop ((out '()))
@@ -339,32 +369,45 @@
           ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'published))
            (loop (cdr ds) (caddar ds)))
           (else (loop (cdr ds) n)))))
-;; THE FRAME OF THE PUBLICATION AN ACTION MADE, BY REVISION: wait until the
-;; daemon's last published revision is past AFTER and has held still for
-;; 300 ms; the action's publications are the revisions after AFTER up to it.
-;; While anyone is subscribed the daemon probes once a second, and a probe
-;; that lands between a writer's segment and its published marker reloads:
-;; the probe's reload or the read's may be the one that carries the
-;; change, and the other reloads the same state, an EMPTY frame (kept,
-;; sent, counted like any other). So of those revisions' frames the one
-;; with items is the action's; none with items, the last one (an empty
-;; frame); two with items is not one action's frame, and says so.
-(define (frame-settled d sub after)
-  (let* ((target (let wait ((k 0) (last #f) (still 0))
-                   (let ((p (last-published d)))
-                     (cond ((and p (> p after) (equal? p last) (>= still 6)) p)
-                           ((> k 200) p)
-                           (else (sleep-ms 50) (wait (+ k 1) p (if (equal? p last) (+ still 1) 0))))))))
-    (let look ((k 0))
-      (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r target (> r after) (<= r target))))
+;; THE FRAME OF THE PUBLICATION AN ACTION MADE, BY THE ACTION'S OWN RECORD:
+;; MARK is that record, (<writer> . <seq>), and the action's publication is
+;; the first frame past AFTER whose cut covers it. While anyone is
+;; subscribed the daemon probes once a second, and a reload queued behind
+;; another refolds the same log: such a reload publishes an EMPTY frame
+;; (kept, sent, counted like any other), and it can land before the
+;; action's own. So of the frames past AFTER up to the covering one, the
+;; one with items is the action's; none with items, the covering one; two
+;; with items is not one action's frame, and says so.
+;; NEVER: NOT "THE LAST REVISION HELD STILL FOR 300 MS". That was the rule,
+;; and under load it took a stale empty frame for the action's when the
+;; action's own reload took longer than 300 ms to publish -- the row then
+;; read (), and nothing said why. A condition does not depend on how fast
+;; the machine is; the bound only ends a wait that will not be answered.
+(define (covers? f mark)
+  (let ((c (frame-cut f)))
+    (and (list? c) (let ((e (assoc (car mark) c))) (and e (>= (cdr e) (cdr mark)))))))
+(define (frame-settled d sub after mark)
+  (let* ((factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
+    (let look ()
+      (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r (> r after))))
                          (frames-of (sub-lines sub))))
-             (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) fs)))
-        (cond ((and target (= (length fs) (- target after)))
-               (cond ((null? said) (car (reverse fs)))
-                     ((null? (cdr said)) (car said))
-                     (else (list 'several-frames-with-items (map frame-rev said)))))
-              ((> k 120) (list 'no-frame target (map frame-rev fs)))
-              (else (sleep-ms 50) (look (+ k 1))))))))
+             (hit (find (lambda (f) (covers? f mark)) fs)))
+        (cond (hit
+               (let* ((upto (filter (lambda (f) (<= (frame-rev f) (frame-rev hit))) fs))
+                      (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) upto)))
+                 (cond ((null? said) hit)
+                       ((null? (cdr said)) (car said))
+                       (else (list 'several-frames-with-items (map frame-rev said))))))
+              ((> (- (real-time) t0) bound)
+               (let ((seen (list 'wanted mark 'past after 'last-published (last-published d)
+                                 'frames (map (lambda (f) (list (frame-rev f) (frame-cut f))) fs))))
+                 (wait-gave-out! "frame-settled" (- (real-time) t0) bound factor seen)
+                 (list 'no-frame seen)))
+              (else (sleep-ms 50) (look)))))))
+;; The record a request's answer says it wrote, (<writer> . <seq>).
+(define (mark-of answer)
+  (let ((ev (and (pair? answer) (assq 'events (cdr answer)))))
+    (and ev (pair? (cadr ev)) (car (cadr ev)))))
 ;; WAITS until the daemon's log holds at least N lines containing NEEDLE, or
 ;; MS pass; the rows then read the count themselves.
 (define (await-trace d needle n ms)
@@ -575,11 +618,11 @@
            (acc (acceptance-of (await-lines sub 1 5000)))
            (token (token-of acc))
            (seen (current-of acc))
-           ;; the frame of the publication the last action made (frame-settled)
-           (frame! (lambda () (let ((f (frame-settled d sub seen))) (when (frame-rev f) (set! seen (frame-rev f))) f))))
+           ;; the frame of the publication the action answered A made (frame-settled)
+           (frame! (lambda (a) (let ((f (frame-settled d sub seen (mark-of a)))) (when (frame-rev f) (set! seen (frame-rev f))) f))))
       (let* ((a (ask d 'insert "--title" "A"))
              (id (new-id a))
-             (f (frame!)))
+             (f (frame! a)))
         (want "F10-2 insert: the request is answered, and exactly one frame arrives, rev 2, (added id) and none of the new block's fields"
               (list (car a) (frame-rev f) (equal? (clause 'daemon f) (list token)) (item-set f))
               (list 'ok 2 #t (expected-set (list 'added id))))
@@ -587,22 +630,20 @@
           (want "F10-2 and the frame's cut is the publication's: the cut a read of it answers"
                 (list (and read-cut #t) (equal? (clause 'cut f) read-cut) (equal? (clause 'from-cut f) (clause 'cut f)))
                 '(#t #t #f)))
-        (ask d 'set id "src" "first")
-        (let ((g (frame!)))
+        (let ((g (frame! (ask d 'set id "src" "first"))))
           (want "F10-2 set src -> (changed id src), and its from-cut is the previous frame's cut"
                 (list (item-set g) (equal? (clause 'from-cut g) (clause 'cut f)))
                 (list (expected-set (list 'changed id 'src)) #t)))
-        (ask d 'set id "src" "first")
         (want "F10-2 set src to the SAME value -> (changed id src): the candidate set differs by its event"
-              (item-set (frame!)) (expected-set (list 'changed id 'src)))
-        (ask d 'set id "front" "f: 1")
-        (want "F10-2 set front -> (changed id front)" (item-set (frame!)) (expected-set (list 'changed id 'front)))
-        (ask d 'set id "kind" "doc")
-        (want "F10-2 set kind -> (changed id kind)" (item-set (frame!)) (expected-set (list 'changed id 'kind)))
-        (let ((b (insert! d "B")))
-          (frame!)
-          (ask d 'del b)
-          (want "F10-2 del -> (removed id), and nothing else" (item-set (frame!)) (expected-set (list 'removed b))))
+              (item-set (frame! (ask d 'set id "src" "first"))) (expected-set (list 'changed id 'src)))
+        (want "F10-2 set front -> (changed id front)"
+              (item-set (frame! (ask d 'set id "front" "f: 1"))) (expected-set (list 'changed id 'front)))
+        (want "F10-2 set kind -> (changed id kind)"
+              (item-set (frame! (ask d 'set id "kind" "doc"))) (expected-set (list 'changed id 'kind)))
+        (let* ((ab (ask d 'insert "--title" "B")) (b (new-id ab)))
+          (frame! ab)
+          (want "F10-2 del -> (removed id), and nothing else"
+                (item-set (frame! (ask d 'del b))) (expected-set (list 'removed b))))
         (want "F10-2 revisions are dense: the frames so far are 2 .. the last read, in order, an empty one included"
               (map frame-rev (frames-of (sub-lines sub)))
               (let loop ((k seen) (out '())) (if (< k 2) out (loop (- k 1) (cons k out))))))
@@ -652,9 +693,9 @@
            (sub (spawn-subscriber! d '("changes" "0")))
            (seen (current-of (acceptance-of (await-lines sub 1 5000))))
            (last-cut '()) (seqs '())
-           ;; the frame of the publication the last action made (frame-settled)
-           (frame! (lambda ()
-                     (let ((f (frame-settled d sub seen)))
+           ;; the frame of the publication record MARK made (frame-settled)
+           (frame! (lambda (mark)
+                     (let ((f (frame-settled d sub seen mark)))
                        (when (frame-rev f) (set! seen (frame-rev f)))
                        (let ((c (frame-cut f))) (when c (set! last-cut c)))
                        f)))
@@ -667,7 +708,7 @@
                       (let ((k (seq! w)))
                         (mirror! d w k deps payload)
                         (poke! d)
-                        (cons (string-append w "." (number->string k)) (frame!)))))
+                        (cons (string-append w "." (number->string k)) (frame! (cons w k))))))
            (put (lambda (title parent ord . kind)
                   (list 'put (append (list (cons 'kind (if (pair? kind) (car kind) 'section)) (cons 'title title))
                                      (if parent (list (cons 'parent parent) (cons 'ord ord)) '()))))))
@@ -717,7 +758,7 @@
           (mirror! d "mirrorgb" k2 last-cut (list 'set y 'front "b: 2"))
           (poke! d)
           (want "F10-2 a block with no front acquiring two concurrent fronts in one reload -> changed AND conflict"
-                (item-set (frame!))
+                (item-set (frame! (cons "mirrorgb" k2)))
                 (expected-set (list 'changed y 'front) (list 'conflict y 'front)))))
       ;; EDGES: a link, a second link with the same endpoints from another
       ;; event, and an unlink that has seen only the first.
@@ -803,6 +844,63 @@
         (want "F10-2 undone -> resolved"
               (item-set (cdr (record! "mirrornd" last-cut (list 'move d2 'root 9))))
               (expected-set (list 'changed d2 'position) (list 'changed d2 'parent) (list 'resolved d2 'nested))))
+      (stop-daemon! d))
+
+    ;; ==== F10-2 behind a stale empty frame: the frame is the action's own ====
+    ;;
+    ;; THE RACE, CONSTRUCTED BY SIZE. A reload refolds the whole log, so on a
+    ;; big store every reload is slow, a redundant one too. Action 1 is one
+    ;; record and TWO reads: the second read finds the publication still old
+    ;; and queues a second reload, which refolds the same log and publishes an
+    ;; EMPTY frame about one reload after action 1's. Action 2 is one record
+    ;; and one read: its reload queues behind that redundant one, so the
+    ;; stale empty frame lands past action 1's revision and before action 2's
+    ;; own, which comes one slow reload later. A wait that takes "the last
+    ;; revision, once it has held still for 300 ms" takes the empty frame for
+    ;; action 2's whenever a reload takes longer than that -- which is what
+    ;; load did in the suite, and what size does here on purpose.
+    ;; NOTE: THE STORE GROWS UNTIL ONE RELOAD TAKES OVER 600 MS (twice that
+    ;; 300 ms), doubling the bulk up to five times; the first row says what it
+    ;; measured, so a green below cannot be one where the race never happened.
+    (printf "~%== F10-2: a slow reload behind a stale empty frame ==~%")
+    (let* ((d (start-daemon! "f2s" ""))
+           (timed-reload
+             (lambda ()
+               (let ((p0 (last-published d)) (t0 (real-time)))
+                 (poke! d)
+                 (let wait ((k 0))
+                   (let ((p (last-published d)))
+                     (cond ((and p (or (not p0) (> p p0))) (- (real-time) t0))
+                           ((> (- (real-time) t0) (scaled 60000 (load-factor))) (list 'never-published p0))
+                           (else (sleep-ms 20) (wait (+ k 1)))))))))
+           (reload-ms
+             (let grow ((n 4000) (k 1))
+               (mirror-many! d (string-append "mirrorb" (number->string k)) n)
+               (let ((t (timed-reload)))
+                 (if (or (not (number? t)) (> t 600) (>= k 5)) t (grow (* n 2) (+ k 1))))))
+           (sub (spawn-subscriber! d '("changes" "0")))
+           (seen (current-of (acceptance-of (await-lines sub 1 (scaled 5000 (load-factor))))))
+           (f1 (begin (mirror! d "mirrorsa" 1 '() '(put ((kind . section) (title . "first") (parent . root) (ord . 1))))
+                      (poke! d)
+                      (poke! d)
+                      (frame-settled d sub seen (cons "mirrorsa" 1))))
+           (r1 (frame-rev f1))
+           (f2 (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
+                      (poke! d)
+                      (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1))))
+           (r2 (frame-rev f2))
+           (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
+                            (frames-of (sub-lines sub)))))
+      (want "F10-2 SLOW: a reload of this store takes over 600 ms, and a stale empty frame came between the two actions' frames"
+            (list (and (number? reload-ms) (> reload-ms 600) #t)
+                  (and (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between) #t))
+            (list #t #t))
+      (want "F10-2 action 1's frame is its own: (added mirrorsa.1)"
+            (item-set f1) (expected-set (list 'added "mirrorsa.1")))
+      (want "F10-2 action 2's frame is its own, not the stale empty one before it: (added mirrorsb.1)"
+            (item-set f2) (expected-set (list 'added "mirrorsb.1")))
+      (unless (and (number? reload-ms) (> reload-ms 600))
+        (printf "NOTE: the reload took ~s ms; the race above was not constructed~%" reload-ms))
       (stop-daemon! d))
 
     ;; A RETRACTION: two writers' records claim one single identity, the

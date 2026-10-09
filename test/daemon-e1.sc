@@ -285,6 +285,52 @@
 (define (tagged-store d) (car d))
 (define (tagged-socket d) (cadr d))
 (define (tagged-log d) (file-text (cadddr d)))
+
+;; THE LOAD A BOUNDED WAIT IS UNDER, as a factor of at least 1 that its base
+;; bound is multiplied by: the larger of 1 + load1/cores (the machine's) and
+;; a measured step ratio -- a fixed unit of work timed now against the same
+;; unit timed when this file started. The load average lags a burst by a
+;; minute; the step does not. Capped at 8, so a wait that will never end
+;; still ends.
+;; NOTE: A WAIT THAT GIVES OUT SAYS SO, with how long it waited, its bound
+;; and what it saw (wait-gave-out!): a row's FAIL line shows only the value,
+;; and "no answer" under load and "no answer" from a defect read alike.
+(define (shell-number command)
+  (let ((f (string-append scratch-base "/de-" pid-text "-number")))
+    (system (string-append "(" command ") > '" f "' 2>/dev/null"))
+    (let* ((t (file-text f))
+           (n (guard (e (#t #f)) (read (open-string-input-port t)))))
+      (and (number? n) n))))
+(define cores (max 1 (or (shell-number "sysctl -n hw.ncpu || nproc") 1)))
+(define (load1)
+  (or (shell-number "sysctl -n vm.loadavg | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg") 0))
+(define (step-ms)
+  (let ((t0 (real-time)))
+    (let loop ((i 0) (a 0)) (when (< i 3000000) (loop (+ i 1) (fxlogxor a i))))
+    (max 1 (- (real-time) t0))))
+(define base-step (step-ms))
+(define (load-factor)
+  (min 8 (max 1 (+ 1 (/ (load1) cores)) (/ (step-ms) base-step))))
+;; A base bound in ms, scaled by FACTOR, as the exact integer the waits take.
+(define (scaled ms factor) (exact (ceiling (* ms factor))))
+(define (wait-gave-out! what waited bound factor observed)
+  (printf "WAIT GAVE OUT: ~a after ~a ms (bound ~a ms, load factor ~,2f, load1 ~a on ~a cores): saw ~s~%"
+          what waited (exact (round bound)) (inexact factor) (load1) cores observed))
+;; The last N lines of a daemon's log, for what a wait that gave out saw.
+(define (log-tail d n)
+  (let* ((lines (let loop ((cs (string->list (tagged-log d))) (cur '()) (out '()))
+                  (cond ((null? cs) (reverse (if (null? cur) out (cons (list->string (reverse cur)) out))))
+                        ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+                        (else (loop (cdr cs) (cons (car cs) cur) out)))))
+         (k (length lines)))
+    (if (> k n) (list-tail lines (- k n)) lines)))
+;; Where NEEDLE first occurs in TEXT, or #f.
+(define (index-in text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) i)
+            (else (loop (+ i 1)))))))
 (define (stop-tagged-daemon! d)
   (system (string-append "pkill -f " (caddr d) " 2>/dev/null")))
 
@@ -1338,15 +1384,46 @@
       ;; NEVER: THE ROW WAITS FOR THE DAEMON TO SAY IT HAS PUBLISHED AGAIN,
       ;; NEVER: NOT for the outside commit to finish. Those are different
       ;; instants, and only the first one is a fact about this daemon.
+      ;;
+      ;; NEVER: THE FIRST ASK DOES NOT CARRY THE START. A read is answered at
+      ;; the connection from what is published, and the first publication is
+      ;; the store process's first fold: a daemon whose socket is up may not
+      ;; have folded yet. The row waits for that publication -- a fact the
+      ;; daemon traces -- before it asks, so the ask's bound is about the
+      ;; ask; under load the start took longer than the ask's 8 s, and the
+      ;; row read "before-said no-answer" with nothing to say why.
+      ;; NOTE: EVERY BOUND HERE IS SCALED BY THE LOAD (load-factor), and a
+      ;; wait that gives out says how long it waited and what the log said.
       (let* ((d (start-tagged-daemon! "extern" #f))
-             (before (ask-tagged d "outline" 8000))
+             (factor (load-factor))
+             (ask-bound (scaled 8000 factor))
+             (said-red (lambda (what answer)
+                         (unless (and (string? (cadr answer)) (starts-with? (cadr answer) "(ok"))
+                           (wait-gave-out! what (car answer) ask-bound factor
+                                           (list 'answer (cadr answer) 'log-tail (log-tail d 6))))
+                         answer))
+             (ready (let ((t0 (real-time)) (w (wait-for-publication d 1 (scaled 8000 factor))))
+                      (unless (eq? w 'published)
+                        (wait-gave-out! "D-18 the first publication" (- (real-time) t0) (scaled 8000 factor) factor
+                                        (list w 'log-tail (log-tail d 6))))
+                      w))
+             (before (said-red "D-18 the first outline" (ask-tagged d "outline" ask-bound)))
              (outside (commit-from-outside! (tagged-store d) "OUTSIDE-CANARY"
                                             (string-append pid-text "-extern")))
-             (triggering (ask-tagged d "outline" 8000))
-             (waited (wait-for-publication d 2 2000))
-             (after-reload (ask-tagged d "outline" 8000))
-             (alive (file-exists? (tagged-socket d))))
+             (triggering (said-red "D-18 the triggering outline" (ask-tagged d "outline" ask-bound)))
+             (waited (let ((t0 (real-time)) (w (wait-for-publication d 2 (scaled 2000 factor))))
+                       (unless (eq? w 'published)
+                         (wait-gave-out! "D-18 the reload's publication" (- (real-time) t0) (scaled 2000 factor) factor
+                                         (list w 'log-tail (log-tail d 6))))
+                       w))
+             (after-reload (said-red "D-18 the outline after the reload" (ask-tagged d "outline" ask-bound)))
+             (alive (file-exists? (tagged-socket d)))
+             (log (tagged-log d)))
         (stop-tagged-daemon! d)
+        (want "D-18 the daemon's first publication is traced before the first request it routes"
+              (let ((p (index-in log "(trace published 1")) (r (index-in log "(trace routed")))
+                (list ready (and p #t) (and r #t) (and p r (< p r))))
+              '(published #t #t #t))
         (want "D-18 an outside commit is picked up, and the daemon says when"
               (list (if (and (string? (cadr before)) (starts-with? (cadr before) "(ok"))
                         'served-before
