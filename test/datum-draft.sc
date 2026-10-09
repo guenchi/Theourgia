@@ -58,14 +58,19 @@
 (define-syntax want
   (syntax-rules ()
     ((_ name got expected)
-     (want-1 name (caught got)
-             ;; AN EXPECTED VALUE THAT RAISES is a FAIL line too, under a tag
-             ;; no computed value can equal (a fresh gensym, which no row can
-             ;; spell): guarded with `caught`, two rows raising the same
-             ;; message would read as agreeing.
-             (guard (e (#t (list expected-raised (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
-               expected)))))
-(define expected-raised (gensym "expected-raised"))
+     ;; AN EXPECTED VALUE THAT RAISES IS A FAIL LINE, with no comparison: any
+     ;; value standing for the raise could be equalled by a row, and with
+     ;; `caught` on both sides two rows raising the same message would read
+     ;; as agreeing.
+     (call-with-current-continuation
+       (lambda (k)
+         (let ((x (guard (e (#t (expected-raised! name e) (k #f))) expected)))
+           (want-1 name (caught got) x)))))))
+(define (expected-raised! name e)
+  (set! rows (+ rows 1))
+  (set! bad (+ bad 1))
+  (printf "FAIL ~a -> the expected value raised ~s\n" name
+          (if (and (condition? e) (message-condition? e)) (condition-message e) e)))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
@@ -271,6 +276,30 @@
                                            " (set \"nosuch.1\" src \"x\"))")
                             (refusal "nosuch.1"))
       '(batch #t (0) #t))
+(want "B11 an insert that makes a plain block, then mode datum and a src on an id the store does not hold, is refused whole"
+      (batch-refused-whole? (string-append "((insert root #f ((title . \"N\")))"
+                                           " (set \"nosuch.2\" mode datum) (set \"nosuch.2\" src \"x\"))")
+                            (refusal "nosuch.2"))
+      '(batch #t (0) #t))
+;; WHERE RESOLVE STOPS THE BATCH, THE SCAN DOES NOT GUESS PAST IT: a text-mode
+;; block cannot be made datum (mode-mismatch), so the src after it never runs
+;; and is not a datum refusal.
+(define s5 (fresh-dir "s"))
+(define s5-src (fresh-dir "js"))
+(write-file! (string-append s5-src "/t.js") "function t() { return 1; }\n")
+(run s5 'init)
+(run s5 'import-code s5-src)
+(define text-block (the-one (ids-where s5 (lambda (fs) (equal? (assq 'mode fs) '(mode . text))))))
+(define text-batch
+  (run s5 'batch (string-append "((set \"" text-block "\" src) (set \"" text-block "\" mode datum) (set \"" text-block "\" src \"x\"))")))
+(want "B12 a src taken away, then mode datum on a text-mode block: resolve's mode-mismatch stops the batch after one intent, no datum refusal"
+      (in-order (string? text-block)
+                ;; The last answer the batch gives is the one that stopped it.
+                (and (pair? text-batch) (pair? (cdr text-batch)) (pair? (cadr text-batch))
+                     (let ((stop (car (last-pair (cadr text-batch)))))
+                       (and (list? stop) (>= (length stop) 2) (list-head stop 2))))
+                (clause-of text-batch 'done))
+      '(#t (error mode-mismatch) (1)))
 (want "B8 CONTROL: mode datum on the bare block alone is taken"
       (in-order (clause-of (run s1 'batch (string-append "((set \"" bare "\" mode datum))")) 'done) (field-of s1 bare 'mode))
       '((1) datum))
