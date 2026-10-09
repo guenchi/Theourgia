@@ -337,7 +337,7 @@
     (list (and (pair? a) (car a))
           (and (clause-in clauses 'resource) (cadr (clause-in clauses 'resource)))
           (and stdout (string-length stdout))
-          (and (clause-in clauses 'truncated) #t))))
+          (clause-in clauses 'truncated))))
 (want "EV-09b one under the limit: ok, all 127 characters carried, nothing truncated"
       (quota-reading "(begin (display (make-string 127 #\\x)) 0)")
       '(ok #f 127 #f))
@@ -346,34 +346,39 @@
       '(ok #f 128 #f))
 (want "EV-09b one over the limit: stopped, 128 characters carried, (truncated #t)"
       (quota-reading "(begin (display (make-string 129 #\\x)) 0)")
-      '(error output 128 #t))
+      '(error output 128 (truncated #t)))
 (want "EV-09b far over the limit: stopped, at most 128 characters carried, (truncated #t)"
       (let ((r (quota-reading "(let loop () (display \"0123456789\") (loop))")))
         (list (car r) (cadr r) (and (caddr r) (<= (caddr r) 128)) (cadddr r)))
-      '(error output #t #t))
+      '(error output #t (truncated #t)))
 
 ;; ---- EV-14 a refused limit names the option and why ---------------------------
 ;;
-;; One row per numeric option: zero, text and a positive value outside the
-;; bounds, each answered eval-arguments with the option clause naming it.
+;; One row per numeric option: zero, a negative, text, a fraction, a number
+;; written with an exponent (inexact, so not a count) and a positive value
+;; outside the bounds, each answered eval-arguments with the option clause
+;; naming it.
 (define (option-clause out)
   (let ((a (answer-of out)))
     (list (and (pair? a) (car a))
           (and (pair? a) (clause-in (cdr a) 'reason))
           (and (pair? a) (clause-in (cdr a) 'option)))))
 (define (limit-readings name out-of-range)
-  (map (lambda (v) (option-clause (evaluate "(+ 1 2)" name v))) (list "0" "abc" out-of-range)))
+  (map (lambda (v) (option-clause (evaluate "(+ 1 2)" name v))) (list "0" "-5" "abc" "1.5" "1e3" out-of-range)))
 (define (limit-wants name low high)
   (list (list 'error '(reason eval-arguments) (list 'option name '(reason not-positive)))
+        (list 'error '(reason eval-arguments) (list 'option name '(reason not-positive)))
+        (list 'error '(reason eval-arguments) (list 'option name '(reason not-a-number)))
+        (list 'error '(reason eval-arguments) (list 'option name '(reason not-a-number)))
         (list 'error '(reason eval-arguments) (list 'option name '(reason not-a-number)))
         (list 'error '(reason eval-arguments) (list 'option name '(reason out-of-range) (list 'range low high)))))
-(want "EV-14 --timeout-ms: 0, abc and 60001 are refused naming the option and the reason"
+(want "EV-14 --timeout-ms: 0, -5, abc, 1.5, 1e3 and 60001 are refused naming the option and the reason"
       (limit-readings "--timeout-ms" "60001")
       (limit-wants "--timeout-ms" 1 60000))
-(want "EV-14 --memory-bytes: 0, abc and 1048575 are refused naming the option and the reason"
+(want "EV-14 --memory-bytes: 0, -5, abc, 1.5, 1e3 and 1048575 are refused naming the option and the reason"
       (limit-readings "--memory-bytes" "1048575")
       (limit-wants "--memory-bytes" 1048576 2147483648))
-(want "EV-14 --output-bytes: 0, abc and 127 are refused naming the option and the reason"
+(want "EV-14 --output-bytes: 0, -5, abc, 1.5, 1e3 and 127 are refused naming the option and the reason"
       (limit-readings "--output-bytes" "127")
       (limit-wants "--output-bytes" 128 1048576))
 ;; THE BOUNDS THEMSELVES: lo-1 is refused, lo and hi are taken -- the
@@ -399,9 +404,6 @@
       (bound-readings "--output-bytes" 128 1048576)
       (list '(option "--output-bytes" (reason out-of-range) (range 128 1048576)) 'taken 'taken
             '(option "--output-bytes" (reason out-of-range) (range 128 1048576))))
-(want "EV-14 a count is a whole number: 1.5 is not-a-number"
-      (caddr (option-clause (evaluate "(+ 1 2)" "--timeout-ms" "1.5")))
-      '(option "--timeout-ms" (reason not-a-number)))
 
 ;; ---- EV-15 no source at all is answered with the usage form --------------------
 (define (cli-no-input . args)
@@ -423,6 +425,10 @@
       '(usage #t))
 (want "EV-15 TWIN: a positional that holds no form is still a source, judged as one"
       (let ((a (answer-of (cli-no-input "eval" " "))))
+        (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a)) (and (pair? a) (clause-in (cdr a) 'reason))))
+      '(error bad-source (reason expected-one-form)))
+(want "EV-15 TWIN: an EMPTY positional is a source too, not a missing one"
+      (let ((a (answer-of (cli-no-input "eval" ""))))
         (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a)) (and (pair? a) (clause-in (cdr a) 'reason))))
       '(error bad-source (reason expected-one-form)))
 (want "EV-15 the catalogue's eval form says --under takes a library id, and a refusal carries the same form"
