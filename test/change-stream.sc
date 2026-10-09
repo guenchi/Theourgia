@@ -771,18 +771,32 @@
         ;; between the writes made two frames (0 -> 1 -> 2), and the row read
         ;; no-items. The store process is held at a probe's acknowledgement
         ;; while both are written, so no fold can come between them.
-        (let ((k1 (seq! "mirrorga")) (k2 (seq! "mirrorgb")))
+        ;; NOTE: A ".held" MADE AFTER BOTH FILES ARE GONE IS A PARKED PROBE: it
+        ;; entered the hold after the release file went. A probe entering
+        ;; between the two removals is parked too, but its ".held" is erased,
+        ;; and nothing else folds until its hold budget (THEOURGIA_HOLD_MS,
+        ;; 30 s by default) runs out; the next probe then parks. So the wait
+        ;; is longer than that budget.
+        ;; NOTE: A HOLD THAT RUNS OUT RESUMES THE PROBE, and one that ran out
+        ;; during the writes could let a fold in between them; the daemon says
+        ;; so on its log, and the row counts it from the parking to the release.
+        (let ((k1 (seq! "mirrorga")) (k2 (seq! "mirrorgb"))
+              (expired (lambda () (count-of (d-log d) "(theourgia hold-expired probe-before-ack"))))
           (system (string-append "rm -f " probe-release " " probe-release ".held"))
-          (let ((held (let wait ((t0 (real-time)) (bound (scaled 5000 (load-factor))))
-                        (cond ((file-exists? (string-append probe-release ".held")) #t)
-                              ((> (- (real-time) t0) bound)
-                               (wait-gave-out! "a probe to park" (- (real-time) t0) bound 1 'no-held-file)
-                               #f)
-                              (else (sleep-ms 20) (wait t0 bound))))))
+          (let* ((held (let wait ((t0 (real-time)) (bound (scaled 35000 (load-factor))))
+                         (cond ((file-exists? (string-append probe-release ".held")) #t)
+                               ((> (- (real-time) t0) bound)
+                                (wait-gave-out! "a probe to park" (- (real-time) t0) bound 1 'no-held-file)
+                                #f)
+                               (else (sleep-ms 20) (wait t0 bound)))))
+                 (expired-before (expired)))
             (mirror! d "mirrorga" k1 last-cut (list 'set y 'front "a: 1"))
             (mirror! d "mirrorgb" k2 last-cut (list 'set y 'front "b: 2"))
-            (system (string-append "touch " probe-release))
-            (want "F10-2 a probe was parked while the two fronts were written" held #t))
+            (let ((expired-after (expired)))
+              (system (string-append "touch " probe-release))
+              (want "F10-2 a probe was parked while the two fronts were written, and its hold did not run out"
+                    (list held (- expired-after expired-before))
+                    '(#t 0))))
           (poke! d)
           (want "F10-2 a block with no front acquiring two concurrent fronts in one reload -> changed AND conflict"
                 (item-set (frame! (cons "mirrorgb" k2)))
