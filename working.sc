@@ -458,10 +458,9 @@
                     (based-on (caddr item))
                     (cut (cadddr item))
                     (declared (caddr found))
-                    (text (and (not (datum-mode-block? state id))
-                               (or declared
-                                   (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
-                                     (and (reduction? past) (field past id 'src))))))
+                    (text (or declared
+                              (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
+                                (and (reduction? past) (field past id 'src)))))
                     (body (and text (if (string? text) (string->utf8 text) text))))
                (cond
                  ;; NEVER: NO ROUTE MAKES A DRAFT ON A DATUM BLOCK (store.sc,
