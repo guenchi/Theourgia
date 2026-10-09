@@ -2485,11 +2485,17 @@
         ((= 0 (system "command -v procstat > /dev/null 2>&1")) 'procstat)
         (else #f)))
 
+;; NEVER: A READING THAT FAILED IS NOT AN EMPTY ONE. A tool that exits
+;; non-zero, or prints nothing at all -- a live process always has lines --
+;; gives #f, never the empty list a process holding nothing would.
 (define (descriptors pid)
   (let ((out (string-append here "/fds.txt")))
+    (define (read-with command)
+      (and (= 0 (system (string-append command " > " out " 2>/dev/null")))
+           (> (string-length (file-text out)) 0)))
     (case (descriptor-tool)
       ((lsof)
-       (system (string-append "lsof -n -P -p " (number->string pid) " -F ftn > " out " 2>/dev/null"))
+       (and (read-with (string-append "lsof -n -P -p " (number->string pid) " -F ftn"))
        ;; f<fd>, t<type>, n<name> lines, one group per descriptor. Only
        ;; numbered descriptors: the executable and its libraries are listed
        ;; as txt, and they are not what a call could leak.
@@ -2505,9 +2511,9 @@
                ((char=? #\f (string-ref (car ls) 0)) (loop (cdr ls) (rest-of (car ls)) #f #f (flush)))
                ((char=? #\t (string-ref (car ls) 0)) (loop (cdr ls) fd (rest-of (car ls)) name acc))
                ((char=? #\n (string-ref (car ls) 0)) (loop (cdr ls) fd type (rest-of (car ls)) acc))
-               (else (loop (cdr ls) fd type name acc)))))
+               (else (loop (cdr ls) fd type name acc))))))
       ((procstat)
-       (system (string-append "procstat -f " (number->string pid) " > " out " 2>/dev/null"))
+       (and (read-with (string-append "procstat -f " (number->string pid)))
        ;; PID COMM FD T V FLAGS REF OFFSET PRO NAME: a vnode counts with its
        ;; name, the last field; a pipe by its type.
        (list-sort string<?
@@ -2526,7 +2532,7 @@
                                         (string-append t " " (list-ref words (- (length words) 1)))
                                         (string-append t " " (number->string fd))))))
                            => (lambda (t) (loop (cdr ls) (cons t acc))))
-                          (else (loop (cdr ls) acc))))))
+                          (else (loop (cdr ls) acc)))))))
       (else 'no-instrument))))
 
 ;; The command a process is running now, by ps, which both platforms have.
@@ -2606,7 +2612,7 @@
              (left (call-dirs-of pid)))
         (close-input! s)
         (let dr () (unless (eof-object? (read-frame s)) (dr)))
-        (list kinds left (equal? before after) (descriptor-tool)))
+        (list kinds left (and (list? before) (list? after) (equal? before after)) (descriptor-tool)))
       (list (append (map (lambda (i) "(ok (stub))\n") '(1 2 3 4 5 6 7 8 9 10))
                     (map (lambda (i) "signal 9") '(1 2 3 4 5))
                     (map (lambda (i) "deadline") '(1 2 3))
