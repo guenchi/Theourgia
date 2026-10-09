@@ -314,6 +314,35 @@
                 (equal? (reduce-gates original) (reduce-gates copy)))
       '(#t #t #t))
 
+;; ---- one judgement, one caller, every route --------------------------------------------------
+;;
+;; Every committed write reaches the judgement through with-store-write's
+;; one writing branch, a plan's completion included: the judgement's entry
+;; is named once where it is defined and once where it is called, and no
+;; other product file enters the rules library.
+(define (forms-of path)
+  (tolerant (call-with-input-file path
+              (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))))
+(define (occurrences sym x)
+  (cond ((eq? x sym) 1) ((pair? x) (+ (occurrences sym (car x)) (occurrences sym (cdr x)))) (else 0)))
+(define product-files
+  (tolerant
+    (filter (lambda (f) (and (> (string-length f) 3) (string=? ".sc" (substring f (- (string-length f) 3) (string-length f)))))
+            (directory-list ".."))))
+(want "J the judgement is defined once and called once, in store.sc's writing branch; only store.sc enters (theourgia rules)"
+      (let ((store-forms (forms-of "../store.sc")))
+        (in-order (occurrences 'rehearsal-refusal store-forms)
+                  (occurrences 'write-judgement-procedure store-forms)
+                  (list-sort string<?
+                             (filter (lambda (f) (and (not (string=? f "rules.sc"))
+                                                      (let ((text (call-with-input-file (string-append "../" f) get-string-all)))
+                                                        (let loop ((i 0))
+                                                          (cond ((> (+ i 16) (string-length text)) #f)
+                                                                ((string=? (substring text i (+ i 16)) "(theourgia rules") #t)
+                                                                (else (loop (+ i 1))))))))
+                                     product-files))))
+      '(2 2 ("store.sc")))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nrule-check complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
