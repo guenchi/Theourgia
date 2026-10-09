@@ -111,6 +111,7 @@
 (define D2 (tolerant (make 'doc "D2")))
 (define V (tolerant (make 'doc "victim")))
 (define D5 (tolerant (make 'doc "D5")))
+(define S0 (tolerant (make 'section)))
 (tolerant (run 'set D5 "phase" "draft"))
 (tolerant (run 'link D1 "asks" D2))
 
@@ -210,6 +211,16 @@
                       (list 'expect stale (list 'set D1 'title "z")))))
         (in-order (car a) (car (car (cadr a))) (car (cadr (cadr a))) (caddr a)))
       '(batch ok error (done 1)))
+
+;; ---- a commit's plan -------------------------------------------------------------------------
+
+(tolerant (run 'rule "section-titled" "--on" "section" "--must" "(title ?w ?t)"))
+(tolerant (run 'write S0 "a draft"))
+(define commit-events (tolerant (events)))
+(want "J a commit is judged as it would land: its member's block fails a rule, and the commit writes nothing"
+      (in-order (head (run 'commit S0) 3) (- (events) commit-events))
+      '((error refused rule-violation) 0))
+(tolerant (run 'rule "section-titled" "--retire"))
 
 ;; ---- check's audit ----------------------------------------------------------------------------
 
