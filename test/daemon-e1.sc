@@ -1385,13 +1385,13 @@
       ;; NEVER: NOT for the outside commit to finish. Those are different
       ;; instants, and only the first one is a fact about this daemon.
       ;;
-      ;; NEVER: THE FIRST ASK DOES NOT CARRY THE START. A read is answered at
-      ;; the connection from what is published, and the first publication is
-      ;; the store process's first fold: a daemon whose socket is up may not
-      ;; have folded yet. The row waits for that publication -- a fact the
-      ;; daemon traces -- before it asks, so the ask's bound is about the
-      ;; ask; under load the start took longer than the ask's 8 s, and the
-      ;; row read "before-said no-answer" with nothing to say why.
+      ;; NOTE: THE FIRST ASK DOES NOT CARRY THE START: the daemon opens its
+      ;; socket only once the store process has published its first fold
+      ;; ("the door opens here and nowhere else", daemon.sc), and the row
+      ;; below pins that order on this run. So when this row once read
+      ;; "before-said no-answer" under the suite's load, it was the outline
+      ;; itself that went unanswered for 8 s -- measured: removing a wait for
+      ;; the first publication changes nothing here.
       ;; NOTE: EVERY BOUND HERE IS SCALED BY THE LOAD (load-factor), and a
       ;; wait that gives out says how long it waited and what the log said.
       (let* ((d (start-tagged-daemon! "extern" #f))
@@ -1402,11 +1402,6 @@
                            (wait-gave-out! what (car answer) ask-bound factor
                                            (list 'answer (cadr answer) 'log-tail (log-tail d 6))))
                          answer))
-             (ready (let ((t0 (real-time)) (w (wait-for-publication d 1 (scaled 8000 factor))))
-                      (unless (eq? w 'published)
-                        (wait-gave-out! "D-18 the first publication" (- (real-time) t0) (scaled 8000 factor) factor
-                                        (list w 'log-tail (log-tail d 6))))
-                      w))
              (before (said-red "D-18 the first outline" (ask-tagged d "outline" ask-bound)))
              (outside (commit-from-outside! (tagged-store d) "OUTSIDE-CANARY"
                                             (string-append pid-text "-extern")))
@@ -1422,8 +1417,8 @@
         (stop-tagged-daemon! d)
         (want "D-18 the daemon's first publication is traced before the first request it routes"
               (let ((p (index-in log "(trace published 1")) (r (index-in log "(trace routed")))
-                (list ready (and p #t) (and r #t) (and p r (< p r))))
-              '(published #t #t #t))
+                (list (and p #t) (and r #t) (and p r (< p r))))
+              '(#t #t #t))
         (want "D-18 an outside commit is picked up, and the daemon says when"
               (list (if (and (string? (cadr before)) (starts-with? (cadr before) "(ok"))
                         'served-before
