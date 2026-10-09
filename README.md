@@ -1682,7 +1682,8 @@ whose block has become a datum block the same way, naming the first such block
 and writing nothing. No other write leaves a datum block holding a src either:
 `set <id> src <text>` on a datum block and `set <id> mode datum` on a block
 holding a src are refused the same way, and an `insert` whose fields carry
-`(mode . datum)` and a src is refused with `(block new)`; a `batch` holding any
+`(mode . datum)` and a src is refused the same way without the block clause,
+since it has no id yet; a `batch` holding any
 of these, in any order, is refused whole before anything is written (`set <id>
 src` with no value still runs and takes away a src written before the rule).
 `restore` of a revoked draft on a datum block is refused the same way and
@@ -2941,7 +2942,9 @@ Evaluates one expression against what the store holds, in a child process
 that is given nothing else: no filesystem, no network, no way to reach
 the committed store except by reading it.
 With no `<source>` argument the source is read from standard input; when
-that is empty too, the answer is the usage form, `(usage (eval ...))`. A source
+that is empty too, the answer is the usage form, `(usage (eval ...))` -- except
+that with every slot of the pool held it is `eval-busy`, since the slot is taken
+before standard input is read. A source
 longer than 1048576 characters is refused `(error bad-source (reason input-limit))`.
 `--under` takes the id of a datum library block, not the library's name.
 
