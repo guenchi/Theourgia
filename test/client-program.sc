@@ -678,15 +678,19 @@
 ;; READ AS A TERMINAL, NOT MERELY "NOT LOST": the acceptance printed, the terminal
 ;; line printed, no lost stream, and the run ended failed (exit non-zero) -- an
 ;; empty run from a failed launch or the alarm says none of these.
+;; EXIT 1 EXACTLY, AND IN TIME: the terminal is printed before it is parsed, so a
+;; run that hung after printing it and was ended by the alarm would show both
+;; lines too; it would not leave with 1 inside the bound.
 (define (dt-read-as-terminal r line)
   (let ((o (out-of (car r))))
-    (list (contains? o "(ok (subscribed))") (contains? o line) (contains? o "lost-stream") (zero? (rc-of (car r))))))
+    (list (contains? o "(ok (subscribed))") (contains? o line) (contains? o "lost-stream")
+          (rc-of (car r)) (< (cadr r) 15000))))
 (want "DT-stream a terminal holding a character is read as the terminal (a written value the old shape check refused)"
       (dt-read-as-terminal (dt-stream "(error transport-unknown (reason #\\a))") "(error transport-unknown (reason #\\a))")
-      '(#t #t #f #f))
+      '(#t #t #f 1 #t))
 (want "DT-stream and one holding a bytevector"
       (dt-read-as-terminal (dt-stream "(error transport-unknown (reason #vu8(1 2)))") "(error transport-unknown (reason #vu8(1 2)))")
-      '(#t #t #f #f))
+      '(#t #t #f 1 #t))
 (want "DT-stream a terminal with a datum label is refused: no terminal, a lost stream"
       (dt-stream-lost? (dt-stream "#0=(error transport-unknown . #0#)"))
       #t)
@@ -748,14 +752,20 @@
 ;; reader can tell them apart, so only the second is results-malformed.
 (define (dt-results value)
   (string-append "(results (to \"someone\") (letter \"x.1\") (blocks (block \"b1\" (parent letter) "
-                 "(fields (title \"t\" " value ")))))"))
+                 "(fields ((title \"t\" " value "))))))"))
 (want "DT-collect collect-into refuses --results holding #e1e100000 where the same results with 1 pass the check, quickly"
       (let ((bad (dt-timed (lambda () (server dt-bound (string-append "collect-into x.1 --results '" (dt-results "#e1e100000")
                                                                      "' --store " store " --wire")))))
-            (good (server dt-bound (string-append "collect-into x.1 --results '" (dt-results "1") "' --store " store " --wire"))))
-        (list (contains? (out-of (car bad)) "results-malformed") (contains? (out-of good) "results-malformed")
-              (< (cadr bad) 15000)))
-      '(#t #f #t))
+            (good (dt-timed (lambda () (server dt-bound (string-append "collect-into x.1 --results '" (dt-results "1")
+                                                                      "' --store " store " --wire"))))))
+        ;; THE CONTROL ANSWERED, and with something other than the refusal: an
+        ;; empty run would also lack the word.
+        (let ((g (out-of (car good))))
+          (list (contains? (out-of (car bad)) "results-malformed")
+                (and (> (string-length g) 0) (char=? (string-ref g 0) #\() #t)
+                (contains? g "results-malformed")
+                (< (cadr bad) 15000) (< (cadr good) 15000))))
+      '(#t #t #f #t #t))
 
 ;; DT-census: every reader of a daemon's text in the programs that talk to one.
 ;; The envelope readers read with readable-shape? and the reader; the rendered
