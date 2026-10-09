@@ -52,7 +52,13 @@
     ((_ e0) (guard (e (#t (list 'RAISED e))) e0))))
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (caught got) expected))))
+    ((_ name got expected)
+     (want-1 name (caught got)
+             ;; AN EXPECTED VALUE THAT RAISES is a FAIL line too, under a tag
+             ;; no computed value can equal: guarded with `caught`, two rows
+             ;; raising the same message would read as agreeing.
+             (guard (e (#t (list 'EXPECTED-RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+               expected)))))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
