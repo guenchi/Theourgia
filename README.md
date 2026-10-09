@@ -1742,7 +1742,10 @@ holding a src are refused the same way, and an `insert` whose fields carry
 `(mode . datum)` and a src is refused the same way without the block clause,
 since it has no id yet; a `batch` holding any
 of these, in any order, is refused whole before anything is written (`set <id>
-src` with no value still runs and takes away a src written before the rule).
+src` with no value still runs and takes away a src written before the rule). A
+block the batch itself inserts has no id until it is written, so a `set` of src,
+or of mode datum, on an id the store does not hold is refused whole when an
+earlier insert in the batch made a datum block, or one holding a src.
 `restore` of a revoked draft on a datum block is refused the same way and
 writes no draft. The refusal points to `def`, the verb
 that writes a datum definition.
