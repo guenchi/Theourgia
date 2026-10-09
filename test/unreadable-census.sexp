@@ -874,11 +874,6 @@
    unrelated a
    "header"
    (e (#t (projection-failure (quote invalid-header)))))
-  ("mcp/server.sc" (catalogue) 1 guard
-   (#t)
-   unrelated a
-   "mcp"
-   (e (#t #f)))
   ("mcp/server.sc" (faithful-id-text) 1 guard
    (#t)
    unrelated a
@@ -914,11 +909,6 @@
    unrelated a
    "mcp: a raise inside a request; one the table classifies is answered by it in the request's shape (F100b point 7), any other keeps -32603"
    (e (#t (or (classified-raise e parsed) (list (quote error) (quote null) -32603 "Core transport unavailable")))))
-  ("mcp/server.sc" (refusal-datum) 1 guard
-   (#t)
-   unrelated a
-   "mcp: a transport refusal's text that does not read is not a refusal datum (peer text); not a filesystem read"
-   (e (#t #f)))
   ("mcp/server.sc" (run-child-in) 1 guard
    (#t)
    unrelated a
@@ -1309,11 +1299,6 @@
    refuse a
    "F100b point 6, TK5: the log, read after the daemon's exit under stage client, cannot be read -- the condition is kept and answered as (kind unreadable) naming the log, with the status"
    (e ((unreadable-entry? e) e)))
-  ("client.sc" (line-datum) 1 guard
-   (#t)
-   unrelated a
-   "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read. The decode's own guard went with F111: utf8->string never raises"
-   (e (#t #f)))
   ("eval-admission.sc" (eval-admit!) 1 guard
    (#t)
    unrelated a
@@ -1334,10 +1319,10 @@
    unrelated a
    "a daemon's answer envelope, read as data from bytes in memory: an unreadable one is answered transport-unknown (unreadable-answer)"
    (e (#t #f)))
-  ("channel.sc" (plain-datum) 1 guard
+  ("client.sc" (plain-datum) 1 guard
    (#t)
    unrelated a
-   "one datum read from text in memory (a daemon's answer, the --results text): one that does not read is no datum, and the callers answer transport-unknown (unreadable-answer) or refuse results-malformed"
+   "one datum read from a daemon's rendered text in memory (the channel's answers, the --results text, the MCP shell's catalogue and transport refusals, the thin client's stream terminal, the start-up reports): text outside the shape write prints for plain data, or that does not read as one datum, is no datum, and each caller answers as before; not a filesystem read"
    (e (#t (eof-object))))
   )
 
