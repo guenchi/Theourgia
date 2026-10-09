@@ -35,7 +35,7 @@
         (only (theourgia client)
               socket-path serve-log-path request-frame
               call! ensure-daemon! answer-field readable-shape? exit-code?
-              verb-spelling-error)
+              verb-spelling-error plain-datum)
         ;; NOTE: THE ARGUMENT TABLES, AND NOTHING ELSE. `(theourgia arguments)`
         ;; is a pure library with no dependencies of its own: it reaches
         ;; neither the dispatcher, nor the scheduler, nor the network. It
@@ -307,10 +307,11 @@
 ;; no terminal, or in mid-line, or a read failed -- or answer-too-large for
 ;; one line past the limit. A store-unreadable notice or a refused request
 ;; is printed and the stream goes on.
+;; A stream line is the daemon's rendered text, read with plain-datum (theourgia
+;; client), the one reader of that text: a datum label in it is refused, not
+;; walked.
 (define (stream-terminal line)
-  (let ((d (guard (e (#t #f))
-             (let ((text (utf8->string line)))
-               (and (readable-shape? text) (read (open-string-input-port text)))))))
+  (let ((d (guard (e (#t #f)) (plain-datum (utf8->string line)))))
     (cond
       ((equal? d '(error draining)) 'draining)
       ((and (pair? d) (list? d) (eq? (car d) 'error) (pair? (cdr d))

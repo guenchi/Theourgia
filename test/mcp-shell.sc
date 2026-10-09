@@ -2212,6 +2212,75 @@
              (cdr passed))
         '(("(display \"--store y\")") ("--" "--store")))))
 
+;; ---- DT the daemon's rendered text: the shell reads it with plain-datum ---------
+;;
+;; NEVER: describe's catalogue and a transport's refusal are the daemon's
+;; rendered text, read with plain-datum (theourgia client), as every reader of
+;; that text is. The shape check they used refused what `write` prints -- a
+;; character, a bytevector -- and the catalogue then read as unavailable. A
+;; fake daemon answers every request (tools/list asks describe) with bytes
+;; read from a file.
+(x-family "DT"
+(let* ((dsock (string-append sock-here "/dt.sock"))
+       (dpeer (string-append here "/dt-peer.sc"))
+       (dreply (string-append here "/dt.reply"))
+       (dstore (string-append here "/store"))
+       (answering
+         (lambda (reply)
+           (call-with-output-file dreply (lambda (p) (display reply p)) 'truncate)
+           (call-with-output-file dpeer
+             (lambda (port)
+               (for-each (lambda (l) (display l port) (newline port))
+                 (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+                       (string-append "(define reply (call-with-port (open-file-input-port \"" dreply "\") get-bytevector-all))")
+                       "(start-scheduler"
+                       "  (lambda ()"
+                       (string-append "    (listen! \"" dsock "\" 16)")
+                       "    (let serve ()"
+                       "      (receive (after 20000 (exit 0))"
+                       "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+                       "               (`(data ,r ,bv) (conn-write! r reply 'last) (serve))"
+                       "               (`(written ,r ,t ,st) (conn-close! r) (serve))"
+                       "               (`(eof ,r) (serve))"
+                       "               (`#(DOWN ,w ,y) (serve))))))")))
+             'truncate)
+           (system (string-append "rm -f " dsock))
+           (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' scheme --script " dpeer " > /dev/null 2>&1 &"))
+           (let up ((k 0))
+             (cond ((file-exists? dsock) 'up) ((> k 300) 'never) (else (system "sleep 0.05") (up (+ k 1)))))))
+       (stop (lambda () (system (string-append "pkill -f " dpeer " 2>/dev/null")) (system (string-append "rm -f " dsock))))
+       (envelope (lambda (stdout exit origin)
+                   (string-append "(answer (stdout " (format "~s" stdout) ") (stderr \"\") (exit " (number->string exit)
+                                  ") (origin " origin "))\n")))
+       (catalogue-with (lambda (extra)
+                         (envelope (string-append "(ok (verbs (outline (usage (outline)) (description \"Outline.\") "
+                                                  "(protocol #f) (route daemon) " extra ")) (protocol \"P\"))\n")
+                                   0 "core")))
+       (listing (lambda (reply)
+                  (answering reply)
+                  (let* ((t0 (wall-ms)) (out (talk (list hello ready tools-list-frame) dstore dsock)) (ms (- (wall-ms) t0)))
+                    (stop)
+                    (list (cadr out) ms)))))
+  (want "DT-mcp a catalogue holding a character is read: the tool is listed (the old shape check made it unavailable)"
+        (tool-names (car (listing (catalogue-with "(note #\\a)"))))
+        '("theourgia_outline"))
+  (want "DT-mcp and one holding a bytevector"
+        (tool-names (car (listing (catalogue-with "(note #vu8(1 2))"))))
+        '("theourgia_outline"))
+  (want "DT-mcp a catalogue whose datum label shares structure is refused: unavailable"
+        (field (car (listing (envelope "(ok (verbs #0=(x) #0#) (protocol \"P\"))\n" 0 "core"))) "error" "data" "kind")
+        "unavailable")
+  (want "DT-mcp a catalogue holding #e1e100000 is refused, unavailable, and quickly"
+        (let ((r (listing (catalogue-with "(note #e1e100000)"))))
+          (list (field (car r) "error" "data" "kind") (< (cadr r) 15000)))
+        '("unavailable" #t))
+  (want "DT-mcp a transport's refusal holding a character is read: its own kind, not unavailable"
+        (field (car (listing (envelope "(error draining (note #\\a))\n" 1 "transport"))) "error" "data" "kind")
+        "draining")
+  (want "DT-mcp a transport's refusal whose datum label shares structure is refused: unavailable"
+        (field (car (listing (envelope "(error draining #0=(x) #0#)\n" 1 "transport"))) "error" "data" "kind")
+        "unavailable")))
+
 ;; ---- X4b the child's argv is the caller's, and its parse is the command line's --------
 (x-family "X4b"
 (let* ((d (stub-dir! "x4b" STUB-WRAPPER))
