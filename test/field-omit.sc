@@ -58,17 +58,20 @@
 (want "FO-1 TWIN: a removed field is not there, and an ordinary one is"
       (list (assq 'gone (fields-of (state-read r B))) (assq 'kept (fields-of (state-read r B))))
       '(#f (kept . "k")))
+;; The field fact names a field by its name as a string (query.sc).
 (want "FO-2 the query's field fact names note with the value omit, and no gone"
       (let* ((a (caught (session-answer (make-query-session r) (list 'field B '?n '?v))))
              (items (if (and (pair? a) (pair? (cdr a))) (cadr a) a)))
-        (list (and (list? items) (exists (lambda (i) (and (pair? i) (member 'note i) (member 'omit i) #t)) items))
-              (and (list? items) (exists (lambda (i) (and (pair? i) (member 'gone i) #t)) items))))
+        (list (and (list? items) (exists (lambda (i) (and (pair? i) (member "note" i) (member 'omit i) #t)) items))
+              (and (list? items) (exists (lambda (i) (and (pair? i) (member "gone" i) #t)) items))))
       '(#t #f))
-(want "FO-3 state-datum keeps the field set to omit, as the value omit"
+(want "FO-3 state-datum keeps the field set to omit as the value omit, and the removed field as its absence candidate"
       (let* ((blk (find (lambda (b) (and (pair? b) (equal? (cadr b) B))) (state-datum r)))
-             (fields (and blk (cadr (assq 'fields (cddr blk))))))
-        (and fields (let ((e (assq 'note fields))) (and e (format "~s" (cadr e))))))
-      (format "~s" (list (cons 'omit (cons W 2)))))
+             (fields (and blk (cadr (assq 'fields (cddr blk)))))
+             (of (lambda (k) (and fields (let ((e (assq k fields))) (and e (format "~s" (cadr e))))))))
+        (list (of 'note) (of 'gone)))
+      (list (format "~s" (list (cons 'omit (cons W 2))))
+            (format "~s" (list (cons (list "#%absent") (cons W 4))))))
 
 (printf "rows: ~a\n~a failures\nfield-omit complete\n" rows bad)
 (exit (if (= bad 0) 0 1))
