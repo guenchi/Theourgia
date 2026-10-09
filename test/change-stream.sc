@@ -896,26 +896,37 @@
                       (nudge!)
                       (frame-settled d sub seen (cons "mirrorsa" 1))))
            (r1 (frame-rev f1))
-           ;; THE WITNESS, TIMED: after action 2's read, when the stale empty
-           ;; frame and action 2's own frame first reach the subscriber. The
-           ;; old wait took the empty one exactly when it stood alone for
-           ;; over 300 ms, so that gap is what the first row asserts.
-           (gap (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
-                       (nudge!)
-                       (let ((t0 (real-time)) (bound (scaled 60000 (load-factor))))
-                         (let poll ((t-empty #f))
-                           (let* ((now (real-time))
-                                  (fs (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 (> r r1))))
-                                              (frames-of (sub-lines sub))))
-                                  (own (find (lambda (f) (covers? f (cons "mirrorsb" 1))) fs))
-                                  (empty (find (lambda (f) (and (not (covers? f (cons "mirrorsb" 1)))
-                                                                (equal? (clause 'items f) '())))
-                                               fs))
-                                  (t-empty (or t-empty (and empty now))))
-                             (cond (own (and t-empty (- now t-empty)))
-                                   ((> (- now t0) bound) (list 'never-own t-empty))
-                                   (else (sleep-ms 20) (poll t-empty))))))))
+           ;; THE WITNESS, TIMED BESIDE THE WAIT: after action 2's read, a
+           ;; process of its own notes when the stale empty frame and action
+           ;; 2's own frame first reach the subscriber, while the row waits
+           ;; for action 2's frame as it always does. The old wait took the
+           ;; empty one exactly when it stood alone for over 300 ms, so that
+           ;; gap is what the first row asserts.
+           ;; NEVER: NOT BEFORE THE WAIT. A witness that first waited for
+           ;; action 2's frame handed the wait both frames at once, and the
+           ;; old wait then chose right: the race was gone (measured: the
+           ;; mutant restoring the old wait survived).
+           (_ (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
+                     (nudge!)))
+           (timer (let ((me self) (bound (scaled 60000 (load-factor))))
+                    (spawn
+                      (lambda ()
+                        (let ((t0 (real-time)))
+                          (let poll ((t-empty #f))
+                            (let* ((now (real-time))
+                                   (fs (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 (> r r1))))
+                                               (frames-of (sub-lines sub))))
+                                   (own (find (lambda (f) (covers? f (cons "mirrorsb" 1))) fs))
+                                   (empty (find (lambda (f) (and (not (covers? f (cons "mirrorsb" 1)))
+                                                                 (equal? (clause 'items f) '())))
+                                                fs))
+                                   (t-empty (or t-empty (and empty now))))
+                              (cond (own (send me (list 'gap (and t-empty (- now t-empty)))))
+                                    ((> (- now t0) bound) (send me (list 'gap (list 'never-own t-empty))))
+                                    (else (sleep-ms 20) (poll t-empty))))))))))
            (f2 (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1)))
+           (gap (receive (after (scaled 60000 (load-factor)) 'no-gap-reading)
+                         (`(gap ,g) g)))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
                             (frames-of (sub-lines sub)))))
