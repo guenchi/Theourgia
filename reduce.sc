@@ -2090,8 +2090,9 @@
                  (declared-names r))))
 
   ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
-  ;; records were accepted, for every APPLIED link or unlink record whose
-  ;; relation is reserved.
+  ;; records were DELIVERED (as state-put-events: not application order, and
+  ;; the route's), for every APPLIED link or unlink record whose relation is
+  ;; reserved.
   (define (state-reserved-relation-records r)
     (let loop ((recs (reverse (reduction-history r))) (out '()))
       (if (null? recs)
@@ -2315,10 +2316,15 @@
   (define (cut-covers? a b)
     (for-all (lambda (e) (past-covers? a (car e) (cdr e))) b))
 
-  ;; THE APPLIED PUTS, as event ids in the order they were admitted. A
-  ;; block's id is derived from the put that created it (block-id), so this
-  ;; is what tells a block that has a creating put from one that a set,
-  ;; move or delete materialised under an id no put made.
+  ;; THE APPLIED PUTS, as event ids in the order they were DELIVERED to this
+  ;; reduction -- not the order they were applied: a record waiting on
+  ;; another writer's is delivered, and kept in the history, before it is
+  ;; applied. Delivery order is the route's (a replay's order, or a
+  ;; snapshot's history and then what came after it), so no order across
+  ;; writers is to be read from this list; within one writer it is seq
+  ;; order. A block's id is derived from the put that created it (block-id),
+  ;; so this is what tells a block that has a creating put from one that a
+  ;; set, move or delete materialised under an id no put made.
   ;;
   ;; NEVER: APPLIED IS NOT ENOUGH. A malformed put advances its writer's
   ;; applied cursor like any record, but `interpret!` notes it and makes no
