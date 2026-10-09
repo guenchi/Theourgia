@@ -695,7 +695,14 @@
     ;; every candidate already there).
     ;; SETTLED means exactly one position candidate: a settled parent and a
     ;; settled ord change when the candidate set goes to or from one.
-    (let* ((d (start-daemon! "f2m" ""))
+    ;; NOTE: THE DAEMON HERE CAN HOLD ITS PROBE (probe-before-ack), and its
+    ;; release file is there from the start, so a probe passes at once. One row
+    ;; below takes the file away to park a probe -- in the store process, after
+    ;; its fold -- so that nothing folds between two writes it means to be one
+    ;; reload.
+    (let* ((probe-release (string-append scratch-base "/cs-" pid-text "-f2m-probe"))
+           (_ (system (string-append "rm -f " probe-release ".held; touch " probe-release)))
+           (d (start-daemon! "f2m" (string-append "THEOURGIA_HOLD='probe-before-ack:" probe-release "'")))
            (sub (spawn-subscriber! d '("changes" "0")))
            (seen (current-of (acceptance-of (await-lines sub 1 5000))))
            (last-cut '()) (seqs '())
@@ -759,9 +766,23 @@
               (item-set (cdr (record! "mirrorfa" last-cut (list 'set y 'src "settled"))))
               (expected-set (list 'changed y 'src) (list 'resolved y 'src)))
         ;; no front, then two concurrent fronts in ONE reload: 0 -> 2
+        ;; NEVER: NOT BY HOPING NO PROBE LANDS BETWEEN THE TWO WRITES. The timer
+        ;; probes once a second and a probe folds what is on the disk: one
+        ;; between the writes made two frames (0 -> 1 -> 2), and the row read
+        ;; no-items. The store process is held at a probe's acknowledgement
+        ;; while both are written, so no fold can come between them.
         (let ((k1 (seq! "mirrorga")) (k2 (seq! "mirrorgb")))
-          (mirror! d "mirrorga" k1 last-cut (list 'set y 'front "a: 1"))
-          (mirror! d "mirrorgb" k2 last-cut (list 'set y 'front "b: 2"))
+          (system (string-append "rm -f " probe-release " " probe-release ".held"))
+          (let ((held (let wait ((t0 (real-time)) (bound (scaled 5000 (load-factor))))
+                        (cond ((file-exists? (string-append probe-release ".held")) #t)
+                              ((> (- (real-time) t0) bound)
+                               (wait-gave-out! "a probe to park" (- (real-time) t0) bound 1 'no-held-file)
+                               #f)
+                              (else (sleep-ms 20) (wait t0 bound))))))
+            (mirror! d "mirrorga" k1 last-cut (list 'set y 'front "a: 1"))
+            (mirror! d "mirrorgb" k2 last-cut (list 'set y 'front "b: 2"))
+            (system (string-append "touch " probe-release))
+            (want "F10-2 a probe was parked while the two fronts were written" held #t))
           (poke! d)
           (want "F10-2 a block with no front acquiring two concurrent fronts in one reload -> changed AND conflict"
                 (item-set (frame! (cons "mirrorgb" k2)))
