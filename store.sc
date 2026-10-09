@@ -4841,23 +4841,30 @@
   ;; what each earlier one did to a block -- made it datum, gave it a src,
   ;; took its src away -- since a batch that sets a block's mode and then
   ;; its src meets the second against a state the preflight never sees.
+  ;; Where resolve stops the batch first -- mode-mismatch on a block whose
+  ;; mode is another, unknown-id with no insert before it -- the scan stops
+  ;; too: nothing after that intent runs.
   ;;
-  ;; A BLOCK THE BATCH ITSELF MAKES has no id here (a set reaches it by the
-  ;; id its insert will get, which only the write knows). So a set of src,
-  ;; or of mode datum, on an id the store does not hold is refused whole
-  ;; when an earlier insert in the batch made a datum block, or one holding
-  ;; a src: the cautious answer, refusing a batch resolve might have taken.
+  ;; A BLOCK THE BATCH ITSELF MAKES has no id here: the batch's own way to
+  ;; address it is `(from k)`, and a bare id it will get is no contract. So
+  ;; an id the store does not hold, after an insert in the batch, starts as
+  ;; datum if any earlier insert made a datum block and as holding a src if
+  ;; any gave one, and is followed from there: the cautious answer, which
+  ;; may refuse a batch resolve would have taken.
   ;; -> the refusal, or #f. A malformed intent is passed over here and left
   ;; for the validator that refuses it.
   (define (datum-src-refusal state intents)
     (define no-id '(error bad-request draft-on-datum-unsupported (use def)))
+    (define (other-mode? id)
+      (let ((m (assq 'mode (block-fields state id)))) (and m (not (eq? (cdr m) 'datum)))))
     ;; seen: (id datum? . src?) for each block an earlier intent touched.
-    (define (datum-now? seen id)
-      (let ((e (assoc id seen))) (if e (cadr e) (datum-mode-block? state id))))
-    (define (src-now? seen id)
-      (let ((e (assoc id seen))) (if e (cddr e) (and (assq 'src (block-fields state id)) #t))))
-    (define (note seen id datum? src?) (cons (cons id (cons datum? src?)) (remp (lambda (e) (equal? (car e) id)) seen)))
-    (let loop ((is (if (list? intents) intents '())) (seen '()) (new-datum #f) (new-src #f))
+    (let loop ((is (if (list? intents) intents '())) (seen '()) (inserted #f) (new-datum #f) (new-src #f))
+      (define (datum-now? id known)
+        (let ((e (assoc id seen))) (cond (e (cadr e)) (known (datum-mode-block? state id)) (else new-datum))))
+      (define (src-now? id known)
+        (let ((e (assoc id seen))) (cond (e (cddr e)) (known (and (assq 'src (block-fields state id)) #t)) (else new-src))))
+      (define (note id datum? src?) (cons (cons id (cons datum? src?)) (remp (lambda (e) (equal? (car e) id)) seen)))
+      (define (next seen) (loop (cdr is) seen inserted new-datum new-src))
       (if (null? is)
           #f
           (let* ((x (car is))
@@ -4870,25 +4877,24 @@
                  (known (and id (known? state id))))
             (cond
               (fields
-               (cond ((datum-with-src-fields? fields) no-id)
-                     (else (loop (cdr is) seen
-                                 (or new-datum (equal? (assq 'mode fields) '(mode . datum)))
-                                 (or new-src (and (assq 'src fields) #t))))))
+               (if (datum-with-src-fields? fields)
+                   no-id
+                   (loop (cdr is) seen #t
+                         (or new-datum (equal? (assq 'mode fields) '(mode . datum)))
+                         (or new-src (and (assq 'src fields) #t)))))
+              ;; resolve answers unknown-id here, and the batch stops.
+              ((and id (not known) (not inserted)) #f)
               ((and id (eq? field 'src) valued?)
-               (cond ((and known (datum-now? seen id)) (draft-on-datum-refusal id))
-                     ((and (not known) new-datum) (draft-on-datum-refusal id))
-                     (known (loop (cdr is) (note seen id (datum-now? seen id) #t) new-datum new-src))
-                     (else (loop (cdr is) seen new-datum new-src))))
+               (if (datum-now? id known) (draft-on-datum-refusal id) (next (note id (datum-now? id known) #t))))
               ((and id (eq? field 'src))
-               (if known
-                   (loop (cdr is) (note seen id (datum-now? seen id) #f) new-datum new-src)
-                   (loop (cdr is) seen new-datum new-src)))
+               (next (note id (datum-now? id known) #f)))
               ((and id (eq? field 'mode) valued? (eq? (cadddr i) 'datum))
-               (cond ((and known (not (datum-now? seen id)) (src-now? seen id)) (draft-on-datum-refusal id))
-                     ((and (not known) new-src) (draft-on-datum-refusal id))
-                     (known (loop (cdr is) (note seen id #t (src-now? seen id)) new-datum new-src))
-                     (else (loop (cdr is) seen new-datum new-src))))
-              (else (loop (cdr is) seen new-datum new-src)))))))
+               (cond
+                 ;; resolve answers mode-mismatch here, and the batch stops.
+                 ((and known (other-mode? id)) #f)
+                 ((and (not (datum-now? id known)) (src-now? id known)) (draft-on-datum-refusal id))
+                 (else (next (note id #t (src-now? id known))))))
+              (else (next seen)))))))
   ;; The live datum blocks that carry a src, in the store's order.
   (define (datum-blocks-with-src state)
     (filter (lambda (id)
