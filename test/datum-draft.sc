@@ -57,7 +57,13 @@
        e0))))
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (caught got) expected))))
+    ((_ name got expected)
+     (want-1 name (caught got)
+             ;; AN EXPECTED VALUE THAT RAISES is a FAIL line too, under a tag
+             ;; no computed value can equal: guarded with `caught`, two rows
+             ;; raising the same message would read as agreeing.
+             (guard (e (#t (list 'EXPECTED-RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+               expected)))))
 
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
@@ -104,10 +110,24 @@
 ;; The first n elements of a list, or the list when it is shorter.
 (define (head-of x n) (if (or (= n 0) (not (pair? x))) '() (cons (car x) (head-of (cdr x) (- n 1)))))
 
+;; A READING OF THE DISK, OR WHY THERE IS NONE. A command that fails gives
+;; (FAILED <name> <status>), never the empty text an empty store would.
+(define (shell-reading name command)
+  (let* ((f (string-append root "/" name ".reading"))
+         (status (system (string-append "(" command ") > '" f "' 2>&1"))))
+    (if (= status 0) (file-text f) (list 'FAILED name status))))
+;; UNCHANGED MEANS TWO READINGS THAT BOTH SUCCEEDED AND AGREE: two failed
+;; readings agree with each other and say nothing.
+(define (same-reading? a b)
+  (and (string? a) (string? b) (> (string-length a) 0) (string=? a b)))
+;; The writers' segments by CONTENT (a checksum over them in a fixed order,
+;; so an equal-length change shows) and the store's file list. There is at
+;; least one segment, or the reading fails.
+(define (segments-cmd store)
+  (string-append "cd '" store "' && find . -name '*.sexp' -path '*writers*' | LC_ALL=C sort > '" root "/segments.list'"
+                 " && test -s '" root "/segments.list' && xargs cat < '" root "/segments.list' | cksum"))
 (define (pins store)
-  (let ((f (string-append root "/pins.txt")))
-    (system (string-append "cd '" store "' && (find . -name '*.sexp' -path '*writers*' -exec cat {} + | wc -c | tr -d ' '; find . | LC_ALL=C sort) > '" f "'"))
-    (file-text f)))
+  (shell-reading "pins" (string-append (segments-cmd store) " && cd '" store "' && find . | LC_ALL=C sort")))
 
 ;; A store with a datum library defining h, and a text block beside it.
 (define (datum-store!)
@@ -144,11 +164,11 @@
 (define before-write (pins s1))
 (define write-h (run s1 'write h "(define (h) 'edited)" "--writer" "w1"))
 (want "W1 write on a datum definition is refused by name, and nothing is written"
-      (in-order write-h (equal? (pins s1) before-write) (file-exists? (string-append s1 "/writers/w1/working/" h)))
+      (in-order write-h (same-reading? (pins s1) before-write) (file-exists? (string-append s1 "/writers/w1/working/" h)))
       (list (refusal h) #t #f))
 (define write-lib (run s1 'write lib "(library (dd) (export h) (import (rnrs)))" "--writer" "w1"))
 (want "W2 write on the datum library block is refused the same way: the rule is the mode"
-      (in-order write-lib (equal? (pins s1) before-write))
+      (in-order write-lib (same-reading? (pins s1) before-write))
       (list (refusal lib) #t))
 (want "W3 the datum block holds its body and no src after both refusals"
       (in-order (and (field-of s1 h 'body) #t) (field-of s1 h 'src))
@@ -165,18 +185,18 @@
       (in-order (head-of commit-h 5) (and (clause-of commit-h 'usage) #t))
       (list (refusal h) #t))
 (want "C2 and the draft is left as it is, and nothing is written"
-      (in-order (equal? (file-bytes draft-path) draft-bytes) (equal? (pins s1) before-commit) (field-of s1 h 'src))
+      (in-order (equal? (file-bytes draft-path) draft-bytes) (same-reading? (pins s1) before-commit) (field-of s1 h 'src))
       '(#t #t #f))
 (define commit-all (run s1 'commit "--writer" "w5"))
 (want "C3 commit naming no block refuses the same way when that writer's drafts hold one"
-      (in-order (head-of commit-all 5) (equal? (file-bytes draft-path) draft-bytes) (equal? (pins s1) before-commit))
+      (in-order (head-of commit-all 5) (equal? (file-bytes draft-path) draft-bytes) (same-reading? (pins s1) before-commit))
       (list (refusal h) #t #t))
 
 ;; ---- set and batch -------------------------------------------------------------------
 
 (define before-set (pins s1))
 (want "S1 set <datum> src <text> is refused by name, and nothing is written"
-      (in-order (run s1 'set h "src" "(define (h) 'set)") (equal? (pins s1) before-set))
+      (in-order (run s1 'set h "src" "(define (h) 'set)") (same-reading? (pins s1) before-set))
       (list (refusal h) #t))
 (define plain-src (field-of s1 plain 'src))
 (define batch-text
@@ -186,7 +206,7 @@
       (in-order (and (pair? batch-answer) (car batch-answer))
                 (and (pair? batch-answer) (pair? (cdr batch-answer)) (cadr batch-answer))
                 (clause-of batch-answer 'done)
-                (equal? (pins s1) before-set)
+                (same-reading? (pins s1) before-set)
                 (equal? (field-of s1 plain 'src) plain-src))
       (list 'batch (list (refusal h)) '(0) #t #t))
 (define control-answer
@@ -194,6 +214,46 @@
 (want "B2 CONTROL: the same batch without the datum intent writes the plain block"
       (in-order (clause-of control-answer 'done) (equal? (field-of s1 plain 'src) plain-src))
       '((1) #f))
+
+;; EVERY SPELLING AND EVERY ORDER. A batch is refused whole, with nothing
+;; written, when an intent in it would leave a datum block holding a src:
+;; wrapped in expect, with arguments past the value, a block made datum and
+;; then given a src, a block holding a src made datum, and an insert
+;; carrying both.
+(define (batch-refused-whole? text expected)
+  (let* ((before (pins s1))
+         (answer (run s1 'batch text))
+         (after (pins s1)))
+    (list (and (pair? answer) (car answer))
+          (and (pair? answer) (pair? (cdr answer)) (equal? (cadr answer) (list expected)))
+          (clause-of answer 'done)
+          (same-reading? before after))))
+(define bare (begin (run s1 'insert "--title" "Bare") (the-one (ids-where s1 (lambda (fs) (equal? (assq 'title fs) '(title . "Bare")))))))
+(want "B3 SETUP: the plain block holds a src and no mode; the bare one holds neither"
+      (in-order (string? (field-of s1 plain 'src)) (field-of s1 plain 'mode) (string? bare) (field-of s1 bare 'src) (field-of s1 bare 'mode))
+      '(#t #f #t #f #f))
+(want "B3 a set wrapped in expect, at the block's current hash, is refused whole"
+      (batch-refused-whole? (string-append "((expect \"" (block-hash (state-of s1) h) "\" (set \"" h "\" src \"(define (h) 'x)\")))")
+                            (refusal h))
+      '(batch #t (0) #t))
+(want "B4 a set with an argument past its value is refused whole"
+      (batch-refused-whole? (string-append "((set \"" h "\" src \"(define (h) 'x)\" extra))") (refusal h))
+      '(batch #t (0) #t))
+(want "B5 a block made datum and then given a src in the same batch is refused whole, the first intent unwritten"
+      (append (batch-refused-whole? (string-append "((set \"" bare "\" mode datum) (set \"" bare "\" src \"x\"))") (refusal bare))
+              (list (field-of s1 bare 'mode)))
+      '(batch #t (0) #t #f))
+(want "B6 a block holding a src made datum is refused whole"
+      (append (batch-refused-whole? (string-append "((set \"" plain "\" mode datum))") (refusal plain))
+              (list (field-of s1 plain 'mode)))
+      '(batch #t (0) #t #f))
+(want "B7 an insert carrying mode datum and a src is refused whole"
+      (batch-refused-whole? "((insert root #f ((kind . code) (mode . datum) (body . (define (x) 1)) (src . \"ignored\"))))"
+                            '(error bad-request draft-on-datum-unsupported (block new) (use def)))
+      '(batch #t (0) #t))
+(want "B8 CONTROL: mode datum on the bare block alone is taken"
+      (in-order (clause-of (run s1 'batch (string-append "((set \"" bare "\" mode datum))")) 'done) (field-of s1 bare 'mode))
+      '((1) datum))
 
 ;; ---- a text block beside it ----------------------------------------------------------
 
@@ -321,10 +381,8 @@
                               (cond ((>= i (string-length text)) text)
                                     ((char=? (string-ref text i) #\newline) (substring text 0 i))
                                     (else (loop (+ i 1))))))))
-(define log-before-routes
-  (let ((f (string-append root "/log-bytes-0.txt")))
-    (system (string-append "cd '" s3 "' && find . -name '*.sexp' -path '*writers*' -exec cat {} + | wc -c | tr -d ' ' > '" f "'"))
-    (file-text f)))
+(define (log-bytes store) (shell-reading "log-bytes" (segments-cmd store)))
+(define log-before-routes (log-bytes s3))
 (define local-route (run s3 'write h3 "(define (h) 'local)" "--writer" "w3"))
 (define client-route
   (first-datum (sh-out "client" (string-append (env "") "scheme --script ../theourgia.sc write " h3
@@ -364,16 +422,10 @@
 ;; THE STORE'S FILE LIST IS NOT COMPARED HERE: a daemon and an MCP shell
 ;; were started on this store, and what they open for themselves is not a
 ;; write. The log's bytes and the drafts' slots are.
-(define (log-bytes store)
-  (let ((f (string-append root "/log-bytes.txt")))
-    (system (string-append "cd '" store "' && find . -name '*.sexp' -path '*writers*' -exec cat {} + | wc -c | tr -d ' ' > '" f "'"))
-    (file-text f)))
 (define (drafts-of store id)
-  (let ((f (string-append root "/drafts.txt")))
-    (system (string-append "cd '" store "' && find . -path '*/working/*' -name '" id "' | LC_ALL=C sort > '" f "'"))
-    (file-text f)))
+  (shell-reading "drafts" (string-append "cd '" store "' && find . -path '*/working/*' -name '" id "' | LC_ALL=C sort")))
 (want "R2 and none of them wrote: the log's bytes are as they were, and no writer holds a draft of the block"
-      (in-order (equal? (log-bytes s3) log-before-routes) (drafts-of s3 h3))
+      (in-order (same-reading? (log-bytes s3) log-before-routes) (drafts-of s3 h3))
       '(#t ""))
 
 (system (string-append "pkill -f 'serve " s3 "' 2>/dev/null"))
