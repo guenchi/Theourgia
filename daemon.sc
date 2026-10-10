@@ -80,7 +80,7 @@
           ;; in `(theourgia client)` and is asked here rather than copied.
           (only (theourgia client) readable-shape?)
           (only (theourgia trace) trace-event!)
-          (only (theourgia ffi) theourgia-fault hold-point! hold-sleeper-set!
+          (only (theourgia ffi) theourgia-fault theourgia-probe-off? hold-point! hold-sleeper-set!
                 theourgia-send-buffer process-id wall-clock-ms)
           (only (theourgia platform-numbers) platform-number)
           (only (theourgia digest) sha256 bytevector->hex)
@@ -1157,9 +1157,10 @@
   ;; (a mailbox has no capacity check), and traced as probe-skipped.
   (define probe-ms 1000)
   (define prober #f)
+  ;; THEOURGIA_PROBE=off (test-only, an injection build's): no prober.
   (define (timer-follow!)
     (cond
-      ((and (pair? subscribers) (not prober))
+      ((and (pair? subscribers) (not prober) (not (theourgia-probe-off?)))
        (let ((store-pid self))
          (set! prober (spawn (lambda () (probe-timer store-pid))))))
       ((and (null? subscribers) prober)
