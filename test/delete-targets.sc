@@ -59,7 +59,13 @@
 (define (review store title . results)
   (new-id (car (cadr (apply batch store (list 'insert 'root #f (list '(kind . doc) (cons 'title title) '(slot . "review")))
                             (map (lambda (r) (list 'link '(from 0) 'cites r)) results))))))
-(define (live? store id) (let ((a (run store 'read id))) (and (pair? a) (eq? (car a) 'ok))))
+;; A read of a deleted block succeeds and says (deleted . #t): live is a read
+;; that answers and holds no such pair.
+(define (holds-deleted? x)
+  (cond ((and (pair? x) (eq? (car x) 'deleted) (eq? (cdr x) #t)) #t)
+        ((pair? x) (or (holds-deleted? (car x)) (holds-deleted? (cdr x))))
+        (else #f)))
+(define (live? store id) (let ((a (run store 'read id))) (and (pair? a) (eq? (car a) 'ok) (not (holds-deleted? a)))))
 ;; -> (error refused rule-violation) and the (rule block) of each failure, or the answer's head.
 (define (refusal-shape a)
   (if (and (list? a) (>= (length a) 4) (eq? (car a) 'error) (eq? (cadr a) 'refused))
