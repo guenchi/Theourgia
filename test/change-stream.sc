@@ -154,7 +154,8 @@
 ;; for it; the rows about the timer start theirs with start-timer-daemon!,
 ;; the variable unset, the prober as in use.
 (define (start-daemon! tag env) (start-daemon* tag (string-append "THEOURGIA_PROBE=off " env)))
-(define (start-timer-daemon! tag env) (start-daemon* tag env))
+;; THE VARIABLE UNSET, not inherited: this fixture may itself run with it set.
+(define (start-timer-daemon! tag env) (start-daemon* tag (string-append "env -u THEOURGIA_PROBE " env)))
 (define (start-daemon* tag env)
   (set! daemon-count (+ daemon-count 1))
   (let* ((t (string-append pid-text "-" (number->string daemon-count) "-" tag))
@@ -174,7 +175,7 @@
                                "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
                 (string-append "(rpc-dispatch \"" st "\" '(init) \"tester\")")
                 (string-append "(serve \"" st "\" \"" sk "\")")))))
-    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on " env " "
+    (system (string-append "env THEOURGIA_TRACE=1 THEOURGIA_INJECT=on " env " "
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
@@ -368,11 +369,14 @@
     (cond ((contains? (d-log d) "(trace write-pending") (- k 1))
           ((> k limit) (list 'never-pending (- k 1)))
           ;; a writer id is 8 base36 characters: bulk0001, bulk0002, ...
-          (else (mirror-many! d (string-append "bulk" (let ((t (number->string k))) (string-append (make-string (- 4 (string-length t)) #\0) t))) 300)
-                (poke! d)
-                ;; PACING, NOT A WAIT FOR THE FOLD: the loop's condition is
-                ;; the write-pending trace, read on the next turn.
-                (sleep-ms 150)
+          ;; ONE PUBLICATION PER WRITER: the next is written only once this
+          ;; one's reload has published, so no reload folds two of them and
+          ;; the number made is the number of frames.
+          (else (let ((before (or (last-published d) 0)))
+                  (mirror-many! d (string-append "bulk" (let ((t (number->string k))) (string-append (make-string (- 4 (string-length t)) #\0) t))) 300)
+                  (poke! d)
+                  (let wait ((n 0))
+                    (unless (or (> (or (last-published d) 0) before) (> n 200)) (sleep-ms 50) (wait (+ n 1)))))
                 (loop (+ k 1))))))
 ;; Stops a daemon and starts another on the SAME store and socket.
 (define (restart-daemon! d env)
@@ -1257,7 +1261,10 @@
         (system (string-append "touch " release))
         (sleep-ms 300)
         (send s '(resume))
-        (let* ((ls (await-lines s (+ (if (integer? made) made 0) 4) 12000))
+        (let* ((ls (let ((counted (await-lines s (+ (if (integer? made) made 0) 4) 12000)))
+                     ;; AND THE CLOSE, a separate event after the terminal
+                     (let wait ((k 0) (ls counted))
+                       (if (or (member "<eof>" ls) (> k 100)) ls (begin (sleep-ms 50) (wait (+ k 1) (sub-lines s)))))))
                (fs (frames-of ls))
                (tail (reverse fs)))
           ;; BY CONTENT: the last frame with items before the terminal is the
@@ -1737,11 +1744,12 @@
     ;; timer would show two or three). The rows above, started with the
     ;; variable unset, read the timer as in use.
     (let* ((d (start-daemon! "poff" ""))
-           (a (spawn-subscriber! d '("changes" "0"))))
-      (await-lines a 1 5000)
+           (a (spawn-subscriber! d '("changes" "0")))
+           (acc (acceptance-of (await-lines a 1 5000))))
       (sleep-ms 3000)
-      (want "F10-5 POFF with the probe off and a subscriber live, no probe in three seconds"
-            (count-of (d-log d) "(trace probe ") 0)
+      (want "F10-5 POFF with the probe off and a subscriber live -- accepted and still open -- no probe in three seconds"
+            (list (and (pair? acc) (car acc)) (and (member "<eof>" (sub-lines a)) #t) (count-of (d-log d) "(trace probe "))
+            '(ok #f 0))
       (stop-daemon! d))
     ;; P6: the timer follows the subscriber count: one of two leaving keeps it
     ;; running, the last leaving stops it, a new subscriber starts it again.
