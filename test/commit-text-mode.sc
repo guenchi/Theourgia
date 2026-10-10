@@ -30,7 +30,8 @@
 
 (import (chezscheme) (theourgia store) (theourgia reduce)
         (only (theourgia wire) storable-encode sexpr->string-extended)
-        (only (theourgia log) writer-directory))
+        (only (theourgia log) writer-directory)
+        (only (theourgia crc32) crc32-hex))
 
 (define bad 0)
 (define rows 0)
@@ -265,16 +266,31 @@
 ;; NEVER: NOT A TEXT-MODE BLOCK. A block's mode, once set, is refused a
 ;; change (mode-mismatch), so a text-mode block never becomes a datum block;
 ;; a block `insert` made carries a src and no mode, and takes one.
+;;
+;; THE DATUM BLOCK IS MADE AS THE PRODUCT MAKES ONE, and its src is an old
+;; build's: no write leaves a datum block holding a src now (store.sc,
+;; datum-src-refusal), so the src is taken away, the block made datum, and
+;; the src put back by a record forged as an earlier build appended it
+;; (forge-record.ss), to the same writer, after its own records.
 (include "forge-draft.ss")
+(include "forge-record.ss")
 (cli "insert" "--title" "Legacy" "--text" "legacythreeplaceholder")
 (define legacy3-id (block-holding "legacythreeplaceholder"))
-(define dd-mode
+(define dd-unsrc
+  (with-store-write store3 (lambda (state view) (list (list 'set legacy3-id 'src))) "test"))
+(define dd-made
   (with-store-write store3
     (lambda (state view)
       (list (list 'set legacy3-id 'kind 'code)
             (list 'set legacy3-id 'mode 'datum)
             (list 'set legacy3-id 'body '(define (legacy) 'committed))))
     "test"))
+(define dd-writer
+  (let ((ws (filter (lambda (w) (= 8 (string-length w))) (directory-list (string-append store3 "/writers")))))
+    (and (pair? ws) (null? (cdr ws)) (car ws))))
+(define dd-forged
+  (forge-record-as! store3 dd-writer (string-append "(set \"" legacy3-id "\" src \"legacythreeplaceholder\")")))
+(define dd-mode (and (number? dd-forged) (list? dd-unsrc) (list? dd-made) (append dd-unsrc dd-made)))
 (define dd-version (forge-fresh-draft! store3 "w5" legacy3-id "(define (legacy) 'edited)\n"))
 (define dd-drafts (cli "drafts" "--writer" "w5"))
 (define dd-commit (cli "commit" "--writer" "w5" legacy3-id))

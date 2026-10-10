@@ -1790,7 +1790,19 @@
         'no-block)))
 (run d5b "set" loaded5b "title" "zebra topic")
 (run d5b "set" loaded5b "keywords" "zebra, more")
-(run d5b "set" loaded5b "src" "zebra in a src field")
+;; THE SRC IS AN OLDER BUILD'S. No write gives a datum block a src now
+;; (store.sc, datum-src-refusal), but a store an earlier build wrote can hold
+;; one and this build reads it, so the ceiling counts it: the record is forged
+;; as that build appended it, to the store's own writer (the block id's
+;; writer), after its own records.
+(forge-record-as! d5b (let ((id loaded5b))
+                        (if (string? id)
+                            (let loop ((i 0))
+                              (cond ((= i (string-length id)) id)
+                                    ((char=? (string-ref id i) #\.) (substring id 0 i))
+                                    (else (loop (+ i 1)))))
+                            id))
+                  (string-append "(set \"" (if (string? loaded5b) loaded5b "no-block") "\" src \"zebra in a src field\")"))
 
 ;; NEVER: A CONTROL THAT TRIED ONE INVALID VALUE AND CONCLUDED SOMETHING ABOUT
 ;; ALL OF THEM. This row used to set `doc` to "a zebra doc", read the refusal
