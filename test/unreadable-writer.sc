@@ -47,7 +47,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 (define (lookup name)
   (guard (e (#t #f)) (eval name (environment '(theourgia log)))))

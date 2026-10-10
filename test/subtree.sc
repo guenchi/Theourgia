@@ -64,7 +64,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 ;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under

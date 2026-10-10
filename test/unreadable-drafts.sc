@@ -49,7 +49,7 @@
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (with-expected label expected (x) (want-1 label (caught got) x))))))
+            (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
 ;; THE SCRATCH ROOT FOLLOWS THEOURGIA_TEST_ROOT, and a directory already
 ;; there is refused rather than reused (F71).

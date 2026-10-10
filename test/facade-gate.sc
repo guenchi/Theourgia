@@ -93,7 +93,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 ;; THE ROOT IS FOUND FROM THIS SCRIPT, not from the current directory:
 ;; the runner starts every fixture from `test/`.

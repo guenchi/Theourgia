@@ -1093,19 +1093,23 @@ echo "row counts: $counted fixture(s) print one; $(echo $uncounted | wc -w | tr 
 ungirded=""
 for f in *.sc; do
   grep -q "^ *(define-syntax want$" "$f" || continue
-  # MATCHED AS A WHOLE LINE, NOT AS A SUBSTRING. Checked with
-  # `grep -q "define-syntax caught"` this stayed silent for a file whose
-  # macro had been renamed to `caught-disabled` -- the check's own first
-  # reading was a false silence, which is the one failure a check of this
-  # kind must not have.
-  grep -q "^ *(define-syntax caught$" "$f" || ungirded="$ungirded ${f%.sc}"
-  # AND THE EXPECTED VALUE TOO (expected.ss): left bare, a row whose expected
-  # value raises ends the file; caught like the computed one, two rows that
-  # raise the same message compare equal and read green. A fixture that
-  # defines want includes the guard and its want evaluates the expected value
-  # through it.
-  { grep -q '^ *(include "expected.ss")$' "$f" && grep -q "(with-expected " "$f"; } \
-    || case " $ungirded " in *" ${f%.sc} "*) ;; *) ungirded="$ungirded ${f%.sc}";; esac
+  # MATCHED AS WHOLE LINES (want's head, the include), NOT AS SUBSTRINGS: an
+  # earlier form of this check, `grep -q "define-syntax caught"`, stayed
+  # silent for a macro renamed `caught-disabled` -- a false silence, the one
+  # failure a check of this kind must not have.
+  # READ IN THE want FORM ITSELF, from its line to the next blank one: a
+  # mention elsewhere in the file -- a comment, a fixture's text in a string
+  # -- says nothing about what want does. Its computed value goes through a
+  # guard (caught, tolerant, or an inline guard); its expected value goes
+  # through with-expected (expected.ss), included as a whole line: left bare,
+  # a row whose expected value raises ends the file, and caught like the
+  # computed one, two rows that raise the same message compare equal and read
+  # green.
+  form=$(sed -n '/^ *(define-syntax want$/,/^ *$/p' "$f")
+  { printf '%s\n' "$form" | grep -q "(with-expected " \
+      && printf '%s\n' "$form" | grep -Eq "\((caught|tolerant|guard) " \
+      && grep -q '^ *(include "expected.ss")$' "$f"; } \
+    || ungirded="$ungirded ${f%.sc}"
 done
 guard_bad=0
 if [ -n "$ungirded" ]; then
