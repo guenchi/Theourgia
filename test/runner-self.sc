@@ -1344,15 +1344,17 @@
 (printf "== RS-R: every refusal is printed, and the code is the first one's ==\n")
 ;; TWO REFUSALS IN ONE RUN: a fixture not green (code 2) and an unguarded one
 ;; (code 4). Both lines are printed, in the runner's order; the code is 2.
-(let ((c (inner! '("red.sc" "want-bare.sc"))))
+(let ((c (inner! '("ok.py" "red.sc" "want-bare.sc"))))
   (start! c)
-  (let ((done (finished? c 120)))
-    (want "RS-R a run with a red fixture and an unguarded one prints both refusals and exits with the first one's code"
-          (list done
-                (and (line-with c "REFUSING: 1 fixture(s) not green") #t)
-                (and (line-with c "REFUSING: unguarded fixture(s)") #t)
-                (rc-of c))
-          '(#t #t #t 2))))
+  (let* ((done (finished? c 120))
+         ;; the positions of the two refusal lines in the log, in its order
+         (at (lambda (text) (let loop ((ls (lines-of (run-log c))) (i 0))
+                              (cond ((null? ls) #f) ((contains? (car ls) text) i) (else (loop (cdr ls) (+ i 1)))))))
+         (red (at "REFUSING: 1 fixture(s) not green"))
+         (unguarded (at "REFUSING: unguarded fixture(s)")))
+    (want "RS-R a run with a red fixture and an unguarded one prints both refusals, the red one first, and exits with its code"
+          (list done (and red #t) (and unguarded #t) (and red unguarded (< red unguarded)) (rc-of c))
+          '(#t #t #t #t 2))))
 
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
