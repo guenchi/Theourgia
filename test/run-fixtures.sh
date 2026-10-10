@@ -1099,10 +1099,17 @@ for f in *.sc; do
   # reading was a false silence, which is the one failure a check of this
   # kind must not have.
   grep -q "^ *(define-syntax caught$" "$f" || ungirded="$ungirded ${f%.sc}"
+  # AND THE EXPECTED VALUE TOO (expected.ss): left bare, a row whose expected
+  # value raises ends the file; caught like the computed one, two rows that
+  # raise the same message compare equal and read green. A fixture that
+  # defines want includes the guard and its want evaluates the expected value
+  # through it.
+  { grep -q '^ *(include "expected.ss")$' "$f" && grep -q "(with-expected " "$f"; } \
+    || case " $ungirded " in *" ${f%.sc} "*) ;; *) ungirded="$ungirded ${f%.sc}";; esac
 done
 guard_bad=0
 if [ -n "$ungirded" ]; then
-  echo "UNGUARDED FIXTURES (rows can end the file instead of failing):$ungirded"
+  echo "UNGUARDED FIXTURES (a row can end the file instead of failing, or two raises read as agreeing):$ungirded"
   guard_bad=1
 fi
 # AND THE CHECK ABOVE ONLY LOOKS AT FIXTURES THAT DECLARED THE MACRO.

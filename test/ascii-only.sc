@@ -54,9 +54,10 @@
 (define-syntax caught
   (syntax-rules ()
     ((_ e0) (guard (e (#t (list (quote RAISED)))) e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 ;; NOTE: WHAT THE FLOOR DOES AND DOES NOT ESTABLISH. It catches a walk that
 ;; found nothing or nearly nothing. NEVER: IT DOES NOT ESTABLISH THAT EVERY

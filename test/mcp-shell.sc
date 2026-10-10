@@ -47,9 +47,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 ;; A ROW WHOSE INSTRUMENT FAILED ITS OWN CONTROL IS NOT A READING OF THE
 ;; PRODUCT. It is counted, so the file's row count does not move with the
 ;; instrument, and it is printed VOID with the reason; it is not a failure.

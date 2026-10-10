@@ -61,9 +61,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 ;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under

@@ -38,9 +38,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 ;; THE SLOW START IS IN-PROCESS. A wrapper that slept in a shell and then
 ;; exec'd the interpreter would leave the `sleep` child alive when the
