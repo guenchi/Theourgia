@@ -927,7 +927,9 @@
 ;;
 ;; NEVER: A COMPLETION LANDS NO DRAFT ON A DATUM BLOCK. A commit crashes after
 ;; its plan; the block of its first member, an inserted block with a src and
-;; no mode, is then given kind code, mode datum and a body. The retry is
+;; no mode, is then made a datum block as the product makes one -- its src
+;; taken away, then kind code, mode datum and a body, since no write leaves
+;; a datum block holding a src (store.sc, datum-src-refusal). The retry is
 ;; refused as a fresh commit refuses such a draft, by name and before the
 ;; stale judgement, with the completion clause, and writes nothing.
 (cell "KD"
@@ -936,23 +938,26 @@
     (call st 'write A "frozen A") (call st 'write B "frozen B")
     (let-values (((barriers args) (crash-commit! "KD" st (list A B) "RD" 2)))
       (let* ((target (member-block st "RD" 0))
+             (unsrc (with-store-write (car st) (lambda (s v) (list (list 'set target 'src))) "test"))
              (made (with-store-write (car st)
                      (lambda (s v)
                        (list (list 'set target 'kind 'code)
                              (list 'set target 'mode 'datum)
                              (list 'set target 'body '(define (made) 'datum))))
                      "test"))
+             (src-before (src st target))
              (before (log-bytes st))
              (retry (cli-run args)))
         (want "KD the block was made a datum block"
-              (and (list? made) (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) made))
+              (and (list? unsrc) (list? made)
+                   (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) (append unsrc made)))
               #t)
         (want "KD the retry is refused draft-on-datum-unsupported, naming the member's block"
               (and (list? retry) (>= (length retry) 5) (list-head retry 5))
               (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block target) '(use def)))
         (want "KD with the completion clause, and nothing written"
-              (list (and (clause 'completion retry) #t) (equal? (log-bytes st) before) (src st target))
-              (list #t #t (if (equal? target A) "old A" "old B")))))))
+              (list (and (clause 'completion retry) #t) (equal? (log-bytes st) before) (equal? (src st target) src-before))
+              (list #t #t #t))))))
 
 (want "L1 after the completions in this process, the judgement's library is loaded, once"
       (judgement-loaded) 1)
