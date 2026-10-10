@@ -357,11 +357,12 @@
 
 (define P (string-append root "/project"))
 (tolerant (rpc-dispatch P '(init "--template" "project") "author"))
-(want "P a fresh project store has no rule record at all, retired or not, and describe and check list none"
+(want "P a fresh project store has the template's one rule, citation coverage as cover: describe lists it, check skips it as a write rule"
       (in-order (length (filter (lambda (row) (eq? (car row) 'rule)) (state->rows (open-and-reduce P))))
                 (assq 'declared-rules (describe-of P))
                 (assq 'rules (cdr (rpc-dispatch P '(check) "author"))))
-      '(0 #f #f))
+      '(1 (declared-rules (cover ((builtin citation-coverage))))
+          (rules (rule-skipped (rule cover) (reason write-rule)))))
 
 ;; ---- a rebuild keeps the rules --------------------------------------------------------
 ;;

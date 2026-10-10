@@ -101,7 +101,9 @@ decision or doc → one it shows is wrong), `verifies` (a test → the code or d
 decision it explains). Each is a name `link` accepts; the reserved names (`ref`, `uses`, `calls`,
 `guards`) are not among them. Any other relation name still links; these are the ones the template
 names. The first six have an effect of their own; the template declares `documents` as a listed
-edge with no effect (see [`relation`](#relation)). `describe`, answered by the daemon, lists the store's roots and relations, the store's declared relations as `(declared-relations (<name> <kind> [(from <selector>)] [(to <selector>)]) ...)` when it has any, and the
+edge with no effect (see [`relation`](#relation)), and the rule `cover`, citation coverage (see
+[`rule`](#rule)): a write in a project store that carries `--premises` and links a block, by a
+relation of kind `depends-on`, to one its premises do not hold is refused. `describe`, answered by the daemon, lists the store's roots and relations, the store's declared relations as `(declared-relations (<name> <kind> [(from <selector>)] [(to <selector>)]) ...)` when it has any, and the
 MCP tools that write carry the roots' sentences after the writing protocol.
 
 `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
@@ -1649,7 +1651,9 @@ write that carried `--premises` and links a target, by a relation of kind
 `depends-on`, to a block its premises do not hold is refused, the witness rows
 `(citation-not-read (block <id>) (cites <id>))`. A write without `--premises` is
 not covered; a project that wants the receipt always carried declares
-`(must (receipt-carried))` beside it.
+`(must (receipt-carried))` beside it. The project template declares it as
+`cover`; a store made otherwise declares it with `rule cover --builtin
+citation-coverage`.
 
 A store with no rule and no typed relation makes no copy and judges nothing:
 every write is as it was.

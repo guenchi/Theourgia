@@ -31,7 +31,7 @@
 ;;; imports it for its conflicts clause, so it may not import the store.
 (library (theourgia template-read)
   (export store-template template-problem template-block-ids
-          template-roots template-relations template-query
+          template-roots template-relations template-rules template-query
           root-slug root-kind root-path root-sentence parse-template-text
           slug-block-ids query-scope-root root-insert-payload)
   (import (rnrs)
@@ -87,6 +87,8 @@
               (list 'problem 'relations-unreadable))
              ((not (let ((c (clause d 'queries))) (or (not c) (and (clause-items c) (for-all query? (cdr c))))))
               (list 'problem 'queries-unreadable))
+             ((not (let ((c (clause d 'rules))) (or (not c) (and (clause-items c) (for-all rule-entry? (cdr c))))))
+              (list 'problem 'rules-unreadable))
              (else (list 'ok d))))))))
 
 ;; The clause with this head, or #f. A clause with the head and not a proper
@@ -121,6 +123,10 @@
     (and (list? r) (= 3 (length r)) (symbol? (car r)) (string? (cadr r)) (string? (caddr r))))
   (define (query? q)
     (and (list? q) (= 2 (length q)) (symbol? (car q)) (symbol? (cadr q))))
+  ;; A RULE THE TEMPLATE DECLARES: (<name> <value>), the value in the one form
+  ;; the rule verb writes; the write that applies the template checks it.
+  (define (rule-entry? r)
+    (and (list? r) (= 2 (length r)) (symbol? (car r)) (list? (cadr r))))
 
   (define (store-template state)
     (let ((r (read-template state))) (and r (eq? (car r) 'ok) (cadr r))))
@@ -132,6 +138,7 @@
 
   (define (template-roots t) (cdr (or (clause t 'roots) '(roots))))
   (define (template-relations t) (cdr (or (clause t 'relations) '(relations))))
+  (define (template-rules t) (cdr (or (clause t 'rules) '(rules))))
   ;; The root slug a verb's default scope is, or #f.
   (define (template-query t verb)
     (let ((q (find (lambda (q) (eq? (car q) verb)) (cdr (or (clause t 'queries) '(queries))))))
