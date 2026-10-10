@@ -1345,9 +1345,14 @@
   ;; (...)))`; a record already in a log keeps whatever it holds (replay
   ;; tolerance). `class` says what kind of statement a block is: an
   ;; observation, an inference, a ruling, a verification, or external
-  ;; material.
+  ;; material. `mode` says how a code block's text is held: text, a src the
+  ;; projection splits, or datum, a body of forms; everything that reads a
+  ;; mode compares it with those two symbols, so the command line's string
+  ;; "datum" was stored and never matched.
   (define known-classes '(observation inference ruling verification external))
-  (define vocabulary-fields (list (cons 'kind known-kinds) (cons 'class known-classes)))
+  (define known-modes '(text datum))
+  (define vocabulary-fields
+    (list (cons 'kind known-kinds) (cons 'class known-classes) (cons 'mode known-modes)))
   (define (vocabulary-known? field v)
     (let ((e (assq field vocabulary-fields))) (and e (symbol? v) (memq v (cdr e)) #t)))
   (define (vocabulary-not-known-reason field v)

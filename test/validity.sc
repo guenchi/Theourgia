@@ -118,6 +118,48 @@
       (field-value K 'class)
       'external)
 
+;; ---- the mode field: the command line's word is the symbol a mode is compared with ----------
+;;
+;; NEVER: `set <id> mode datum` FROM THE COMMAND LINE STORED THE STRING "datum".
+;; Everything that reads a mode compares it with the symbols text and datum,
+;; so the block never behaved as a datum block, and a second `set ... mode
+;; datum` on a real datum block answered mode-mismatch. The blocks here hold
+;; no src: mode datum on a block holding one is refused by another rule.
+(define (bare! title) (new-id (run 'insert "--title" title)))
+;; The tail of the first list anywhere in X that begins with HEAD, or #f.
+(define (from-head x head)
+  (cond ((and (pair? x) (eq? (car x) head)) x)
+        ((pair? x) (or (from-head (car x) head) (from-head (cdr x) head)))
+        (else #f)))
+(define M (bare! "Mode target"))
+(want "MODE-1 set <id> mode datum from the command line stores the symbol"
+      (in-order (car (run 'set M "mode" "datum")) (field-value M 'mode))
+      '(ok datum))
+;; A DATUM BLOCK WHOSE MODE IS THE SYMBOL, made through batch (which hands
+;; the symbol over), asked the command line's same set: the string would not
+;; equal it and was answered mode-mismatch.
+(define MD (bare! "Datum mode target"))
+(want "MODE-1 the command line's set mode datum on a datum block is taken, not mode-mismatch"
+      (in-order (rpc-ok? (run 'batch (format "((set ~s mode datum))" MD))) (field-value MD 'mode)
+                (car (run 'set MD "mode" "datum")))
+      '(#t datum ok))
+(define MT (bare! "Text mode target"))
+(want "MODE-1 TWIN: set <id> mode text stores the symbol"
+      (in-order (car (run 'set MT "mode" "text")) (field-value MT 'mode))
+      '(ok text))
+(define MX (bare! "Unknown mode target"))
+(define mode-cli (run 'set MX "mode" "nonsense"))
+(define mode-batch (run 'batch (format "((set ~s mode nonsense))" MX)))
+(want "MODE-2 the command line refuses an unknown mode by name, with the known list"
+      (from-head mode-cli 'mode-not-known)
+      '(mode-not-known (mode "nonsense") (known (text datum))))
+(want "MODE-2 batch refuses it with the same detail"
+      (in-order (rpc-ok? mode-batch) (equal? (from-head mode-batch 'mode-not-known) (from-head mode-cli 'mode-not-known)))
+      '(#f #t))
+(want "MODE-2 the refused writes left the block without a mode"
+      (field-value MX 'mode)
+      #f)
+
 ;; ---- C49-3: what a read says ----------------------------------------------------------------
 
 (define G (ins! "Ground" "ground"))

@@ -887,7 +887,7 @@
                          ;; spelling is refused BY NAME rather than stored.
                          ;; `class` IS THE SAME KIND OF FIELD (a word from a
                          ;; fixed list) AND IS CONVERTED AND REFUSED BY THE
-                         ;; SAME RULE, over the reducer's one table of them.
+                         ;; SAME RULE, over the reducer's one table of them, and so is `mode`.
                          ((assq (string->symbol (cadr rest)) vocabulary-fields)
                           (let ((field (string->symbol (cadr rest)))
                                 (k (string->symbol (caddr rest))))
