@@ -77,7 +77,10 @@
   (call-with-output-file runner
     (lambda (port)
       (for-each (lambda (l) (display l port) (newline port))
-        (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
+        ;; THE VERBS REGISTERED FROM OUTSIDE THE CORE TABLE (query, context
+        ;; among them), as theourgiad.sc registers them before it serves.
+        (list "(import (chezscheme) (theourgia daemon) (theourgia rpc) (only (theourgia extensions) extension-verbs))"
+              "(register-verbs! extension-verbs)"
               (string-append "(rpc-dispatch \"" store "\" '(init \"--template\" \"project\") \"agent-a\")")
               (string-append "(serve \"" store "\" \"" sock "\")"))))
     'truncate)
@@ -194,6 +197,11 @@
 (start-scheduler
   (lambda ()
     (start-daemon!)
+    ;; THE DAEMON IS STOPPED HOWEVER THE SCENARIO ENDS: a raise that leaves
+    ;; it serving leaves a process behind every run.
+    (dynamic-wind
+      (lambda () (if #f #f))
+      (lambda ()
 
     ;; ==== the store's declarations ====
     (set! init-ok
@@ -302,4 +310,5 @@
     (stop-daemon!)
     (system (string-append "rm -rf '" store "' '" sock "' '" runner "' '" daemon-log "'"))
     (printf "rows: ~a~%~a failures~%paper-scenario complete~%" rows bad)
-    (exit (if (= bad 0) 0 1))))
+    (exit (if (= bad 0) 0 1)))
+      stop-daemon!)))
