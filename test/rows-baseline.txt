@@ -7,7 +7,7 @@ attest-model 65 68 33d2e3dcfe463b8c84f48f4fb3c82224
 baseline-rules 29 32 8b29372312cf9612081a4b9393beee28
 behind 41 44 4ae24fd514f7e984d7b5eb3836e4416e
 change-stream 127 158 9944afd3421a01db768403786beff96c
-change-stream-client 20 25 3ae6b8514213829e61aa5038a65005fd
+change-stream-client 21 26 39c2c9ad02fd7fdfc824c80020227b65
 change-stream-guard 4 11 6126162510c4bb68e73ca6edf3002b45
 cli-forward 22 25 c68a34ec84477fe8c75c8c193f124e65
 cli1 99 122 3cd79663cebf9f5fae5e4a74b2c0844b
@@ -145,7 +145,7 @@ scope-model 13 19 c1b28782e891524b4d02392c35549611
 since-contract 57 60 ebdf1e74cdb0d3b49ef75c416a8ee86c
 smoke-crc32 - 9 7995b0255470cdef541c5e2aef31e412
 smoke-shortwrite - 4 f00f08055256b64c8ef4117ccdb07b56
-smoke-shortwrite-nb 2 8 3a889bfc343286fa99cd6c3faf24abf0
+smoke-shortwrite-nb 3 9 0b242dfdc81e5032f18e5c868aacfc7b
 smoke-wire - 24 9d129dbffacf937198c9f06f051245bf
 smoke-wire-fuzz - 5 d2f81d74fdad6c838e079be6a1e05d51
 smoke-wire-trace - 6 41b0a4d9dda05cea5ab8de0a6cb1771d
