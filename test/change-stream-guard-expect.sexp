@@ -6,5 +6,6 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; The relation and rule verbs' descriptions say what they now enforce.
-((describe "describe tells that typed relations hold their ends and that rules judge writes"))
+;; Empty: rules and typed relations are in the base now, and this change (a
+;; scenario fixture) changes no scripted answer.
+()
