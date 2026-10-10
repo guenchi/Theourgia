@@ -2,10 +2,11 @@
   "hooks": {
     "PostToolUse": [
       {
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "sh /path/to/theourgia/contrib/mail-hook.sh PostToolUse",
+            "command": "THEOURGIA_ACTOR=claude sh /path/to/theourgia/contrib/mail-hook.sh PostToolUse",
             "timeout": 10
           }
         ]
@@ -16,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh /path/to/theourgia/contrib/mail-hook.sh UserPromptSubmit",
+            "command": "THEOURGIA_ACTOR=claude sh /path/to/theourgia/contrib/mail-hook.sh UserPromptSubmit",
             "timeout": 10
           }
         ]

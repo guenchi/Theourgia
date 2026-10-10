@@ -1353,12 +1353,13 @@ Codex reaches a store through the MCP shell: `codex mcp add theourgia --
 environment, gives its sessions the store's verbs as tools. Three routes
 then carry one message to it, and each one missing leaves the others:
 
-- THE HOOKS. `contrib/codex-hooks.json` runs `contrib/codex-mail.sh` on
+- THE HOOKS. `contrib/codex-hooks.json` runs `contrib/mail-hook.sh` on
   `PostToolUse` (during a turn) and `UserPromptSubmit` (at the start of
   one). The script asks the store named by `THEOURGIA_STORE` for the
   unread mail of `THEOURGIA_ACTOR` and prints the hook's answer naming
   each block, or nothing when there is none. Copy the file to
   `~/.codex/hooks.json` with the script's path filled in.
+  `contrib/codex-mail.sh`, the script's earlier name, still runs it.
 - THE DOORBELL, for a Codex idle at its prompt, where no hook runs.
   `contrib/doorbell.sh <store> <actor> <tmux-target>` subscribes to the
   store's changes and, for every block added, or whose `to` changed, that
@@ -1369,6 +1370,20 @@ then carry one message to it, and each one missing leaves the others:
 
 `contrib/AGENTS.md` is the text for the reader's side: how to read and
 answer mail, and the discipline both sides follow.
+
+### Claude Code as a reader
+
+Claude Code reaches a store the same way, through the MCP shell (`claude
+mcp add theourgia -- <the command that starts the shell>`), and its hooks
+take the same answer: `hookSpecificOutput` with `hookEventName` and
+`additionalContext`. `contrib/claude-hooks.json` is the `hooks` section of
+Claude Code's `settings.json` (`~/.claude/settings.json`, or a project's
+`.claude/settings.json`), running `contrib/mail-hook.sh` on `PostToolUse`
+and `UserPromptSubmit` with `THEOURGIA_ACTOR=claude` set in each command;
+`THEOURGIA_STORE` comes from the environment, as for Codex. Merge it into
+the file with the script's path filled in; a session started after that
+is told its unread mail at its first prompt. The doorbell and the reader's
+own query serve it as they serve Codex.
 
 ### What this does not protect against
 

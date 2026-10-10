@@ -632,22 +632,23 @@
   (lambda (p) (put-string p (string-append "#!/bin/sh\necho \"$@\" >> '" root "/tmux.log'\n"))))
 (system (string-append "chmod +x '" root "/bin/theourgia' '" root "/bin/tmux'"))
 (define hooks-text (file-text "../contrib/codex-hooks.json"))
-(define (hook-command event)
+(define (hook-command-in text event)
   (let* ((at (let find ((i 0))
-               (cond ((> (+ i (string-length event)) (string-length hooks-text)) #f)
-                     ((string=? (substring hooks-text i (+ i (string-length event) 2)) (string-append "\"" event "\"")) i)
+               (cond ((> (+ i (string-length event)) (string-length text)) #f)
+                     ((string=? (substring text i (+ i (string-length event) 2)) (string-append "\"" event "\"")) i)
                      (else (find (+ i 1))))))
          (key "\"command\": \"")
          (k (and at (let find ((i at))
-                      (cond ((> (+ i (string-length key)) (string-length hooks-text)) #f)
-                            ((string=? (substring hooks-text i (+ i (string-length key))) key) (+ i (string-length key)))
+                      (cond ((> (+ i (string-length key)) (string-length text)) #f)
+                            ((string=? (substring text i (+ i (string-length key))) key) (+ i (string-length key)))
                             (else (find (+ i 1)))))))
-         (end (and k (let find ((i k)) (if (char=? (string-ref hooks-text i) #\") i (find (+ i 1)))))))
-    (and end (let* ((c (substring hooks-text k end)) (p "/path/to/theourgia") (n (string-length p)))
+         (end (and k (let find ((i k)) (if (char=? (string-ref text i) #\") i (find (+ i 1)))))))
+    (and end (let* ((c (substring text k end)) (p "/path/to/theourgia") (n (string-length p)))
                (let loop ((i 0))
                  (cond ((> (+ i n) (string-length c)) c)
                        ((string=? (substring c i (+ i n)) p) (string-append (substring c 0 i) tree (substring c (+ i n) (string-length c))))
                        (else (loop (+ i 1)))))))))
+(define (hook-command event) (hook-command-in hooks-text event))
 (define (hook-run name event)
   (sh-out name (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" M "' THEOURGIA_ACTOR=codex sh -c '"
                               (hook-command event) "'")))
@@ -665,6 +666,41 @@
 (want "H with nothing unread for codex, both commands print nothing"
       (list (hook-run "hook-post-2" "PostToolUse") (hook-run "hook-prompt-2" "UserPromptSubmit"))
       '("" ""))
+;; CLAUDE CODE'S HOOKS RUN THE SAME HANDLER, with THEOURGIA_ACTOR=claude in
+;; each command: a letter to claude is named by them, and by codex's not.
+(define claude-hooks-text
+  (guard (e (#t "")) (file-text "../contrib/claude-hooks.json")))
+(define (claude-hook-run name event)
+  (let ((c (hook-command-in claude-hooks-text event)))
+    (and c (sh-out name (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" M "' THEOURGIA_ACTOR=codex sh -c '"
+                                       c "'")))))
+(want "H the shipped claude-hooks.json has a command for PostToolUse and for UserPromptSubmit, each for actor claude"
+      (map (lambda (e) (let ((c (hook-command-in claude-hooks-text e)))
+                         (and c (string-contains? c "THEOURGIA_ACTOR=claude") (string-contains? c "/contrib/mail-hook.sh"))))
+           '("PostToolUse" "UserPromptSubmit"))
+      '(#t #t))
+(define LC
+  (let ((a (first-datum (cli-batch "msg-claude" "author" M
+                          (format "~s" (list (list 'insert 'root #f '((kind . doc) (title . "to claude")
+                                                                    (to . "claude") (status . "unread")))))))))
+    (new-id (car (cadr a)))))
+(define claude-post (claude-hook-run "hook-claude-post" "PostToolUse"))
+(define claude-prompt (claude-hook-run "hook-claude-prompt" "UserPromptSubmit"))
+(want "H with a letter to claude unread, both of claude's commands answer the hook's JSON naming it, and codex's name nothing"
+      (in-order (and (string? claude-post) (string-contains? claude-post LC))
+                (and (string? claude-post) (string-contains? claude-post "\"hookEventName\":\"PostToolUse\""))
+                (and (string? claude-prompt) (string-contains? claude-prompt LC))
+                (and (string? claude-prompt) (string-contains? claude-prompt "\"hookEventName\":\"UserPromptSubmit\""))
+                (hook-run "hook-post-3" "PostToolUse"))
+      '(#t #t #t #t ""))
+(want "H the handler's old name, codex-mail.sh, gives the same answer as mail-hook.sh"
+      (let ((run-as (lambda (name script)
+                      (sh-out name (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" M "' THEOURGIA_ACTOR=claude sh "
+                                                  tree "/contrib/" script " UserPromptSubmit")))))
+        (let ((old (run-as "hook-old-name" "codex-mail.sh")) (new (run-as "hook-new-name" "mail-hook.sh")))
+          (list (string-contains? new LC) (string=? old new))))
+      '(#t #t))
+(run M "claude" 'set LC "status" "read")
 
 (system (string-append "PATH='" root "/bin':\"$PATH\" sh ../contrib/doorbell.sh '" M "' codex pane > '" root "/doorbell.out' 2>&1 &"))
 (define (ring-for actor)

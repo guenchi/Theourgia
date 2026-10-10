@@ -27,7 +27,7 @@
 # into the pane <tmux-target> (a tmux target: a window name, or
 # session:window.pane). The message itself never travels this way; the
 # reader reads the block at that cut. A reader busy in a turn learns of mail
-# from its hooks instead (codex-mail.sh); this is for one idle at its
+# from its hooks instead (mail-hook.sh); this is for one idle at its
 # prompt, where no hook runs.
 #
 # `theourgia` is the command on the PATH. When the stream ends -- the

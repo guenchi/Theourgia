@@ -13,19 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A CODEX HOOK'S HANDLER: the unread mail of THEOURGIA_ACTOR in the store
-# THEOURGIA_STORE names, as the hook's answer, or nothing when there is none.
+# A HOOK'S HANDLER, for Codex and for Claude Code: the unread mail of
+# THEOURGIA_ACTOR in the store THEOURGIA_STORE names, as the hook's answer,
+# or nothing when there is none.
 #
-#   codex-mail.sh <hook-event-name>
+#   mail-hook.sh <hook-event-name>
 #
 # <hook-event-name> is the event the hook is registered on (PostToolUse or
-# UserPromptSubmit); the answer names it, as Codex requires. The mail is
+# UserPromptSubmit); the answer names it, as both require. The answer is
+# one JSON object, hookSpecificOutput with hookEventName and
+# additionalContext, which is the format of both: contrib/codex-hooks.json
+# and contrib/claude-hooks.json run this one script. contrib/codex-mail.sh,
+# its old name, still runs it. The mail is
 # the mailbox goal of the README, asked with the command line, so the hook
 # does not depend on an MCP shell being up. `theourgia` is the command on
 # the PATH.
 
 set -u
-event=${1:?usage: codex-mail.sh <hook-event-name>}
+event=${1:?usage: mail-hook.sh <hook-event-name>}
 actor=${THEOURGIA_ACTOR:?THEOURGIA_ACTOR names the reader}
 goal="(and (field ?m \"to\" \"$actor\") (field ?m \"status\" \"unread\"))"
 
