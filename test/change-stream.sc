@@ -1049,25 +1049,28 @@
            (acc (acceptance-of (await-lines sub 1 5000)))
            (base (current-of acc)))
       (insert! d "local")
-      (let ((f (next-frame sub 0)))
+      (let ((f (said-frame-after sub base)))
         (want "F10-11 a local commit makes exactly one frame, the next revision"
               (frame-rev f) (+ base 1)))
       (mirror! d "mirrorpp" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 20))))
-      ;; BY POSITION, AND RIGHT: frame 0 is the local commit's, and the
-      ;; outside commit's is the next whatever follows it; an empty refold
-      ;; could only come after it.
       (poke! d)
-      (let ((f (next-frame sub 1)))
+      (let ((f (said-frame-after sub (+ base 1))))
         (want "F10-11 a reload asked by another connection's read after an outside commit: one frame, the next revision"
               (list (frame-rev f) (item-set f)) (list (+ base 2) (expected-set (list 'added "mirrorpp.1")))))
       (mirror! d "mirrorpq" 1 '() '(put ((kind . section) (title . "outside two") (parent . root) (ord . 21))))
       (let ((at (ask d 'read id "--cut" (format "~s" (list (cons "mirrorpq" 1))))))
-        (let ((f (next-frame sub 2)))
+        (let ((f (said-frame-after sub (+ base 2))))
           (want "F10-11 a read at a cut that the publication has not folded: the store process refreshes, one frame"
                 (list (frame-rev f) (item-set f)) (list (+ base 3) (expected-set (list 'added "mirrorpq.1"))))))
       (sleep-ms 400)
-      (want "F10-11 and no publisher made a second frame for the same publication"
-            (length (frames-of (sub-lines sub))) 3)
+;; THE CLAIM, EXACTLY: one frame with items per change -- the local commit,
+      ;; the outside commit, the read at a cut -- and every other frame empty
+      ;; (a queued reload's refold of the same log carries no change).
+      (want "F10-11 and no publisher made a second frame for the same publication: three frames with items, every other frame empty"
+            (let ((fs (frames-of (sub-lines sub))))
+              (list (length (filter (lambda (f) (pair? (clause 'items f))) fs))
+                    (for-all (lambda (f) (or (pair? (clause 'items f)) (equal? (clause 'items f) '()))) fs)))
+            '(3 #t))
       (want "F10-11 read --rev --cut is refused incompatible-cut-options"
             (ask d 'read id "--rev" "--cut" (format "~s" (list (cons "mirrorpq" 1))))
             '(error bad-request incompatible-cut-options))
@@ -1281,9 +1284,12 @@
         (let* ((ls (await-lines s (+ (if (integer? made) made 0) 4) 12000))
                (fs (frames-of ls))
                (tail (reverse fs)))
+          ;; BY CONTENT: the last frame with items before the terminal is the
+          ;; publication in flight; an empty refold may sit between them.
           (want "F10-6 with a write blocked, a publication in flight at the drain is written before (error draining), and the close follows"
                 (list (integer? made)
-                      (and (> (length tail) 1) (item-set (cadr tail)))
+                      (let ((said (find (lambda (f) (and (frame-rev f) (pair? (clause 'items f)))) (if (pair? tail) (cdr tail) '()))))
+                        (and said (item-set said)))
                       (and (pair? tail) (car tail))
                       (and (pair? ls) (car (reverse ls))))
                 (list #t (expected-set (list 'added "mirrordr.1")) '(error draining) "<eof>")))))
@@ -1297,7 +1303,9 @@
            (acc (acceptance-of (await-lines a 1 5000)))
            (token (token-of acc))
            (base (current-of acc)))
-      (for-each (lambda (w) (mirror-many! d w 300) (poke! d) (await-lines a (- (string->number (substring w 7 8)) -1) 8000))
+      ;; EACH WRITER'S FRAME BY CONTENT, past the revision before its write:
+      ;; an empty refold may follow any of them.
+      (for-each (lambda (w) (let ((r (or (last-published d) 0))) (mirror-many! d w 300) (poke! d) (said-frame-after a r)))
                 '("keptbig1" "keptbig2" "keptbig3" "keptbig4" "keptbig5"))
       (let ((b (spawn-subscriber! d (list "changes" (number->string base) token) 'paused)))
         (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace write-pending") (> k 100)) (sleep-ms 50) (wait (+ k 1))))
@@ -1306,12 +1314,23 @@
         (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
         (sleep-ms 300)
         (send b '(resume))
-        (let* ((ls (await-lines b 7 15000)) (fs (frames-of ls)))
+        ;; UNTIL THE CLOSE, not until a count: the retained frames may include
+        ;; empty refolds, so the reader is read to its end.
+        (let* ((ls (let wait ((k 0))
+                     (let ((ls (sub-lines b)))
+                       (if (or (member "<eof>" ls) (> k 300)) ls (begin (sleep-ms 50) (wait (+ k 1)))))))
+               (fs (frames-of ls))
+               (changes (filter (lambda (f) (eq? (car f) 'changes)) fs))
+               (revs (map frame-rev changes)))
+          ;; THE COUNT IS OF FRAMES WITH ITEMS (an empty refold is no second
+          ;; publication): the five writers' frames, in order; and every
+          ;; retained frame arrived, the revisions consecutive from base + 1.
           (want "F10-6 a drain with a replay list unwritten: every retained frame, then (error draining), then the close"
-                (list (map frame-rev (filter (lambda (f) (eq? (car f) 'changes)) fs))
+                (list (length (filter (lambda (f) (pair? (clause 'items f))) changes))
+                      (and (pair? revs) (equal? revs (let loop ((r (+ base (length revs))) (out '())) (if (<= r base) out (loop (- r 1) (cons r out))))))
                       (and (pair? fs) (car (reverse fs)))
                       (and (pair? ls) (car (reverse ls))))
-                (list (list (+ base 1) (+ base 2) (+ base 3) (+ base 4) (+ base 5)) '(error draining) "<eof>")))))
+                (list 5 #t '(error draining) "<eof>")))))
     (let* ((d (start-daemon! "f6r" ""))
            (s (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines s 1 5000)))
@@ -1438,6 +1457,8 @@
            (before (current-of acc)))
       (mirror! d "mirrorrr" 1 '() '(put ((kind . section) (title . "unfolded") (parent . root) (ord . 70))))
       (poke! d)
+      ;; BY POSITION, AND RIGHT: the first line after the acceptance is the
+      ;; failed reload's notice; a second notice may follow it, never precede.
       (let* ((ls (await-lines s 2 6000)) (f (and (> (length ls) 1) (car (frames-of ls))))
              (traced (let find ((ds (read-all-data (d-log d))))
                        (cond ((null? ds) 'no-trace)
@@ -1455,9 +1476,10 @@
         (want "F10-6 and the publication stayed: the last revision published is still the one before"
               (last-published d) before))
       (insert! d "after the failed reload")
-      (let ((fs (frames-of (await-lines s 3 6000))))
+      ;; BY CONTENT: a timer probe may add a second notice before it.
+      (let ((f (said-frame-after s before)))
         (want "F10-6 and the stream goes on: the next local commit's frame is the next revision"
-              (and (> (length fs) 1) (list (car (cadr fs)) (frame-rev (cadr fs))))
+              (and (pair? f) (list (car f) (frame-rev f)))
               (list 'changes (+ before 1))))
       (stop-daemon! d))
 
@@ -1489,7 +1511,7 @@
                 (list old #t)))
         (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
         (system (string-append "touch " release))
-        (let* ((f (next-frame sub 0))
+        (let* ((f (said-frame-after sub old))
                (later (ask d 'read id "--rev")))
           (want "F10-10 the next revision's frame names the unread writer's block removed and carries (incomplete ...)"
                 (list (frame-rev f) (item-set f) (and (clause 'incomplete f) #t))
