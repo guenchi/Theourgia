@@ -44,6 +44,7 @@
 (library (theourgia completion)
   (export completion-run)
   (import (rnrs) (theourgia reduce)
+          (only (theourgia request) plan-member-intent)
           (only (theourgia baseline) baseline-touching baseline-stale-answer baseline-combine)
           ;; the mode check a fresh commit asks, asked of a completion too
           (only (theourgia store) datum-mode-block? draft-on-datum-refusal intent-ref-positions))
@@ -62,9 +63,9 @@
   ;; and catch nothing: a shape they do not recognise has no kind, no
   ;; references and no target, and the run then answers for it as any run
   ;; does.
-  ;; The intent inside an (expect <subject> <intent> ...) wrapper.
-  (define (declared-intent e)
-    (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
+  ;; The intent inside an (expect <subject> <intent> ...) wrapper: the one
+  ;; reading every reader of a plan's members uses (reduce.sc).
+  (define (declared-intent e) (plan-member-intent e))
   (define (declared-kind e)
     (let ((u (declared-intent e))) (and (pair? u) (symbol? (car u)) (car u))))
   ;; Where an entry's references stand: the store's table, by kind.

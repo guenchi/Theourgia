@@ -366,6 +366,43 @@
         (membership (cadddr es) es))
       'undetermined)
 
+(printf "\n== U3m: a plan another writer made: what its members hold is read as theirs ==\n")
+;; NEVER: "NOT BOUND YET" WAS A SYMBOL A MEMBER COULD HOLD. bind-new answered
+;; the symbol `unbound`, so a member naming a relation `unbound` read as a
+;; marker with nothing to bind and waited for ever.
+(define unbound-entries (list (cons 0 '(link "b" unbound "c"))))
+(want "U3m a member whose relation is the symbol unbound is compared, not left waiting"
+      (let ((es (list (plan-ev unbound-entries) (ev 14 0 '(link "b" unbound "c")))))
+        (membership (cadr es) es))
+      'valid)
+(want "U3m TWIN: and a record naming another end is invalid, not waiting"
+      (let ((es (list (plan-ev unbound-entries) (ev 14 0 '(link "b" unbound "d")))))
+        (membership (cadr es) es))
+      'invalid)
+;; A LINK IS WRITTEN AT ITS FOUR PARTS. A plan from an earlier build or
+;; another writer can declare a fifth; the record never carries it.
+(define link5-entries (list (cons 0 '(link "b" cites "c" extra))))
+(want "U3m a link declared with a fifth part is carried out by its four-part record"
+      (let ((es (list (plan-ev link5-entries) (ev 14 0 '(link "b" cites "c")))))
+        (membership (cadr es) es))
+      'valid)
+(want "U3m TWIN: the four parts still have to agree"
+      (let ((es (list (plan-ev link5-entries) (ev 14 0 '(link "b" cites "d")))))
+        (membership (cadr es) es))
+      'invalid)
+;; A MEMBER IN AN EXPECT WRAPPER IS JUDGED BY THE INTENT INSIDE. plan-reason
+;; read the wrapper's subject, a hash, as the member's target, so a plan
+;; whose consumes covers the block was malformed.
+(define (consumes-plan member)
+  (list 'plan "req-1" FP AFTER (list (cons 0 member))
+        (list 'consumes "w3kxxxxx" (list (list "b" "v1" "h0" '())))))
+(want "U3m a wrapped member on a block the plan consumes is not malformed"
+      (payload-reason (consumes-plan '(expect "h0" (set "b" src "x"))))
+      #f)
+(want "U3m TWIN: a wrapped member on a block it does not consume is"
+      (payload-reason (consumes-plan '(expect "h0" (set "c" src "x"))))
+      'consumes-does-not-cover-sub-operation)
+
 (printf "\n== U3c: which payload fields come from the intent ==\n")
 ;; `ord` IS DELIBERATELY OUTSIDE THE TABLE. It is decided by the state at
 ;; the time -- which siblings were there -- and a completion months later
