@@ -27,7 +27,9 @@
         (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read state-edges
               reduce-empty reduce-apply! reduce-gates)
         (only (theourgia store) open-and-reduce)
+        (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
+              log-publish! segment-sha
               view-revision view-epoch view-writer view-expect-seq session-written-events)
         (only (theourgia trace) trace-enable!))
 
@@ -312,6 +314,26 @@
 (want "E a store whose only judge is a typed relation refuses a link its selector does not match"
       (head (rpc-dispatch S4 (list 'link F1 "answers" F2) "author") 3)
       '(error bad-request relation-endpoint))
+
+;; A rule that reached the store by another writer's record and names a
+;; relation the rule verb refuses (def reads outside the log) is never asked:
+;; every write it applies to is refused unevaluable with the verb's refusal,
+;; and check lists it unevaluable.
+(define S5 (string-append root "/s5"))
+(tolerant (rpc-dispatch S5 '(init) "author"))
+(define G1 (tolerant (car (item-ids (rpc-dispatch S5 (list 'batch (format "~s" (list '(insert root #f ((kind . doc) (title . "G1")))))) "author")))))
+(define writer5 (tolerant (car (car (reduce-applied-cut (open-and-reduce S5))))))
+(define forged5 (tolerant
+  (encode-record 1 1789000000001 "peer" (list (cons writer5 (cdr (assoc writer5 (reduce-applied-cut (open-and-reduce S5))))))
+                 (storable-encode (list 'rule 'outside '((class state) (on doc) (must-not (def ?w ?l "x"))))))))
+(tolerant (log-publish! S5 "peerzzzz" 1 forged5 (segment-sha forged5)))
+(want "J a stored rule its value's check refuses is never asked: the write is unevaluable with that refusal, and check lists it"
+      (in-order (let ((a (rpc-dispatch S5 (list 'set G1 "role" "x") "author")))
+                  (and (pair? a) (eq? (car a) 'error) (list (head a 3) (list-ref a 3) (head (cadr (list-ref a 5)) 3))))
+                (let ((r (assq 'rules (cdr (rpc-dispatch S5 '(check) "author")))))
+                  (and r (map car (cdr r)))))
+      (list (list '(error refused rule-unevaluable) '(rule outside) '(error bad-request rule-relation-not-allowed))
+            '(rule-unevaluable)))
 
 ;; ---- citation coverage and the order of a write's checks --------------------------------------
 

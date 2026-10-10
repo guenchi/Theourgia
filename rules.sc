@@ -35,7 +35,7 @@
   (export write-judgement state-audit)
   (import (rnrs)
           (only (theourgia query) make-query-session session-rows session-spent session-budget-set!
-                refusal? refusal-answer query-budget-default)
+                refusal? refusal-answer query-budget-default rule-value-check)
           (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds relation-kind
                 state-edges))
 
@@ -200,8 +200,12 @@
 
   ;; ---- the rules --------------------------------------------------------------------------------
 
-  ;; A RULE AS IT IS EVALUATED: (name class kinds where goal polarity witness),
-  ;; a built-in expanded to the goal it stands for.
+  ;; A RULE AS IT IS EVALUATED: (name class kinds where goal polarity witness
+  ;; bad), a built-in expanded to the goal it stands for. BAD is #f, or the
+  ;; refusal the rule verb gives its value (rule-value-check): a rule that
+  ;; reached the store some other way -- a writer whose build checked less --
+  ;; and names a relation that reads outside the log, say, is never asked; it
+  ;; is unevaluable at every block it applies to.
   (define (rule-plan name value)
     (define (clause k) (let ((c (assq k value))) (and c (cadr c))))
     (cond
@@ -211,21 +215,30 @@
        (list name 'write known-kinds #f
              '(and (receipt-carried) (cited ?w ?s) (unread ?s))
              'must-not
-             (lambda (id row) (list 'citation-not-read (list 'block id) (list 'cites (car row))))))
+             (lambda (id row) (list 'citation-not-read (list 'block id) (list 'cites (car row))))
+             #f))
       (else
-       (list name (clause 'class) (cdr (assq 'on value)) (clause 'where)
-             (or (clause 'must) (clause 'must-not))
-             (if (assq 'must value) 'must 'must-not)
-             #f))))
+       (let ((checked (rule-value-check value)))
+         (list name (clause 'class) (cdr (assq 'on value)) (clause 'where)
+               (or (clause 'must) (clause 'must-not))
+               (if (assq 'must value) 'must 'must-not)
+               #f
+               (and (pair? checked) (eq? (car checked) 'error) checked))))))
 
 ;; ONE PAIR OF A RULE AND A BLOCK, on session S, the block's kind K: #f when
   ;; the rule does not apply (a kind it does not list, a selector with no row
-  ;; for the block) or holds; else the failure, (rule) (block) (goal, ?w
-  ;; bound) (expected some|none) (rows n) and, for a must-not, at most ten
-  ;; witness rows. A query's refusal is raised to the caller.
+  ;; for the block) or holds; (not-evaluable . <refusal>) for a rule its value's
+  ;; check refuses; else the failure, (rule) (block) (goal, ?w bound) (expected
+  ;; some|none) (rows n) and, for a must-not, at most ten witness rows. A
+  ;; query's refusal is raised to the caller.
   (define (pair-failure ask S p id k)
     (and (memq k (caddr p))
-         (or (not (cadddr p)) (pair? (ask S (bind-target (cadddr p) id))))
+         (if (list-ref p 7)
+             (cons 'not-evaluable (list-ref p 7))
+             (pair-asked ask S p id))))
+
+  (define (pair-asked ask S p id)
+    (and (or (not (cadddr p)) (pair? (ask S (bind-target (cadddr p) id))))
          (let* ((goal (bind-target (list-ref p 4) id))
                 (rows (ask S goal)))
            (case (list-ref p 5)
@@ -263,11 +276,15 @@
                        (hashtable-set! kinds id k)
                        k)))
                (define (judge S p id)
-                 (let ((k (judge-kind id p)))
-                   (guard (e ((refusal? e)
-                              (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
-                                            (list 'reason (refusal-answer e))))))
-                     (pair-failure ask S p id k))))
+                 (let* ((k (judge-kind id p))
+                        (f (guard (e ((refusal? e)
+                                      (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
+                                                    (list 'reason (refusal-answer e))))))
+                             (pair-failure ask S p id k))))
+                   (if (and (pair? f) (eq? (car f) 'not-evaluable))
+                       (return (list 'error 'refused 'rule-unevaluable (list 'rule (car p)) (list 'block id)
+                                     (list 'reason (cdr f))))
+                       f)))
                (let* ((state-failures
                         (append-map-in-order
                           (lambda (id) (filter-map-in-order (lambda (p) (judge (post-S) p id)) state-rules))
@@ -395,8 +412,20 @@
                                                               (list 'reason (refusal-answer e))))))
                                          (pair-failure ask S p (car ids)
                                                        (cadr (assoc (car ids) kinds))))))
+                                ;; A BUDGET RUN OUT ENDS THE RULE, which every later block
+                                ;; would answer the same; any other refusal is that
+                                ;; block's, and the rule's other blocks are still asked. A
+                                ;; rule its value's check refuses is listed once.
                                 (cond ((not f) (loop (cdr ids) out))
-                                      ((eq? (car f) 'unevaluable) (reverse (cons (cadr f) out)))
+                                      ((eq? (car f) 'not-evaluable)
+                                       (reverse (cons (list 'rule-unevaluable (list 'rule (car p)) (list 'block (car ids))
+                                                            (list 'reason (cdr f)))
+                                                      out)))
+                                      ((eq? (car f) 'unevaluable)
+                                       (let ((reason (cadr (list-ref (cadr f) 3))))
+                                         (if (and (pair? reason) (pair? (cdr reason)) (eq? (cadr reason) 'query-budget))
+                                             (reverse (cons (cadr f) out))
+                                             (loop (cdr ids) (cons (cadr f) out)))))
                                       (else (loop (cdr ids) (cons (cons 'rule-violation f) out)))))))))))
                  rules))
              (typed (typed-relations state))
