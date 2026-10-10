@@ -1037,12 +1037,15 @@
   ;; not the file the daemon published.
   (define known-segments '())
   (define replaced-writers '())
-  ;; JUDGE-SHRINK? says a shorter version of the same path is judged a swap;
-  ;; this process's own repair is not (note-own-repair!).
+  ;; JUDGE-SHRINK? says the new version is a publication's, judged: kept
+  ;; out when it is shorter than the known one of the same path, or has no
+  ;; size while the known one has. This process's own repair is not judged
+  ;; (note-own-repair!): it replaces the known version, whatever it is.
   (define (know-segment! writer path version judge-shrink?)
     (let ((old (assoc writer known-segments)))
       (unless (and old
-                   (or (and judge-shrink? (equal? (cadr old) path) (segment-shrank? (cddr old) version))
+                   judge-shrink?
+                   (or (and (equal? (cadr old) path) (segment-shrank? (cddr old) version))
                        (and (segment-version-readable? (cddr old))
                             (not (segment-version-readable? version)))))
         (set! known-segments
@@ -1054,11 +1057,24 @@
 
   ;; THIS PROCESS'S OWN REPAIR IS KNOWN AS IT LEFT THE SEGMENT. The log calls
   ;; this under the lock right after it cut a torn tail back (log.sc,
-  ;; log-append-guard!): the segment is then shorter than the version
-  ;; published with the residue, and that version must not be kept against
-  ;; it.
+  ;; log-append-guard!), with the length it cut to: the segment is then
+  ;; shorter than the version published with the residue, and that version
+  ;; must not be kept against it. The path's version is known when it can be
+  ;; read and is at least that long; otherwise -- a stat that failed, a path
+  ;; gone, a shorter file -- the cut length is known, as a version with no
+  ;; identity and that size, so the guard still judges a shorter file
+  ;; against it, and the next publication replaces it.
+  ;; NEVER: THIS IS NOT A DEFENCE AGAINST A FILE PUT AT THE PATH DURING A
+  ;; WRITE. The cut acts on a descriptor and everything after it reaches the
+  ;; segment by path again, and the store's lock excludes no rename; that
+  ;; is a limit of the whole write path, not of this record.
+  ;; It says which it knew, (trace repair-noted version|cut-length <length>).
   (define (note-own-repair! store writer path cut-length)
-    (know-segment! writer path (segment-version-now path) #f))
+    (let* ((now (segment-version-now path))
+           (use-now? (and (segment-version-readable? now)
+                          (not (segment-shrank? (list #f #f #f #f #f #f cut-length) now)))))
+      (trace-event! 'repair-noted (if use-now? 'version 'cut-length) cut-length)
+      (know-segment! writer path (if use-now? now (list #f #f #f #f #f #f cut-length)) #f)))
   (define (segment-replaced store writer)
     (or (let ((latched (assoc writer replaced-writers))) (and latched (cdr latched)))
         (let* ((k (assoc writer known-segments))
