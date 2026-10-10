@@ -26,9 +26,11 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia reduce) block-id)
-        (only (theourgia render) render-wire render-human))
+        (only (theourgia render) render-wire render-human answer-printing!))
 
 (register-verbs! extension-verbs)
+;; As the command line prints: once per process, before any answer.
+(answer-printing!)
 
 (define bad 0)
 (define rows 0)
@@ -92,6 +94,16 @@
 (want "H commit --premises takes the line as printed"
       (car (run S 'commit "--writer" "author" "--premises" receipt-line))
       'ok)
+
+;; THE LINES' SHAPE, whatever the base: each line that is not an entry (an
+;; entry is indented), by its first word -- the section names in order, the
+;; tail clauses, then the receipt.
+(define (head-word l)
+  (let loop ((i 0))
+    (if (or (= i (string-length l)) (char=? (string-ref l i) #\space)) (substring l 0 i) (loop (+ i 1)))))
+(want "H the lines that are not entries: for, the five sections, notes, excluded, budget, then the receipt"
+      (map head-word (filter (lambda (l) (and (> (string-length l) 0) (not (char=? (string-ref l 0) #\space)))) (lines human)))
+      '("for" "constraints" "evidence" "to-verify" "counterexamples" "background" "notes" "(excluded" "(budget" "(receipt"))
 
 ;; An incomplete clause follows the receipt, as it does on the wire.
 (define constructed
