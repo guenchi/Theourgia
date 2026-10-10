@@ -3388,7 +3388,7 @@
            (branch clone dry)
            ((write-judgement-procedure)
             state clone
-            (write-targets clone (filter (lambda (e) (not (member e before))) (session-written-events dry)))
+            (write-targets clone (filter (lambda (e) (not (member e before))) (session-written-events dry)) state)
             receipt))))
 
   ;; THE TARGETS OF A WRITE: every block whose records it adds -- created,
@@ -3400,15 +3400,19 @@
   ;; edges can tell, so the far end of each of the deleted block's edges, in
   ;; either direction, is a target too, when it is live after the write: a
   ;; block that loses an edge is judged whether the edge went by unlink or by
-  ;; delete. EVENTS are the write's own, ((<writer> . <seq>) ...), one
-  ;; writer's and consecutive. -> ids, sorted.
-  (define (write-targets post events)
+  ;; delete -- for a delete that took effect: the block is deleted in POST and
+  ;; was not in PRE, the state before the write (a gated delete, or one of a
+  ;; block already gone, unlinks nothing). EVENTS are the write's own,
+  ;; ((<writer> . <seq>) ...), one writer's and consecutive. -> ids, sorted.
+  (define (write-targets post events pre)
     (let loop ((rs (if (null? events) '()
                        (state-written-records post (car (car events)) (cdr (car events))
                                               (+ 1 (cdr (list-ref events (- (length events) 1)))))))
                (ids '()) (deleted '()) (writer (and (pair? events) (car (car events)))))
       (if (null? rs)
-          (let ((far (if (null? deleted)
+          (let* ((deleted-here? (lambda (st id) (let ((row (state-read st id))) (and row (cdr (assq 'deleted row)) #t))))
+                 (deleted (filter (lambda (id) (and (deleted-here? post id) (not (deleted-here? pre id)))) deleted))
+                 (far (if (null? deleted)
                          '()
                          (apply append
                                 (map (lambda (e)
