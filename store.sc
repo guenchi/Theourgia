@@ -3849,7 +3849,9 @@
                 (let* ((body (plan-member-intent (cdar es)))
                        (block (and (pair? body) (pair? (cdr body)) (eq? 'set (car body))
                                    (cadr body)))
-                       (text (and block (= 4 (length body)) (eq? 'src (caddr body))
+                       ;; list? FIRST: a member another writer declared need
+                       ;; not be a proper list, and length would raise on it.
+                       (text (and block (list? body) (= 4 (length body)) (eq? 'src (caddr body))
                                   (cadddr body)))
                        ;; EITHER SPELLING OF THE TEXT IS CHECKED. A plan
                        ;; for a text-mode block declares its bytes (F119);

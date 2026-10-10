@@ -307,16 +307,19 @@
   ;; no sub-operation for it -- which is what an `unchanged` item looks
   ;; like: it was consumed, and its bytes are the committed src at its
   ;; own cut rather than anything the plan carries.
+  ;; A member in an expect wrapper is read by the intent inside
+  ;; (request.sc, plan-member-intent), as every reader of a plan's members.
   (define (declared-src entries block)
     (let loop ((es entries))
-      (cond
-        ((null? es) #f)
-        ((and (pair? (car es)) (list? (cdar es)) (>= (length (cdar es)) 4)
-              (eq? 'set (car (cdar es)))
-              (equal? block (cadr (cdar es)))
-              (eq? 'src (caddr (cdar es))))
-         (cadddr (cdar es)))
-        (else (loop (cdr es))))))
+      (if (null? es)
+          #f
+          (let ((i (and (pair? (car es)) (plan-member-intent (cdar es)))))
+            (if (and (list? i) (>= (length i) 4)
+                     (eq? 'set (car i))
+                     (equal? block (cadr i))
+                     (eq? 'src (caddr i)))
+                (cadddr i)
+                (loop (cdr es)))))))
 
   ;; NOTE: ONE ENTRY PER VERSION, NOT PER GATED PLAN. Two plans claiming one
   ;; identity are both gated and both name the same version, so a caller

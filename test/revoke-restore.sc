@@ -379,4 +379,42 @@
         (list answer unchanged slot))
       (list (list 'error 'bad-request 'draft-on-datum-unsupported (list 'block D) '(use def)) #t #f))
 
+;; ---- RR-07 a revoked plan whose member another writer wrapped in expect ----------
+;;
+;; A plan another writer made can wrap a member in (expect <hash> <intent>).
+;; The text a revoked consumption is restored from is the member's, read
+;; through the wrapper (request.sc, plan-member-intent): read as the bare
+;; set it was never found, and restore fell back to the block's src at the
+;; consumed cut, which does not name this version. Forged as RR-05's is: a
+;; plan claiming R1's identity, at a version computed from the wrapped text.
+(define wrapped-text "the text a wrapped member froze")
+(define wrapped-based (list-ref (car (caddr real-consumes)) 2))
+(define wrapped-cut (list-ref (car (caddr real-consumes)) 3))
+(define wrapped-version (draft-version (string->utf8 wrapped-text) wrapped-based wrapped-cut))
+(define wrapped-forged
+  (encode-record 1 1789000000004 (ev-actor plan-ev) '()
+                 (storable-encode
+                   (list 'plan (list-ref (ev-payload plan-ev) 1) (list-ref (ev-payload plan-ev) 2)
+                         (list-ref (ev-payload plan-ev) 3)
+                         (list (list 0 'expect wrapped-based (list 'set A 'src wrapped-text)))
+                         (list 'consumes (cadr real-consumes)
+                               (list (list A wrapped-version wrapped-based wrapped-cut)))))))
+(want "RR-07 setup: the plan with a wrapped member publishes, and the store lists its version as revoked"
+      (let* ((published (car (log-publish! store "wrappzzz" 1 wrapped-forged (segment-sha wrapped-forged))))
+             (listed (exists (lambda (r) (equal? wrapped-version (cadr (car r)))) (state-revoked (state) writer))))
+        (list published listed))
+      '(published #t))
+(call 'discard A)
+(want "RR-07 restoring it gives back the wrapped member's text"
+      ;; Read back through the writer's working view, as the person would see it.
+      (let* ((answer (call 'restore wrapped-version))
+             (view (format "~s" (call 'read A "--working")))
+             (n (string-length wrapped-text)))
+        (list (rpc-ok? answer)
+              (let scan ((i 0))
+                (cond ((> (+ i n) (string-length view)) #f)
+                      ((string=? (substring view i (+ i n)) wrapped-text) #t)
+                      (else (scan (+ i 1)))))))
+      '(#t #t))
+
 (printf "rows: ~a\n~a failures\nrevoke-restore complete\n" rows bad)

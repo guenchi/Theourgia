@@ -386,7 +386,7 @@
       (let ((es (list (plan-ev link5-entries) (ev 14 0 '(link "b" cites "c")))))
         (membership (cadr es) es))
       'valid)
-(want "U3m TWIN: the four parts still have to agree"
+(want "U3m CONTROL: the four parts still have to agree"
       (let ((es (list (plan-ev link5-entries) (ev 14 0 '(link "b" cites "d")))))
         (membership (cadr es) es))
       'invalid)
@@ -399,7 +399,7 @@
 (want "U3m a wrapped member on a block the plan consumes is not malformed"
       (payload-reason (consumes-plan '(expect "h0" (set "b" src "x"))))
       #f)
-(want "U3m TWIN: a wrapped member on a block it does not consume is"
+(want "U3m CONTROL: a wrapped member on a block it does not consume is malformed"
       (payload-reason (consumes-plan '(expect "h0" (set "c" src "x"))))
       'consumes-does-not-cover-sub-operation)
 
