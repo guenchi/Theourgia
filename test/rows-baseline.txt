@@ -37,6 +37,7 @@ datum-completion 3 7 d3387db41f3eb55658cb8f35aa9b2f82
 datum-draft 36 40 a4ddbe6da08d03d40f0a06c00e80dcb2
 datum-import - 77 95f9a0815fe286343c544066ff3c6f33
 datum-self 18 82 b03381aee59dbbc849d695087c1f317b
+delete-targets 6 10 598bc84011cbc5f4d9bfef74f9b7587f
 delivery-order 11 14 ce2b9b02ad675ad1b6c44c0d72889ade
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
 describe 29 32 468e142356259a13f50a39fa37726ea7
