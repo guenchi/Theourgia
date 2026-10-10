@@ -50,7 +50,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 (define (lines-of-count text)
   (let loop ((i 0) (n 0))

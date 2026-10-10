@@ -41,7 +41,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 ;; THE SLOW START IS IN-PROCESS. A wrapper that slept in a shell and then
 ;; exec'd the interpreter would leave the `sleep` child alive when the

@@ -50,6 +50,7 @@
   (syntax-rules ()
     ((_ label got expected)
      (with-expected label expected (x) (want-1 label (caught got) x)))))
+
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/datum-completion-" (number->string (get-process-id))))
 (when (file-exists? root) (error 'datum-completion "Use a fresh test root" root))

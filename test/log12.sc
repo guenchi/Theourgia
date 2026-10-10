@@ -146,7 +146,7 @@
   (syntax-rules ()
     ((_ label got expect)
      (begin (set! rows-run (+ rows-run 1))
-            (with-expected label expect (x) (want-1 label (caught got) x))))))
+            (with-expected label expect (x) (want-1 label (caught got) (caught x)))))))
 
 (define-syntax caught
   (syntax-rules ()
