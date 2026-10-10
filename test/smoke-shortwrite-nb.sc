@@ -181,20 +181,28 @@
 (define dir1 (test-dir "pipe-full"))
 (system (string-append "mkfifo " dir1 "/f"))
 ;; The holder opens the fifo for reading (so the writer's open returns) and
-;; never reads; it is ended below by its pid. NEVER BY ITS COMMAND LINE: sh
-;; runs its last command in place, so the holder is `sleep 30` by the time
-;; it is ended, and `pkill -f` with the line it was given matched nothing --
-;; the holder outlived the file and was left in the runner's group.
-;; -> #t once process PID is gone: TERM, then up to five seconds of
-;; `kill -0` until it answers that there is no such process.
-(define (stop-pid! pid)
-  (system (string-append "kill " (number->string pid) " 2>/dev/null"))
+;; never reads; it is ended below by its pid, and it is that pid because sh
+;; execs the sleep explicitly. NEVER BY ITS COMMAND LINE: `pkill -f` with
+;; the line sh was given ended at most the sh, and `sleep 30` -- holding the
+;; fifo -- outlived the file and was left in the runner's group.
+;; -> whether PID is still the process this file started: ps knows it, it
+;; is not a zombie (exited, not yet reaped), and its command line holds
+;; MARKER. NEVER `kill -0` ALONE: it answers yes for a zombie, and for a pid
+;; reused by a process this file never started -- which TERM would then end.
+(define (ours-alive? pid marker)
+  (= 0 (system (string-append "ps -ww -p " (number->string pid) " -o stat= -o command= 2>/dev/null"
+                              " | grep -v '^ *Z' | grep -qF '" marker "'"))))
+;; -> #t once process PID, started with MARKER in its command line, is gone:
+;; TERM while it is ours, then up to five seconds until it is not.
+(define (stop-pid! pid marker)
+  (when (ours-alive? pid marker)
+    (system (string-append "kill " (number->string pid) " 2>/dev/null")))
   (let wait ((k 0))
-    (cond ((not (= 0 (system (string-append "kill -0 " (number->string pid) " 2>/dev/null")))) #t)
+    (cond ((not (ours-alive? pid marker)) #t)
           ((> k 50) #f)
           (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define holder-pid-file (string-append dir1 "/holder.pid"))
-(system (string-append "sh -c 'exec 3< " dir1 "/f; sleep 30' & echo $! > " holder-pid-file))
+(system (string-append "sh -c 'exec 3< " dir1 "/f; exec sleep 30' & echo $! > " holder-pid-file))
 (define fd1 (fd-open (string-append dir1 "/f") (list 'write)))
 (define nb1 (make-nonblocking! fd1))
 (define t0 (real-time))
@@ -203,7 +211,9 @@
 (define full (if nb1 (write-nonblocking fd1) 'NOT-NONBLOCKING))
 (define full-ms (- (real-time) t0))
 (fd-close fd1)
-(define holder-stopped (stop-pid! (call-with-input-file holder-pid-file read)))
+(define holder-stopped
+  (let ((pid (guard (e (#t #f)) (call-with-input-file holder-pid-file read))))
+    (and (integer? pid) (stop-pid! pid "sleep 30"))))
 (printf "NB1 reading: ~s in ~a ms (non-blocking: ~a)\n" full full-ms nb1)
 (want "NB1 a full non-blocking pipe: write-all! raises the filesystem error with errno EAGAIN, promptly, after writing what fitted"
       (list (if (pair? full) (car full) full)

@@ -389,12 +389,20 @@
 ;; exited -- the lagging row's fifteen seconds -- outlived the file and was
 ;; left in the runner's group.
 (define fake-pid-files '())
-;; -> #t once process PID is gone: TERM, then up to five seconds of
-;; `kill -0` until it answers that there is no such process.
-(define (stop-pid! pid)
-  (system (string-append "kill " (number->string pid) " 2>/dev/null"))
+;; -> whether PID is still the process this file started: ps knows it, it
+;; is not a zombie (exited, not yet reaped), and its command line holds
+;; MARKER. NEVER `kill -0` ALONE: it answers yes for a zombie, and for a pid
+;; reused by a process this file never started -- which TERM would then end.
+(define (ours-alive? pid marker)
+  (= 0 (system (string-append "ps -ww -p " (number->string pid) " -o stat= -o command= 2>/dev/null"
+                              " | grep -v '^ *Z' | grep -qF '" marker "'"))))
+;; -> #t once process PID, started with MARKER in its command line, is gone:
+;; TERM while it is ours, then up to five seconds until it is not.
+(define (stop-pid! pid marker)
+  (when (ours-alive? pid marker)
+    (system (string-append "kill " (number->string pid) " 2>/dev/null")))
   (let wait ((k 0))
-    (cond ((not (= 0 (system (string-append "kill -0 " (number->string pid) " 2>/dev/null")))) #t)
+    (cond ((not (ours-alive? pid marker)) #t)
           ((> k 50) #f)
           (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define (subscribe-to-fake! st script)
@@ -470,6 +478,16 @@
         (list rc (< elapsed 10000) (and (last-datum s) (car (last-datum s))) (clause 'reason (last-datum s)))
         (list 1 #t 'error '(lagging))))
 
+;; EVERY FAKE ENDED HERE, right after the rows that start them, while the
+;; lagging row's fake still has most of its fifteen seconds to sleep: each
+;; pid file is read on its own and every fake is stopped, whatever an
+;; earlier one answered.
+(want "F10-7 every fake daemon this file started has exited before the file ends"
+      (let* ((pids (map (lambda (f) (guard (e (#t #f)) (call-with-input-file f read))) fake-pid-files))
+             (stopped (map (lambda (pid) (and (integer? pid) (stop-pid! pid "change-stream-fake-daemon.pl"))) pids)))
+        (list (length pids) (for-all integer? pids) (for-all values stopped)))
+      (list fake-n #t #t))
+
 ;; ---- core.sc forwards it like any verb (F10-14) -----------------------------------
 (let* ((st (fresh-store!))
        (_ (insert! st "warm"))
@@ -482,11 +500,6 @@
         (list rc (length ls) (and (pair? a) (car a)) (and (pair? a) (clause 'subscribed a)) (and (pair? a) (string? (car (or (clause 'daemon a) '(#f))))))
         (list 0 1 'ok '(0) #t))
   (stop-daemon! st))
-
-(want "F10-7 every fake daemon this file started has exited before the file ends"
-      (let ((pids (map (lambda (f) (call-with-input-file f read)) fake-pid-files)))
-        (list (length pids) (for-all integer? pids) (for-all stop-pid! pids)))
-      (list fake-n #t #t))
 
 (sh "rm -rf " run-root)
 (printf "rows: ~a~%~a failures~%change-stream-client complete~%" rows bad)
