@@ -2699,17 +2699,11 @@
 (want "N11 check names the unreadable block and its field, and not the marked one"
       (check-clause d12b 'undecodable-text)
       (list 'undecodable-text (list (list d12b-bad 'src))))
-;; A FIELD GREP DOES NOT READ: check names the title, a search counts the
-;; block, and grep, which decodes only `src`, does not.
-(define d12c (fresh-store!))
-(init! d12c)
-(define d12c-title (insert! d12c "--title" "placeholder"))
-(run-with-stdin d12c
-                (string-append "((set \"" d12c-title "\" title #vu8(255 254)) (set \"" d12c-title "\" src \"tag\"))")
-                "batch")
-(want "N11 check names a title that is not text; search counts the block and grep, decoding only src, does not"
-      (list (scan-reading d12c "search" "tag") (scan-reading d12c "grep" "tag") (check-clause d12c 'undecodable-text))
-      (list '(1 1) '(1 0) (list 'undecodable-text (list (list d12c-title 'title)))))
+;; NOT BUILT HERE: a block whose title or keywords alone is not text, which
+;; a search would count and grep would not. No write can make one -- `batch`
+;; refuses bytes in either field, `(field-value-not-text (field title) (kind
+;; bytevector) (allowed (string)))`, measured. check names them because a
+;; search decodes them; src is the field these rows can reach.
 
 ;; ---- how many names, rather than whether there is an index --------------
 (define (defs-clause store q)
