@@ -50,23 +50,11 @@
 (define-syntax caught
   (syntax-rules ()
     ((_ e0) (guard (e (#t (list 'RAISED e))) e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ name got expected)
-     ;; AN EXPECTED VALUE THAT RAISES IS A FAIL LINE, with no comparison: any
-     ;; value standing for the raise could be equalled by a row, and with
-     ;; `caught` on both sides two rows raising the same message would read
-     ;; as agreeing.
-     (call-with-current-continuation
-       (lambda (k)
-         (let ((x (guard (e (#t (expected-raised! name e) (k #f))) expected)))
-           (want-1 name (caught got) x)))))))
-(define (expected-raised! name e)
-  (set! rows (+ rows 1))
-  (set! bad (+ bad 1))
-  (printf "FAIL ~a -> the expected value raised ~s\n" name
-          (if (and (condition? e) (message-condition? e)) (condition-message e) e)))
-
+     (with-expected name expected (x) (want-1 name (caught got) x)))))
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
     (let loop ((i 0))

@@ -61,11 +61,12 @@
                                      (condition-message e)
                                      e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (want-1 label (caught got) (caught expected))))))
+            (with-expected label expected (x) (want-1 label (caught got) x))))))
 
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -186,6 +187,22 @@
     ;; A FIXTURE THAT COUNTS ROWS, which the empty table does not list.
     (scheme-fixture "rowsy" "(printf \"ok one~%rows: 1~%\")\n")
     (cons "red.sc" "(import (chezscheme))\n(printf \"1 failures~%red complete~%\")\n")
+    ;; TWO FIXTURES THAT DEFINE want: one evaluates the expected value bare,
+    ;; one through the guard (expected.ss). The runner names the first and not
+    ;; the second.
+    (scheme-fixture "want-bare"
+      (string-append
+        "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(define-syntax want\n  (syntax-rules () ((_ n g e) (want-1 n (caught g) e))))\n"
+        "(want \"one\" 1 1)\n"))
+    (scheme-fixture "want-guarded"
+      (string-append
+        "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(include \"expected.ss\")\n"
+        "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n (caught g) x)))))\n"
+        "(want \"one\" 1 1)\n"))
     ;; What the runner handed its fixtures, read from the fixture's own
     ;; environment; and a marker file written into each root, so "removed"
     ;; is about roots that held something.
@@ -382,6 +399,8 @@
     ;; THE LAUNCHER GOES WITH THE RUNNER when this tree has one: the runner
     ;; calls ./launch.pl beside itself and refuses to start without it.
     (when (file-exists? "launch.pl") (sh "cp launch.pl " dir "/launch.pl"))
+    ;; AND THE EXPECTED-VALUE GUARD, which a fixture defining want includes.
+    (when (file-exists? "expected.ss") (sh "cp expected.ss " dir "/expected.ss"))
     (spit! (string-append dir "/rows-baseline.txt") "")
     (for-each (lambda (h) (spit! (string-append dir "/" (car h)) (cdr h))) helper-texts)
     (for-each (lambda (name)
@@ -1283,6 +1302,15 @@
                       (pair? (snap-dirs t))))
                 toks)
         '()))
+
+(printf "== RS-G: a fixture's want guards its expected value ==\n")
+(let ((c (inner! '("ok.py" "want-bare.sc" "want-guarded.sc"))))
+  (start! c)
+  (let* ((done (finished? c 120))
+         (line (find (lambda (l) (starts-with? l "UNGUARDED FIXTURES")) (lines-of (run-log c)))))
+    (want "RS-G the runner names the fixture whose want evaluates its expected value bare, and not the one that guards it"
+          (list done (and line (word-in? line "want-bare")) (and line (word-in? line "want-guarded")))
+          '(#t #t #f))))
 
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)

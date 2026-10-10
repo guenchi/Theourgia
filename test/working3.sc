@@ -75,11 +75,12 @@
     (else
      (set! failures (+ failures 1))
      (printf "FAIL ~a: ~s WANT ~s\n" name (caught-value actual) (caught-value expected)))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect)
      (begin (set! rows-run (+ rows-run 1))
-            (want-1 label (caught got) (caught expect))))))
+            (with-expected label expect (x) (want-1 label (caught got) x))))))
 (define-syntax caught
   (syntax-rules ()
     ((_ e0)

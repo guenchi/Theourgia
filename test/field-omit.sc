@@ -34,9 +34,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (caught got) expected))))
+    ((_ name got expected) (with-expected name expected (x) (want-1 name (caught got) x)))))
 
 ;; One block: `note` set to the symbol omit; `gone` written and then removed
 ;; (a set with no value: the absence); `kept` an ordinary value beside them.

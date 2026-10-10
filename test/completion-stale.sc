@@ -56,9 +56,10 @@
                          (if (and (condition? e) (message-condition? e))
                              (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 ;; A CELL THAT RAISES IS A FAILED ROW, NOT THE END OF THE FILE: a cell run
 ;; on a tree that answers otherwise (the base, a mutant) may meet a shape
 ;; it did not build for, and the cells after it must still be asked.

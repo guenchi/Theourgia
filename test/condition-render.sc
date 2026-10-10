@@ -39,9 +39,10 @@
 (define-syntax caught
   (syntax-rules ()
     ((_ e0) (guard (e (#t (list 'RAISED (condition->text e)))) e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 (define (holds? text needle)
   (let ((n (string-length needle)) (m (string-length text)))

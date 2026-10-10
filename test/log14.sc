@@ -143,11 +143,12 @@
 ;; tables as well as one at a time.
 (define rows-run 0)
 
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect)
      (begin (set! rows-run (+ rows-run 1))
-            (want-1 label (caught got) (caught expect))))))
+            (with-expected label expect (x) (want-1 label (caught got) x))))))
 
 (define-syntax caught
   (syntax-rules ()

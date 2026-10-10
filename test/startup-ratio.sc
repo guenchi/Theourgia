@@ -96,9 +96,10 @@
                          (if (and (condition? e) (message-condition? e))
                              (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 ;; ---- the calibration record (read as data by C4b) ---------------------------
 ;;

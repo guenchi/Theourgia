@@ -43,9 +43,10 @@
                          (if (and (condition? e) (message-condition? e))
                              (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 (define (settles-to base read)
   (let loop ((k 0))

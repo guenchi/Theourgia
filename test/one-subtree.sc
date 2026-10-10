@@ -46,11 +46,12 @@
                                      (condition-message e)
                                      e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (want-1 label (caught got) (caught expected))))))
+            (with-expected label expected (x) (want-1 label (caught got) x))))))
 
 ;; SCRATCH PATHS LIVE UNDER THE RUNNER'S SCRATCH ROOT (F71).
 (define scratch-base
