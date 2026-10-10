@@ -32,7 +32,8 @@
 ;; answering a request is refused at its end.
 
 (import (chezscheme) (theourgia sched) (theourgia net)
-        (only (theourgia wire) sexpr->string-extended))
+        (only (theourgia wire) sexpr->string-extended)
+        (only (theourgia reduce) block-id))
 
 (define bad 0)
 (define rows 0)
@@ -122,9 +123,11 @@
         (list 'transport r))))
 (define (a . args) (apply ask "agent-a" args))
 (define (b . args) (apply ask "agent-b" args))
+;; A BLOCK'S ID IS THE REDUCER'S SPELLING of its creating event (block-id: the
+;; sequence in base 36), not the event's numbers written out.
 (define (new-id answer)
   (let ((ev (and (pair? answer) (eq? (car answer) 'ok) (assq 'events (cdr answer)))))
-    (and ev (pair? (cadr ev)) (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e)))))))
+    (and ev (pair? (cadr ev)) (let ((e (car (cadr ev)))) (block-id (car e) (cdr e))))))
 (define (item-ids answer) (if (and (pair? answer) (eq? (car answer) 'batch)) (map new-id (cadr answer)) '()))
 (define (batch-of who intents . options) (apply who 'batch (format "~s" intents) options))
 (define (head x n) (if (and (list? x) (>= (length x) n)) (list-head x n) x))
