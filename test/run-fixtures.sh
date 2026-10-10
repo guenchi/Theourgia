@@ -1097,17 +1097,20 @@ for f in *.sc; do
   # earlier form of this check, `grep -q "define-syntax caught"`, stayed
   # silent for a macro renamed `caught-disabled` -- a false silence, the one
   # failure a check of this kind must not have.
-  # READ IN THE want FORM ITSELF, from its line to the next blank one: a
-  # mention elsewhere in the file -- a comment, a fixture's text in a string
-  # -- says nothing about what want does. Its computed value goes through a
-  # guard (caught, tolerant, or an inline guard); its expected value goes
-  # through with-expected (expected.ss), included as a whole line: left bare,
-  # a row whose expected value raises ends the file, and caught like the
-  # computed one, two rows that raise the same message compare equal and read
-  # green.
-  form=$(sed -n '/^ *(define-syntax want$/,/^ *$/p' "$f")
+  # READ IN THE want FORM ITSELF, from its line to the parenthesis that closes
+  # it (counted outside ; comments): a mention elsewhere in the file -- a
+  # comment, a fixture's text in a string -- says nothing about what want
+  # does. Its computed value, want-1's second argument, goes through a guard
+  # (caught, tolerant, or an inline guard); its expected value goes through
+  # with-expected (expected.ss), included as a whole line: left bare, a row
+  # whose expected value raises ends the file, and caught like the computed
+  # one, two rows that raise the same message compare equal and read green.
+  form=$(awk '/^ *\(define-syntax want$/ { on = 1 }
+              on { line = $0; sub(/;.*/, "", line); print $0
+                   depth += gsub(/\(/, "(", line) - gsub(/\)/, ")", line)
+                   if (depth <= 0) exit }' "$f")
   { printf '%s\n' "$form" | grep -q "(with-expected " \
-      && printf '%s\n' "$form" | grep -Eq "\((caught|tolerant|guard) " \
+      && printf '%s\n' "$form" | grep -Eq "\(want-1 [^ ()]+ \((caught|tolerant|guard) " \
       && grep -q '^ *(include "expected.ss")$' "$f"; } \
     || ungirded="$ungirded ${f%.sc}"
 done
