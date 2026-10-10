@@ -814,10 +814,11 @@
 (let ((c (inner! '("green.sc"))))
   (start! c)
   (let ((done (finished? c 120)))
-    (want "RS-P a run over scheme fixtures only reads no `*` entry, no UNACCOUNTED line, and exits 0"
+    (want "RS-P a run over scheme fixtures only reads no `*` entry, no UNACCOUNTED line, no complaint about a missing file, and exits 0"
           (list done (and (line-with c "RED *") #t) (and (line-with c "UNACCOUNTED") #t)
-                (and (line-with c "the directory changed under the run") #t) (rc-of c))
-          '(#t #f #f #f 0))))
+                (and (line-with c "the directory changed under the run") #t)
+                (and (line-with c "No such file") #t) (rc-of c))
+          '(#t #f #f #f #f 0))))
 
 (printf "== RS-7: the summary's python numbers ==\n")
 (let ((c (inner! '("ok.py" "red.sc"))))

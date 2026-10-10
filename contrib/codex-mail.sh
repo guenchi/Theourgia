@@ -16,4 +16,14 @@
 # THE OLD NAME OF contrib/mail-hook.sh, kept so a hooks file that names it
 # still runs: the same handler, given the same arguments.
 
-exec sh "$(dirname "$0")/mail-hook.sh" "$@"
+# Beside the script itself, not beside a link to it: a link is followed to
+# the file it names.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+exec sh "$(dirname "$self")/mail-hook.sh" "$@"

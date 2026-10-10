@@ -634,7 +634,7 @@
 (define hooks-text (file-text "../contrib/codex-hooks.json"))
 (define (hook-command-in text event)
   (let* ((at (let find ((i 0))
-               (cond ((> (+ i (string-length event)) (string-length text)) #f)
+               (cond ((> (+ i (string-length event) 2) (string-length text)) #f)
                      ((string=? (substring text i (+ i (string-length event) 2)) (string-append "\"" event "\"")) i)
                      (else (find (+ i 1))))))
          (key "\"command\": \"")
@@ -686,20 +686,34 @@
     (new-id (car (cadr a)))))
 (define claude-post (claude-hook-run "hook-claude-post" "PostToolUse"))
 (define claude-prompt (claude-hook-run "hook-claude-prompt" "UserPromptSubmit"))
+;; The answer is read whole up to the ids: the object, its two keys in the
+;; order both vendors read, and the actor named; then the letter's id.
+(define (hook-answer-for? answer event id)
+  (let ((head (string-append "{\"hookSpecificOutput\":{\"hookEventName\":\"" event
+                             "\",\"additionalContext\":\"theourgia: unread mail for claude: ")))
+    (and (string? answer)
+         (>= (string-length answer) (string-length head))
+         (string=? (substring answer 0 (string-length head)) head)
+         (string-contains? answer id))))
 (want "H with a letter to claude unread, both of claude's commands answer the hook's JSON naming it, and codex's name nothing"
-      (in-order (and (string? claude-post) (string-contains? claude-post LC))
-                (and (string? claude-post) (string-contains? claude-post "\"hookEventName\":\"PostToolUse\""))
-                (and (string? claude-prompt) (string-contains? claude-prompt LC))
-                (and (string? claude-prompt) (string-contains? claude-prompt "\"hookEventName\":\"UserPromptSubmit\""))
+      (in-order (hook-answer-for? claude-post "PostToolUse" LC)
+                (hook-answer-for? claude-prompt "UserPromptSubmit" LC)
                 (hook-run "hook-post-3" "PostToolUse"))
-      '(#t #t #t #t ""))
+      '(#t #t ""))
 (want "H the handler's old name, codex-mail.sh, gives the same answer as mail-hook.sh"
       (let ((run-as (lambda (name script)
                       (sh-out name (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" M "' THEOURGIA_ACTOR=claude sh "
                                                   tree "/contrib/" script " UserPromptSubmit")))))
         (let ((old (run-as "hook-old-name" "codex-mail.sh")) (new (run-as "hook-new-name" "mail-hook.sh")))
-          (list (string-contains? new LC) (string=? old new))))
+          (list (hook-answer-for? new "UserPromptSubmit" LC) (string=? old new))))
       '(#t #t))
+(want "H the old name, reached through a link in another directory, still runs the handler beside its target"
+      (begin
+        (system (string-append "mkdir -p '" root "/elsewhere' && ln -sf '" tree "/contrib/codex-mail.sh' '" root "/elsewhere/codex-mail.sh'"))
+        (hook-answer-for? (sh-out "hook-linked" (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" M "' THEOURGIA_ACTOR=claude sh '"
+                                                               root "/elsewhere/codex-mail.sh' UserPromptSubmit"))
+                          "UserPromptSubmit" LC))
+      #t)
 (run M "claude" 'set LC "status" "read")
 
 (system (string-append "PATH='" root "/bin':\"$PATH\" sh ../contrib/doorbell.sh '" M "' codex pane > '" root "/doorbell.out' 2>&1 &"))

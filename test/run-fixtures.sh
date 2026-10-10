@@ -890,7 +890,9 @@ for f in *.sc *.py; do
   # python fixture handed this loop the literal `*.py`, which was launched,
   # read RED, counted as a fixture the directory does not hold, and then
   # refused as "the directory changed under the run" -- the wrong cause.
-  [ -e "$f" ] || continue
+  # A dangling link is still a name the directory holds, as `ls` counts it
+  # below, so it is classified as before.
+  [ -e "$f" ] || [ -L "$f" ] || continue
   # NOTHING MORE IS LAUNCHED once a launch's group or result could not be
   # read, or a member of it outlived KILL (launcher design L6).
   [ "$aborted" = 1 ] && break
@@ -1097,6 +1099,7 @@ echo "row counts: $counted fixture(s) print one; $(echo $uncounted | wc -w | tr 
 
 ungirded=""
 for f in *.sc; do
+  [ -e "$f" ] || continue
   grep -q "^ *(define-syntax want$" "$f" || continue
   # MATCHED AS WHOLE LINES (want's head, the include), NOT AS SUBSTRINGS: an
   # earlier form of this check, `grep -q "define-syntax caught"`, stayed
@@ -1133,6 +1136,7 @@ fi
 # silence, and the number is what a decision can be made against.
 byproc=""
 for f in *.sc; do
+  [ -e "$f" ] || continue
   grep -q "^ *(define (want " "$f" || continue
   byproc="$byproc ${f%.sc}"
 done
