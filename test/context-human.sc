@@ -21,7 +21,7 @@
 ;; clause follows it, as on the wire. Everything before that line is what
 ;; it was: with a base tree named (THEOURGIA_BASE_LIBDIR, an opt-in as the
 ;; change-stream guard's is), the human output is compared with the base's,
-;; the receipt line left out.
+;; a trailing receipt line left out of both.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
@@ -122,6 +122,14 @@
       (list (list "(receipt (premise \"a.1\" \"h\"))" "(incomplete (writers \"w\"))") #f #f))
 
 ;; ---- N: everything before the receipt line is the base tree's --------------------------------
+;;
+;; A TRAILING RECEIPT LINE IS LEFT OUT OF BOTH, whether or not the base prints
+;; one, so the row does not say what the base lacks: it says the rest is the
+;; same. That this tree prints one is its own element.
+(define (receipt-line? l) (and (>= (string-length l) 8) (string=? (substring l 0 8) "(receipt")))
+(define (without-receipt-line text)
+  (let ((ls (lines text)))
+    (join (if (and (pair? ls) (receipt-line? (last-of ls))) (but-last ls) ls))))
 
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
 (cond
@@ -139,11 +147,13 @@
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N the human output is the base tree's, byte for byte, but for its last line, the receipt"
+     (want "N the human output is the base tree's, byte for byte, a trailing receipt line left out of both; this tree's ends with one"
            (let ((base (call-with-input-file out get-string-all))
                  (now (render-human (ctx S T))))
-             (in-order (> (string-length base) 0) (equal? base (join (but-last (lines now))))))
-           '(#t #t)))))
+             (in-order (> (string-length base) 0)
+                       (equal? (without-receipt-line base) (without-receipt-line now))
+                       (receipt-line? (or (last-of (lines now)) ""))))
+           '(#t #t #t)))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\ncontext-human complete\n" bad rows)
