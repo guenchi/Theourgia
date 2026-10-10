@@ -486,14 +486,15 @@
   ;; once; every other process leaves it answering #f.
   ;;
   ;; AND WHAT THIS PROCESS ITSELF DID TO A SEGMENT IS TOLD TO IT: NOTED is
-  ;; called with the store, the writer and the segment's path right after
-  ;; maintenance cut a torn tail back, still under the lock. That is the one
+  ;; called with the store, the writer, the segment's path and the length it
+  ;; was cut to, right after maintenance cut a torn tail back, still under
+  ;; the lock, in stage repair. That is the one
   ;; thing this process does that leaves a segment shorter than it was, and
   ;; it is this process's own repair, not a file put in its place. An append
   ;; only lengthens a segment, and a rotation writes a new path, which the
   ;; next publication takes as it is, so neither is told.
   (define append-guard (lambda (store writer) #f))
-  (define append-noted (lambda (store writer path) (if #f #f)))
+  (define append-noted (lambda (store writer path cut-length) (if #f #f)))
   (define (log-append-guard! proc . noted)
     (set! append-guard proc)
     (when (pair? noted) (set! append-noted (car noted))))
@@ -6072,8 +6073,15 @@
                   (lambda () (if #f #f))
                   (lambda ()
                     (ftruncate! fd (cadr torn) path)
-                    (append-noted store writer path))
-                  (lambda () (fd-close fd)))))
+                    (barrier! 'after-repair-cut)
+                    ;; IN A STAGE OF ITS OWN, so a fault can reach the
+                    ;; record's snapshot and nothing else: every write's
+                    ;; rotation probe stats the same segment in stage commit.
+                    (parameterize ((theourgia-stage 'repair))
+                      (append-noted store writer path (cadr torn))))
+                  (lambda () (fd-close fd))))
+              ;; The rows' seam between a repair and the append after it.
+              (rotation-probe-fault! path))
             (let* ((rotated (maybe-rotate! store writer seg path p line))
                    (target (car rotated))
                    (target-path (cdr rotated)))
