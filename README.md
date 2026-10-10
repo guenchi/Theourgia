@@ -1620,7 +1620,11 @@ A RULE JUDGES EVERY COMMITTED WRITE MADE AFTER IT, on every route -- the verbs
 that write, `batch`, `commit`, the imports, `def`, `template apply` and the
 completion of a plan already written. A write's TARGETS are the blocks whose
 records it adds: created, set, moved, and either end of a linked or unlinked
-edge, live after the write (a block it deletes is no target). A rule applies to
+edge, live after the write (a block it deletes is no target). A delete unlinks
+every edge of its block as far as a reader of edges can tell, so the live far
+end of each of the deleted block's edges, in either direction, is a target too:
+a review whose only cited result is deleted is judged in that write, as it is
+when the edge is unlinked. A rule applies to
 a target whose kind, after the write, it lists, and that its `where` selects;
 `--must` holds when its goal has a row with `?w` bound to the target,
 `--must-not` when it has none. A STATE rule is asked of the state the write
