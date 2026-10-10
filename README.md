@@ -1092,6 +1092,13 @@ preferred entries are not in it; their versions are in `(versions ...)`,
 as on every read. `(name-use syntactic)` says the definitions step
 consulted name use.
 
+The human output prints each section's name and one line per entry, the
+notes one per line, the `insufficient`, `excluded` and `budget` clauses as
+`--wire` writes them, and then the receipt on one line, the clause exactly as
+`--wire` writes it, ready for `commit --premises`; `(incomplete ...)`, when a
+writer could not be read, follows it. The cut and the versions are `--wire`'s
+only.
+
 ## Following a store
 
 ### `subscribe`
