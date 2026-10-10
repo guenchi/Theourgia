@@ -706,13 +706,16 @@
       (> acts-2 acts-1)
       #t)
 ;; THE STORE'S CLAUSES COME FROM THE STATE THE DAEMON HANDS DESCRIBE: the
-;; template, and the declared table, which a store made from the project
-;; template has (documents, as nothing). The rest is the catalogue.
+;; template, the declared table, which a store made from the project
+;; template has (documents, as nothing), and the rules in force, which it
+;; has too (the template's citation coverage, as cover). In process, with no
+;; state handed, describe adds none of the three; the rest is the catalogue,
+;; and it is that the comparison below holds byte for byte.
 (want "D through the daemon describe carries the declared table: documents, as nothing"
       (clause-of via-daemon 'declared-relations)
       '((documents nothing)))
 (define (strip-store-clauses a)
-  (if (pair? a) (filter (lambda (x) (not (and (pair? x) (memq (car x) '(template declared-relations))))) a) a))
+  (if (pair? a) (filter (lambda (x) (not (and (pair? x) (memq (car x) '(template declared-relations declared-rules))))) a) a))
 (want "D the daemon's catalogue is the in-process one, registered verbs included, byte for byte"
       (equal? (strip-store-clauses via-daemon) (run s1 'describe))
       #t)
