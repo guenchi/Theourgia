@@ -1341,6 +1341,19 @@
           (list done (named? "want-bare") (named? "want-mention") (named? "want-gotbare") (named? "want-guarded") (named? "want-tolerant"))
           '(#t #t #t #t #f #f))))
 
+(printf "== RS-R: every refusal is printed, and the code is the first one's ==\n")
+;; TWO REFUSALS IN ONE RUN: a fixture not green (code 2) and an unguarded one
+;; (code 4). Both lines are printed, in the runner's order; the code is 2.
+(let ((c (inner! '("red.sc" "want-bare.sc"))))
+  (start! c)
+  (let ((done (finished? c 120)))
+    (want "RS-R a run with a red fixture and an unguarded one prints both refusals and exits with the first one's code"
+          (list done
+                (and (line-with c "REFUSING: 1 fixture(s) not green") #t)
+                (and (line-with c "REFUSING: unguarded fixture(s)") #t)
+                (rc-of c))
+          '(#t #t #t 2))))
+
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
 (sh "rm -rf " root)

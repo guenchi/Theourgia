@@ -1146,28 +1146,36 @@ echo "unguarded by construction ($(echo $byproc | wc -w | tr -d " ") fixtures de
 # would report its own tidy-up as a leak.
 count_leaks
 
-# ---- one refusal, after everything has been said ----------------------------
+# ---- every refusal, after everything has been said ---------------------------
 #
 # The order is by what a reader should fix first, and each code is distinct
 # so a caller can tell them apart without parsing the text.
+#
+# NEVER: NOT ONLY THE FIRST. Exiting at the first refusal hid every later one
+# behind it: a tree with known reds always stopped at "not green", and its
+# unguarded fixtures and row baseline were never refused where a caller looks.
+# Every refusal is printed, in this order; the exit code is the first one's.
+refusal_code=0
+refuse() {
+  echo "REFUSING: $2"
+  if [ "$refusal_code" = 0 ]; then refusal_code=$1; fi
+}
 if [ "$bad" != 0 ]; then
-  echo "REFUSING: $bad fixture(s) not green"
-  exit 2
+  refuse 2 "$bad fixture(s) not green"
 fi
 if [ "$leaked" != 0 ] || [ "$left_group" != 0 ]; then
-  echo "REFUSING: this run left something behind"
-  exit 3
+  refuse 3 "this run left something behind"
 fi
 if [ "$aborted" != 0 ]; then
-  echo "REFUSING: $abort_reason; nothing more was launched"
-  exit 6
+  refuse 6 "$abort_reason; nothing more was launched"
 fi
 if [ "$guard_bad" != 0 ]; then
-  echo "REFUSING: unguarded fixture(s)"
-  exit 4
+  refuse 4 "unguarded fixture(s)"
 fi
 if [ "$baseline_bad" != 0 ]; then
-  echo "REFUSING: the row baseline does not describe this tree"
-  exit 1
+  refuse 1 "the row baseline does not describe this tree"
+fi
+if [ "$refusal_code" != 0 ]; then
+  exit "$refusal_code"
 fi
 
