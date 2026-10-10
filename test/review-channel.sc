@@ -686,15 +686,19 @@
     (new-id (car (cadr a)))))
 (define claude-post (claude-hook-run "hook-claude-post" "PostToolUse"))
 (define claude-prompt (claude-hook-run "hook-claude-prompt" "UserPromptSubmit"))
-;; The answer is read whole up to the ids: the object, its two keys in the
-;; order both vendors read, and the actor named; then the letter's id.
+;; The answer is read at both ends: the object, its two keys in the order
+;; both vendors read and the actor named at its head; the string and both
+;; objects closed at its end, one line; the letter's id between.
 (define (hook-answer-for? answer event id)
-  (let ((head (string-append "{\"hookSpecificOutput\":{\"hookEventName\":\"" event
-                             "\",\"additionalContext\":\"theourgia: unread mail for claude: ")))
+  (let* ((head (string-append "{\"hookSpecificOutput\":{\"hookEventName\":\"" event
+                              "\",\"additionalContext\":\"theourgia: unread mail for claude: "))
+         (tail "\"}}\n")
+         (n (if (string? answer) (string-length answer) 0)))
     (and (string? answer)
-         (>= (string-length answer) (string-length head))
+         (>= n (+ (string-length head) (string-length tail)))
          (string=? (substring answer 0 (string-length head)) head)
-         (string-contains? answer id))))
+         (string=? (substring answer (- n (string-length tail)) n) tail)
+         (string-contains? (substring answer (string-length head) (- n (string-length tail))) id))))
 (want "H with a letter to claude unread, both of claude's commands answer the hook's JSON naming it, and codex's name nothing"
       (in-order (hook-answer-for? claude-post "PostToolUse" LC)
                 (hook-answer-for? claude-prompt "UserPromptSubmit" LC)
