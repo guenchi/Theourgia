@@ -2619,7 +2619,7 @@
 
      (define fault-argument-checked
        (when (memq fault-name '(fsync-fail no-log-fsync open-fail read-fail-after readdir-fail-after
-                                lseek-fail mkdir-fail))
+                                lseek-fail mkdir-fail rotation-probe-fail))
          (unless (and (string? fault-substring) (> (string-length fault-substring) 0))
            (assertion-violation 'theourgia-ffi
                                 "this fault needs a non-empty path substring"

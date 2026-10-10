@@ -376,8 +376,11 @@
 ;; segment, 2000 bytes with no newline are appended to it (longer than the
 ;; next record), and a read folds them, its publication (number REVISION)
 ;; waited for. -> (segment first-write-ok? size-before folded), or #f when
-;; there is no segment.
+;; there is no segment -- a daemon that did not start included: its store
+;; may have no writers directory to list.
 (define (make-torn! d tag revision)
+  (guard (e (#t #f)) (make-torn-unguarded! d tag revision)))
+(define (make-torn-unguarded! d tag revision)
   (let* ((first-write (ask-tagged d "insert \"--title\" \"BEFORE-TORN\"" 8000))
          (current (tagged-current-segment d))
          (seg (and current (cdr current))))
@@ -827,16 +830,17 @@
                 '(#t published #t #t #t published #t))))
 
       ;; D-TORN-3a and 3b: parked after the cut, the segment moved aside and
-      ;; the path left absent; the record's snapshot fails (stat-fail@repair)
-      ;; and the probe cannot open the path. Then a file goes back at the path:
-      ;; the cut file itself, whose length is the cut length (the next write
-      ;; lands), or one byte shorter (the next write is refused).
+      ;; the path left absent; the record finds no version at the path (the
+      ;; absent branch: no fault is needed, D-TORN-1 is the injected one) and
+      ;; knows the cut length, and the probe cannot open the path. Then a file
+      ;; goes back at the path: the cut file itself, whose length is the cut
+      ;; length (the next write lands), or one byte shorter (the next write is
+      ;; refused).
       (let ((torn-parked
               (lambda (tag put-back)
                 (let* ((fifo (string-append scratch-base "/dmn-fifo-" pid-text "-" tag))
                        (_ (system (string-append "rm -f " fifo "; mkfifo " fifo)))
-                       (d (start-tagged-daemon! tag "stat-fail@repair:file=000001.sexp"
-                                                (string-append "after-repair-cut:" fifo)))
+                       (d (start-tagged-daemon! tag #f (string-append "after-repair-cut:" fifo)))
                        (t (make-torn! d tag 3))
                        (seg (and t (car t)))
                        (aside (and seg (string-append seg ".aside"))))
@@ -856,7 +860,7 @@
                           (contains? (tagged-log d) "(trace repair-noted cut-length")
                           next))))))
         (let ((r (torn-parked "torn-b1" (lambda (seg aside n) (system (string-append "mv " aside " " seg))))))
-          (want "D-TORN-3a the record's snapshot fails and the write fails with the path gone; the cut file put back (the cut length) is not a swap: the next write lands"
+          (want "D-TORN-3a the path gone after the cut: the record knows the cut length and the write fails; the cut file put back (the cut length) is not a swap: the next write lands"
                 (append (list-head r 6) (list (answer-ok? (list-ref r 6))))
                 '(#t published #t #t #t #t #t)))
         (let ((r (torn-parked "torn-b2"
