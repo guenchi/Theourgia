@@ -193,13 +193,13 @@
     (scheme-fixture "want-bare"
       (string-append
         "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
-        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) (guard (x (#t (list 'RAISED x))) e0))))\n"
         "(define-syntax want\n  (syntax-rules () ((_ n g e) (want-1 n (caught g) e))))\n"
         "(want \"one\" 1 1)\n"))
     (scheme-fixture "want-guarded"
       (string-append
         "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
-        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) (guard (x (#t (list 'RAISED x))) e0))))\n"
         "(include \"expected.ss\")\n"
         "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n (caught g) x)))))\n"
         "\n(want \"one\" 1 1)\n"))
@@ -208,17 +208,26 @@
     (scheme-fixture "want-mention"
       (string-append
         "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
-        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) (guard (x (#t (list 'RAISED x))) e0))))\n"
         "(include \"expected.ss\")\n"
         ";; (with-expected is not used below\n"
         "(define-syntax want\n  (syntax-rules () ((_ n g e) (want-1 n (caught g) e))))\n"
         "\n(want \"one\" 1 1)\n"))
+    ;; THE COMPUTED VALUE BARE, the expected value guarded: want-1's second
+    ;; argument is what the runner asks about, not a guard elsewhere in want.
+    (scheme-fixture "want-gotbare"
+      (string-append
+        "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) (guard (x (#t (list 'RAISED x))) e0))))\n"
+        "(include \"expected.ss\")\n"
+        "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n g (caught x))))))\n"
+        "(want \"one\" 1 1)\n"))
     ;; THE COMPUTED VALUE GUARDED ANOTHER WAY (as context-stale's tolerant):
     ;; no `caught` definition, and guarded all the same.
     (scheme-fixture "want-tolerant"
       (string-append
         "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
-        "(define-syntax tolerant\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(define-syntax tolerant\n  (syntax-rules () ((_ e0) (guard (x (#t (list 'TOLERATED x))) e0))))\n"
         "(include \"expected.ss\")\n"
         "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n (tolerant g) x)))))\n"
         "\n(want \"one\" 1 1)\n"))
@@ -1323,14 +1332,14 @@
         '()))
 
 (printf "== RS-G: a fixture's want guards its expected value ==\n")
-(let ((c (inner! '("ok.py" "want-bare.sc" "want-guarded.sc" "want-mention.sc" "want-tolerant.sc"))))
+(let ((c (inner! '("ok.py" "want-bare.sc" "want-guarded.sc" "want-mention.sc" "want-tolerant.sc" "want-gotbare.sc"))))
   (start! c)
   (let* ((done (finished? c 120))
          (line (find (lambda (l) (starts-with? l "UNGUARDED FIXTURES")) (lines-of (run-log c))))
          (named? (lambda (w) (and line (word-in? line w) #t))))
-    (want "RS-G the runner names the fixtures whose want evaluates its expected value bare -- also when the guard is only mentioned -- and not those that guard it, by caught or another guard"
-          (list done (named? "want-bare") (named? "want-mention") (named? "want-guarded") (named? "want-tolerant"))
-          '(#t #t #t #f #f))))
+    (want "RS-G the runner names the fixtures whose want evaluates its expected value bare (also when the guard is only mentioned) or its computed value bare, and not those that guard both, by caught or another guard"
+          (list done (named? "want-bare") (named? "want-mention") (named? "want-gotbare") (named? "want-guarded") (named? "want-tolerant"))
+          '(#t #t #t #t #f #f))))
 
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
