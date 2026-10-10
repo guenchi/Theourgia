@@ -25,7 +25,7 @@
 ;; (a review to a result), typed; result-answers and the review's stance
 ;; rules (state rules: a review says whether it relies on results, stance
 ;; "relies" or "none"; one that relies cites, one that relies on none cites
-;; nothing, and every review says which); reviews-carry-receipt (a write
+;; nothing, and every review says one of the two); reviews-carry-receipt (a write
 ;; rule); citation coverage, which the project template declares. The rows walk it: a result made in two writes
 ;; is refused; b's subscription sees a result arrive; b's review is written
 ;; with its receipt; a refutes the result b read; b's revision on the old
@@ -222,7 +222,8 @@
                     "--must" "(edge ?w cites ?s)")
                  (a 'rule "review-cites-none" "--on" "doc" "--where" "(and (field ?w \"slot\" \"review\") (field ?w \"stance\" \"none\"))"
                     "--must-not" "(edge ?w cites ?s)")
-                 (a 'rule "review-stance" "--on" "doc" "--where" "(field ?w \"slot\" \"review\")" "--must" "(field ?w \"stance\" ?x)")
+                 (a 'rule "review-stance" "--on" "doc" "--where" "(field ?w \"slot\" \"review\")"
+                    "--must" "(and (field ?w \"stance\" ?x) (member ?x (\"relies\" \"none\")))")
                  (a 'rule "result-answers" "--on" "doc" "--where" "(field ?w \"slot\" \"result\")"
                     "--must" "(and (edge ?w answers ?r) (field ?w \"for\" ?r))")
                  (a 'rule "reviews-carry-receipt" "--on" "doc" "--where" "(field+ ?w \"slot\" \"review\")" "--must" "(receipt-carried)"))))
@@ -315,8 +316,8 @@
 
     ;; ==== a review that relies on nothing ====
     ;; Where nothing holds, a review says so: stance "none", and it cites
-    ;; nothing. Citing anything then is refused, and so is a review that does
-    ;; not say its stance.
+    ;; nothing. Citing anything then is refused; so is a review that relies
+    ;; on results and cites none, and one that does not say one of the two.
     (set! read-4 (b 'context "--for" S2 "--budget" "4000"))
     (want "P a review that relies on nothing (stance none) and cites nothing is written"
           (let ((r (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W0") '(slot . "review") '(stance . "none"))))
@@ -331,6 +332,14 @@
     (want "P a review that does not say its stance is refused review-stance"
           (refusing-rule (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W2") '(slot . "review")))
                                            (list 'link '(from 0) 'cites S2))
+                                   "--premises" (receipt-text read-4)))
+          'review-stance)
+    (want "P a review that relies on results and cites none is refused review-cites"
+          (refusing-rule (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W3") '(slot . "review") '(stance . "relies"))))
+                                   "--premises" (receipt-text read-4)))
+          'review-cites)
+    (want "P a review whose stance is neither relies nor none is refused review-stance"
+          (refusing-rule (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W4") '(slot . "review") '(stance . "other"))))
                                    "--premises" (receipt-text read-4)))
           'review-stance)
 
