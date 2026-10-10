@@ -2351,7 +2351,8 @@ before `commit` refused one -- is listed under `(datum-with-src (<id> ...))`,
 only when there is one; nothing that runs or exports it reads that src, and the
 verdict is unchanged. A live block whose stored `title`, `keywords` or `src` is
 bytes that are not UTF-8 (a leading byte-order mark aside) -- the blocks a
-`search` or `grep` counts under `unreadable-blocks` -- is listed under
+`search` counts under `unreadable-blocks`; `grep` reads only `src` and counts
+those listed with it -- is listed under
 `(undecodable-text ((<id> <field> ...) ...))` in the outline's order, only when
 there is one, a contested field named when one of its candidates does not
 decode; the verdict is unchanged. The rules in force are audited under `(rules ...)`, only
