@@ -372,12 +372,18 @@
           ;; ONE PUBLICATION PER WRITER: the next is written only once this
           ;; one's reload has published, so no reload folds two of them and
           ;; the number made is the number of frames.
-          (else (let ((before (or (last-published d) 0)))
+          ;; A PUBLICATION NOT SEEN ENDS THE FILL with why, not a next writer:
+          ;; the callers read a number made, and this is not one.
+          (else (let* ((before (or (last-published d) 0))
+                       (factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
                   (mirror-many! d (string-append "bulk" (let ((t (number->string k))) (string-append (make-string (- 4 (string-length t)) #\0) t))) 300)
                   (poke! d)
-                  (let wait ((n 0))
-                    (unless (or (> (or (last-published d) 0) before) (> n 200)) (sleep-ms 50) (wait (+ n 1)))))
-                (loop (+ k 1))))))
+                  (let wait ()
+                    (cond ((> (or (last-published d) 0) before) (loop (+ k 1)))
+                          ((> (- (real-time) t0) bound)
+                           (wait-gave-out! "fill-until-pending's publication" (- (real-time) t0) bound factor k)
+                           (list 'publication-not-seen k))
+                          (else (sleep-ms 50) (wait)))))))))
 ;; Stops a daemon and starts another on the SAME store and socket.
 (define (restart-daemon! d env)
   (stop-daemon! d)
