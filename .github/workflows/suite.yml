@@ -50,6 +50,30 @@ jobs:
         with:
           ref: ${{ env.REF }}
           path: lib/theourgia
+      # A LANDING EMPTIES THE GUARD'S EXPECTATIONS. The change-stream guard
+      # compares a tree with its base and requires every answer the tree's
+      # change alters to be listed in test/change-stream-guard-expect.sexp;
+      # once a change lands, the next base holds it, so the file on master
+      # must be (). A commit on master with a non-empty file is a landing
+      # that did not empty it, and this job refuses it. A branch under test
+      # lists what it changes: its entries are printed, not refused. Asked
+      # here, before the tree's .git is removed, from master's history.
+      - name: the change-stream guard's expectations, empty on master
+        working-directory: lib/theourgia
+        run: |
+          f=test/change-stream-guard-expect.sexp
+          [ -f "$f" ] || { echo "no $f in this tree: nothing to check"; exit 0; }
+          body=$(grep -v '^[[:space:]]*;' "$f" | tr -d ' \t\r\n')
+          git fetch -q --no-tags origin master
+          if git merge-base --is-ancestor "$REF" FETCH_HEAD; then on=master; else on=branch; fi
+          if [ "$body" = "()" ]; then echo "guard expectations: () ($on)"; exit 0; fi
+          echo "guard expectations not empty ($on):"
+          grep -v '^[[:space:]]*;' "$f"
+          if [ "$on" = master ]; then
+            echo "a commit on master carries a non-empty $f: the landing that put its entries there did not empty it"
+            exit 1
+          fi
+          echo "not on master: a branch lists the answers it changes; a reading, not a refusal"
       - uses: actions/checkout@v4
         with:
           repository: guenchi/Igropyr
