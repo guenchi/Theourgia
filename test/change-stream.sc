@@ -543,13 +543,18 @@
 ;; until one arrives or the bound passes: an empty refold frame before or
 ;; after it is passed over, where a position would count it.
 (define (said-frame-after sub after)
-  (let wait ((k 0))
-    (let ((hit (find (lambda (f) (let ((r (frame-rev f)))
-                                   (and r (> r after) (pair? (clause 'items f)))))
-                     (frames-of (sub-lines sub)))))
-      (cond (hit hit)
-            ((> k 120) (list 'no-frame 'past after (map frame-rev (frames-of (sub-lines sub)))))
-            (else (sleep-ms 50) (wait (+ k 1)))))))
+  (let* ((factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
+    (let wait ()
+      (let* ((fs (frames-of (sub-lines sub)))
+             (hit (find (lambda (f) (let ((r (frame-rev f)))
+                                      (and r (> r after) (pair? (clause 'items f)))))
+                        fs)))
+        (cond (hit hit)
+              ((> (- (real-time) t0) bound)
+               (let ((seen (list 'past after 'frames (map frame-rev fs))))
+                 (wait-gave-out! "said-frame-after" (- (real-time) t0) bound factor seen)
+                 (list 'no-frame seen)))
+              (else (sleep-ms 50) (wait)))))))
 
 (start-scheduler
   (lambda ()
@@ -956,16 +961,20 @@
            (sub (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines sub 1 5000))
            (single (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0))))
-      (mirror-as! d "aaa00000" 1 '() single '(put ((kind . section) (title . "claimed") (parent . root) (ord . 10))))
-      (poke! d)
-      (let ((f1 (said-frame-after sub 0)))
+;; EACH FRAME IS LOOKED FOR PAST THE REVISION PUBLISHED BEFORE ITS OWN
+      ;; WRITE, never past an earlier frame that may not have been found.
+      (let ((r1 (or (last-published d) 0)))
+       (mirror-as! d "aaa00000" 1 '() single '(put ((kind . section) (title . "claimed") (parent . root) (ord . 10))))
+       (poke! d)
+      (let ((f1 (said-frame-after sub r1)) (r2 #f))
+        (set! r2 (or (last-published d) 0))
         (mirror-as! d "bbb00000" 1 '() single '(put ((kind . section) (title . "rival") (parent . root) (ord . 11))))
         (poke! d)
-        (let ((f2 (said-frame-after sub (or (frame-rev f1) 0))))
+        (let ((f2 (said-frame-after sub r2)))
           (want "F10-2 a single identity's record is applied -> (added its block)"
                 (item-set f1) (expected-set (list 'added "aaa00000.1")))
           (want "F10-2 a rival claim reverses it: the block is taken back with no new event -> (removed it) alone"
-                (item-set f2) (expected-set (list 'removed "aaa00000.1")))))
+                (item-set f2) (expected-set (list 'removed "aaa00000.1"))))))
       ;; AN OLDER CANDIDATE COMES BACK: a block's src is set by a claimed
       ;; record, and a rival claim takes that record back; the block's
       ;; earlier value is its value again, with no new event.
@@ -979,10 +988,11 @@
         (set! held-rev (let ((r (rev-clause (ask d 'read "plainzzz.1" "--rev")))) (and r (car r))))
         (mirror-as! d "ccc00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "claimed"))
         (poke! d)
-        (let ((f3 (said-frame-after sub (or held-rev 0))))
+        (let* ((f3 (said-frame-after sub (or held-rev 0)))
+               (r4 (or (last-published d) 0)))
           (mirror-as! d "ddd00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "rival"))
           (poke! d)
-          (let ((f4 (said-frame-after sub (or (frame-rev f3) 0))))
+          (let ((f4 (said-frame-after sub r4)))
             (want "F10-2 a claimed record sets the field -> (changed id src)"
                   (item-set f3) (expected-set (list 'changed "plainzzz.1" 'src)))
             (want "F10-2 the rival claim takes it back: the old value returns with no new event -> (changed id src)"
@@ -1463,7 +1473,8 @@
                   (list (frame-rev f) (frame-rev f) #t #t #t))))
         (system (string-append "chmod 600 " current))
         (poke! d)
-        (let ((f (said-frame-after sub (or (frame-rev f) 0))))
+        ;; past the damage's frame, old + 1 (read above)
+        (let ((f (said-frame-after sub (+ old 1))))
           (want "F10-10 the segment readable again and a reload: the block is added back, and no clause"
                 (list (item-set f) (clause 'incomplete f))
                 (list (expected-set (list 'added "mirrorin.2")) #f))))
