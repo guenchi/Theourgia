@@ -201,13 +201,20 @@
   ;; ---- the rules --------------------------------------------------------------------------------
 
   ;; A RULE AS IT IS EVALUATED: (name class kinds where goal polarity witness
-  ;; bad), a built-in expanded to the goal it stands for. BAD is #f, or the
-  ;; refusal the rule verb gives its value (rule-value-check): a rule that
-  ;; reached the store some other way -- a writer whose build checked less --
-  ;; and names a relation that reads outside the log, say, is never asked; it
-  ;; is unevaluable at every block it applies to.
+  ;; bad), a built-in expanded to the goal it stands for. BAD is #f, or why the
+  ;; rule verb would not have written this value: its refusal
+  ;; (rule-value-check), or rule-not-in-its-form when the value is not the one
+  ;; form the verb writes -- a class its goals do not give, a built-in name
+  ;; this build does not know. A rule that reached the store some other way, a
+  ;; writer whose build checked less, is never asked so; it is unevaluable at
+  ;; every block it applies to.
   (define (rule-plan name value)
     (define (clause k) (let ((c (assq k value))) (and c (cadr c))))
+    (define bad
+      (let ((checked (rule-value-check value)))
+        (cond ((and (pair? checked) (eq? (car checked) 'error)) checked)
+              ((not (equal? checked value)) (list 'error 'bad-request 'rule-not-in-its-form (list 'form checked)))
+              (else #f))))
     (cond
       ((assq 'builtin value)
        ;; CITATION COVERAGE: a write that carried a receipt and cites, from a
@@ -216,14 +223,13 @@
              '(and (receipt-carried) (cited ?w ?s) (unread ?s))
              'must-not
              (lambda (id row) (list 'citation-not-read (list 'block id) (list 'cites (car row))))
-             #f))
+             bad))
       (else
-       (let ((checked (rule-value-check value)))
-         (list name (clause 'class) (cdr (assq 'on value)) (clause 'where)
-               (or (clause 'must) (clause 'must-not))
-               (if (assq 'must value) 'must 'must-not)
-               #f
-               (and (pair? checked) (eq? (car checked) 'error) checked))))))
+       (list name (clause 'class) (cdr (assq 'on value)) (clause 'where)
+             (or (clause 'must) (clause 'must-not))
+             (if (assq 'must value) 'must 'must-not)
+             #f
+             bad))))
 
 ;; ONE PAIR OF A RULE AND A BLOCK, on session S, the block's kind K: #f when
   ;; the rule does not apply (a kind it does not list, a selector with no row
@@ -397,6 +403,8 @@
                  (lambda (r)
                    (let ((p (rule-plan (car r) (cadr r))))
                      (cond
+                       ((list-ref p 7)
+                        (list (list 'rule-unevaluable (list 'rule (car p)) (list 'reason (list-ref p 7)))))
                        ((eq? (cadr p) 'write)
                         (list (list 'rule-skipped (list 'rule (car p)) '(reason write-rule))))
                        ((not kinds)

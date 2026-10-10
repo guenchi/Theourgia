@@ -335,6 +335,30 @@
       (list (list '(error refused rule-unevaluable) '(rule outside) '(error bad-request rule-relation-not-allowed))
             '(rule-unevaluable)))
 
+;; Two more rules the verb would not write, each from another writer: a
+;; built-in this build does not know, and a class its goals do not give. A
+;; write is refused naming the first; check lists both unevaluable, each with
+;; the verb's answer.
+(define S6 (string-append root "/s6"))
+(tolerant (rpc-dispatch S6 '(init) "author"))
+(define G6 (tolerant (car (item-ids (rpc-dispatch S6 (list 'batch (format "~s" (list '(insert root #f ((kind . doc) (title . "G6")))))) "author")))))
+(define writer6 (tolerant (car (car (reduce-applied-cut (open-and-reduce S6))))))
+(define (forge6 peer value)
+  (tolerant
+    (let ((bytes (encode-record 1 1789000000001 "peer" (list (cons writer6 (cdr (assoc writer6 (reduce-applied-cut (open-and-reduce S6))))))
+                                (storable-encode value))))
+      (log-publish! S6 peer 1 bytes (segment-sha bytes)))))
+(forge6 "peeraaaa" '(rule future ((builtin future-rule))))
+(forge6 "peerbbbb" '(rule wrongclass ((class write) (on doc) (must (title ?w ?t)))))
+(want "J a stored built-in this build does not know, and a stored class its goals do not give, are unevaluable; check lists both"
+      (in-order (let ((a (rpc-dispatch S6 (list 'set G6 "role" "x") "author")))
+                  (and (pair? a) (eq? (car a) 'error) (list (head a 3) (list-ref a 3))))
+                (let ((r (assq 'rules (cdr (rpc-dispatch S6 '(check) "author")))))
+                  (and r (map (lambda (x) (list (car x) (cadr x) (head (cadr (list-ref x 2)) 3))) (cdr r)))))
+      (list (list '(error refused rule-unevaluable) '(rule future))
+            (list (list 'rule-unevaluable '(rule future) '(error bad-request builtin-rule-not-known))
+                  (list 'rule-unevaluable '(rule wrongclass) '(error bad-request rule-not-in-its-form)))))
+
 ;; ---- citation coverage and the order of a write's checks --------------------------------------
 
 (define C1 (tolerant (make 'doc "C1")))
