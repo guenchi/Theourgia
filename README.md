@@ -968,6 +968,7 @@ Fact relations:
 - `moved/4` -- an edge of an effect-bearing relation one of whose ends moved, and that end
 - `moved-kind/4` -- a moved edge with its relation's kind in place of its name, and the end that moved
 - `verified-by/2` -- a live block, and a live block with a current verifies edge to it
+- `verified-moved/2` -- a live block, and a live block with a verifies edge to it that it has moved past
 - `score/3` -- exactly the hits search <text> returns with no cap, each with its score; text required
 
 Tests, on bound values only: `=/2`, `/=/2`, `string</2`, `member/2`.
@@ -1031,7 +1032,8 @@ implementer <d> <end>)`, `(why stale-verification <m>)` -- and, when it is not
 valid, `(validity <v> (<why> <by>) ...)`. `notes` hold `(nogood <a> <b>
 conflicts-with)` once for each pair that contradicts in the scope, and
 `(stale-verification <m> verifies <c>)` for each block `m` in the scope whose
-`verifies` edge's target `c` has moved past it: `c` is a hard block, about `m`,
+`verifies` edge's target `c` has moved past it (`verified-moved`, the
+lifecycle's word: past every name of the edge): `c` is a hard block, about `m`,
 so the receipt holds it and a verification going stale refuses an older one.
 
 What else fits follows, never in a hard section and never in the receipt,
@@ -1066,7 +1068,7 @@ answer is refused with `(error unhashable-hard-block (id <id> ...))`. Then, gree
 one pass: the hard blocks at identity in HARD ORDER -- T; the rest of the
 unit in document order; the other members by distance from the unit over
 depends edges, ties by id; then the others by role (unsettled, supersedes,
-cause, implementer), by id -- one that does not fit named in
+cause, implementer, stale), by id -- one that does not fit named in
 `(insufficient (missing ((<id> <bytes>) ...)) [(more <n> (bytes <b>))])`,
 at most twenty named, every later one still tried; then one pass of
 upgrades in hard order, to full when it fits, else to summary; then the
@@ -1079,7 +1081,7 @@ queries, the hard blocks' records and the request.
     (ok (for <entry>)
         (constraints (<entry> ...)) (evidence (<entry> ...))
         (to-verify (<entry> ...)) (counterexamples (<entry> ...))
-        (background (<entry> ...)) (notes (<nogood> ...))
+        (background (<entry> ...)) (notes (<note> ...))
         [(insufficient ...)] (excluded ...)
         (budget (tokens <t>) (used <u>) (reserve <r>))
         (receipt <premise> ...) (cut <cut>) (versions (...))

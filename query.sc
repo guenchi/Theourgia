@@ -121,6 +121,7 @@
       (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end" stored)
       (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved" stored)
       (verified-by 2 "a live block, and a live block with a current verifies edge to it" stored)
+      (verified-moved 2 "a live block, and a live block with a verifies edge to it that it has moved past" stored)
       (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required" external)))
 
   (define tests '((= 2) (/= 2) (string< 2) (member 2)))
@@ -175,7 +176,10 @@
       ;; A VERIFICATION GONE STALE: a block in t's scope (t itself among them)
       ;; whose verifies edge's target has moved past it -- the target is hard,
       ;; about the verifier, so context shows it and the receipt holds it.
-      ((hard ?t ?c stale ?m) (scope-of ?t ?m) (moved-kind ?m verifies ?c target))))
+      ;; Stale is the lifecycle's word (verified-moved), not moved-kind's: an
+      ;; edge under several names of kind verifies is stale only when the target
+      ;; moved past every one of them.
+      ((hard ?t ?c stale ?m) (scope-of ?t ?m) (verified-moved ?c ?m))))
 
   ;; The one line each rule relation is described by.
   (define rule-lines
@@ -605,6 +609,9 @@
         ((verified-by) (apply append (map (lambda (x) (map (lambda (v) (list x (car v)))
                                                            (filter (lambda (v) (eq? (cadr v) 'current)) (lc:verified-by (provider S) x))))
                                           ids)))
+        ((verified-moved) (apply append (map (lambda (x) (map (lambda (v) (list x (car v)))
+                                                              (filter (lambda (v) (eq? (cadr v) 'moved)) (lc:verified-by (provider S) x))))
+                                             ids)))
         (else (assertion-violation 'query "no provider" rel)))))
 
   ;; A VIEW OVER A BUILD: its tuples with the relation in the second place

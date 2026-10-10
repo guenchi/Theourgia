@@ -20,10 +20,13 @@
 ;; hard block, about the verifier, entered in evidence with (why
 ;; stale-verification <m>), and the notes say (stale-verification <m>
 ;; verifies <c>). The receipt holds it, so a receipt taken before the target
-;; moved is refused. A store with no moved verifies edge answers as before:
-;; with a base tree named (THEOURGIA_BASE_LIBDIR, an opt-in as the
-;; change-stream guard's is), its receipt is compared with the base's, byte
-;; for byte.
+;; moved is refused, and so is one taken while it was stale once the target
+;; moves again or the verifier links it again (linking again attests anew).
+;; Stale is the lifecycle's: an edge under two names of kind verifies is stale
+;; only while the target has moved past both. A store with no moved verifies
+;; edge answers as before: with a base tree named (THEOURGIA_BASE_LIBDIR, an
+;; opt-in as the change-stream guard's is), its whole answer, receipt
+;; included, is compared with the base's, byte for byte.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
@@ -103,11 +106,48 @@
                 (let ((a (run S 'commit "--writer" "author" "--premises" (receipt-text after)))) (and (pair? a) (car a))))
       '((error premise-changed) ok))
 
+(define (string-contains? text needle)
+  (let ((n (string-length text)) (k (string-length needle)))
+    (let loop ((i 0)) (cond ((> (+ i k) n) #f) ((string=? (substring text i (+ i k)) needle) #t) (else (loop (+ i 1)))))))
+(define (stale-notes a) (filter (lambda (n) (and (pair? n) (eq? (car n) 'stale-verification))) (or (section a 'notes) '())))
+(define (refused-by-premise? store a)
+  (let ((r (run store 'commit "--writer" "author" "--premises" (receipt-text a))))
+    (and (pair? r) (pair? (cdr r)) (list (car r) (cadr r)))))
+(tolerant (run S 'set C "note" "changed again, the verification still stale"))
+(want "S the target moves again while the verification is stale: the receipt taken while stale is refused"
+      (refused-by-premise? S after)
+      '(error premise-changed))
+(define stale-again (tolerant (ctx S V)))
+(tolerant (run S 'link V "verifies" C))
+(define attested (tolerant (ctx S V)))
+(want "S the verifier links the target again: no stale verification, and the receipt taken while stale is refused"
+      (in-order (stale-notes attested) (in-force-entry attested C) (refused-by-premise? S stale-again))
+      '(() #f (error premise-changed)))
+
+;; Two names of kind verifies on one edge: stale only past both.
+(define S3 (string-append root "/s3"))
+(tolerant (run S3 'init))
+(tolerant (run S3 'relation "checks" "--as" "verifies"))
+(define C3 (tolerant (new-id (run S3 'insert "--title" "C"))))
+(define V3 (tolerant (new-id (car (cadr (run S3 'batch (format "~s" (list '(insert root #f ((kind . doc) (title . "S")))
+                                                                          (list 'link '(from 0) 'verifies C3)
+                                                                          (list 'link '(from 0) 'checks C3)))))))))
+(tolerant (run S3 'set C3 "note" "changed after both"))
+(define both-moved (tolerant (ctx S3 V3)))
+(tolerant (run S3 'link V3 "checks" C3))
+(define one-relinked (tolerant (ctx S3 V3)))
+(want "S an edge under two names of kind verifies: stale while the target moved past both, not once one of them is linked again"
+      (in-order (stale-notes both-moved) (stale-notes one-relinked))
+      (list (list (list 'stale-verification V3 'verifies C3)) '()))
+
 ;; ---- N: a store with no moved verifies edge keeps its receipt bytes ----------------------------
 
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
 (define st2 (tolerant (store-with-verification "s2")))
-(define product-receipt (tolerant (receipt-text (ctx (car st2) (caddr st2)))))
+;; The whole answer -- sections, notes, budget, receipt -- its versions
+;; clause left out on both sides.
+(define (without-versions a) (if (pair? a) (cons (car a) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a))) a))
+(define product-answer (tolerant (sexpr->string-extended (without-versions (ctx (car st2) (caddr st2))))))
 (cond
   ((not (and base-lib (> (string-length base-lib) 0)))
    (printf "SKIP: THEOURGIA_BASE_LIBDIR is unset: set it to a library root holding the base tree's theourgia/ and igropyr/ to compare a receipt with the base's (an opt-in, not a failure)~%"))
@@ -119,16 +159,18 @@
          (write '(import (chezscheme) (theourgia rpc) (only (theourgia extensions) extension-verbs)
                          (only (theourgia wire) sexpr->string-extended)) p)
          (write '(register-verbs! extension-verbs) p)
-         (write `(let* ((a (rpc-dispatch ,(car st2) '(context "--for" ,(caddr st2) "--budget" "4000") "author"))
-                        (r (find (lambda (c) (and (pair? c) (eq? (car c) 'receipt))) (cdr a))))
-                   (display (if r (sexpr->string-extended r) "()")))
+         (write `(let ((a (rpc-dispatch ,(car st2) '(context "--for" ,(caddr st2) "--budget" "4000") "author")))
+                   (display (sexpr->string-extended
+                              (cons (car a) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a))))))
                 p))
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N a store with no moved verifies edge: the receipt is the base tree's, byte for byte"
+     (want "N a store with no moved verifies edge: the answer, receipt included, is the base tree's, byte for byte"
            (let ((base (call-with-input-file out get-string-all)))
-             (in-order (> (string-length product-receipt) 2) (equal? base product-receipt)))
+             (in-order (and (string? product-answer) (> (string-length product-answer) 2)
+                            (string-contains? product-answer "(receipt"))
+                       (equal? base product-answer)))
            '(#t #t)))))
 
 (system (string-append "rm -rf '" root "'"))

@@ -343,7 +343,7 @@
                 (sources-under tree "")))))
 (want "RE-3 the places the six relation names are written in the shipped sources, and how often"
       (census)
-      '("context.sc assemble 2" "context.sc hard-goals 1" "context.sc hard-whys 2"
+      '("context.sc assemble 3" "context.sc hard-goals 1" "context.sc hard-whys 2"
         "context.sc member-distances 2" "context.sc preferred-steps 5" "context.sc role-order 1"
         "lifecycle.sc compute-validity 11" "lifecycle.sc decision-state-of 1" "lifecycle.sc effect-table 6"
         "lifecycle.sc implementation-of 1" "lifecycle.sc verified-by 1"
