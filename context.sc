@@ -197,7 +197,7 @@
 
   ;; ---- the hard material ------------------------------------------------------------------
 
-  (define role-order '(unit member unsettled supersedes cause implementer))
+  (define role-order '(unit member unsettled supersedes cause implementer stale))
 
   (define (assemble store view t budget all? appended)
     (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
@@ -232,10 +232,17 @@
                               ((memq v '(superseded refuted)) 'to-verify)
                               ((authoritative? view h) 'constraints)
                               (else 'evidence)))))
-             (notes (unique (map (lambda (r)
-                                   (let ((a (car r)) (b (cadr r)))
-                                     (if (string<? a b) (list 'nogood a b 'conflicts-with) (list 'nogood b a 'conflicts-with))))
-                                 k5)))
+             ;; A STALE VERIFICATION IS SAID WHERE A READER LOOKS: beside the
+             ;; nogoods, (stale-verification <verifier> verifies <target>), one for
+             ;; each hard row of role stale. Its place stays evidence: the target
+             ;; is in force, and to-verify is for what is not.
+             (notes (append
+                      (unique (map (lambda (r)
+                                     (let ((a (car r)) (b (cadr r)))
+                                       (if (string<? a b) (list 'nogood a b 'conflicts-with) (list 'nogood b a 'conflicts-with))))
+                                   k5))
+                      (unique (map (lambda (r) (list 'stale-verification (caddr r) 'verifies (car r)))
+                                   (filter (lambda (r) (eq? (cadr r) 'stale)) k1)))))
              (versions (map (lambda (h) (cons h (version-of view h))) order))
              (unhashable (map car (filter (lambda (p) (not (cdr p))) versions)))
              (receipt (cons 'receipt
@@ -321,6 +328,7 @@
                                                             (filter (lambda (s) (equal? (car s) h)) k3)))
                                           ((supersedes) (list (list 'why 'supersedes (cadr r))))
                                           ((cause) (list (list 'why 'cause (cadr r))))
+                                          ((stale) (list (list 'why 'stale-verification (cadr r))))
                                           ((implementer)
                                            (map (lambda (m) (list 'why 'implementer (car m) (caddr m)))
                                                 (filter (lambda (m) (and (equal? (cadr m) h) (equal? (car m) (cadr r)))) k4)))

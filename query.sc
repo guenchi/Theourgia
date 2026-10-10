@@ -171,7 +171,11 @@
       ((hard ?t ?x supersedes ?m) (scope-of ?t ?m) (supersedes* ?x ?m))
       ((hard ?t ?b cause ?m) (scope-of ?t ?m) (validity-reason ?m _ ?b) (kind ?b _))
       ((hard ?t ?i implementer ?d) (unsettled-for ?t ?d) (decision-state ?d review)
-                                   (moved-kind ?i implements ?d _))))
+                                   (moved-kind ?i implements ?d _))
+      ;; A VERIFICATION GONE STALE: a block in t's scope (t itself among them)
+      ;; whose verifies edge's target has moved past it -- the target is hard,
+      ;; about the verifier, so context shows it and the receipt holds it.
+      ((hard ?t ?c stale ?m) (scope-of ?t ?m) (moved-kind ?m verifies ?c target))))
 
   ;; The one line each rule relation is described by.
   (define rule-lines

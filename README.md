@@ -1027,9 +1027,12 @@ hard block is in exactly one place, read from the top:
 
 Every entry carries each why it has -- `(why unit)`, `(why member)`, `(why
 unsettled <state>)`, `(why supersedes <m>)`, `(why cause <m>)`, `(why
-implementer <d> <end>)` -- and, when it is not valid, `(validity <v> (<why>
-<by>) ...)`. `notes` hold `(nogood <a> <b> conflicts-with)` once for each
-pair that contradicts in the scope.
+implementer <d> <end>)`, `(why stale-verification <m>)` -- and, when it is not
+valid, `(validity <v> (<why> <by>) ...)`. `notes` hold `(nogood <a> <b>
+conflicts-with)` once for each pair that contradicts in the scope, and
+`(stale-verification <m> verifies <c>)` for each block `m` in the scope whose
+`verifies` edge's target `c` has moved past it: `c` is a hard block, about `m`,
+so the receipt holds it and a verification going stale refuses an older one.
 
 What else fits follows, never in a hard section and never in the receipt,
 each candidate once, an earlier step winning: in `background`, the
