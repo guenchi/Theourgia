@@ -89,7 +89,9 @@ jobs:
           W="$PWD"; mkdir -p "$W/out" "$W/testroot"
           date '+suite start %H:%M:%S'
           cd lib/theourgia/test
-          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot"; . ./env.sh
+          # THE KNOWN-RED LIST GOES TO THE RUNNER TOO: a listed fixture's row
+          # count that differs from the table is a reading there, not a refusal.
+          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot" THEOURGIA_KNOWN_RED="$W/harness/known-red.txt"; . ./env.sh
             sh run-fixtures.sh "$W/out" > "$W/suite.log" 2>&1; echo $? > "$W/suite.rc" ) || true
           cd "$W"
           date '+suite end %H:%M:%S'
@@ -130,7 +132,15 @@ jobs:
               echo "known $fx: $(printf '%s\n' "$hard" | wc -l | tr -d ' ') hard line(s), all in its class; judge it on the development machine" >> verdict.txt
             fi
           done
+          # A ROW COUNT THE TABLE DOES NOT RECORD, for a fixture not known red,
+          # refuses the run; the verdict says it, or it would be the one refusal
+          # nobody reads.
+          if grep -q '^row baseline, rows:' suite.log; then
+            echo "UNEXPECTED $(grep '^row baseline, rows:' suite.log | cut -c1-300)" >> verdict.txt; unexpected=$((unexpected+1))
+          fi
           echo "fixtures not green: $(grep -c '^RED ' suite.log); unexpected: $unexpected" >> verdict.txt
+          # VOID ROWS ARE NOT GREEN ROWS: the runner's count, named by fixture.
+          grep '^void rows:' suite.log >> verdict.txt || echo "void rows: no line (the runner of this tree does not count them)" >> verdict.txt
           cat verdict.txt
           [ "$unexpected" = 0 ] || exit 1
       - name: keep the readings
