@@ -310,7 +310,7 @@ scene({dur:7.5,build(r){
 }});
 
 // ============================== FEATURE 1 ==================================
-scene({tag:['feat','Feature 1 / 7'],title:'A query API small enough to memorize',dur:7.5,build(r){
+scene({tag:['feat','Feature 1 / 8'],title:'A query API small enough to memorize',dur:7.5,build(r){
   this.term=el(`<div class="abs term" style="width:1040px;height:500px"><div class="l0"></div><div class="out"></div><div class="l1" style="margin-top:14px"></div><div class="out2"></div></div>`,r);
   this.l0=this.term.querySelector('.l0');this.l1=this.term.querySelector('.l1');
   const rows=[['x9a3vtll.4','"Goals"','38'],['x9a3vtll.9','"Retry policy"','112'],['8pniyrtk.j','"Timeouts"','64'],['q7m2hs0c.1','"parse-block"','205']];
@@ -331,7 +331,7 @@ scene({tag:['feat','Feature 1 / 7'],title:'A query API small enough to memorize'
 }});
 
 // ============================== FEATURE 2 ==================================
-scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any language',dur:7.5,build(r){
+scene({tag:['feat','Feature 2 / 8'],title:'Docs, code, tests — one graph, any language',dur:7.5,build(r){
   // four code blocks in four languages, all equal nodes between the requirement and its test
   const B=[['DESIGN','Retry policy §4','8pniyrtk.2','var(--acc2)',230,250],['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,500],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,215],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,375],['RUST','fn jitter(ms: u64) …','x9a3vtll.7','#b7410e',760,535],['GO','func Retry(ctx, fn) …','q7m2hs0c.4','#0089ad',760,695],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,380],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,640]];
   this.b=B.map(([k,tt,id,c,x,y])=>({x,y,e:el(`<div class="blk" style="border-color:${c}"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${id}</div></div>`,r)}));
@@ -370,7 +370,7 @@ scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any 
 }});
 
 // ============================== FEATURE 3 ==================================
-scene({tag:['feat','Feature 3 / 7'],title:'Every reference to a block, for the price of a lookup',dur:9.5,build(r){
+scene({tag:['feat','Feature 3 / 8'],title:'Every reference to a block, for the price of a lookup',dur:9.5,build(r){
   this.c=el(`<div class="blk" style="border-color:var(--violet);border-width:3px"><div class="k" style="color:var(--violet)">CODE</div><div class="t">(define retry …)</div><div class="id">8pniyrtk.j</div></div>`,r);
   this.q=el(`<div class="abs chip" style="background:#1e1d1a;color:#7fd6c9">refs 8pniyrtk.j</div>`,r);
   const R=[['DESIGN','Retry policy §4',-470,-170],['PROSE','Ops guide ¶3',470,-170],['TEST','test W3',-470,170],['LESSON','Jitter matters',470,170]];
@@ -397,7 +397,7 @@ scene({tag:['feat','Feature 3 / 7'],title:'Every reference to a block, for the p
 }});
 
 // ============================== FEATURE 4 ==================================
-scene({tag:['feat','Feature 4 / 7'],title:'Same question, same context, every time',dur:11.5,build(r){
+scene({tag:['feat','Feature 4 / 8'],title:'Same question, same context, every time',dur:11.5,build(r){
   // part A: query
   this.qt=el(`<div class="abs term" style="width:1000px;height:360px"><div class="ls"></div></div>`,r);
   this.qs=[['(query blast-radius 8pniyrtk.j)','→ 4 blocks, 2 tests'],['(query open-rulings)','→ R4 “cap retries?”'],['(query definition \'backoff)','→ q7m2hs0c.1 (the live one)']].map(([a,b])=>el(`<div style="margin-bottom:12px"><span class="k"></span> <span class="n"></span></div>`,this.qt.querySelector('.ls')));
@@ -429,7 +429,7 @@ scene({tag:['feat','Feature 4 / 7'],title:'Same question, same context, every ti
 }});
 
 // ============================== FEATURE 5 ==================================
-scene({tag:['feat','Feature 5 / 7'],title:'You and the agent, looking at the same file',dur:11,build(r){
+scene({tag:['feat','Feature 5 / 8'],title:'You and the agent, looking at the same file',dur:11,build(r){
   this.ide=el(`<div class="abs" style="width:1360px;height:560px;border-radius:18px;overflow:hidden;background:#fff;border:2px solid var(--line);box-shadow:0 16px 50px rgba(60,50,30,.14);display:flex">
     <div style="width:260px;background:var(--bg2);border-right:2px solid var(--line);padding:22px;font:600 21px/2 var(--mono);color:var(--dim)"><div class="lbl" style="font-size:16px">workspace</div><div>▾ src</div><div style="padding-left:20px;color:var(--fg)">retry.ss</div><div class="dr" style="margin-top:14px">▾ drafts/agent-b</div><div class="dr" style="padding-left:20px;color:var(--orange)">retry.ss ●</div></div>
     <div style="flex:1;padding:40px 44px;font:500 28px/1.75 var(--mono);position:relative">
@@ -460,7 +460,7 @@ scene({tag:['feat','Feature 5 / 7'],title:'You and the agent, looking at the sam
 }});
 
 // ============================== FEATURE 6 ==================================
-scene({tag:['feat','Feature 6 / 7'],title:'Ten agents race in parallel. The main tree doesn’t flinch.',dur:16.6,build(r){
+scene({tag:['feat','Feature 6 / 8'],title:'Ten agents race in parallel. The main tree doesn’t flinch.',dur:16.6,build(r){
   // opening beat: ten scratchpads, ten competing implementations, each compiled, run and tested in its own environment
   const AG='abcdefghij',COL=['#12b09c','#e08a1e','#3572a5','#d2493a','#9a6b12','#0f6f68','#5b3fc4','#0d8a7a','#8a4b12','#1a8f8f'];
   this.FAIL=[3,6,8];
@@ -508,7 +508,7 @@ scene({tag:['feat','Feature 6 / 7'],title:'Ten agents race in parallel. The main
 }});
 
 // ============================== FEATURE 7 ==================================
-scene({tag:['feat','Feature 7 / 7'],title:'A store you can run code against',dur:10.5,build(r){
+scene({tag:['feat','Feature 7 / 8'],title:'A store you can run code against',dur:10.5,build(r){
   this.code=el(`<div class="abs term" style="width:760px;height:260px;font-size:27px"><div class="c1"></div><div class="c2"></div><div style="margin-top:16px">(<span class="k">greet</span> <span class="s">"agent"</span>)</div></div>`,r);
   this.c1=this.code.querySelector('.c1');this.c2=this.code.querySelector('.c2');
   this.box=el(`<div class="abs" style="width:520px;height:260px;border-radius:22px;border:3px solid var(--acc);background:#e9f7f4;padding:20px 24px"><div class="lbl" style="color:var(--acc2);font-size:17px">sandboxed child process</div><div class="gs" style="margin-top:16px;display:flex;flex-direction:column;gap:14px"></div></div>`,r);
@@ -535,6 +535,86 @@ scene({tag:['feat','Feature 7 / 7'],title:'A store you can run code against',dur
   const hp=t<5?1:L(1,.42,P(t,5,6.4));
   this.h.style.left=`calc(${hp*100}% - 21px)`;this.hl.style.left=`calc(${hp*100}% - 60px)`;
   this.hl.textContent=hp>.99?'now':'@ log '+Math.round(L(1042,2480,(hp-.42)/.58));
+}});
+
+// ============================== FEATURE 8 ==================================
+scene({tag:['feat','Feature 8 / 8'],title:'Communication between sessions of different models',dur:17,build(r){
+  // one review round through the store, with the ids of the first real run (a Codex session on GPT-6 as the reader)
+  const card=(kind,c,title,id,w)=>`<div class="blk" style="width:${w}px;border-color:${c};padding:9px 16px"><div class="k" style="color:${c};font-size:13px">${kind}</div><div class="t" style="font-size:20px;margin-top:2px">${title}</div><div class="id" style="font-size:14px">${id}</div></div>`;
+  const panel=(x,label)=>el(`<div class="abs" style="width:620px;height:612px;border-radius:22px;border:2.5px solid var(--line);background:rgba(255,255,255,.55)"><div class="lbl" style="position:absolute;left:22px;top:-30px;font-size:17px;color:var(--fg)">${label}</div></div>`,r);
+  this.pm=panel(0,'main store · 5bp4tan7');this.ps=panel(0,'scoped store · hr4y7nad · for codex');
+  this.machine=el(`<div class="abs lbl" style="width:420px;text-align:center;font-size:16px">one machine · any vendor</div>`,r);
+  const C={sec:'var(--acc2)',code:'#3572a5',mail:'var(--orange)',v:'var(--str)',f:'var(--gold)'};
+  this.edges=el(`<svg class="full"><defs><marker id="a8" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--gold)"/></marker></defs><g class="g" stroke="var(--gold)" stroke-width="3.5" fill="none" stroke-dasharray="9 7"></g><g class="lab" font-family="SF Mono,Menlo,monospace" font-weight="700" font-size="16" fill="var(--gold)"></g></svg>`,r);
+  // main store
+  this.M={sec:[150,298,560],code:[190,384,520],letter:[150,474,560],v:[190,560,520],f1:[230,646,480],f2:[230,732,480]};
+  this.m={sec:el(card('SECTION',C.sec,'crc32.sc','2gc62due.1',560),r),code:el(card('CODE',C.code,'(define (crc32 bv) …)','2gc62due.2',520),r),
+    letter:el(card('LETTER · DOC',C.mail,'to "codex" · status <span class="st"></span>','2gc62due.6',560),r),
+    v:el(card('VERDICT',C.v,'model GPT-6','2gc62due.8',520),r),
+    f1:el(card('FINDING',C.f,'no defect: matches zlib.crc32 on 269 inputs','2gc62due.9',480),r),
+    f2:el(card('FINDING',C.f,'optional bound checks, lines 140 and 142','2gc62due.a',480),r)};
+  this.st=this.m.letter.querySelector('.st');
+  // scoped store: the letter copy first, then what the reader writes under it, then the copies
+  this.S={letter:[1210,298,560],v:[1250,384,520],f1:[1290,490,480],f2:[1290,576,480],sec:[1210,666,560],code:[1250,752,520]};
+  this.s={letter:el(card('LETTER COPY',C.mail,'to "codex" · cut review-1','hr4y7nad.1',560),r),
+    v:el(`<div class="blk" style="width:520px;border-color:${C.v};padding:9px 16px"><div class="k" style="color:${C.v};font-size:13px">VERDICT</div><div style="font:600 15px/1.5 var(--mono);margin-top:4px">model GPT-6 · approval auto_review<br>sandbox workspace-write · effort not exposed</div><div class="id" style="font-size:14px">hr4y7nad.7</div></div>`,r),
+    f1:el(card('FINDING',C.f,'no defect: matches zlib.crc32 on 269 inputs','hr4y7nad.8',480),r),
+    f2:el(card('FINDING',C.f,'optional bound checks, lines 140 and 142','hr4y7nad.a',480),r),
+    sec:el(card('SECTION · COPY',C.sec,'crc32.sc','hr4y7nad.2 · origin 2gc62due.1',560),r),
+    code:el(card('CODE · COPY',C.code,'(define (crc32 bv) …)','hr4y7nad.3 · origin 2gc62due.2',520),r)};
+  // copies in flight: two blocks out to the scoped store, three results back
+  this.ghost=[0,1,2,3,4].map(()=>el(`<div class="abs" style="height:70px;border-radius:16px;border:2.5px dashed var(--acc);background:rgba(18,176,156,.08)"></div>`,r));
+  this.term=el(`<div class="abs term" style="width:384px;font-size:16.5px;line-height:1.6;padding:16px 20px;white-space:pre"><div class="a"></div><div class="b" style="color:#8a857a"></div></div>`,r);
+  this.ta=this.term.querySelector('.a');this.tb=this.term.querySelector('.b');
+  this.author=el(botHTML('#12b09c','author session'),r);
+  this.reader=el(botHTML('#3d3a35','codex · GPT-6'),r);
+  this.bub=el(`<div class="bubble" style="font:600 20px var(--mono)"></div>`,r);
+  this.stamp=el(`<div class="abs toast ok" style="font-size:24px">a message is a block · reading mail is a query</div>`,r);
+  this.paths=null;
+},update(t){
+  const pos=(e,[x,y],o,s=1)=>S(e,{o,x,y,s});
+  S(this.pm,{o:P(t,0,.4),x:120,y:250});S(this.ps,{o:P(t,0,.4),x:1180,y:250});
+  S(this.machine,{o:P(t,.3,.7),x:750,y:226});
+  // main store: the original blocks, then the letter, then the collected results
+  pos(this.m.sec,this.M.sec,P(t,.1,.4));pos(this.m.code,this.M.code,P(t,.2,.5));
+  const pl=pop(t,2.9);pos(this.m.letter,this.M.letter,pl.o,pl.s);
+  const read=t>5.4;
+  this.st.innerHTML=read?'<span style="color:var(--str)">"read"</span>':'<span style="color:var(--orange)">"unread"</span>';
+  this.m.letter.style.boxShadow=read&&t<6.2?`0 0 0 ${6*(1-P(t,5.4,6.2))}px rgba(10,114,39,.25)`:'';
+  ['v','f1','f2'].forEach((k,i)=>{const p=pop(t,13+i*.2);pos(this.m[k],this.M[k],p.o,p.s)});
+  // scoped store: the letter copy and the copies, then the reader's verdict and findings
+  ['letter','sec','code'].forEach((k,i)=>{const p=pop(t,2.5+i*.15);pos(this.s[k],this.S[k],p.o,p.s)});
+  ['v','f1','f2'].forEach((k,i)=>{const a=[7.2,8.4,9.2][i],p=pop(t,a);pos(this.s[k],this.S[k],p.o,p.s)});
+  this.s.code.style.boxShadow=t>6&&t<7.2?'0 0 0 6px rgba(53,114,165,.22)':'';
+  // ghosts: section and code copied out at the cut; verdict and findings carried home by collect
+  const flights=[[this.M.sec,this.S.sec,2.1],[this.M.code,this.S.code,2.25],[this.S.v,this.M.v,12.2],[this.S.f1,this.M.f1,12.4],[this.S.f2,this.M.f2,12.6]];
+  flights.forEach(([a,b,s0],i)=>{const g=this.ghost[i],p=P(t,s0,s0+.75);g.style.width=b[2]+'px';S(g,{o:p>0&&p<1?1:0,x:L(a[0],b[0],p),y:L(a[1],b[1],p)-Math.sin(p*Math.PI)*60})});
+  // the terminal: scope, then collect
+  const SC='$ theourgia scope scope-1\n    --cut review-1\n    --roots 2gc62due.1\n    --for codex',CO='$ theourgia collect scope-1';
+  const col=t>10.3;
+  this.ta.textContent=col?typed(CO,t,10.5,26):typed(SC,t,.6,40);
+  this.tb.textContent=col?(t>11.8?'(ok (inserted 3) (linked 2)\n    (already 0))':''):(t>2.1?'(ok … (letter 2gc62due.6)\n      (letter-copy hr4y7nad.1))':'');
+  S(this.term,{o:P(t,.3,.6)*(t>10&&t<10.3?1-P(t,10,10.3):1),x:768,y:298});
+  // the two sessions
+  S(this.author,{o:P(t,.3,.6),x:370,y:880});eyes(this.author,t,0,1);
+  S(this.reader,{o:P(t,3.8,4.2),x:1440,y:880});eyes(this.reader,t+1,0,-1);
+  const say=t<4.3?'':(t<6?'hook at prompt: unread mail for codex: 2gc62due.6':(t<7.2?'reading the copies at the baseline':(t<9.9?'writing a verdict and two findings':'')));
+  this.bub.textContent=say;
+  const bw=this.bub.offsetWidth;
+  S(this.bub,{o:say?1:0,x:1420-bw,y:905});
+  S(this.stamp,{...pop(t,14.6),x:(1920-this.stamp.offsetWidth)/2,y:960});this.stamp.style.opacity=pop(t,14.6).o;
+  // about edges: findings to the code copy, then (after collect) to the original block
+  if(!this.paths){
+    const g=this.edges.querySelector('.g'),lab=this.edges.querySelector('.lab');this.paths=[];
+    const rect=(e,[x,y,w])=>({x,y,w,h:e.offsetHeight});
+    const mk=(fe,fp,te,tp,a,bulge)=>{const F=rect(fe,fp),T=rect(te,tp);const x1=F.x+F.w,y1=F.y+F.h/2,x2=T.x+T.w+6,y2=T.y+T.h/2;
+      const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',`M${x1} ${y1} C${x1+bulge} ${y1} ${x2+bulge} ${y2} ${x2} ${y2}`);p.setAttribute('marker-end','url(#a8)');g.appendChild(p);
+      const tx=document.createElementNS('http://www.w3.org/2000/svg','text');tx.setAttribute('x',Math.max(x1,x2)+bulge*.75+6);tx.setAttribute('y',(y1+y2)/2+5);tx.textContent='about';lab.appendChild(tx);
+      this.paths.push([p,tx,p.getTotalLength(),a])};
+    mk(this.s.f1,this.S.f1,this.s.code,this.S.code,8.7,46);mk(this.s.f2,this.S.f2,this.s.code,this.S.code,9.5,72);
+    mk(this.m.f1,this.M.f1,this.m.code,this.M.code,13.6,46);mk(this.m.f2,this.M.f2,this.m.code,this.M.code,14.0,72);
+  }
+  this.paths.forEach(([p,tx,len,a],i)=>{p.style.opacity=t>a?1:0;p.style.strokeDasharray=t>a+.6?'9 7':`${len}`;p.style.strokeDashoffset=t>a+.6?0:len*(1-P(t,a,a+.6));tx.style.opacity=(i%2==0)?P(t,a+.4,a+.7):0});
 }});
 
 // ============================== OUTRO ======================================
