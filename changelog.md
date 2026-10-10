@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.2.0 — 2026-10-11
+
+*156 commits.* Mail and review between sessions of any vendor through a store, rules and relation effects declared as data and judged before every write, a first import cut at an editor's symbols, stale verifications named by `context`, and a run of fixes found by the first two measurements on the real tree.
+
+### New verbs
+
+- `scope <dir> --cut <cut> --roots <id> --for <actor>` makes a store for one reader holding exactly the blocks under the roots as they were at the cut, with a letter copy (`to`, `status`, `cut`, `roots`, `scope`, `baseline`) and one letter in this store; `review-results` reads the reader's verdict and findings back as one datum; `collect-into <letter> --results <datum>` and `collect <dir>` bring them under the letter here, each finding's `about` edge on the original block. A message is a block of kind `doc` with `to` and `status`; reading one's mail is a query. `contrib/` holds the Codex hooks, the doorbell and the reader's AGENTS.md. `THEOURGIA_SOCKET` names the main store's daemon for `scope` and `collect`.
+- `relation <name> --as <kind> [--from <selector>] [--to <selector>]` declares what a relation name does in this store: one of the six relations with an effect, or `nothing`; the lifecycle reads the declarations, and a reason names the relation.
+- `rule <name> --on <kind> [--where <goal>] --must|--must-not <goal>` declares a rule of this store in the query language; every committed write is judged against the rules before it is written, by a rehearsal of the write on a clone of the state, and refused with the rule's name. `--builtin citation-coverage` enables the built-in rule. `template apply` installs a template's rules with its roots; the `project` template declares `cover`.
+- `import-code --symbols <symbols-file>` splits the FIRST import of a file with no marker lines at the symbols an editor collected, into code blocks under its file block; a file that carries marker lines follows its markers.
+
+### New options and clauses
+
+- `context` names a stale verification: for a block in scope whose `verifies` edge's target has moved past it, the notes carry `(stale-verification <m> verifies <c>)` and the receipt holds the target, read through the new query relation `verified-moved`; the human output prints the receipt on one line, as `--wire` writes it.
+- `commit` answers `behind-records`, how far each writer that moved since the writer's baseline is, in records.
+- `check` answers `(undecodable-text ((<id> <field> ...) ...))` naming the blocks whose stored text cannot be decoded; a text block beginning with a UTF-8 byte-order mark is text, and `search` and `grep` read it.
+- `eval` refuses an output limit by naming the option, cuts what a limit carries to the limit, and takes `--under` a library id; `eval --working` refuses a draft on a datum block by name.
+- `set <id> mode datum` from the command line stores the symbol, as `batch` does.
+- A datum block takes no `src` by any intent's spelling or order; a batch is read as a set for the datum rule.
+
+### Changed behaviour you may notice
+
+- A delete's targets include the live far ends of the deleted block's edges, so a rule over a review that cites a result judges the deletion of that result.
+- A field set to the symbol `omit` reads as itself; it was read as absent.
+- The history's order is delivery order, and the comments and the two readers of it say so and agree on every route.
+- A plan another writer made is read as its members are declared: five readers unwrap an `expect` wrapper through one procedure; a revoked plan's wrapped member is restored from its text.
+- The daemon's own repair of a torn tail replaces what it knows of the segment, and records the snapshot only when it is at least the cut's length; what it knew of the segment is kept only when the segment shrank or its new snapshot cannot be read.
+- The transport refusal of the MCP shell names its option, and the tools say they are bound to a store.
+- `def` refuses a name the library already defines.
+
+### Fixed
+
+- `supply` refuses a datum library's file by name instead of answering stale.
+- `state-revoked` compares versions as the strings they are.
+- A write declaration too short for its verb is asked its shape first, instead of being read as a different request.
+- An insert refused for both datum and `src` carries no block clause; `eval` states its busy pool before usage.
+- `check`'s reserved-relation records are sorted by event, the same on every route.
+
+### Test-only hooks
+
+- `THEOURGIA_PROBE=off` starts a test daemon without its timer probe; read only by an injection build, any other value refused at load.
+
+### Documentation
+
+- The README gains "Mail and review between sessions" (the mailbox, `scope`, `review-results`, `collect-into`, `collect`, a review round, Codex as a reader, what this does not protect against, where this runs), the `relation` and `rule` sections, the rules' place in `template`, and the environment variable table's new rows.
+
 ## VS Code extension 1.1.1 — 2026-10-09
 
 *The extension's own version, `theourgia.theourgos`, published on the Marketplace for macOS on arm64 and x86_64 and Linux on x86_64 and arm64.* Import with Symbols, on a core pinned at theourgia be42914.

@@ -76,7 +76,7 @@ The built-in templates are `project` and `memory`; `--template-file` takes one o
 
 `template apply <name>`, or `template apply --file <template-file>`, gives an existing store a template: it creates the template block and each document root the store does not have, and never changes a block that exists. A root is found by its slug and its path. When something else holds a root's place -- a template already, two blocks with the slug, a block with the slug that is not a top-level document at that path, or a document without the slug at the path -- it refuses and creates nothing.
 
-The template is data in its block: change it with write and commit like any block, and insert a new root's document; nothing else needs to change. A template block that cannot be read is listed by `conflicts`, and every verb then behaves as in a store without one. Importing a document does not make decisions or tasks.
+The template is data in its block: change it with write and commit like any block, and insert a new root's document; nothing else needs to change. `template apply` also installs the template's relation declarations and rules: the `project` template declares `documents` as a listed relation with no effect, and the rule `cover`, citation coverage (see "Relations and rules"). A template block that cannot be read is listed by `conflicts`, and every verb then behaves as in a store without one. Importing a document does not make decisions or tasks.
 
 ### Decisions and tasks
 
@@ -141,7 +141,7 @@ del retires a block: the reduction stops treating it as live, and the record of 
 
 ### One graph over code and prose
 
-The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text. A Scheme definition imported as a library block is a block the store can evaluate against and follow by name; for other languages the editor supplies what its language server knows (signatures, keywords, call edges, diagnostics), and every answer built on those facts names the editor that supplied them and counts the facts the source has since outrun.
+The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text, and with --symbols it splits a first import at the symbols an editor collected. A Scheme definition imported as a library block is a block the store can evaluate against and follow by name; for other languages the editor supplies what its language server knows (signatures, keywords, call edges, diagnostics), and every answer built on those facts names the editor that supplied them and counts the facts the source has since outrun.
 
 ### One answer shape
 
@@ -167,7 +167,13 @@ A plain `read` of a block that is not valid adds a `(validity ...)` clause, and 
 
 `query <goal>` answers every binding of a goal's variables over the committed state at one cut. Its facts are twenty relations the store already answers -- a block's kind, class, validity, version, title and fields, edges, parents and text references, libraries, definitions, name use, the lifecycle's reasons and states, and search scores -- and nineteen rules kept as data combine them; `query --relations` lists both. A query reads no log, runs no code and writes nothing, and one whose new work passes a million tuples is refused, never answered in part. An answer carries a digest of its rows, which a write can give back as a premise.
 
-`context --for <id> --budget <tokens>` answers what to read before working on a block, within a budget counted as four bytes a token of the answer as the wire prints it, its cut left out: the blocks it must show, with their roles and validity, the decisions still unsettled for the block, implementations in review and contradictions in its scope, then definitions, evidence, dependents and ancestors as the budget allows. Its receipt holds a premise for every block it had to show and the digests of the five queries that chose them, so a commit given that receipt is refused if any of that has changed; what it adds as the budget allows is not in the receipt.
+`context --for <id> --budget <tokens>` answers what to read before working on a block, within a budget counted as four bytes a token of the answer as the wire prints it, its cut left out: the blocks it must show, with their roles and validity, the decisions still unsettled for the block, implementations in review and contradictions in its scope, then definitions, evidence, dependents and ancestors as the budget allows. Its receipt holds a premise for every block it had to show and the digests of the five queries that chose them, so a commit given that receipt is refused if any of that has changed; what it adds as the budget allows is not in the receipt. A verification whose target has moved past it is named in the notes as `(stale-verification <m> verifies <c>)`, and its target is held by the receipt. The human output prints the receipt on one line, exactly as `--wire` writes it, ready for `commit --premises`.
+
+### Relations and rules
+
+`relation <name> --as <kind>` declares what a relation name does in this store: it follows one of the six relations with an effect, or with `--as nothing` it is a listed edge with no effect. `--from` and `--to` say which blocks each end is meant for, and a write that adds an edge whose end does not match is refused. `--retire` makes the name a plain edge again.
+
+`rule <name> --on <kind> [--where <goal>] --must <goal>` (or `--must-not`) declares a rule of this store in the query language, `?w` standing for the block a write touches. Every committed write made after it, on every route, is judged against the rules before anything is written: the write runs once against a copy of the store's state, is judged, and then runs for real; one that fails a rule writes nothing and is refused `rule-violation`, naming each failing rule and block. A delete counts the live far end of each of the deleted block's edges among the blocks it touches, so a rule over a review that cites a result judges the deletion of that result. `rule cover --builtin citation-coverage` enables the built-in rule: a write that carries `--premises` and links a block, by a relation of kind `depends-on`, to one its premises do not hold is refused. A declaration and a rule are records: two writers who declare one name differently without seeing each other leave it contested, with no effect, until a writer who has seen both declares it again. A store with no rule and no declared relation judges nothing.
 
 ### Writers
 
@@ -239,7 +245,7 @@ $ theourgia insert --store store --under root --title "..."
 
 > **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. A clone that carries another copy's instance.sexp is refused for the mismatch, as above; a clone without one -- what the .gitignore init writes gives -- is refused `(error refused no-instance (remedy adopt))`. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
-## 46 verbs
+## 52 verbs
 
 Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, daemon over the socket, or child: a process the caller runs itself, so the store's server never runs user code.
 
@@ -349,6 +355,32 @@ subscribe <stream> <rev> [<token>]
 
 Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave. (stream)
 
+### Mail and review
+
+```
+scope <dir> --cut <cut> --roots <id> --for <actor>
+```
+
+Make a new store at <dir> holding a letter to <actor> and a copy of each block under the roots as it was at the cut, each copy carrying origin (the block's id here) and origin-cut; the edges between copies are copied, an edge leaving the roots is dropped and listed, and a contested field is listed and not copied. The letter copy's baseline is the new store's cut after the copies. --roots is given once per root. One record is written here: the letter, at the top level, with to, status, cut, roots and scope. An existing <dir> is refused before anything is written, and so is a block or edge the write would refuse. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server. (child)
+
+```
+review-results
+```
+
+In a scoped store, list the review results as one datum: each live block the letter's reviewer created that is not a copy, with its parent, settled fields and the actor of each, and its about targets; a finding with no about and a verdict missing a condition field are listed. (daemon)
+
+```
+collect-into <letter-id> --results <datum>
+```
+
+Write a review-results datum under a letter: the blocks not collected before, then the about edges not present, as the reviewer's records. Answers how many were inserted, linked and already linked, and every field another actor set. (daemon)
+
+```
+collect <dir>
+```
+
+Bring a scoped store's review results back under its letter here: the blocks the letter's reviewer created in <dir>, with their settled fields, under the reviewer's name, and their about edges, to the origin of a copy or to the collected block. A second collect writes nothing new. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server. (child)
+
 ### Making and changing blocks
 
 ```
@@ -403,7 +435,19 @@ Remove a named relation between two blocks. (daemon)
 def <name> [--under <library>] <source> [--premises <datum>]
 ```
 
-Define or replace one named definition. (daemon)
+Define one named definition in a datum library, after its last child. A name one of the library's children already defines is refused (name-exists); def does not replace a definition. (daemon)
+
+```
+relation <name> [--as <kind>] [--from <selector>] [--to <selector>] [--retire] [--premises <datum>]
+```
+
+Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for: a write that adds an edge whose end its selector does not match, or retypes such an end, is refused relation-endpoint. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing. (daemon)
+
+```
+rule <name> [--on <kind>] [--where <goal>] [--must <goal>] [--must-not <goal>] [--builtin <name>] [--retire] [--premises <datum>]
+```
+
+Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. Every committed write after it is judged before anything is written; a write that fails is refused rule-violation, naming every failing pair. The same rule again answers (ok (unchanged)) and writes nothing. (daemon)
 
 ### Drafts, and committing them
 
@@ -452,10 +496,10 @@ export-md <dir> [--with-ids] [--working] [--writer <name>]
 Write the store out as markdown. (daemon)
 
 ```
-import-code <dir> [--allow-delete] [--datum] [--premises <datum>]
+import-code <dir> [--allow-delete] [--datum] [--symbols <symbols-file>] [--premises <datum>]
 ```
 
-Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. (daemon)
+Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. With --symbols, a file an editor's symbols file names is split on its first import at those symbols' ranges, every start and every end a cut, as a marked import of the same cuts would split it; a file that already carries markers follows them, and the answer lists it as symbols-ignored. A file whose cuts the scanner does not see at the top level is not imported, and the answer lists it with its refusal as symbols-refused. (daemon)
 
 ```
 export-code <dir> [--raw] [--datum] [--working] [--writer <name>]
@@ -510,7 +554,7 @@ Carry out several changes as one request. (daemon)
 ### Evaluating
 
 ```
-eval [--lang <language>] [--cut <cut>] [--under <library>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>] <source>
+eval [--lang <language>] [--cut <cut>] [--under <library-id>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>] <source>
 ```
 
 Evaluate source against the store, or against a writer's working view with --working: Scheme by default, another language with --lang, whose runner runs only where the operator has set THEOURGIA_RUNNERS=on. It runs as a child process of the caller, never in the store's server. (child)
@@ -521,7 +565,7 @@ Evaluate source against the store, or against a writer's working view with --wor
 supply <kind> <file> [--for <writer>] [--clear]
 ```
 
-Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- beside the store, never in it. The file's header names the projection it was made from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed. (daemon)
+Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- in the store's directory under derived/, outside the event log. The header carries the digests of the projected files it was computed from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed. (daemon)
 
 ```
 reach <id> [--rel <rel>] [--depth <n>]
@@ -533,7 +577,7 @@ List the blocks a block reaches over the edges an editor supplied (calls, by def
 diagnostics [--writer <name>]
 ```
 
-List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src. (daemon)
+List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src; one whose range cannot be mapped onto a single block's src is listed with (at unmappable). (daemon)
 
 ## Options every verb takes
 
@@ -554,6 +598,7 @@ A request that reaches a server naming `--store`, `--actor`, `--wire` or `--sock
 |---|---|
 | `THEOURGIA_STORE` | The store when `--store` is absent |
 | `THEOURGIA_ACTOR` | Who the requests are from when `--actor` is absent |
+| `THEOURGIA_SOCKET` | For `scope` and `collect`, the main store's daemon socket when `--socket` is absent |
 | `THEOURGIA_WRITER` | Whose drafts a request reads and writes when `--writer` is absent |
 | `THEOURGIA_HOME` | Where the machine registry and its lock live. Falls back to `$HOME/.theourgia`, or `/tmp/.theourgia` when `HOME` is unset |
 | `THEOURGIA_RUN` | The run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
@@ -568,6 +613,8 @@ A request that reaches a server naming `--store`, `--actor`, `--wire` or `--sock
 | `THEOURGIA_RUNNER_C` | The operator's runner for `eval --lang c`, a whole runner in place of the default |
 | `THEOURGIA_RUNNER_JAVA` | The operator's runner for `eval --lang java`, a whole runner in place of the default |
 | `THEOURGIA_TRACE` | `1` writes filesystem and dispatch events to stderr |
+
+Nine more variables are for tests only and are read only by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read them. Among them `THEOURGIA_PROBE=off` starts a daemon without its once-a-second probe for outside changes.
 
 ## Working with agents
 
@@ -626,6 +673,20 @@ After checking that an implementation still carries out its decision, link <impl
 A writer id is held by one live agent at a time. On the command line it is `--writer`, else `THEOURGIA_WRITER`; with neither, a draft verb is refused `writer-required`. The MCP shell decides it once, when it starts: `THEOURGIA_WRITER` when set and not empty, else `--writer`, else one derived for the session, `<actor>-<start>-<pid>` -- the actor reduced to what a writer id may hold, the start in milliseconds in base 36, the shell's process id. The initialize response names it, and a tool call's own `--writer` overrides it for that call only. A name a writer cannot have (1 to 128 characters of `a-z`, `0-9`, `.`, `_`, `-`, and not `.` or `..`) stops the shell at start with its usage line, exit 2.
 
 A later session may bind the same id and carry on with its drafts, by starting with `THEOURGIA_WRITER=<that name>`, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. Derived writers differ between sessions, so the risk comes from a fixed name: a host that sets one `--writer` or `THEOURGIA_WRITER` for several agents makes them share it.
+
+### Mail and review between sessions
+
+Sessions on one machine -- of any vendor, through the command line or the MCP shell -- talk to each other through a store. There is no message verb: a message is a block of kind `doc` with `to`, the reader's actor name, and `status`, `"unread"` when sent and `"read"` once the reader has read it, and reading one's mail is a query:
+
+```
+query '(and (field ?m "to" "codex") (field ?m "status" "unread"))'
+```
+
+A review goes through a store made for the reader. `scope <dir> --cut <cut> --roots <id> --for <actor>` makes a new store holding exactly the blocks under the roots as they were at the cut, a letter copy that names the reader, and nothing else -- the authors' notes, ledgers and earlier rounds are not in it -- and writes one letter in this store. The reader, in a fresh session pointed at `<dir>`, writes a verdict under the letter copy, with `model`, `approval`, `sandbox` and `effort`, and a finding under the verdict for each finding, each with an `about` edge to the copy it concerns. `collect <dir>` brings them back under the letter here, each `about` edge on the original block; `review-results`, run in the scoped store, and `collect-into` are the two halves it is made of. `scope` and `collect` run in the command line's own program or as the MCP shell's child, never in a daemon.
+
+Codex reaches a store through the MCP shell (`codex mcp add theourgia -- <the command that starts the shell>`, with `THEOURGIA_ACTOR=codex`). `contrib/` holds what tells it about mail: `codex-hooks.json` runs `codex-mail.sh` on `PostToolUse` and `UserPromptSubmit`, which prints the reader's unread mail as the hook's answer; `doorbell.sh` types one line into a tmux pane when mail arrives for a reader idle at its prompt; `AGENTS.md` is the reader's side of the discipline. A Claude Code session reads its mail the same way, through the same handler registered on its own `PostToolUse` and `UserPromptSubmit` hooks.
+
+The scoped store keeps a cooperating reader from seeing more than its roots. It does not keep out a reader that opens the main store's directory or states another actor's name: on one machine the user owns every session, and an actor is a stated name. This program speaks over a local socket and the local filesystem; a store kept in git is read on any clone, and writing one store from two machines is not built.
 
 ### One store per machine
 
