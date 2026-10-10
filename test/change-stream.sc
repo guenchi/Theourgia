@@ -757,7 +757,48 @@
               (expected-set (list 'changed y 'src) (list 'conflict y 'src)))
         (want "F10-2 a later supersession -> changed and resolved"
               (item-set (cdr (record! "mirrorfa" last-cut (list 'set y 'src "settled"))))
-              (expected-set (list 'changed y 'src) (list 'resolved y 'src))))
+              (expected-set (list 'changed y 'src) (list 'resolved y 'src)))
+        ;; NO FRONT, THEN TWO CONCURRENT FRONTS IN ONE FOLD: 0 -> 2.
+        ;;
+        ;; NEVER: ONE FOLD BY CAUSALITY, NOT BY TIMING. The two fronts are two
+        ;; writers' records, two publications, and while a subscriber is
+        ;; registered the daemon probes once a second: a probe between them
+        ;; folded the first alone, and the row read 1 -> 2 under its 0 -> 2
+        ;; name. So both name a third record among what they have seen, and
+        ;; that record is published last: until it arrives neither can be
+        ;; applied (pending), whatever folds; its one publication releases
+        ;; both in the fold that applies it. Neither has seen the other, so
+        ;; they stay concurrent.
+        (let* ((k1 (seq! "mirrorga")) (k2 (seq! "mirrorgb")) (kr (seq! "mirrorgr"))
+               (release (cons "mirrorgr" kr)) (before last-cut)
+               (from-cut-of (lambda (f) (let ((c (clause 'from-cut f))) (and c (car c)))))
+               (in? (lambda (cut mark) (and (list? cut) (let ((e (assoc (car mark) cut))) (and e (>= (cdr e) (cdr mark)) #t))))))
+          (mirror! d "mirrorga" k1 (cons release before) (list 'set y 'front "a: 1"))
+          (mirror! d "mirrorgb" k2 (cons release before) (list 'set y 'front "b: 2"))
+          (mirror! d "mirrorgr" kr before (list 'set y 'title "released"))
+          (poke! d)
+          (let ((f (frame! release)))
+            (want "F10-2 a block with no front acquiring two concurrent fronts in one fold -> changed AND conflict (and the release's own title)"
+                  (item-set f)
+                  (expected-set (list 'changed y 'front) (list 'conflict y 'front) (list 'changed y 'title)))
+            ;; THE CONSTRUCTION, READ: the frame that applied the release
+            ;; starts before either front and ends after both.
+            (want "F10-2 CONSTRUCTION: both fronts arrived in one fold -- the frame's from-cut holds neither, its cut holds both"
+                  (list (in? (from-cut-of f) (cons "mirrorga" k1)) (in? (from-cut-of f) (cons "mirrorgb" k2))
+                        (in? (frame-cut f) (cons "mirrorga" k1)) (in? (frame-cut f) (cons "mirrorgb" k2)))
+                  '(#f #f #t #t))
+            ;; CONTROL: THE OLD SHAPE, the first record's own frame awaited
+            ;; before the second is written -- two folds, which the reading
+            ;; above tells apart: the second's frame starts after the first.
+            (let* ((ka (seq! "mirrorha")) (kb (seq! "mirrorhb"))
+                   (fa (begin (mirror! d "mirrorha" ka last-cut (list 'set y 'keywords "h: a")) (poke! d)
+                              (frame! (cons "mirrorha" ka))))
+                   (fb (begin (mirror! d "mirrorhb" kb last-cut (list 'set y 'keywords "h: b")) (poke! d)
+                              (frame! (cons "mirrorhb" kb)))))
+              (want "F10-2 CONTROL: written with a fold between, the two arrive in two folds -- the first's frame lacks the second, the second's starts after the first"
+                    (list (in? (frame-cut fa) (cons "mirrorha" ka)) (in? (frame-cut fa) (cons "mirrorhb" kb))
+                          (in? (from-cut-of fb) (cons "mirrorha" ka)) (in? (from-cut-of fb) (cons "mirrorhb" kb)))
+                    '(#t #f #t #f))))))
       ;; EDGES: a link, a second link with the same endpoints from another
       ;; event, and an unlink that has seen only the first.
       (let* ((p (car (record! "mirrorea" last-cut (put "p" 'root 4))))
@@ -842,71 +883,6 @@
         (want "F10-2 undone -> resolved"
               (item-set (cdr (record! "mirrornd" last-cut (list 'move d2 'root 9))))
               (expected-set (list 'changed d2 'position) (list 'changed d2 'parent) (list 'resolved d2 'nested))))
-      (stop-daemon! d))
-
-    ;; ==== F10-2 two concurrent fronts in ONE fold: 0 -> 2 ====
-    ;;
-    ;; NEVER: ONE RELOAD BY CONSTRUCTION, NOT BY TIMING. The two fronts are two
-    ;; writers' records, so two publications; while a subscriber is registered
-    ;; the daemon probes once a second, and a probe between the two folds the
-    ;; first alone -- two frames, and the row read the second (1 -> 2), not the
-    ;; 0 -> 2 it is named for. So no subscriber is registered while they are
-    ;; written: with none there is no probe (daemon.sc, timer-follow!). The
-    ;; subscriber closes; its unregistering is traced, and the prober is told to
-    ;; stop in that same step of the store process; one read then runs after
-    ;; any probe it had already asked for (one mailbox, in order). The two
-    ;; records are published, one read folds both, and a subscriber resuming
-    ;; from the revision before reads that one frame.
-    (let* ((d (start-daemon! "f2g" ""))
-           (sub (spawn-subscriber! d '("changes" "0")))
-           (acc (acceptance-of (await-lines sub 1 5000)))
-           (token (token-of acc))
-           (y "mirrorgy.1"))
-      (mirror! d "mirrorgy" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "y") (cons 'parent 'root) (cons 'ord 3))))
-      (poke! d)
-      (let* ((y-frame (let ((fs (frames-of (await-lines sub 2 5000)))) (and (pair? fs) (car fs))))
-             (y-cut (and (pair? y-frame) (frame-cut y-frame)))
-             (_ (send sub '(close)))
-             (_ (await-trace d "(trace stream-unregistered" 1 5000))
-             (unregistered (count-of (d-log d) "(trace stream-unregistered"))
-             (_ (poke! d))
-             (r0 (last-published d))
-             (_ (mirror! d "mirrorga" 1 y-cut (list 'set y 'front "a: 1")))
-             (_ (mirror! d "mirrorgb" 1 y-cut (list 'set y 'front "b: 2")))
-             (_ (poke! d))
-             (resumed (spawn-subscriber! d (list "changes" (number->string r0) token)))
-             (frames (frames-of (await-lines resumed 2 5000)))
-             (f (and (pair? frames) (car frames)))
-             (from-cut (let ((c (clause 'from-cut f))) (and c (car c)))))
-        (want "F10-2 SETUP: y published in a frame, and the subscriber's leaving traced once"
-              (list (equal? (item-set y-frame) (expected-set (list 'added y))) (and (pair? y-cut) #t) unregistered)
-              '(#t #t 1))
-        (want "F10-2 a block with no front acquiring two concurrent fronts in one reload -> changed AND conflict"
-              (item-set f)
-              (expected-set (list 'changed y 'front) (list 'conflict y 'front)))
-        ;; THE CONSTRUCTION, READ: one frame after r0, which starts before
-        ;; either front and ends after both.
-        (want "F10-2 CONSTRUCTION: both fronts arrived in one fold -- one frame, its from-cut holds neither, its cut holds both"
-              (list (map frame-rev frames)
-                    (and (list? from-cut) (assoc "mirrorga" from-cut) #t) (and (list? from-cut) (assoc "mirrorgb" from-cut) #t)
-                    (and (list? (frame-cut f)) (equal? (assoc "mirrorga" (frame-cut f)) '("mirrorga" . 1))
-                         (equal? (assoc "mirrorgb" (frame-cut f)) '("mirrorgb" . 1))))
-              (list (list (+ r0 1)) #f #f #t))
-        ;; CONTROL: THE OLD SHAPE, with a read FORCED between the writes: the
-        ;; fronts fold apart, and the reading above tells the two shapes apart.
-        (let* ((r1 (last-published d))
-               (_ (mirror! d "mirrorha" 1 y-cut (list 'set y 'title "h: a")))
-               (_ (poke! d))
-               (_ (mirror! d "mirrorhb" 1 y-cut (list 'set y 'title "h: b")))
-               (_ (poke! d))
-               ;; the acceptance, then every frame from r0 + 1 to r1 + 2
-               (split (filter (lambda (x) (and (frame-rev x) (> (frame-rev x) r1)))
-                              (frames-of (await-lines resumed (+ 1 (- (+ r1 2) r0)) 5000))))
-               (last (and (pair? split) (car (last-pair split))))
-               (last-from (let ((c (and last (clause 'from-cut last)))) (and c (car c)))))
-          (want "F10-2 CONTROL: with a read forced between the writes the two arrive in two folds -- the second frame's from-cut holds the first"
-                (list (length split) (and (list? last-from) (assoc "mirrorha" last-from) #t))
-                '(2 #t))))
       (stop-daemon! d))
 
     ;; ==== F10-2 behind a stale empty frame: the frame is the action's own ====
