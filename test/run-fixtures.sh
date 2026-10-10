@@ -886,6 +886,11 @@ fi
 # differs is only the interpreter.
 bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0; pyred=0
 for f in *.sc *.py; do
+  # A GLOB THAT MATCHED NOTHING IS ITS OWN WORD in sh: a directory with no
+  # python fixture handed this loop the literal `*.py`, which was launched,
+  # read RED, counted as a fixture the directory does not hold, and then
+  # refused as "the directory changed under the run" -- the wrong cause.
+  [ -e "$f" ] || continue
   # NOTHING MORE IS LAUNCHED once a launch's group or result could not be
   # read, or a member of it outlived KILL (launcher design L6).
   [ "$aborted" = 1 ] && break
@@ -998,7 +1003,7 @@ done
 # "clean run that exits non-zero" in the other -- the second was reported
 # as a defect in an unrelated gate before the cause was found. ONE RUNNER
 # AT A TIME IN A DIRECTORY.
-total=$(ls *.sc *.py | wc -l | tr -d " ")
+total=$(ls *.sc *.py 2>/dev/null | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
 # THE SUMMARY SAYS WHAT IT COUNTS (F80). It used to print the number of

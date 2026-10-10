@@ -807,6 +807,18 @@
                 (rc-of c))
           '(#t #f 3))))
 
+(printf "== RS-P: a directory with no python fixture ==\n")
+;; THE LITERAL `*.py`: with no python fixture the runner's loop met the glob
+;; itself, launched it, read it RED and refused that the directory changed
+;; under the run. Every other case here carries ok.py, which hid it.
+(let ((c (inner! '("green.sc"))))
+  (start! c)
+  (let ((done (finished? c 120)))
+    (want "RS-P a run over scheme fixtures only reads no `*` entry, no UNACCOUNTED line, and exits 0"
+          (list done (and (line-with c "RED *") #t) (and (line-with c "UNACCOUNTED") #t)
+                (and (line-with c "the directory changed under the run") #t) (rc-of c))
+          '(#t #f #f #f 0))))
+
 (printf "== RS-7: the summary's python numbers ==\n")
 (let ((c (inner! '("ok.py" "red.sc"))))
   (start! c)
