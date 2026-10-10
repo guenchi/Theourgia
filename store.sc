@@ -3396,27 +3396,41 @@
   ;; is live after it, read from the state it produced: a block it deletes is
   ;; no target (rules speak of live blocks), and neither is one it creates and
   ;; deletes, but a deletion the reduction did not apply leaves its block a
-  ;; target. EVENTS are the write's own, ((<writer> . <seq>) ...), one
+  ;; target. A DELETE UNLINKS EVERY EDGE OF ITS BLOCK as far as a reader of
+  ;; edges can tell, so the far end of each of the deleted block's edges, in
+  ;; either direction, is a target too, when it is live after the write: a
+  ;; block that loses an edge is judged whether the edge went by unlink or by
+  ;; delete. EVENTS are the write's own, ((<writer> . <seq>) ...), one
   ;; writer's and consecutive. -> ids, sorted.
   (define (write-targets post events)
     (let loop ((rs (if (null? events) '()
                        (state-written-records post (car (car events)) (cdr (car events))
                                               (+ 1 (cdr (list-ref events (- (length events) 1)))))))
-               (ids '()) (writer (and (pair? events) (car (car events)))))
+               (ids '()) (deleted '()) (writer (and (pair? events) (car (car events)))))
       (if (null? rs)
-          (list-sort string<?
-                     (filter (lambda (id)
-                               (let ((row (state-read post id)))
-                                 (and row (not (cdr (assq 'deleted row))))))
-                             ids))
+          (let ((far (if (null? deleted)
+                         '()
+                         (apply append
+                                (map (lambda (e)
+                                       (cond ((member (car e) deleted) (list (caddr e)))
+                                             ((member (caddr e) deleted) (list (car e)))
+                                             (else '())))
+                                     (state-edges post))))))
+            (list-sort string<?
+                       (filter (lambda (id)
+                                 (let ((row (state-read post id)))
+                                   (and row (not (cdr (assq 'deleted row))))))
+                               (fold-left (lambda (acc x) (if (and (string? x) (not (member x acc))) (cons x acc) acc))
+                                          ids far))))
           (let* ((seq (caar rs)) (p (cdar rs))
                  (add (lambda (xs) (fold-left (lambda (acc x) (if (and (string? x) (not (member x acc))) (cons x acc) acc))
                                               ids xs))))
             (case (and (pair? p) (car p))
-              ((put) (loop (cdr rs) (add (list (block-id writer seq))) writer))
-              ((set move del) (loop (cdr rs) (add (list (cadr p))) writer))
-              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) writer))
-              (else (loop (cdr rs) ids writer)))))))
+              ((put) (loop (cdr rs) (add (list (block-id writer seq))) deleted writer))
+              ((del) (loop (cdr rs) (add (list (cadr p))) (cons (cadr p) deleted) writer))
+              ((set move) (loop (cdr rs) (add (list (cadr p))) deleted writer))
+              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) deleted writer))
+              (else (loop (cdr rs) ids deleted writer)))))))
 
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
