@@ -1475,11 +1475,16 @@
 
   (define (intent-produced? declared payload)
     (define intent (plan-member-intent declared))
-    (and (pair? intent) (pair? payload)
+    ;; A DECLARATION TOO SHORT FOR ITS VERB IS CARRIED OUT BY NO RECORD. A
+    ;; plan another writer made can declare `(tag)` or `(insert)`; each arm
+    ;; below reads the parts its verb has, so the shape is asked first, here,
+    ;; rather than left to the guard membership wraps this in.
+    (define (parts n) (and (list? intent) (>= (length intent) n)))
+    (and (pair? intent) (pair? payload) (list? payload)
          (case (car intent)
            ;; (insert <parent> <after> <fields>) -> (put <fields + parent + ord>)
            ((insert)
-            (and (eq? (car payload) (quote put))
+            (and (parts 4) (eq? (car payload) (quote put)) (pair? (cdr payload))
                  (let ((got (cadr payload)))
                    (and (equal? (field-of got (quote parent)) (list-ref intent 1))
                         (fields-agree? (list-ref intent 3) got)))))
@@ -1500,13 +1505,13 @@
            ((rule) (equal? intent payload))
            ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
            ((move)
-            (and (eq? (car payload) (quote move))
+            (and (parts 3) (>= (length payload) 3) (eq? (car payload) (quote move))
                  (equal? (list-ref payload 1) (list-ref intent 1))
                  (equal? (list-ref payload 2) (list-ref intent 2))))
            ;; (tag <name>) -> (tag <name> <cut>): the cut is the moment,
            ;; not the intent.
            ((tag)
-            (and (eq? (car payload) (quote tag))
+            (and (parts 2) (>= (length payload) 2) (eq? (car payload) (quote tag))
                  (equal? (list-ref payload 1) (list-ref intent 1))))
            ;; A VERB THE TABLE DOES NOT NAME IS NOT COMPARED LENIENTLY.
            ;; This build does not know which of its payload came from the

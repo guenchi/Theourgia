@@ -399,6 +399,12 @@
 (want "U3m a wrapped member on a block the plan consumes is not malformed"
       (payload-reason (consumes-plan '(expect "h0" (set "b" src "x"))))
       #f)
+;; A DECLARATION TOO SHORT FOR ITS VERB is carried out by no record: the
+;; comparison asks its shape before reading its parts.
+(want "U3m CONTROL: a member declared (tag) with no name is not carried out by a tag record"
+      (let ((es (list (plan-ev (list (cons 0 '(tag)))) (ev 14 0 '(tag "t" ())))))
+        (membership (cadr es) es))
+      'invalid)
 (want "U3m CONTROL: a wrapped member on a block it does not consume is malformed"
       (payload-reason (consumes-plan '(expect "h0" (set "c" src "x"))))
       'consumes-does-not-cover-sub-operation)
