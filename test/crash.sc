@@ -411,7 +411,7 @@
     (define rows-run 0)
 
     (include "expected.ss")
-(define-syntax want
+    (define-syntax want
       (syntax-rules ()
         ((_ label got expect)
          (begin (set! rows-run (+ rows-run 1))
