@@ -125,9 +125,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (caught got) expected))))
+    ((_ name got expected) (with-expected name expected (x) (want-1 name (caught got) x)))))
 
 (define EAGAIN (platform-number 'EAGAIN))
 ;; NEVER: fcntl IS VARIADIC, AND ITS THIRD ARGUMENT IS PASSED AS ONE. A fixed

@@ -45,20 +45,11 @@
     ((_ e0)
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expected)
-     ;; AN EXPECTED VALUE THAT RAISES IS A FAIL LINE, with no comparison.
-     (call-with-current-continuation
-       (lambda (k)
-         (let ((x (guard (e (#t (expected-raised! label e) (k #f))) expected)))
-           (want-1 label (caught got) x)))))))
-(define (expected-raised! label e)
-  (set! rows (+ rows 1))
-  (set! bad (+ bad 1))
-  (printf "FAIL ~a: the expected value raised ~s\n" label
-          (if (and (condition? e) (message-condition? e)) (condition-message e) e)))
-
+     (with-expected label expected (x) (want-1 label (caught got) x)))))
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/datum-completion-" (number->string (get-process-id))))
 (when (file-exists? root) (error 'datum-completion "Use a fresh test root" root))

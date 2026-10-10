@@ -52,9 +52,10 @@
                          (if (and (condition? e) (message-condition? e))
                              (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (want-1 label (caught got) (caught expect)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/working-version-" (number->string (get-process-id))))

@@ -43,9 +43,10 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                      (condition-message e) e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (caught got) expected))))
+    ((_ name got expected) (with-expected name expected (x) (want-1 name (caught got) x)))))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/import-symbols-" (number->string (get-process-id))))
 (system (string-append "rm -rf '" root "'; mkdir -p '" root "/home'"))

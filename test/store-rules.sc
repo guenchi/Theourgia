@@ -50,15 +50,14 @@
   (if (equal? got expected)
       (printf "ok   ~a\n" name)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ name got expected)
-     (want-1 name
-             (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+     (with-expected name expected (x) (want-1 name (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
                                              (condition-message e) e)
                                  (if (and (condition? e) (irritants-condition? e)) (condition-irritants e) '()))))
-               got)
-             expected))))
+               got) x)))))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/store-rules-" (number->string (get-process-id))))
 (system (string-append "rm -rf '" root "'; mkdir -p '" root "/home'"))
