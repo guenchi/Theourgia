@@ -146,7 +146,16 @@
 (define all-stores '())
 ;; the cost store's reduction before its three timed sets (for the shortcut row)
 (define cost-before #f)
-(define (start-daemon! tag env)
+;; NEVER: NO TIMER UNLESS THE ROW IS ABOUT THE TIMER. A daemon's once-a-second
+;; probe folds an outside change on its own schedule, and a read's queued
+;; reload then refolds it into an empty frame: every row reading frames by
+;; revision, count or line raced it. So the daemons here start with
+;; THEOURGIA_PROBE=off (test-only) and a change folds only when a row asks
+;; for it; the rows about the timer start theirs with start-timer-daemon!,
+;; the variable unset, the prober as in use.
+(define (start-daemon! tag env) (start-daemon* tag (string-append "THEOURGIA_PROBE=off " env)))
+(define (start-timer-daemon! tag env) (start-daemon* tag env))
+(define (start-daemon* tag env)
   (set! daemon-count (+ daemon-count 1))
   (let* ((t (string-append pid-text "-" (number->string daemon-count) "-" tag))
          (st (string-append scratch-base "/cs-" t))
@@ -370,7 +379,7 @@
   (stop-daemon! d)
   (let wait ((k 0)) (unless (or (> (string-length (file-text (list-ref d 5))) 0) (> k 100)) (sleep-ms 50) (wait (+ k 1))))
   (system (string-append "rm -f " (d-socket d) " " (list-ref d 4) " " (list-ref d 5)))
-  (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on " env " "
+  (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_PROBE=off " env " "
                          "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                          " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                          " sh -c 'scheme --script " (list-ref d 2) " > " (list-ref d 3) " 2>&1; echo $? > " (list-ref d 5) "' &"))
@@ -1316,21 +1325,22 @@
         (send b '(resume))
         ;; UNTIL THE CLOSE, not until a count: the retained frames may include
         ;; empty refolds, so the reader is read to its end.
-        (let* ((ls (let wait ((k 0))
-                     (let ((ls (sub-lines b)))
-                       (if (or (member "<eof>" ls) (> k 300)) ls (begin (sleep-ms 50) (wait (+ k 1)))))))
-               (fs (frames-of ls))
-               (changes (filter (lambda (f) (eq? (car f) 'changes)) fs))
-               (revs (map frame-rev changes)))
-          ;; THE COUNT IS OF FRAMES WITH ITEMS (an empty refold is no second
-          ;; publication): the five writers' frames, in order; and every
-          ;; retained frame arrived, the revisions consecutive from base + 1.
+        (let* ((ls (let* ((factor (load-factor)) (bound (scaled 15000 factor)) (t0 (real-time)))
+                     (let wait ()
+                       (let ((ls (sub-lines b)))
+                         (cond ((member "<eof>" ls) ls)
+                               ((> (- (real-time) t0) bound)
+                                (wait-gave-out! "the replay's close" (- (real-time) t0) bound factor (length ls))
+                                ls)
+                               (else (sleep-ms 50) (wait)))))))
+               (fs (frames-of ls)))
+          ;; NO TIMER (THEOURGIA_PROBE=off), SO NO REFOLD: the five writers'
+          ;; frames are exactly the retained ones, base + 1 to base + 5.
           (want "F10-6 a drain with a replay list unwritten: every retained frame, then (error draining), then the close"
-                (list (length (filter (lambda (f) (pair? (clause 'items f))) changes))
-                      (and (pair? revs) (equal? revs (let loop ((r (+ base (length revs))) (out '())) (if (<= r base) out (loop (- r 1) (cons r out))))))
+                (list (map frame-rev (filter (lambda (f) (eq? (car f) 'changes)) fs))
                       (and (pair? fs) (car (reverse fs)))
                       (and (pair? ls) (car (reverse ls))))
-                (list 5 #t '(error draining) "<eof>")))))
+                (list (list (+ base 1) (+ base 2) (+ base 3) (+ base 4) (+ base 5)) '(error draining) "<eof>")))))
     (let* ((d (start-daemon! "f6r" ""))
            (s (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines s 1 5000)))
@@ -1734,7 +1744,7 @@
     ;; P1-P3. The bounds: no probe in 5 s with nobody subscribed (the timer
     ;; ticks every second, so a running one would show five); an outside
     ;; commit within 2 s (one tick to see it, one to spare); no probe in 3 s once the last subscriber is unregistered.
-    (let* ((d (start-daemon! "p1" "")))
+    (let* ((d (start-timer-daemon! "p1" "")))
       (sleep-ms 5000)
       (want "F10-5 with no subscriber, no probe in five seconds"
             (count-of (d-log d) "(trace probe ") 0)
@@ -1755,9 +1765,20 @@
           (want "F10-5 after the last subscriber is unregistered, no probe in three seconds"
                 (- (count-of (d-log d) "(trace probe ") n) 0)))
       (stop-daemon! d))
+    ;; POFF: THEOURGIA_PROBE=off, the setting every other row's daemon runs
+    ;; under: with a subscriber live, no probe in three seconds (a running
+    ;; timer would show two or three). The rows above, started with the
+    ;; variable unset, read the timer as in use.
+    (let* ((d (start-daemon! "poff" ""))
+           (a (spawn-subscriber! d '("changes" "0"))))
+      (await-lines a 1 5000)
+      (sleep-ms 3000)
+      (want "F10-5 POFF with the probe off and a subscriber live, no probe in three seconds"
+            (count-of (d-log d) "(trace probe ") 0)
+      (stop-daemon! d))
     ;; P6: the timer follows the subscriber count: one of two leaving keeps it
     ;; running, the last leaving stops it, a new subscriber starts it again.
-    (let* ((d (start-daemon! "p6" ""))
+    (let* ((d (start-timer-daemon! "p6" ""))
            (a (spawn-subscriber! d '("changes" "0")))
            (b (spawn-subscriber! d '("changes" "0"))))
       (await-lines a 1 5000) (await-lines b 1 5000)
@@ -1780,7 +1801,7 @@
     ;; P7: A SNAPSHOT THAT CANNOT BE TAKEN COUNTS AS BEHIND: with the timer's
     ;; snapshot failing once, the probe reloads, and a frame arrives with no
     ;; commit at all.
-    (let* ((d (start-daemon! "p7" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
+    (let* ((d (start-timer-daemon! "p7" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
            (a (spawn-subscriber! d '("changes" "0"))))
       (await-lines a 1 5000)
       (let* ((ls (await-lines a 2 4000)) (f (and (> (length ls) 1) (car (frames-of ls)))))
@@ -1793,7 +1814,7 @@
     ;; empty frame at base+1, a commit makes base+2, and a resume from base
     ;; is accepted and replays both -- a withheld empty frame would be a hole
     ;; and the resume would be refused window for nothing.
-    (let* ((d (start-daemon! "pe" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
+    (let* ((d (start-timer-daemon! "pe" "THEOURGIA_FAULT=refresh-snapshot-raise@conn"))
            (a (spawn-subscriber! d '("changes" "0")))
            (acc (acceptance-of (await-lines a 1 5000)))
            (token (token-of acc)) (base (current-of acc)))
@@ -1815,7 +1836,7 @@
     ;; same actor's.
     (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-probe"))
            (_ (system (string-append "rm -f " release " " release ".held")))
-           (d (start-daemon! "p4" (string-append "THEOURGIA_HOLD='probe-before-ack:" release "'")))
+           (d (start-timer-daemon! "p4" (string-append "THEOURGIA_HOLD='probe-before-ack:" release "'")))
            (a (spawn-subscriber! d '("changes" "0")))
            (asker self))
       (await-lines a 1 5000)
@@ -1840,7 +1861,7 @@
     ;; 850 and 1150 ms: an absolute schedule gives 1000, a schedule counted
     ;; from the acknowledgement gives about 1300, a faster timer less than
     ;; 850; 150 ms either side is the margin, half the probe's own 300.
-    (let* ((d (start-daemon! "p5" "THEOURGIA_FAULT=probe-slow@conn"))
+    (let* ((d (start-timer-daemon! "p5" "THEOURGIA_FAULT=probe-slow@conn"))
            (a (spawn-subscriber! d '("changes" "0"))))
       (await-lines a 1 5000)
       (await-trace d "(trace probe " 7 12000)
