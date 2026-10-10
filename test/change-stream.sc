@@ -321,14 +321,18 @@
 (define (mirror-as! d writer seq deps actor payload)
   (let ((bytes (encode-record seq (+ 1789000000000 seq) actor deps (storable-encode payload))))
     (log-publish! (d-store d) writer seq bytes (segment-sha bytes))))
-;; NEVER: A POKE IS A REQUEST, NOT A FOLD. The read probes and, when the disk
-;; differs from the published state, sends the store process a reload BEFORE
-;; it answers -- so when poke! returns the reload is queued, ahead of anything
-;; sent to the store process after it, and not yet done: the read answers
-;; from the published state. A row that needs the fold's result waits for it
-;; by a condition (frame!, frame-settled, next-frame, await-lines,
+;; NEVER: A POKE IS A REQUEST, NOT A FOLD. The read probes and, ONLY when the
+;; disk differs from the published state, sends the store process a reload
+;; before it answers (none for an unchanged or absent snapshot, or a probe
+;; that fails); the answer is from the published state, and whether that
+;; reload has run by the time it arrives is not known. So when poke! returns
+;; a reload is queued, ahead of anything sent to the store process after it,
+;; if the disk differed. A row that needs the fold's result waits for it by a
+;; condition (frame!, frame-settled, said-frame-after, await-lines,
 ;; await-trace, a hold's file); a row that needs only the request queued may
-;; rely on the order.
+;; rely on the order. And a queued reload refolds whether or not the timer's
+;; probe got there first, so an EMPTY frame can follow a change's frame: a
+;; row reads a change's frame by what it says, not by its position.
 (define (poke! d) (ask d 'outline))
 ;; One segment of WRITER holding N new blocks: one reload, one frame with N
 ;; (added ...) items, which is how a row makes a frame big enough to fill a
@@ -535,6 +539,17 @@
   (let* ((ls (await-lines sub (+ n 2) 6000))
          (fs (frames-of ls)))
     (if (> (length fs) n) (list-ref fs n) (list 'no-frame (length fs) ls))))
+;; THE FIRST FRAME PAST REV AFTER THAT SAYS SOMETHING (has items), waiting
+;; until one arrives or the bound passes: an empty refold frame before or
+;; after it is passed over, where a position would count it.
+(define (said-frame-after sub after)
+  (let wait ((k 0))
+    (let ((hit (find (lambda (f) (let ((r (frame-rev f)))
+                                   (and r (> r after) (pair? (clause 'items f)))))
+                     (frames-of (sub-lines sub)))))
+      (cond (hit hit)
+            ((> k 120) (list 'no-frame 'past after (map frame-rev (frames-of (sub-lines sub)))))
+            (else (sleep-ms 50) (wait (+ k 1)))))))
 
 (start-scheduler
   (lambda ()
@@ -976,10 +991,10 @@
            (single (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0))))
       (mirror-as! d "aaa00000" 1 '() single '(put ((kind . section) (title . "claimed") (parent . root) (ord . 10))))
       (poke! d)
-      (let ((f1 (next-frame sub 0)))
+      (let ((f1 (said-frame-after sub 0)))
         (mirror-as! d "bbb00000" 1 '() single '(put ((kind . section) (title . "rival") (parent . root) (ord . 11))))
         (poke! d)
-        (let ((f2 (next-frame sub 1)))
+        (let ((f2 (said-frame-after sub (or (frame-rev f1) 0))))
           (want "F10-2 a single identity's record is applied -> (added its block)"
                 (item-set f1) (expected-set (list 'added "aaa00000.1")))
           (want "F10-2 a rival claim reverses it: the block is taken back with no new event -> (removed it) alone"
@@ -988,17 +1003,19 @@
       ;; record, and a rival claim takes that record back; the block's
       ;; earlier value is its value again, with no new event.
       (let* ((held-rev #f)
-             (single2 (list "test" (cons "other111" "t") 'single "fp" #f (cons "other111" 0))))
+             (single2 (list "test" (cons "other111" "t") 'single "fp" #f (cons "other111" 0)))
+             ;; every publication so far has been read above
+             (before-plain (or (last-published d) 0)))
         (mirror! d "plainzzz" 1 '() '(put ((kind . section) (title . "keeps") (parent . root) (ord . 12) (src . "original"))))
         (poke! d)
-        (next-frame sub 2)
+        (said-frame-after sub before-plain)
         (set! held-rev (let ((r (rev-clause (ask d 'read "plainzzz.1" "--rev")))) (and r (car r))))
         (mirror-as! d "ccc00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "claimed"))
         (poke! d)
-        (let ((f3 (next-frame sub 3)))
+        (let ((f3 (said-frame-after sub (or held-rev 0))))
           (mirror-as! d "ddd00000" 1 (list (cons "plainzzz" 1)) single2 '(set "plainzzz.1" src "rival"))
           (poke! d)
-          (let ((f4 (next-frame sub 4)))
+          (let ((f4 (said-frame-after sub (or (frame-rev f3) 0))))
             (want "F10-2 a claimed record sets the field -> (changed id src)"
                   (item-set f3) (expected-set (list 'changed "plainzzz.1" 'src)))
             (want "F10-2 the rival claim takes it back: the old value returns with no new event -> (changed id src)"
@@ -1026,6 +1043,9 @@
         (want "F10-11 a local commit makes exactly one frame, the next revision"
               (frame-rev f) (+ base 1)))
       (mirror! d "mirrorpp" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 20))))
+      ;; BY POSITION, AND RIGHT: frame 0 is the local commit's, and the
+      ;; outside commit's is the next whatever follows it; an empty refold
+      ;; could only come after it.
       (poke! d)
       (let ((f (next-frame sub 1)))
         (want "F10-11 a reload asked by another connection's read after an outside commit: one frame, the next revision"
@@ -1476,7 +1496,7 @@
                   (list (frame-rev f) (frame-rev f) #t #t #t))))
         (system (string-append "chmod 600 " current))
         (poke! d)
-        (let ((f (next-frame sub 1)))
+        (let ((f (said-frame-after sub (or (frame-rev f) 0))))
           (want "F10-10 the segment readable again and a reload: the block is added back, and no clause"
                 (list (item-set f) (clause 'incomplete f))
                 (list (expected-set (list 'added "mirrorin.2")) #f))))
@@ -1526,10 +1546,11 @@
         (bytevector-u8-set! bv i (fxlogxor (bytevector-u8-ref bv i) 1))
         (call-with-port (open-file-output-port older (file-options no-fail)) (lambda (p) (put-bytevector p bv)))
         (poke! d)
-        ;; THE RELOAD THE POKE QUEUED, AWAITED BY ITS RESULT, not by a sleep:
-        ;; until a publication follows the withheld trace and the subscriber
-        ;; holds a frame for each, or the bound passes and the row reads what
-        ;; is there.
+        ;; THE ROW'S STATE, AWAITED, not a sleep and not this poke's reload: the
+        ;; repair may change no snapshot the probe compares, so the poke may
+        ;; queue nothing. The wait is for the claim's condition -- a
+        ;; publication after the withheld trace and a frame for each -- or the
+        ;; bound, and the row then reads what is there.
         (let* ((published-after
                  (lambda ()
                    (let find ((ds (read-all-data (d-log d))) (seen #f) (n 0))
