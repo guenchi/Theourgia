@@ -6,5 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; The relation and rule verbs' descriptions say what they now enforce.
-((describe "describe tells that typed relations hold their ends and that rules judge writes"))
+;; describe's entries for eval, supply, diagnostics and def say what those
+;; verbs now do; a commit that finds writers behind says how far, in records.
+((describe "describe's eval usage takes a library id; supply, diagnostics and def sentences")
+ (commit "a commit with writers behind carries behind-records beside behind"))
