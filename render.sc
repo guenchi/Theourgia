@@ -90,8 +90,11 @@
   ;; A CONTEXT ANSWER IS PRINTED BY SECTION, for a person: each section's
   ;; name, then one line per entry, its id, level and title; the notes one
   ;; per line; the insufficient, excluded and budget clauses as the wire
-  ;; writes them. The receipt, the cut and the versions are for a program,
-  ;; which asks for the wire form.
+  ;; writes them; then THE RECEIPT ON ONE LINE, the clause exactly as the wire
+  ;; writes it, so a person who reads the human form can hand it to commit
+  ;; --premises as it stands. The cut and the versions are for a program,
+  ;; which asks for the wire form. A kept clause (incomplete) follows the
+  ;; receipt, as it does on the wire.
   (define context-sections '(for constraints evidence to-verify counterexamples background notes))
   (define context-tail '(insufficient excluded budget))
   (define (context-answer? answer)
@@ -127,6 +130,7 @@
                       ((memq (car c) context-tail) (render-wire c))
                       (else "")))
                   (cdr answer))
+             (map render-wire (filter (lambda (c) (and (pair? c) (eq? (car c) 'receipt))) (cdr answer)))
              (list kept))))
   (define (render-human answer)
     (let* ((clauses (if (and (pair? answer) (list? answer))
