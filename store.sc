@@ -823,13 +823,60 @@
   ;; COUNT?, when #f, leaves the counter alone: a rehearsal's copy of a state
   ;; is read by a rule check of a write that may never happen, and a
   ;; diagnostic of the store's readers does not count it.
+  ;;
+  ;; A LEADING BYTE-ORDER MARK IS TEXT. `import-code` keeps a source's mark
+  ;; (README), and `utf8->string` drops it, so the round trip of such a
+  ;; source came back three bytes short and every text block imported with
+  ;; its mark was counted unreadable and never scanned. The bytes after the
+  ;; mark are compared when the round trip does not give the whole: a mark
+  ;; is EF BB BF exactly, and what follows it must still round-trip, so a
+  ;; source that is not UTF-8 after its mark is skipped as before.
   (define (decoded-text bv . count?)
     (let ((text (utf8->string bv)))
-      (if (bytevector=? (string->utf8 text) bv)
+      (if (or (bytevector=? (string->utf8 text) bv)
+              (and (utf8-mark? bv) (bytevector=? (string->utf8 text) (bytevector-tail bv 3))))
           text
           (begin (when (or (null? count?) (car count?))
                    (set! text-decode-skipped (+ text-decode-skipped 1)))
                  #f))))
+
+  (define (utf8-mark? bv)
+    (and (>= (bytevector-length bv) 3)
+         (= (bytevector-u8-ref bv 0) #xEF)
+         (= (bytevector-u8-ref bv 1) #xBB)
+         (= (bytevector-u8-ref bv 2) #xBF)))
+
+  (define (bytevector-tail bv k)
+    (let ((out (make-bytevector (- (bytevector-length bv) k))))
+      (bytevector-copy! bv k out 0 (- (bytevector-length bv) k))
+      out))
+
+  ;; THE LIVE BLOCKS WHOSE STORED TEXT IS BYTES AND NOT TEXT, as
+  ;; (<id> <field> ...) in the outline's order: the blocks a search or a
+  ;; grep counts under `unreadable-blocks`, named, for `check`. The fields
+  ;; are the stored ones those scans decode through `field-strings` -- doc,
+  ;; body and names are derived from them -- and a contested field is named
+  ;; when one of its candidates does not decode. Decoded here without
+  ;; counting: this is a listing, not a scan's diagnostic.
+  (define stored-text-fields (quote (title keywords src)))
+  (define (undecodable-text-blocks state)
+    (let ((bad? (lambda (v) (and (bytevector? v) (not (decoded-text v #f))))))
+      (filter pair?
+              (map (lambda (r)
+                     (let* ((id (caddr r))
+                            (block (state-read state id))
+                            (fields (if block (cdr (assq (quote fields) block)) (quote ())))
+                            (names (filter
+                                     (lambda (name)
+                                       (let ((e (assq name fields)))
+                                         (and e
+                                              (or (bad? (cdr e))
+                                                  (let ((cs (and (state-field-contested? state id name (cdr e))
+                                                                 (conflict-candidates (cdr e)))))
+                                                    (and cs (exists (lambda (c) (bad? (car c))) cs)))))))
+                                     stored-text-fields)))
+                       (if (pair? names) (cons id names) (quote ()))))
+                   (state-outline state)))))
 
   ;; THE TEXTS OF ONE FIELD OF A BLOCK: a string, a UTF-8 bytevector decoded,
   ;; or, for a field two writers left at once, each candidate's. STATE and ID
@@ -5093,6 +5140,12 @@
            ;; one, and nothing that runs or exports the block reads it.
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
+           ;; A BLOCK WHOSE STORED TEXT IS NOT UTF-8 is reported, and it is
+           ;; not damage: the record applies, and a search or grep skips the
+           ;; field and counts the block under `unreadable-blocks`. This
+           ;; names them. Present only when there is one; the verdict is
+           ;; unchanged.
+           (undecodable (undecodable-text-blocks state))
            ;; THE RULES AND TYPED ENDPOINTS IN FORCE, AUDITED (theourgia rules,
            ;; state-audit): each state rule over every live block of a kind it
            ;; lists, a write rule listed once as skipped (no write is in
@@ -5146,6 +5199,7 @@
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
+        (if (pair? undecodable) (list (list 'undecodable-text undecodable)) '())
         (if (pair? rules) (list (cons 'rules rules)) '())
         (if (pair? endpoints) (list (cons 'relation-endpoints endpoints)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then

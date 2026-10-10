@@ -2656,6 +2656,50 @@
               (and (assq 'unreadable-blocks (cdr sc)) #t)))
       (list #t #t #f))
 
+;; ---- a leading byte-order mark is text ------------------------------------
+;;
+;; `import-code` keeps a source's mark (README), and the round trip that
+;; judges a field to be text came back three bytes short of such a source,
+;; because `utf8->string` drops the mark: every block imported with one was
+;; counted unreadable and never scanned. The bytes are forged through
+;; `batch`, as the rows above forge theirs: the mark and then "marked tag";
+;; the mark and then FF FE, which is not text after its mark either.
+(printf "\n== N11: a leading byte-order mark is text ==\n")
+(define (scan-reading store verb word)
+  (let ((answer (car (lines-of (run store verb word "--wire")))))
+    (list (length (cdr (assq 'items (cdr answer))))
+          (cadr (assq 'unreadable-blocks (cdr (assq 'scanned (cdr answer))))))))
+(define (check-clause store name)
+  (begin (run store "check")
+         (let ((answer (read (open-string-input-port (text-of out-path)))))
+           (and (pair? answer) (assq name (cdr answer))))))
+(define d12 (fresh-store!))
+(init! d12)
+(define d12-marked (insert! d12 "--title" "a block stored with its mark"))
+(run-with-stdin d12
+                (string-append "((set \"" d12-marked "\" src #vu8(239 187 191 109 97 114 107 101 100 32 116 97 103)))")
+                "batch")
+(want "N11 a block whose source begins with a byte-order mark is found by search and grep, and none is unreadable"
+      (list (scan-reading d12 "search" "marked") (scan-reading d12 "grep" "marked"))
+      '((1 0) (1 0)))
+(want "N11 TWIN: check names no block on that store"
+      (check-clause d12 'undecodable-text)
+      #f)
+(define d12b (fresh-store!))
+(init! d12b)
+(define d12b-marked (insert! d12b "--title" "a block stored with its mark"))
+(define d12b-bad (insert! d12b "--title" "a block with a mark and then no text"))
+(run-with-stdin d12b
+                (string-append "((set \"" d12b-marked "\" src #vu8(239 187 191 109 97 114 107 101 100 32 116 97 103))"
+                               " (set \"" d12b-bad "\" src #vu8(239 187 191 255 254)))")
+                "batch")
+(want "N11 a mark followed by bytes that are not text is still one unreadable block, beside the marked one found"
+      (list (scan-reading d12b "search" "marked") (scan-reading d12b "grep" "marked"))
+      '((1 1) (1 1)))
+(want "N11 check names the unreadable block and its field, and not the marked one"
+      (check-clause d12b 'undecodable-text)
+      (list 'undecodable-text (list (list d12b-bad 'src))))
+
 ;; ---- how many names, rather than whether there is an index --------------
 (define (defs-clause store q)
   (let* ((answer (car (lines-of (run store "search" q "--wire"))))
