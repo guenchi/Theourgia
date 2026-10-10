@@ -149,16 +149,17 @@
       '(ok text))
 (define MX (bare! "Unknown mode target"))
 (define mode-cli (run 'set MX "mode" "nonsense"))
-(define mode-batch (run 'batch (format "((set ~s mode nonsense))" MX)))
+(define MY (bare! "Unknown mode target, batch"))
+(define mode-batch (run 'batch (format "((set ~s mode nonsense))" MY)))
 (want "MODE-2 the command line refuses an unknown mode by name, with the known list"
       (from-head mode-cli 'mode-not-known)
       '(mode-not-known (mode "nonsense") (known (text datum))))
-(want "MODE-2 batch refuses it with the same detail"
-      (in-order (rpc-ok? mode-batch) (equal? (from-head mode-batch 'mode-not-known) (from-head mode-cli 'mode-not-known)))
-      '(#f #t))
-(want "MODE-2 the refused writes left the block without a mode"
-      (field-value MX 'mode)
-      #f)
+(want "MODE-2 batch refuses it on a block of its own with the same detail"
+      (in-order (rpc-ok? mode-batch) (from-head mode-batch 'mode-not-known))
+      '(#f (mode-not-known (mode "nonsense") (known (text datum)))))
+(want "MODE-2 the refused writes left both blocks without a mode"
+      (list (field-value MX 'mode) (field-value MY 'mode))
+      '(#f #f))
 
 ;; ---- C49-3: what a read says ----------------------------------------------------------------
 
