@@ -890,9 +890,13 @@ for f in *.sc *.py; do
   # python fixture handed this loop the literal `*.py`, which was launched,
   # read RED, counted as a fixture the directory does not hold, and then
   # refused as "the directory changed under the run" -- the wrong cause.
-  # A dangling link is still a name the directory holds, as `ls` counts it
-  # below, so it is classified as before.
-  [ -e "$f" ] || [ -L "$f" ] || continue
+  # ONLY THE PATTERN ITSELF is skipped: a fixture removed while the run was
+  # under way is still launched, read RED and counted against the
+  # directory, which is how that change is caught. A dangling link named
+  # `*.sc` is a name the directory holds, as `ls` counts it below.
+  case "$f" in
+    '*.sc'|'*.py') [ -e "$f" ] || [ -L "$f" ] || continue ;;
+  esac
   # NOTHING MORE IS LAUNCHED once a launch's group or result could not be
   # read, or a member of it outlived KILL (launcher design L6).
   [ "$aborted" = 1 ] && break
