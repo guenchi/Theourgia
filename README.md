@@ -3017,8 +3017,9 @@ holds both `theourgia/` and `igropyr/` (see `test/RUN.md`):
 At its end the runner prints every refusal that applies, one `REFUSING:` line
 each, in its order -- fixtures not green (2), something left behind (3), not
 all launched (6), unguarded fixtures (4), a row baseline that does not describe
-the tree (1) -- and exits with the first one's code; a run with none exits 0.
-A refusal ranked below another is printed, not hidden behind it.
+the tree (1) -- and exits with the first one's code. A refusal ranked below
+another is printed, not hidden behind it. A run with none exits 0, unless the
+roots it made could not be removed: it then says `NOT REMOVED` and exits 5.
 
 The run's preflight, `test/expansion-branches.sc`, imports the libraries the
 programs import statically, in a child under each value of `THEOURGIA_INJECT`,
