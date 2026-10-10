@@ -6,7 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; The rule verb joins the catalogue, and the verb list an unknown verb is
-;; answered with.
-((describe "describe lists the rule verb")
- (no-such-verb "the unknown-verb refusal's verb list names rule"))
+;; describe's entries for eval, supply, diagnostics and def say what those
+;; verbs now do; a commit that finds writers behind says how far, in records.
+((describe "describe's eval usage takes a library id; supply, diagnostics and def sentences")
+ (commit "a commit with writers behind carries behind-records beside behind"))
