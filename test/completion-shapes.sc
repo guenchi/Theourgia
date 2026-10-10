@@ -111,7 +111,7 @@
 (include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) x)))))
+    ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/completion-shapes-" (number->string (get-process-id))))

@@ -66,7 +66,7 @@
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (with-expected label expected (x) (want-1 label (caught got) x))))))
+            (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -202,7 +202,26 @@
         "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
         "(include \"expected.ss\")\n"
         "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n (caught g) x)))))\n"
-        "(want \"one\" 1 1)\n"))
+        "\n(want \"one\" 1 1)\n"))
+    ;; THE GUARD MENTIONED, NOT USED: the include, and (with-expected in a
+    ;; comment, while want itself evaluates the expected value bare.
+    (scheme-fixture "want-mention"
+      (string-append
+        "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
+        "(define-syntax caught\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(include \"expected.ss\")\n"
+        ";; (with-expected is not used below\n"
+        "(define-syntax want\n  (syntax-rules () ((_ n g e) (want-1 n (caught g) e))))\n"
+        "\n(want \"one\" 1 1)\n"))
+    ;; THE COMPUTED VALUE GUARDED ANOTHER WAY (as context-stale's tolerant):
+    ;; no `caught` definition, and guarded all the same.
+    (scheme-fixture "want-tolerant"
+      (string-append
+        "(define (want-1 n g e) (printf \"ok ~a~%\" n))\n"
+        "(define-syntax tolerant\n  (syntax-rules () ((_ e0) e0)))\n"
+        "(include \"expected.ss\")\n"
+        "(define-syntax want\n  (syntax-rules () ((_ n g e) (with-expected n e (x) (want-1 n (tolerant g) x)))))\n"
+        "\n(want \"one\" 1 1)\n"))
     ;; What the runner handed its fixtures, read from the fixture's own
     ;; environment; and a marker file written into each root, so "removed"
     ;; is about roots that held something.
@@ -1304,13 +1323,14 @@
         '()))
 
 (printf "== RS-G: a fixture's want guards its expected value ==\n")
-(let ((c (inner! '("ok.py" "want-bare.sc" "want-guarded.sc"))))
+(let ((c (inner! '("ok.py" "want-bare.sc" "want-guarded.sc" "want-mention.sc" "want-tolerant.sc"))))
   (start! c)
   (let* ((done (finished? c 120))
-         (line (find (lambda (l) (starts-with? l "UNGUARDED FIXTURES")) (lines-of (run-log c)))))
-    (want "RS-G the runner names the fixture whose want evaluates its expected value bare, and not the one that guards it"
-          (list done (and line (word-in? line "want-bare")) (and line (word-in? line "want-guarded")))
-          '(#t #t #f))))
+         (line (find (lambda (l) (starts-with? l "UNGUARDED FIXTURES")) (lines-of (run-log c))))
+         (named? (lambda (w) (and line (word-in? line w) #t))))
+    (want "RS-G the runner names the fixtures whose want evaluates its expected value bare -- also when the guard is only mentioned -- and not those that guard it, by caught or another guard"
+          (list done (named? "want-bare") (named? "want-mention") (named? "want-guarded") (named? "want-tolerant"))
+          '(#t #t #t #f #f))))
 
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)

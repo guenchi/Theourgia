@@ -60,6 +60,7 @@
   (syntax-rules ()
     ((_ name got expected)
      (with-expected name expected (x) (want-1 name (caught got) x)))))
+
 (define (string-contains? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
     (let loop ((i 0))

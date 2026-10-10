@@ -47,7 +47,7 @@
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (with-expected label expected (x) (want-1 label (caught got) x))))))
+            (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))

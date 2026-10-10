@@ -180,7 +180,7 @@
   (syntax-rules ()
     ((_ label got expect)
      (begin (set! rows-run (+ rows-run 1))
-            (with-expected label expect (x) (want-1 label (caught got) x))))))
+            (with-expected label expect (x) (want-1 label (caught got) (caught x)))))))
 
 ;; THE RENDERER IS SHARED, NOT COPIED. This file read a raised condition
 ;; with `condition-message` alone, which threw the irritants away: the

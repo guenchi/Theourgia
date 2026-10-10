@@ -50,7 +50,7 @@
   (syntax-rules ()
     ((_ label got expected)
      (begin (set! rows (+ rows 1))
-            (with-expected label expected (x) (want-1 label (caught got) x))))))
+            (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
 ;; The typed condition is looked up at run time, so this file loads on a
 ;; tree without it; there, the rows that need it are red and the rest read.
