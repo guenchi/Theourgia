@@ -1,6 +1,6 @@
 {
   "name": "theourgia",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A block-graph store for LLM agents and the people working with them, with its daemon and MCP shell.",
   "license": "Apache-2.0",
   "author": "guenchi",
