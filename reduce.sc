@@ -64,7 +64,7 @@
           (rnrs unicode) (rnrs io simple)
           (only (rnrs io ports) call-with-string-output-port)
           (only (theourgia trace) trace-event!)
-          (only (theourgia request) store-supplied-fields
+          (only (theourgia request) plan-member-intent store-supplied-fields
                 request-actor? actor-identity actor-sub
                 actor-plan-event make-evidence request-gates
                 plan? plan-consumes consumes?)
@@ -1503,7 +1503,7 @@
              ((null? es) #f)
              ((not (and (pair? (car es)) (list? (cdar es)))) #f)
              (else
-              (let* ((body (cdar es))
+              (let* ((body (plan-member-intent (cdar es)))
                      (target (and (pair? body) (pair? (cdr body)) (cadr body))))
                 (if (and (string? target) (not (member target blocks)))
                     'consumes-does-not-cover-sub-operation

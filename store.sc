@@ -3846,7 +3846,7 @@
              (cond
                ((null? es) #f)
                (else
-                (let* ((body (cdar es))
+                (let* ((body (plan-member-intent (cdar es)))
                        (block (and (pair? body) (pair? (cdr body)) (eq? 'set (car body))
                                    (cadr body)))
                        (text (and block (= 4 (length body)) (eq? 'src (caddr body))

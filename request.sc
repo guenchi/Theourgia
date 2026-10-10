@@ -37,7 +37,7 @@
 (library (theourgia request)
   (export request-fingerprint request-identity identity=?
           req-id-ok? actor-identity actor-fingerprint actor-sub
-          plan? plan-consumes consumes?
+          plan? plan-consumes consumes? plan-member-intent
           actor-plan-event actor-after request-actor?
           make-evidence ev-event ev-actor ev-deps ev-payload ev-placement
           ev-delivered? ev-marks ev-marked?
@@ -1294,7 +1294,7 @@
               ;; `undetermined` and not a verdict.
               (let ((bound (bind-new declared evidence)))
                 (cond
-                  ((eq? bound 'unbound) 'undetermined)
+                  ((eq? bound unbound) 'undetermined)
                   ((intent-produced? bound (ev-payload e)) 'valid)
                   (else 'invalid))))))))))
 
@@ -1465,11 +1465,16 @@
   ;; (completion.sc, declared-intent): the record never carries the wrapper,
   ;; so a member declared as (expect <hash> <intent> ...) is the record of
   ;; <intent>.
+;; THE INTENT A PLAN MEMBER DECLARES, inside an (expect <subject> <intent>
+  ;; ...) wrapper, one level; any other shape is its own intent. One reading
+  ;; for every reader of a plan's members (this file, reduce.sc plan-reason,
+  ;; store.sc consumes-mismatch, completion.sc): a member another writer
+  ;; wrapped is judged by the intent inside, not by the wrapper's subject.
+  (define (plan-member-intent e)
+    (if (and (pair? e) (eq? (car e) 'expect) (pair? (cdr e)) (pair? (cddr e))) (caddr e) e))
+
   (define (intent-produced? declared payload)
-    (define intent
-      (if (and (pair? declared) (eq? (car declared) 'expect) (pair? (cdr declared)) (pair? (cddr declared)))
-          (caddr declared)
-          declared))
+    (define intent (plan-member-intent declared))
     (and (pair? intent) (pair? payload)
          (case (car intent)
            ;; (insert <parent> <after> <fields>) -> (put <fields + parent + ord>)
@@ -1481,7 +1486,13 @@
            ;; (set <id> <field> <value> [<expect>]) -> the same, verbatim
            ((set) (equal? intent payload))
            ((del) (equal? intent payload))
-           ((link unlink) (equal? intent payload))
+           ;; (link <from> <rel> <to>) -> the same: resolve writes an edge at
+           ;; its four parts, so a part past the fourth -- which a plan this
+           ;; build writes no longer declares (store.sc, intent-with-refs),
+           ;; and one from an earlier build or another writer can -- is not
+           ;; part of what the record carries out.
+           ((link unlink) (and (list? intent) (>= (length intent) 4)
+                                (equal? (list (car intent) (cadr intent) (caddr intent) (cadddr intent)) payload)))
            ;; (relation <name> <value>) -> the same, verbatim
            ((relation) (equal? intent payload))
            ;; (rule <name> <value>) -> the same, verbatim: the store writes
@@ -1554,6 +1565,11 @@
               (loop (div n 36)
                     (cons (string-ref base36-digits (mod n 36)) acc))))))
 
+  ;; NEVER: THE ANSWER FOR "NOT BOUND YET" IS NOT A VALUE A PLAN CAN HOLD.
+  ;; It was the symbol `unbound`, so a member whose value held that symbol
+  ;; anywhere read as not bound and waited for ever. A fresh object, compared
+  ;; by identity, is one no record can spell.
+  (define unbound (list 'unbound))
   ;; Replace every `("#%new" k)` with the id index k's applied record
   ;; created, or answer `unbound` if any of them has no such record.
   (define (bind-new x evidence)
@@ -1561,13 +1577,13 @@
       ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
        (let ((e (applied-index evidence (cadr x))))
          (if (and e (pair? (ev-payload e)) (eq? (car (ev-payload e)) 'put))
-             (created-id (ev-event e)) (quote unbound))))
+             (created-id (ev-event e)) unbound)))
       ((pair? x)
        (let ((a (bind-new (car x) evidence)))
-         (if (eq? a (quote unbound))
-             (quote unbound)
+         (if (eq? a unbound)
+             unbound
              (let ((d (bind-new (cdr x) evidence)))
-               (if (eq? d (quote unbound)) (quote unbound) (cons a d))))))
+               (if (eq? d unbound) unbound (cons a d))))))
       (else x)))
 
   ;; IT MUST NOT ASK ABOUT MEMBERSHIP, and that is not an optimisation.
