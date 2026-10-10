@@ -376,7 +376,7 @@
           lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version real-path
           fs-error? fs-error-op fs-error-target fs-error-errno errno-text
-          theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-stage known-stages
+          theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-probe-off? theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
@@ -2357,6 +2357,16 @@
      (define read-chunk-setting (positive-setting "THEOURGIA_READ_CHUNK"))
      (define (theourgia-send-buffer) send-buffer-setting)
      (define (theourgia-read-chunk) read-chunk-setting)
+     ;; THE DAEMON'S TIMER PROBE, OFF FOR A FIXTURE: THEOURGIA_PROBE=off
+     ;; spawns no prober, so a change folds only when something asks for it
+     ;; and a row's frames do not race a timer fold. Unset, the prober runs
+     ;; as always; any other value is refused at load.
+     (define probe-off-setting
+       (let ((v (getenv "THEOURGIA_PROBE")))
+         (cond ((not v) #f)
+               ((string=? v "off") #t)
+               (else (assertion-violation 'theourgia-ffi "THEOURGIA_PROBE must be \"off\" or unset" v)))))
+     (define (theourgia-probe-off?) probe-off-setting)
 
      ;; NOFLOCK: THE PRODUCT'S LOCK IS REMOVED AND THE BARRIER IS KEPT.
      ;; It exists so that the rows asserting mutual exclusion can be
@@ -2974,6 +2984,7 @@
      (define (theourgia-fault-armed?) #f)
      (define (theourgia-send-buffer) #f)
      (define (theourgia-read-chunk) #f)
+     (define (theourgia-probe-off?) #f)
      (define (stat-fault? path) #f)
      (define (stat-fault-errno) EIO)
      (define (lseek-fault subject) #f)

@@ -3542,10 +3542,10 @@ Code at the store -- see
 | `THEOURGIA_SCHEME` | `theourgia.sc`, `core.sc`, `mcp/server.sc` | the Chez binary every program starts its Scheme children with: the thin client's `core.sc` and daemon, the MCP shell's daemon and `eval` child, and `eval`'s worker. A tree started under a particular Chez therefore starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
-**Test-only. Eight of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
+**Test-only. Nine of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
 `THEOURGIA_BARRIER`, `THEOURGIA_HOLD`, `THEOURGIA_HOLD_MS`,
-`THEOURGIA_PLATFORM_KEY`, `THEOURGIA_SEND_BUFFER` and `THEOURGIA_READ_CHUNK`
--- are read only
+`THEOURGIA_PLATFORM_KEY`, `THEOURGIA_SEND_BUFFER`, `THEOURGIA_READ_CHUNK` and
+`THEOURGIA_PROBE` -- are read only
 by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read
 them at all.**
 
@@ -3557,6 +3557,7 @@ them at all.**
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
 | `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
+| `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
 | `THEOURGIA_SEND_BUFFER` | an exact positive integer: a daemon presses each accepted connection's send buffer to that many bytes, so a row can make a write the daemon cannot finish (`subscribe`'s blocked-write rows); refused at load if it is anything else |
 | `THEOURGIA_READ_CHUNK` | an exact positive integer: the streaming client reads at most that many bytes at a time, so a row can cut its lines where it likes; refused at load if it is anything else |
