@@ -22,9 +22,11 @@
 ;; for results on the change stream, reads one with context, and reviews it
 ;; (a top-level doc, slot "review", citing the result) carrying the
 ;; receipt. The store declares: answers (a result to a decision) and cites
-;; (a review to a result), typed; review-cites, result-answers (state
-;; rules); reviews-carry-receipt (a write rule); citation coverage, which the
-;; project template declares. The rows walk it: a result made in two writes
+;; (a review to a result), typed; result-answers and the review's stance
+;; rules (state rules: a review says whether it relies on results, stance
+;; "relies" or "none"; one that relies cites, one that relies on none cites
+;; nothing, and every review says which); reviews-carry-receipt (a write
+;; rule); citation coverage, which the project template declares. The rows walk it: a result made in two writes
 ;; is refused; b's subscription sees a result arrive; b's review is written
 ;; with its receipt; a refutes the result b read; b's revision on the old
 ;; receipt is refused; b reads again, finds the result to verify, and writes
@@ -136,6 +138,10 @@
 (define (section answer name) (let ((c (clause answer name))) (and c (cadr c))))
 (define (ids-in answer name) (let ((es (section answer name))) (if (list? es) (map car es) 'no-section)))
 ;; THE RECEIPT IS GIVEN BACK AS THE ANSWER PRINTS IT: the clause itself.
+;; The rule a refusal names first: (error refused rule-violation (failures ((rule <name>) ...) ...)).
+(define (refusing-rule r)
+  (and (list? r) (>= (length r) 4) (eq? (car r) 'error) (pair? (list-ref r 3)) (pair? (cdr (list-ref r 3)))
+       (cadr (car (cadr (list-ref r 3))))))
 (define (receipt-text answer) (let ((r (clause answer 'receipt))) (if r (sexpr->string-extended r) "()")))
 
 ;; ---- b's subscription -----------------------------------------------------------
@@ -196,6 +202,7 @@
 (define W #f)
 (define read-2 #f)
 (define read-3 #f)
+(define read-4 #f)
 
 (start-scheduler
   (lambda ()
@@ -211,13 +218,18 @@
       (map car
            (list (a 'relation "answers" "--as" "implements" "--from" "(kind doc) (field slot \"result\")" "--to" "(kind decision)")
                  (a 'relation "cites" "--as" "depends-on" "--from" "(kind doc) (field slot \"review\")" "--to" "(kind doc) (field slot \"result\")")
-                 (a 'rule "review-cites" "--on" "doc" "--where" "(field ?w \"slot\" \"review\")" "--must" "(edge ?w cites ?s)")
+                 (a 'rule "review-cites" "--on" "doc" "--where" "(and (field ?w \"slot\" \"review\") (field ?w \"stance\" \"relies\"))"
+                    "--must" "(edge ?w cites ?s)")
+                 (a 'rule "review-cites-none" "--on" "doc" "--where" "(and (field ?w \"slot\" \"review\") (field ?w \"stance\" \"none\"))"
+                    "--must-not" "(edge ?w cites ?s)")
+                 (a 'rule "review-stance" "--on" "doc" "--where" "(field ?w \"slot\" \"review\")" "--must" "(field ?w \"stance\" ?x)")
                  (a 'rule "result-answers" "--on" "doc" "--where" "(field ?w \"slot\" \"result\")"
                     "--must" "(and (edge ?w answers ?r) (field ?w \"for\" ?r))")
                  (a 'rule "reviews-carry-receipt" "--on" "doc" "--where" "(field+ ?w \"slot\" \"review\")" "--must" "(receipt-carried)"))))
-    (want "P the store declares answers and cites, typed, and the three rules; coverage is the template's"
+    (want "P the store declares answers and cites, typed, and the five rules; coverage is the template's"
           (list init-ok (map car (cdr (or (clause (a 'describe) 'declared-rules) '(declared-rules)))))
-          (list '(ok ok ok ok ok) '(cover result-answers review-cites reviews-carry-receipt)))
+          (list '(ok ok ok ok ok ok ok)
+                '(cover result-answers review-cites review-cites-none review-stance reviews-carry-receipt)))
 
     ;; ==== a's requests ====
     ;; The template's design root, by its slug: requests are decisions under it.
@@ -262,7 +274,7 @@
     (want "P b reads the result with context: it is the answer's for, and a receipt comes with it"
           (list (car read-1) (car (section read-1 'for)) (and (clause read-1 'receipt) #t))
           (list 'ok S1 #t))
-    (set! review (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W") '(slot . "review")))
+    (set! review (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W") '(slot . "review") '(stance . "relies")))
                                      (list 'link '(from 0) 'cites S1))
                              "--premises" (receipt-text read-1)))
     (set! W (car (item-ids review)))
@@ -300,6 +312,27 @@
                     (and f (assq 'witness (cdr f))))))
           (list '(error refused rule-violation)
                 (list 'witness (list 'citation-not-read (list 'block W) (list 'cites S2)))))
+
+    ;; ==== a review that relies on nothing ====
+    ;; Where nothing holds, a review says so: stance "none", and it cites
+    ;; nothing. Citing anything then is refused, and so is a review that does
+    ;; not say its stance.
+    (set! read-4 (b 'context "--for" S2 "--budget" "4000"))
+    (want "P a review that relies on nothing (stance none) and cites nothing is written"
+          (let ((r (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W0") '(slot . "review") '(stance . "none"))))
+                             "--premises" (receipt-text read-4))))
+            (and (pair? r) (eq? (car r) 'batch) (map car (cadr r))))
+          '(ok))
+    (want "P a review that relies on nothing and cites a result is refused review-cites-none"
+          (refusing-rule (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W1") '(slot . "review") '(stance . "none")))
+                                           (list 'link '(from 0) 'cites S2))
+                                   "--premises" (receipt-text read-4)))
+          'review-cites-none)
+    (want "P a review that does not say its stance is refused review-stance"
+          (refusing-rule (batch-of b (list (list 'insert 'root #f (list '(kind . doc) '(title . "W2") '(slot . "review")))
+                                           (list 'link '(from 0) 'cites S2))
+                                   "--premises" (receipt-text read-4)))
+          'review-stance)
 
     ;; ==== check ====
     (want "P check: the state rules hold over the store, the write rules are skipped, the verdict ok"
