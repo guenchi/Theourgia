@@ -435,7 +435,9 @@ was given. `<m>` is how many of those `<n>` held text that could not be
 decoded, counted once per block however many of its fields were affected.
 `<m>` is a fact about THIS answer; it does not accumulate. The clause names
 its unit because a bare `unreadable` could as easily have counted lines,
-fields or bytes.
+fields or bytes. A leading UTF-8 byte-order mark is text, so a block
+`import-code` stored with its mark is read and is not counted. `check`
+names the blocks under `undecodable-text`.
 
 A successful `whereis` carries `scanned` without `unreadable-blocks`: it
 consults the definitions index rather than reading block text, and a count
@@ -2347,7 +2349,12 @@ again only when there is one; it does not change the verdict. A live block
 whose mode is `datum` and which carries a `src` -- a draft committed onto it
 before `commit` refused one -- is listed under `(datum-with-src (<id> ...))`,
 only when there is one; nothing that runs or exports it reads that src, and the
-verdict is unchanged. The rules in force are audited under `(rules ...)`, only
+verdict is unchanged. A live block whose stored `title`, `keywords` or `src` is
+bytes that are not UTF-8 (a leading byte-order mark aside) -- the blocks a
+`search` or `grep` counts under `unreadable-blocks` -- is listed under
+`(undecodable-text ((<id> <field> ...) ...))` in the outline's order, only when
+there is one, a contested field named when one of its candidates does not
+decode; the verdict is unchanged. The rules in force are audited under `(rules ...)`, only
 when there is one: each state rule over every live block of a kind it lists,
 `(rule-violation (rule <name>) (block <id>) (goal ...) (expected ...) (rows <n>)
 [(witness ...)])` for each block it fails, `(rule-unevaluable (rule <name>)
