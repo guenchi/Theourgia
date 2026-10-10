@@ -819,10 +819,10 @@
    propagate b
    "adopt! re-raises after unlock"
    (e (#t ((current-lock-release) lock) (release-store! store) (raise e))))
-  ("log.sc" (session-append!) 1 guard
+  ("log.sc" (real-append!) 1 guard
    (#t)
    refuse b
-   "session-append! metadata barrier: refused-before-reserve metadata-not-durable"
+   "session-append! metadata barrier (the real append's body, real-append!): refused-before-reserve metadata-not-durable"
    (e (#t (quote barrier-failed))))
   ("log.sc" (session-snapshot!) 1 guard
    (#t)

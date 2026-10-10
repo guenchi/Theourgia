@@ -282,6 +282,8 @@
 ;;   tasks.sc task-row                  a kind asked, and the answer's label
 ;;   templates.sc templates             the template's relation table
 ;;   request.sc supersedes-list?        a resolution record's own clause
+;;   rules.sc write-facts               the kind depends-on, compared after
+;;                                      relation-kind answered (citation)
 ;; A place added, or a count grown, reds this row: it is read again.
 (define relation-names '(supersedes refutes depends-on implements verifies conflicts-with))
 (define script-dir
@@ -346,7 +348,7 @@
         "lifecycle.sc compute-validity 11" "lifecycle.sc decision-state-of 1" "lifecycle.sc effect-table 6"
         "lifecycle.sc implementation-of 1" "lifecycle.sc verified-by 1"
         "query.sc rule-library 11" "reduce.sc effect-relation-names 6" "request.sc supersedes-list? 1"
-        "tasks.sc task-row 4" "templates.sc templates 7"))
+        "rules.sc write-facts 1" "tasks.sc task-row 4" "templates.sc templates 7"))
 
 ;; ---- RE-4: the declared table, and the relation fact ------------------------------
 

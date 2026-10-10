@@ -31,7 +31,12 @@
         (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
               log-publish! segment-sha
               view-revision view-epoch view-writer view-expect-seq session-written-events)
-        (only (theourgia trace) trace-enable!))
+        (only (theourgia trace) trace-enable!)
+        (only (theourgia extensions) extension-verbs))
+
+;; The verbs registered from outside the core table (query among them), as
+;; core.sc and the daemon register them.
+(register-verbs! extension-verbs)
 
 (define bad 0)
 (define rows 0)
@@ -248,10 +253,10 @@
 ;; ---- a commit's plan -------------------------------------------------------------------------
 
 (tolerant (run 'rule "section-titled" "--on" "section" "--must" "(title ?w ?t)"))
-(tolerant (run 'write S0 "a draft"))
+(tolerant (run 'write S0 "a draft" "--writer" "rc"))
 (define commit-events (tolerant (events)))
 (want "J a commit is judged as it would land: its member's block fails a rule, and the commit writes nothing"
-      (in-order (head (run 'commit S0) 3) (- (events) commit-events))
+      (in-order (head (run 'commit S0 "--writer" "rc") 3) (- (events) commit-events))
       '((error refused rule-violation) 0))
 (tolerant (run 'rule "section-titled" "--retire"))
 
