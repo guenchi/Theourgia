@@ -853,10 +853,10 @@
 
   ;; THE LIVE BLOCKS WHOSE STORED TEXT IS BYTES AND NOT TEXT, as
   ;; (<id> <field> ...) in the outline's order, for `check`. The fields are
-  ;; the stored ones a search decodes through `field-strings` -- doc, body
-  ;; and names are derived from them -- so these are the blocks a search
-  ;; counts under `unreadable-blocks`; grep reads only `src`, and counts
-  ;; the ones named with it. A contested field is named when one of its
+  ;; the ones a search decodes through `field-strings`, so these are the
+  ;; blocks a search counts under `unreadable-blocks`; grep decodes only
+  ;; `src` that way (doc and body it reads through `derived-strings`, which
+  ;; skips bytes without counting them), and counts the ones named with it. A contested field is named when one of its
   ;; candidates does not decode. Decoded here without counting: this is a
   ;; listing, not a scan's diagnostic.
   (define stored-text-fields (quote (title keywords src)))
@@ -5142,9 +5142,9 @@
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
            ;; A BLOCK WHOSE STORED TEXT IS NOT UTF-8 is reported, and it is
-           ;; not damage: the record applies, and a search or grep skips the
-           ;; field and counts the block under `unreadable-blocks`. This
-           ;; names them. Present only when there is one; the verdict is
+           ;; not damage: the record applies, and a search skips the field
+           ;; and counts the block under `unreadable-blocks` (a grep, when
+           ;; the field is src). This names them. Present only when there is one; the verdict is
            ;; unchanged.
            (undecodable (undecodable-text-blocks state))
            ;; THE RULES AND TYPED ENDPOINTS IN FORCE, AUDITED (theourgia rules,
