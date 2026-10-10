@@ -384,13 +384,27 @@
 ;; -> the subscriber's (out rc err), the fake daemon serving SCRIPT (a list
 ;; of lines of the little language above).
 (define fake-n 0)
+;; EACH FAKE'S PID, written by the shell that started it, so the file ends
+;; them itself: a fake whose script still sleeps when its subscriber has
+;; exited -- the lagging row's fifteen seconds -- outlived the file and was
+;; left in the runner's group.
+(define fake-pid-files '())
+;; -> #t once process PID is gone: TERM, then up to five seconds of
+;; `kill -0` until it answers that there is no such process.
+(define (stop-pid! pid)
+  (system (string-append "kill " (number->string pid) " 2>/dev/null"))
+  (let wait ((k 0))
+    (cond ((not (= 0 (system (string-append "kill -0 " (number->string pid) " 2>/dev/null")))) #t)
+          ((> k 50) #f)
+          (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define (subscribe-to-fake! st script)
   (set! fake-n (+ fake-n 1))
   (let ((sf (string-append root "/fake" (number->string fake-n) ".script"))
         (sk (socket-path st)))
     (call-with-output-file sf (lambda (p) (for-each (lambda (l) (display l p) (newline p)) script)))
     (sh "mkdir -p \"$(dirname " (quoted sk) ")\"; perl " (quoted fake-daemon) " " (quoted sk) " " (quoted sf)
-        " > " sf ".log 2>&1 &")
+        " > " sf ".log 2>&1 & echo $! > " sf ".pid")
+    (set! fake-pid-files (cons (string-append sf ".pid") fake-pid-files))
     (wait-until (lambda () (file-exists? sk)) 5000)
     (subscribe-bg! "" st "0")))
 (define (last-datum s) (let ((ls (sub-lines s))) (and (pair? ls) (datum-of-line (car (reverse ls))))))
@@ -468,6 +482,11 @@
         (list rc (length ls) (and (pair? a) (car a)) (and (pair? a) (clause 'subscribed a)) (and (pair? a) (string? (car (or (clause 'daemon a) '(#f))))))
         (list 0 1 'ok '(0) #t))
   (stop-daemon! st))
+
+(want "F10-7 every fake daemon this file started has exited before the file ends"
+      (let ((pids (map (lambda (f) (call-with-input-file f read)) fake-pid-files)))
+        (list (length pids) (for-all integer? pids) (for-all stop-pid! pids)))
+      (list fake-n #t #t))
 
 (sh "rm -rf " run-root)
 (printf "rows: ~a~%~a failures~%change-stream-client complete~%" rows bad)
