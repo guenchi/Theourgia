@@ -821,8 +821,10 @@
     (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
       (run (lambda ()
              (let ((r (import-md-report store dir actor (argument-option options "--allow-delete") check)))
-               (finish (append (list 'import (car r))
-                               (filter (lambda (c) c) (cdr r)))))))))
+               (finish (if (and (list? (car r)) (= 1 (length (car r))) (judgement-refusal? (car (car r))))
+                           (car (car r))
+                           (append (list 'import (car r))
+                                   (filter (lambda (c) c) (cdr r))))))))))
 
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
@@ -1025,8 +1027,10 @@
     ;; the answer cannot be told from its shape
     (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises") #f)))
       (run (lambda ()
-             (finish (batch-answer (with-store-write store (lambda (state view) items) actor req preflight)
-                                   (null? items)))))))
+             (finish (let ((answers (with-store-write store (lambda (state view) items) actor req preflight)))
+                       (if (and (= 1 (length answers)) (judgement-refusal? (car answers)))
+                           (car answers)
+                           (batch-answer answers (null? items)))))))))
 
   (define (parse-batch store actor args req options)
     (if (not (= 1 (length args)))
@@ -1150,10 +1154,10 @@
       (list 'unlink unlink-usage
             "Remove a named relation between two blocks." #f 'daemon)
       (list 'relation relation-usage
-            "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for, stored and listed, not enforced. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
+            "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for: a write that adds an edge whose end its selector does not match, or retypes such an end, is refused relation-endpoint. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       (list 'rule rule-usage
-            "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. In this build a rule is stored, listed by check and conflicts, and judges no write. The same rule again answers (ok (unchanged)) and writes nothing."
+            "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. Every committed write after it is judged before anything is written; a write that fails is refused rule-violation, naming every failing pair. The same rule again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
       ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the

@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia admission)
-  (export make-admission admission-add! admission-gates)
+  (export make-admission admission-copy admission-add! admission-gates)
   (import (rnrs) (theourgia request)
           (only (theourgia wire) sexpr->string-extended))
 
@@ -29,6 +29,17 @@
   (define (add! t x value) (put! t x (cons value (ref t x '()))))
   (define (make-admission)
     (make-admission/raw (table) (table) (table) (table) (table) (table) '()))
+  ;; A COPY THAT SHARES NOTHING IT COULD CHANGE: each table copied (its values
+  ;; are replaced on update, never changed in place), the gate list shared
+  ;; (it too is replaced).
+  (define (admission-copy a)
+    (make-admission/raw (hashtable-copy (admission-buckets a) #t)
+                        (hashtable-copy (admission-events a) #t)
+                        (hashtable-copy (admission-dependents a) #t)
+                        (hashtable-copy (admission-waits a) #t)
+                        (hashtable-copy (admission-pasts a) #t)
+                        (hashtable-copy (admission-clock a) #t)
+                        (admission-gates a)))
 
   (define (event rec) (cons (car rec) (cadr rec)))
   (define (actor rec) (list-ref rec 4))
@@ -50,7 +61,9 @@
       (make-evidence (event rec) (actor rec) (if past past (caddr rec))
                      (cadddr rec) 'valid-history (and past #t) '())))
 
-  (define (admission-add! a rec)
+;; REHEARSAL?, when given and true, says the admission belongs to a
+  ;; rehearsal's copy of a reduction: the probes' trace lines are marked.
+  (define (admission-add! a rec . rehearsal?)
     (let ((changed (table)) (id (identity rec)))
       (define (touch! id) (when id (put! changed id id)))
       (define (touch-event! e)
@@ -89,7 +102,8 @@
             (let* ((records (ref (admission-buckets a) id '()))
                    (events (map event records))
                    (fresh (filter (lambda (p) (not (eq? (cdr p) 'valid)))
-                                  (request-gates (map (lambda (r) (evidence a r)) records)))))
+                                  (request-gates (map (lambda (r) (evidence a r)) records)
+                                                 (and (pair? rehearsal?) (car rehearsal?))))))
               (admission-gates-set! a
                 (append fresh (filter (lambda (p) (not (member (car p) events)))
                                       (admission-gates a)))))) ids))

@@ -44,13 +44,13 @@
   (import (rnrs)
           (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
-          (only (theourgia store) open-and-reduce with-store-write premises-preflight)
+          (only (theourgia store) open-and-reduce with-store-write premises-preflight judgement-refusal?)
           (only (theourgia reduce) state-read state-block-ids block-id
-                effect-relation-names reserved-relation-names state-declaration)
+                effect-relation-names reserved-relation-names state-declaration state-rule)
           (only (theourgia field-reading) field-of written-text)
           (only (theourgia ffi) entry-bytes)
           (only (theourgia templates) built-in-template built-in-template-names)
-          (only (theourgia template-read) parse-template-text template-block-ids template-roots template-relations
+          (only (theourgia template-read) parse-template-text template-block-ids template-roots template-relations template-rules
                 slug-block-ids root-slug root-kind root-path root-insert-payload template-problem)
           (only (theourgia extensions) template-usage))
 
@@ -176,11 +176,13 @@
                          (if (eq? (car p) 'refuse)
                              (begin (set! late (cadr p)) '())
                              (append (map (lambda (c) (list 'insert 'root #f (cadr c))) (cdr p))
-                                     (declarations state datum)))))
+                                     (declarations state datum)
+                                     (rule-declarations state datum)))))
                      actor req check))
                  (made (if (and inner (eq? (car inner) 'create)) (map car (cdr inner)) '())))
             (cond
               (late late)
+              ((and (= 1 (length answers)) (judgement-refusal? (car answers))) (car answers))
               ((not (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers))
                (list 'error 'template-apply-failed (cons 'answers answers)))
               (else
@@ -196,6 +198,12 @@
                    (not (or (memq name effect-relation-names) (memq name reserved-relation-names)
                             (state-declaration state name))))
                  (map car (template-relations datum)))))
+
+;; The template's rules the store has never declared, each as written in the
+  ;; template: a rule the store declared, retired or contests is its own.
+  (define (rule-declarations state datum)
+    (map (lambda (r) (list 'rule (car r) (cadr r)))
+         (filter (lambda (r) (not (state-rule state (car r)))) (template-rules datum))))
 
   (define (first-of n l) (if (= n 0) '() (cons (car l) (first-of (- n 1) (cdr l)))))
 

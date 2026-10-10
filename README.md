@@ -101,7 +101,9 @@ decision or doc → one it shows is wrong), `verifies` (a test → the code or d
 decision it explains). Each is a name `link` accepts; the reserved names (`ref`, `uses`, `calls`,
 `guards`) are not among them. Any other relation name still links; these are the ones the template
 names. The first six have an effect of their own; the template declares `documents` as a listed
-edge with no effect (see [`relation`](#relation)). `describe`, answered by the daemon, lists the store's roots and relations, the store's declared relations as `(declared-relations (<name> <kind> [(from <selector>)] [(to <selector>)]) ...)` when it has any, and the
+edge with no effect (see [`relation`](#relation)), and the rule `cover`, citation coverage (see
+[`rule`](#rule)): a write in a project store that carries `--premises` and links a block, by a
+relation of kind `depends-on`, to one its premises do not hold is refused. `describe`, answered by the daemon, lists the store's roots and relations, the store's declared relations as `(declared-relations (<name> <kind> [(from <selector>)] [(to <selector>)]) ...)` when it has any, and the
 MCP tools that write carry the roots' sentences after the writing protocol.
 
 `theourgia init` without a template is the advanced form: the store has no shape until you give it one.
@@ -1532,8 +1534,19 @@ outside the seven is refused `(error bad-request kind-not-known (kind
 
 `--from` and `--to` say which blocks each end is meant for, as the clauses
 of a selector: `(kind doc)`, or `(kind doc) (field slot "result")`. They are
-stored with the declaration and printed by `query --relations`; this version
-does not refuse a link whose ends they do not match.
+stored with the declaration, printed by `query --relations`, and held: a write
+that adds an edge under the name whose end the selector does not match, or that
+changes the kind or a selector's field of a block at such an edge, writes
+nothing and is refused with every mismatch in one answer,
+
+    (error bad-request relation-endpoint
+      (failures ((relation <name>) (edge <from> <name> <to>) (end from|to) (expected <selector>)) ...))
+
+judged on the state the write would produce, so a block created and linked in
+one `batch` is judged with the kind the batch gives it. A query that cannot be
+evaluated while they are judged refuses the write `(error refused
+relation-endpoint-unevaluable (reason <the refusal>))`. An edge that predates
+the declaration is listed by `check`.
 
 A declaration is a record: a replay, a rebuild and a snapshot give the same
 table. Its value is the whole declaration -- the kind and both selectors, or
@@ -1596,10 +1609,54 @@ cyclic structure, is refused. `?w` is bound to the target before `where` and
 the goal are asked, so a test may name it first. A
 replay, a rebuild and a snapshot keep the rules. `describe`, answered by the
 daemon, lists the rules in force as `(declared-rules (<name> <value>) ...)` when
-there is one, and `check` lists each as `(rules (rule-skipped (rule <name>) (reason write-rule|not-evaluated))
-...)`, a built-in as a write rule.
+there is one; `check` audits them (see `check`).
 
-In this version a rule is stored and listed, and judges no write.
+A RULE JUDGES EVERY COMMITTED WRITE MADE AFTER IT, on every route -- the verbs
+that write, `batch`, `commit`, the imports, `def`, `template apply` and the
+completion of a plan already written. A write's TARGETS are the blocks whose
+records it adds: created, set, moved, and either end of a linked or unlinked
+edge, live after the write (a block it deletes is no target). A rule applies to
+a target whose kind, after the write, it lists, and that its `where` selects;
+`--must` holds when its goal has a row with `?w` bound to the target,
+`--must-not` when it has none. A STATE rule is asked of the state the write
+would produce; a WRITE rule's plain facts read the state before the write, and
+its `+` facts the state after, for the targets; `cited` is a `depends-on` edge
+from a target the write adds, `unread` a cited block the write's `--premises`
+does not hold, `receipt-carried` that the write carried `--premises`. The state
+the write would produce is the store's own: the write runs once against a copy
+of the store's state with nothing written, is judged, and then runs for real.
+A write that fails a rule writes nothing and is refused with every failing pair,
+targets by id, rules by name:
+
+    (error refused rule-violation
+      (failures ((rule <name>) (block <id>) (goal <goal, ?w bound>) (expected some|none) (rows <n>)
+                 [(witness <row> ...)]) ...))
+
+A `--must-not`'s witness is at most ten of its rows, the count exact. A rule that
+cannot be evaluated -- one budget of query work for the whole write, or a query's
+refusal -- refuses the write `(error refused rule-unevaluable (rule <name>)
+(block <id>) (reason <the refusal>))`, never as ok. A created block is named by
+the id the write would have given it. Every route answers these refusals as they
+are, as it answers a premise's; a `batch` does not put them in its items, a
+`template apply` not in `template-apply-failed`, an `import-md` not in its
+`import` clause. A contested or retired rule
+judges nothing, and a rule judges no write made before it. A write is judged by
+the rules and typed relations in force BEFORE it: one that declares or changes
+a rule or a relation is judged by those already there, and the writes after it
+by what it declared.
+
+`--builtin citation-coverage` is the rule
+`(must-not (and (receipt-carried) (cited ?w ?s) (unread ?s)))` on every kind: a
+write that carried `--premises` and links a target, by a relation of kind
+`depends-on`, to a block its premises do not hold is refused, the witness rows
+`(citation-not-read (block <id>) (cites <id>))`. A write without `--premises` is
+not covered; a project that wants the receipt always carried declares
+`(must (receipt-carried))` beside it. The project template declares it as
+`cover`; a store made otherwise declares it with `rule cover --builtin
+citation-coverage`.
+
+A store with no rule and no typed relation makes no copy and judges nothing:
+every write is as it was.
 
 ### `def`
 
@@ -1805,6 +1862,12 @@ that fails after its write began and before the check was asked; one that
 fails before it began, a lock that cannot be taken among them, wrote nothing
 and carries no clause. A commit that writes nothing asks the same check of
 the state it read.
+
+A WRITE IS JUDGED IN THIS ORDER, and refused at the first that fails: the
+request understood; its premises (`premise-changed`); the verb's own check
+(`stale-baseline`); the typed relations' ends (`relation-endpoint`, see
+`relation`); the rules (`rule-violation`, `rule-unevaluable`, see `rule`). A
+write that fails its premises and a rule answers `premise-changed`.
 
 ## Importing, exporting, and splitting
 
@@ -2238,10 +2301,16 @@ again only when there is one; it does not change the verdict. A live block
 whose mode is `datum` and which carries a `src` -- a draft committed onto it
 before `commit` refused one -- is listed under `(datum-with-src (<id> ...))`,
 only when there is one; nothing that runs or exports it reads that src, and the
-verdict is unchanged. The rules in force are listed under `(rules
-(rule-skipped (rule <name>) (reason write-rule|not-evaluated)) ...)`, only when
-there is one: a write rule is never evaluated here, since no write is in hand,
-and this version evaluates no state rule; the verdict is unchanged. The verdict
+verdict is unchanged. The rules in force are audited under `(rules ...)`, only
+when there is one: each state rule over every live block of a kind it lists,
+`(rule-violation (rule <name>) (block <id>) (goal ...) (expected ...) (rows <n>)
+[(witness ...)])` for each block it fails, `(rule-unevaluable (rule <name>)
+(block <id>) (reason ...))` when it cannot be evaluated; a write rule, the
+built-in among them, listed once as `(rule-skipped (rule <name>) (reason
+write-rule))`, since no write is in hand. An edge under a typed relation whose
+end does not match its selector is listed under `(relation-endpoints
+(relation-endpoint (relation <name>) (edge ...) (end from|to) (expected
+<selector>)) ...)`. Neither changes the verdict. The verdict
 is `damaged` when a writer's log fails its integrity check, the reduction
 could not apply a record, or the registry is inside the store; otherwise
 `duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The

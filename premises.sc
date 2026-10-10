@@ -166,6 +166,11 @@
   ;; before it wrote nothing and will write nothing, and carries no clause.
   (define (premises-faces store text own raise-answer)
     (let ((check (premises-compile text store))
+          ;; THE BLOCKS THE SET HOLDS, read by the same reader the check is
+          ;; compiled from: a write's rule check asks which blocks its receipt
+          ;; holds (the gate's fifth slot).
+          (blocks (let-values (((ps cut) (read-set text)))
+                    (map cadr (filter (lambda (p) (eq? (car p) 'block)) ps))))
           (called #f)
           (entered #f)
           (refusal #f))
@@ -180,7 +185,8 @@
                                (list 'reason (if (marks-replay? answer 3) 'replay 'not-fresh))))))))
       (define (gate-of checker)
         (vector 'premises-gate checker (lambda () (set! entered #t))
-                (lambda (more) (gate-of (lambda (state) (or (checker state) (more state)))))))
+                (lambda (more) (gate-of (lambda (state) (or (checker state) (more state)))))
+                blocks))
       (values
         (gate-of (lambda (state)
                    (set! called #t)

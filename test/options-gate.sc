@@ -1747,7 +1747,7 @@
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "field-reading.sc" "incomplete.sc" "json.sc"
         "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "premises.sc" "proc.sc" "project.sc" "query.sc" "reduce.sc" "refusal.sc" "regex.sc"
-        "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
+        "render.sc" "request.sc" "rpc.sc" "rules.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "stream-client.sc" "stream-frames.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"
         "view.sc" "wire.sc" "working.sc"))
 

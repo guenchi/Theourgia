@@ -47,7 +47,8 @@
                  (verifies "<test> -> <code or decision>" "it checks it")
                  (conflicts-with "<decision> -> <decision>" "the two cannot both hold")
                  (documents "<doc> -> <code or decision>" "it explains it"))
-               (queries (tasks tasks) (commitments design))))
+               (queries (tasks tasks) (commitments design))
+               (rules (cover ((builtin citation-coverage))))))
       (cons "memory"
             '(template 1
                (roots

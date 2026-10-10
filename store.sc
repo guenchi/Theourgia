@@ -18,6 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
+          judgement-refusal?
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
@@ -64,6 +65,7 @@
                 store-register!
                 uncertain-load run-barrier! retired-successor retired-of
                 session-commit! session-pending-count-set! note-written-for!
+                session-dry-clone session-dry?
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
@@ -818,11 +820,16 @@
   ;; query, 15 in total, identical in both. A counter that moved with the
   ;; evaluation order would have been noise rather than a diagnostic, and
   ;; would have been changed to count blocks instead.
-  (define (decoded-text bv)
+  ;; COUNT?, when #f, leaves the counter alone: a rehearsal's copy of a state
+  ;; is read by a rule check of a write that may never happen, and a
+  ;; diagnostic of the store's readers does not count it.
+  (define (decoded-text bv . count?)
     (let ((text (utf8->string bv)))
       (if (bytevector=? (string->utf8 text) bv)
           text
-          (begin (set! text-decode-skipped (+ text-decode-skipped 1)) #f))))
+          (begin (when (or (null? count?) (car count?))
+                   (set! text-decode-skipped (+ text-decode-skipped 1)))
+                 #f))))
 
   ;; THE TEXTS OF ONE FIELD OF A BLOCK: a string, a UTF-8 bytevector decoded,
   ;; or, for a field two writers left at once, each candidate's. STATE and ID
@@ -836,7 +843,7 @@
         ((not e) (quote ()))
         ((string? (cdr e)) (list (cdr e)))
         ((bytevector? (cdr e))
-         (let ((text (decoded-text (cdr e))))
+         (let ((text (decoded-text (cdr e) (not (reduce-rehearsal? state)))))
            (if text (list text) (quote ()))))
         ((and (state-field-contested? state id name (cdr e)) (conflict-candidates (cdr e)))
          => (lambda (cs)
@@ -845,7 +852,7 @@
                   ((null? l) (reverse out))
                   ((string? (car (car l))) (loop (cdr l) (cons (car (car l)) out)))
                   ((bytevector? (car (car l)))
-                   (let ((text (decoded-text (car (car l)))))
+                   (let ((text (decoded-text (car (car l)) (not (reduce-rehearsal? state)))))
                      (loop (cdr l) (if text (cons text out) out))))
                   (else (loop (cdr l) out))))))
         (else (quote ())))))
@@ -2908,7 +2915,9 @@
 
   (define (state-section state payload writer seq)
     (guard (e (#t (list 'state 'unavailable (list 'reason (failure-text e)))))
-      (if (report-fault?)
+      ;; THE FAULT SEAM IS THE REAL RUN'S: a rehearsal does not consult it, so
+      ;; it cannot consume a fault meant for the write that follows.
+      (if (and (not (reduce-rehearsal? state)) (report-fault?))
           (list 'state 'unavailable (list 'reason "injected report failure"))
           (list 'state (state-report state (block-ids-of payload writer seq))))))
 
@@ -3299,12 +3308,14 @@
     (set! raise-answer-hook procedure))
 
   ;; A GATE is the premises' preflight: #(premises-gate <check> <enter>
-  ;; <also>), made by (theourgia premises). with-store-write calls ENTER once
-  ;; its session has begun, then asks CHECK; a plain procedure is still a
-  ;; preflight. A tagged vector, so nothing here loads the premises library.
-  (define (premises-gate? p) (and (vector? p) (= (vector-length p) 4) (eq? (vector-ref p 0) 'premises-gate)))
+  ;; <also> <blocks>), made by (theourgia premises). with-store-write calls
+  ;; ENTER once its session has begun, then asks CHECK; a plain procedure is
+  ;; still a preflight. BLOCKS are the block ids the set holds, which a rule
+  ;; check reads. A tagged vector, so nothing here loads the premises library.
+  (define (premises-gate? p) (and (vector? p) (= (vector-length p) 5) (eq? (vector-ref p 0) 'premises-gate)))
   (define (premises-gate-check p) (vector-ref p 1))
   (define (premises-gate-enter p) (vector-ref p 2))
+  (define (premises-gate-blocks p) (vector-ref p 4))
 
   ;; A SITE'S OWN CHECK, asked after the premises: the gate composes it
   ;; (keeping its entry); without a set, the plain composition.
@@ -3324,6 +3335,79 @@
         ((eval 'premises-faces (environment '(theourgia premises)))
          store text own (lambda (e) (raise-answer-hook e)))))
 
+;; ---- the rehearsal --------------------------------------------------------
+  ;;
+  ;; WHEN A RULE OR A TYPED DECLARATION IS IN FORCE, A WRITE RUNS TWICE
+  ;; THROUGH ONE CODE PATH. The rehearsal runs the writing branch against a
+  ;; copy of the reduction (reduce-clone) and a dry session
+  ;; (session-dry-clone): the same code, on equal inputs, handing out the
+  ;; same ids. What it produced -- the copy after the branch, which holds the
+  ;; prefix a failing expectation leaves -- is judged (theourgia rules); a
+  ;; refusal is the write's answer and nothing is written. Otherwise the
+  ;; branch runs again for real, under the same lock, and its answer is the
+  ;; write's. A store with neither makes no copy and no dry session.
+;; A REFUSAL OF THE JUDGEMENT: a rule's (error refused rule-violation |
+  ;; rule-unevaluable ...) or a typed endpoint's (error bad-request
+  ;; relation-endpoint ...). Every route answers it as it is, as it answers a
+  ;; premise's refusal: a batch does not wrap it in its items, a template's
+  ;; apply does not wrap it in template-apply-failed.
+  (define (judgement-refusal? a)
+    (and (list? a) (>= (length a) 3) (eq? (car a) 'error)
+         (or (and (eq? (cadr a) 'refused) (memq (caddr a) '(rule-violation rule-unevaluable relation-endpoint-unevaluable)) #t)
+             (and (eq? (cadr a) 'bad-request) (eq? (caddr a) 'relation-endpoint)))))
+
+  (define (rehearsal-live? state)
+    (or (pair? (state-declared-rules state))
+        (exists (lambda (d) (and (= (length d) 4)
+                                 (or (pair? (cadr (caddr d))) (pair? (cadr (cadddr d))))))
+                (state-declared-relations state))))
+
+  (define rules-judgement #f)
+  (define (write-judgement-procedure)
+    (or rules-judgement
+        (begin (set! rules-judgement (eval 'write-judgement (environment '(theourgia rules))))
+               rules-judgement)))
+
+  ;; -> #f, or the refusal the write answers with.
+  (define (rehearsal-refusal state s branch receipt)
+    (and (rehearsal-live? state)
+         (let ((clone (reduce-clone state))
+               (dry (session-dry-clone s))
+               (before (session-written-events s)))
+           (trace-event! 'rehearsal (length before) '(rehearsal))
+           (branch clone dry)
+           ((write-judgement-procedure)
+            state clone
+            (write-targets clone (filter (lambda (e) (not (member e before))) (session-written-events dry)))
+            receipt))))
+
+  ;; THE TARGETS OF A WRITE: every block whose records it adds -- created,
+  ;; set, moved, deleted, and either end of a linked or unlinked edge -- that
+  ;; is live after it, read from the state it produced: a block it deletes is
+  ;; no target (rules speak of live blocks), and neither is one it creates and
+  ;; deletes, but a deletion the reduction did not apply leaves its block a
+  ;; target. EVENTS are the write's own, ((<writer> . <seq>) ...), one
+  ;; writer's and consecutive. -> ids, sorted.
+  (define (write-targets post events)
+    (let loop ((rs (if (null? events) '()
+                       (state-written-records post (car (car events)) (cdr (car events))
+                                              (+ 1 (cdr (list-ref events (- (length events) 1)))))))
+               (ids '()) (writer (and (pair? events) (car (car events)))))
+      (if (null? rs)
+          (list-sort string<?
+                     (filter (lambda (id)
+                               (let ((row (state-read post id)))
+                                 (and row (not (cdr (assq 'deleted row))))))
+                             ids))
+          (let* ((seq (caar rs)) (p (cdar rs))
+                 (add (lambda (xs) (fold-left (lambda (acc x) (if (and (string? x) (not (member x acc))) (cons x acc) acc))
+                                              ids xs))))
+            (case (and (pair? p) (car p))
+              ((put) (loop (cdr rs) (add (list (block-id writer seq))) writer))
+              ((set move del) (loop (cdr rs) (add (list (cadr p))) writer))
+              ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) writer))
+              (else (loop (cdr rs) ids writer)))))))
+
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
@@ -3336,6 +3420,9 @@
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty)))
       (let* ((s (log-begin store (deliver-into state #f)))
+             ;; THE RECEIPT A RULE CHECK READS: the blocks the write's premise
+             ;; set holds, or #f when it carried none.
+             (receipt (and (premises-gate? preflight) (premises-gate-blocks preflight)))
              ;; ENTERED: the session has begun. A gate is told so here, and
              ;; its check is the preflight from now on.
              (preflight (if (premises-gate? preflight)
@@ -3450,8 +3537,14 @@
                                         (or (and preflight (preflight state))
                                             (begin (announce-count! s intents)
                                                    (and req (cursor-unreachable store s req)))))))
-                          (cond
-                            (bad (list bad))
+                          ;; THE WRITING BRANCH, as one procedure of the reduction and
+                          ;; the session it writes through. It runs once for real;
+                          ;; when a rule or a typed declaration is live it runs first
+                          ;; against a copy of the reduction and a dry session, and
+                          ;; what that rehearsal produced is judged before anything
+                          ;; is written (rehearsal-refusal).
+                          (define (branch state s)
+                           (cond
                             ;; KEY: A PLAN THAT IS ALREADY PERSISTED IS
                             ;; FINISHED FROM THE PLAN. The premises are
                             ;; NOT checked again: the blocks this request
@@ -3494,7 +3587,11 @@
                             ;; then only ever say how far the whole batch
                             ;; got -- never which item.
                             (else
-                             (write-batch! s state req intents))))))))))))
+                             (write-batch! s state req intents))))
+                          (cond
+                            (bad (list bad))
+                            ((rehearsal-refusal state s branch receipt) => list)
+                            (else (branch state s))))))))))))
           (lambda () (guard (e (#t #f)) (log-end! s)))))))
 
   ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a
@@ -4890,14 +4987,17 @@
            ;; one, and nothing that runs or exports the block reads it.
            ;; Present only when there is one; the verdict is unchanged.
            (datum-src (datum-blocks-with-src state))
-           ;; THE RULES IN FORCE, each listed once: a write rule is never
-           ;; evaluated here (no write is in hand), and this build does not
-           ;; evaluate a state rule yet.
-           (rules (map (lambda (r)
-                         (list 'rule-skipped (list 'rule (car r))
-                               (list 'reason (if (or (equal? (assq 'class (cadr r)) '(class write)) (assq 'builtin (cadr r)))
-                                                 'write-rule 'not-evaluated))))
-                       (state-declared-rules state)))
+           ;; THE RULES AND TYPED ENDPOINTS IN FORCE, AUDITED (theourgia rules,
+           ;; state-audit): each state rule over every live block of a kind it
+           ;; lists, a write rule listed once as skipped (no write is in
+           ;; hand), every typed edge whose end its selector does not hold.
+           ;; Reported, and not damage: the verdict is unchanged. A store with
+           ;; neither asks nothing.
+           (audit (and (rehearsal-live? state)
+                       (call-with-values (lambda () ((eval 'state-audit (environment '(theourgia rules))) state))
+                                         list)))
+           (rules (if audit (car audit) '()))
+           (endpoints (if audit (cadr audit) '()))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4941,6 +5041,7 @@
         (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         (if (pair? datum-src) (list (list 'datum-with-src datum-src)) '())
         (if (pair? rules) (list (cons 'rules rules)) '())
+        (if (pair? endpoints) (list (cons 'relation-endpoints endpoints)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

@@ -41,7 +41,7 @@
 ;;; snapshot and from empty and be checked against each other.
 (library (theourgia reduce)
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
-          reduce-empty reduce-apply! reduce-pending reduce-noted
+          reduce-empty reduce-clone reduce-rehearsal? state-written-records reduce-apply! reduce-pending reduce-noted
           reduce-applied-cut reduce-trace reduce-gates
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
@@ -143,7 +143,11 @@
             (mutable admission-index)
             (mutable consumption)
             (mutable declared-relations)
-            (mutable declared-rules)))
+            (mutable declared-rules)
+            ;; A REHEARSAL'S COPY (reduce-clone), and only that: a trace line
+            ;; emitted while reducing it is marked (rehearsal), and the
+            ;; store's fault seam is not consulted for it.
+            rehearsal?))
 
   ;; ---- the name of a draft's content ---------------------------------------
   ;;
@@ -426,8 +430,9 @@
       ;; which made a draft more expensive to read the longer the writer
       ;; had been working; a row that only checked the ANSWER would be
       ;; green for that implementation too.
-      (trace-event! 'consumption-probe (cons owner version) #f)
-      (for-each (lambda (e) (trace-event! 'consumption-probe e #f)) events)
+      (let ((mark (and (reduction-rehearsal? r) '(rehearsal))))
+        (trace-event! 'consumption-probe (cons owner version) mark)
+        (for-each (lambda (e) (trace-event! 'consumption-probe e mark)) events))
       (exists (lambda (e)
                 (let ((entry (hashtable-ref (consumption-by-plan (reduction-consumption r))
                                             (event-key e) #f)))
@@ -595,7 +600,54 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '()))
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() #f))
+
+  ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
+  ;; container a reduction changes in place is copied -- the blocks' records,
+  ;; the admission tables, the consumption tables and the plan entries in
+  ;; by-plan -- and everything it replaces on update is shared. The copy
+  ;; answers every question the original answers, and reducing records into
+  ;; it changes nothing the original holds. Not the snapshot round trip,
+  ;; which drops pending records and filters the history to the cut.
+  (define (reduce-clone r)
+    (make-reduction (map (lambda (p)
+                           (let ((b (cdr p)))
+                             (cons (car p) (make-blk (blk-name b) (blk-fields b) (blk-position b) (blk-tomb b)))))
+                         (reduction-blocks r))
+                    (reduction-links r) (reduction-tags r) (reduction-pasts r)
+                    (reduction-applied r) (reduction-pending r) (reduction-trace r)
+                    (reduction-noted r) (reduction-history r) (reduction-gates r)
+                    (admission-copy (reduction-admission-index r))
+                    (consumption-copy (reduction-consumption r))
+                    (reduction-declared-relations r) (reduction-declared-rules r)
+                    #t))
+
+  (define (consumption-copy c)
+    (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
+      (vector-for-each
+        (lambda (k)
+          (let ((e (hashtable-ref by-plan k #f)))
+            (hashtable-set! by-plan k (make-plan-entry (plan-entry-owner e) (plan-entry-items e)
+                                                       (plan-entry-declared e) (plan-entry-applied e)
+                                                       (plan-entry-completion e)))))
+        (hashtable-keys by-plan))
+      (make-consumption-record (hashtable-copy (consumption-by-key c) #t) by-plan
+                               (hashtable-copy (consumption-by-seen c) #t)
+                               (hashtable-copy (consumption-by-seen-plan c) #t)
+                               (hashtable-copy (consumption-by-member c) #t))))
+
+  ;; Whether R is a rehearsal's copy; #f for anything that is not a reduction.
+  (define (reduce-rehearsal? r) (and (reduction? r) (reduction-rehearsal? r)))
+
+  ;; THE RECORDS ONE WRITER ADDED FROM SEQ FROM UP TO SEQ TO (exclusive), in
+  ;; sequence order: ((<seq> . <payload>) ...), applied or gated, as the
+  ;; history holds every record reduced.
+  (define (state-written-records r writer from to)
+    (map (lambda (rec) (cons (rec-seq rec) (rec-payload rec)))
+         (list-sort (lambda (a b) (< (rec-seq a) (rec-seq b)))
+                    (filter (lambda (rec) (and (string=? (rec-writer rec) writer)
+                                               (<= from (rec-seq rec)) (< (rec-seq rec) to)))
+                            (reduction-history r)))))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
@@ -649,7 +701,7 @@
         (else
          (let* ((actor (and (pair? rest) (car rest)))
                 (rec (make-record writer seq deps payload actor))
-                (gates (admission-add! (reduction-admission-index r) rec))
+                (gates (admission-add! (reduction-admission-index r) rec (reduction-rehearsal? r)))
                 (reversed?
                   (exists (lambda (p)
                             (and (not (assoc (car p) (reduction-gates r)))
@@ -2448,22 +2500,25 @@
           ((request-actor? a) (list-ref a 0))
           (else #f)))
 
-  ;; ONE PASS OVER THE HISTORY, KEPT FOR THE LAST REDUCTION ASKED. The two
+  ;; ONE PASS OVER THE HISTORY, KEPT FOR THE LAST HISTORY ASKED. The two
   ;; accessors below are asked once per block by a caller walking a whole
   ;; store -- at a write's locked planning point, among others -- and a scan
   ;; of the history per question is the square of the store. The tables are
-  ;; built once and kept while the reduction, its history and its applied
-  ;; cut are the ones they were built from: a record can be in the history
-  ;; before it is applied, so the history alone does not say the tables
-  ;; still hold. ONE SLOT, AND THAT IS WHY THIS LIBRARY STAYS PURE R6RS: a
-  ;; table per reduction would need a weak table to let go of reductions
-  ;; nobody holds, and R6RS has none; one slot keeps at most one such
-  ;; reduction alive.
+  ;; built once and kept while the history and the applied cut are the ones
+  ;; they were built from: a record can be in the history before it is
+  ;; applied, so the history alone does not say the tables still hold. They
+  ;; are a function of those two and nothing else of the reduction (an event
+  ;; is applied when the cut covers it), so a rehearsal's copy, which shares
+  ;; the history, shares the tables while its cut is the original's, and the
+  ;; rehearsal and the real run do not rebuild them in turn. ONE SLOT, AND
+  ;; THAT IS WHY THIS LIBRARY STAYS PURE R6RS: a table per history would need
+  ;; a weak table to let go of histories nobody holds, and R6RS has none; one
+  ;; slot keeps at most one such history alive.
   (define history-tables #f)
   (define (history-table r)
     (let* ((h (reduction-history r)) (cut (reduce-applied-cut r))
            (have history-tables))
-      (if (and have (eq? (vector-ref have 4) r) (eq? (vector-ref have 0) h) (equal? (vector-ref have 1) cut))
+      (if (and have (eq? (vector-ref have 0) h) (equal? (vector-ref have 1) cut))
           have
           (let ((creations (make-hashtable string-hash string=?))
                 (actors (make-hashtable equal-hash equal?)))
@@ -2477,7 +2532,7 @@
                       (hashtable-set! creations (block-id (rec-writer rec) (rec-seq rec))
                                       (cons (actor-name (rec-actor rec)) (rec-payload rec)))))))
               h)
-            (let ((built (vector h cut creations actors r)))
+            (let ((built (vector h cut creations actors)))
               (set! history-tables built)
               built)))))
 

@@ -53,6 +53,7 @@
   (export query-verb fact-relations rule-library rule-relations check-rules
           rule-only-facts relation-external? rule-value-check builtin-rules
           make-query-session session-query session-answer session-expansions session-spent session-passes query-relations-items
+          session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
           query-budget-default)
   (import (rnrs) (rnrs mutable-pairs)
@@ -318,9 +319,11 @@
 
   ;; ---- registration (checked when the library loads) -----------------------------------
 
-  (define (arity-of rel rules)
+  ;; FACTS, when given, are a session's per-write facts.
+  (define (arity-of rel rules . facts)
     (cond ((assq rel fact-relations) => cadr)
           ((assq rel tests) => cadr)
+          ((and (pair? facts) (assq rel (car facts))) => cadr)
           ((assq rel (rule-relations rules)) => cadr)
           (else #f)))
 
@@ -388,17 +391,26 @@
   ;; complete, kept for every query of the session.
   (define-record-type (session new-session session?)
     (fields state rules index builds memo tables complete expansion-counts
-            (mutable visited) (mutable changed) (mutable tuples) budget
-            (mutable provider) (mutable attestation) (mutable consulted) keyword-hook (mutable passes)))
+            (mutable visited) (mutable changed) (mutable tuples) (mutable budget)
+            (mutable provider) (mutable attestation) (mutable consulted) keyword-hook (mutable passes)
+            write-facts))
 
   (define query-budget-default 1000000)
 
   ;; Optional: extra rules (a fixture's), a budget, and the search verb's
   ;; keyword hook (a procedure of a state, as `search` passes it) for `score`.
+  ;; OPTIONS: extra rules, the budget, the keyword hook, and THE PER-WRITE FACTS
+  ;; -- ((<relation> <arity> <tuple> ...) ...), the facts only a rule check
+  ;; of one write has (kind+, field+, edge+, edge-kind+, cited, unread,
+  ;; receipt-carried). Only the rule check passes them; every other session
+  ;; has none, and a goal naming one is an unknown relation there.
   (define (make-query-session state . options)
     (let* ((extra (if (pair? options) (car options) '()))
            (budget (if (and (pair? options) (pair? (cdr options))) (cadr options) query-budget-default))
            (keyword-hook (and (pair? options) (pair? (cdr options)) (pair? (cddr options)) (caddr options)))
+           (write-facts (if (and (pair? options) (pair? (cdr options)) (pair? (cddr options)) (pair? (cdddr options)))
+                            (cadddr options)
+                            '()))
            (rules (append rule-library extra))
            (index (make-eq-hashtable)))
       (unless (null? extra) (check-rules rules))
@@ -407,7 +419,7 @@
       (new-session state rules index (make-eq-hashtable) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?) #f 0 budget
-                   #f #f #f keyword-hook 0)))
+                   #f #f #f keyword-hook 0 write-facts)))
 
   ;; How many times one call was expanded in the session: (rel arg ...),
   ;; a variable for an unbound argument.
@@ -715,6 +727,11 @@
             ((assq rel fact-relations)
              (for-each (lambda (t) (let ((b2 (unify args t b))) (when b2 (solve S (cdr goals) b2 k))))
                        (fact-tuples S rel (call-args args b))))
+            ((assq rel (session-write-facts S))
+             => (lambda (f)
+                  (count! S rel (length (cddr f)))
+                  (for-each (lambda (t) (let ((b2 (unify args t b))) (when b2 (solve S (cdr goals) b2 k))))
+                            (cddr f))))
             (else
              (let ((key (cons rel (call-args args b))))
                (ensure-expanded S key)
@@ -761,8 +778,11 @@
 
   ;; The goals of a query, the variables it reports, checked as A3 says.
   ;; BOUND, when given, names variables bound before the first goal: a rule's
-  ;; goals are asked with ?w bound to the target.
-  (define (query-goals goal rules . bound)
+  ;; goals are asked with ?w bound to the target. FACTS, when given after it,
+  ;; are the session's per-write facts.
+  (define (query-goals goal rules . bound+facts)
+    (define bound (if (pair? bound+facts) (list (car bound+facts)) '()))
+    (define facts (if (and (pair? bound+facts) (pair? (cdr bound+facts))) (cadr bound+facts) '()))
     (unless (and (pair? goal) (list? goal) (symbol? (car goal)))
       (refuse 'error 'bad-request 'not-a-goal (list 'goal goal)))
     (let ((goals (if (eq? (car goal) 'and) (cdr goal) (list goal))))
@@ -772,7 +792,7 @@
           (unless (and (pair? g) (list? g) (symbol? (car g)))
             (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
           (when (eq? (car g) 'and) (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
-          (let ((n (arity-of (car g) rules)))
+          (let ((n (arity-of (car g) rules facts)))
             (unless n
               (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g))
                       (list 'known (append (map car fact-relations) (map car (rule-relations rules)) (map car tests)))))
@@ -797,7 +817,7 @@
 
   ;; -> (values <rows> <vars>), the rows as lists of values. Raises a refusal.
   (define (session-query S goal)
-    (let* ((goals (query-goals goal (session-rules S)))
+    (let* ((goals (query-goals goal (session-rules S) '() (session-write-facts S)))
            (vars (let loop ((gs goals) (out '()))
                    (if (null? gs) (reverse out)
                        (loop (cdr gs) (fold-left (lambda (acc v) (if (memq v acc) acc (cons v acc))) out (goal-variables (car gs)))))))
@@ -870,6 +890,14 @@
                          (loop (cdr l) (cons (bytevector->u8-list (car (car l)))
                                              (if (null? acc) acc (cons '(10) acc))))))))
       (values (map cdr unique) (bytevector->hex (sha256 (u8-list->bytevector joined))))))
+
+  ;; -> the rows of GOAL as an answer would hold them -- sorted, unique, and
+  ;; each one renderable, a row that is not raising the query's refusal
+  ;; (unrenderable) -- for a caller that counts or lists rows itself.
+  (define (session-rows S goal)
+    (let-values (((rows vars) (session-query S goal)))
+      (let-values (((sorted digest) (canonical rows vars (query-goals goal (session-rules S) '() (session-write-facts S)))))
+        sorted)))
 
   ;; -> (ok <rows sorted> <vars> <digest>), or the refusal's answer.
   (define (session-answer S goal)
