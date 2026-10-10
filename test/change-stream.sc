@@ -321,6 +321,14 @@
 (define (mirror-as! d writer seq deps actor payload)
   (let ((bytes (encode-record seq (+ 1789000000000 seq) actor deps (storable-encode payload))))
     (log-publish! (d-store d) writer seq bytes (segment-sha bytes))))
+;; NEVER: A POKE IS A REQUEST, NOT A FOLD. The read probes and, when the disk
+;; differs from the published state, sends the store process a reload BEFORE
+;; it answers -- so when poke! returns the reload is queued, ahead of anything
+;; sent to the store process after it, and not yet done: the read answers
+;; from the published state. A row that needs the fold's result waits for it
+;; by a condition (frame!, frame-settled, next-frame, await-lines,
+;; await-trace, a hold's file); a row that needs only the request queued may
+;; rely on the order.
 (define (poke! d) (ask d 'outline))
 ;; One segment of WRITER holding N new blocks: one reload, one frame with N
 ;; (added ...) items, which is how a row makes a frame big enough to fill a
@@ -349,6 +357,8 @@
           ;; a writer id is 8 base36 characters: bulk0001, bulk0002, ...
           (else (mirror-many! d (string-append "bulk" (let ((t (number->string k))) (string-append (make-string (- 4 (string-length t)) #\0) t))) 300)
                 (poke! d)
+                ;; PACING, NOT A WAIT FOR THE FOLD: the loop's condition is
+                ;; the write-pending trace, read on the next turn.
                 (sleep-ms 150)
                 (loop (+ k 1))))))
 ;; Stops a daemon and starts another on the SAME store and socket.
@@ -671,8 +681,11 @@
            (outside (mirror! d "mirrorrf" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 9))))))
       (poke! d)
       (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
+      ;; THE SECOND RELOAD IS QUEUED WHEN THIS RETURNS: its read found the
+      ;; published state still old (the first is held before publishing) and
+      ;; sent the reload before answering, so no wait stands between it and
+      ;; the release.
       (poke! d)
-      (sleep-ms 300)
       (system (string-append "touch " release))
       (let* ((ls (await-lines sub 3 8000)) (fs (frames-of ls)))
         ;; AT LEAST ONE empty frame after it: the timer's probes may add
@@ -1480,15 +1493,24 @@
         (bytevector-u8-set! bv i (fxlogxor (bytevector-u8-ref bv i) 1))
         (call-with-port (open-file-output-port older (file-options no-fail)) (lambda (p) (put-bytevector p bv)))
         (poke! d)
-        (sleep-ms 1500)
-        (let* ((log (d-log d))
-               (after (let find ((ds (read-all-data log)) (seen #f) (n 0))
-                        (cond ((null? ds) (and seen n))
-                              ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'publish-withheld))
-                               (find (cdr ds) #t n))
-                              ((and seen (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'published))
-                               (find (cdr ds) seen (+ n 1)))
-                              (else (find (cdr ds) seen n))))))
+        ;; THE RELOAD THE POKE QUEUED, AWAITED BY ITS RESULT, not by a sleep:
+        ;; until a publication follows the withheld trace and the subscriber
+        ;; holds a frame for each, or the bound passes and the row reads what
+        ;; is there.
+        (let* ((published-after
+                 (lambda ()
+                   (let find ((ds (read-all-data (d-log d))) (seen #f) (n 0))
+                     (cond ((null? ds) (and seen n))
+                           ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'publish-withheld))
+                            (find (cdr ds) #t n))
+                           ((and seen (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'published))
+                            (find (cdr ds) seen (+ n 1)))
+                           (else (find (cdr ds) seen n))))))
+               (_ (let wait ((k 0))
+                    (let ((n (published-after)))
+                      (unless (or (and n (>= n 1) (= n (length (frames-of (sub-lines sub))))) (> k 100))
+                        (sleep-ms 50) (wait (+ k 1))))))
+               (after (published-after)))
           (want "F10-10 the session's publication is withheld: traced, and after it every published revision has exactly one frame"
                 (list (and after #t) (and after (>= after 1)) (and after (= after (length (frames-of (sub-lines sub))))))
                 '(#t #t #t))))
@@ -1791,6 +1813,10 @@
                      (loop (+ k 1) (+ seq 4) (append (reverse (cons put links)) out))))))
            (bytes (string->utf8 (apply string-append (map utf8->string records)))))
       (log-publish! (d-store d) "costwrtr" 1 bytes (segment-sha bytes))
+      ;; NO WAIT NEEDED: the reload is queued before the subscription is sent,
+      ;; and the store process answers both in order, so the subscription is
+      ;; accepted after the cost store's publication and the frames below are
+      ;; the three sets'.
       (poke! d)
       (let* ((a (spawn-subscriber! d '("changes" "0")))
              (st (d-store d)))
