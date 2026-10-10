@@ -100,9 +100,16 @@
 (want "D deleting one of two results a review cites is taken: the review is judged and still holds"
       (in-order (car (run D 'del R3)) (live? D R3) (live? D W2))
       '(ok #f #t))
-(want "D the far end in the other direction: deleting the review itself is taken, and the result it cited is a target, and the rule does not select it"
-      (in-order (car (run D 'del W2)) (live? D W2) (live? D R4))
-      '(ok #f #t))
+;; The other direction: a block that must keep an incoming citation, and the
+;; one review citing it. Deleting the review is refused by the cited block's
+;; rule, naming it.
+(define R5 (tolerant (made D "R5")))
+(define W3 (tolerant (review D "W3" R5)))
+(tolerant (run D 'set R5 "keep" "yes"))
+(tolerant (run D 'rule "kept-cited" "--on" "doc" "--where" "(field ?w \"keep\" \"yes\")" "--must" "(edge ?a cites ?w)"))
+(want "D the far end in the other direction: deleting the only review citing a block that must stay cited is refused by kept-cited, naming that block; the review stays"
+      (in-order (refusal-shape (run D 'del W3)) (live? D W3))
+      (list (list '(error refused rule-violation) (list (list 'kept-cited R5))) #t))
 
 ;; ---- check's audit ------------------------------------------------------------------------
 
