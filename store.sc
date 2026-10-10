@@ -852,12 +852,13 @@
       out))
 
   ;; THE LIVE BLOCKS WHOSE STORED TEXT IS BYTES AND NOT TEXT, as
-  ;; (<id> <field> ...) in the outline's order: the blocks a search or a
-  ;; grep counts under `unreadable-blocks`, named, for `check`. The fields
-  ;; are the stored ones those scans decode through `field-strings` -- doc,
-  ;; body and names are derived from them -- and a contested field is named
-  ;; when one of its candidates does not decode. Decoded here without
-  ;; counting: this is a listing, not a scan's diagnostic.
+  ;; (<id> <field> ...) in the outline's order, for `check`. The fields are
+  ;; the stored ones a search decodes through `field-strings` -- doc, body
+  ;; and names are derived from them -- so these are the blocks a search
+  ;; counts under `unreadable-blocks`; grep reads only `src`, and counts
+  ;; the ones named with it. A contested field is named when one of its
+  ;; candidates does not decode. Decoded here without counting: this is a
+  ;; listing, not a scan's diagnostic.
   (define stored-text-fields (quote (title keywords src)))
   (define (undecodable-text-blocks state)
     (let ((bad? (lambda (v) (and (bytevector? v) (not (decoded-text v #f))))))
