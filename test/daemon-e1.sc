@@ -850,7 +850,10 @@
                          (_ (release-fifo! fifo))
                          (failed (take-asked 16000))
                          (cut-size (and aside (file-exists? aside) (bytevector-length (file-bytes aside))))
-                         (_ (when cut-size (put-back seg aside cut-size)))
+                         ;; PUT-BACK answers the length it means to leave at the
+                         ;; path; the row reads the path's length itself.
+                         (meant (and cut-size (put-back seg aside cut-size)))
+                         (placed (and meant (file-exists? seg) (= meant (bytevector-length (file-bytes seg)))))
                          (next (ask-tagged d "insert \"--title\" \"AFTER-TWO\"" 8000)))
                     (stop-tagged-daemon! d)
                     (release-fifo! fifo)
@@ -858,17 +861,19 @@
                           (and seg (failed-after-cut? failed seg "ENOENT"))
                           (and cut-size t (= cut-size (caddr t)))
                           (contains? (tagged-log d) "(trace repair-noted cut-length")
+                          placed
                           next))))))
-        (let ((r (torn-parked "torn-b1" (lambda (seg aside n) (system (string-append "mv " aside " " seg))))))
+        (let ((r (torn-parked "torn-b1" (lambda (seg aside n) (system (string-append "mv " aside " " seg)) n))))
           (want "D-TORN-3a the path gone after the cut: the record knows the cut length and the write fails; the cut file put back (the cut length) is not a swap: the next write lands"
-                (append (list-head r 6) (list (answer-ok? (list-ref r 6))))
-                '(#t published #t #t #t #t #t)))
+                (append (list-head r 7) (list (answer-ok? (list-ref r 7))))
+                '(#t published #t #t #t #t #t #t)))
         (let ((r (torn-parked "torn-b2"
                               (lambda (seg aside n)
-                                (system (string-append "head -c " (number->string (- n 1)) " " aside " > " seg))))))
-          (want "D-TORN-3b the same, and a file one byte shorter than the cut put at the path: the next write is refused store-replaced"
-                (append (list-head r 6) (list (answer-refused-replaced? (list-ref r 6))))
-                '(#t published #t #t #t #t #t))))
+                                (system (string-append "head -c " (number->string (- n 1)) " " aside " > " seg))
+                                (- n 1)))))
+          (want "D-TORN-3b the same, and a file one byte shorter than the cut put at the path (its length read back): the next write is refused store-replaced"
+                (append (list-head r 7) (list (answer-refused-replaced? (list-ref r 7))))
+                '(#t published #t #t #t #t #t #t))))
 
       ;; D-TORN-0: a daemon whose first write is a repair, armed
       ;; stat-fail@commit at the segment. The record's snapshot is in stage
