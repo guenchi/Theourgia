@@ -1057,7 +1057,7 @@
   ;; log-append-guard!): the segment is then shorter than the version
   ;; published with the residue, and that version must not be kept against
   ;; it.
-  (define (note-own-repair! store writer path)
+  (define (note-own-repair! store writer path cut-length)
     (know-segment! writer path (segment-version-now path) #f))
   (define (segment-replaced store writer)
     (or (let ((latched (assoc writer replaced-writers))) (and latched (cdr latched)))

@@ -230,6 +230,8 @@
 ;;;   no-log-fsync              fsync is SKIPPED and reports success
 ;;;   open-fail                 the open reports the errno it is given
 ;;;   stat-fail                 a stat reports EIO, or the errno it is given
+;;;   rotation-probe-fail       the rotation probe of a write that cut a torn
+;;;                             tail reports EIO for the segment, once
 ;;;   read-fail-after           a read, once it has produced at least one
 ;;;                             byte, reports the errno it is given
 ;;;   readdir-fail-after        a listing, once it has produced at least
@@ -371,7 +373,7 @@
           fd-seek! fd-size file-size file-ensure! fd-path link!
           setsid! session-id signal-pid! process-alive-signal0?
           setrlimit! getrlimit RLIMIT_CPU process-rss-bytes isolate-evaluation!
-          barrier!
+          barrier! rotation-probe-fault!
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version real-path
@@ -2446,7 +2448,7 @@
          lseek-fail mkdir-fail client-extra-child store-raise-early
          reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
          stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
-         writer-raise-second probe-slow refresh-snapshot-raise))
+         writer-raise-second probe-slow refresh-snapshot-raise rotation-probe-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2805,6 +2807,21 @@
 
      (define (stat-fault-errno) (or fault-errno EIO))
 
+     ;; THE ROTATION PROBE OF A WRITE THAT CUT A TORN TAIL, ONE-SHOT AND
+     ;; PATH-SCOPED like stat-fail. The log asks it only in such a write,
+     ;; between the cut and the probe, so no earlier write's probe spends
+     ;; it: it is how a row puts a failure between a repair and the append
+     ;; that follows. It raises what a probe whose stat failed raises, the
+     ;; segment's unreadable-entry with EIO.
+     (define (rotation-probe-fault! path)
+       (when (and fault-name
+                  (eq? fault-name 'rotation-probe-fail)
+                  (in-fault-stage?)
+                  (fault-path-match? #f path)
+                  (eq? (unbox fault-state) 'fresh))
+         (set-box! fault-state 'done)
+         (unreadable! path EIO)))
+
      ;; -> an errno, or #f. A READ OR A LISTING FAILS PART WAY, which is
      ;; what these two exist to produce: they fire only once something has
      ;; been produced, so a caller that answered with what it had so far
@@ -2976,6 +2993,7 @@
      (define (theourgia-read-chunk) #f)
      (define (stat-fault? path) #f)
      (define (stat-fault-errno) EIO)
+     (define (rotation-probe-fault! path) (void))
      (define (lseek-fault subject) #f)
      (define (mkdir-fault path) #f)
      (define (waitpid-fault) #f)

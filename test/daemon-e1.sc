@@ -174,7 +174,8 @@
 (define tagged-start-report
   (lambda (label came) (want-1 label came 'up)))
 
-(define (start-tagged-daemon! suffix fault)
+;; BARRIER, when given, is THEOURGIA_BARRIER's value, <name>:<fifo>.
+(define (start-tagged-daemon! suffix fault . barrier)
   ;; NOTE: THE TAG CARRIES THE FAULT, so two armed runs do not collide on
   ;; one runner file -- `call-with-output-file` refuses an existing one,
   ;; and that refusal killed the whole fixture rather than one row.
@@ -219,6 +220,7 @@
     ;; this one.
     (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on "
                            (if fault (string-append "THEOURGIA_FAULT=" fault " ") "")
+                           (if (pair? barrier) (string-append "THEOURGIA_BARRIER=" (car barrier) " ") "")
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
@@ -339,6 +341,81 @@
             (else (loop (+ i 1)))))))
 (define (stop-tagged-daemon! d)
   (system (string-append "pkill -f " (caddr d) " 2>/dev/null")))
+
+;; THE SAME RUNNER STARTED AGAIN ON ITS STORE, armed with FAULT, its output
+;; in <log>.<suffix>: the store and its writer are the first daemon's, so the
+;; new daemon's first write is the first commit this process makes on that
+;; writer's segment. -> (daemon log-path), the daemon answering, or
+;; (never-came-up log-path).
+(define (restart-tagged-daemon! d suffix fault)
+  (let ((lg2 (string-append (list-ref d 3) "." suffix)))
+    (let gone ((k 0))
+      (when (and (file-exists? (tagged-socket d)) (< k 60)) (sleep-ms 50) (gone (+ k 1))))
+    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_FAULT=" fault
+                           " CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
+                           " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                           " scheme --script " (caddr d) " > " lg2 " 2>&1 &"))
+    (let up ((k 0))
+      (cond ((and (file-exists? (tagged-socket d))
+                  (let ((r (ask-tagged d "outline" 3000)))
+                    (and (string? (cadr r)) (starts-with? (cadr r) "(ok"))))
+             (list d lg2))
+            ((> k 100) (list 'never-came-up lg2))
+            (else (sleep-ms 100) (up (+ k 1)))))))
+
+;; ASKED IN THE BACKGROUND: a process of its own asks D and sends the answer
+;; to the asker as (asked <answer>); the asker takes it with take-asked.
+(define (ask-in-background d text ms)
+  (let ((asker self))
+    (spawn (lambda () (send asker (list 'asked (ask-tagged d text ms)))))))
+(define (take-asked ms)
+  (receive (after ms (list 0 'no-answer-in-time))
+    (`(asked ,r) r)))
+
+;; A TORN TAIL ON A TAGGED DAEMON'S SEGMENT, folded: a write makes the
+;; segment, 2000 bytes with no newline are appended to it (longer than the
+;; next record), and a read folds them, its publication (number REVISION)
+;; waited for. -> (segment first-write-ok? size-before folded), or #f when
+;; there is no segment.
+(define (make-torn! d tag revision)
+  (let* ((first-write (ask-tagged d "insert \"--title\" \"BEFORE-TORN\"" 8000))
+         (current (tagged-current-segment d))
+         (seg (and current (cdr current))))
+    (and seg
+         (let ((size-before (bytevector-length (file-bytes seg)))
+               (residue-file (string-append scratch-base "/dmn-residue-" pid-text "-" tag ".txt")))
+           (call-with-port (open-file-output-port residue-file (file-options no-fail))
+             (lambda (o) (put-bytevector o (string->utf8 (make-string 2000 #\x)))))
+           (system (string-append "cat " residue-file " >> " seg))
+           (ask-tagged d "outline" 8000)
+           (list seg
+                 (and (string? (cadr first-write)) (starts-with? (cadr first-write) "(ok"))
+                 size-before
+                 (wait-for-publication d revision 5000))))))
+(define (answer-ok? a) (and (string? (cadr a)) (starts-with? (cadr a) "(ok")))
+(define (answer-refused-replaced? a) (and (string? (cadr a)) (starts-with? (cadr a) "(error refused store-replaced")))
+;; An answer of a write that failed after the cut: error incomplete, the
+;; segment's path, the errno ERRNO, and the cut in what was written.
+(define (failed-after-cut? a seg errno)
+  (let ((t (cadr a)))
+    (and (string? t)
+         (starts-with? t "(error incomplete")
+         (contains? t seg)
+         (contains? t (string-append "(errno " errno ")"))
+         (contains? t "(written ((truncate"))))
+
+;; RELEASES A PROCESS PARKED AT A BARRIER on FIFO, with a bound: opening a
+;; fifo for writing blocks until a reader opens it, so a plain `echo >` with
+;; no process parked would hang the fixture. Harmless when nothing is parked.
+(define (release-fifo! fifo)
+  (system (string-append "perl -e 'alarm 3; open(F, \">" fifo "\") and print F \"go\\n\"' 2>/dev/null")))
+
+;; Waits, bounded, until the text of file PATH holds NEEDLE. -> #t or #f.
+(define (wait-in-file path needle ms)
+  (let wait ((k 0))
+    (cond ((contains? (file-text path) needle) #t)
+          ((> k (div ms 50)) #f)
+          (else (sleep-ms 50) (wait (+ k 1))))))
 
 ;; One request to a daemon started above, with the answer's text and the
 ;; time it took. NOTE: The time includes connecting, because that is what a
@@ -700,6 +777,120 @@
                       (and (string? (cadr repaired)) (starts-with? (cadr repaired) "(ok"))
                       (and (string? (cadr next)) (starts-with? (cadr next) "(ok")))
                 '(#t #t #t published #t #t #t))))
+
+      ;; ---- the daemon's own repair record --------------------------------
+      ;;
+      ;; NEVER: THE REPAIR'S RECORD STANDS ALONE. Each row puts a failure or
+      ;; a fault where D-TORN has none, so the record the repair makes is the
+      ;; only thing between the cut and the next write's guard. The record is
+      ;; traced, (trace repair-noted version|cut-length <length>), so a row
+      ;; can say which one it made -- and that the fault it armed fired.
+      ;; Faults name the segment by its file name, 000001.sexp, the first
+      ;; segment of the one writer.
+
+      ;; D-TORN-1: the record's snapshot cannot be read (stat-fail@repair): the
+      ;; cut length is known, the repairing write and the next one land.
+      (let* ((d (start-tagged-daemon! "torn-s1" "stat-fail@repair:file=000001.sexp"))
+             (t (make-torn! d "s1" 3))
+             (seg (and t (car t)))
+             (size-torn (and seg (bytevector-length (file-bytes seg))))
+             (repaired (ask-tagged d "insert \"--title\" \"AFTER-ONE\"" 8000))
+             (size-repaired (and seg (bytevector-length (file-bytes seg))))
+             (next (ask-tagged d "insert \"--title\" \"AFTER-TWO\"" 8000)))
+        (stop-tagged-daemon! d)
+        (want "D-TORN-1 the repair record's snapshot unreadable: the cut length is known, and the repairing write and the next one land"
+              (list (and t (cadr t)) (and t (cadddr t))
+                    (and size-torn size-repaired (< size-repaired size-torn))
+                    (contains? (tagged-log d) "(trace repair-noted cut-length")
+                    (answer-ok? repaired) (answer-ok? next))
+              '(#t published #t #t #t #t)))
+
+      ;; D-TORN-2: the rotation probe fails after the cut (the record's
+      ;; snapshot readable): the write fails with the cut done, and the next
+      ;; write lands on the record alone. A second torn tail on the same
+      ;; daemon is repaired and lands: the fault fired once.
+      (let* ((d (start-tagged-daemon! "torn-s2" "rotation-probe-fail@commit:file=000001.sexp"))
+             (t (make-torn! d "s2" 3))
+             (seg (and t (car t)))
+             (failed (ask-tagged d "insert \"--title\" \"AFTER-ONE\"" 8000))
+             (next (ask-tagged d "insert \"--title\" \"AFTER-TWO\"" 8000)))
+        (when seg
+          (system (string-append "cat " scratch-base "/dmn-residue-" pid-text "-s2.txt >> " seg)))
+        (let* ((folded-again (begin (ask-tagged d "outline" 8000) (wait-for-publication d 5 5000)))
+               (second (ask-tagged d "insert \"--title\" \"AFTER-SECOND-TORN\"" 8000)))
+          (stop-tagged-daemon! d)
+          (want "D-TORN-2 the probe fails after the cut: error incomplete with the cut written; the next write lands; a second torn tail is repaired and lands"
+                (list (and t (cadr t)) (and t (cadddr t))
+                      (and seg (failed-after-cut? failed seg "EIO"))
+                      (contains? (tagged-log d) "(trace repair-noted version")
+                      (answer-ok? next) folded-again (answer-ok? second))
+                '(#t published #t #t #t published #t))))
+
+      ;; D-TORN-3a and 3b: parked after the cut, the segment moved aside and
+      ;; the path left absent; the record's snapshot fails (stat-fail@repair)
+      ;; and the probe cannot open the path. Then a file goes back at the path:
+      ;; the cut file itself, whose length is the cut length (the next write
+      ;; lands), or one byte shorter (the next write is refused).
+      (let ((torn-parked
+              (lambda (tag put-back)
+                (let* ((fifo (string-append scratch-base "/dmn-fifo-" pid-text "-" tag))
+                       (_ (system (string-append "rm -f " fifo "; mkfifo " fifo)))
+                       (d (start-tagged-daemon! tag "stat-fail@repair:file=000001.sexp"
+                                                (string-append "after-repair-cut:" fifo)))
+                       (t (make-torn! d tag 3))
+                       (seg (and t (car t)))
+                       (aside (and seg (string-append seg ".aside"))))
+                  (ask-in-background d "insert \"--title\" \"AFTER-ONE\"" 15000)
+                  (let* ((parked (wait-in-file (list-ref d 3) "(trace barrier after-repair-cut" 8000))
+                         (_ (when (and parked seg) (system (string-append "mv " seg " " aside))))
+                         (_ (release-fifo! fifo))
+                         (failed (take-asked 16000))
+                         (cut-size (and aside (file-exists? aside) (bytevector-length (file-bytes aside))))
+                         (_ (when cut-size (put-back seg aside cut-size)))
+                         (next (ask-tagged d "insert \"--title\" \"AFTER-TWO\"" 8000)))
+                    (stop-tagged-daemon! d)
+                    (release-fifo! fifo)
+                    (list (and t (cadr t)) (and t (cadddr t)) parked
+                          (and seg (failed-after-cut? failed seg "ENOENT"))
+                          (and cut-size t (= cut-size (caddr t)))
+                          (contains? (tagged-log d) "(trace repair-noted cut-length")
+                          next))))))
+        (let ((r (torn-parked "torn-b1" (lambda (seg aside n) (system (string-append "mv " aside " " seg))))))
+          (want "D-TORN-3a the record's snapshot fails and the write fails with the path gone; the cut file put back (the cut length) is not a swap: the next write lands"
+                (append (list-head r 6) (list (answer-ok? (list-ref r 6))))
+                '(#t published #t #t #t #t #t)))
+        (let ((r (torn-parked "torn-b2"
+                              (lambda (seg aside n)
+                                (system (string-append "head -c " (number->string (- n 1)) " " aside " > " seg))))))
+          (want "D-TORN-3b the same, and a file one byte shorter than the cut put at the path: the next write is refused store-replaced"
+                (append (list-head r 6) (list (answer-refused-replaced? (list-ref r 6))))
+                '(#t published #t #t #t #t #t))))
+
+      ;; D-TORN-0: a daemon whose first write is a repair, armed
+      ;; stat-fail@commit at the segment. The record's snapshot is in stage
+      ;; repair, so the fault reaches the rotation probe: the write fails with
+      ;; the cut done (it used to be taken by the record, which then knew a
+      ;; version it could not read, and the write landed); the next one lands.
+      (let* ((d0 (start-tagged-daemon! "torn-first" #f))
+             (first-write (ask-tagged d0 "insert \"--title\" \"BEFORE-TORN\"" 8000))
+             (current (tagged-current-segment d0))
+             (seg (and current (cdr current))))
+        (stop-tagged-daemon! d0)
+        (when seg
+          (call-with-port (open-file-output-port (string-append scratch-base "/dmn-residue-" pid-text "-first.txt")
+                                                 (file-options no-fail))
+            (lambda (o) (put-bytevector o (string->utf8 (make-string 2000 #\x)))))
+          (system (string-append "cat " scratch-base "/dmn-residue-" pid-text "-first.txt >> " seg)))
+        (let* ((again (restart-tagged-daemon! d0 "first" "stat-fail@commit:file=000001.sexp"))
+               (up? (not (eq? (car again) 'never-came-up)))
+               (failed (if up? (ask-tagged d0 "insert \"--title\" \"AFTER-ONE\"" 8000) (list 0 'not-up)))
+               (next (if up? (ask-tagged d0 "insert \"--title\" \"AFTER-TWO\"" 8000) (list 0 'not-up))))
+          (stop-tagged-daemon! d0)
+          (want "D-TORN-0 a daemon's first write is a repair, stat-fail@commit armed: the probe fails after the cut (not the record), and the next write lands"
+                (list (answer-ok? first-write) up?
+                      (and seg (failed-after-cut? failed seg "EIO"))
+                      (answer-ok? next))
+                '(#t #t #t #t))))
 
       ;; ---- D-01 TWIN: the build said nothing ---------------------------
       ;;
