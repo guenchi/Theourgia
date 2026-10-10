@@ -15,6 +15,7 @@ theourgia/arguments.sc
 theourgia/attest.sc
 theourgia/baseline.sc
 theourgia/build.ss
+theourgia/channel.sc
 theourgia/client.sc
 theourgia/code-markers.sc
 theourgia/code-project.sc
@@ -64,6 +65,7 @@ theourgia/regex.sc
 theourgia/render.sc
 theourgia/request.sc
 theourgia/rpc.sc
+theourgia/rules.sc
 theourgia/sched.sc
 theourgia/source-lex.sc
 theourgia/store.sc
