@@ -178,3 +178,95 @@ jobs:
             suite.rc
             verdict.txt
             rerun
+
+  # THE OPT-IN ROUND TRIP, a job of its own: test/tree-round-trip.sc imports
+  # the whole tree split by split-suggest, twice -- about nineteen minutes on
+  # the development machine, past the runner's per-fixture limit, so the
+  # suite runs it without THEOURGIA_ROUND_TRIP and reads its skip (rows-baseline
+  # "0 5" is the suite's line). Here it runs alone, set to 1, outside the
+  # runner (which has no single-fixture path), as the suite's reruns run a
+  # fixture: from the tree's test/, fresh roots, under its own alarm. Its
+  # reading is its own: nine ok rows, no FAIL, its sentinel, rc 0.
+  round-trip:
+    if: startsWith(github.event.head_commit.message, 'suite ')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: the tree under test
+        env:
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          first=$(printf '%s\n' "$MESSAGE" | head -1)
+          ref=$(printf '%s\n' "$first" | sed -n -E 's/^suite ([0-9a-f]{40})( .*)?$/\1/p')
+          [ -n "$ref" ] || { echo "the commit's first line is not 'suite <full 40-character commit id>': nothing to run"; exit 1; }
+          echo "REF=$ref" >> "$GITHUB_ENV"; echo "under test: $ref"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+          path: lib/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: ${{ env.IGROPYR_REV }}
+          path: lib/igropyr
+      - name: libuv and OpenSSL
+        run: brew install libuv openssl@3
+      # THE SUITE JOB'S CACHE, by the same key: its matrix runner is
+      # macos-latest, written out here.
+      - name: Chez Scheme, cached
+        id: chez
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/chez-prefix
+          key: chez-${{ env.CHEZ_VERSION }}-macos-latest-${{ runner.arch }}
+      - name: Chez Scheme ${{ env.CHEZ_VERSION }}, built
+        if: steps.chez.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
+          cd "csv${CHEZ_VERSION}"
+          ./configure --threads --disable-x11 --disable-curses --installprefix="$RUNNER_TEMP/chez-prefix" > "$RUNNER_TEMP/chez-configure.log"
+          make -j"$(getconf _NPROCESSORS_ONLN)" > "$RUNNER_TEMP/chez-make.log" 2>&1
+          make install > "$RUNNER_TEMP/chez-install.log" 2>&1
+      # THE TREE AS THE RUNNER GIVES IT, a git archive: no .git, so the
+      # fixture compares the files on disk, as the suite's tree does.
+      - name: what this run is on
+        run: |
+          echo "$RUNNER_TEMP/chez-prefix/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/chez-prefix/bin:$PATH"
+          uname -a; sw_vers; sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          scheme --version
+          git -C lib/theourgia rev-parse HEAD
+          git -C lib/igropyr rev-parse HEAD
+          rm -rf lib/theourgia/.git lib/igropyr/.git lib/theourgia/.github
+          echo "so files: $(find lib -name '*.so' | wc -l)"
+      - name: the round trip
+        run: |
+          set +e
+          W="$PWD"; mkdir -p "$W/out" "$W/testroot"
+          root=$(mktemp -d "$W/testroot/rt.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
+          date '+round trip start %H:%M:%S'
+          ( cd lib/theourgia/test
+            export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock" THEOURGIA_ROUND_TRIP=1; . ./env.sh
+            perl -e 'alarm 2100; exec @ARGV' scheme --script tree-round-trip.sc > "$W/out/tree-round-trip.out" 2>&1 < /dev/null
+            echo $? > "$W/out/tree-round-trip.rc" ) || true
+          date '+round trip end %H:%M:%S'
+          o="$W/out/tree-round-trip.out"
+          tail -40 "$o"
+          rc=$(cat "$W/out/tree-round-trip.rc")
+          ok=$(grep -c '^ok ' "$o"); fail=$(grep -c '^FAIL' "$o"); void=$(grep -c '^VOID' "$o")
+          rows=$(sed -n 's/^rows: //p' "$o" | tail -1); sentinel=$(grep -c '^tree-round-trip complete$' "$o")
+          echo "tree-round-trip rc=$rc ok=$ok fail=$fail void=$void rows=${rows:-none} sentinel=$sentinel"
+          # NINE ROWS, ALL OK: a skip (rows: 0) means the variable did not
+          # reach the fixture, and reads as a failure here, not as a pass.
+          [ "$rc" = 0 ] && [ "$sentinel" = 1 ] && [ "$fail" = 0 ] && [ "$void" = 0 ] && [ "$ok" = 9 ] && [ "$rows" = 9 ] \
+            || { echo "the round trip is not nine green rows"; exit 1; }
+      - name: keep the readings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: round-trip-${{ env.REF }}
+          path: out
