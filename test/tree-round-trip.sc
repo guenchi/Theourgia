@@ -328,7 +328,7 @@
                                      (cond ((= k (bytevector-length b)) #f)
                                            ((<= 97 (bytevector-u8-ref b k) 122) k)
                                            (else (find-letter (+ k 1))))))))
-                    (if k (list id (+ at k) file) (loop (cdr cs))))))))))))
+                    (if k (list id (+ at k) file b k) (loop (cdr cs))))))))))))
     (and (list? t) (not (eq? (car t) 'RAISED)) t)))
 (define changed
   (tolerant
@@ -339,13 +339,19 @@
          (let* ((before (versions ids-after))
                 (a (run 'import-code one-dir))
                 (ids (live-ids))
-                (after (versions ids)))
+                (after (versions ids))
+                ;; the child's bytes with the one byte changed, as the store must now hold them
+                (meant (let ((m (bytevector-copy (list-ref target 3))) (k (list-ref target 4)))
+                         (bytevector-u8-set! m k (bytevector-u8-ref file at)) m))
+                (held (code-field (open-and-reduce store) (car target) 'src)))
            (list (and (pair? a) (car a))
                  (equal? ids ids-after)
-                 (map car (filter (lambda (b) (let ((e (assoc (car b) after))) (not (and e (equal? (cdr b) (cdr e)))))) before))))))))
-(want "RT-5 CONTROL: one byte changed in one child of eval-worker.sc's marked export moves that block's version and no other's"
-      (in-order (and target #t) (and (list? changed) (car changed)) (and (list? changed) (cadr changed)) (and (list? changed) (caddr changed)))
-      (list #t 'ok #t (if target (list (car target)) '())))
+                 (map car (filter (lambda (b) (let ((e (assoc (car b) after))) (not (and e (equal? (cdr b) (cdr e)))))) before))
+                 (and (bytevector? held) (bytevector=? held meant))))))))
+(want "RT-5 CONTROL: one byte changed in one child of eval-worker.sc's marked export moves that block's version and no other's, and the block holds exactly the changed bytes"
+      (in-order (and target #t) (and (list? changed) (car changed)) (and (list? changed) (cadr changed)) (and (list? changed) (caddr changed))
+                (and (list? changed) (= 4 (length changed)) (cadddr changed)))
+      (list #t 'ok #t (if target (list (car target)) '()) #t))
 
 ;; ---- the splitting -------------------------------------------------------------------------------
 
