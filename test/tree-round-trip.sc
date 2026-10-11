@@ -110,10 +110,14 @@
 (define store (string-append root "/store"))
 (define (run . args) (rpc-dispatch store args "tester"))
 
+;; NOTHING AT THE TOP LEVEL RAISES past the rows: a file that cannot be read
+;; is #f, the listing and the steps below are guarded, and a failure reads as
+;; a red row while the cleanup at the end still runs.
 (define (bytes-of path)
-  (and (file-exists? path)
+  (guard (e (#t #f))
+   (and (file-exists? path)
        (call-with-port (open-file-input-port path)
-         (lambda (i) (let ((b (get-bytevector-all i))) (if (eof-object? b) (make-bytevector 0) b))))))
+         (lambda (i) (let ((b (get-bytevector-all i))) (if (eof-object? b) (make-bytevector 0) b)))))))
 (define (parent-of path)
   (let loop ((i (- (string-length path) 1)))
     (cond ((< i 0) ".") ((char=? (string-ref path i) #\/) (substring path 0 i)) (else (loop (- i 1))))))
@@ -159,11 +163,12 @@
 ;; THE TREE'S FILES: git ls-files where the tree is a working copy, else the
 ;; files on disk (a git archive under the runner).
 (define all-files
-  (if (file-exists? (string-append tree "/.git"))
+  (guard (e (#t '()))
+   (if (file-exists? (string-append tree "/.git"))
       (let ((out (string-append root "/ls-files")))
         (system (string-append "git -C '" tree "' ls-files > '" out "' 2>/dev/null"))
         (list-sort string<? (lines-of (call-with-input-file out get-string-all))))
-      (files-under tree #f)))
+      (files-under tree #f))))
 (define dot-paths (filter dot-named? all-files))
 (define compared (filter (lambda (p) (not (dot-named? p))) all-files))
 (define originals (map (lambda (p) (cons p (bytes-of (string-append tree "/" p)))) compared))
@@ -183,8 +188,8 @@
          (let* ((out (string-append reviews "/" p))
                 (_ (system (string-append "mkdir -p '" (parent-of out) "'")))
                 (a (tolerant (run 'split-suggest (string-append scratch "/" p) "--output" out))))
-           (when (and (pair? a) (eq? (car a) 'ok) (file-exists? out))
-             (write-bytes! (string-append scratch "/" p) (bytes-of out)))
+           (tolerant (when (and (pair? a) (eq? (car a) 'ok) (file-exists? out))
+                       (write-bytes! (string-append scratch "/" p) (bytes-of out))))
            (cons p a)))
        scheme-files))
 (define (clause a name) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) name))) (cdr a))))
@@ -264,7 +269,7 @@
         ((pair? x) (append (clauses-named (car x) name) (clauses-named (cdr x) name)))
         (else '())))
 (define checked (tolerant (run 'check)))
-(define bom-files (filter (lambda (p) (let ((b (original p))) (and (>= (bytevector-length b) 3)
+(define bom-files (filter (lambda (p) (let ((b (original p))) (and (bytevector? b) (>= (bytevector-length b) 3)
                                                                   (= (bytevector-u8-ref b 0) #xEF) (= (bytevector-u8-ref b 1) #xBB)
                                                                   (= (bytevector-u8-ref b 2) #xBF))))
                           compared))
@@ -308,6 +313,7 @@
             (else (loop (+ i 1)))))))
 (define target-path (and (member "eval-worker.sc" compared) "eval-worker.sc"))
 (define target
+  (let ((t (tolerant
   (and target-path
        (let ((file (bytes-of (string-append marked-dir "/" target-path))))
          (let loop ((cs (if (pair? (children-of target-path)) (cdr (children-of target-path)) '())))
@@ -317,7 +323,8 @@
                                      (cond ((= k (bytevector-length b)) #f)
                                            ((<= 97 (bytevector-u8-ref b k) 122) k)
                                            (else (find-letter (+ k 1))))))))
-                    (if k (list id (+ at k) file) (loop (cdr cs))))))))))
+                    (if k (list id (+ at k) file) (loop (cdr cs))))))))))))
+    (and (list? t) (not (eq? (car t) 'RAISED)) t)))
 (define changed
   (tolerant
    (and target
