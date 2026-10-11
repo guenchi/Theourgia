@@ -206,9 +206,15 @@
        (file-exists? (string-append reviews "/" p))))
 (define failed-suggestions (filter (lambda (s) (not (suggested? (car s) (cdr s)))) suggestions))
 (define (boundaries-of a) (let ((b (clause-value a 'boundaries))) (if (list? b) b '())))
+;; A fallback warning has the product's one shape, (code <reason> byte-offset
+;; <n>) (code-suggest.sc, fallback), with a reason the supplier can give.
+(define fallback-reasons '(lexically-uncertain unbalanced unclosed-quote unknown-profile invalid-utf8))
 (define (fallback-of a)
   (let ((ws (clause-value a 'warnings)))
-    (and (list? ws) (find (lambda (w) (and (list? w) (>= (length w) 2) (eq? (car w) 'code))) ws))))
+    (and (list? ws)
+         (find (lambda (w) (and (list? w) (= (length w) 4) (eq? (car w) 'code) (memq (cadr w) fallback-reasons)
+                                (eq? (caddr w) 'byte-offset) (integer? (cadddr w))))
+               ws))))
 
 (define t0 (real-time))
 (define imported (tolerant (run 'import-code scratch)))
