@@ -62,8 +62,16 @@
 ;;      read, refs/heads/<branch> fetched from it (no tags), the new commit's
 ;;      parent required to be exactly that, then pushed to it (no hooks, no
 ;;      tags).
+;; SCOPE: the script runs on our worktree under our git configuration. A
+;; hostile configuration -- hooks, skip-worktree, a pushurl, push.followTags,
+;; submodule recursion, core.fileMode and the like -- is out of scope; the
+;; flags and options above are belts, not claims. The backstop is the
+;; comparison of the commit's tree with the export: whatever a configuration
+;; does to the commit, the publication is refused committed-not-the-export
+;; rather than pushed.
 ;; A refusal says the state it leaves: untouched (1-4), synced (5-6: the worktree
-;; changed, nothing staged), staged (7) or committed <sha> (8: not pushed). An
+;; changed, nothing staged), staged (7) or committed <sha> (8; a failed push
+;; also says whether the remote ref was read back at the commit). An
 ;; unexpected failure is answered the same way, (error raised <message> (state
 ;; ...)), and the scratch directory is removed in every case.
 ;;
@@ -87,7 +95,9 @@
 
 (define (quoted s)
   (string-append "'" (apply string-append (map (lambda (c) (if (char=? c #\') "'\\''" (string c))) (string->list s))) "'"))
-(define (has-newline? s) (and (string? s) (memv #\newline (string->list s)) #t))
+;; A line break of either kind: rsync's filter files and git's path lists
+;; end a line at either.
+(define (has-newline? s) (and (string? s) (exists (lambda (c) (memv c '(#\newline #\return))) (string->list s)) #t))
 (define (file-text path) (if (file-exists? path) (call-with-input-file path get-string-all) ""))
 (define (first-line text)
   (let loop ((i 0)) (cond ((= i (string-length text)) text) ((char=? (string-ref text i) #\newline) (substring text 0 i)) (else (loop (+ i 1))))))
@@ -154,6 +164,12 @@
 (define (not-regular-under dir)
   (let ((e (entries-under dir)))
     (list-sort string<? (append (cdr e) (filter (lambda (p) (file-symbolic-link? (string-append dir "/" p))) (car e))))))
+;; TEXT split at its NUL characters, the empty piece after the last one dropped.
+(define (split-nul text)
+  (let loop ((i 0) (start 0) (out '()))
+    (cond ((= i (string-length text)) (reverse (if (< start i) (cons (substring text start i) out) out)))
+          ((char=? (string-ref text i) #\nul) (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
+          (else (loop (+ i 1) start out)))))
 ;; Not text to an import: the import's own test, import-text? (markers.sc).
 (define (not-text? b) (not (import-text? b)))
 ;; A path as an rsync pattern matching only itself: anchored, and each wildcard
@@ -360,8 +376,17 @@
                                            (parent (and (= 0 (git "rev-parse HEAD~1")) (first-line (file-text git-out)))))
                                        (unless (and remote-head parent (equal? remote-head parent))
                                          (refuse 'remote-is-not-the-parent (list 'remote remote-head) (list 'parent parent))))
+                                     ;; A push that fails may still have moved the remote (a reply lost
+                                     ;; after the update): the remote ref is read back and named.
                                      (unless (= 0 (git (string-append "push -q --no-verify --no-follow-tags -- " (quoted url) " " (quoted (string-append "HEAD:" ref)))))
-                                       (refuse 'git-push-failed (file-text git-out)))
+                                       (let ((said (file-text git-out))
+                                             (now (command-one-line (string-append "git -C " (quoted tree) " ls-remote -- " (quoted url) " " (quoted ref)))))
+                                         (refuse 'git-push-failed said
+                                                 (list 'remote (cond ((not now) 'unknown)
+                                                                     ((and (>= (string-length now) (string-length commit))
+                                                                           (string=? (substring now 0 (string-length commit)) commit))
+                                                                      'at-the-commit)
+                                                                     (else 'not-at-the-commit))))))
                                      #t))))
                         (list 'publication served (list 'files (length exported-files)) (list 'kept kept)
                               '(comparison ok) (list 'commit commit) (list 'pushed pushed)))))))))
@@ -455,10 +480,6 @@
     (git "commit -q -m initial")
     (git "remote add origin " (quoted bare))
     (git "push -q origin HEAD:refs/heads/main")
-    ;; A pre-commit hook that would add a file: a publication commits with
-    ;; --no-verify, so the file never reaches a commit.
-    (put! (string-append repo "/.git/hooks/pre-commit") "#!/bin/sh\necho hooked > hooked.txt\ngit add hooked.txt\n")
-    (system (string-append "chmod +x " (quoted (string-append repo "/.git/hooks/pre-commit"))))
     (let* ((first (guarded (lambda () (publish! store c1 "x" repo freeze #f))))
            (kept-paths '(".gitignore" "bad.dat" "blob[1].bin" "blob].bin" "nul.dat" "sub/.hidden" "two-marks.txt")))
       (row "P-0 the freeze and the cuts: the freeze cut, a later cut with the same tree, the head's a.sc changed after both"
@@ -479,10 +500,9 @@
                  (list (string->utf8 "*.tmp\n") (bytevector 255 254 65) (bytevector 0 255) (bytevector 0 254)
                        (bytevector 97 0 98) (string->utf8 "hidden\n") (bytevector #xEF #xBB #xBF #xEF #xBB #xBF 97))
                  kept-paths 'ok))
-      (row "P-2 the commit is \"landing x at <cut>\", the status clean, keep.tmp in the index although .gitignore hides it, the pre-commit hook not run"
-           (list (git-text "log -1 --format=%s") (git-text "status --porcelain") (git-text "ls-files --cached keep.tmp")
-                 (git-text "ls-files --cached hooked.txt") (file-exists? (string-append repo "/hooked.txt")))
-           (list (string-append "landing x at " (or c1 "")) "" "keep.tmp" "" #f))
+      (row "P-2 the commit is \"landing x at <cut>\", the status clean, and keep.tmp in the index although .gitignore hides it"
+           (list (git-text "log -1 --format=%s") (git-text "status --porcelain") (git-text "ls-files --cached keep.tmp"))
+           (list (string-append "landing x at " (or c1 "")) "" "keep.tmp"))
       (let ((again (guarded (lambda () (publish! store c1 "x" repo freeze #f)))))
         (row "P-3 published again at the same cut: nothing to commit, said, not refused"
              (list (and (pair? again) (car again)) (and (part again 'commit) (cadr (part again 'commit))))
@@ -525,19 +545,30 @@
           (row "P-5 CONTROL: the worktree and HEAD are as they were after the five refusals"
                (list (equal? before (snapshot)) (equal? head (git-text "rev-parse HEAD")))
                '(#t #t))))
-      (row "P-6 no freeze export; a store inside the worktree; a branch that is a refspec; an index entry marked skip-worktree: each refused, untouched"
-           (list (head2 (guarded (lambda () (publish! store c1 "x" repo #f #f))))
-                 (head2 (guarded (lambda () (copy-tree store (string-append repo "/inner-store"))
-                                            (let ((r (publish! (string-append repo "/inner-store") c1 "x" repo freeze #f)))
-                                              (system (string-append "rm -rf " (quoted (string-append repo "/inner-store"))))
-                                              r))))
-                 (head2 (guarded (lambda () (publish! store c1 "x" repo freeze (list "origin" "+main:refs/heads/victim")))))
-                 (begin (git "update-index --skip-worktree notes.txt")
-                        (let ((r (guarded (lambda () (publish! store c1 "x" repo freeze #f)))))
-                          (git "update-index --no-skip-worktree notes.txt")
-                          (list (head2 r) (let ((d (and (list? r) (> (length r) 2) (list-ref r 2)))) d)))))
-           '((error no-freeze-export) (error inside-the-worktree) (error not-a-branch-name)
-             ((error index-entry-flagged) ("notes.txt"))))
+      ;; Each case: the answer's head, its state, and whether the worktree, the
+      ;; index (with its flags) and HEAD read the same after it as before.
+      (let* ((index-text (lambda () (let ((o (string-append root "/index-text")))
+                                      (shell-out (string-append "git -C " (quoted repo) " ls-files -s -v") o) (file-text o))))
+             (measured (lambda (thunk)
+                         (let* ((before (snapshot)) (head (git-text "rev-parse HEAD")) (index (index-text))
+                                (r (guarded thunk)))
+                           (list (head2 r) (let ((s (part r 'state))) (and s (cadr s)))
+                                 (and (equal? before (snapshot)) (equal? head (git-text "rev-parse HEAD")) (equal? index (index-text)))))))
+             (inner (string-append repo "/inner-store"))
+             (no-freeze (measured (lambda () (publish! store c1 "x" repo #f #f))))
+             (inside (begin (copy-tree store inner)
+                            (let ((m (measured (lambda () (publish! inner c1 "x" repo freeze #f)))))
+                              (system (string-append "rm -rf " (quoted inner)))
+                              m)))
+             (refspec (measured (lambda () (publish! store c1 "x" repo freeze (list "origin" "+main:refs/heads/victim")))))
+             (flagged (begin (git "update-index --skip-worktree notes.txt")
+                             (let ((m (measured (lambda () (publish! store c1 "x" repo freeze #f)))))
+                               (git "update-index --no-skip-worktree notes.txt")
+                               m))))
+        (row "P-6 no freeze export; a store inside the worktree; a branch that is a refspec; an index entry marked skip-worktree: each refused, state untouched, worktree, index and HEAD unchanged"
+             (list no-freeze inside refspec flagged)
+             '(((error no-freeze-export) untouched #t) ((error inside-the-worktree) untouched #t)
+               ((error not-a-branch-name) untouched #t) ((error index-entry-flagged) untouched #t))))
       ;; The push: to the named remote and branch, only when this run committed,
       ;; and only onto the commit's own parent. The earlier commits are pushed
       ;; first.
