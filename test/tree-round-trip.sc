@@ -367,7 +367,7 @@
 (define (class-of s)
   (let ((a (cdr s)))
     (cond ((not (suggested? (car s) a)) 'failed)
-          ((fallback-of a) 'fell-back)
+          ((fallback-of a) (if (equal? (boundaries-of a) '(0)) 'fell-back 'other))
           ((and (= 1 (length (boundaries-of a))) (null? (cadr (clause a 'warnings)))) 'one-block)
           ((> (length (boundaries-of a)) 1) 'split)
           (else 'other))))
