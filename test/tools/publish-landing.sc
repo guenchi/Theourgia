@@ -31,7 +31,8 @@
 ;;      mktemp -d) must lie outside the worktree;
 ;;   2. export-code --cut <cut>, marked, into a fresh directory made in the
 ;;      scratch one (an export removes nothing it did not write);
-;;   3. the export compared with the freeze export: the same paths, and each
+;;   3. the export and the freeze export required to hold regular files only,
+;;      then compared: the same paths, and each
 ;;      file the same bytes but for its header line -- the one line equal to
 ;;      the header line the projection writes for the header it decodes to --
 ;;      whose headers may differ in their cut and nothing else;
@@ -53,9 +54,14 @@
 ;;      keep a published file out); each exported path's staged blob compared
 ;;      with the export (a clean filter must not change what is committed);
 ;;      commit "landing <item> at <cut>" (nothing to commit is said, not refused);
-;;   8. with --push, and only when this run committed: refs/heads/<branch>
-;;      fetched, the new commit's parent required to be exactly that, then
-;;      pushed to it.
+;;      the commit made with --no-verify (no hook changes it), then its whole
+;;      tree, the publication-only paths left out, compared with the export;
+;;      an index entry marked skip-worktree or assume-unchanged is refused
+;;      before the worktree is touched;
+;;   8. with --push, and only when this run committed: the remote's push URL
+;;      read, refs/heads/<branch> fetched from it (no tags), the new commit's
+;;      parent required to be exactly that, then pushed to it (no hooks, no
+;;      tags).
 ;; A refusal says the state it leaves: untouched (1-4), synced (5-6: the worktree
 ;; changed, nothing staged), staged (7) or committed <sha> (8: not pushed). An
 ;; unexpected failure is answered the same way, (error raised <message> (state
@@ -104,7 +110,7 @@
 ;; A directory's absolute, symlink-resolved path, or #f.
 (define (real-dir dir)
   (and (not (has-newline? dir))
-       (let ((p (command-one-line (string-append "cd " (quoted dir) " && pwd -P"))))
+       (let ((p (command-one-line (string-append "cd -P -- " (quoted dir) " && pwd -P"))))
          (and p (char=? (string-ref p 0) #\/) p))))
 (define (inside? path dir)
   (let ((d (string-append dir "/")))
@@ -144,6 +150,10 @@
         (cons (list-sort string<? (car r)) (list-sort string<? (cdr r))))
       (cons '() '())))
 (define (files-under dir) (car (entries-under dir)))
+;; The entries under DIR that are not regular files: symbolic links and others.
+(define (not-regular-under dir)
+  (let ((e (entries-under dir)))
+    (list-sort string<? (append (cdr e) (filter (lambda (p) (file-symbolic-link? (string-append dir "/" p))) (car e))))))
 ;; Not text to an import: the import's own test, import-text? (markers.sc).
 (define (not-text? b) (not (import-text? b)))
 ;; A path as an rsync pattern matching only itself: anchored, and each wildcard
@@ -235,6 +245,13 @@
                               (refuse 'not-a-git-worktree-top tree)))
                          (_ (for-each (lambda (p) (when (inside? p tree) (refuse 'inside-the-worktree p)))
                                       (list store-real freeze-real scratch)))
+                         ;; An index entry marked skip-worktree or assume-unchanged is one
+                         ;; git add -A leaves as it is: the commit would not be the export.
+                         (flagged (begin (unless (= 0 (git "ls-files -v -z")) (refuse 'git-ls-files-failed (file-text git-out)))
+                                         (filter (lambda (e) (and (> (string-length e) 2)
+                                                                  (let ((tag (string-ref e 0))) (or (char=? tag #\S) (char-lower-case? tag)))))
+                                                 (split-nul (file-text git-out)))))
+                         (_ (unless (null? flagged) (refuse 'index-entry-flagged (map (lambda (e) (substring e 2 (string-length e))) flagged))))
                          (_ (when push
                               (unless (remote-name? (car push)) (refuse 'not-a-remote-name (car push)))
                               (unless (branch-name? (cadr push) scratch) (refuse 'not-a-branch-name (cadr push)))))
@@ -246,6 +263,8 @@
                          (_ (unless served (refuse 'export-failed exported)))
                          (exported-files (files-under fresh))
                          (_ (for-each (lambda (p) (when (has-newline? p) (refuse 'path-holds-a-newline p))) exported-files))
+                         (_ (for-each (lambda (d) (let ((odd (not-regular-under d))) (unless (null? odd) (refuse 'not-a-plain-tree d odd))))
+                                      (list fresh freeze-real)))
                          (frozen-diff (tree-differences fresh freeze-real))
                          (_ (unless (null? frozen-diff) (refuse 'comparison-failed (list 'differ frozen-diff))))
                          (worktree-entries (entries-under tree))
@@ -266,7 +285,10 @@
                                        worktree-files))
                          (_ (for-each (lambda (p) (when (and (not (dot-named? p)) (memv #\\ (string->list p))) (refuse 'kept-path-holds-a-backslash p)))
                                       kept))
-                         (kept-before (map (lambda (p) (cons p (bytes-of (string-append tree "/" p)))) kept))
+                         ;; Kept regular files, byte for byte; a kept symbolic link (in a dot
+                         ;; path) is not followed.
+                         (kept-before (map (lambda (p) (cons p (bytes-of (string-append tree "/" p))))
+                                           (filter (lambda (p) (not (file-symbolic-link? (string-append tree "/" p)))) kept)))
                          (exclude (string-append scratch "/exclude"))
                          (listing (string-append scratch "/exported")))
                     (call-with-output-file exclude
@@ -296,7 +318,7 @@
                     (let ((staged-differ
                             (filter (lambda (p)
                                       (let ((blob (string-append scratch "/blob")))
-                                        (not (and (= 0 (shell-out (string-append "git -C " (quoted tree) " cat-file blob " (quoted (string-append ":" p))
+                                        (not (and (= 0 (shell-out (string-append "git -C " (quoted tree) " cat-file blob " (quoted (string-append ":0:" p))
                                                                                  " > " (quoted blob))
                                                                   git-out))
                                                   (equal? (bytes-of blob) (bytes-of (string-append fresh "/" p)))))))
@@ -305,22 +327,40 @@
                     (let* ((diff-rc (git "diff --cached --quiet"))
                            (commit (cond ((= diff-rc 0) 'none)
                                          ((= diff-rc 1)
-                                          (unless (= 0 (git (string-append "commit -q -m " (quoted (string-append "landing " item " at " cut)))))
+                                          (unless (= 0 (git (string-append "commit -q --no-verify -m " (quoted (string-append "landing " item " at " cut)))))
                                             (refuse 'git-commit-failed (file-text git-out)))
+                                          (set! state '(committed unknown))
                                           (unless (= 0 (git "rev-parse HEAD")) (refuse 'git-rev-parse-failed (file-text git-out)))
                                           (first-line (file-text git-out)))
                                          (else (refuse 'git-diff-failed (file-text git-out))))))
                       (when (string? commit) (set! state (list 'committed commit)))
+                      ;; The commit's tree, the kept paths left out, against the export:
+                      ;; the same paths, each blob the same bytes.
+                      (let* ((head-paths (begin (unless (= 0 (git "ls-tree -r -z --name-only HEAD")) (refuse 'git-ls-tree-failed (file-text git-out)))
+                                                (list-sort string<? (filter (lambda (p) (not (member p kept))) (split-nul (file-text git-out))))))
+                             (blob (string-append scratch "/head-blob"))
+                             (differ (filter (lambda (p)
+                                               (not (and (= 0 (shell-out (string-append "git -C " (quoted tree) " cat-file blob " (quoted (string-append "HEAD:" p))
+                                                                                        " > " (quoted blob))
+                                                                         git-out))
+                                                         (equal? (bytes-of blob) (bytes-of (string-append fresh "/" p))))))
+                                             exported-files)))
+                        (unless (and (equal? head-paths exported-files) (null? differ))
+                          (refuse 'committed-not-the-export (list 'paths head-paths) (list 'differ differ))))
                       (let ((pushed
                               (and push (string? commit)
-                                   (let* ((remote (car push)) (ref (string-append "refs/heads/" (cadr push))))
-                                     (unless (= 0 (git (string-append "fetch -q -- " (quoted remote) " " (quoted ref))))
+                                   ;; Fetched from and pushed to the one URL the push goes to (a
+                                   ;; remote's pushurl may differ from its fetch url), with no tags.
+                                   (let* ((url (or (command-one-line (string-append "git -C " (quoted tree) " remote get-url --push " (quoted (car push))))
+                                                   (refuse 'no-push-url (car push))))
+                                          (ref (string-append "refs/heads/" (cadr push))))
+                                     (unless (= 0 (git (string-append "fetch -q --no-tags -- " (quoted url) " " (quoted ref))))
                                        (refuse 'git-fetch-failed (file-text git-out)))
                                      (let ((remote-head (and (= 0 (git "rev-parse FETCH_HEAD")) (first-line (file-text git-out))))
                                            (parent (and (= 0 (git "rev-parse HEAD~1")) (first-line (file-text git-out)))))
                                        (unless (and remote-head parent (equal? remote-head parent))
                                          (refuse 'remote-is-not-the-parent (list 'remote remote-head) (list 'parent parent))))
-                                     (unless (= 0 (git (string-append "push -q -- " (quoted remote) " " (quoted (string-append "HEAD:" ref)))))
+                                     (unless (= 0 (git (string-append "push -q --no-verify --no-follow-tags -- " (quoted url) " " (quoted (string-append "HEAD:" ref)))))
                                        (refuse 'git-push-failed (file-text git-out)))
                                      #t))))
                         (list 'publication served (list 'files (length exported-files)) (list 'kept kept)
@@ -369,10 +409,14 @@
       (and at #t)))
   ;; a.sc's source changed in the store, from OLD to NEW, through a marked export
   ;; (a file without its header would be imported as a new file).
+  ;; -> #t when the edit was made and the import answered ok.
   (define (change-a! old new dir)
     (run 'export-code dir)
-    (replace-in! (string-append dir "/a.sc") old new)
-    (run 'import-code dir))
+    (and (replace-in! (string-append dir "/a.sc") old new)
+         (let ((a (run 'import-code dir))) (and (pair? a) (eq? (car a) 'ok)))))
+  (define (holds-text? file text)
+    (let ((t (file-text file)) (n (string-length text)))
+      (let loop ((i 0)) (cond ((> (+ i n) (string-length t)) #f) ((string=? (substring t i (+ i n)) text) #t) (else (loop (+ i 1)))))))
   (system (string-append "rm -rf " (quoted root) "; mkdir -p " (quoted (string-append root "/home"))))
   (putenv "THEOURGIA_HOME" (string-append root "/home"))
   ;; The store: three files (keep.tmp is hidden by the repository's .gitignore),
@@ -381,18 +425,19 @@
   (put! (string-append src "/a.sc") "(define (a) 'frozen)\n")
   (put! (string-append src "/notes.txt") "notes, frozen\n")
   (put! (string-append src "/keep.tmp") "kept although ignored\n")
+  (put! (string-append src "/at.sc") "(define (at) \"@file one\")\n")
   (run 'init)
   (run 'import-code src)
   (let* ((freeze (string-append root "/freeze"))
          (c1 (cut-of (export-cut freeze (begin (run 'tag "freeze-x-1") "freeze-x-1"))))
          (_ (run 'batch "((insert root #f ((kind . section) (title . \"not a file\"))))"))
          (c2 (cut-of (export-cut (string-append root "/c2-probe") (begin (run 'tag "later-x") "later-x"))))
-         (_ (change-a! "'frozen)" "'later)" (string-append root "/edit1"))))
+         (edit1 (change-a! "'frozen)" "'later)" (string-append root "/edit1"))))
     ;; The repository: an older tree; two stale files; publication-only files: a
     ;; .gitignore, a nested dot file, a file with a NUL that is valid UTF-8, a
     ;; file that is not UTF-8 and holds no NUL, a file with two byte-order marks,
     ;; and two named with rsync's pattern characters; a bare remote.
-    (system (string-append "mkdir -p " (quoted repo) "; git init -q --bare " (quoted bare) " > /dev/null 2>&1"))
+    (system (string-append "mkdir -p " (quoted repo) "; git init -q --bare -b main " (quoted bare) " > /dev/null 2>&1"))
     (git "init -q")
     (git "config user.name self-test")
     (git "config user.email self-test@localhost")
@@ -410,14 +455,18 @@
     (git "commit -q -m initial")
     (git "remote add origin " (quoted bare))
     (git "push -q origin HEAD:refs/heads/main")
+    ;; A pre-commit hook that would add a file: a publication commits with
+    ;; --no-verify, so the file never reaches a commit.
+    (put! (string-append repo "/.git/hooks/pre-commit") "#!/bin/sh\necho hooked > hooked.txt\ngit add hooked.txt\n")
+    (system (string-append "chmod +x " (quoted (string-append repo "/.git/hooks/pre-commit"))))
     (let* ((first (guarded (lambda () (publish! store c1 "x" repo freeze #f))))
            (kept-paths '(".gitignore" "bad.dat" "blob[1].bin" "blob].bin" "nul.dat" "sub/.hidden" "two-marks.txt")))
       (row "P-0 the freeze and the cuts: the freeze cut, a later cut with the same tree, the head's a.sc changed after both"
-           (list (and c1 #t) (and c2 #t) (not (equal? c1 c2))
+           (list (and c1 #t) (and c2 #t) (not (equal? c1 c2)) edit1
                  (let ((now (string-append root "/now")))
                    (run 'export-code now "--raw")
                    (equal? (bytes-of (string-append now "/a.sc")) (string->utf8 "(define (a) 'later)\n"))))
-           '(#t #t #t #t))
+           '(#t #t #t #t #t))
       (row "P-1 published at the freeze cut: the frozen files, the stale files deleted, the publication-only files kept byte for byte, compared ok"
            (list (and (pair? first) (car first))
                  (map (lambda (p) (equal? (bytes-of (string-append repo "/" p)) (bytes-of (string-append freeze "/" p))))
@@ -430,9 +479,10 @@
                  (list (string->utf8 "*.tmp\n") (bytevector 255 254 65) (bytevector 0 255) (bytevector 0 254)
                        (bytevector 97 0 98) (string->utf8 "hidden\n") (bytevector #xEF #xBB #xBF #xEF #xBB #xBF 97))
                  kept-paths 'ok))
-      (row "P-2 the commit is \"landing x at <cut>\", the status clean, and keep.tmp in the index although .gitignore hides it"
-           (list (git-text "log -1 --format=%s") (git-text "status --porcelain") (git-text "ls-files --cached keep.tmp"))
-           (list (string-append "landing x at " (or c1 "")) "" "keep.tmp"))
+      (row "P-2 the commit is \"landing x at <cut>\", the status clean, keep.tmp in the index although .gitignore hides it, the pre-commit hook not run"
+           (list (git-text "log -1 --format=%s") (git-text "status --porcelain") (git-text "ls-files --cached keep.tmp")
+                 (git-text "ls-files --cached hooked.txt") (file-exists? (string-append repo "/hooked.txt")))
+           (list (string-append "landing x at " (or c1 "")) "" "keep.tmp" "" #f))
       (let ((again (guarded (lambda () (publish! store c1 "x" repo freeze #f)))))
         (row "P-3 published again at the same cut: nothing to commit, said, not refused"
              (list (and (pair? again) (car again)) (and (part again 'commit) (cadr (part again 'commit))))
@@ -457,49 +507,55 @@
         (copy-tree freeze missing) (delete-file (string-append missing "/notes.txt"))
         (let* ((edits (list (replace-in! (string-append wrong-text "/notes.txt") "notes, frozen" "notes, Frozen")
                             (replace-in! (string-append wrong-mark "/a.sc") " pad 0" "")
-                            (replace-in! (string-append wrong-at "/a.sc") "(define (a) 'frozen)" "(define (a) \"@file frozen\")")))
+                            (replace-in! (string-append wrong-at "/at.sc") "@file one" "@file two")))
                (before (snapshot)) (head (git-text "rev-parse HEAD"))
                ;; At the freeze's own cut the headers are equal, so each copy differs
                ;; from the export in its one edit alone.
                (answers (map (lambda (f) (guarded (lambda () (publish! store c1 "x" repo f #f))))
                              (list wrong-text wrong-mark wrong-at extra missing))))
-          (row "P-5 PREMISE: each freeze copy was changed as its row says (a body byte, a marker line, a source line holding \"@file \")"
+          (row "P-5 PREMISE: each freeze copy was changed as its row says (a body byte, a marker line, a source line holding \"@file \" on both sides)"
                edits '(#t #t #t))
           (row "P-5 a freeze export differing in a body byte, a marker line, a source line holding @file, by an extra file, by a missing file: each refused comparison-failed naming the path, untouched"
                (map (lambda (a) (list (head2 a) (let ((d (part a 'differ))) (and d (cadr d))) (let ((s (part a 'state))) (and s (cadr s))))) answers)
                '(((error comparison-failed) ("notes.txt") untouched)
                  ((error comparison-failed) ("a.sc") untouched)
-                 ((error comparison-failed) ("a.sc") untouched)
+                 ((error comparison-failed) ("at.sc") untouched)
                  ((error comparison-failed) ("extra.sc") untouched)
                  ((error comparison-failed) ("notes.txt") untouched)))
           (row "P-5 CONTROL: the worktree and HEAD are as they were after the five refusals"
                (list (equal? before (snapshot)) (equal? head (git-text "rev-parse HEAD")))
                '(#t #t))))
-      (row "P-6 no freeze export; a store inside the worktree; a branch that is a refspec: each refused, untouched"
+      (row "P-6 no freeze export; a store inside the worktree; a branch that is a refspec; an index entry marked skip-worktree: each refused, untouched"
            (list (head2 (guarded (lambda () (publish! store c1 "x" repo #f #f))))
                  (head2 (guarded (lambda () (copy-tree store (string-append repo "/inner-store"))
                                             (let ((r (publish! (string-append repo "/inner-store") c1 "x" repo freeze #f)))
                                               (system (string-append "rm -rf " (quoted (string-append repo "/inner-store"))))
                                               r))))
-                 (head2 (guarded (lambda () (publish! store c1 "x" repo freeze (list "origin" "+main:refs/heads/victim"))))))
-           '((error no-freeze-export) (error inside-the-worktree) (error not-a-branch-name)))
+                 (head2 (guarded (lambda () (publish! store c1 "x" repo freeze (list "origin" "+main:refs/heads/victim")))))
+                 (begin (git "update-index --skip-worktree notes.txt")
+                        (let ((r (guarded (lambda () (publish! store c1 "x" repo freeze #f)))))
+                          (git "update-index --no-skip-worktree notes.txt")
+                          (list (head2 r) (let ((d (and (list? r) (> (length r) 2) (list-ref r 2)))) d)))))
+           '((error no-freeze-export) (error inside-the-worktree) (error not-a-branch-name)
+             ((error index-entry-flagged) ("notes.txt"))))
       ;; The push: to the named remote and branch, only when this run committed,
       ;; and only onto the commit's own parent. The earlier commits are pushed
       ;; first.
       (git "push -q origin HEAD:refs/heads/main")
       (let* ((head-before (git-text "rev-parse HEAD"))
-             (_ (change-a! "'later)" "'pushed)" (string-append root "/edit2")))
+             (edit2 (change-a! "'later)" "'pushed)" (string-append root "/edit2")))
              (freeze3 (string-append root "/freeze3"))
              (c3 (cut-of (export-cut freeze3 (begin (run 'tag "freeze-x-3") "freeze-x-3"))))
              (pushed (guarded (lambda () (publish! store c3 "z" repo freeze3 (list "origin" "main")))))
              (head-after (git-text "rev-parse HEAD")))
         (row "P-7 --push origin main: a new commit, carrying the change, pushed, and the remote branch is that commit"
-             (list (and (pair? pushed) (car pushed)) (not (equal? head-before head-after))
+             (list edit2 (holds-text? (string-append freeze3 "/a.sc") "'pushed)")
+                   (and (pair? pushed) (car pushed)) (not (equal? head-before head-after))
                    (let ((c (part pushed 'commit))) (and c (equal? (cadr c) head-after)))
                    (equal? (bytes-of (string-append repo "/a.sc")) (bytes-of (string-append freeze3 "/a.sc")))
                    (and (part pushed 'pushed) (cadr (part pushed 'pushed)))
                    (equal? (git-text-in bare "rev-parse main") head-after))
-             '(publication #t #t #t #t #t))
+             '(#t #t publication #t #t #t #t #t))
         (let ((again (guarded (lambda () (publish! store c3 "z" repo freeze3 (list "origin" "main"))))))
           (row "P-8 --push with nothing new to commit: commit none, nothing pushed"
                (list (and (pair? again) (car again)) (and (part again 'commit) (cadr (part again 'commit)))
@@ -507,21 +563,22 @@
                '(publication none #f)))
         ;; Another clone moves the remote branch on; the next publication's parent
         ;; is not the remote branch: committed, not pushed.
-        (system (string-append "git clone -q " (quoted bare) " " (quoted other) " > /dev/null 2>&1"))
+        (system (string-append "git clone -q --branch main " (quoted bare) " " (quoted other) " > /dev/null 2>&1"))
         (git-in other "config user.name other")
         (git-in other "config user.email other@localhost")
         (put! (string-append other "/elsewhere.txt") "from another clone\n")
         (git-in other "add -A")
         (git-in other "commit -q -m elsewhere")
         (git-in other "push -q origin HEAD:refs/heads/main")
-        (let* ((_ (change-a! "'pushed)" "'fourth)" (string-append root "/edit3")))
+        (let* ((moved-on (equal? (git-text-in bare "rev-parse main") (git-text-in other "rev-parse HEAD")))
+               (edit3 (change-a! "'pushed)" "'fourth)" (string-append root "/edit3")))
                (freeze4 (string-append root "/freeze4"))
                (c4 (cut-of (export-cut freeze4 (begin (run 'tag "freeze-x-4") "freeze-x-4"))))
                (moved (guarded (lambda () (publish! store c4 "w" repo freeze4 (list "origin" "main"))))))
           (row "P-9 the remote branch moved on elsewhere: refused remote-is-not-the-parent, committed and not pushed"
-               (list (head2 moved) (let ((s (part moved 'state))) (and s (pair? (cadr s)) (car (cadr s))))
+               (list moved-on edit3 (head2 moved) (let ((s (part moved 'state))) (and s (pair? (cadr s)) (car (cadr s))))
                      (not (equal? (git-text-in bare "rev-parse main") (git-text "rev-parse HEAD"))))
-               '((error remote-is-not-the-parent) committed #t))))))
+               '(#t #t (error remote-is-not-the-parent) committed #t))))))
   (system (string-append "rm -rf " (quoted root)))
   (printf "\n~a failures\nrows: ~a\npublish-landing self-test complete\n" bad rows)
   (exit (if (= bad 0) 0 1)))
