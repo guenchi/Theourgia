@@ -83,9 +83,10 @@
   (if (equal? got expected)
       (printf "ok   ~a\n" name)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a -> ~s   WANT ~s\n" name got expected))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
-    ((_ name got expected) (want-1 name (tolerant got) expected))))
+    ((_ name got expected) (with-expected name expected (x) (want-1 name (tolerant got) x)))))
 
 ;; ---- paths and bytes ------------------------------------------------------------------------------
 
