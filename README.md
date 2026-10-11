@@ -2188,6 +2188,20 @@ boundary, and the offset of an uncertain token, counts the mark. With
 so a symbol starting at byte 3 is refused `symbols-not-a-line-start`.
 Without `--output`, the review file is written beside the file as `<file>.review-<pid>-<ms>-<n><ext>`. An existing file is never overwritten: an `--output` that exists is refused `(error projection-invalid (reason output-exists))`. A file that changed while it was being scanned is refused `input-changed`.
 
+The definition patterns are looked for at the top level, outside strings,
+comments and brackets, as the language's profile reads them. A token the
+scanner cannot follow makes the whole file one block, with the warning
+`(code lexically-uncertain byte-offset <n>)`; an unbalanced file does the
+same with `unbalanced`. In Scheme a character literal -- `#\(`, `#\"`,
+`#\;`, `#\space`, `#\x41` -- is read as code, and a datum comment, `#;`,
+is still a token the scanner cannot follow. A Scheme file whose first
+opening parenthesis at the top level opens `(library ...)` is cut at the
+definitions of the library's body: those at its first level are cut as
+top-level ones are, at the start of their line, and the library's name,
+`export` and `import` stay in the first block. That is the definition
+patterns' rule only: with `--symbols`, a start inside the library is still
+`symbol-not-top-level`.
+
 With `--symbols`, the cuts come from a list of the file's top-level
 symbols that an editor collected, in place of the definition patterns.
 Only the question "does a definition start on this line" changes hands:

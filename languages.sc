@@ -129,7 +129,12 @@
           (suggest-only
             ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
               (quote-delimiters ("\"")) (escaped-character "\\")
-              (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+              ;; a character literal is read by the escape: `#` and then `\`
+              ;; with the character after it, both code (code-suggest.sc); a
+              ;; datum comment still cannot be followed
+              (nested-block-comment #t) (uncertain-tokens ("#;"))
+              ;; a library's definitions are cuts inside its one form
+              (body-forms ("library"))
               ;; no operator continues a line here: "-", "+", "." and the rest
               ;; are identifier characters, and an open bracket is the stack's
               (continuation-tokens ())
@@ -318,7 +323,8 @@
            (suggest-only
              ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
                (quote-delimiters ("\"")) (escaped-character "\\")
-               (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+               (nested-block-comment #t) (uncertain-tokens ("#;"))
+               (body-forms ("library"))
                ;; as scheme's: no operator continues a line
                (continuation-tokens ())
                (fallback "whole-file-with-warning") (prefix-lines ())))

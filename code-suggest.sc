@@ -83,6 +83,16 @@
                (block (language-property entry 'block-comment #f))
                (uncertain (get 'uncertain-tokens '()))
                (prefix-patterns (map regex-compile (get 'prefix-lines '())))
+               ;; A BODY FORM: the first opener met with an empty stack is read
+               ;; for its head, once per file; a head the profile lists in
+               ;; `body-forms` designates that frame, and the definitions at
+               ;; its first level are cuts as top-level ones are, until its
+               ;; closer is popped. `unattempted`, `designated`, then `done`;
+               ;; `none` when the head is another or the profile lists none.
+               ;; HEAD is the head read so far while it is being read, else #f.
+               (body-heads (get 'body-forms '()))
+               (designation (if (null? body-heads) 'none 'unattempted))
+               (head #f)
                (stack '()) (quoted #f) (comment-depth 0) (continued? #f)
                (fence #f) (pending #f) (boundaries '(0))
                (last-kind 'none) (code-end 0) (last-escaped #f) (continues? #f) (blank-starts '())
@@ -112,6 +122,15 @@
                                                       (and (>= m 3) (string=? (substring code (- m 3) m) "...")))))))))))
                     continuation-tokens))
           (define (at-any s i tokens) (find (lambda (t) (string-prefix-at? s t i)) tokens))
+          ;; The head being read ends at anything that is not one of its
+          ;; characters; whitespace, a comment or a line end before its first
+          ;; character does not end the wait.
+          (define (head-end!)
+            (when head
+              (set! designation (if (member head body-heads) 'designated 'none))
+              (set! head #f)))
+          (define (head-pause!)
+            (when (and head (> (string-length head) 0)) (head-end!)))
           (define (fence-run line)
             (let* ((s (trim-left line)) (indent (- (string-length line) (string-length s))))
               (and (<= indent 3) (> (string-length s) 0) (memv (string-ref s 0) '(#\` #\~))
@@ -125,6 +144,7 @@
             (let loop ((i 0))
               (if (= i (string-length line))
                   (begin
+                    (head-pause!)
                     (when (> comment-depth 0) (set! last-kind 'comment))
                     (when (and quoted (not continued?) (not (member quoted multiline))) (fallback 'unclosed-quote (+ offset (bytevector-length (string->utf8 line))))))
                   (let ((c (string-ref line i)))
@@ -144,24 +164,35 @@
                              ((string-prefix-at? line quoted i)
                               (let ((n (string-length quoted))) (set! quoted #f) (set! last-kind 'string) (loop (+ i n))))
                              (else (loop (+ i 1)))))
-                      ((at-any line i (comment-prefixes entry)) (if #f #f))
+                      ((at-any line i (comment-prefixes entry)) (head-pause!))
                       ((and block (string-prefix-at? line (car block) i))
+                       (head-pause!)
                        (set! comment-depth 1) (set! last-kind 'comment) (loop (+ i (string-length (car block)))))
                       ((at-any line i uncertain) (fallback 'lexically-uncertain (+ offset (bytevector-length (string->utf8 (substring line 0 i))))))
-                      ((at-any line i quotes) => (lambda (q) (set! quoted q) (set! last-kind 'string) (loop (+ i (string-length q)))))
+                      ((at-any line i quotes) => (lambda (q) (head-end!) (set! quoted q) (set! last-kind 'string) (loop (+ i (string-length q)))))
                       ((exists (lambda (p) (char=? c (string-ref p 0))) pairs)
                        (let ((p (find (lambda (p) (char=? c (string-ref p 0))) pairs)))
-                         (code! i) (set! stack (cons (string-ref p 1) stack)) (loop (+ i 1))))
+                         (head-end!)
+                         (code! i)
+                         (when (and (null? stack) (eq? designation 'unattempted)) (set! head ""))
+                         (set! stack (cons (string-ref p 1) stack)) (loop (+ i 1))))
                       ((exists (lambda (p) (char=? c (string-ref p 1))) pairs)
                        (unless (and (pair? stack) (char=? c (car stack))) (fallback 'unbalanced (+ offset i)))
-                       (code! i) (set! stack (cdr stack)) (loop (+ i 1)))
+                       (head-end!)
+                       (code! i) (set! stack (cdr stack))
+                       (when (and (null? stack) (eq? designation 'designated)) (set! designation 'done))
+                       (loop (+ i 1)))
                       ((string-prefix-at? line escape i)
+                       (head-end!)
                        (if (= (+ i (string-length escape)) (string-length line)) (set! continued? #t)
                            ;; the escaped character is code, as written
                            (begin (code! (+ i (string-length escape)))
                                   (set! last-escaped (+ i (string-length escape)))
                                   (loop (min (string-length line) (+ i (string-length escape) 1))))))
-                      (else (unless (char-whitespace? c) (code! i)) (loop (+ i 1))))))))
+                      ((char-whitespace? c) (head-pause!) (loop (+ i 1)))
+                      (else (code! i)
+                            (when head (set! head (string-append head (string c))))
+                            (loop (+ i 1))))))))
           (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
           ;; NEVER: A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT. The whole
@@ -181,7 +212,12 @@
               (let* ((offset (+ prefix (car row)))
                      (line (safe-utf8 (byte-slice bytes offset (+ prefix (cadr row)))))
                      (trimmed (trim-left line))
-                     (top? (and (null? stack) (not quoted) (zero? comment-depth) (not continued?)
+                     ;; the first level of a designated body form counts as the
+                     ;; top level for the regex supplier only: supplied starts
+                     ;; keep depth zero (the editor-symbol contract)
+                     (top? (and (or (null? stack)
+                                    (and (not starts) (eq? designation 'designated) (= (length stack) 1)))
+                                (not quoted) (zero? comment-depth) (not continued?)
                                 (or (not (string=? kind "indent")) (string=? line trimmed)
                                     ;; strict: a line of spaces only is blank,
                                     ;; judged by the next non-blank line below

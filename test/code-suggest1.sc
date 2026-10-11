@@ -1,6 +1,7 @@
 #!r6rs
 (import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi)
-        (theourgia languages) (theourgia code-project) (theourgia code-markers))
+        (theourgia languages) (theourgia code-project) (theourgia code-markers)
+        (only (theourgia code-suggest) suggest-boundaries))
 (define bad 0)
 (define (want name got expected)
   (if (equal? got expected) (printf "ok ~a\n" name)
@@ -95,5 +96,90 @@
         (list (result-value p 'warnings) (result-value m 'warnings))
         (list (list (list 'code 'lexically-uncertain 'byte-offset (byte-count head)))
               (list (list 'code 'lexically-uncertain 'byte-offset (+ 3 (byte-count head)))))))
+;; ---- Scheme character literals and library bodies --------------------------
+;;
+;; A CHARACTER LITERAL IS READ BY THE ESCAPE: `#` is code, and `\` takes the
+;; character after it as code, so `#\(` opens nothing, `#\"` no string, `#\;`
+;; no comment. Until this the Scheme profile listed `#\` as uncertain and the
+;; whole file was one block. A DATUM COMMENT `#;` still is.
+(define (ss-bounds text) (boundaries (suggest "ss" text)))
+(define (ss-warnings text) (result-value (suggest "ss" text) 'warnings))
+;; the scanner itself, for an entry and, when given, the strict symbols path
+(define (scan lang text . starts)
+  (if (pair? starts)
+      (suggest-boundaries (language-for-name lang) (string->utf8 text) (car starts) #t)
+      (suggest-boundaries (language-for-name lang) (string->utf8 text))))
+(let ((a "(define a #\\( )\n"))
+  (want "CS-1 a #\\( literal: two boundaries, no warning"
+        (list (ss-bounds (string-append a "(define b 2)\n")) (ss-warnings (string-append a "(define b 2)\n")))
+        (list (list 0 (byte-count a)) '())))
+(let ((a "(define a #\\\")\n"))
+  (want "CS-2 a #\\\" literal opens no string: two boundaries"
+        (ss-bounds (string-append a "(define b 2)\n")) (list 0 (byte-count a))))
+(let ((a "(define a #\;)\n") (a2 "(define a #\\|)\n"))
+  (want "CS-3 #\; starts no comment and #\\| no block comment: two boundaries each"
+        (list (ss-bounds (string-append a "(define b 2)\n")) (ss-bounds (string-append a2 "(define b 2)\n")))
+        (list (list 0 (byte-count a)) (list 0 (byte-count a2)))))
+(let ((a "(define a #\\space)\n") (b "(define b #\\x41)\n"))
+  (want "CS-4 #\\space, #\\x41 and #\\λ: three boundaries"
+        (ss-bounds (string-append a b "(define c #\\λ)\n"))
+        (list 0 (byte-count a) (+ (byte-count a) (byte-count b)))))
+(let ((a "#\\\\\n"))
+  (want "CS-5 the strict symbols path: a #\\\\ line does not continue, and b's start is accepted with no warning"
+        (scan "scheme" (string-append a "(define b 2)\n") (list (byte-count a)))
+        (list (list 0 (byte-count a)) '())))
+(let ((a "(define a #\\(x)\n"))
+  (want "CS-5b #\\( is one character: x) closes the define, two boundaries"
+        (ss-bounds (string-append a "(define b 2)\n")) (list 0 (byte-count a))))
+(let ((a "(define a #\\\n)\n") (open "(define a #\\"))
+  (want "CS-5c a literal prefix at a line end continues the form, the next line closes it and b is a cut; at the end of the file it is unbalanced"
+        (list (ss-bounds (string-append a "(define b 2)\n"))
+              (let ((r (suggest "ss" open))) (list (boundaries r) (result-value r 'warnings))))
+        (list (list 0 (byte-count a))
+              (list '(0) (list (list 'code 'unbalanced 'byte-offset (byte-count open)))))))
+(let ((r (suggest "ss" "(define a #;ignored 1)\n(define b 2)\n")))
+  (want "CS-6 PIN a datum comment still makes the whole file one block, with a warning"
+        (list (boundaries r) (map cadr (result-value r 'warnings)))
+        '((0) (lexically-uncertain))))
+(let ((s1 "(define a \"\n(define fake 1)\n\")\n") (c1 "(define a 1)\n") (s2 "(define a \"#\\\\(\")\n"))
+  (want "CS-7 PIN an unbalanced file falls back; a define inside a string is hidden; a literal inside a string or a block comment changes nothing"
+        (list (map cadr (ss-warnings "(define a (\n(define b 2)\n"))
+              (ss-bounds (string-append s1 "(define b 2)\n"))
+              (ss-bounds (string-append s2 "(define b 2)\n"))
+              (ss-bounds (string-append c1 "#| #\\( |#\n(define b 2)\n")))
+        (list '(unbalanced) (list 0 (byte-count s1)) (list 0 (byte-count s2)) (list 0 (byte-count c1)))))
+(let* ((a "(define a #\\( )\n") (text (string-append a "(define b 2)\n")))
+  (want "CS-8 the chez runner entry cuts CS-1's text as the scheme entry does: (0 N), no warning"
+        (list (scan "chez" text) (scan "scheme" text))
+        (list (list (list 0 (byte-count a)) '()) (list (list 0 (byte-count a)) '()))))
+
+;; A LIBRARY'S BODY: the first opener met with an empty stack is read for its
+;; head; `library` designates that frame, and the definitions at its first
+;; level are cuts at their line's start, indentation included.
+(define lb-head "(library (a)\n  (export f g)\n  (import (rnrs))\n")
+(let* ((f "  (define (f) 1)\n") (g "  (define (g) 2))\n")
+       (o1 (byte-count lb-head)) (o2 (+ o1 (byte-count f))))
+  (want "LB-1 a library's two definitions are cuts at their lines, the name, export and import in the first block"
+        (list (ss-bounds (string-append lb-head f g)) (ss-warnings (string-append lb-head f g)))
+        (list (list 0 o1 o2) '()))
+  (want "LB-5 PIN the strict symbols path keeps depth zero: starts at f and g in a library are not top level"
+        (cadr (scan "scheme" (string-append lb-head f g) (list o1 o2)))
+        (list (list 'symbol-not-top-level (list 'at o1)) (list 'symbol-not-top-level (list 'at o2)))))
+(let* ((f "  (define (f)\n(define (h) 1)\n    (h))\n") (g "  (define (g) 2))\n")
+       (o1 (byte-count lb-head)) (o2 (+ o1 (byte-count f))))
+  (want "LB-2 a define nested in f's body at column 0 is not a cut: still three boundaries"
+        (ss-bounds (string-append lb-head f g)) (list 0 o1 o2)))
+(want "LB-3 PIN a define before the library: the first opener's head is define, nothing is designated, f is not a cut"
+      (ss-bounds "(define x 1)\n(library (a)\n  (export)\n  (import (rnrs))\n  (define (f) 1))\n")
+      '(0))
+(let ((before "42\n(library (a)\n  (export)\n  (import (rnrs))\n"))
+  (want "LB-3b an atom before the library does not matter: f is a cut"
+        (ss-bounds (string-append before "  (define (f) 1))\n")) (list 0 (byte-count before))))
+(let* ((f "  (define (f) #\\( )\n") (g "  (define (g) 2))\n")
+       (o1 (byte-count lb-head)) (o2 (+ o1 (byte-count f)))
+       (one "(library (a) (export) (import (rnrs)) (define (f) #\\( ) (define (g) 2))\n"))
+  (want "LB-4 a library on one line is one block with no warning; written over lines with a literal, three boundaries"
+        (list (ss-bounds one) (ss-warnings one) (ss-bounds (string-append lb-head f g)))
+        (list '(0) '() (list 0 o1 o2))))
 (printf "~a failures\ncode-suggest1 complete\n" bad)
 (exit (if (zero? bad) 0 1))
