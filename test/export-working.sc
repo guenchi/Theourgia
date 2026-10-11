@@ -507,7 +507,8 @@
       (list (if (contains? tagged "(ok") 'tagged (list 'said tagged))
             (if (contains? later-commit "(ok") 'committed (list 'said later-commit))
             (map ok-answer? (list md-then-answer code-then-answer md-at-answer code-at-answer))
-            (and (contains? (all-text md-then) "alphacommitted") (contains? (all-text code-then) "onecommitted"))
+            ;; alpha's committed text is w2's published one (W12's commit above); one's is still its first
+            (and (contains? (all-text md-then) "alphapublished") (contains? (all-text code-then) "onecommitted"))
             (equal? (tree-of md-at) (tree-of md-then))
             (equal? (tree-of code-at) (tree-of code-then))
             (and tag-read-cut (list? (cadr tag-read-cut)) (pair? (cadr tag-read-cut)) #t)
