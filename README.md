@@ -586,6 +586,11 @@ The projection is title, src, level, parent, ord and the edge set: a tombstone i
 `removed`, and an edge-set change is `(changed <id> links)`. Comparing only the scalar
 fields would call two states identical when an edge had moved.
 
+Both cuts are judged and then replayed, and each replay is asked again, as a read at a
+cut is: a record set aside between the judgement and the replay stops the replay short
+of the cut, and the diff is refused `(error cut-moved (cut from|to) (asked <cut>)
+(served <cut>))` rather than compared against a state it did not reach.
+
 A cut literal is parsed by shape and never handed to `read` — the reader implements
 the whole numeric syntax, and `#e` with a large exponent asks it to build an integer
 of any size from eleven characters of argument. A cut this store cannot reach is
@@ -1974,7 +1979,7 @@ goes to the top level), and the `would-delete` refusal names them under
 
 ### `export-md`
 
-    (export-md <dir> ("--with-ids") ("--working") ("--writer" <name>))
+    (export-md <dir> ("--with-ids") ("--working") ("--writer" <name>) ("--cut" <cut>))
 
 Writes the store out as Markdown. `--with-ids` writes each section's id
 before its heading, and a document is found again by its path, so the
@@ -1983,6 +1988,13 @@ result can be imported back onto the same blocks.
 `--working` writes the writer's working view instead of the committed store
 (see "The working view on disk" above); `--writer` selects whose drafts, with
 `--working`, and is accepted and ignored without it.
+
+`--cut <cut>` writes the store as it was at a causal cut -- a tag name or a cut
+written out -- exactly as `read --cut` reads it: an unusable cut is refused
+`cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name that is
+not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served. A
+past cut has no working view: `--cut` with `--working` or `--writer` is refused
+`(error bad-request incompatible-cut-options)`.
 
 The answer counts the files written. Every block this projection should have
 written and did not is listed after that count, with a reason:
@@ -2142,7 +2154,7 @@ they changed, the import is refused `(error stale-baseline (path <path>)
 
 ### `export-code`
 
-    (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>))
+    (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>) ("--cut" <cut>))
 
 Writes the store out as source. Without `--datum` it writes the text-mode
 files -- the blocks `import-code` made without `--datum`; a store with no
@@ -2155,6 +2167,13 @@ are two different projections and there is no answer to "both".
 in any of the three projections (see "The working view on disk" above);
 `--writer` selects whose drafts, with `--working`, and is accepted and
 ignored without it.
+
+`--cut <cut>` writes the store, in any of the three projections, as it was at a causal cut -- a tag name or a cut
+written out -- exactly as `read --cut` reads it: an unusable cut is refused
+`cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name that is
+not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served. A
+past cut has no working view: `--cut` with `--working` or `--writer` is refused
+`(error bad-request incompatible-cut-options)`.
 
 #### A path several blocks hold
 
@@ -3597,7 +3616,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |

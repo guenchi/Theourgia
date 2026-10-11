@@ -473,11 +473,60 @@
              (equal? (tree-of md-plain-w1) (tree-of md-now)))
       #t)
 
+;; ---- an export at a past cut (--cut) -------------------------------------------
+;;
+;; NEVER: AN EXPORT AT A TAG IS THE STORE AS IT WAS THEN. The state is tagged,
+;; both exports are taken at the head, a later commit changes a section and a
+;; code block, and both exports taken at the tag equal the ones taken when the
+;; tag was the head; a head export now carries the change.
+(define cut-tag "f266-before")
+(define tagged (cli "tag" cut-tag))
+(define md-then (fresh-dir "md-then"))
+(define code-then (fresh-dir "code-then"))
+(cli "export-md" md-then)
+(cli "export-code" code-then)
+(define later-alpha (cli "write" "--writer" "w9" alpha-id "alphalater here.\n"))
+(define later-one (cli "write" "--writer" "w9" one-id "(define (f) 'onelater)\n"))
+(define later-commit (cli "commit" "--writer" "w9"))
+(define md-at (fresh-dir "md-at"))
+(define code-at (fresh-dir "code-at"))
+(define md-at-answer (cli "export-md" md-at "--cut" cut-tag))
+(define code-at-answer (cli "export-code" code-at "--cut" cut-tag))
+(define md-now (fresh-dir "md-now"))
+(define code-now (fresh-dir "code-now"))
+(cli "export-md" md-now)
+(cli "export-code" code-now)
+
+(want "F266-1 an export at a tag equals the export taken when the tag was the head, after a later commit changed a section and a code block; each answer says its cut"
+      (list (if (contains? tagged "(ok") 'tagged (list 'said tagged))
+            (if (contains? later-commit "(ok") 'committed (list 'said later-commit))
+            (equal? (tree-of md-at) (tree-of md-then))
+            (equal? (tree-of code-at) (tree-of code-then))
+            (and (clause-of md-at-answer 'cut) #t)
+            (and (clause-of code-at-answer 'cut) #t))
+      '(tagged committed #t #t #t #t))
+(want "F266-1 CONTROL: the head exports carry the later commit and the tag's do not"
+      (list (contains? (all-text md-now) "alphalater") (contains? (all-text md-at) "alphalater")
+            (contains? (all-text code-now) "onelater") (contains? (all-text code-at) "onelater"))
+      '(#t #f #t #f))
+(want "F266-2 --cut with --working is refused incompatible-cut-options, by export-md and by export-code"
+      (list (let ((a (answer-of (cli "export-md" (fresh-dir "md-x") "--cut" cut-tag "--working" "--writer" "w1"))))
+              (and (pair? a) (list-head a (min 3 (length a)))))
+            (let ((a (answer-of (cli "export-code" (fresh-dir "code-x") "--cut" cut-tag "--working" "--writer" "w1"))))
+              (and (pair? a) (list-head a (min 3 (length a))))))
+      '((error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)))
+(want "F266-3 an unknown tag is refused unknown-tag, by export-md and by export-code, and nothing is written"
+      (let ((md-x (fresh-dir "md-y")) (code-x (fresh-dir "code-y")))
+        (list (let ((a (answer-of (cli "export-md" md-x "--cut" "no-such-tag")))) (and (pair? a) (list-head a (min 2 (length a)))))
+              (let ((a (answer-of (cli "export-code" code-x "--cut" "no-such-tag")))) (and (pair? a) (list-head a (min 2 (length a)))))
+              (tree-of md-x) (tree-of code-x)))
+      '((error unknown-tag) (error unknown-tag) () ()))
+
 ;; ---- the README -----------------------------------------------------------------
 (define readme (file-text "../README.md"))
-(want "F17-05 the README's usage forms for export-md and export-code carry --working and --writer"
-      (list (contains? readme "(export-md <dir> (\"--with-ids\") (\"--working\") (\"--writer\" <name>))")
-            (contains? readme "(export-code <dir> (\"--raw\") (\"--datum\") (\"--working\") (\"--writer\" <name>))"))
+(want "F17-05 the README's usage forms for export-md and export-code carry --working, --writer and --cut"
+      (list (contains? readme "(export-md <dir> (\"--with-ids\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))")
+            (contains? readme "(export-code <dir> (\"--raw\") (\"--datum\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))"))
       '(#t #t))
 
 (system (string-append "rm -rf " here))

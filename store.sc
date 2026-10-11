@@ -2303,6 +2303,12 @@
                       (list (quote cut) (quote cut))
                       (list (quote reason) (if (pair? verdict) (cadr verdict) verdict))))))))
 
+  ;; A DIFF'S TWO CUTS ARE JUDGED AND THEN REPLAYED, and each replay is asked
+  ;; again, as a read at a cut is (store-state-at-cut): a record set aside
+  ;; between the judgement and the replay stops the replay short of the cut
+  ;; judged usable, and the diff is refused cut-moved, naming the cut, the cut
+  ;; asked and the cut served. The hold stage diff-cut-before-replay sits in
+  ;; the window.
   (define (store-diff store from-text to-text)
     (let ((from (resolve-cut store (quote from) from-text))
           (to (resolve-cut store (quote to) to-text)))
@@ -2325,9 +2331,21 @@
                          (else (loop (cdr cs))))))) 
            (if bad
                bad
-               (cons (quote ok)
-                     (list (diff-states (replay store (cadr from))
-                                        (replay store (cadr to)))))))))))
+               (begin
+                 (hold-point! (quote diff-cut-before-replay))
+                 (let* ((from-state (replay store (cadr from)))
+                        (to-state (replay store (cadr to)))
+                        (moved (find (lambda (c)
+                                       (not (cut-covers? (reduce-applied-cut (cadr c))
+                                                         (filter (lambda (e) (> (cdr e) 0)) (caddr c)))))
+                                     (list (list (quote from) from-state (cadr from))
+                                           (list (quote to) to-state (cadr to))))))
+                   (if moved
+                       (list (quote error) (quote cut-moved)
+                             (list (quote cut) (car moved))
+                             (list (quote asked) (caddr moved))
+                             (list (quote served) (reduce-applied-cut (cadr moved))))
+                       (cons (quote ok) (list (diff-states from-state to-state))))))))))))
 
 
   ;; ---- cuts on the command line ---------------------------------------------
