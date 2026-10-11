@@ -441,6 +441,20 @@
         (list (cadr a) (exists (lambda (l) (has-substring? l "injected reload raise")) (trace-lines-with st "reload-failed")))
         '((error cut-unavailable (cut cut) (reason not-received)) #t)))
 
+;; D1, the limit, for an export at a cut: judged against the same publication
+;; as the read, so it answers as the read does, not from a fresh fold.
+(let* ((s (daemon-store!)) (st (car s)) (w (cadr s))
+       (env (string-append traced " THEOURGIA_FAULT=reload-raise@conn"))
+       (_ (client env "outline" "--store" st))
+       (late (new-id (ask st 'insert "--under" "root" "--title" "Late")))
+       (late-cut (cut-text (entry-clause (entry-for st (cons w 3)) 'cut)))
+       (dir (string-append root "/rc-d1e-export"))
+       (a (client env "export-code" dir "--cut" late-cut "--store" st)))
+  (stop-daemon! st)
+  (want "RC-D1e an export at that cut, when the fold fails: cut-unavailable not-received against the previous publication, as the read"
+        (cadr a)
+        '(error cut-unavailable (cut cut) (reason not-received))))
+
 ;; D4: a writer in the request's envelope is not the --writer option.
 (let* ((s (daemon-store!)) (st (car s)) (w (cadr s)) (b1 (caddr s))
        (cut12 (cut-text (entry-clause (entry-for st (cons w 2)) 'cut)))
