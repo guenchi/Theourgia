@@ -2179,9 +2179,10 @@ scanner cannot follow makes the whole file one block, with the warning
 `(code lexically-uncertain byte-offset <n>)`; an unbalanced file does the
 same with `unbalanced`. In Scheme a character literal -- `#\(`, `#\"`,
 `#\;`, `#\space`, `#\x41` -- is read as code, and a datum comment, `#;`,
-is still a token the scanner cannot follow. A Scheme file whose first
-opening parenthesis at the top level opens `(library ...)` is cut at the
-definitions of the library's body: those at its first level are cut as
+is still a token the scanner cannot follow. A Scheme file in which the
+first bracket opened at the top level, of any kind, begins `(library ...)`
+is cut at the definitions of the library's body: those at its first level
+are cut as
 top-level ones are, at the start of their line, and the library's name,
 `export` and `import` stay in the first block. That is the definition
 patterns' rule only: with `--symbols`, a start inside the library is still
