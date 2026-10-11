@@ -213,7 +213,10 @@
 (define store-children
   (tolerant (let ((st (open-and-reduce store)))
               (map (lambda (id) (cons (code-field st id 'path) (length (code-children st id)))) (code-files st)))))
-(define (store-child-count p) (let ((e (and (list? store-children) (assoc p store-children)))) (and e (cdr e))))
+(define (store-child-count p)
+  (guard (x (#t #f))
+    (let ((e (and (list? store-children) (pair? store-children) (pair? (car store-children)) (assoc p store-children))))
+      (and e (cdr e)))))
 
 (want "RT-0 the import answers ok with no skipped clause: every compared file was read"
       (in-order (and (pair? imported) (car imported)) (clause imported 'skipped))
@@ -224,7 +227,9 @@
 (define raw-answer (tolerant (run 'export-code raw-dir "--raw")))
 (define marked-answer (tolerant (run 'export-code marked-dir)))
 
-(define unequal (filter (lambda (p) (not (equal? (bytes-of (string-append raw-dir "/" p)) (original p)))) compared))
+(define unequal (filter (lambda (p) (let ((b (bytes-of (string-append raw-dir "/" p))) (o (original p)))
+                                      (not (and (bytevector? b) (bytevector? o) (bytevector=? b o)))))
+                        compared))
 (want "RT-1 the raw export is the tree byte for byte: every compared path equal (the dot-named paths not compared are listed)"
       (in-order (and (pair? raw-answer) (car raw-answer))
                 (- (length compared) (length unequal))
