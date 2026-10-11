@@ -6,7 +6,6 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the describe and commit changes are in the base now, and this
-;; change (a stale verification in context, a scenario's review stance)
-;; changes no scripted answer.
-()
+;; describe's catalogue gives export-code's and export-md's usage forms their
+;; --cut option.
+((describe "describe's export-code and export-md usage forms take --cut"))

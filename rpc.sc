@@ -1216,13 +1216,13 @@
       (list 'import-code import-code-usage
             "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. With --symbols, a file an editor's symbols file names is split on its first import at those symbols' ranges, every start and every end a cut, as a marked import of the same cuts would split it; a file that already carries markers follows them, and the answer lists it as symbols-ignored. A file whose cuts the scanner does not see at the top level is not imported, and the answer lists it with its refusal as symbols-refused."
             #f 'daemon)
-      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])
+      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])
             "Write the store's source back out to a directory." #f 'daemon)
       (list 'def '(def <name> ["--under" <library>] <source> ["--premises" <datum>])
             "Define one named definition in a datum library, after its last child. A name one of the library's children already defines is refused (name-exists); def does not replace a definition." #f 'daemon)
       (list 'import-md '(import-md <dir> ["--allow-delete"] ["--premises" <datum>])
             "Read a directory of markdown into the store." #f 'daemon)
-      (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])
+      (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>] ["--cut" <cut>])
             "Write the store out as markdown." #f 'daemon)
       (list 'supply supply-usage
             "Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- in the store's directory under derived/, outside the event log. The header carries the digests of the projected files it was computed from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed."
