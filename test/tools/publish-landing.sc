@@ -35,8 +35,8 @@
 ;;      then compared: the same paths, and each
 ;;      file the same bytes but for its header line: the freeze's line must be
 ;;      exactly the export's header line with the cut replaced (the same
-;;      wrapping, every other field equal); a dot path in the export is
-;;      refused;
+;;      wrapping, every other field equal); an exported file that would be
+;;      publication-only (a dot path, or not import text) is refused;
 ;;   4. the worktree read: outside the dot paths, an entry that is not a
 ;;      regular file (a symbolic link, a fifo) is refused, a file that cannot be read is refused, a path holding a
 ;;      newline is refused (in the worktree and in the export); the
@@ -182,6 +182,18 @@
 (define (literal-pattern p)
   (string-append "/" (apply string-append (map (lambda (c) (if (memv c '(#\* #\? #\[)) (string #\\ c) (string c))) (string->list p)))))
 
+;; Why an export cannot be published, or #f. A file of it that the
+;; publication would classify as publication-only -- a dot path (rsync would
+;; not write it, git would keep the worktree's), or a file the import does not
+;; take as text (a store can hold such a src; the next publication would keep
+;; it as the worktree's) -- would make the published tree not the export.
+(define (export-refusal dir files)
+  (let ((dots (filter dot-named? files)))
+    (if (pair? dots)
+        (list 'export-holds-a-dot-path dots)
+        (let ((odd (filter (lambda (p) (let ((b (bytes-of (string-append dir "/" p)))) (or (not (bytevector? b)) (not-text? b)))) files)))
+          (and (pair? odd) (list 'export-holds-not-text odd))))))
+
 ;; ---- the comparison -------------------------------------------------------------------------------
 
 (define (subbytes b from to) (let ((out (make-bytevector (- to from)))) (bytevector-copy! b from out 0 (- to from)) out))
@@ -289,9 +301,7 @@
                          (_ (unless served (refuse 'export-failed exported)))
                          (exported-files (files-under fresh))
                          (_ (for-each (lambda (p) (when (has-newline? p) (refuse 'path-holds-a-newline p))) exported-files))
-                         ;; A dot path in the export would be a publication-only path: rsync
-                         ;; would not write it and git would keep the worktree's.
-                         (_ (let ((dots (filter dot-named? exported-files))) (unless (null? dots) (refuse 'export-holds-a-dot-path dots))))
+                         (_ (let ((r (export-refusal fresh exported-files))) (when r (apply refuse r))))
                          (_ (for-each (lambda (d) (let ((odd (not-regular-under d))) (unless (null? odd) (refuse 'not-a-plain-tree d odd))))
                                       (list fresh freeze-real)))
                          (frozen-diff (tree-differences fresh freeze-real))
@@ -591,6 +601,16 @@
           (row "P-5 CONTROL: the worktree and HEAD are as they were after the eight refusals"
                (list (equal? before (snapshot)) (equal? head (git-text "rev-parse HEAD")))
                '(#t #t))))
+      (let ((probe (string-append root "/export-probe")))
+        (put! (string-append probe "/a.sc") "(define (a) 1)\n")
+        (put-bytes! (string-append probe "/n.dat") (bytevector 110 0 10))
+        (put! (string-append probe "/sub/.x") "dot\n")
+        (let* ((with-dot (export-refusal probe (files-under probe)))
+               (_ (delete-file (string-append probe "/sub/.x")))
+               (with-nul (export-refusal probe (files-under probe))))
+          (row "P-10 an export holding a dot path, then one holding a file with a NUL, then the freeze export: refused, refused, taken"
+               (list with-dot with-nul (export-refusal freeze (files-under freeze)))
+               '((export-holds-a-dot-path ("sub/.x")) (export-holds-not-text ("n.dat")) #f))))
       ;; Each case: the answer's head, its state, and whether the worktree, the
       ;; index (with its flags) and HEAD read the same after it as before.
       (let* ((index-text (lambda () (let ((o (string-append root "/index-text")))
