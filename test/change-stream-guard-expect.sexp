@@ -6,7 +6,6 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the describe and commit changes are in the base now, and this
-;; change (a stale verification in context, a scenario's review stance)
-;; changes no scripted answer.
+;; Empty: the --cut usage forms are in the base now, and this change (two
+;; operator scripts under test/tools/) changes no scripted answer.
 ()
