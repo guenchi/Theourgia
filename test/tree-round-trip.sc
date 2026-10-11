@@ -171,7 +171,9 @@
 
 ;; ---- the scratch copy, split, imported ------------------------------------------------------------
 
-(for-each (lambda (e) (write-bytes! (string-append scratch "/" (car e)) (cdr e))) originals)
+;; Under the guard, so a failure here reads in the rows and the cleanup at
+;; the end still runs.
+(tolerant (for-each (lambda (e) (write-bytes! (string-append scratch "/" (car e)) (cdr e))) originals))
 (tolerant (run 'init))
 (define scheme-files (filter scheme-file? compared))
 ;; Each Scheme file's split-suggest answer, (path . answer); its review copy
