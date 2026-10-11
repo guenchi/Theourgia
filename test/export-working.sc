@@ -479,12 +479,18 @@
 ;; both exports are taken at the head, a later commit changes a section and a
 ;; code block, and both exports taken at the tag equal the ones taken when the
 ;; tag was the head; a head export now carries the change.
+;; The reference exports are taken first: a tag is a record of its own, and
+;; the cut it names is the one before it, so an export taken after the tag
+;; would carry a later cut in the marked header.
 (define cut-tag "f266-before")
-(define tagged (cli "tag" cut-tag))
 (define md-then (fresh-dir "md-then"))
 (define code-then (fresh-dir "code-then"))
-(cli "export-md" md-then)
-(cli "export-code" code-then)
+(define md-then-answer (cli "export-md" md-then))
+(define code-then-answer (cli "export-code" code-then))
+(define tagged (cli "tag" cut-tag))
+;; The cut read --cut serves for the tag: the export's must be the same.
+(define tag-read-cut (clause-of (cli "read" alpha-id "--cut" cut-tag) 'cut))
+(define (ok-answer? text) (let ((a (answer-of text))) (and (pair? a) (eq? (car a) 'ok))))
 (define later-alpha (cli "write" "--writer" "w9" alpha-id "alphalater here.\n"))
 (define later-one (cli "write" "--writer" "w9" one-id "(define (f) 'onelater)\n"))
 (define later-commit (cli "commit" "--writer" "w9"))
@@ -497,24 +503,29 @@
 (cli "export-md" md-now)
 (cli "export-code" code-now)
 
-(want "F266-1 an export at a tag equals the export taken when the tag was the head, after a later commit changed a section and a code block; each answer says its cut"
+(want "F266-1 an export at a tag equals the export taken when the tag was the head, after a later commit changed a section and a code block; each answer is ok and says the cut read --cut serves for the tag"
       (list (if (contains? tagged "(ok") 'tagged (list 'said tagged))
             (if (contains? later-commit "(ok") 'committed (list 'said later-commit))
+            (map ok-answer? (list md-then-answer code-then-answer md-at-answer code-at-answer))
+            (and (contains? (all-text md-then) "alphacommitted") (contains? (all-text code-then) "onecommitted"))
             (equal? (tree-of md-at) (tree-of md-then))
             (equal? (tree-of code-at) (tree-of code-then))
-            (and (clause-of md-at-answer 'cut) #t)
-            (and (clause-of code-at-answer 'cut) #t))
-      '(tagged committed #t #t #t #t))
+            (and tag-read-cut (list? (cadr tag-read-cut)) (pair? (cadr tag-read-cut)) #t)
+            (equal? (clause-of md-at-answer 'cut) tag-read-cut)
+            (equal? (clause-of code-at-answer 'cut) tag-read-cut))
+      '(tagged committed (#t #t #t #t) #t #t #t #t #t #t))
 (want "F266-1 CONTROL: the head exports carry the later commit and the tag's do not"
       (list (contains? (all-text md-now) "alphalater") (contains? (all-text md-at) "alphalater")
             (contains? (all-text code-now) "onelater") (contains? (all-text code-at) "onelater"))
       '(#t #f #t #f))
-(want "F266-2 --cut with --working is refused incompatible-cut-options, by export-md and by export-code"
-      (list (let ((a (answer-of (cli "export-md" (fresh-dir "md-x") "--cut" cut-tag "--working" "--writer" "w1"))))
-              (and (pair? a) (list-head a (min 3 (length a)))))
-            (let ((a (answer-of (cli "export-code" (fresh-dir "code-x") "--cut" cut-tag "--working" "--writer" "w1"))))
-              (and (pair? a) (list-head a (min 3 (length a))))))
-      '((error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)))
+(define (head3 text) (let ((a (answer-of text))) (and (pair? a) (list-head a (min 3 (length a))))))
+(want "F266-2 --cut with --working, and --cut with --writer, each alone, are refused incompatible-cut-options, by export-md and by export-code"
+      (list (head3 (cli "export-md" (fresh-dir "md-x1") "--cut" cut-tag "--working"))
+            (head3 (cli "export-md" (fresh-dir "md-x2") "--cut" cut-tag "--writer" "w1"))
+            (head3 (cli "export-code" (fresh-dir "code-x1") "--cut" cut-tag "--working"))
+            (head3 (cli "export-code" (fresh-dir "code-x2") "--cut" cut-tag "--writer" "w1")))
+      '((error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)
+        (error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)))
 (want "F266-3 an unknown tag is refused unknown-tag, by export-md and by export-code, and nothing is written"
       (let ((md-x (fresh-dir "md-y")) (code-x (fresh-dir "code-y")))
         (list (let ((a (answer-of (cli "export-md" md-x "--cut" "no-such-tag")))) (and (pair? a) (list-head a (min 2 (length a)))))
