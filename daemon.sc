@@ -1744,10 +1744,12 @@
                 ;; process may open.
                 (not (argument-option nodes "--cut"))))))
 
-  ;; A read at a causal cut. -> #t or #f
+  ;; A read, or an export, at a causal cut: both are judged against the
+  ;; publication, so an export at a cut serves the state a read at that cut
+  ;; would. -> #t or #f
   (define (cut-read? request)
     (and (pair? request)
-         (eq? (car request) 'read)
+         (memq (car request) '(read export-code export-md))
          (for-all string? (cdr request))
          (let ((nodes (parse-arguments (car request) (cdr request))))
            (and (list? nodes)
