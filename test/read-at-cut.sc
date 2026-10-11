@@ -551,6 +551,54 @@
             (list '(published published published) 'held (cons rc8-Q 3)))))
   '(local daemon))
 
+;; =============================================================================
+;; NEVER: A DIFF DOES NOT COMPARE A STATE IT DID NOT REACH. Its two cuts are
+;; judged and then replayed; held at diff-cut-before-replay, a fork marker is
+;; written for the mirrored writer, its records from the fork on are set
+;; aside, the replay to the later cut stops short, and the diff is refused
+;; cut-moved, naming that cut, the cut asked and the cut served. The twin is
+;; held the same way with no marker and answers ok. Local route.
+(define (held-cut-diff! fork?)
+  (let* ((c (fresh-store!)) (st (car c))
+         (Q "qqqqqqqq")
+         (published (list (mirror! st Q 1 1757300000001 '() (section "q1"))
+                          (mirror! st Q 2 1757300000002 '() (section "q2"))
+                          (mirror! st Q 3 1757300000003 '() (section "q3"))))
+         (release (string-append root "/hold-diff-" (if fork? "moved" "still")))
+         (out (string-append release ".out")))
+    (sh "( THEOURGIA_INJECT=on THEOURGIA_LOCAL=1 "
+        "THEOURGIA_HOLD=diff-cut-before-replay:" release
+        " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc diff "
+        (quoted (cut-text (list (cons Q 1)))) " " (quoted (cut-text (list (cons Q 3))))
+        " --store " (quoted st) " --wire > " out " 2> " out ".err"
+        " < /dev/null; echo $? > " out ".rc ) &")
+    (let ((held (let wait ((k 0))
+                  (cond ((file-exists? (string-append release ".held")) 'held)
+                        ((> k 300) 'never-held)
+                        (else (sh "sleep 0.1") (wait (+ k 1)))))))
+      (when (and fork? (eq? held 'held))
+        (call-with-output-file (string-append (writer-directory st Q) "/quarantine.sexp")
+          (lambda (p) (put-string p "((format 1) (fork 2) (ours \"o\") (theirs \"t\"))\n"))
+          'truncate))
+      (sh "touch " release)
+      (let wait ((k 0))
+        (unless (or (file-exists? (string-append out ".rc")) (> k 700))
+          (sh "sleep 0.1") (wait (+ k 1))))
+      (list published held (first-datum-of out)))))
+(let ((r (held-cut-diff! #t)))
+  (want "RC-9 a record set aside between a diff's judgement and its replay: refused cut-moved, naming the later cut, the cut asked and the cut served"
+        (let ((a (caddr r)))
+          (list (car r) (cadr r)
+                (and (pair? a) (list? a) (pair? (cdr a))
+                     (list (car a) (cadr a) (assq 'cut (cddr a)) (assq 'asked (cddr a))
+                           (let ((s (assq 'served (cddr a)))) (and s (list? (cadr s)) (assoc rc8-Q (cadr s))))))))
+        (list '(published published published) 'held
+              (list 'error 'cut-moved '(cut to) (list 'asked (list (cons rc8-Q 3))) (cons rc8-Q 1)))))
+(let ((r (held-cut-diff! #f)))
+  (want "RC-9 TWIN: held the same way with nothing set aside, the diff answers ok"
+        (let ((a (caddr r))) (list (car r) (cadr r) (and (pair? a) (car a))))
+        (list '(published published published) 'held 'ok)))
+
 ;; NEVER: A WRITER ASKED AT 0 IS SERVED AT 0. The replay delivers none of
 ;; its records, and the cut it reached names no entry for it; that is the
 ;; cut asked, not one that moved. Read on a store B has written to, then

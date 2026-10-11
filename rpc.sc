@@ -98,6 +98,18 @@
           (append a (list (list 'cut (reduce-applied-cut view)) '(working #t)))
           a)))
 
+  ;; AN EXPORT OF THE STATE AT A CAUSAL CUT: the cut resolved and judged as a
+  ;; read's (store-state-at-cut answers cut-unavailable and cut-moved), the
+  ;; export run over that state, and an ok answer saying the cut it served.
+  (define (export-at-cut store state text export)
+    (let ((past (store-state-at-cut store state text)))
+      (if (reduction? past)
+          (let ((a (export (lambda () past))))
+            (if (and (pair? a) (eq? 'ok (car a)))
+                (append a (list (list 'cut (reduce-applied-cut past))))
+                a))
+          past)))
+
   (define (guarded thunk)
     (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
               ;; A FILESYSTEM FAILURE IS NOT ANSWERED HERE (F100b, D7): it
@@ -1619,12 +1631,26 @@
                                       (argument-option options "--allow-delete") (list check finish run)
                                       (let ((path (argument-option options "--symbols")))
                                         (and path (cons (lambda () (read-import-symbols path)) import-symbol-cuts))))))))))))
+      ;; AN EXPORT AT A CAUSAL CUT (`--cut`) IS THE SAME EXPORT OVER THE STATE AT
+      ;; THE CUT, as read's: the cut is resolved and judged by store-state-at-cut,
+      ;; which answers cut-unavailable and cut-moved as it does for read; the
+      ;; answer says the cut it was taken at. A writer's working view has no
+      ;; meaning at a past cut: --working or --writer with --cut is refused.
       (cons 'export-code
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
                   (guarded (lambda ()
                     (cond ((and (argument-option options "--datum") (argument-option options "--raw"))
                            '(error bad-request incompatible-projection-options))
+                          ((and (argument-option options "--cut")
+                                (or (argument-option options "--working") (argument-option options "--writer")))
+                           '(error bad-request incompatible-cut-options))
+                          ((argument-option options "--cut")
+                           (export-at-cut store state (argument-option options "--cut")
+                             (lambda (view)
+                               (if (argument-option options "--datum")
+                                   (export-datum-view store (car args) view)
+                                   (export-code-view store (car args) (argument-option options "--raw") view)))))
                           ((argument-option options "--working")
                            (working-export store state writer
                              (lambda (view)
@@ -1633,7 +1659,7 @@
                                    (export-code-view store (car args) (argument-option options "--raw") view)))))
                           ((argument-option options "--datum") (export-datum store (car args)))
                           (else (export-code store (car args) (argument-option options "--raw"))))))
-                  (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])))))
+                  (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])))))
       ;; THE TABLE'S WRITER IS --for, AND THE VIEW IS THAT WRITER'S: the
       ;; committed state for "-" (no --for), the writer's working view
       ;; otherwise -- the view the plugin's export-code projected.
@@ -1663,12 +1689,19 @@
       (cons 'export-md
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>]))
+                  (usage '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>] ["--cut" <cut>]))
                   (guarded (lambda ()
-                    (if (argument-option options "--working")
-                        (working-export store state writer
-                          (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids"))))
-                        (export-md store (car args) (argument-option options "--with-ids"))))))))
+                    (cond
+                      ((and (argument-option options "--cut")
+                            (or (argument-option options "--working") (argument-option options "--writer")))
+                       '(error bad-request incompatible-cut-options))
+                      ((argument-option options "--cut")
+                       (export-at-cut store state (argument-option options "--cut")
+                         (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids")))))
+                      ((argument-option options "--working")
+                       (working-export store state writer
+                         (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids")))))
+                      (else (export-md store (car args) (argument-option options "--with-ids")))))))))
       (cons 'adopt
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
