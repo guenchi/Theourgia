@@ -196,14 +196,19 @@
 (define (clause a name) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) name))) (cdr a))))
 ;; A suggestion that answered ok, with its boundaries, and wrote its review
 ;; copy; anything else is listed and fails RT-6, never counted as one block.
+;; A clause's value, or #f when the clause is missing or has none: nothing
+;; that reads an answer can raise on a malformed one.
+(define (clause-value a name) (let ((c (clause a name))) (and c (pair? (cdr c)) (cadr c))))
 (define (suggested? p a)
-  (and (pair? a) (eq? (car a) 'ok) (clause a 'boundaries) (pair? (cadr (clause a 'boundaries)))
-       (clause a 'warnings) (file-exists? (string-append reviews "/" p))))
+  (and (pair? a) (eq? (car a) 'ok)
+       (let ((b (clause-value a 'boundaries))) (and (list? b) (pair? b) (for-all integer? b)))
+       (list? (clause-value a 'warnings))
+       (file-exists? (string-append reviews "/" p))))
 (define failed-suggestions (filter (lambda (s) (not (suggested? (car s) (cdr s)))) suggestions))
-(define (boundaries-of a) (let ((c (clause a 'boundaries))) (if c (cadr c) '())))
+(define (boundaries-of a) (let ((b (clause-value a 'boundaries))) (if (list? b) b '())))
 (define (fallback-of a)
-  (let ((c (clause a 'warnings)))
-    (and c (find (lambda (w) (and (pair? w) (eq? (car w) 'code))) (cadr c)))))
+  (let ((ws (clause-value a 'warnings)))
+    (and (list? ws) (find (lambda (w) (and (list? w) (>= (length w) 2) (eq? (car w) 'code))) ws))))
 
 (define t0 (real-time))
 (define imported (tolerant (run 'import-code scratch)))
@@ -369,7 +374,7 @@
   (let ((a (cdr s)))
     (cond ((not (suggested? (car s) a)) 'failed)
           ((fallback-of a) (if (equal? (boundaries-of a) '(0)) 'fell-back 'other))
-          ((and (= 1 (length (boundaries-of a))) (null? (cadr (clause a 'warnings)))) 'one-block)
+          ((and (= 1 (length (boundaries-of a))) (null? (clause-value a 'warnings))) 'one-block)
           ((> (length (boundaries-of a)) 1) 'split)
           (else 'other))))
 (define fell-back (filter (lambda (s) (eq? (class-of s) 'fell-back)) suggestions))
