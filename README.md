@@ -1990,9 +1990,11 @@ result can be imported back onto the same blocks.
 `--working`, and is accepted and ignored without it.
 
 `--cut <cut>` writes the store as it was at a causal cut -- a tag name or a cut
-written out -- exactly as `read --cut` reads it: an unusable cut is refused
-`cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name that is
-not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served. A
+written out -- resolved, judged and replayed as `read --cut` does it: an unusable cut
+is refused `cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name
+that is not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served.
+Unlike a read, which answers a store it could not read whole with an `(incomplete
+...)` clause, an export refuses it, at a cut as at the head. A
 past cut has no working view: `--cut` with `--working` or `--writer` is refused
 `(error bad-request incompatible-cut-options)`.
 
@@ -2169,9 +2171,11 @@ in any of the three projections (see "The working view on disk" above);
 ignored without it.
 
 `--cut <cut>` writes the store, in any of the three projections, as it was at a causal cut -- a tag name or a cut
-written out -- exactly as `read --cut` reads it: an unusable cut is refused
-`cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name that is
-not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served. A
+written out -- resolved, judged and replayed as `read --cut` does it: an unusable cut
+is refused `cut-unavailable`, one whose replay stopped short of it `cut-moved`, a name
+that is not a tag `unknown-tag`; an ok answer ends with `(cut <cut>)`, the cut served.
+Unlike a read, which answers a store it could not read whole with an `(incomplete
+...)` clause, an export refuses it, at a cut as at the head. A
 past cut has no working view: `--cut` with `--working` or `--writer` is refused
 `(error bad-request incompatible-cut-options)`.
 
