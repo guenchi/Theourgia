@@ -99,7 +99,11 @@
 ;; A line break of either kind: rsync's filter files and git's path lists
 ;; end a line at either.
 (define (has-newline? s) (and (string? s) (exists (lambda (c) (memv c '(#\newline #\return))) (string->list s)) #t))
-(define (file-text path) (if (file-exists? path) (call-with-input-file path get-string-all) ""))
+;; A file's text; an empty file is "" (get-string-all answers the eof object).
+(define (file-text path)
+  (if (file-exists? path)
+      (let ((t (call-with-input-file path get-string-all))) (if (string? t) t ""))
+      ""))
 (define (first-line text)
   (let loop ((i 0)) (cond ((= i (string-length text)) text) ((char=? (string-ref text i) #\newline) (substring text 0 i)) (else (loop (+ i 1))))))
 ;; COMMAND with its output in OUT. -> its exit status, as the shell reports it.
