@@ -116,8 +116,8 @@
 (let ((a "(define a #\\\")\n"))
   (want "CS-2 a #\\\" literal opens no string: two boundaries"
         (ss-bounds (string-append a "(define b 2)\n")) (list 0 (byte-count a))))
-(let ((a "(define a #\;)\n") (a2 "(define a #\\|)\n"))
-  (want "CS-3 #\; starts no comment and #\\| no block comment: two boundaries each"
+(let ((a "(define a #\\;)\n") (a2 "(define a #\\|)\n"))
+  (want "CS-3 #\\; starts no comment and #\\| no block comment: two boundaries each"
         (list (ss-bounds (string-append a "(define b 2)\n")) (ss-bounds (string-append a2 "(define b 2)\n")))
         (list (list 0 (byte-count a)) (list 0 (byte-count a2)))))
 (let ((a "(define a #\\space)\n") (b "(define b #\\x41)\n"))
