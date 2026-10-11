@@ -262,7 +262,9 @@
       (define (refuse . what) (return (cons 'error (append what (list (list 'state state))))))
       (unless (and (string? freeze) (> (string-length freeze) 0)) (refuse 'no-freeze-export))
       (for-each (lambda (s) (when (has-newline? s) (refuse 'argument-holds-a-newline s))) (list store worktree freeze cut item))
-      (let* ((tmp (or (getenv "TMPDIR") "/tmp"))
+      ;; The scratch directory's parent: TMPDIR, else the test root, else /tmp
+      ;; (spelled as the test root's fallback, the one shape tmp-paths allows).
+      (let* ((tmp (or (getenv "TMPDIR") (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")))
              (_ (when (has-newline? tmp) (refuse 'tmpdir-holds-a-newline)))
              (made (command-one-line (string-append "mktemp -d " (quoted (string-append tmp "/publish-landing.XXXXXX")))))
              (_ (unless (and made (file-directory? made)) (refuse 'no-scratch-directory)))
