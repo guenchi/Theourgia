@@ -33,9 +33,10 @@
 ;;      scratch one (an export removes nothing it did not write);
 ;;   3. the export and the freeze export required to hold regular files only,
 ;;      then compared: the same paths, and each
-;;      file the same bytes but for its header line -- the one line equal to
-;;      the header line the projection writes for the header it decodes to --
-;;      whose headers may differ in their cut and nothing else;
+;;      file the same bytes but for its header line: the freeze's line must be
+;;      exactly the export's header line with the cut replaced (the same
+;;      wrapping, every other field equal); a dot path in the export is
+;;      refused;
 ;;   4. the worktree read: outside the dot paths, an entry that is not a
 ;;      regular file (a symbolic link, a fifo) is refused, a file that cannot be read is refused, a path holding a
 ;;      newline is refused (in the worktree and in the export); the
@@ -66,9 +67,9 @@
 ;; hostile configuration -- hooks, skip-worktree, a pushurl, push.followTags,
 ;; submodule recursion, core.fileMode and the like -- is out of scope; the
 ;; flags and options above are belts, not claims. The backstop is the
-;; comparison of the commit's tree with the export: whatever a configuration
-;; does to the commit, the publication is refused committed-not-the-export
-;; rather than pushed.
+;; comparison of the commit's tree with the export, by paths and bytes (not
+;; modes): whatever a configuration does to them, the publication is refused
+;; committed-not-the-export rather than pushed.
 ;; A refusal says the state it leaves: untouched (1-4), synced (5-6: the worktree
 ;; changed, nothing staged), staged (7) or committed <sha> (8; a failed push
 ;; also says whether the remote ref was read back at the commit). An
@@ -140,16 +141,17 @@
   (exists (lambda (c) (and (> (string-length c) 0) (char=? (string-ref c 0) #\.))) (split-path p)))
 ;; The entries under DIR, relative and sorted, as (files . others): files are
 ;; regular files and symbolic links; others (a fifo, a socket, a device) are
-;; listed so a caller can refuse them. The entry named .git at the top is the
-;; repository and is not entered.
-(define (entries-under dir)
+;; listed so a caller can refuse them. In a WORKTREE the entry named .git at
+;; the top is the repository and is not entered; in an export or a freeze
+;; export it is an entry like any other.
+(define (entries-under dir . worktree?)
   (define (walk rel acc)
     (let ((d (if (string=? rel "") dir (string-append dir "/" rel))))
       (fold-left (lambda (acc name)
                    (let* ((r (if (string=? rel "") name (string-append rel "/" name)))
                           (p (string-append dir "/" r)))
                      (cond ((member name '("." "..")) acc)
-                           ((and (string=? rel "") (string=? name ".git")) acc)
+                           ((and (pair? worktree?) (car worktree?) (string=? rel "") (string=? name ".git")) acc)
                            ((file-symbolic-link? p) (cons (cons r (car acc)) (cdr acc)))
                            ((file-directory? p) (walk r acc))
                            ((file-regular? p) (cons (cons r (car acc)) (cdr acc)))
@@ -160,6 +162,7 @@
         (cons (list-sort string<? (car r)) (list-sort string<? (cdr r))))
       (cons '() '())))
 (define (files-under dir) (car (entries-under dir)))
+(define (worktree-files-under dir) (car (entries-under dir #t)))
 ;; The entries under DIR that are not regular files: symbolic links and others.
 (define (not-regular-under dir)
   (let ((e (entries-under dir)))
@@ -188,17 +191,22 @@
            (reverse (if (< start i) (cons (subbytes b start i) out) out)))
           ((= 10 (bytevector-u8-ref b i)) (loop (+ i 1) (+ i 1) (cons (subbytes b start (+ i 1)) out)))
           (else (loop (+ i 1) start out)))))
-;; A marked file's decoded header and the header line the projection writes for
-;; it, or #f. The header is (code-projection 1 <store> <id> <cut> text <pad>).
+;; The header line the projection writes for header H in ENTRY's wrapping.
+(define (header-line entry h)
+  (marker-line entry (string-append "@file " (bytevector->hex (string->utf8 (sexpr->string-extended (storable-encode h)))))))
+;; A marked file's language entry, its decoded header and the header line the
+;; projection writes for it, or #f. The header is (code-projection 1 <store>
+;; <id> <cut> text <pad>).
 (define (header-and-line p b)
   (let* ((entry (or (find (lambda (candidate) (projection-header-wrapper? candidate b)) (language-table)) (language-for-path p)))
          (d (guard (e (#t #f)) (projection-decode entry b))))
     (and (list? d) (= 2 (length d)) (list? (car d)) (= 7 (length (car d)))
          (let ((h (car d)))
            (guard (e (#t #f))
-             (cons h (marker-line entry (string-append "@file " (bytevector->hex (string->utf8 (sexpr->string-extended (storable-encode h))))))))))))
-;; The same bytes, or the same but for the one header line: the line in each
-;; that IS that file's header line, the two headers differing in the cut alone.
+             (list entry h (header-line entry h)))))))
+;; The same bytes, or the same but for the one header line: A's line is A's own
+;; header line, and B's line is EXACTLY the line A's wrapping gives A's header
+;; with its cut replaced by B's -- the same wrapping, every other field equal.
 (define (same-but-cut? p a b)
   (or (bytevector=? a b)
       (let ((la (lines-of a)) (lb (lines-of b)))
@@ -207,10 +215,10 @@
                (and (= 1 (length differing))
                     (let ((ha (header-and-line p a)) (hb (header-and-line p b)))
                       (and ha hb
-                           (bytevector=? (car (car differing)) (cdr ha))
-                           (bytevector=? (cdr (car differing)) (cdr hb))
-                           (equal? (list-head (car ha) 4) (list-head (car hb) 4))
-                           (equal? (list-tail (car ha) 5) (list-tail (car hb) 5))))))))))
+                           (let* ((entry (car ha)) (h (cadr ha))
+                                  (with-b-cut (append (list-head h 4) (list (list-ref (cadr hb) 4)) (list-tail h 5))))
+                             (and (bytevector=? (car (car differing)) (caddr ha))
+                                  (bytevector=? (cdr (car differing)) (header-line entry with-b-cut))))))))))))
 ;; The paths of two trees that are not the same but for the cut.
 (define (tree-differences left right)
   (let ((paths (list-sort string<? (fold-left (lambda (acc p) (if (member p acc) acc (cons p acc))) (files-under left) (files-under right)))))
@@ -261,6 +269,8 @@
                               (refuse 'not-a-git-worktree-top tree)))
                          (_ (for-each (lambda (p) (when (inside? p tree) (refuse 'inside-the-worktree p)))
                                       (list store-real freeze-real scratch)))
+                         ;; A merge in progress would make the publication a merge commit.
+                         (_ (when (= 0 (git "rev-parse -q --verify MERGE_HEAD")) (refuse 'merge-in-progress)))
                          ;; An index entry marked skip-worktree or assume-unchanged is one
                          ;; git add -A leaves as it is: the commit would not be the export.
                          (flagged (begin (unless (= 0 (git "ls-files -v -z")) (refuse 'git-ls-files-failed (file-text git-out)))
@@ -279,11 +289,14 @@
                          (_ (unless served (refuse 'export-failed exported)))
                          (exported-files (files-under fresh))
                          (_ (for-each (lambda (p) (when (has-newline? p) (refuse 'path-holds-a-newline p))) exported-files))
+                         ;; A dot path in the export would be a publication-only path: rsync
+                         ;; would not write it and git would keep the worktree's.
+                         (_ (let ((dots (filter dot-named? exported-files))) (unless (null? dots) (refuse 'export-holds-a-dot-path dots))))
                          (_ (for-each (lambda (d) (let ((odd (not-regular-under d))) (unless (null? odd) (refuse 'not-a-plain-tree d odd))))
                                       (list fresh freeze-real)))
                          (frozen-diff (tree-differences fresh freeze-real))
                          (_ (unless (null? frozen-diff) (refuse 'comparison-failed (list 'differ frozen-diff))))
-                         (worktree-entries (entries-under tree))
+                         (worktree-entries (entries-under tree #t))
                          (worktree-files (car worktree-entries))
                          ;; Outside the dot paths (which rsync leaves alone), every entry must
                          ;; be a regular file: the import refuses anything else, and reading a
@@ -317,7 +330,7 @@
                       (refuse 'rsync-failed (file-text (string-append scratch "/rsync.out"))))
                     (unless (for-all (lambda (k) (equal? (bytes-of (string-append tree "/" (car k))) (cdr k))) kept-before)
                       (refuse 'publication-only-file-changed (map car (filter (lambda (k) (not (equal? (bytes-of (string-append tree "/" (car k))) (cdr k)))) kept-before))))
-                    (let ((published (filter (lambda (p) (not (member p kept))) (files-under tree))))
+                    (let ((published (filter (lambda (p) (not (member p kept))) (worktree-files-under tree))))
                       (unless (and (equal? published exported-files)
                                    (for-all (lambda (p) (equal? (bytes-of (string-append tree "/" p)) (bytes-of (string-append fresh "/" p))))
                                             published))
@@ -415,6 +428,11 @@
     (when (file-exists? path) (delete-file path))
     (call-with-port (open-file-output-port path (file-options no-fail)) (lambda (o) (put-bytevector o b))))
   (define (put! path text) (put-bytes! path (string->utf8 text)))
+  (define (bytes-append . bs)
+    (let ((out (make-bytevector (apply + (map bytevector-length bs)))))
+      (let loop ((bs bs) (at 0))
+        (if (null? bs) out
+            (begin (bytevector-copy! (car bs) 0 out at (bytevector-length (car bs))) (loop (cdr bs) (+ at (bytevector-length (car bs)))))))))
   (define (git-in dir . args) (system (string-append "git -C " (quoted dir) " " (apply string-append args) " > /dev/null 2>&1 < /dev/null")))
   (define (git . args) (apply git-in repo args))
   (define (git-text-in dir args) (let ((o (string-append root "/git-text"))) (shell-out (string-append "git -C " (quoted dir) " " args) o) (first-line (file-text o))))
@@ -422,7 +440,7 @@
   (define (guarded thunk) (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e)))) (thunk)))
   (define (part r k) (and (pair? r) (list? r) (find (lambda (c) (and (pair? c) (eq? (car c) k))) (cdr r))))
   (define (head2 r) (and (pair? r) (list? r) (list-head r (min 2 (length r)))))
-  (define (snapshot) (map (lambda (p) (cons p (bytes-of (string-append repo "/" p)))) (files-under repo)))
+  (define (snapshot) (map (lambda (p) (cons p (bytes-of (string-append repo "/" p)))) (worktree-files-under repo)))
   (define (export-cut dir c) (run 'export-code dir "--cut" c))
   (define (cut-of answer) (let ((c (and (pair? answer) (eq? (car answer) 'ok) (assq 'cut (cdr answer))))) (and c (format "~s" (cadr c)))))
   (define (copy-tree from to) (system (string-append "rm -rf " (quoted to) "; cp -R " (quoted from) " " (quoted to))))
@@ -519,30 +537,58 @@
       ;; Each refusal before the worktree is touched leaves it and HEAD as they were.
       (let* ((wrong-text (string-append root "/freeze-text")) (wrong-mark (string-append root "/freeze-mark"))
              (wrong-at (string-append root "/freeze-at")) (extra (string-append root "/freeze-extra"))
-             (missing (string-append root "/freeze-missing")))
+             (missing (string-append root "/freeze-missing")) (wrong-id (string-append root "/freeze-id"))
+             (wrong-wrap (string-append root "/freeze-wrap")) (with-git (string-append root "/freeze-git"))
+             ;; FILE's header line replaced by the line ENTRY-OF gives the header
+             ;; MUTATE makes. -> #t when the line was found and replaced by another.
+             (rewrite-header!
+               (lambda (file p mutate entry-of)
+                 (let* ((b (bytes-of file)) (hal (and (bytevector? b) (header-and-line p b))))
+                   (and hal
+                        (let* ((old (caddr hal)) (h (cadr hal))
+                               (new (header-line (entry-of (car hal) h) (mutate h))))
+                          (and (not (bytevector=? old new))
+                               (begin
+                                 (put-bytes! file (apply bytes-append (map (lambda (l) (if (bytevector=? l old) new l)) (lines-of b))))
+                                 #t))))))))
         (copy-tree freeze wrong-text)
         (copy-tree freeze wrong-mark)
         (copy-tree freeze wrong-at)
         (copy-tree freeze extra) (put! (string-append extra "/extra.sc") "(define (extra) 1)\n")
         (copy-tree freeze missing) (delete-file (string-append missing "/notes.txt"))
+        (copy-tree freeze wrong-id)
+        (copy-tree freeze wrong-wrap)
+        (copy-tree freeze with-git) (put! (string-append with-git "/.git/x") "not the export\n")
         (let* ((edits (list (replace-in! (string-append wrong-text "/notes.txt") "notes, frozen" "notes, Frozen")
                             (replace-in! (string-append wrong-mark "/a.sc") " pad 0" "")
-                            (replace-in! (string-append wrong-at "/at.sc") "@file one" "@file two")))
+                            (replace-in! (string-append wrong-at "/at.sc") "@file one" "@file two")
+                            ;; a validly encoded header naming another store
+                            (rewrite-header! (string-append wrong-id "/a.sc") "a.sc"
+                                             (lambda (h) (append (list-head h 2) (list "another-store") (list-tail h 3)))
+                                             (lambda (entry h) entry))
+                            ;; the same header in another language's wrapping
+                            (rewrite-header! (string-append wrong-wrap "/a.sc") "a.sc" (lambda (h) h)
+                                             (lambda (entry h)
+                                               (or (find (lambda (e) (not (bytevector=? (header-line e h) (header-line entry h)))) (language-table))
+                                                   entry)))))
                (before (snapshot)) (head (git-text "rev-parse HEAD"))
                ;; At the freeze's own cut the headers are equal, so each copy differs
                ;; from the export in its one edit alone.
                (answers (map (lambda (f) (guarded (lambda () (publish! store c1 "x" repo f #f))))
-                             (list wrong-text wrong-mark wrong-at extra missing))))
-          (row "P-5 PREMISE: each freeze copy was changed as its row says (a body byte, a marker line, a source line holding \"@file \" on both sides)"
-               edits '(#t #t #t))
-          (row "P-5 a freeze export differing in a body byte, a marker line, a source line holding @file, by an extra file, by a missing file: each refused comparison-failed naming the path, untouched"
+                             (list wrong-text wrong-mark wrong-at extra missing wrong-id wrong-wrap with-git))))
+          (row "P-5 PREMISE: each freeze copy was changed as its row says (a body byte, a marker line, a source line holding \"@file \" on both sides, the header's store, the header's wrapping)"
+               edits '(#t #t #t #t #t))
+          (row "P-5 a freeze export differing in a body byte, a marker line, a source line holding @file, by an extra file, by a missing file, in a header field other than the cut, in the header's wrapping, by a .git entry: each refused comparison-failed naming the path, untouched"
                (map (lambda (a) (list (head2 a) (let ((d (part a 'differ))) (and d (cadr d))) (let ((s (part a 'state))) (and s (cadr s))))) answers)
                '(((error comparison-failed) ("notes.txt") untouched)
                  ((error comparison-failed) ("a.sc") untouched)
                  ((error comparison-failed) ("at.sc") untouched)
                  ((error comparison-failed) ("extra.sc") untouched)
-                 ((error comparison-failed) ("notes.txt") untouched)))
-          (row "P-5 CONTROL: the worktree and HEAD are as they were after the five refusals"
+                 ((error comparison-failed) ("notes.txt") untouched)
+                 ((error comparison-failed) ("a.sc") untouched)
+                 ((error comparison-failed) ("a.sc") untouched)
+                 ((error comparison-failed) (".git/x") untouched)))
+          (row "P-5 CONTROL: the worktree and HEAD are as they were after the eight refusals"
                (list (equal? before (snapshot)) (equal? head (git-text "rev-parse HEAD")))
                '(#t #t))))
       ;; Each case: the answer's head, its state, and whether the worktree, the
