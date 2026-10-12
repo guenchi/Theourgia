@@ -85,5 +85,35 @@
 (want "WP-08 next edit remains durable after an intervening external write" (rpc-ok? (next-write two "three")) #t)
 (want "WP-08 parent proof never silently advances past the committed parent"
       (cadr (call 'commit id "--writer" "window-sequential")) 'stale-baseline)
+;; WP-09: A SRC THAT BEGINS WITH A UTF-8 BYTE-ORDER MARK (F261). A draft of
+;; marked bytes reads back with the mark, under --working and under
+;; --working-info; it commits, as its bytes; and the store read again from
+;; its log (a fresh fold) and a plain read hold the same bytes, mark included.
+(define marked (u8-list->bytevector (append '(#xEF #xBB #xBF) (bytevector->u8-list (string->utf8 "(define x 1)\n")))))
+(define marked-id
+  (let* ((a (call 'insert "--title" "M" "--text" "plain")) (ev (car (cadr (assq 'events (cdr a))))))
+    (block-id (car ev) (cdr ev))))
+(define (text-bytes answer)
+  (let ((t (and (pair? answer) (eq? (car answer) 'ok) (assq 'text (filter pair? (cdr answer))))))
+    (and t (string? (cadr t)) (string->utf8 (cadr t)))))
+(define (holds-datum? tree x) (or (equal? tree x) (and (pair? tree) (or (holds-datum? (car tree) x) (holds-datum? (cdr tree) x)))))
+(define marked-write (call 'write marked-id marked "--writer" "window-mark"))
+(want "WP-09 PREMISE: the marked draft is written" (rpc-ok? marked-write) #t)
+(want "WP-09 a marked draft reads back under --working as text whose UTF-8 is the draft, mark included"
+      (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-mark")) marked) #t)
+(want "WP-09 and under --working-info, the projection's text"
+      (let* ((v (call 'read marked-id "--working-info" "--writer" "window-mark"))
+             (p (and (pair? v) (assq 'projection (filter pair? (cdr v))))))
+        (and p (string? (list-ref p 7)) (equal? (string->utf8 (list-ref p 7)) marked)))
+      #t)
+(define marked-commit (guard (e (#t (list 'RAISED (if (message-condition? e) (condition-message e) e))))
+                        (call 'commit marked-id "--writer" "window-mark")))
+(want "WP-09 the marked draft commits" (rpc-ok? marked-commit) #t)
+(want "WP-09 the store folded again from its log holds the marked bytes as the src"
+      (cdr (assq 'src (cdr (assq 'fields (state-read (open-and-reduce store) marked-id))))) marked)
+(want "WP-09 a plain read answers the marked bytes"
+      (holds-datum? (call 'read marked-id) marked) #t)
+(want "WP-09 the committed marked src reads back under --working, no draft standing, with the mark"
+      (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-mark")) marked) #t)
 (printf "~a failures\nworking-projection complete\n" failures)
 (exit (if (= failures 0) 0 1))
