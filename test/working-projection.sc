@@ -132,6 +132,25 @@
               (and p (list-ref p 1))
               (and p (string? (list-ref p 7)) (equal? (string->utf8 (list-ref p 7)) marked))))
       '(#t committed #t))
+(define (holds-marked-text? a)
+  (let find-text ((x a))
+    (cond ((string? x) (let ((n (string-length marked-text)) (m (string-length x)))
+                         (let loop ((i 0)) (cond ((> (+ i n) m) #f) ((string=? (substring x i (+ i n)) marked-text) #t) (else (loop (+ i 1)))))))
+          ((pair? x) (or (find-text (car x)) (find-text (cdr x))))
+          (else #f))))
+(want "WP-09 read --md --recursive (the projection's rendering, project.sc) renders the committed marked src's text, mark included"
+      (holds-marked-text? (call 'read marked-id "--md" "--recursive")) #t)
+(want "WP-09 another writer writes the committed text back as it read it: drafts calls that draft fresh and unchanged"
+      (let* ((t (call 'read marked-id "--working" "--writer" "window-back"))
+             (text (and (pair? t) (eq? (car t) 'ok) (assq 'text (filter pair? (cdr t)))))
+             (w (and text (call 'write marked-id (cadr text) "--writer" "window-back")))
+             (d (call 'drafts "--writer" "window-back"))
+             (items (and (pair? d) (eq? (car d) 'ok) (assq 'items (cdr d))))
+             (mine (and items (find (lambda (it) (and (pair? it) (eq? (car it) 'draft) (equal? (assq 'block (cdr it)) (list 'block marked-id))))
+                                    (cdr items)))))
+        (and (pair? w) (eq? (car w) 'ok) mine
+             (list (cadr (assq 'fresh (cdr mine))) (cadr (assq 'unchanged (cdr mine))))))
+      '(#t #t))
 (want "WP-09 read --md renders the committed marked src's text, mark included"
       (let ((a (call 'read marked-id "--md")))
         (let find-text ((x a))
@@ -146,11 +165,14 @@
 ;; red, not as a fixture that cannot load.
 (define src-text-of
   (guard (e (#t #f)) (eval 'src-text (environment '(theourgia store)))))
-(want "WP-09 src-text: a mark before a malformed byte, a cut mark, a mark alone, plain text"
+(want "WP-09 src-text: a mark before a malformed byte, a cut mark, a mark alone, plain text, two marks, an interior U+FEFF"
       (and src-text-of
-           (list (src-text-of (bytevector #xEF #xBB #xBF #xFF)) (src-text-of (bytevector #xEF #xBB))
-                 (equal? (src-text-of (bytevector #xEF #xBB #xBF)) (string (integer->char #xFEFF))) (src-text-of (string->utf8 "abc"))))
-      '(#f #f #t "abc"))
+           (let ((feff (string (integer->char #xFEFF))))
+             (list (src-text-of (bytevector #xEF #xBB #xBF #xFF)) (src-text-of (bytevector #xEF #xBB))
+                   (equal? (src-text-of (bytevector #xEF #xBB #xBF)) feff) (src-text-of (string->utf8 "abc"))
+                   (equal? (src-text-of (bytevector #xEF #xBB #xBF #xEF #xBB #xBF #x61)) (string-append feff feff "a"))
+                   (equal? (src-text-of (string->utf8 (string-append "a" feff "b"))) (string-append "a" feff "b")))))
+      '(#f #f #t "abc" #t #t))
 ;; A committed marked src in a stale-baseline refusal's since: its size is its
 ;; bytes. Two other writers commit marked drafts of 1024 and 1025 bytes over a
 ;; draft standing on the older baseline; that draft's commit is refused.
