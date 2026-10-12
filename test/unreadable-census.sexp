@@ -429,6 +429,11 @@
    unrelated a
    "/proc"
    (e (#t #f)))
+  ("ffi.sc" (timing-line!) 1 guard
+   (#t)
+   unrelated a
+   "the timing seam's printer (THEOURGIA_TIMING, test-only): a failure to print is swallowed, as the trace's is, so timing cannot turn a write that worked into one that raised; stderr, not a store entry"
+   (e (#t #f)))
   ("ffi.sc" (redirect-stdio!) 1 guard
    (#t)
    propagate a
