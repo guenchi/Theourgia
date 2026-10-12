@@ -137,6 +137,7 @@
   ;; a state the rest of the pass may still change.
   (define (deliver-into r cut . defer)
     (lambda (writer seg off seq ts actor deps payload)
+      (when (timing-enabled?) (vector-set! delivered 0 (+ 1 (vector-ref delivered 0))))
       (if (not (within? cut writer seq))
           'skipped
           (let ((answer (reduce-apply! r writer seq deps (stored->payload payload) actor)))
@@ -218,11 +219,8 @@
   ;; store it is refused -- unless the request it runs in declared (plan
   ;; amendment A2: the declaration rides on the store object the dispatcher
   ;; owns). A caller that has not been handed a declaration fails CLOSED.
-  ;; A READ'S LOAD AND REPLAY is a timed phase too (the timing seam below):
-  ;; a reader is seeded from the snapshot, where a write session replays the
-  ;; whole log, and the two lines say how far apart they are.
   (define (open-and-reduce store . rest)
-    (timed 'read-load-replay (lambda () (apply obtain-state store #f #f rest))))
+    (apply obtain-state store #f #f rest))
 
   ;; ---- obtaining state (F77c, F77 R2e) --------------------------------------
   ;;
@@ -257,7 +255,13 @@
   ;; refused to any other, the refusal told to the listener first.
   ;; A CUT IS A DIFFERENT REDUCTION: it is always loaded, never taken from
   ;; a supplied state (see reduction-for in the rpc layer).
+  ;; A READ'S LOAD AND REPLAY is a timed phase too (the timing seam, below):
+  ;; every reader reaches the state through here (open-and-reduce, rpc's
+  ;; reduction-for), seeded from the snapshot where a write session replays
+  ;; the whole log, and the two lines say how far apart they are.
   (define (obtain-state store supplied declaration . rest)
+    (timed 'read-load-replay (lambda () (apply obtain-state* store supplied declaration rest))))
+  (define (obtain-state* store supplied declaration . rest)
     (let ((cut (if (null? rest) #f (car rest))))
       (if (and supplied (not cut))
           (let* ((is-sealed (sealed-state? supplied))
@@ -3209,7 +3213,7 @@
   ;; It is what every exit owes.
   (define (commit-then s thunk)
     (let* ((answers (guard (e (#t (vector 'raised e))) (thunk)))
-           (outcome (guard (e (#t 'barrier-failed)) (session-commit! s))))
+           (outcome (timed 'commit (lambda () (guard (e (#t 'barrier-failed)) (session-commit! s))))))
       (cond
         ((eq? outcome 'barrier-failed)
          (list (list 'error 'unknown (list 'commit-barrier-failed))))
@@ -3513,21 +3517,26 @@
   ;; cost that grows inside one request shows as a rising series. Unset,
   ;; each wrapper is the call it wraps.
   (define (timed what thunk)
-    (if (timing-enabled?)
+    (if (and (timing-enabled?) (not (vector-ref intent-quiet 0)))
         (let* ((t0 (monotonic-us)) (v (thunk)))
           (timing-line! 'request what (- (monotonic-us) t0))
           v)
         (thunk)))
-  (define intent-phases '#(refs check resolve deps append reduce applied))
+;; every record delivered, applied or not, while the timing seam is on
+  (define delivered (vector 0))
+  ;; #t while the rules rehearse the branch dry: its intents and its plan
+  ;; are not the request's, and neither is counted or printed
+  (define intent-quiet (vector #f))
+  (define intent-phases '#(refs check resolve deps append reduce applied receipt))
   (define intent-sums (make-vector (vector-length intent-phases) 0))
   (define (intent-timed i thunk)
-    (if (timing-enabled?)
+    (if (and (timing-enabled?) (not (vector-ref intent-quiet 0)))
         (let* ((t0 (monotonic-us)) (v (thunk)))
           (vector-set! intent-sums i (+ (vector-ref intent-sums i) (- (monotonic-us) t0)))
           v)
         (thunk)))
   (define (intent-window! n)
-    (when (and (timing-enabled?) (> n 0) (= 0 (mod n 100)))
+    (when (and (timing-enabled?) (not (vector-ref intent-quiet 0)) (> n 0) (= 0 (mod n 100)))
       (timing-line! 'intents n
                     (let loop ((k (- (vector-length intent-phases) 1)) (out '()))
                       (if (< k 0) out
@@ -3545,10 +3554,11 @@
           ;; is written into.
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty))
-          (t-start (and (timing-enabled?) (begin (vector-fill! intent-sums 0) (monotonic-us)))))
+          (t-start (and (timing-enabled?) (begin (vector-fill! intent-sums 0) (vector-set! delivered 0 0) (monotonic-us)))))
       (let* ((s (timed 'load-replay (lambda () (log-begin store (deliver-into state #f)))))
              (replayed (when (timing-enabled?)
-                         (timing-line! 'request 'replayed-records
+                         (timing-line! 'request 'delivered-records (vector-ref delivered 0))
+                         (timing-line! 'request 'applied-records
                                        (apply + (map (lambda (e) (if (and (pair? e) (integer? (cdr e))) (cdr e) 0))
                                                      (reduce-applied-cut state))))))
              ;; THE RECEIPT A RULE CHECK READS: the blocks the write's premise
@@ -3722,8 +3732,14 @@
                              (write-batch! s state req intents))))
                           (cond
                             (bad (list bad))
-                            ((timed 'rules (lambda () (rehearsal-refusal state s branch receipt))) => list)
-                            (else (timed 'apply (lambda () (branch state s))))))))))))))
+                            ((timed 'rules
+                                    (lambda ()
+                                      (dynamic-wind
+                                        (lambda () (vector-set! intent-quiet 0 #t))
+                                        (lambda () (rehearsal-refusal state s branch receipt))
+                                        (lambda () (vector-set! intent-quiet 0 #f)))))
+                             => list)
+                            (else (timed 'apply (lambda () (vector-fill! intent-sums 0) (branch state s))))))))))))))
           (lambda ()
             (guard (e (#t #f)) (timed 'log-end (lambda () (log-end! s))))
             (when t-start (timing-line! 'request 'total (- (monotonic-us) t-start))))))))
@@ -4737,7 +4753,7 @@
                                 (append
                                   (list 'ok
                                         (list 'events (list (cons writer seq)))
-                                        (state-section state payload writer seq)
+                                        (intent-timed 7 (lambda () (state-section state payload writer seq)))
                                         (list 'cursor (cons writer seq))
                                         (list 'replay #f))
                                   (if matched (list (list 'matched matched)) '()))))))))))))))

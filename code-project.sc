@@ -20,6 +20,7 @@
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
+          (only (theourgia ffi) timing-enabled? monotonic-us timing-line!)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
                 entry-bytes)
           (only (theourgia markers) import-text?)
@@ -227,7 +228,13 @@
                (pc (and given (car given)))
                (finish (if given (cadr given) (lambda (a) a)))
                (run (if given (caddr given) (lambda (thunk) (thunk))))
-               (packet (frozen-operation store req (lambda () (capture-import store dir allow-delete? symbols))))
+               ;; THE CAPTURE IS TIMED HERE (the timing seam, ffi.sc): it runs
+               ;; before the write request's clock starts, and builds every
+               ;; intent of the import.
+               (packet (let* ((t0 (and (timing-enabled?) (monotonic-us)))
+                              (p (frozen-operation store req (lambda () (capture-import store dir allow-delete? symbols)))))
+                         (when t0 (timing-line! 'request 'capture (- (monotonic-us) t0)))
+                         p))
                (captured (cadr packet)))
           (run
             (lambda ()

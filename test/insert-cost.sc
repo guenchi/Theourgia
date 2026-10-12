@@ -84,27 +84,35 @@
       (cond ((> (+ i n) (string-length s)) #f)
             ((string=? (substring s i (+ i n)) sub) #t)
             (else (loop (+ i 1)))))))
+;; Every phase of an import's one request, each printed once. `apply`
+;; includes the plan's three; `total` less the others is what is left
+;; untimed (the publication, the answer's assembly).
 (define request-phases
-  '(load-replay replayed-records intents verdict premises datum-src cursor rules
-    plan-canonical plan-entries plan-append apply log-end total))
+  '(capture load-replay delivered-records applied-records intents verdict premises datum-src cursor rules
+    plan-canonical plan-entries plan-append apply commit log-end total))
+(define intent-phase-names '(refs check resolve deps append reduce applied receipt))
+(define (request-lines lines phase)
+  (filter (lambda (d) (and (= (length d) 4) (eq? (cadr d) 'request) (eq? (caddr d) phase))) lines))
 (define (request-value lines phase)
-  (let ((l (find (lambda (d) (and (>= (length d) 4) (eq? (cadr d) 'request) (eq? (caddr d) phase))) lines)))
-    (and l (cadddr l))))
+  (let ((ls (request-lines lines phase))) (and (= (length ls) 1) (cadddr (car ls)))))
+;; the answer's first datum, its head: ok, or what refused
+(define (answer-head out)
+  (let ((d (guard (e (#t #f)) (read (open-input-string out))))) (and (pair? d) (car d))))
 
 (define small (string-append root "/small"))
 (write-files! small 3)
 
 (let ((r (import-in-child! "unset" small #f)))
   (want "TC-0 with THEOURGIA_TIMING unset the import answers ok and its stderr holds no timing line"
-        (list (contains? (car r) "(ok") (contains? (caddr r) "(timing"))
-        '(#t #f)))
+        (list (answer-head (car r)) (contains? (caddr r) "(timing"))
+        '(ok #f)))
 
 (let* ((r (import-in-child! "set" small "1"))
        (lines (cadr r)))
-  (want "TC-1 with THEOURGIA_TIMING=1 the import answers ok and prints every request phase once, each a count of microseconds"
-        (list (contains? (car r) "(ok")
+  (want "TC-1 with THEOURGIA_TIMING=1 the import answers ok and prints every request phase exactly once, each a count of microseconds"
+        (list (answer-head (car r))
               (map (lambda (ph) (let ((v (request-value lines ph))) (and (integer? v) (>= v 0)))) request-phases))
-        (list #t (map (lambda (ph) #t) request-phases))))
+        (list 'ok (map (lambda (ph) #t) request-phases))))
 
 (if (not (equal? (getenv "THEOURGIA_INSERT_COST") "1"))
     (printf "SKIP the curve: THEOURGIA_INSERT_COST is not 1 (one import of 7000 blocks; set it to read the series)~%")
@@ -123,11 +131,17 @@
                     (let ((a (phase-us 1000 ph)) (b (phase-us 3000 ph)) (c (phase-us 7000 ph)))
                       (printf "  ~a ~a ~a ~a ~a~%" ph a b c
                               (if (and (integer? a) (integer? c) (> a 0)) (exact->inexact (/ c a)) 'n/a))))
-                  '(refs check resolve deps append reduce applied))
-        (want "TC-2 the curve: the import answers ok, and the series has one window per 100 of its 7000 intents, every phase in every window a count of microseconds"
-              (list (contains? (car r) "(ok") (length series)
-                    (for-all (lambda (d) (for-all (lambda (e) (and (integer? (cadr e)) (>= (cadr e) 0))) (cadddr d))) series))
-              (list #t 70 #t)))))
+                  intent-phase-names)
+        (want "TC-2 the curve: the import answers ok, the windows end at 100, 200, ... 7000, and each holds every intent phase once, a count of microseconds"
+              (list (answer-head (car r))
+                    (map caddr series)
+                    (for-all (lambda (d)
+                               (let ((w (cadddr d)))
+                                 (and (list? w)
+                                      (equal? (map car w) intent-phase-names)
+                                      (for-all (lambda (e) (and (= (length e) 2) (integer? (cadr e)) (>= (cadr e) 0))) w))))
+                             series))
+              (list 'ok (map (lambda (k) (* 100 (+ k 1))) (iota 70)) #t)))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%insert-cost complete~%" bad rows)
