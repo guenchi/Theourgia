@@ -206,9 +206,10 @@ daemon's, the MCP shell's -- each is a string when the bytes are exactly
 UTF-8 text, a leading byte-order mark kept as the string's first character
 (U+FEFF), so the string encodes back to the same bytes; otherwise it stays
 bytes, `#vu8(...)`. Only the printing changes: the store, an answer used
-inside the process (`scope`'s copies, `export-code`) and the definitions
-index keep the bytes as stored, and `query`'s `field` relation answers the
-stored value.
+inside the process, `export-code` and the definitions index keep the bytes
+as stored; `scope`, which reads its copies through a daemon when one
+serves the store, stores a text-mode copy's `src` as the string's bytes
+again; and `query`'s `field` relation answers the stored value.
 
 **The receipt: which state was read, and which version of each block.** A read of
 the committed store ends with `(cut <cut>)`, the applied cut of the state it read

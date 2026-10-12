@@ -115,6 +115,17 @@
   ;; stored under those keys; copied, they would become stored fields the
   ;; block never had. They are left out; the scoped store's own view derives
   ;; them again from the copied source.
+  ;; A TEXT-MODE CODE BLOCK'S SRC IS STORED AS BYTES, and a daemon prints it
+  ;; as the string those bytes encode when they are text (render.sc). A copy
+  ;; read through a daemon therefore has the string; its bytes are the
+  ;; string's UTF-8, exactly, and export-code requires them as bytes. FS is
+  ;; the record's fields, which say whether the block is a text-mode one.
+  (define (stored-src f fs)
+    (if (and (eq? (car f) 'src) (string? (cdr f))
+             (eq? (field fs 'kind) 'code) (eq? (field fs 'mode) 'text))
+        (cons 'src (string->utf8 (cdr f)))
+        f))
+
   (define (derived-keys fs)
     (if (eq? (field fs 'kind) 'code)
         (case (field fs 'mode) ((text) '(name doc)) ((datum) '(name names)) (else '()))
@@ -217,13 +228,14 @@
                     (let* ((id (field rec 'id)) (fs (field rec 'fields)) (skip (derived-keys fs)))
                       (list id parent
                             (append
-                              (filter (lambda (f)
-                                        (cond ((memq (car f) skip) #f)
-                                              ((contested? (cdr f))
-                                               (set! contested (cons (list 'contested id (car f)) contested))
-                                               #f)
-                                              (else #t)))
-                                      fs)
+                              (map (lambda (f) (stored-src f fs))
+                                   (filter (lambda (f)
+                                             (cond ((memq (car f) skip) #f)
+                                                   ((contested? (cdr f))
+                                                    (set! contested (cons (list 'contested id (car f)) contested))
+                                                    #f)
+                                                   (else #t)))
+                                           fs))
                               (list (cons 'origin id) (cons 'origin-cut cut-text))))))
                   recs (placed-parents recs roots)))
            (edges (apply append

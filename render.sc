@@ -72,21 +72,29 @@
       (cond ((bytevector=? (string->utf8 t) bv) t)
             ((bytevector=? (string->utf8 marked) bv) marked)
             (else #f))))
-  ;; X is a proper list here; -> its `(fields ...)` element when that says a
-  ;; text-mode code block, else #f.
+  ;; X is a proper list here; -> its `(fields ...)` element when X is a
+  ;; block record of a text-mode code block, else #f. A RECORD IS KNOWN BY
+  ;; ITS HEAD, as state-read builds it: (id . "<id>"), (deleted . #t/#f),
+  ;; then (fields ...). A value that only looks like a fields list -- a
+  ;; custom field holding one, a query row -- is not a record and is left.
   (define (text-mode-fields x)
-    (let ((e (find (lambda (y) (and (pair? y) (eq? (car y) 'fields))) x)))
-      (and e (list? (cdr e)) (for-all pair? (cdr e))
-           (equal? (assq 'kind (cdr e)) '(kind . code))
-           (equal? (assq 'mode (cdr e)) '(mode . text))
-           e)))
+    (and (>= (length x) 3)
+         (pair? (car x)) (eq? (caar x) 'id) (string? (cdar x))
+         (pair? (cadr x)) (eq? (caadr x) 'deleted) (boolean? (cdadr x))
+         (let ((e (caddr x)))
+           (and (pair? e) (eq? (car e) 'fields) (list? (cdr e)) (for-all pair? (cdr e))
+                (equal? (assq 'kind (cdr e)) '(kind . code))
+                (equal? (assq 'mode (cdr e)) '(mode . text))
+                e))))
   ;; ONCE OVER THE ANSWER: a proper list is asked once whether it is such a
   ;; record and otherwise mapped, so an answer of n items costs n, not n
   ;; squared as walking every tail would.
   (define (reader-form x)
     (cond
       ((not (pair? x)) x)
-      ((not (list? x)) (cons (reader-form (car x)) (reader-form (cdr x))))
+      ((not (list? x))
+       (let walk ((p x))
+         (if (pair? p) (cons (reader-form (car p)) (walk (cdr p))) (reader-form p))))
       ((text-mode-fields x)
        => (lambda (e)
             (map (lambda (y)

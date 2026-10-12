@@ -595,6 +595,34 @@
                 (let ((c (find (lambda (id) (equal? (field-of X9 id 'origin) BV)) (outline-order X9))))
                   (and c (map (lambda (k) (field-of X9 c k)) '(src glyph pair)))))
       '(ok (#vu8(65 66) #\a #(1 2))))
+;; A TEXT-MODE CODE BLOCK THROUGH A DAEMON: its src is printed as the string
+;; its bytes encode (render.sc), so the copy scope reads has the string; the
+;; copy stores the bytes again (channel.sc), and the scoped store exports the
+;; file byte for byte, its leading byte-order mark included.
+(define MT (string-append root "/main-text"))
+(define MT-dir (string-append root "/text-src"))
+(define MT-bytes (string->utf8 (string-append (string (integer->char #xFEFF)) "function scoped() { return 1 }\n")))
+(system (string-append "mkdir -p '" MT-dir "'"))
+(call-with-port (open-file-output-port (string-append MT-dir "/scoped.js") (file-options no-fail))
+  (lambda (p) (put-bytevector p MT-bytes)))
+(cli "init-mt" "author" "init" "--store" MT)
+(cli "import-mt" "author" "import-code" MT-dir "--store" MT)
+(define MT-code (find (lambda (id) (equal? (field-of MT id 'src) MT-bytes)) (outline-order MT)))
+(define XT (string-append root "/scoped-text"))
+(define served-t0 (served-count))
+(define ST (and MT-code
+                (first-datum (cli "scope-mt" "author" "scope" XT "--cut" (format "~s" (reduce-applied-cut (state MT)))
+                                  "--roots" MT-code "--for" "codex" "--store" MT))))
+(define served-t1 (served-count))
+(define XT-copy (and ST (find (lambda (id) (equal? (field-of XT id 'origin) MT-code)) (outline-order XT))))
+(define XT-out (string-append root "/scoped-text-export"))
+(define XT-export (and XT-copy (run XT "author" 'export-code XT-out "--raw")))
+(want "D a text-mode code block scoped through the main store's daemon: the copy holds the source's bytes, and the scoped store exports the file byte for byte"
+      (in-order (and ST (car ST)) (> served-t1 served-t0) (and XT-copy (field-of XT XT-copy 'src))
+                (and (pair? XT-export) (car XT-export))
+                (let ((f (string-append XT-out "/scoped.js")))
+                  (and (file-exists? f) (equal? (call-with-port (open-file-input-port f) get-bytevector-all) MT-bytes))))
+      (list 'ok #t MT-bytes 'ok #t))
 (define frame-answer
   (let ((o (call! (socket-path M)
                   (request-frame M 'scope (list (string-append root "/x7") "--cut" "t1" "--roots" R1 "--for" "codex")
