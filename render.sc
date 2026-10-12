@@ -72,46 +72,68 @@
       (cond ((bytevector=? (string->utf8 t) bv) t)
             ((bytevector=? (string->utf8 marked) bv) marked)
             (else #f))))
-  ;; X is a proper list here. A BLOCK RECORD IS KNOWN BY ITS HEAD, as
-  ;; state-read builds it: (id . "<id>"), (deleted . #t/#f), then
-  ;; (fields ...); -> that fields element, else #f.
+  ;; A BLOCK RECORD IS KNOWN BY ITS HEAD, as state-read builds it:
+  ;; (id . "<id>"), (deleted . #t/#f), then (fields ...); -> that fields
+  ;; element, else #f.
   (define (record-fields x)
-    (and (>= (length x) 3)
+    (and (list? x) (>= (length x) 3)
          (pair? (car x)) (eq? (caar x) 'id) (string? (cdar x))
          (pair? (cadr x)) (eq? (caadr x) 'deleted) (boolean? (cdadr x))
          (let ((e (caddr x)))
            (and (pair? e) (eq? (car e) 'fields) (list? (cdr e)) (for-all pair? (cdr e)) e))))
-  (define (text-mode? e)
-    (and (equal? (assq 'kind (cdr e)) '(kind . code))
-         (equal? (assq 'mode (cdr e)) '(mode . text))))
-  ;; ONCE OVER THE ANSWER: a proper list is asked once whether it is a record
-  ;; and otherwise mapped, so an answer of n items costs n, not n squared as
-  ;; walking every tail would. NOTHING STORED IS ENTERED: a block record is
-  ;; given back whole (a text-mode one with its src and doc as text), and a
-  ;; query's (row ...) is a row of stored values, so a field holding a value
-  ;; shaped like a record is printed as it is stored.
+  ;; A RECORD, with a text-mode code block's src and doc as text when they are.
+  (define (record-form r)
+    (let ((e (record-fields r)))
+      (if (not (and e (equal? (assq 'kind (cdr e)) '(kind . code)) (equal? (assq 'mode (cdr e)) '(mode . text))))
+          r
+          (map (lambda (y)
+                 (if (eq? y e)
+                     (cons 'fields
+                           (map (lambda (f)
+                                  (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
+                                      (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
+                                      f))
+                                (cdr e)))
+                     y))
+               r))))
+  ;; A context entry's (block <record>) clause, and nothing else in it.
+  (define (entry-form e)
+    (if (and (list? e) (pair? e))
+        (cons (car e)
+              (map (lambda (c)
+                     (if (and (list? c) (= (length c) 2) (eq? (car c) 'block) (record-fields (cadr c)))
+                         (list 'block (record-form (cadr c)))
+                         c))
+                   (cdr e)))
+        e))
+  ;; ONLY WHERE AN ANSWER'S SUBJECT IS A BLOCK RECORD: read's (ok <record> ...)
+  ;; and (ok (items <record> ...) ...), a record printed alone (an item, by
+  ;; render-human), and context's entries' (block <record>). NOTHING ELSE IS
+  ;; ENTERED -- a query's rows, review-results' field triples, a custom field
+  ;; holding a value shaped like a record: stored values are printed as they
+  ;; are stored, and an answer is never searched for something record-shaped.
   (define (reader-form x)
     (cond
-      ((not (pair? x)) x)
-      ((not (list? x))
-       (let walk ((p x))
-         (if (pair? p) (cons (reader-form (car p)) (walk (cdr p))) (reader-form p))))
-      ((eq? (car x) 'row) x)
-      ((record-fields x)
-       => (lambda (e)
-            (if (not (text-mode? e))
-                x
-                (map (lambda (y)
-                       (if (eq? y e)
-                           (cons 'fields
-                                 (map (lambda (f)
-                                        (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
-                                            (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
-                                            f))
-                                      (cdr e)))
-                           y))
-                     x))))
-      (else (map reader-form x))))
+      ((record-fields x) (record-form x))
+      ((context-answer? x)
+       (cons 'ok
+             (map (lambda (c)
+                    (cond ((and (list? c) (= (length c) 2) (eq? (car c) 'for))
+                           (list 'for (entry-form (cadr c))))
+                          ((and (list? c) (= (length c) 2) (memq (car c) context-sections)
+                                (not (memq (car c) '(for notes))) (list? (cadr c)))
+                           (list (car c) (map entry-form (cadr c))))
+                          (else c)))
+                  (cdr x))))
+      ((and (pair? x) (eq? (car x) 'ok) (pair? (cdr x)))
+       (let ((s (cadr x)))
+         (cons 'ok
+               (cons (cond ((record-fields s) (record-form s))
+                           ((and (list? s) (pair? s) (eq? (car s) 'items))
+                            (cons 'items (map (lambda (r) (if (record-fields r) (record-form r) r)) (cdr s))))
+                           (else s))
+                     (cddr x)))))
+      (else x)))
   ;; THE INCOMPLETE CLAUSE IS PRINTED EVEN WHERE THE REST OF THE ANSWER IS
   ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
   ;; used to drop every clause after the body; the one saying the answer

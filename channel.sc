@@ -118,8 +118,11 @@
   ;; A TEXT-MODE CODE BLOCK'S SRC IS STORED AS BYTES, and a daemon prints it
   ;; as the string those bytes encode when they are text (render.sc). A copy
   ;; read through a daemon therefore has the string; its bytes are the
-  ;; string's UTF-8, exactly, and export-code requires them as bytes. FS is
-  ;; the record's fields, which say whether the block is a text-mode one.
+  ;; string's UTF-8, exactly, and export-code requires them as bytes. A src
+  ;; stored as a string -- an insert can leave one; `set` stores a string as
+  ;; its bytes -- is copied as its bytes too: the same text, in the form
+  ;; `set` stores and export-code reads. FS is the record's fields, which
+  ;; say whether the block is a text-mode one.
   (define (stored-src f fs)
     (if (and (eq? (car f) 'src) (string? (cdr f))
              (eq? (field fs 'kind) 'code) (eq? (field fs 'mode) 'text))
