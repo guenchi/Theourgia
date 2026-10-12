@@ -26,8 +26,10 @@ child the programs start (the daemon, an MCP child verb) receives this
 process's environment as `/usr/bin/env -0`, run by `/bin/sh`, lists its
 names, each with this process's own value: the C library's `environ` is
 not reachable from Chez on FreeBSD. A name the platform's `/bin/sh`
-removes before running a command does not reach the child -- none on
-FreeBSD 15, `OLDPWD` on macOS. The row is chosen when
+removes before running a command does not reach the child; measured with
+a known environment, that was none on FreeBSD 15 and `OLDPWD` on macOS.
+When the environment cannot be read -- `env` missing, empty, or failing --
+the spawn fails rather than start a child with an empty one. The row is chosen when
 the programs start, from Chez's machine type and, on Linux, from the C
 library the process has mapped. On any other platform -- another
 architecture, a Linux with musl, a static executable, a sandbox that

@@ -434,6 +434,26 @@
    propagate a
    "re-raises after cleanup"
    (e (#t (when null-fd (fd-close null-fd)) (when log-fd (fd-close log-fd)) (raise e))))
+  ("ffi.sc" (process-environment) 1 guard
+   (#t)
+   unrelated a
+   "the env child's input pipe, closed quietly in the unwind: a process pipe, not a store entry; the wait that follows and the output decide"
+   (e (#t #f)))
+  ("ffi.sc" (process-environment) 2 guard
+   (#t)
+   unrelated a
+   "the env child's output pipe, closed quietly in the unwind: a process pipe, not a store entry; the wait that follows and the output decide"
+   (e (#t #f)))
+  ("ffi.sc" (process-environment) 3 guard
+   (#t)
+   unrelated a
+   "the env child's error pipe, closed quietly in the unwind: a process pipe, not a store entry; the wait that follows and the output decide"
+   (e (#t #f)))
+  ("ffi.sc" (spawn-captured!) 1 guard
+   ((fs-error? e))
+   propagate a
+   "process-environment's failure to read the environment (fs-error, op environment) is answered as the spawn that did not start, (values #f errno), which every caller already handles; nothing else is caught"
+   (e ((fs-error? e) e)))
   ("ffi.sc" (unix-socket-connect) 1 guard
    (#t)
    propagate a
@@ -1448,9 +1468,9 @@
   ((redirect-stdio!) close-quietly 2 out-of-scope "after the dup2s: the log descriptor is released; stdio, D1's scope exclusion")
   ((redirect-stdio!) fd-close 1 out-of-scope "inside the failure guard, before the re-raise: fd-close raises on its own failure, which would replace the condition leaving; stdio, D1's scope exclusion, the queue candidate")
   ((redirect-stdio!) fd-close 2 out-of-scope "inside the failure guard, before the re-raise: fd-close raises on its own failure, which would replace the condition leaving; stdio, D1's scope exclusion, the queue candidate")
-  ((process-environment) close-port 1 out-of-scope "the env child's input, closed unwritten before its output is read: a process pipe, D1's scope exclusion")
-  ((process-environment) close-port 2 out-of-scope "the env child's output, once read to its end: a process pipe, D1's scope exclusion")
-  ((process-environment) close-port 3 out-of-scope "the env child's error output, never read: a process pipe, D1's scope exclusion")
+  ((process-environment) close-port 1 out-of-scope "the env child's input, closed in the unwind, never written: a process pipe, D1's scope exclusion")
+  ((process-environment) close-port 2 out-of-scope "the env child's output, closed in the unwind once read or on a raise: a process pipe, D1's scope exclusion")
+  ((process-environment) close-port 3 out-of-scope "the env child's error output (sent to /dev/null), closed in the unwind: a process pipe, D1's scope exclusion")
   ((rss-linux) call-with-input-file 1 out-of-scope "the implicit close of /proc's statm, not a store entry; rss-linux is outside the door")
   ((unix-socket-connect) c-close 1 escape "setsockopt raised: the socket is released and the condition re-raised")
   ((unix-socket-connect) c-close 2 escape "connect failed: the socket is released before the raise")

@@ -77,6 +77,9 @@
 (define probe-name "THEOURGIA_F191_PROBE")
 (define probe-value "a b\nc")
 (putenv probe-name probe-value)
+;; Two more, not among E-3's bindings: one plain, one whose value holds =.
+(putenv "THEOURGIA_F191_A" "1")
+(putenv "THEOURGIA_F191_EQ" "x=y")
 (define env (process-environment))
 
 (want "E-1 process-environment: every entry is NAME=VALUE with this process's getenv value, each name once, PATH among them"
@@ -108,6 +111,22 @@
         (list (exited pid)
               (equal? (sorted (entries-of (bytes-of detached-out))) (sorted (process-environment)))))
       '((exit 0) #t))
+
+;; ---- E-6: an oracle that is not process-environment ------------------------------------------
+;;
+;; E-3 and E-4 compare a child with process-environment itself, so an entry
+;; it dropped would be dropped on both sides. These names are checked against
+;; this process's getenv directly, in both children's environments.
+(define independent '("PATH" "HOME" "THEOURGIA_TEST_ROOT" "THEOURGIA_F191_A" "THEOURGIA_F191_EQ"))
+(want "E-6 PATH, HOME, the test root and two values set after the start reach both children as this process's getenv gives them"
+      (let ((expected (map (lambda (n) (string-append n "=" (getenv n))) (filter getenv independent))))
+        (list (length expected)
+              (for-all (lambda (e) (and (member e (entries-of (bytes-of captured-out))) #t)) expected)
+              (for-all (lambda (e) (and (member e (entries-of (bytes-of detached-out))) #t)) expected)))
+      (list (length (filter getenv independent)) #t #t))
+(want "E-6 PREMISE: the two values set after the start, and PATH, are set here"
+      (map (lambda (n) (and (getenv n) #t)) '("THEOURGIA_F191_A" "THEOURGIA_F191_EQ" "PATH"))
+      '(#t #t #t))
 
 ;; ---- E-5: the reading against the C library's environ --------------------------------------------
 

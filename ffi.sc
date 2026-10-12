@@ -1265,28 +1265,36 @@
       (assertion-violation 'spawn-detached! "argv must be a non-empty list of strings" argv))
     (unless (foreign-entry? "posix_spawnp")
       (assertion-violation 'spawn-detached! "no posix_spawnp in libc" (machine-kind)))
-    (let* ((c-spawn (foreign-procedure "posix_spawnp"
-                                       (u8* string void* void* void* void*) int))
-           (width (foreign-sizeof 'void*))
-           (env-strings (map c-string (process-environment)))
-           (envp (foreign-alloc (* width (+ 1 (length env-strings)))))
-           (cells (foreign-alloc (* width (+ 1 (length argv)))))
-           (strings (map c-string argv))
-           (pid-out (make-pid-buffer)))
-      (do ((ps env-strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
-        (foreign-set! 'void* envp (* i width) (car ps)))
-      (foreign-set! 'void* envp (* (length env-strings) width) 0)
-      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
-        (foreign-set! 'void* cells (* i width) (car ps)))
-      (foreign-set! 'void* cells (* (length argv) width) 0)
-      (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
-        (for-each foreign-free strings)
-        (foreign-free cells)
-        (for-each foreign-free env-strings)
-        (foreign-free envp)
-        (if (zero? rc)
-            (pid-buffer-ref pid-out)
-            (raise (fs-err 'spawn (car argv) rc))))))
+    ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, as in spawn-captured!: each
+    ;; is recorded as it is made and freed on the way out. A failure to read
+    ;; the environment raises its fs-error before anything is allocated.
+    (let ((owned '()))
+      (define (own! p) (set! owned (cons p owned)) p)
+      (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (let* ((c-spawn (foreign-procedure "posix_spawnp"
+                                             (u8* string void* void* void* void*) int))
+                 (width (foreign-sizeof 'void*))
+                 (environment (process-environment))
+                 (env-strings (map (lambda (e) (own! (c-string e))) environment))
+                 (envp (own! (foreign-alloc (* width (+ 1 (length env-strings))))))
+                 (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
+                 (strings (map (lambda (a) (own! (c-string a))) argv))
+                 (pid-out (make-pid-buffer)))
+            (do ((ps env-strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* envp (* i width) (car ps)))
+            (foreign-set! 'void* envp (* (length env-strings) width) 0)
+            (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* cells (* i width) (car ps)))
+            (foreign-set! 'void* cells (* (length argv) width) 0)
+            (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
+              (if (zero? rc)
+                  (pid-buffer-ref pid-out)
+                  (raise (fs-err 'spawn (car argv) rc))))))
+        (lambda ()
+          (for-each foreign-free owned)
+          (set! owned '())))))
 
   ;; ---- this process's environment, as a list ------------------------------
   ;;
@@ -1312,33 +1320,54 @@
   ;; The child is waited for; a status already collected elsewhere (a
   ;; reap-children! between) is not an error.
   ;;
-  ;; NEVER: NO ENVIRONMENT IS NOT AN EMPTY ONE. An env that printed nothing,
-  ;; or ended other than with exit 0, raises: passing an empty envp would
-  ;; start a daemon without THEOURGIA_HOME, silently, on another store.
+;; NEVER: NO ENVIRONMENT IS NOT AN EMPTY ONE. An env that printed nothing,
+  ;; ended other than with exit 0, or listed no name this process has a
+  ;; value for raises fs-error (op environment, EIO): passing an empty envp
+  ;; would start a daemon without THEOURGIA_HOME, silently, on another
+  ;; store. A status another reaper collected first (ECHILD) cannot say exit
+  ;; 0, and the output alone decides. Its standard error goes to /dev/null:
+  ;; nothing reads it, and a pipe nobody reads can fill.
+  (define environment-EINTR (platform-number 'EINTR))
+  (define environment-EIO (platform-number 'EIO))
   (define (process-environment)
     (let-values (((to-child from-child errors pid)
-                  (open-process-ports "exec /usr/bin/env -0" (buffer-mode block) #f)))
-      (close-port to-child)
-      (let ((bytes (get-bytevector-all from-child)))
-        (close-port from-child)
-        (close-port errors)
-        (let* ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
-               (status (make-bytevector (platform-type-size 'int) 0))
-               (r (c-waitpid pid status 0))
-               (w (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int))))
-          (when (or (eof-object? bytes) (zero? (bytevector-length bytes))
-                    (and (= r pid) (not (zero? w))))
-            (assertion-violation 'process-environment
-                                 "/usr/bin/env -0 gave no environment" (list 'wait-status (and (= r pid) w)))))
-        (let loop ((entries (split-at-nul bytes))
-                   (seen '()) (out '()))
-          (if (null? entries)
-              (reverse out)
-              (let* ((name (entry-name (car entries)))
-                     (value (and name (not (member name seen)) (getenv name))))
-                (loop (cdr entries)
-                      (if name (cons name seen) seen)
-                      (if (string? value) (cons (string-append name "=" value) out) out))))))))
+                  (open-process-ports "exec /usr/bin/env -0 2>/dev/null" (buffer-mode block) #f)))
+      (let ((bytes #f) (status #f))
+        ;; THE PORTS ARE CLOSED AND THE CHILD WAITED FOR ON EVERY PATH.
+        (dynamic-wind
+          (lambda () #f)
+          (lambda () (set! bytes (get-bytevector-all from-child)))
+          (lambda ()
+            (guard (e (#t #f)) (close-port to-child))
+            (guard (e (#t #f)) (close-port from-child))
+            (guard (e (#t #f)) (close-port errors))
+            (set! status (environment-child-status pid))))
+        (when (or (eof-object? bytes) (zero? (bytevector-length bytes))
+                  (and status (not (zero? status))))
+          (raise (fs-err 'environment "/usr/bin/env" environment-EIO)))
+        (let ((environment
+               (let loop ((entries (split-at-nul bytes)) (seen '()) (out '()))
+                 (if (null? entries)
+                     (reverse out)
+                     (let* ((name (entry-name (car entries)))
+                            (value (and name (not (member name seen)) (getenv name))))
+                       (loop (cdr entries)
+                             (if name (cons name seen) seen)
+                             (if (string? value) (cons (string-append name "=" value) out) out)))))))
+          (when (null? environment)
+            (raise (fs-err 'environment "/usr/bin/env" environment-EIO)))
+          environment))))
+
+  ;; The env child's wait status word, waited for (EINTR retried), or #f when
+  ;; another reaper collected it first.
+  (define (environment-child-status pid)
+    (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+          (status (make-bytevector (platform-type-size 'int) 0)))
+      (let loop ()
+        (let ((r (c-waitpid pid status 0)))
+          (cond ((= r pid) (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int)))
+                ((and (< r 0) (= (errno) environment-EINTR)) (loop))
+                (else #f))))))
 
   ;; The pieces of a NUL-separated list of byte strings; an empty piece after
   ;; the last NUL is not an entry.
@@ -1473,6 +1502,12 @@
     ;; owns copies of their paths, and freeing the handle's storage without
     ;; destroying it would leak those. The destroy is in the same unwind as
     ;; the frees, before them.
+    ;; THE ENVIRONMENT IS READ FIRST, before anything is allocated. A failure
+    ;; to read it is answered as a spawn that did not start, (values #f
+    ;; errno), the failure this procedure's callers already handle.
+    (let ((environment (guard (e ((fs-error? e) e)) (process-environment))))
+     (if (fs-error? environment)
+      (values #f (fs-error-errno environment))
     (let ((owned '()) (destroy! #f))
       (define (own! p) (set! owned (cons p owned)) p)
       (dynamic-wind
@@ -1490,7 +1525,7 @@
                                       (not (exists (lambda (n) (and (>= (string-length e) (string-length n))
                                                                     (string=? (substring e 0 (string-length n)) n)))
                                                    names)))
-                                    (process-environment))))
+                                    environment)))
                  (added (map (lambda (b) (own! (c-string (string-append (car b) "=" (cdr b))))) bindings))
                  (envp-list (append kept added))
                  (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
@@ -1524,7 +1559,7 @@
         (lambda ()
           (when destroy! (destroy!) (set! destroy! #f))
           (for-each foreign-free owned)
-          (set! owned '())))))
+          (set! owned '())))))))
 
 
   ;; NEVER: A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS

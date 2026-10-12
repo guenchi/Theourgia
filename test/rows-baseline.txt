@@ -150,7 +150,7 @@ smoke-wire - 24 9d129dbffacf937198c9f06f051245bf
 smoke-wire-fuzz - 5 d2f81d74fdad6c838e079be6a1e05d51
 smoke-wire-trace - 6 41b0a4d9dda05cea5ab8de0a6cb1771d
 snap1 22 32 e6c084dd04e53d68dc866c80c22b825c
-spawn-environment 5 9 5c75f1f8bafb13a408d30306795d63a4
+spawn-environment 7 11 07a0c556ed7623ab1752a2fa447826a8
 split-symbols 36 40 fd6bd5522c88facad0ef2dbf3085e804
 stage-gate - 5 0f911587319ae008949660d0f4a59639
 startup-ratio 59 68 4b961d3e19f1f7a9b586d84d519cf2f6
