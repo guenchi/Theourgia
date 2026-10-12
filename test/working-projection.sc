@@ -196,6 +196,15 @@
               (and contents (>= (length contents) 2) (list-head contents 2))))
       (list '(error stale-baseline)
             (list '(content elided 1025) (list 'set since-id 'src (string->utf8 (marked-of 1024))))))
+;; context's relevance searches with T's title and text: a committed marked src
+;; is text to search with (the mark left out, as search leaves it).
+(define related-id
+  (let* ((a (call 'insert "--title" "R" "--text" "(define x 1)")) (ev (car (cadr (assq 'events (cdr a))))))
+    (block-id (car ev) (cdr ev))))
+(want "WP-09 context --for the marked block finds, as relevant, a block whose text matches its committed text"
+      (holds-datum? (call 'context "--for" marked-id "--budget" "4000") related-id)
+      #t)
+
 ;; WP-09, TWO MORE CONSUMERS OF A COMMITTED SRC HELD AS BYTES, in a store of
 ;; their own: the template reader (a store's template block edited with
 ;; write and commit, as the README says) and export-code (a text file's
@@ -216,8 +225,12 @@
              (c (and (pair? w) (eq? (car w) 'ok) (guard (e (#t 'RAISED)) (call2 'commit template-id "--writer" "window-t"))))
              (x (call2 'template "export")))
         (list (and template-id #t) (rpc-ok? c) (bytevector? (src-of-2 template-id))
-              (and (pair? x) (car x))))
-      '(#t #t #t ok))
+              (and (pair? x) (car x))
+              ;; the text export prints keeps the mark, as the block holds it
+              (let ((t (and (pair? x) (eq? (car x) 'ok) (assq 'text (filter pair? (cdr x))))))
+                (and t (string? (cadr t)) (> (string-length (cadr t)) 0)
+                     (char=? (string-ref (cadr t) 0) (integer->char #xFEFF))))))
+      '(#t #t #t ok #t))
 (define code-dir (string-append root "/code-src"))
 (mkdir-p! code-dir)
 (call-with-port (open-file-output-port (string-append code-dir "/a.sc") (file-options no-fail))
@@ -235,5 +248,14 @@
         (list (and code-id #t) (rpc-ok? c) (bytevector? (src-of-2 code-id)) (and (pair? x) (car x))
               (equal? bytes (string->utf8 marked-code))))
       '(#t #t #t ok #t))
+(want "WP-09 and export-code's marked projection writes a.sc beginning with the mark, before its header line"
+      (let* ((out (string-append root "/code-out-marked"))
+             (x (call2 'export-code out))
+             (bytes (let ((f (string-append out "/a.sc")))
+                      (and (file-exists? f) (call-with-port (open-file-input-port f) get-bytevector-all)))))
+        (list (and (pair? x) (car x))
+              (and (bytevector? bytes) (>= (bytevector-length bytes) 3)
+                   (list (bytevector-u8-ref bytes 0) (bytevector-u8-ref bytes 1) (bytevector-u8-ref bytes 2)))))
+      '(ok (#xEF #xBB #xBF)))
 (printf "~a failures\nworking-projection complete\n" failures)
 (exit (if (= failures 0) 0 1))

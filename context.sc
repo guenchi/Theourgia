@@ -57,6 +57,7 @@
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
           (only (theourgia store) search-state sealed-state? sealed-state-notes)
+          (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire)
           (only (theourgia query) make-query-session session-answer query-budget-default)
@@ -106,8 +107,17 @@
   (define (field-value row name)
     (let ((e (and row (assq name (cdr (assq 'fields row)))))) (and e (cdr e))))
 
+  ;; A field as text to search with: a string, or a bytevector that is text
+  ;; (a committed src that began with a byte-order mark), the mark left out
+  ;; as search leaves it out; anything else is "".
   (define (text-field row name)
-    (let ((v (field-value row name))) (if (string? v) v "")))
+    (let ((v (field-value row name)))
+      (cond ((string? v) v)
+            ((and (bytevector? v) (src-text v))
+             => (lambda (t) (if (and (> (string-length t) 0) (char=? (string-ref t 0) (integer->char #xFEFF)))
+                                (substring t 1 (string-length t))
+                                t)))
+            (else ""))))
 
   ;; ---- entries --------------------------------------------------------------------------
 
