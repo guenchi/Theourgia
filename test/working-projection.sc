@@ -140,7 +140,7 @@
           (else #f))))
 (want "WP-09 read --md --recursive (the projection's rendering, project.sc) renders the committed marked src's text, mark included"
       (holds-marked-text? (call 'read marked-id "--md" "--recursive")) #t)
-(want "WP-09 another writer writes the committed text back as it read it: drafts calls that draft fresh and unchanged"
+(want "WP-09 another writer writes back the committed text as it read it, the marked bytes: drafts calls that draft fresh and unchanged"
       (let* ((t (call 'read marked-id "--working" "--writer" "window-back"))
              (text (and (pair? t) (eq? (car t) 'ok) (assq 'text (filter pair? (cdr t)))))
              (w (and text (call 'write marked-id (cadr text) "--writer" "window-back")))
@@ -149,8 +149,9 @@
              (mine (and items (find (lambda (it) (and (pair? it) (eq? (car it) 'draft) (equal? (assq 'block (cdr it)) (list 'block marked-id))))
                                     (cdr items)))))
         (and (pair? w) (eq? (car w) 'ok) mine
-             (list (cadr (assq 'fresh (cdr mine))) (cadr (assq 'unchanged (cdr mine))))))
-      '(#t #t))
+             (list (equal? (string->utf8 (cadr text)) marked)
+                   (cadr (assq 'fresh (cdr mine))) (cadr (assq 'unchanged (cdr mine))))))
+      '(#t #t #t))
 (want "WP-09 read --md renders the committed marked src's text, mark included"
       (let ((a (call 'read marked-id "--md")))
         (let find-text ((x a))
