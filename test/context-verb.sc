@@ -1109,6 +1109,68 @@
       tm-summary
       (list 'summary tm-first))
 
+;; ---- a text-mode code block's src, as a reader is given it ---------------------------------------------
+;;
+;; A text-mode code block stores its src as bytes, and every answer that
+;; carries its record printed them as `#vu8(...)`: read, context's (block ...)
+;; entry, the daemon's. Bytes that are exactly a text are given as the text,
+;; a leading byte-order mark kept as U+FEFF; other bytes stay bytes. Read by
+;; five routes: local read, read and context through the command line, read
+;; and context through a daemon.
+(define rx-s (fresh-store!))
+(define rx-dir (string-append root "/readertext"))
+(system (string-append "mkdir -p " (quoted rx-dir)))
+(define rx-plain "function plain() { return 1 }\n")
+(define rx-marked (string-append (string (integer->char #xFEFF)) "function marked() { return 2 }\n"))
+(define rx-rawtext "function raw() { return 3 }\n")
+(define rx-raw (let ((b (string->utf8 rx-rawtext))) (u8-list->bytevector (append (bytevector->u8-list b) '(255 10)))))
+(write-file! (string-append rx-dir "/plain.js") rx-plain)
+(write-file! (string-append rx-dir "/marked.js") rx-marked)
+(write-file! (string-append rx-dir "/raw.js") rx-rawtext)
+(run rx-s 'import-code rx-dir)
+(define (rx-block bytes)
+  (find (lambda (id) (equal? (field-of rx-s id 'src) bytes)) (state-block-ids (state-of rx-s))))
+(define rx-p (rx-block (string->utf8 rx-plain)))
+(define rx-m (rx-block (string->utf8 rx-marked)))
+(define rx-r (rx-block (string->utf8 rx-rawtext)))
+(when rx-r (run rx-s 'batch (format "~s" (list (list 'set rx-r 'src rx-raw)))))
+(want "SETUP the three code blocks were imported in text mode and the store keeps their src as bytes, the third's set to bytes that are not UTF-8"
+      (list (and rx-p #t) (and rx-m #t) (and rx-r (equal? (field-of rx-s rx-r 'src) rx-raw)))
+      '(#t #t #t))
+(define (record-src rec)
+  (let ((fs (and (pair? rec) (list? rec) (assq 'fields rec))))
+    (and fs (let ((e (assq 'src (cdr fs)))) (if e (cdr e) 'NO-SRC)))))
+(define (parsed text) (if (string? text) (guard (e (#t 'UNREADABLE)) (read (open-string-input-port text))) text))
+(define (context-block-src a id)
+  (let ((b (sub (entry-of a id) 'block))) (and b (record-src (cadr b)))))
+(define (rx-local id)
+  (list (record-src (let ((a (run rx-s 'read id))) (and (ok? a) (cadr a))))
+        (record-src (let ((a (parsed (cli-wire rx-s "read" id)))) (and (ok? a) (cadr a))))
+        (context-block-src (parsed (cli-wire rx-s "context" "--for" id "--budget" "100000")) id)))
+(define rx-local-readings (map rx-local (list rx-p rx-m rx-r)))
+(start-daemon! rx-s)
+(define rx-daemon-readings
+  (map (lambda (id)
+         (list (record-src (let ((a (parsed (through-daemon rx-s "read" id)))) (and (ok? a) (cadr a))))
+               (context-block-src (parsed (through-daemon rx-s "context" "--for" id "--budget" "100000")) id)))
+       (list rx-p rx-m rx-r)))
+(stop-daemon! rx-s)
+(define (rx-all k) (append (list-ref rx-local-readings k) (list-ref rx-daemon-readings k)))
+(want "RX-1 a UTF-8 src is a string on every route: read, read --wire, context --wire's block entry, and read and context through a daemon"
+      (rx-all 0)
+      (make-list 5 rx-plain))
+(want "RX-2 a src beginning with a byte-order mark is the string with U+FEFF first on every route, and it encodes back to the stored bytes"
+      (let ((got (rx-all 1)))
+        (list got (and (string? (car got)) (equal? (string->utf8 (car got)) (field-of rx-s rx-m 'src)))))
+      (list (make-list 5 rx-marked) #t))
+(want "RX-3 a src that is not UTF-8 stays bytes on every route"
+      (rx-all 2)
+      (make-list 5 rx-raw))
+(want "RX-4 PIN the derived names of the two text blocks are unchanged"
+      (map (lambda (id) (let* ((a (run rx-s 'read id)) (fs (and (ok? a) (assq 'fields (cadr a)))) (e (and fs (assq 'name (cdr fs))))) (and e (cdr e))))
+           (list rx-p rx-m))
+      '("plain" "marked"))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-verb complete\n" rows bad)
 (exit (if (= bad 0) 0 1))

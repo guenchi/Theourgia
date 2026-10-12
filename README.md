@@ -200,6 +200,14 @@ subtree) and `outline`, which shows its title, are refused as any raise is,
 with the block named after the condition:
 `(error internal (condition "...") (id <id>))`.
 
+A text-mode code block stores its `src`, and its `doc` is read from it, as
+bytes. Given to a reader -- by `read`, in `context`'s `(block ...)` entries,
+and through a daemon alike -- each is a string when the bytes are exactly
+UTF-8 text, a leading byte-order mark kept as the string's first character
+(U+FEFF), so the string encodes back to the same bytes; otherwise it stays
+bytes, `#vu8(...)`. The store, `export-code` and the definitions index keep
+the bytes as stored.
+
 **The receipt: which state was read, and which version of each block.** A read of
 the committed store ends with `(cut <cut>)`, the applied cut of the state it read
 (for `--cut`, the state at that cut), and `(versions ((<id> . "<hash>") ...))`,
