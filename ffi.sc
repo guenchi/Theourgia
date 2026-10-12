@@ -396,7 +396,8 @@
           redirect-stdio! spawn-detached! spawn-captured! process-environment reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
-          process-id wall-clock-ms machine-home env-or libc-entry-name)
+          process-id wall-clock-ms machine-home env-or libc-entry-name
+          timing-enabled? monotonic-us timing-line!)
   (import (chezscheme)
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
@@ -837,6 +838,27 @@
   (define (wall-clock-ms)
     (let ((t (current-time)))
       (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+
+  ;; THE WRITE PATH'S TIMING SEAM (test-only, like THEOURGIA_TRACE):
+  ;; THEOURGIA_TIMING=1 makes store.sc's write path print where a request's
+  ;; time goes, one line per phase on stderr, `(timing <what> ...)`. Read
+  ;; once at load, as the trace switch is; unset, every timed phase is the
+  ;; call it wraps and nothing is printed. The clock is the monotonic one,
+  ;; in microseconds: the per-intent phases are well under a millisecond,
+  ;; and a wall clock can step.
+  (define timing-setting (equal? (getenv "THEOURGIA_TIMING") "1"))
+  (define (timing-enabled?) timing-setting)
+  (define (monotonic-us)
+    (let ((t (current-time 'time-monotonic)))
+      (+ (* 1000000 (time-second t)) (quotient (time-nanosecond t) 1000))))
+  ;; A failure to print is swallowed, as the trace's is: timing must not turn
+  ;; a write that worked into one that raised.
+  (define (timing-line! . fields)
+    (guard (e (#t #f))
+      (let ((p (current-error-port)))
+        (write (cons 'timing fields) p)
+        (newline p)
+        (flush-output-port p))))
 
   (define libc
     (load-first-shared-object!
