@@ -894,6 +894,11 @@
    unrelated a
    "utf8"
    (e (#t #f)))
+  ("markers.sc" (src-text) 1 guard
+   (#t)
+   unrelated a
+   "src-text: utf8 decode of bytes in hand (moved from working.sc's working-read, which now calls it); a failure is #f, not text"
+   (failure (#t #f)))
   ("markers.sc" (header-read) 1 guard
    (#t)
    unrelated a
@@ -1164,11 +1169,6 @@
    propagate b
    "working-restore!: as working-write!; an unreadable writer is not no-text-for-version"
    (e (#t #f)))
-  ("working.sc" (working-read) 1 guard
-   (#t)
-   unrelated b
-   "working-read: utf8 decode of bytes in hand"
-   (failure (#t #f)))
   ("working.sc" (behind-clauses) 1 guard
    (#t)
    unrelated b
