@@ -1111,12 +1111,14 @@
 
 ;; ---- a text-mode code block's src, as a reader is given it ---------------------------------------------
 ;;
-;; A text-mode code block stores its src as bytes, and every answer that
-;; carries its record printed them as `#vu8(...)`: read, context's (block ...)
-;; entry, the daemon's. Bytes that are exactly a text are given as the text,
-;; a leading byte-order mark kept as U+FEFF; other bytes stay bytes. Read by
-;; five routes: local read, read and context through the command line, read
-;; and context through a daemon.
+;; A text-mode code block stores its src as bytes, and every PRINTED answer
+;; that carries its record showed them as `#vu8(...)`: read, context's
+;; (block ...) entry, the daemon's. Bytes that are exactly a text are printed
+;; as the text, a leading byte-order mark kept as U+FEFF; other bytes stay
+;; bytes. Read by five printed routes -- read --wire and read through the
+;; command line, context --wire through it, read and context through a
+;; daemon that came up and dispatched them -- and the answer inside the
+;; process keeps the bytes (a scope copies blocks through it).
 (define rx-s (fresh-store!))
 (define rx-dir (string-append root "/readertext"))
 (system (string-append "mkdir -p " (quoted rx-dir)))
@@ -1143,29 +1145,50 @@
 (define (parsed text) (if (string? text) (guard (e (#t 'UNREADABLE)) (read (open-string-input-port text))) text))
 (define (context-block-src a id)
   (let ((b (sub (entry-of a id) 'block))) (and b (record-src (cadr b)))))
-(define (rx-local id)
-  (list (record-src (let ((a (run rx-s 'read id))) (and (ok? a) (cadr a))))
-        (record-src (let ((a (parsed (cli-wire rx-s "read" id)))) (and (ok? a) (cadr a))))
+(define (cli-human s . args)
+  (let* ((out (string-append root "/cli-human.out"))
+         (rc (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../core.sc "
+                                    (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                                    "--store " (quoted (st-path s)) " > " (quoted out) " 2>/dev/null < /dev/null"))))
+    (if (= rc 0) (file-text out) (list 'FAILED rc (file-text out)))))
+(define (rx-printed id)
+  (list (record-src (let ((a (parsed (cli-wire rx-s "read" id)))) (and (ok? a) (cadr a))))
+        (record-src (let ((a (parsed (cli-human rx-s "read" id)))) (and (ok? a) (cadr a))))
         (context-block-src (parsed (cli-wire rx-s "context" "--for" id "--budget" "100000")) id)))
-(define rx-local-readings (map rx-local (list rx-p rx-m rx-r)))
-(start-daemon! rx-s)
+(define rx-printed-readings (map rx-printed (list rx-p rx-m rx-r)))
+;; the daemon's trace lines for VERB: a reading taken through it, not a
+;; local fallback, is one of them
+(define (served verb)
+  (let ((t (file-text daemon-log)) (needle (string-append "(trace daemon-dispatch " verb)))
+    (let loop ((i 0) (n 0))
+      (cond ((> (+ i (string-length needle)) (string-length t)) n)
+            ((string=? (substring t i (+ i (string-length needle))) needle) (loop (+ i 1) (+ n 1)))
+            (else (loop (+ i 1) n))))))
+(define rx-daemon-up (start-daemon! rx-s))
 (define rx-daemon-readings
   (map (lambda (id)
          (list (record-src (let ((a (parsed (through-daemon rx-s "read" id)))) (and (ok? a) (cadr a))))
                (context-block-src (parsed (through-daemon rx-s "context" "--for" id "--budget" "100000")) id)))
        (list rx-p rx-m rx-r)))
+(define rx-daemon-served (list rx-daemon-up (>= (served "read") 3) (>= (served "context") 3)))
 (stop-daemon! rx-s)
-(define (rx-all k) (append (list-ref rx-local-readings k) (list-ref rx-daemon-readings k)))
-(want "RX-1 a UTF-8 src is a string on every route: read, read --wire, context --wire's block entry, and read and context through a daemon"
+(want "CONTROL the daemon came up and dispatched the three reads and the three contexts itself"
+      rx-daemon-served
+      '(up #t #t))
+(define (rx-all k) (append (list-ref rx-printed-readings k) (list-ref rx-daemon-readings k)))
+(want "RX-1 a UTF-8 src is printed as a string on every route: read --wire, read, context --wire's block entry, and read and context through a daemon"
       (rx-all 0)
       (make-list 5 rx-plain))
-(want "RX-2 a src beginning with a byte-order mark is the string with U+FEFF first on every route, and it encodes back to the stored bytes"
+(want "RX-2 a src beginning with a byte-order mark is printed as the string with U+FEFF first on every route, and it encodes back to the stored bytes"
       (let ((got (rx-all 1)))
         (list got (and (string? (car got)) (equal? (string->utf8 (car got)) (field-of rx-s rx-m 'src)))))
       (list (make-list 5 rx-marked) #t))
-(want "RX-3 a src that is not UTF-8 stays bytes on every route"
+(want "RX-3 a src that is not UTF-8 is printed as bytes on every route"
       (rx-all 2)
       (make-list 5 rx-raw))
+(want "RX-0 PIN the answer inside the process keeps the stored bytes: a scope's copy or an export reads them as stored"
+      (map (lambda (id) (record-src (let ((a (run rx-s 'read id))) (and (ok? a) (cadr a))))) (list rx-p rx-m rx-r))
+      (list (string->utf8 rx-plain) (string->utf8 rx-marked) rx-raw))
 (want "RX-4 PIN the derived names of the two text blocks are unchanged"
       (map (lambda (id) (let* ((a (run rx-s 'read id)) (fs (and (ok? a) (assq 'fields (cadr a)))) (e (and fs (assq 'name (cdr fs))))) (and e (cdr e))))
            (list rx-p rx-m))

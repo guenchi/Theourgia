@@ -49,7 +49,57 @@
     (print-gensym #f))
 
   (define (render-wire value)
-    (call-with-string-output-port (lambda (p) (write value p) (newline p))))
+    (call-with-string-output-port (lambda (p) (write (reader-form value) p) (newline p))))
+
+  ;; A TEXT-MODE CODE BLOCK'S `src` AND `doc` ARE PRINTED AS TEXT WHEN THEY
+  ;; ARE TEXT. The store keeps them as bytes, and a block record printed with
+  ;; them as `#vu8(...)` cost three to four times the text's bytes in every
+  ;; answer carrying it -- read, context's (block ...) entries, the daemon's,
+  ;; the MCP shell's. Here, where every answer is printed, a record whose
+  ;; fields say `(kind . code)` and `(mode . text)` has each of the two given
+  ;; as a string when its bytes are exactly that string's encoding; other
+  ;; bytes stay bytes. ONLY THE PRINTED ANSWER: the answer as a value is
+  ;; unchanged, so a caller inside the process -- a scope copying blocks, an
+  ;; export -- still has the bytes as stored.
+  ;;
+  ;; EXACTLY: the string encodes back to the same bytes. `utf8->string` drops
+  ;; one leading byte-order mark, so a string that comes back three bytes
+  ;; short is tried again with U+FEFF in front; whichever encodes back to the
+  ;; bytes is the text, and none is no text.
+  (define (exact-text bv)
+    (let* ((t (utf8->string bv))
+           (marked (string-append (string #\xFEFF) t)))
+      (cond ((bytevector=? (string->utf8 t) bv) t)
+            ((bytevector=? (string->utf8 marked) bv) marked)
+            (else #f))))
+  ;; X is a proper list here; -> its `(fields ...)` element when that says a
+  ;; text-mode code block, else #f.
+  (define (text-mode-fields x)
+    (let ((e (find (lambda (y) (and (pair? y) (eq? (car y) 'fields))) x)))
+      (and e (list? (cdr e)) (for-all pair? (cdr e))
+           (equal? (assq 'kind (cdr e)) '(kind . code))
+           (equal? (assq 'mode (cdr e)) '(mode . text))
+           e)))
+  ;; ONCE OVER THE ANSWER: a proper list is asked once whether it is such a
+  ;; record and otherwise mapped, so an answer of n items costs n, not n
+  ;; squared as walking every tail would.
+  (define (reader-form x)
+    (cond
+      ((not (pair? x)) x)
+      ((not (list? x)) (cons (reader-form (car x)) (reader-form (cdr x))))
+      ((text-mode-fields x)
+       => (lambda (e)
+            (map (lambda (y)
+                   (if (eq? y e)
+                       (cons 'fields
+                             (map (lambda (f)
+                                    (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
+                                        (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
+                                        f))
+                                  (cdr e)))
+                       y))
+                 x)))
+      (else (map reader-form x))))
   ;; THE INCOMPLETE CLAUSE IS PRINTED EVEN WHERE THE REST OF THE ANSWER IS
   ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
   ;; used to drop every clause after the body; the one saying the answer

@@ -525,43 +525,7 @@
   ;; view in this file comes through here.
   (define (view-of state id)
     (guard (e (#t (raise (append (guarded (lambda () (raise e))) (list (list 'id id))))))
-      (reader-record (view-read state id))))
-
-  ;; THE RECORD A READER IS GIVEN: a text-mode code block's `src` and `doc`
-  ;; are stored as bytes, and printed so -- `#vu8(...)`, three to four times
-  ;; the bytes of the text, in every answer that carries the record (read,
-  ;; context's (block ...) entries, the daemon's). When those bytes are
-  ;; exactly a text, the reader is given the text. Exactly: the string
-  ;; encodes back to the same bytes, a leading byte-order mark kept as its
-  ;; character (utf8->string drops it, and the string then encodes three
-  ;; bytes short); anything else stays bytes. Only here: the view itself,
-  ;; which export, the definitions index and the projections read, keeps the
-  ;; bytes as stored.
-  (define (exact-text bv)
-    (let* ((t (utf8->string bv))
-           (marked? (and (>= (bytevector-length bv) 3)
-                         (= (bytevector-u8-ref bv 0) #xEF)
-                         (= (bytevector-u8-ref bv 1) #xBB)
-                         (= (bytevector-u8-ref bv 2) #xBF)))
-           (t (if (and marked? (or (= (string-length t) 0) (not (char=? (string-ref t 0) #\xFEFF))))
-                  (string-append (string #\xFEFF) t)
-                  t)))
-      (and (bytevector=? (string->utf8 t) bv) t)))
-  (define (reader-record b)
-    (let* ((fs (and (pair? b) (assq 'fields b) (cdr (assq 'fields b))))
-           (get (lambda (k) (let ((e (and (list? fs) (assq k fs)))) (and e (cdr e))))))
-      (if (not (and (list? fs) (eq? (get 'kind) 'code) (eq? (get 'mode) 'text)))
-          b
-          (map (lambda (e)
-                 (if (and (pair? e) (eq? (car e) 'fields))
-                     (cons 'fields
-                           (map (lambda (f)
-                                  (if (and (pair? f) (memq (car f) '(src doc)) (bytevector? (cdr f)))
-                                      (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
-                                      f))
-                                (cdr e)))
-                     e))
-               b))))
+      (view-read state id)))
 
   ;; A TITLE IS SOMETHING A PERSON READS, so it comes from the view: for
   ;; a code block the name is derived from its source, and `state-read`
