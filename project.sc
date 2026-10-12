@@ -43,7 +43,7 @@
           ;; projections; that move is recorded, not done here.
           (only (theourgia code-project) code-safe-path?)
           ;; what a text import holds is decided once, for both importers
-          (only (theourgia markers) import-text?)
+          (only (theourgia markers) import-text? src-text)
           (theourgia md)
           (theourgia reduce)
           (theourgia store))
@@ -53,7 +53,7 @@
            (e (and fs (assq name fs))))
       (and e (cdr e))))
 
-;; A field as text: a string, or a bytevector that is text (src-text keeps
+  ;; A field as text: a string, or a bytevector that is text (src-text keeps
   ;; a leading mark, as the block holds it); anything else is "".
   (define (text-field b name)
     (let ((v (field b name)))

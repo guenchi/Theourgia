@@ -52,7 +52,8 @@
           (only (theourgia templates) built-in-template built-in-template-names)
           (only (theourgia template-read) parse-template-text template-block-ids template-roots template-relations template-rules
                 slug-block-ids root-slug root-kind root-path root-insert-payload template-problem)
-          (only (theourgia extensions) template-usage))
+          (only (theourgia extensions) template-usage)
+          (only (theourgia markers) src-text))
 
   ;; `template apply <name>`, `template apply --file <template-file>`,
   ;; `template export`, with the eight arguments every handler takes.
@@ -95,7 +96,10 @@
             ((template-problem state)
              => (lambda (r) (list 'error 'template-unreadable (list 'reason r) (cons 'ids ids))))
             (else
-             (let ((src (field-of (state-read state (car ids)) 'src)))
+             ;; A src held as bytes (a committed draft that began with a
+             ;; byte-order mark) is printed as its text, the mark included.
+             (let* ((stored (field-of (state-read state (car ids)) 'src))
+                    (src (if (bytevector? stored) (src-text stored) stored)))
                (if (string? src)
                    (list 'ok (list 'text (string-append src (if (and (> (string-length src) 0)
                                                                     (char=? #\newline (string-ref src (- (string-length src) 1))))

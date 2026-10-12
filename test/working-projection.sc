@@ -1,5 +1,7 @@
 #!r6rs
-(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi))
+(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi)
+        (only (theourgia extensions) extension-verbs))
+(register-verbs! extension-verbs)
 (define failures 0)
 (define (want name actual expected)
   (if (equal? actual expected) (printf "ok ~a\n" name)
@@ -160,12 +162,12 @@
                 ((pair? x) (or (find-text (car x)) (find-text (cdr x))))
                 (else #f))))
       #t)
-;; src-text (store.sc), the judgement both sites use, on the shapes a request's
+;; src-text (markers.sc), the judgement both sites use, on the shapes a request's
 ;; text cannot carry: a mark before malformed bytes, a cut mark, a mark alone.
 ;; Taken at run time, so a store that does not export it reads as this row's
 ;; red, not as a fixture that cannot load.
 (define src-text-of
-  (guard (e (#t #f)) (eval 'src-text (environment '(theourgia store)))))
+  (guard (e (#t #f)) (eval 'src-text (environment '(theourgia markers)))))
 (want "WP-09 src-text: a mark before a malformed byte, a cut mark, a mark alone, plain text, two marks, an interior U+FEFF"
       (and src-text-of
            (let ((feff (string (integer->char #xFEFF))))
@@ -194,5 +196,44 @@
               (and contents (>= (length contents) 2) (list-head contents 2))))
       (list '(error stale-baseline)
             (list '(content elided 1025) (list 'set since-id 'src (string->utf8 (marked-of 1024))))))
+;; WP-09, TWO MORE CONSUMERS OF A COMMITTED SRC HELD AS BYTES, in a store of
+;; their own: the template reader (a store's template block edited with
+;; write and commit, as the README says) and export-code (a text file's
+;; code block). Each row also requires the marked commit and the bytevector
+;; it stores, so a tree that cannot commit a marked draft reads red here.
+(define store2 (string-append root "/store2"))
+(define (call2 . args) (rpc-dispatch store2 args "test"))
+(define (first-id-of answer)
+  (let ((items (and (pair? answer) (eq? (car answer) 'ok) (assq 'items (filter pair? (cdr answer))))))
+    (and items (pair? (cdr items)) (pair? (cadr items)) (cadr (cadr items)))))
+(define (src-of-2 id) (cdr (assq 'src (cdr (assq 'fields (state-read (open-and-reduce store2) id))))))
+(call2 'init "--template" "project")
+(define template-id (first-id-of (call2 'query "(kind ?b template)")))
+(want "WP-09 a template block edited to begin with the mark commits as bytes, and template export still reads it"
+      (let* ((t (and template-id (call2 'read template-id "--working" "--writer" "window-t")))
+             (text (and (pair? t) (eq? (car t) 'ok) (assq 'text (filter pair? (cdr t)))))
+             (w (and text (call2 'write template-id (string-append (string (integer->char #xFEFF)) (cadr text)) "--writer" "window-t")))
+             (c (and (pair? w) (eq? (car w) 'ok) (guard (e (#t 'RAISED)) (call2 'commit template-id "--writer" "window-t"))))
+             (x (call2 'template "export")))
+        (list (and template-id #t) (rpc-ok? c) (bytevector? (src-of-2 template-id))
+              (and (pair? x) (car x))))
+      '(#t #t #t ok))
+(define code-dir (string-append root "/code-src"))
+(mkdir-p! code-dir)
+(call-with-port (open-file-output-port (string-append code-dir "/a.sc") (file-options no-fail))
+  (lambda (o) (put-bytevector o (string->utf8 "(define a 1)\n"))))
+(call2 'import-code code-dir)
+(define code-id (first-id-of (call2 'query "(kind ?b code)")))
+(want "WP-09 a text file's code block drafted with the mark commits as bytes, and export-code --raw writes the marked bytes"
+      (let* ((marked-code (string-append (string (integer->char #xFEFF)) "(define a 1)\n"))
+             (w (and code-id (call2 'write code-id marked-code "--writer" "window-c")))
+             (c (and (pair? w) (eq? (car w) 'ok) (guard (e (#t 'RAISED)) (call2 'commit code-id "--writer" "window-c"))))
+             (out (string-append root "/code-out"))
+             (x (call2 'export-code out "--raw"))
+             (bytes (let ((f (string-append out "/a.sc")))
+                      (and (file-exists? f) (call-with-port (open-file-input-port f) get-bytevector-all)))))
+        (list (and code-id #t) (rpc-ok? c) (bytevector? (src-of-2 code-id)) (and (pair? x) (car x))
+              (equal? bytes (string->utf8 marked-code))))
+      '(#t #t #t ok #t))
 (printf "~a failures\nworking-projection complete\n" failures)
 (exit (if (= failures 0) 0 1))

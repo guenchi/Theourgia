@@ -63,11 +63,27 @@
   ;; left `header-read` and `block-read` behind and the library would not
   ;; load. A move is finished when the thing moved has nothing left
   ;; pointing back.
-  (export byte-slice bytes-append byte-lines safe-utf8 import-text? mark-length after-mark string-prefix-at?
+  (export byte-slice bytes-append byte-lines safe-utf8 src-text import-text? mark-length after-mark string-prefix-at?
           language-property projection-failure hex-decode safe-id?
           header-read block-read
           wrapping marker-line family projection-header-wrapper? projection-control)
   (import (rnrs) (only (theourgia wire) storable-decode string->sexpr-extended))
+
+  ;; THE TEXT OF A STORED VALUE'S BYTES, or #f: the bytes are that text's
+  ;; UTF-8. A leading byte-order mark is KEPT, as U+FEFF in front, so the
+  ;; text's UTF-8 is the stored bytes again: what a reader hands to a writer,
+  ;; or renders, comes back byte for byte (utf8->string drops the mark). The
+  ;; bytes after a mark must still round-trip. Here, below the store, so the
+  ;; template reader (which may not import the store) reads it too.
+  (define (src-text b)
+    (let ((s (guard (failure (#t #f)) (utf8->string b))))
+      (and s
+           (cond ((bytevector=? b (string->utf8 s)) s)
+                 ((and (>= (bytevector-length b) 3) (= (bytevector-u8-ref b 0) #xEF)
+                       (= (bytevector-u8-ref b 1) #xBB) (= (bytevector-u8-ref b 2) #xBF))
+                  (let ((t (string-append (string (integer->char #xFEFF)) s)))
+                    (and (bytevector=? b (string->utf8 t)) t)))
+                 (else #f)))))
 
   (define (byte-slice b from to)
     (let ((out (make-bytevector (- to from)))) (bytevector-copy! b from out 0 (- to from)) out))

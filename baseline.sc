@@ -125,7 +125,7 @@
   ;; A record with no body -- a delete, a move -- has no text to measure
   ;; and no text to be long; its encoded form is used, which is bounded
   ;; by the shape of the verb.
-;; A src written as bytes (a marked src, an imported file) is a body too:
+  ;; A src written as bytes (a marked src, an imported file) is a body too:
   ;; its size is its length.
   (define (content-body content)
     (and (pair? content) (eq? 'set (car content))

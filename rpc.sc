@@ -55,7 +55,8 @@
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
           (rnrs eval)
-          (theourgia arguments) (theourgia project) (theourgia md))
+          (theourgia arguments) (theourgia project) (theourgia md)
+          (only (theourgia markers) src-text))
 
   ;; ---- answers --------------------------------------------------------------
 

@@ -22,7 +22,7 @@
           ;; this one moved -- and would still look like it was working.
           (rename (lock-path draft-lock-path)))
   (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
-          (theourgia wire) (theourgia digest)
+          (theourgia wire) (theourgia digest) (only (theourgia markers) src-text)
           (only (theourgia log) store-writers writer-directory atomic-write!
                 remember-unreadable-notes! unreadable-behind
                 directory-entry-durable! present-or-unreadable-skip?)
@@ -863,7 +863,7 @@
                                               entries)))))
             (else (baseline-combine bad)))))
   ;; A MARKED SRC IS COMMITTED AS ITS BYTES, mark included, as import-code
-  ;; stores a marked file; every other src as its text. src-text (store.sc)
+  ;; stores a marked file; every other src as its text. src-text (markers.sc)
   ;; answers a marked src's text with U+FEFF in front, and only then.
   (define (entry-intent e)
     (let* ((bytes (list-ref e 7)) (text (src-text bytes)))

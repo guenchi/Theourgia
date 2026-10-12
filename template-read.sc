@@ -35,6 +35,7 @@
           root-slug root-kind root-path root-sentence parse-template-text
           slug-block-ids query-scope-root root-insert-payload)
   (import (rnrs)
+          (only (theourgia markers) src-text)
           (only (theourgia reduce) state-read state-block-ids caller-payload-reason)
           (only (theourgia field-reading) field-of))
 
@@ -55,10 +56,16 @@
         ((null? ids) #f)
         ((pair? (cdr ids)) (list 'problem 'several-template-blocks))
         (else
-         (let ((src (field-of (state-read state (car ids)) 'src)))
-           (if (not (string? src))
+         ;; A src held as bytes (a committed draft that began with a byte-order
+         ;; mark) is read as its text, the mark left out of what is parsed.
+         (let* ((src (field-of (state-read state (car ids)) 'src))
+                (text (cond ((string? src) src) ((bytevector? src) (src-text src)) (else #f)))
+                (text (if (and text (> (string-length text) 0) (char=? (string-ref text 0) (integer->char #xFEFF)))
+                          (substring text 1 (string-length text))
+                          text)))
+           (if (not text)
                (list 'problem 'src-not-a-string)
-               (parse-template-text src)))))))
+               (parse-template-text text)))))))
 
   ;; The text of a template, read as exactly one well-formed template datum.
   ;; -> (ok <datum>) | (problem <reason>).

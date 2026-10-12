@@ -17,7 +17,7 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export src-text store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
+  (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
           judgement-refusal?
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
@@ -839,20 +839,6 @@
           (begin (when (or (null? count?) (car count?))
                    (set! text-decode-skipped (+ text-decode-skipped 1)))
                  #f))))
-
-;; THE TEXT OF A STORED VALUE'S BYTES, or #f: the bytes are that text's
-  ;; UTF-8. Unlike decoded-text, a leading byte-order mark is KEPT, as U+FEFF
-  ;; in front, so the text's UTF-8 is the stored bytes again: what a reader
-  ;; hands to a writer, or renders, comes back byte for byte. The bytes after
-  ;; a mark must still round-trip.
-  (define (src-text b)
-    (let ((s (guard (failure (#t #f)) (utf8->string b))))
-      (and s
-           (cond ((bytevector=? b (string->utf8 s)) s)
-                 ((utf8-mark? b)
-                  (let ((t (string-append (string (integer->char #xFEFF)) s)))
-                    (and (bytevector=? b (string->utf8 t)) t)))
-                 (else #f)))))
 
   (define (utf8-mark? bv)
     (and (>= (bytevector-length bv) 3)
