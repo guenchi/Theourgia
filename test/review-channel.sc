@@ -608,16 +608,26 @@
 (cli "init-mt" "author" "init" "--store" MT)
 (cli "import-mt" "author" "import-code" MT-dir "--store" MT)
 (define MT-code (find (lambda (id) (equal? (field-of MT id 'src) MT-bytes)) (outline-order MT)))
+;; THE FILE BLOCK IS SCOPED: it holds the path, and export-code writes a file
+;; for a file block only; the code block is its child.
+(define MT-file (and MT-code (parent-of MT MT-code)))
+;; READS THE DAEMONS DISPATCHED: scope's copies are read with `read`, and
+;; its letter is written with a batch, so a count of every dispatch would
+;; be met by the letter alone.
+(define (served-reads)
+  (let ((f (string-append root "/served-reads.txt")))
+    (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c 'daemon-dispatch read' > '" f "' || true"))
+    (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
 (define XT (string-append root "/scoped-text"))
-(define served-t0 (served-count))
-(define ST (and MT-code
+(define served-t0 (served-reads))
+(define ST (and MT-file
                 (first-datum (cli "scope-mt" "author" "scope" XT "--cut" (format "~s" (reduce-applied-cut (state MT)))
-                                  "--roots" MT-code "--for" "codex" "--store" MT))))
-(define served-t1 (served-count))
+                                  "--roots" MT-file "--for" "codex" "--store" MT))))
+(define served-t1 (served-reads))
 (define XT-copy (and ST (find (lambda (id) (equal? (field-of XT id 'origin) MT-code)) (outline-order XT))))
 (define XT-out (string-append root "/scoped-text-export"))
 (define XT-export (and XT-copy (run XT "author" 'export-code XT-out "--raw")))
-(want "D a text-mode code block scoped through the main store's daemon: the copy holds the source's bytes, and the scoped store exports the file byte for byte"
+(want "D a text-mode code block scoped through the main store's daemon, which read it: the copy holds the source's bytes, and the scoped store exports the file byte for byte"
       (in-order (and ST (car ST)) (> served-t1 served-t0) (and XT-copy (field-of XT XT-copy 'src))
                 (and (pair? XT-export) (car XT-export))
                 (let ((f (string-append XT-out "/scoped.js")))

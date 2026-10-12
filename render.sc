@@ -72,41 +72,45 @@
       (cond ((bytevector=? (string->utf8 t) bv) t)
             ((bytevector=? (string->utf8 marked) bv) marked)
             (else #f))))
-  ;; X is a proper list here; -> its `(fields ...)` element when X is a
-  ;; block record of a text-mode code block, else #f. A RECORD IS KNOWN BY
-  ;; ITS HEAD, as state-read builds it: (id . "<id>"), (deleted . #t/#f),
-  ;; then (fields ...). A value that only looks like a fields list -- a
-  ;; custom field holding one, a query row -- is not a record and is left.
-  (define (text-mode-fields x)
+  ;; X is a proper list here. A BLOCK RECORD IS KNOWN BY ITS HEAD, as
+  ;; state-read builds it: (id . "<id>"), (deleted . #t/#f), then
+  ;; (fields ...); -> that fields element, else #f.
+  (define (record-fields x)
     (and (>= (length x) 3)
          (pair? (car x)) (eq? (caar x) 'id) (string? (cdar x))
          (pair? (cadr x)) (eq? (caadr x) 'deleted) (boolean? (cdadr x))
          (let ((e (caddr x)))
-           (and (pair? e) (eq? (car e) 'fields) (list? (cdr e)) (for-all pair? (cdr e))
-                (equal? (assq 'kind (cdr e)) '(kind . code))
-                (equal? (assq 'mode (cdr e)) '(mode . text))
-                e))))
-  ;; ONCE OVER THE ANSWER: a proper list is asked once whether it is such a
-  ;; record and otherwise mapped, so an answer of n items costs n, not n
-  ;; squared as walking every tail would.
+           (and (pair? e) (eq? (car e) 'fields) (list? (cdr e)) (for-all pair? (cdr e)) e))))
+  (define (text-mode? e)
+    (and (equal? (assq 'kind (cdr e)) '(kind . code))
+         (equal? (assq 'mode (cdr e)) '(mode . text))))
+  ;; ONCE OVER THE ANSWER: a proper list is asked once whether it is a record
+  ;; and otherwise mapped, so an answer of n items costs n, not n squared as
+  ;; walking every tail would. NOTHING STORED IS ENTERED: a block record is
+  ;; given back whole (a text-mode one with its src and doc as text), and a
+  ;; query's (row ...) is a row of stored values, so a field holding a value
+  ;; shaped like a record is printed as it is stored.
   (define (reader-form x)
     (cond
       ((not (pair? x)) x)
       ((not (list? x))
        (let walk ((p x))
          (if (pair? p) (cons (reader-form (car p)) (walk (cdr p))) (reader-form p))))
-      ((text-mode-fields x)
+      ((eq? (car x) 'row) x)
+      ((record-fields x)
        => (lambda (e)
-            (map (lambda (y)
-                   (if (eq? y e)
-                       (cons 'fields
-                             (map (lambda (f)
-                                    (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
-                                        (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
-                                        f))
-                                  (cdr e)))
-                       y))
-                 x)))
+            (if (not (text-mode? e))
+                x
+                (map (lambda (y)
+                       (if (eq? y e)
+                           (cons 'fields
+                                 (map (lambda (f)
+                                        (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
+                                            (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
+                                            f))
+                                      (cdr e)))
+                           y))
+                     x))))
       (else (map reader-form x))))
   ;; THE INCOMPLETE CLAUSE IS PRINTED EVEN WHERE THE REST OF THE ANSWER IS
   ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
