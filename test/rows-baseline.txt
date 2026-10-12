@@ -150,7 +150,7 @@ smoke-wire - 24 9d129dbffacf937198c9f06f051245bf
 smoke-wire-fuzz - 5 d2f81d74fdad6c838e079be6a1e05d51
 smoke-wire-trace - 6 41b0a4d9dda05cea5ab8de0a6cb1771d
 snap1 22 32 e6c084dd04e53d68dc866c80c22b825c
-spawn-environment 7 11 07a0c556ed7623ab1752a2fa447826a8
+spawn-environment 7 11 08391f3b17cd280b0592707066206d9e
 split-symbols 36 40 fd6bd5522c88facad0ef2dbf3085e804
 stage-gate - 5 0f911587319ae008949660d0f4a59639
 startup-ratio 59 68 4b961d3e19f1f7a9b586d84d519cf2f6
@@ -164,7 +164,7 @@ tmp-paths 47 115 62d8b37bcc42f8df6fcc8f0322186c6b
 tree-round-trip 0 5 3fb82603f94c056ecbff456037b720f0
 unreadable-acknowledge-routes 68 77 3287bb10f4d537a659c856e845343718
 unreadable-adopt 34 47 5fd5d9cdf1ec3a2c22ef87ab5656eccf
-unreadable-census 42 47 7e492bcd4d3ac8d1d38c6c634d510012
+unreadable-census 42 47 1ef39476f7246abe0dac1e2a3d2a27a7
 unreadable-drafts 16 24 843bd3f4efb488a1c67bd08440860dc4
 unreadable-publish 12 20 1bd757617c5384250f492cc79efdc2fc
 unreadable-routes 76 87 032738ddf8497f5a612bfe61ea20f4e3

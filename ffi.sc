@@ -1329,7 +1329,13 @@
   ;; nothing reads it, and a pipe nobody reads can fill.
   (define environment-EINTR (platform-number 'EINTR))
   (define environment-EIO (platform-number 'EIO))
+  ;; A FAILURE OF CHEZ'S OWN (the process could not be started, its output
+  ;; could not be read) is that same fs-error, so every caller classifies it.
   (define (process-environment)
+    (guard (e ((fs-error? e) (raise e))
+              (#t (raise (fs-err 'environment "/usr/bin/env" environment-EIO))))
+      (read-process-environment)))
+  (define (read-process-environment)
     (let-values (((to-child from-child errors pid)
                   (open-process-ports "exec /usr/bin/env -0 2>/dev/null" (buffer-mode block) #f)))
       (let ((bytes #f) (status #f))

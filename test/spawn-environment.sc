@@ -48,6 +48,9 @@
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/spawn-environment-" (number->string (get-process-id))))
 (system (string-append "rm -rf '" root "'; mkdir -p '" root "'"))
+;; THE NAME A LOST ENVIRONMENT COSTS MOST: a daemon started without it opens
+;; another store. Set here, so E-6 can require it.
+(putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 ;; ---- reading a NUL-separated environment -----------------------------------------------------------
 
@@ -117,16 +120,16 @@
 ;; E-3 and E-4 compare a child with process-environment itself, so an entry
 ;; it dropped would be dropped on both sides. These names are checked against
 ;; this process's getenv directly, in both children's environments.
-(define independent '("PATH" "HOME" "THEOURGIA_TEST_ROOT" "THEOURGIA_F191_A" "THEOURGIA_F191_EQ"))
-(want "E-6 PATH, HOME, the test root and two values set after the start reach both children as this process's getenv gives them"
+(define independent '("PATH" "HOME" "THEOURGIA_HOME" "THEOURGIA_TEST_ROOT" "THEOURGIA_F191_A" "THEOURGIA_F191_EQ"))
+(want "E-6 PATH, HOME, THEOURGIA_HOME, the test root and two values set after the start reach both children as this process's getenv gives them"
       (let ((expected (map (lambda (n) (string-append n "=" (getenv n))) (filter getenv independent))))
         (list (length expected)
               (for-all (lambda (e) (and (member e (entries-of (bytes-of captured-out))) #t)) expected)
               (for-all (lambda (e) (and (member e (entries-of (bytes-of detached-out))) #t)) expected)))
       (list (length (filter getenv independent)) #t #t))
-(want "E-6 PREMISE: the two values set after the start, and PATH, are set here"
-      (map (lambda (n) (and (getenv n) #t)) '("THEOURGIA_F191_A" "THEOURGIA_F191_EQ" "PATH"))
-      '(#t #t #t))
+(want "E-6 PREMISE: THEOURGIA_HOME, the two values set after the start, and PATH, are set here"
+      (map (lambda (n) (and (getenv n) #t)) '("THEOURGIA_HOME" "THEOURGIA_F191_A" "THEOURGIA_F191_EQ" "PATH"))
+      '(#t #t #t #t))
 
 ;; ---- E-5: the reading against the C library's environ --------------------------------------------
 
@@ -137,6 +140,12 @@
           (else 'other))))
 ;; THE NAMES EACH PLATFORM'S /bin/sh REMOVES, as measured (header).
 (define removed-by-sh (case platform ((darwin) '("OLDPWD")) ((freebsd) '()) (else #f)))
+(define (admissible-name? bytes)
+  (let loop ((i 0))
+    (cond ((= i (bytevector-length bytes)) #f)
+          ((= 61 (bytevector-u8-ref bytes i))
+           (and (> i 0) (let* ((nb (subbytes bytes 0 i)) (s (utf8->string nb))) (bytevector=? nb (string->utf8 s)))))
+          (else (loop (+ i 1))))))
 (define c-environ
   (guard (e (#t #f))
     (and (begin (for-each (lambda (l) (guard (x (#t #f)) (load-shared-object l))) '("libc.dylib" "libc.so.7" "libc.so.6")) #t)
@@ -146,10 +155,13 @@
              (let ((p (foreign-ref 'void* at (* i width))))
                (if (= p 0) (reverse out)
                    (loop (+ i 1)
-                         (cons (let c ((k 0) (bs '()))
-                                 (let ((b (foreign-ref 'unsigned-8 p k)))
-                                   (if (= b 0) (utf8->string (u8-list->bytevector (reverse bs))) (c (+ k 1) (cons b bs)))))
-                               out)))))))))
+                         (let ((bytes (let c ((k 0) (bs '()))
+                                        (let ((b (foreign-ref 'unsigned-8 p k)))
+                                          (if (= b 0) (u8-list->bytevector (reverse bs)) (c (+ k 1) (cons b bs)))))))
+                           ;; THE SAME ADMISSIBILITY AS process-environment: an
+                           ;; entry whose name is not UTF-8 cannot be asked of
+                           ;; getenv and is left out on both sides.
+                           (if (admissible-name? bytes) (cons (utf8->string bytes) out) out))))))))))
 (want "E-5 READING: where environ is readable, process-environment is within it and lacks only names this platform's sh removes; FreeBSD has no environ symbol"
       (case platform
         ((freebsd) (if c-environ 'environ-readable 'no-environ-symbol))
