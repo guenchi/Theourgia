@@ -142,9 +142,14 @@
       #t)
 ;; src-text (store.sc), the judgement both sites use, on the shapes a request's
 ;; text cannot carry: a mark before malformed bytes, a cut mark, a mark alone.
+;; Taken at run time, so a store that does not export it reads as this row's
+;; red, not as a fixture that cannot load.
+(define src-text-of
+  (guard (e (#t #f)) (eval 'src-text (environment '(theourgia store)))))
 (want "WP-09 src-text: a mark before a malformed byte, a cut mark, a mark alone, plain text"
-      (list (src-text (bytevector #xEF #xBB #xBF #xFF)) (src-text (bytevector #xEF #xBB))
-            (equal? (src-text (bytevector #xEF #xBB #xBF)) (string (integer->char #xFEFF))) (src-text (string->utf8 "abc")))
+      (and src-text-of
+           (list (src-text-of (bytevector #xEF #xBB #xBF #xFF)) (src-text-of (bytevector #xEF #xBB))
+                 (equal? (src-text-of (bytevector #xEF #xBB #xBF)) (string (integer->char #xFEFF))) (src-text-of (string->utf8 "abc"))))
       '(#f #f #t "abc"))
 ;; A committed marked src in a stale-baseline refusal's since: its size is its
 ;; bytes. Two other writers commit marked drafts of 1024 and 1025 bytes over a
