@@ -32,7 +32,9 @@
 ;; the last window to the tenth per phase. The rows assert only the shape;
 ;; the readings are the deliverable.
 
-(import (chezscheme) (theourgia rpc))
+(import (chezscheme) (theourgia rpc)
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia reduce) reduce-applied-cut))
 
 (define bad 0)
 (define rows 0)
@@ -71,11 +73,16 @@
       (loop (+ k 1)))))
 ;; IMPORT IN A CHILD, so the switch, read once when the library loads, is the
 ;; child's: TIMING is "1" or #f (unset).
+;; A TRACKED REQUEST carries its id and the cursor it was made at: the store's
+;; writer and the last of its records applied (none yet on a fresh store: 0).
 (define (import-in-child! tag dir timing)
-  (let ((store (string-append root "/" tag "-store")) (err (string-append root "/" tag ".err")))
-    (rpc-dispatch store '(init) "test")
+  (let* ((store (string-append root "/" tag "-store")) (err (string-append root "/" tag ".err"))
+         (made (rpc-dispatch store '(init) "test"))
+         (writer (cadr (assq 'writer (cdr made))))
+         (seen (assoc writer (reduce-applied-cut (open-and-reduce store))))
+         (cursor (string-append writer ":" (number->string (if seen (cdr seen) 0)))))
     (system (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
-                           "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --wire"
+                           "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --cursor '" cursor "' --wire"
                            " > '" root "/" tag ".out' 2> '" err "' < /dev/null"))
     (list (file-text (string-append root "/" tag ".out")) (timing-lines err) (file-text err))))
 (define (contains? s sub)
