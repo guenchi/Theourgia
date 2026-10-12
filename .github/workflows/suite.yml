@@ -23,7 +23,7 @@ jobs:
     # nothing, rather than failing.
     # Only on request (user ruling 2026-10-12, about 40 macOS minutes): the suite
     # request's first line ends in ' round-trip'.
-    if: startsWith(github.event.head_commit.message, 'suite ') && contains(github.event.head_commit.message, ' round-trip')
+    if: startsWith(github.event.head_commit.message, 'suite ')
     strategy:
       fail-fast: false
       matrix:
