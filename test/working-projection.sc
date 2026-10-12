@@ -89,7 +89,10 @@
 ;; marked bytes reads back with the mark, under --working and under
 ;; --working-info; it commits, as its bytes; and the store read again from
 ;; its log (a fresh fold) and a plain read hold the same bytes, mark included.
-(define marked (u8-list->bytevector (append '(#xEF #xBB #xBF) (bytevector->u8-list (string->utf8 "(define x 1)\n")))))
+;; The draft is written as a client sends it, text: U+FEFF in front, whose
+;; UTF-8 is EF BB BF (a request's arguments are strings).
+(define marked-text (string-append (string (integer->char #xFEFF)) "(define x 1)\n"))
+(define marked (string->utf8 marked-text))
 (define marked-id
   (let* ((a (call 'insert "--title" "M" "--text" "plain")) (ev (car (cadr (assq 'events (cdr a))))))
     (block-id (car ev) (cdr ev))))
@@ -97,8 +100,10 @@
   (let ((t (and (pair? answer) (eq? (car answer) 'ok) (assq 'text (filter pair? (cdr answer))))))
     (and t (string? (cadr t)) (string->utf8 (cadr t)))))
 (define (holds-datum? tree x) (or (equal? tree x) (and (pair? tree) (or (holds-datum? (car tree) x) (holds-datum? (cdr tree) x)))))
-(define marked-write (call 'write marked-id marked "--writer" "window-mark"))
-(want "WP-09 PREMISE: the marked draft is written" (rpc-ok? marked-write) #t)
+(define marked-write (call 'write marked-id marked-text "--writer" "window-mark"))
+(want "WP-09 PREMISE: the draft's bytes begin with the mark, and the draft is written"
+      (list (equal? (list-head (bytevector->u8-list marked) 3) '(#xEF #xBB #xBF)) (rpc-ok? marked-write))
+      '(#t #t))
 (want "WP-09 a marked draft reads back under --working as text whose UTF-8 is the draft, mark included"
       (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-mark")) marked) #t)
 (want "WP-09 and under --working-info, the projection's text"
