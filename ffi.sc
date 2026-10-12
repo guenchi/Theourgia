@@ -1311,6 +1311,10 @@
   ;; name that is not UTF-8 cannot be asked of getenv and is left out.
   ;; The child is waited for; a status already collected elsewhere (a
   ;; reap-children! between) is not an error.
+  ;;
+  ;; NEVER: NO ENVIRONMENT IS NOT AN EMPTY ONE. An env that printed nothing,
+  ;; or ended other than with exit 0, raises: passing an empty envp would
+  ;; start a daemon without THEOURGIA_HOME, silently, on another store.
   (define (process-environment)
     (let-values (((to-child from-child errors pid)
                   (open-process-ports "exec /usr/bin/env -0" (buffer-mode block) #f)))
@@ -1318,10 +1322,15 @@
       (let ((bytes (get-bytevector-all from-child)))
         (close-port from-child)
         (close-port errors)
-        (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
-              (status (make-bytevector (platform-type-size 'int) 0)))
-          (c-waitpid pid status 0))
-        (let loop ((entries (split-at-nul (if (eof-object? bytes) (make-bytevector 0) bytes)))
+        (let* ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+               (status (make-bytevector (platform-type-size 'int) 0))
+               (r (c-waitpid pid status 0))
+               (w (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int))))
+          (when (or (eof-object? bytes) (zero? (bytevector-length bytes))
+                    (and (= r pid) (not (zero? w))))
+            (assertion-violation 'process-environment
+                                 "/usr/bin/env -0 gave no environment" (list 'wait-status (and (= r pid) w)))))
+        (let loop ((entries (split-at-nul bytes))
                    (seen '()) (out '()))
           (if (null? entries)
               (reverse out)
