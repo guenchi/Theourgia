@@ -572,7 +572,7 @@
     call-with-port))
 (define close-categories '(checked escape contention out-of-scope))
 (define close-out-of-scope-definitions
-  '(above-stdio redirect-stdio! unix-socket-connect spawn-detached! barrier! rss-linux))
+  '(above-stdio redirect-stdio! unix-socket-connect spawn-detached! process-environment barrier! rss-linux))
 (define (close-sites rel text)
   (let* ((sfd (make-source-file-descriptor rel (open-bytevector-input-port (string->utf8 text))))
          (p (open-string-input-port text))

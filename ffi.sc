@@ -393,7 +393,7 @@
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
           unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
-          redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
+          redirect-stdio! spawn-detached! spawn-captured! process-environment reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
           process-id wall-clock-ms machine-home env-or libc-entry-name)
@@ -1258,36 +1258,99 @@
   ;; NOTE: THE ENVIRONMENT IS PASSED EXPLICITLY, because `posix_spawn` has
   ;; no "inherit" and a NULL envp is an EMPTY environment, not the
   ;; caller's -- a daemon started that way would lose THEOURGIA_HOME and
-  ;; open a different store than the client asked about, silently.
-  ;;
-  ;; NOTE: `environ` IS ONLY THERE ONCE libc IS LOADED. `foreign-entry?`
-  ;; answers #f for every one of these symbols in a process that has not
-  ;; touched the library yet, which reads exactly like "this platform
-  ;; does not have it". The library is loaded by the time any of this
-  ;; runs; the check below is about the platform, and says so.
+  ;; open a different store than the client asked about, silently. It is
+  ;; the one `process-environment` reads, on every platform.
   (define (spawn-detached! argv)
     (unless (and (pair? argv) (for-all string? argv))
       (assertion-violation 'spawn-detached! "argv must be a non-empty list of strings" argv))
     (unless (foreign-entry? "posix_spawnp")
       (assertion-violation 'spawn-detached! "no posix_spawnp in libc" (machine-kind)))
-    (unless (foreign-entry? "environ")
-      (assertion-violation 'spawn-detached! "no environ in libc" (machine-kind)))
     (let* ((c-spawn (foreign-procedure "posix_spawnp"
                                        (u8* string void* void* void* void*) int))
            (width (foreign-sizeof 'void*))
+           (env-strings (map c-string (process-environment)))
+           (envp (foreign-alloc (* width (+ 1 (length env-strings)))))
            (cells (foreign-alloc (* width (+ 1 (length argv)))))
            (strings (map c-string argv))
-           (pid-out (make-pid-buffer))
-           (envp (foreign-ref 'void* (foreign-entry "environ") 0)))
+           (pid-out (make-pid-buffer)))
+      (do ((ps env-strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+        (foreign-set! 'void* envp (* i width) (car ps)))
+      (foreign-set! 'void* envp (* (length env-strings) width) 0)
       (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
         (foreign-set! 'void* cells (* i width) (car ps)))
       (foreign-set! 'void* cells (* (length argv) width) 0)
       (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
         (for-each foreign-free strings)
         (foreign-free cells)
+        (for-each foreign-free env-strings)
+        (foreign-free envp)
         (if (zero? rc)
             (pid-buffer-ref pid-out)
             (raise (fs-err 'spawn (car argv) rc))))))
+
+  ;; ---- this process's environment, as a list ------------------------------
+  ;;
+  ;; NEVER: NOT THE C LIBRARY'S `environ`. On FreeBSD 15 it is defined in
+  ;; the executable's start-up code and Chez's binary does not export it:
+  ;; measured 2026-10-12, foreign-entry? answers #f for environ, __environ
+  ;; and _environ once libc.so.7 is loaded, and dlsym(RTLD_DEFAULT,
+  ;; "environ") finds nothing either. Reading it there raised "no environ in
+  ;; libc" on every spawn, so the daemon could not start.
+  ;;
+  ;; THE NAMES COME FROM `exec /usr/bin/env -0`, run by /bin/sh through
+  ;; Chez's own process ports (fork and exec in Chez's runtime, which hands
+  ;; the child this process's environment as the C library holds it, putenv
+  ;; included), and EACH VALUE FROM THIS PROCESS'S getenv. A value the shell
+  ;; rewrote (SHLVL, PWD) is therefore ours, and a name the shell added has
+  ;; no value here and is left out. A name the platform's /bin/sh REMOVES
+  ;; before running a command does not reach a child: measured 2026-10-12
+  ;; under `env -i` with a known set, none on FreeBSD 15, OLDPWD on macOS
+  ;; (bash as sh). NUL separation keeps a value with a newline whole.
+  ;;
+  ;; -> a list of "NAME=VALUE" strings, each name once, in env's order. A
+  ;; name that is not UTF-8 cannot be asked of getenv and is left out.
+  ;; The child is waited for; a status already collected elsewhere (a
+  ;; reap-children! between) is not an error.
+  (define (process-environment)
+    (let-values (((to-child from-child errors pid)
+                  (open-process-ports "exec /usr/bin/env -0" (buffer-mode block) #f)))
+      (close-port to-child)
+      (let ((bytes (get-bytevector-all from-child)))
+        (close-port from-child)
+        (close-port errors)
+        (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+              (status (make-bytevector (platform-type-size 'int) 0)))
+          (c-waitpid pid status 0))
+        (let loop ((entries (split-at-nul (if (eof-object? bytes) (make-bytevector 0) bytes)))
+                   (seen '()) (out '()))
+          (if (null? entries)
+              (reverse out)
+              (let* ((name (entry-name (car entries)))
+                     (value (and name (not (member name seen)) (getenv name))))
+                (loop (cdr entries)
+                      (if name (cons name seen) seen)
+                      (if (string? value) (cons (string-append name "=" value) out) out))))))))
+
+  ;; The pieces of a NUL-separated list of byte strings; an empty piece after
+  ;; the last NUL is not an entry.
+  (define (split-at-nul b)
+    (let loop ((i 0) (start 0) (out '()))
+      (cond ((= i (bytevector-length b))
+             (reverse (if (< start i) (cons (subbytes b start i) out) out)))
+            ((= 0 (bytevector-u8-ref b i)) (loop (+ i 1) (+ i 1) (cons (subbytes b start i) out)))
+            (else (loop (+ i 1) start out)))))
+  (define (subbytes b from to)
+    (let ((out (make-bytevector (- to from)))) (bytevector-copy! b from out 0 (- to from)) out))
+  ;; The name of a NAME=VALUE entry, or #f: the bytes before its first =, a
+  ;; non-empty UTF-8 string.
+  (define (entry-name e)
+    (let loop ((i 0))
+      (cond ((= i (bytevector-length e)) #f)
+            ((= 61 (bytevector-u8-ref e i))
+             (and (> i 0)
+                  (let* ((nb (subbytes e 0 i)) (s (utf8->string nb)))
+                    (and (bytevector=? nb (string->utf8 s)) s))))
+            (else (loop (+ i 1))))))
 
   ;; ---- a descriptor a child must not inherit ------------------------------
   ;;
@@ -1359,12 +1422,11 @@
   ;; pipes: nothing here can fill and block while the caller is not reading.
   ;;
   ;; THE ENVIRONMENT IS THE CALLER'S WITH `bindings` REPLACING ITS OWN. Each
-  ;; binding is (name . value); an entry of `environ` whose name is one of
-  ;; them is left out, and the binding is added, so the child's getenv sees
-  ;; the binding whatever the caller's environment held. Appending instead
-  ;; would leave two entries of one name, and which one a getenv answers is
-  ;; the C library's choice. The entries kept are the caller's own pointers,
-  ;; byte for byte.
+  ;; binding is (name . value); an entry of `process-environment` whose name
+  ;; is one of them is left out, and the binding is added, so the child's
+  ;; getenv sees the binding whatever the caller's environment held.
+  ;; Appending instead would leave two entries of one name, and which one a
+  ;; getenv answers is the C library's choice.
   ;;
   ;; NOTE: O_CREAT AND O_TRUNC ARE PASSED HERE, and the note at the top of
   ;; this file does not forbid it: that note is about open(2), whose mode
@@ -1395,11 +1457,9 @@
       (assertion-violation 'spawn-captured! "the stream paths must be strings" (list stdin-path stdout-path stderr-path)))
     (unless (foreign-entry? "posix_spawnp")
       (assertion-violation 'spawn-captured! "no posix_spawnp in libc" (machine-kind)))
-    (unless (foreign-entry? "environ")
-      (assertion-violation 'spawn-captured! "no environ in libc" (machine-kind)))
     ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, a raise part-way through
     ;; included: each one is recorded as it is made and freed on the way
-    ;; out. The kept environ entries are the caller's and are never freed.
+    ;; out, the environment's strings included.
     ;; AND THE FILE ACTIONS ARE DESTROYED WHENEVER THEY WERE INITIALISED: libc
     ;; owns copies of their paths, and freeing the handle's storage without
     ;; destroying it would leak those. The destroy is in the same unwind as
@@ -1415,19 +1475,13 @@
                                                (void* int string int unsigned-int) int))
                  (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
                  (width (foreign-sizeof 'void*))
-                 (names (map (lambda (b) (string->utf8 (string-append (car b) "="))) bindings))
-                 ;; A NULL environ is an empty environment, not an array to read.
-                 (environ-at (foreign-ref 'void* (foreign-entry "environ") 0))
-                 (kept (if (= environ-at 0)
-                           '()
-                           (let loop ((i 0) (out '()))
-                             (let ((entry (foreign-ref 'void* environ-at (* i width))))
-                               (if (= entry 0)
-                                   (reverse out)
-                                   (loop (+ i 1)
-                                         (if (exists (lambda (n) (c-bytes-prefix? entry n)) names)
-                                             out
-                                             (cons entry out))))))))
+                 (names (map (lambda (b) (string-append (car b) "=")) bindings))
+                 (kept (map (lambda (e) (own! (c-string e)))
+                            (filter (lambda (e)
+                                      (not (exists (lambda (n) (and (>= (string-length e) (string-length n))
+                                                                    (string=? (substring e 0 (string-length n)) n)))
+                                                   names)))
+                                    (process-environment))))
                  (added (map (lambda (b) (own! (c-string (string-append (car b) "=" (cdr b))))) bindings))
                  (envp-list (append kept added))
                  (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
@@ -1463,14 +1517,6 @@
           (for-each foreign-free owned)
           (set! owned '())))))
 
-  ;; Whether the NUL-terminated C string at `address` starts with the bytes
-  ;; of `prefix`.
-  (define (c-bytes-prefix? address prefix)
-    (let ((n (bytevector-length prefix)))
-      (let loop ((i 0))
-        (cond ((= i n) #t)
-              ((= (foreign-ref 'unsigned-8 address i) (bytevector-u8-ref prefix i)) (loop (+ i 1)))
-              (else #f)))))
 
   ;; NEVER: A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
   ;; THAT STARTED IT. `spawn-detached!` answers a pid and nothing ever

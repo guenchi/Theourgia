@@ -21,9 +21,13 @@ signal names an evaluation reports are those whose numbers every row
 shares. The rows: macOS on arm64 and on x86_64, Linux on x86_64
 and on aarch64 with glibc, and FreeBSD 15 on amd64. The macOS x86_64 row
 was read under Rosetta and equals the arm64 row number for number.
-FreeBSD 15 on amd64 has a measured row, but the daemon does not start there yet (reading its
-own environment fails intermittently); it is expected in a later
-release. The row is chosen when
+FreeBSD 15 on amd64 has a measured row, and the daemon starts there. A
+child the programs start (the daemon, an MCP child verb) receives this
+process's environment as `/usr/bin/env -0`, run by `/bin/sh`, lists its
+names, each with this process's own value: the C library's `environ` is
+not reachable from Chez on FreeBSD. A name the platform's `/bin/sh`
+removes before running a command does not reach the child -- none on
+FreeBSD 15, `OLDPWD` on macOS. The row is chosen when
 the programs start, from Chez's machine type and, on Linux, from the C
 library the process has mapped. On any other platform -- another
 architecture, a Linux with musl, a static executable, a sandbox that
