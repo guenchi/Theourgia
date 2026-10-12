@@ -3512,6 +3512,15 @@ shorter segment at that path -- a repair that replaces it whole, say --
 changes the store under the daemon as a checkout does, and is refused the
 same way, with no exemption: run such tools with the daemon stopped.
 
+NEVER: **The guard detects; it does not prevent.** It sees a swap that has
+already happened when a write asks, and nothing more. The store's lock binds
+theourgia's own processes and does nothing to an outside rename, so a file
+swapped in after a write has asked -- while that write reopens the segment
+by its path to append a record, to flush it, or to rotate it -- can receive
+the write's bytes, and the write can still be published. Stopping the daemon
+before anything replaces a segment file is the contract that keeps a store
+whole; the guard is a best-effort report for when it was not kept.
+
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or
 `$HOME/.theourgia/run` and the key is the first 16 hex digits of the
