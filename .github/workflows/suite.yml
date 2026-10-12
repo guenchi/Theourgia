@@ -21,7 +21,9 @@ jobs:
   suite:
     # A push that is not a request (a change to the harness itself) runs
     # nothing, rather than failing.
-    if: startsWith(github.event.head_commit.message, 'suite ')
+    # Only on request (user ruling 2026-10-12, about 40 macOS minutes): the suite
+    # request's first line ends in ' round-trip'.
+    if: startsWith(github.event.head_commit.message, 'suite ') && contains(github.event.head_commit.message, ' round-trip')
     strategy:
       fail-fast: false
       matrix:
@@ -188,7 +190,9 @@ jobs:
   # fixture: from the tree's test/, fresh roots, under its own alarm. Its
   # reading is its own: nine ok rows, no FAIL, its sentinel, rc 0.
   round-trip:
-    if: startsWith(github.event.head_commit.message, 'suite ')
+    # Only on request (user ruling 2026-10-12, about 40 macOS minutes): the suite
+    # request's first line ends in ' round-trip'.
+    if: startsWith(github.event.head_commit.message, 'suite ') && contains(github.event.head_commit.message, ' round-trip')
     runs-on: macos-latest
     timeout-minutes: 60
     defaults:
