@@ -483,22 +483,6 @@
                     (list 'ok (list 'restored id) (list 'writer writer)
                           (list 'version version) (list 'based-on based-on)))))))))))))) 
 
-;; THE TEXT OF A SRC'S BYTES, or #f: the bytes are that text's UTF-8. A
-  ;; leading byte-order mark is kept: utf8->string drops it, so the text a
-  ;; marked src reads as is U+FEFF in front of what follows, and its UTF-8 is
-  ;; the stored bytes again. The bytes after the mark must still round-trip.
-  (define (src-text b)
-    (let ((s (guard (failure (#t #f)) (utf8->string b))))
-      (and s
-           (cond ((equal? b (string->utf8 s)) s)
-                 ((src-marked? b)
-                  (let ((t (string-append (string (integer->char #xFEFF)) s)))
-                    (and (equal? b (string->utf8 t)) t)))
-                 (else #f)))))
-  (define (src-marked? b)
-    (and (>= (bytevector-length b) 3)
-         (= (bytevector-u8-ref b 0) #xEF) (= (bytevector-u8-ref b 1) #xBB) (= (bytevector-u8-ref b 2) #xBF)))
-
   (define (working-read store state supplied id . information)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
@@ -879,12 +863,14 @@
                                               entries)))))
             (else (baseline-combine bad)))))
   ;; A MARKED SRC IS COMMITTED AS ITS BYTES, mark included, as import-code
-  ;; stores a marked file; every other src as its text.
+  ;; stores a marked file; every other src as its text. src-text (store.sc)
+  ;; answers a marked src's text with U+FEFF in front, and only then.
   (define (entry-intent e)
     (let* ((bytes (list-ref e 7)) (text (src-text bytes)))
       (unless text
         (assertion-violation 'commit "The src field requires valid UTF-8" (list-ref e 3)))
-      (list 'set (list-ref e 3) 'src (if (src-marked? bytes) bytes text))))
+      (list 'set (list-ref e 3) 'src
+            (if (and (> (string-length text) 0) (char=? (string-ref text 0) (integer->char #xFEFF))) bytes text))))
   ;; NEVER: ONLY THE DRAFTS THIS REQUEST CONSUMED.
   ;;
   ;; The entries were read when the request was assembled, and on a

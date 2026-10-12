@@ -125,16 +125,20 @@
   ;; A record with no body -- a delete, a move -- has no text to measure
   ;; and no text to be long; its encoded form is used, which is bounded
   ;; by the shape of the verb.
+;; A src written as bytes (a marked src, an imported file) is a body too:
+  ;; its size is its length.
   (define (content-body content)
     (and (pair? content) (eq? 'set (car content))
          (= 4 (length content)) (eq? 'src (caddr content))
-         (string? (cadddr content))
+         (or (string? (cadddr content)) (bytevector? (cadddr content)))
          (cadddr content)))
 
   (define (entry-of r)
     (let* ((content (list-ref r 3))
            (body (content-body content))
-           (n (if body (bytevector-length (string->utf8 body)) (encoded-size content))))
+           (n (cond ((string? body) (bytevector-length (string->utf8 body)))
+                    (body (bytevector-length body))
+                    (else (encoded-size content)))))
       (list (event-of r) (list-ref r 4)
             (if (> n content-limit) (list 'content 'elided n) content))))
 

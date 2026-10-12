@@ -53,8 +53,11 @@
            (e (and fs (assq name fs))))
       (and e (cdr e))))
 
+;; A field as text: a string, or a bytevector that is text (src-text keeps
+  ;; a leading mark, as the block holds it); anything else is "".
   (define (text-field b name)
-    (let ((v (field b name))) (if (string? v) v "")))
+    (let ((v (field b name)))
+      (cond ((string? v) v) ((and (bytevector? v) (src-text v))) (else ""))))
 
   (define (kind-of b) (field b 'kind))
 

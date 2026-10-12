@@ -106,6 +106,13 @@
       '(#t #t))
 (want "WP-09 a marked draft reads back under --working as text whose UTF-8 is the draft, mark included"
       (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-mark")) marked) #t)
+(define marked-version (cadr (assq 'version (cdr marked-write))))
+(want "WP-09 the text read back, written back as it is, is the same draft: the same version"
+      (let* ((t (call 'read marked-id "--working" "--writer" "window-mark"))
+             (text (and (pair? t) (eq? (car t) 'ok) (assq 'text (filter pair? (cdr t)))))
+             (again (and text (call 'write marked-id (cadr text) "--writer" "window-mark"))))
+        (and (pair? again) (eq? (car again) 'ok) (equal? (cadr (assq 'version (cdr again))) marked-version)))
+      #t)
 (want "WP-09 and under --working-info, the projection's text"
       (let* ((v (call 'read marked-id "--working-info" "--writer" "window-mark"))
              (p (and (pair? v) (assq 'projection (filter pair? (cdr v))))))
@@ -118,7 +125,46 @@
       (cdr (assq 'src (cdr (assq 'fields (state-read (open-and-reduce store) marked-id))))) marked)
 (want "WP-09 a plain read answers the marked bytes"
       (holds-datum? (call 'read marked-id) marked) #t)
-(want "WP-09 the committed marked src reads back under --working, no draft standing, with the mark"
-      (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-mark")) marked) #t)
+(want "WP-09 another writer, with no draft, reads the committed marked src with the mark: --working, and --working-info's committed projection"
+      (let* ((v (call 'read marked-id "--working-info" "--writer" "window-other"))
+             (p (and (pair? v) (assq 'projection (filter pair? (cdr v))))))
+        (list (equal? (text-bytes (call 'read marked-id "--working" "--writer" "window-other")) marked)
+              (and p (list-ref p 1))
+              (and p (string? (list-ref p 7)) (equal? (string->utf8 (list-ref p 7)) marked))))
+      '(#t committed #t))
+(want "WP-09 read --md renders the committed marked src's text, mark included"
+      (let ((a (call 'read marked-id "--md")))
+        (let find-text ((x a))
+          (cond ((string? x) (let ((n (string-length marked-text)) (m (string-length x)))
+                               (let loop ((i 0)) (cond ((> (+ i n) m) #f) ((string=? (substring x i (+ i n)) marked-text) #t) (else (loop (+ i 1)))))))
+                ((pair? x) (or (find-text (car x)) (find-text (cdr x))))
+                (else #f))))
+      #t)
+;; src-text (store.sc), the judgement both sites use, on the shapes a request's
+;; text cannot carry: a mark before malformed bytes, a cut mark, a mark alone.
+(want "WP-09 src-text: a mark before a malformed byte, a cut mark, a mark alone, plain text"
+      (list (src-text (bytevector #xEF #xBB #xBF #xFF)) (src-text (bytevector #xEF #xBB))
+            (equal? (src-text (bytevector #xEF #xBB #xBF)) (string (integer->char #xFEFF))) (src-text (string->utf8 "abc")))
+      '(#f #f #t "abc"))
+;; A committed marked src in a stale-baseline refusal's since: its size is its
+;; bytes. Two other writers commit marked drafts of 1024 and 1025 bytes over a
+;; draft standing on the older baseline; that draft's commit is refused.
+(define since-id
+  (let* ((a (call 'insert "--title" "S" "--text" "s0")) (ev (car (cadr (assq 'events (cdr a))))))
+    (block-id (car ev) (cdr ev))))
+(define (marked-of n) (string-append (string (integer->char #xFEFF)) (make-string (- n 3) #\q)))
+(call 'write since-id "mine" "--writer" "window-s1")
+(call 'write since-id (marked-of 1024) "--writer" "window-s2")
+(call 'commit since-id "--writer" "window-s2")
+(call 'write since-id (marked-of 1025) "--writer" "window-s3")
+(call 'commit since-id "--writer" "window-s3")
+(want "WP-09 since: the 1025-byte marked body is elided by its bytes, the 1024-byte one handed back whole, as bytes"
+      (let* ((r (call 'commit since-id "--writer" "window-s1"))
+             (since (and (pair? r) (assq 'since (filter pair? (cdr r)))))
+             (contents (and since (map caddr (cdr since)))))
+        (list (and (pair? r) (list-head r (min 2 (length r))))
+              (and contents (>= (length contents) 2) (list-head contents 2))))
+      (list '(error stale-baseline)
+            (list '(content elided 1025) (list 'set since-id 'src (string->utf8 (marked-of 1024))))))
 (printf "~a failures\nworking-projection complete\n" failures)
 (exit (if (= failures 0) 0 1))
