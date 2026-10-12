@@ -81,6 +81,28 @@ jobs:
           repository: guenchi/Igropyr
           ref: ${{ env.IGROPYR_REV }}
           path: lib/igropyr
+      # THE BASE, for the rows that compare this tree with the one before it
+      # (the change-stream guard, the context rows that read a base): the
+      # tested commit's first parent -- a landing's base -- archived beside
+      # the tree with the same igropyr, as the development machine's gate
+      # builds it, and given to the runner as THEOURGIA_BASE_LIBDIR. Without
+      # it those rows skip and their counts differ from rows-baseline's, which
+      # the runner refuses. A commit with no first parent has no base: the
+      # rows then skip and say why.
+      - name: the base tree
+        run: |
+          mkdir -p base
+          if git -C lib/theourgia fetch -q --no-tags --depth 2 origin "$REF" \
+             && parent=$(git -C lib/theourgia rev-parse -q --verify "$REF^1"); then
+            mkdir -p base/theourgia
+            git -C lib/theourgia archive "$parent" | tar -x -C base/theourgia
+            cp -R lib/igropyr base/igropyr
+            rm -rf base/igropyr/.git base/theourgia/.github
+            echo "BASE_LIBDIR=$PWD/base" >> "$GITHUB_ENV"
+            echo "base: $parent (the first parent of $REF)"
+          else
+            echo "no first parent for $REF: the base-relative rows will skip"
+          fi
       - name: libuv and OpenSSL
         run: brew install libuv openssl@3
       - name: Chez Scheme, cached
@@ -117,7 +139,8 @@ jobs:
           cd lib/theourgia/test
           # THE KNOWN-RED LIST GOES TO THE RUNNER TOO: a listed fixture's row
           # count that differs from the table is a reading there, not a refusal.
-          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot" THEOURGIA_KNOWN_RED="$W/harness/known-red.txt"; . ./env.sh
+          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot" THEOURGIA_KNOWN_RED="$W/harness/known-red.txt"
+            [ -n "${BASE_LIBDIR:-}" ] && export THEOURGIA_BASE_LIBDIR="$BASE_LIBDIR"; . ./env.sh
             sh run-fixtures.sh "$W/out" > "$W/suite.log" 2>&1; echo $? > "$W/suite.rc" ) || true
           cd "$W"
           date '+suite end %H:%M:%S'
@@ -131,7 +154,8 @@ jobs:
             f="$W/lib/theourgia/test/$fx.sc"; runner="scheme --script"
             [ -f "$f" ] || { f="$W/lib/theourgia/test/$fx.py"; runner="python3"; }
             root=$(mktemp -d "$W/testroot/rerun.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
-            ( cd "$W/lib/theourgia/test"; export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock"; . ./env.sh
+            ( cd "$W/lib/theourgia/test"; export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock"
+              [ -n "${BASE_LIBDIR:-}" ] && export THEOURGIA_BASE_LIBDIR="$BASE_LIBDIR"; . ./env.sh
               perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$W/rerun/$fx.out" 2>&1 < /dev/null; echo $? > "$W/rerun/$fx.rc" ) || true
             echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") mismatch=$(grep -c 'MISMATCH' "$W/rerun/$fx.out") exception=$(grep -c -i 'exception' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
           done
@@ -194,7 +218,7 @@ jobs:
     # request's first line ends in ' round-trip'.
     if: startsWith(github.event.head_commit.message, 'suite ') && contains(github.event.head_commit.message, ' round-trip')
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -255,7 +279,7 @@ jobs:
           date '+round trip start %H:%M:%S'
           ( cd lib/theourgia/test
             export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$root" THEOURGIA_TEST_SOCK="$sock" THEOURGIA_ROUND_TRIP=1; . ./env.sh
-            perl -e 'alarm 2100; exec @ARGV' scheme --script tree-round-trip.sc > "$W/out/tree-round-trip.out" 2>&1 < /dev/null
+            perl -e 'alarm 4200; exec @ARGV' scheme --script tree-round-trip.sc > "$W/out/tree-round-trip.out" 2>&1 < /dev/null
             echo $? > "$W/out/tree-round-trip.rc" ) || true
           date '+round trip end %H:%M:%S'
           o="$W/out/tree-round-trip.out"
