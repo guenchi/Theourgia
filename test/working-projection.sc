@@ -263,7 +263,7 @@
                            (let ((has (lambda (needle) (let loop ((i 0)) (cond ((> (+ i (string-length needle)) (string-length t)) #f)
                                                                                 ((string=? (substring t i (+ i (string-length needle))) needle) #t)
                                                                                 (else (loop (+ i 1))))))))
-                             (list (has "@file ") (has "(define a 1)")))))))))
+                             (list (has "@file ") (has "(define a 1)"))))))))
       '(ok (#xEF #xBB #xBF) (#t (#t #t))))
 (printf "~a failures\nworking-projection complete\n" failures)
 (exit (if (= failures 0) 0 1))
