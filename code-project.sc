@@ -230,10 +230,18 @@
                (run (if given (caddr given) (lambda (thunk) (thunk))))
                ;; THE CAPTURE IS TIMED HERE (the timing seam, ffi.sc): it runs
                ;; before the write request's clock starts, and builds every
-               ;; intent of the import.
+               ;; intent of the import. `capture` is the capture alone, inside
+               ;; the thunk (a request whose packet already exists runs none);
+               ;; `packet` is the whole frozen operation around it -- its
+               ;; directory, lock and packet file included.
                (packet (let* ((t0 (and (timing-enabled?) (monotonic-us)))
-                              (p (frozen-operation store req (lambda () (capture-import store dir allow-delete? symbols)))))
-                         (when t0 (timing-line! 'request 'capture (- (monotonic-us) t0)))
+                              (p (frozen-operation store req
+                                   (lambda ()
+                                     (let* ((c0 (and (timing-enabled?) (monotonic-us)))
+                                            (c (capture-import store dir allow-delete? symbols)))
+                                       (when c0 (timing-line! 'request 'capture (- (monotonic-us) c0)))
+                                       c)))))
+                         (when t0 (timing-line! 'request 'packet (- (monotonic-us) t0)))
                          p))
                (captured (cadr packet)))
           (run

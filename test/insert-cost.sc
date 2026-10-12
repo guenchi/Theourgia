@@ -75,7 +75,7 @@
   (let ((store (string-append root "/" tag "-store")) (err (string-append root "/" tag ".err")))
     (rpc-dispatch store '(init) "test")
     (system (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
-                           "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --wire"
+                           "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --wire"
                            " > '" root "/" tag ".out' 2> '" err "' < /dev/null"))
     (list (file-text (string-append root "/" tag ".out")) (timing-lines err) (file-text err))))
 (define (contains? s sub)
@@ -84,11 +84,13 @@
       (cond ((> (+ i n) (string-length s)) #f)
             ((string=? (substring s i (+ i n)) sub) #t)
             (else (loop (+ i 1)))))))
-;; Every phase of an import's one request, each printed once. `apply`
-;; includes the plan's three; `total` less the others is what is left
-;; untimed (the publication, the answer's assembly).
+;; Every phase of an import's one request, each printed once. The import is
+;; a TRACKED request (--req), as a client's is, so it takes the plan path.
+;; `capture` and `packet` run before the write request, `total` from the
+;; write's start to its end; `apply` includes the plan's three;
+;; delivered-records and applied-records are counts, not times.
 (define request-phases
-  '(capture load-replay delivered-records applied-records intents verdict premises datum-src cursor rules
+  '(capture packet load-replay delivered-records applied-records intents verdict premises datum-src cursor rules
     plan-canonical plan-entries plan-append apply commit log-end total))
 (define intent-phase-names '(refs check resolve deps append reduce applied receipt))
 (define (request-lines lines phase)
