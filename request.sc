@@ -44,6 +44,8 @@
           comparison-set executed-member-set historical-set membership
           duplicate-slots plan-conflicts present-indices prefix?
           request-decision request-gates identity-gates/full plan? store-supplied-fields
+          make-judgement judgement-copy judgement-arrive! judgement-run! judgement-finals
+          judgement-bound-events judgement-fresh-gates judgement-holds?
           receipt? receipt-req receipt-fingerprint receipt-after
           receipt-entries receipt-item-after receipt-covers?
           receipt-duplicate batch-item-state batch-state bind-new created-id
@@ -1278,10 +1280,25 @@
   (define (make-binding-index)
     (make-binding-index/raw '() (make-hashtable equal-hash equal?) (make-eqv-hashtable)
                             (make-eq-hashtable) (make-eq-hashtable)))
+  ;; A JUDGEMENT OF ONE ARRIVAL READS THE BUCKET'S KEPT BINDINGS THROUGH A
+  ;; VIEW: BY-EVENT and BY-SUB answer only the bindings a whole judgement
+  ;; would have made before the slot being classified (the judgement's
+  ;; position filter), and the plan memo tables are the bucket's own, kept
+  ;; with the records they describe (the admission retains them unchanged).
+  (define-record-type (binding-view make-binding-view binding-view?)
+    (fields by-event by-sub plan-answers plan-entries))
+  (define (plan-answers-of evidence)
+    (cond ((binding-index? evidence) (binding-index-plan-answers evidence))
+          ((binding-view? evidence) (binding-view-plan-answers evidence))
+          (else #f)))
+  (define (plan-entries-of evidence)
+    (cond ((binding-index? evidence) (binding-index-plan-entries evidence))
+          ((binding-view? evidence) (binding-view-plan-entries evidence))
+          (else #f)))
   ;; plan? of PAYLOAD, kept in the judgement's index when EVIDENCE is one.
   (define (plan?/in evidence payload)
-    (if (and (binding-index? evidence) (pair? payload))
-        (let ((t (binding-index-plan-answers evidence)))
+    (if (and (plan-answers-of evidence) (pair? payload))
+        (let ((t (plan-answers-of evidence)))
           (let ((known (hashtable-ref t payload 'unknown)))
             (if (eq? known 'unknown)
                 (let ((answer (plan? payload))) (hashtable-set! t payload answer) answer)
@@ -1293,14 +1310,14 @@
     (hashtable-update! (binding-index-by-sub ix) (actor-sub (ev-actor e)) (lambda (l) (cons e l)) '()))
   ;; The records of the evidence with this event, in the evidence's order.
   (define (evidence-with-event evidence event)
-    (if (binding-index? evidence)
-        (hashtable-ref (binding-index-by-event evidence) event '())
-        (filter (lambda (e) (equal? (ev-event e) event)) evidence)))
+    (cond ((binding-index? evidence) (hashtable-ref (binding-index-by-event evidence) event '()))
+          ((binding-view? evidence) ((binding-view-by-event evidence) event))
+          (else (filter (lambda (e) (equal? (ev-event e) event)) evidence))))
   ;; The records of the evidence at this sub, in the evidence's order.
   (define (evidence-at-sub evidence sub)
-    (if (binding-index? evidence)
-        (hashtable-ref (binding-index-by-sub evidence) sub '())
-        (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) sub)) evidence)))
+    (cond ((binding-index? evidence) (hashtable-ref (binding-index-by-sub evidence) sub '()))
+          ((binding-view? evidence) ((binding-view-by-sub evidence) sub))
+          (else (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) sub)) evidence))))
 
   (define (membership e evidence)
     (guard (ex (#t 'invalid)) (membership-checked e evidence)))
@@ -1421,6 +1438,60 @@
   ;; pass. The statuses come back in the order the reference gives them:
   ;; each event once, the most recently marked first.
   ;; -> (values statuses bindings), bindings newest first.
+  ;; A RECORD'S DECLARATION AGREES WITH ITS ACTOR: a plan or receipt only
+  ;; under the plan sub, naming the actor's request, fingerprint and cursor;
+  ;; no plan or batch payload under any other sub.
+  (define (declaration-ok? e)
+    (let ((p (ev-payload e)) (a (ev-actor e)))
+      (if (not (eq? (actor-sub a) 'plan))
+          (not (and (pair? p) (memq (car p) '(plan batch))))
+          (and (or (plan? p) (receipt? p))
+               (equal? (cadr p) (cdr (actor-identity a)))
+               (equal? (caddr p) (actor-fingerprint a))
+               (equal? (cadddr p) (actor-after a))))))
+
+  ;; ONE SLOT CLASSIFIED: its members in the order given, against BINDINGS
+  ;; (a list, a binding-index or a binding-view; membership reads it).
+  ;; -> (values marks bound): MARKS the (record . status) pairs in the order a
+  ;; whole judgement makes them (the walk's own marks as it goes, then the
+  ;; valid list, which cons left newest first, as valid or plan-conflict);
+  ;; BOUND the slot's one valid record, or #f. Every judgement, whole or of
+  ;; one arrival, classifies a slot through this.
+  (define (slot-classification slot bindings)
+    (let ((valid '()) (marks '()))
+      (define (mark! e why) (set! marks (cons (cons e why) marks)))
+      (for-each
+        (lambda (e)
+          (cond
+            ((not (ev-delivered? e)) (mark! e 'pending-plan))
+            ((not (declaration-ok? e)) (mark! e 'plan-mismatch))
+            ((and (integer? (actor-sub (ev-actor e)))
+                  (not (actor-plan-event (ev-actor e))))
+             (mark! e 'plan-mismatch))
+            ((not (actor-plan-event (ev-actor e)))
+             (set! valid (cons e valid)))
+            (else
+             (case (membership e bindings)
+               ((valid) (set! valid (cons e valid)))
+               ((invalid) (mark! e 'plan-mismatch))
+               (else (mark! e 'pending-plan))))))
+        slot)
+      (let ((why (if (and (pair? valid) (pair? (cdr valid))) 'plan-conflict 'valid)))
+        (for-each (lambda (e) (mark! e why)) valid))
+      (values (reverse marks) (and (pair? valid) (null? (cdr valid)) (car valid)))))
+
+  ;; THE ORDER PASS FOR ONE classification-valid integer member E: PREVIOUS
+  ;; the records before it (its plan's record for index 0, the members at the
+  ;; index before otherwise), FINAL-OF their final statuses. -> the status
+  ;; the pass marks it with, or #f when it stays valid.
+  (define (order-status e previous final-of)
+    (let ((eligible (filter (lambda (p) (eq? (final-of p) 'valid)) previous)))
+      (cond
+        ((null? previous) 'plan-order)
+        ((not (= 1 (length eligible))) 'pending-plan)
+        ((not (linked-to? e (ev-event (car eligible)))) 'plan-order)
+        (else #f))))
+
   (define (identity-gates/full es)
     (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
       (define (status e)
@@ -1428,35 +1499,10 @@
       (define (mark! e why)
         (set! stamp (+ stamp 1))
         (hashtable-set! statuses (ev-event e) (cons why stamp)))
-      (define (declaration-ok? e)
-        (let ((p (ev-payload e)) (a (ev-actor e)))
-          (if (not (eq? (actor-sub a) 'plan))
-              (not (and (pair? p) (memq (car p) '(plan batch))))
-              (and (or (plan? p) (receipt? p))
-                   (equal? (cadr p) (cdr (actor-identity a)))
-                   (equal? (caddr p) (actor-fingerprint a))
-                   (equal? (cadddr p) (actor-after a))))))
       (define (classify-slot! slot)
-        (let ((valid '()))
-          (for-each
-            (lambda (e)
-              (cond
-                ((not (ev-delivered? e)) (mark! e 'pending-plan))
-                ((not (declaration-ok? e)) (mark! e 'plan-mismatch))
-                ((and (integer? (actor-sub (ev-actor e)))
-                      (not (actor-plan-event (ev-actor e))))
-                 (mark! e 'plan-mismatch))
-                ((not (actor-plan-event (ev-actor e)))
-                 (set! valid (cons e valid)))
-                (else
-                 (case (membership e bindings)
-                   ((valid) (set! valid (cons e valid)))
-                   ((invalid) (mark! e 'plan-mismatch))
-                   (else (mark! e 'pending-plan))))))
-            slot)
-          (let ((why (if (and (pair? valid) (pair? (cdr valid))) 'plan-conflict 'valid)))
-            (for-each (lambda (e) (mark! e why)) valid))
-          (when (and (pair? valid) (null? (cdr valid))) (binding-add! bindings (car valid)))))
+        (let-values (((marks bound) (slot-classification slot bindings)))
+          (for-each (lambda (m) (mark! (car m) (cdr m))) marks)
+          (when bound (binding-add! bindings bound))))
       ;; ONE PASS over the records, in their order: each integer index's
       ;; records, each (plan, index)'s and each event's.
       (let ((at-index (make-eqv-hashtable)) (at-plan-index (make-hashtable equal-hash equal?))
@@ -1501,14 +1547,12 @@
                 (lambda (e)
                   (let ((pe (actor-plan-event (ev-actor e))))
                     (when (eq? (status e) 'valid)
-                      (let ((previous (if (= i 0)
-                                          (in-order at-event pe)
-                                          (in-order at-plan-index (cons pe (- i 1))))))
-                        (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
-                          (cond
-                            ((null? previous) (mark! e 'plan-order))
-                            ((not (= 1 (length eligible))) (mark! e 'pending-plan))
-                            ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
+                      (let ((why (order-status e
+                                               (if (= i 0)
+                                                   (in-order at-event pe)
+                                                   (in-order at-plan-index (cons pe (- i 1))))
+                                               status)))
+                        (when why (mark! e why))))))
                 (in-order at-index i)))
             indices)))
       (let-values (((events marks) (hashtable-entries statuses)))
@@ -1522,7 +1566,256 @@
       (degeneracy-check (identity-gates-compare es statuses bindings))
       statuses))
 
-  ;; THE REFERENCE, under the degeneracy switch only (degeneracy.sc): the
+  ;; ONE BUCKET'S JUDGEMENT, KEPT AND MOVED BY ARRIVALS (judging only what an
+  ;; arrival can change). The whole judgement above starts from nothing on
+  ;; every call; this one keeps the bucket's records, each slot's members
+  ;; (newest first, the whole judgement's encounter order), every record's
+  ;; classification and final status, and each slot's binding, and on an
+  ;; arrival re-judges only the slots the arrival can change:
+  ;; - the arrival's own slot (its members' valid count);
+  ;; - when a slot's binding changes: for the plan slot, every slot of that
+  ;;   plan (membership reads the plan binding); for single or index k, every
+  ;;   slot whose declared intent holds ("#%new" single) or ("#%new" k), in
+  ;;   any plan event's group (applied-index counts every binding at the sub);
+  ;; - the order pass of the next index, when a slot's final statuses changed
+  ;;   or a record arrived at it at all, and of index 0 for the plan slot.
+  ;; THE ORDER OF JUDGEMENT IS THE WHOLE JUDGEMENT'S: classifications first,
+  ;; each time the dirty slot that comes first in the pass (plan, single, then
+  ;; index ascending, each index's plan-event groups by their newest member,
+  ;; oldest first, which is the order 1487-1492's fold gives), then the order
+  ;; passes by ascending index. Every edge points to a later slot, so each
+  ;; slot is judged once per run and the result is the whole judgement's.
+  ;; A SLOT SEES THE BINDINGS OF THE SLOTS BEFORE IT IN THAT ORDER only: the
+  ;; whole judgement builds its index from empty in that order, and the
+  ;; binding-view's lookups filter by the binding slot's position.
+  (define-record-type (judgement make-judgement/raw judgement?)
+    (fields (mutable counter) ev rank slot members plan-slots index-groups class final fresh
+            binding by-sub by-event plan-refs plan-answers plan-entries
+            (mutable dirty-class) (mutable dirty-order)))
+  (define (judgement-table) (make-hashtable equal-hash equal?))
+  (define (make-judgement)
+    (make-judgement/raw 0 (judgement-table) (judgement-table) (judgement-table) (judgement-table)
+                        (judgement-table) (judgement-table) (judgement-table) (judgement-table)
+                        (judgement-table) (judgement-table) (judgement-table) (judgement-table)
+                        (judgement-table) (make-eq-hashtable) (make-eq-hashtable) '() '()))
+  ;; A COPY THAT SHARES NOTHING EITHER CHANGES: every table copied; the values
+  ;; are lists and records, replaced on change, never changed in place (the
+  ;; plan-refs tables are built once per plan payload and only read).
+  (define (judgement-copy j)
+    (make-judgement/raw (judgement-counter j)
+                        (hashtable-copy (judgement-ev j) #t) (hashtable-copy (judgement-rank j) #t)
+                        (hashtable-copy (judgement-slot j) #t) (hashtable-copy (judgement-members j) #t)
+                        (hashtable-copy (judgement-plan-slots j) #t) (hashtable-copy (judgement-index-groups j) #t)
+                        (hashtable-copy (judgement-class j) #t)
+                        (hashtable-copy (judgement-final j) #t) (hashtable-copy (judgement-fresh j) #t)
+                        (hashtable-copy (judgement-binding j) #t)
+                        (hashtable-copy (judgement-by-sub j) #t) (hashtable-copy (judgement-by-event j) #t)
+                        (hashtable-copy (judgement-plan-refs j) #t)
+                        (hashtable-copy (judgement-plan-answers j) #t) (hashtable-copy (judgement-plan-entries j) #t)
+                        (judgement-dirty-class j) (judgement-dirty-order j)))
+
+  ;; a record's slot: plan, single, or (plan-event . index); #f for none
+  (define (slot-key-of e)
+    (let* ((a (ev-actor e)) (sub (actor-sub a)))
+      (cond ((eq? sub 'plan) 'plan)
+            ((eq? sub 'single) 'single)
+            ((integer? sub) (cons (actor-plan-event a) sub))
+            (else #f))))
+  (define (slot-sub key) (if (pair? key) (cdr key) key))
+  (define (slot-members j key) (hashtable-ref (judgement-members j) key '()))
+  ;; where KEY's slot comes in the whole judgement: (0) plan, (1) single,
+  ;; (2 index rank) an index's group, rank its newest member's arrival
+  (define (slot-position j key)
+    (cond ((eq? key 'plan) '(0 0 0))
+          ((eq? key 'single) '(1 0 0))
+          (else (let ((m (slot-members j key)))
+                  (list 2 (cdr key) (if (pair? m) (hashtable-ref (judgement-rank j) (car m) 0) 0))))))
+  (define (position<? a b)
+    (cond ((null? a) #f)
+          ((< (car a) (car b)) #t)
+          ((> (car a) (car b)) #f)
+          (else (position<? (cdr a) (cdr b)))))
+  ;; ("#%new" x) references in a plan payload's declared intents: x -> indices
+  (define (plan-new-refs payload)
+    (let ((t (judgement-table)))
+      (guard (e (#t t))
+        (when (and (pair? payload) (eq? (car payload) 'plan))
+          (for-each
+            (lambda (entry)
+              (let walk ((x (cdr entry)))
+                (cond ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
+                       (let ((had (hashtable-ref t (cadr x) '())))
+                         (unless (memv (car entry) had)
+                           (hashtable-set! t (cadr x) (cons (car entry) had)))))
+                      ((pair? x) (walk (car x)) (walk (cdr x))))))
+            (list-ref payload 4)))
+        t)))
+  ;; a record's final status, and the bucket's non-valid ones beside it
+  (define (set-final! j event status)
+    (hashtable-set! (judgement-final j) event status)
+    (if (eq? status 'valid)
+        (hashtable-delete! (judgement-fresh j) event)
+        (hashtable-set! (judgement-fresh j) event status)))
+  (define (dirty-class! j key)
+    (unless (member key (judgement-dirty-class j))
+      (judgement-dirty-class-set! j (cons key (judgement-dirty-class j)))))
+  (define (dirty-order! j key)
+    (unless (member key (judgement-dirty-order j))
+      (judgement-dirty-order-set! j (cons key (judgement-dirty-order j)))))
+
+  ;; E (evidence) arrives at the bucket, or arrives again (delivered now, its
+  ;; past known). One identity-probe line per arrival. REHEARSAL? marks it.
+  (define (judgement-arrive! j e rehearsal?)
+    (trace-event! 'identity-probe (ev-event e) (and rehearsal? '(rehearsal)))
+    (let ((event (ev-event e)))
+      (unless (hashtable-contains? (judgement-ev j) event)
+        (hashtable-set! (judgement-rank j) event (judgement-counter j))
+        (judgement-counter-set! j (+ 1 (judgement-counter j)))
+        (let ((key (slot-key-of e)))
+          (when key
+            (hashtable-set! (judgement-slot j) event key)
+            (hashtable-update! (judgement-members j) key (lambda (l) (cons event l)) '())
+            (when (pair? key)
+              (hashtable-update! (judgement-plan-slots j) (car key)
+                                 (lambda (l) (if (member key l) l (cons key l))) '())
+              (hashtable-update! (judgement-index-groups j) (cdr key)
+                                 (lambda (l) (if (member key l) l (cons key l))) '()))))
+        (let ((p (ev-payload e)))
+          (when (and (pair? p) (eq? (car p) 'plan))
+            (hashtable-set! (judgement-plan-refs j) event (plan-new-refs p)))))
+      (hashtable-set! (judgement-ev j) event e)
+      (let ((key (hashtable-ref (judgement-slot j) event #f)))
+        (when key
+          (dirty-class! j key)
+          (cond ((pair? key)
+                 ;; the groups at this index: their order follows their newest
+                 ;; members, and a slot sees the earlier groups' bindings
+                 (for-each (lambda (k) (dirty-class! j k))
+                           (hashtable-ref (judgement-index-groups j) (cdr key) '()))
+                 (dirty-order! j key)
+                 (dirty-order! j (cons (car key) (+ 1 (cdr key)))))
+                ((eq? key 'plan)
+                 (dirty-order! j (cons event 0))))))))
+
+  ;; the evidence bound by the slots in KEYS that come before SLOT
+  (define (visible-bindings j slot keys)
+    (let ((at (slot-position j slot)))
+      (fold-left (lambda (out key)
+                   (let ((bound (hashtable-ref (judgement-binding j) key #f)))
+                     (if (and bound (position<? (slot-position j key) at))
+                         (cons (hashtable-ref (judgement-ev j) bound #f) out)
+                         out)))
+                 '() keys)))
+
+  (define (classify-kept-slot! j key)
+    (let* ((events (slot-members j key))
+           (view (make-binding-view
+                   (lambda (event) (visible-bindings j key (hashtable-ref (judgement-by-event j) event '())))
+                   (lambda (sub) (visible-bindings j key (hashtable-ref (judgement-by-sub j) sub '())))
+                   (judgement-plan-answers j) (judgement-plan-entries j))))
+      (let-values (((marks bound) (slot-classification (map (lambda (ev) (hashtable-ref (judgement-ev j) ev #f)) events) view)))
+        (for-each (lambda (m) (hashtable-set! (judgement-class j) (ev-event (car m)) (cdr m))) marks)
+        (cond ((pair? key) (dirty-order! j key))
+              (else
+               ;; plan and single have no order pass: their final is their class
+               (for-each (lambda (ev)
+                           (set-final! j ev (hashtable-ref (judgement-class j) ev #f))
+                           (when (eq? key 'plan) (dirty-order! j (cons ev 0))))
+                         events)))
+        (let ((before (hashtable-ref (judgement-binding j) key #f))
+              (after (and bound (ev-event bound))))
+          (unless (equal? before after)
+            (hashtable-set! (judgement-binding j) key after)
+            (let ((sub (slot-sub key)))
+              (hashtable-update! (judgement-by-sub j) sub
+                                 (lambda (l) (let ((l (remove key l))) (if after (cons key l) l))) '())
+              (when before
+                (hashtable-update! (judgement-by-event j) before (lambda (l) (remove key l)) '()))
+              (when after
+                (hashtable-update! (judgement-by-event j) after (lambda (l) (cons key l)) '()))
+              ;; what reads this binding is judged again
+              (if (eq? key 'plan)
+                  (for-each (lambda (pe)
+                              (for-each (lambda (k) (dirty-class! j k))
+                                        (hashtable-ref (judgement-plan-slots j) pe '())))
+                            (filter (lambda (x) x) (list before after)))
+                  (let ((at (slot-position j key)))
+                    (let-values (((plans refs) (hashtable-entries (judgement-plan-refs j))))
+                      (vector-for-each
+                        (lambda (pe t)
+                          (for-each (lambda (i)
+                                      (let ((k (cons pe i)))
+                                        (when (and (pair? (slot-members j k))
+                                                   (position<? at (slot-position j k)))
+                                          (dirty-class! j k))))
+                                    (hashtable-ref t sub '())))
+                        plans refs))))))))))
+
+  (define (order-kept-slot! j key)
+    (let* ((pe (car key)) (i (cdr key))
+           (ev-of (lambda (event) (hashtable-ref (judgement-ev j) event #f)))
+           (previous (if (= i 0)
+                         (let ((p (ev-of pe))) (if p (list p) '()))
+                         (map ev-of (slot-members j (cons pe (- i 1))))))
+           (final-of (lambda (p) (hashtable-ref (judgement-final j) (ev-event p) #f)))
+           (changed #f))
+      (for-each
+        (lambda (event)
+          (let* ((class (hashtable-ref (judgement-class j) event #f))
+                 (final (if (eq? class 'valid)
+                            (or (order-status (ev-of event) previous final-of) 'valid)
+                            class)))
+            (unless (eq? final (hashtable-ref (judgement-final j) event #f))
+              (set-final! j event final)
+              (set! changed #t))))
+        (slot-members j key))
+      (when changed (dirty-order! j (cons pe (+ i 1))))))
+
+  ;; Judge what the arrivals since the last run can change, in the whole
+  ;; judgement's order; each slot once.
+  ;; Under the degeneracy switch a slot classified twice in one run raises:
+  ;; the order makes every edge point forward, so it never should.
+  (define (judgement-run! j)
+    (let ((classified (make-hashtable equal-hash equal?)))
+      (let classify ()
+        (let ((todo (filter (lambda (k) (pair? (slot-members j k))) (judgement-dirty-class j))))
+          (judgement-dirty-class-set! j todo)
+          (unless (null? todo)
+            (let ((next (fold-left (lambda (best k) (if (position<? (slot-position j k) (slot-position j best)) k best))
+                                   (car todo) (cdr todo))))
+              (judgement-dirty-class-set! j (remove next (judgement-dirty-class j)))
+              (degeneracy-check
+                (when (hashtable-contains? classified next)
+                  (assertion-violation 'degeneracy "a slot was classified twice in one run" next))
+                (hashtable-set! classified next #t))
+              (classify-kept-slot! j next)
+              (classify))))))
+    (let order ()
+      (let ((todo (filter (lambda (k) (and (pair? k) (pair? (slot-members j k)))) (judgement-dirty-order j))))
+        (judgement-dirty-order-set! j todo)
+        (unless (null? todo)
+          (let ((next (fold-left (lambda (best k) (if (< (cdr k) (cdr best)) k best)) (car todo) (cdr todo))))
+            (judgement-dirty-order-set! j (remove next (judgement-dirty-order j)))
+            (order-kept-slot! j next)
+            (order))))))
+
+  ;; -> ((event . final status) ...) of every record in a slot
+  (define (judgement-finals j)
+    (let-values (((events statuses) (hashtable-entries (judgement-final j))))
+      (map cons (vector->list events) (vector->list statuses))))
+  ;; -> the events bound by the slots, the classification-stage bindings
+  (define (judgement-bound-events j)
+    (let-values (((keys bound) (hashtable-entries (judgement-binding j))))
+      (filter (lambda (x) x) (vector->list bound))))
+  ;; -> ((event . status) ...), the bucket's records whose final status is not
+  ;; valid: its gates, in no particular order
+  (define (judgement-fresh-gates j)
+    (let-values (((events statuses) (hashtable-entries (judgement-fresh j))))
+      (map cons (vector->list events) (vector->list statuses))))
+  ;; -> #t when EVENT is one of the bucket's records
+  (define (judgement-holds? j event) (hashtable-contains? (judgement-ev j) event))
+
+    ;; THE REFERENCE, under the degeneracy switch only (degeneracy.sc): the
   ;; whole-bucket judgement as it was before its lookups were indexed,
   ;; verbatim but for its answer, run beside identity-gates/full on every
   ;; bucket; a difference in the statuses or the bindings raises there.
@@ -1804,8 +2097,8 @@
   ;; list of evidence are asked with assv itself, raising as it raises.
   (define (plan-entry evidence payload index)
     (let ((entries (list-ref payload 4)))
-      (if (binding-index? evidence)
-          (let* ((tables (binding-index-plan-entries evidence))
+      (if (plan-entries-of evidence)
+          (let* ((tables (plan-entries-of evidence))
                  (t (or (hashtable-ref tables payload #f)
                         (let ((t (if (and (list? entries) (for-all pair? entries))
                                      (let ((t (make-eqv-hashtable)))

@@ -286,6 +286,15 @@
                                       (for-all (lambda (e) (and (= (length e) 2) (integer? (cadr e)) (>= (cadr e) 0))) w))))
                              series))
               (list 'ok (map (lambda (k) (* 100 (+ k 1))) (iota 70)) #t))
+        ;; AI-CURVE: admission judges only what an arrival can change, so the
+        ;; reduce phase per window stops growing with the request: at 7000
+        ;; intents within 1.5 times its value at 1000 (it grew 7.46 times while
+        ;; every arrival judged the whole request).
+        (want "AI-curve the reduce phase per window at 7000 intents is within 1.5 times its value at 1000"
+              (let ((a (phase-us 1000 'reduce)) (c (phase-us 7000 'reduce)))
+                (list (and (integer? a) (integer? c) (> a 0) (<= (* 2 c) (* 3 a))) a c))
+              (let ((a (phase-us 1000 'reduce)) (c (phase-us 7000 'reduce)))
+                (list #t a c)))
         (wall-against-phases (string-append root "/curve.err.ts"))
         ;; KEPT: the import completes and the root goes, so both files are
         ;; copied beside it first, under the test root, named by this process.

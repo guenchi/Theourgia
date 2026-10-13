@@ -20,8 +20,10 @@
 
   ;; This index tracks causal availability independently of application.
   ;; Revoking an applied gate still makes the reducer replay its retained set.
+  ;; JUDGEMENTS holds each bucket's kept judgement (request.sc, make-judgement):
+  ;; an arrival is judged against it, not the bucket judged again.
   (define-record-type (admission make-admission/raw admission?)
-    (fields buckets events dependents waits pasts clock
+    (fields buckets events dependents waits pasts clock judgements
             (mutable gates)))
   (define (table) (make-hashtable string-hash string=?))
   (define (key x) (sexpr->string-extended x))
@@ -29,10 +31,11 @@
   (define (put! t x value) (hashtable-set! t (key x) value))
   (define (add! t x value) (put! t x (cons value (ref t x '()))))
   (define (make-admission)
-    (make-admission/raw (table) (table) (table) (table) (table) (table) '()))
+    (make-admission/raw (table) (table) (table) (table) (table) (table) (table) '()))
   ;; A COPY THAT SHARES NOTHING IT COULD CHANGE: each table copied (its values
-  ;; are replaced on update, never changed in place), the gate list shared
-  ;; (it too is replaced).
+  ;; are replaced on update, never changed in place), each bucket's judgement
+  ;; copied whole (its tables are changed in place by arrivals), the gate list
+  ;; shared (it too is replaced).
   (define (admission-copy a)
     (make-admission/raw (hashtable-copy (admission-buckets a) #t)
                         (hashtable-copy (admission-events a) #t)
@@ -40,7 +43,19 @@
                         (hashtable-copy (admission-waits a) #t)
                         (hashtable-copy (admission-pasts a) #t)
                         (hashtable-copy (admission-clock a) #t)
+                        (let ((copy (table)))
+                          (let-values (((ids js) (hashtable-entries (admission-judgements a))))
+                            (vector-for-each (lambda (id j) (hashtable-set! copy id (judgement-copy j))) ids js))
+                          copy)
                         (admission-gates a)))
+  ;; THE GATES' ORDER IS CANONICAL: by event, writer then seq, the order the
+  ;; notes are made in (reduce.sc gate-notes). Nothing reads another order.
+  (define (event<? a b)
+    (or (string<? (car a) (car b)) (and (string=? (car a) (car b)) (< (cdr a) (cdr b)))))
+  (define (gates-sorted gates) (list-sort (lambda (x y) (event<? (car x) (car y))) gates))
+  (define (bucket-judgement a id)
+    (or (ref (admission-judgements a) id #f)
+        (let ((j (make-judgement))) (put! (admission-judgements a) id j) j)))
 
   (define (event rec) (cons (car rec) (cadr rec)))
   (define (actor rec) (list-ref rec 4))
@@ -65,7 +80,8 @@
 ;; REHEARSAL?, when given and true, says the admission belongs to a
   ;; rehearsal's copy of a reduction: the probes' trace lines are marked.
   (define (admission-add! a rec . rehearsal?)
-    (let ((changed (table)) (id (identity rec)))
+    (let ((changed (table)) (id (identity rec)) (woken '())
+          (marked (and (pair? rehearsal?) (car rehearsal?))))
       (define (touch! id) (when id (put! changed id id)))
       (define (touch-event! e)
         (let ((r (ref (admission-events a) e #f))) (when r (touch! (identity r))))
@@ -81,6 +97,7 @@
                                (list e) (premises rec))))
                   (put! (admission-pasts a) e past)
                   (put! (admission-clock a) (car e) (cdr e))
+                  (set! woken (cons rec woken))
                   (touch-event! e)
                   (let ((waiting (append (ref (admission-waits a) e '())
                                          (if (= (cdr e) 1)
@@ -97,30 +114,35 @@
           (when plan (add! (admission-dependents a) plan id))))
       (touch-event! (event rec))
       (schedule! rec)
+      ;; THE ARRIVALS: the record, then every record its delivery woke, each in
+      ;; its own bucket's judgement (the record itself once, delivered or not).
+      (when id (judgement-arrive! (bucket-judgement a id) (evidence a rec) marked))
+      (for-each (lambda (w)
+                  (let ((wid (identity w)))
+                    (when (and wid (not (eq? w rec)))
+                      (judgement-arrive! (bucket-judgement a wid) (evidence a w) marked))))
+                (reverse woken))
       (let-values (((keys ids) (hashtable-entries changed)))
         (vector-for-each
           (lambda (id)
-            (let* ((records (ref (admission-buckets a) id '()))
-                   (events (make-hashtable equal-hash equal?))
-                   (fresh (filter (lambda (p) (not (eq? (cdr p) 'valid)))
-                                  (request-gates (map (lambda (r) (evidence a r)) records)
-                                                 (and (pair? rehearsal?) (car rehearsal?))))))
-              ;; THE BUCKET'S EVENTS AS A TABLE, so dropping its old gates is
-              ;; one lookup per gate, not a walk of the bucket per gate.
-              (for-each (lambda (r) (hashtable-set! events (event r) #t)) records)
-              (let ((before (admission-gates a)))
-                (admission-gates-set! a
-                  (append fresh (filter (lambda (p) (not (hashtable-contains? events (car p))))
-                                        before)))
-                (degeneracy-check (gates-compare records fresh before (admission-gates a)))))) ids))
+            (let ((j (ref (admission-judgements a) id #f)))
+              (when j
+                (judgement-run! j)
+                (let ((before (admission-gates a)))
+                  (admission-gates-set! a
+                    (append (judgement-fresh-gates j)
+                            (filter (lambda (p) (not (judgement-holds? j (car p)))) before)))))))
+          ids)
+        (admission-gates-set! a (gates-sorted (admission-gates a)))
+        (degeneracy-check (judgements-compare a ids)))
       (admission-gates a)))
 
-  ;; THE REPLACEMENT AS IT WAS, under the degeneracy switch only
-  ;; (degeneracy.sc): the old gates whose event is among the bucket's, found
-  ;; by walking the bucket's events, dropped, and the fresh ones put first; a
-  ;; list that differs from the one kept raises at that record. The fresh
-  ;; gates themselves are checked where they are judged (request.sc,
-  ;; identity-gates).
+  ;; THE WHOLE JUDGEMENT BESIDE THE KEPT ONE, under the degeneracy switch only
+  ;; (degeneracy.sc): after every admission, every touched bucket (the
+  ;; record's, the woken records', the dependents') judged as a whole from
+  ;; scratch, and its final statuses, its classification-stage bindings and
+  ;; its gates compared with the kept judgement's; a difference raises at
+  ;; that record, naming the bucket and what differs.
   (degeneracy-definitions
     ;; THE REFERENCE: one bucket judged as a whole, from scratch, as every
     ;; admission did before judgements followed only what an arrival can
@@ -130,10 +152,23 @@
       (let ((es (map (lambda (r) (evidence a r)) (ref (admission-buckets a) id '()))))
         (let-values (((statuses bindings) (identity-gates/full es)))
           (values statuses bindings (filter (lambda (p) (not (eq? (cdr p) 'valid))) statuses)))))
-    (define (gates-compare records fresh before kept)
-      (let* ((events (map event records))
-             (expected (append fresh (filter (lambda (p) (not (member (car p) events))) before))))
-        (unless (equal? expected kept)
-          (assertion-violation 'degeneracy "the gates differ from the whole-bucket replacement"
-                               (map event records) kept expected)))))
+    (define (judgements-compare a ids)
+      (vector-for-each
+        (lambda (id)
+          (let ((j (ref (admission-judgements a) id #f)))
+            (when j
+              (let-values (((statuses bindings fresh) (whole-bucket-judgement a id)))
+                (define (differ! what kept whole)
+                  (unless (equal? kept whole)
+                    (assertion-violation 'degeneracy "the kept judgement differs from the whole one"
+                                         id what kept whole)))
+                (differ! 'statuses (gates-sorted (judgement-finals j)) (gates-sorted statuses))
+                (differ! 'bindings
+                         (list-sort event<? (judgement-bound-events j))
+                         (list-sort event<? (map ev-event bindings)))
+                (differ! 'gates (gates-sorted (judgement-fresh-gates j)) (gates-sorted fresh))
+                (differ! 'gate-list
+                         (filter (lambda (p) (judgement-holds? j (car p))) (admission-gates a))
+                         (gates-sorted fresh))))))
+        ids)))
 )
