@@ -20,14 +20,16 @@
 ;; arguments, which for an import are every intent it holds. It was computed
 ;; again for every record, so an import of n intents hashed its own arguments
 ;; n times. store.sc's request-actors makes a request's actors from one
-;; fingerprint, computed when it is made.
+;; fingerprint, computed at the first actor (inside the loop's guard for that
+;; intent, where it always was) and kept.
 ;;
 ;; RA-1: the actors are what an actor has always been -- the request's who,
 ;; identity, the sub, the fingerprint, the plan event and the cursor -- for
 ;; indexed subs, plan and single. RA-2: over a thousand subs the fingerprint
 ;; is asked for once (a counting stand-in, request-actors' own argument), and
 ;; every actor carries what it answered. RA-3: no request, no actor, and no
-;; fingerprint asked for. request-actors is looked up by eval, so a tree
+;; fingerprint asked for. RA-4: made and never asked for an actor, nothing is
+;; hashed (a loop that stops before its first actor). request-actors is looked up by eval, so a tree
 ;; without it loads this file and its rows read red with the reason.
 
 (import (chezscheme) (theourgia request) (only (theourgia store) make-write-request))
@@ -78,6 +80,13 @@
              (actors (actors-of #f plan-event counting)))
         (list (map actors '(0 plan single)) asked))
       '((#f #f #f) 0))
+
+(want "RA-4 made and never asked for an actor: the fingerprint is not asked for"
+      (let* ((asked 0)
+             (counting (lambda (r) (set! asked (+ asked 1)) "fp"))
+             (actors (actors-of req plan-event counting)))
+        (list (procedure? actors) asked))
+      '(#t 0))
 
 (printf "\n~a failures\nrows: ~a\nrequest-actors complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

@@ -3753,21 +3753,35 @@
   ;; A REQUEST'S ACTORS, ONE PER SUB-OPERATION, FROM ONE FINGERPRINT. The
   ;; fingerprint is a hash over the request's whole arguments -- an import's
   ;; are every intent it carries -- and it is the same for each of them, so
-  ;; it is computed once, when this is made, not once per record.
+  ;; it is computed once, not once per record.
+  ;; AT THE FIRST ACTOR, NOT WHEN THIS IS MADE: the first actor is made where
+  ;; it always was, inside the loop's guard for that intent, so a hash that
+  ;; fails is answered as it was, and a loop that stops before any actor
+  ;; hashes nothing. A failed hash keeps nothing; the next actor asks again.
   ;; -> a procedure from a sub to the actor request-actor answers for it (#f
   ;; when REQ is #f). FINGERPRINT-OF, when given, stands in for the request's
   ;; fingerprint: a test counts with it.
   (define (request-actors req plan-event . fingerprint-of)
-    (let ((fingerprint (and req ((if (pair? fingerprint-of) (car fingerprint-of) write-request-fingerprint) req))))
+    (let ((fingerprint (once (lambda () ((if (pair? fingerprint-of) (car fingerprint-of) write-request-fingerprint) req)))))
       (lambda (sub)
         (and req
              (list (write-request-who req)
                    (request-identity (write-request-after req)
                                      (write-request-req-id req))
                    sub
-                   fingerprint
+                   (fingerprint)
                    plan-event
                    (write-request-after req))))))
+
+  ;; THUNK's value, computed at the first call and kept; a call that raises
+  ;; keeps nothing.
+  (define (once thunk)
+    (let ((done #f) (value #f))
+      (lambda ()
+        (unless done
+          (set! value (thunk))
+          (set! done #t))
+        value)))
 
   (define (write-request-fingerprint req)
     (request-fingerprint (write-request-who req)
@@ -3835,7 +3849,7 @@
   ;; plan first; nothing does that yet, and when something does it is
   ;; that item's business and not the batch's.
   (define (run-items! s state req intents entries)
-    (define fingerprint (write-request-fingerprint req))
+    (define fingerprint (once (lambda () (write-request-fingerprint req))))
     (let loop ((is intents) (k 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
@@ -3901,7 +3915,7 @@
                                        (list 'error 'unknown
                                              (list 'interrupted (failure-text e)))
                                        (raise e))))
-                       (let ((actor (intent-timed 14 (item-actor req fingerprint k declared))))
+                       (let ((actor (intent-timed 14 (item-actor req (fingerprint) k declared))))
                          (intent-timed 8 (one-intent! s state actor fixed))))))))
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
@@ -3925,7 +3939,8 @@
                             made))
                       (cons answer out))))))))
 
-  ;; FINGERPRINT is the batch request's, computed once by the loop.
+  ;; FINGERPRINT is the batch request's, from the loop's once: computed at
+  ;; the first item's actor.
   (define (item-actor req fingerprint k after)
     (list (write-request-who req)
           (cons (car (write-request-after req))
