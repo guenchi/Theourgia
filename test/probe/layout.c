@@ -103,7 +103,7 @@ int main(void) {
   int exited = 0x0300;
   int signalled = 0x0009;
 
-  printf("(layout-probe 4)\n");
+  printf("(layout-probe 5)\n");
   if (uname(&u) == 0) {
     printf("(machine \"%s\") (system \"%s\") (release \"%s\")\n", u.machine, u.sysname, u.release);
   }
@@ -134,6 +134,17 @@ int main(void) {
          (unsigned long)offsetof(struct stat, MTIM), (unsigned long)sizeof(((struct stat *)0)->MTIM));
   printf("  (field st_ctim (member %s) (offset %lu) (size %lu))\n", XSTR(CTIM),
          (unsigned long)offsetof(struct stat, CTIM), (unsigned long)sizeof(((struct stat *)0)->CTIM));
+  /* The seconds and nanoseconds of mtime and ctime, each at its offset
+     within struct stat, so a reader takes the pair from the buffer with no
+     arithmetic of its own (layout-probe 5). */
+  printf("  (field st_mtim_sec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, MTIM.tv_sec), (unsigned long)sizeof(((struct stat *)0)->MTIM.tv_sec));
+  printf("  (field st_mtim_nsec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, MTIM.tv_nsec), (unsigned long)sizeof(((struct stat *)0)->MTIM.tv_nsec));
+  printf("  (field st_ctim_sec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, CTIM.tv_sec), (unsigned long)sizeof(((struct stat *)0)->CTIM.tv_sec));
+  printf("  (field st_ctim_nsec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, CTIM.tv_nsec), (unsigned long)sizeof(((struct stat *)0)->CTIM.tv_nsec));
   TYPE(dev_t);
   TYPE(ino_t);
   TYPE(mode_t);

@@ -580,6 +580,13 @@
     ("../ffi.sc" spawn-captured! (platform-struct-value (quote posix_spawn) (quote file-actions-size)))
     ("../ffi.sc" st-mode-of (row-uint-ref buf (quote stat) (quote st_mode)))
     ("../ffi.sc" stat-buffer-size (platform-struct-size (quote stat)))
+    ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_ctim_nsec)))
+    ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_ctim_sec)))
+    ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_mtim_nsec)))
+    ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_mtim_sec)))
+    ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_size)))
+    ("../ffi.sc" stat-fields (row-uint-ref buf (quote stat) (quote st_dev)))
+    ("../ffi.sc" stat-fields (row-uint-ref buf (quote stat) (quote st_ino)))
     ("../ffi.sc" timeval-bytes (platform-struct-size (quote timeval)))
     ("../ffi.sc" timeval-bytes (row-uint-set! tv (quote timeval) (quote tv_sec) (div ms 1000)))
     ("../ffi.sc" timeval-bytes (row-uint-set! tv (quote timeval) (quote tv_usec) (* 1000 (mod ms 1000))))
@@ -653,7 +660,7 @@
   '(st-size-offset dirent-name-offset stat-buffer-size st-dev-offset st-ino-offset signal-term sigkill
     spawn-O_RDONLY spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
 (define struct-definitions
-  '(st-mode-of path-device-inode size-entry sockaddr-un timeval-bytes rlimit-bytes getrlimit rss-darwin rss-freebsd
+  '(st-mode-of path-device-inode stat-fields size-entry sockaddr-un timeval-bytes rlimit-bytes getrlimit rss-darwin rss-freebsd
     make-pid-buffer pid-buffer-ref waitpid-status))
 (define mechanism-definitions '(process-rss-bytes spawn-detached! spawn-captured! path-case-sensitive? machine-kind))
 (define fixed-width-accessors
@@ -812,13 +819,19 @@
 ;; ---- signedness is the reader's, from the C type --------------------------------
 ;;
 ;; The rows carry no signedness. st_mode, st_dev and st_ino are read
-;; unsigned, st_size (off_t) signed, and these are the forms that do it.
-(want "PN-S st_mode, st_dev and st_ino are read unsigned and st_size signed, at the row's offset and width"
+;; unsigned, st_size (off_t) signed, and these are the forms that do it;
+;; stat-fields (path-stat, fd-stat) reads the times' seconds (time_t) and
+;; nanoseconds (long) signed as well.
+(want "PN-S st_mode, st_dev and st_ino are read unsigned and st_size signed, at the row's offset and width; stat-fields reads device and inode unsigned, size and the four time fields signed"
       (list (holds? (defined-form 'st-mode-of) '(row-uint-ref buf 'stat 'st_mode))
             (holds? (defined-form 'path-device-inode) '(row-uint-ref buf 'stat 'st_dev))
             (holds? (defined-form 'path-device-inode) '(row-uint-ref buf 'stat 'st_ino))
-            (holds? (defined-form 'size-entry) '(row-sint-ref buf 'stat 'st_size)))
-      '(#t #t #t #t))
+            (holds? (defined-form 'size-entry) '(row-sint-ref buf 'stat 'st_size))
+            (map (lambda (f) (holds? (defined-form 'stat-fields) f))
+                 '((row-uint-ref buf 'stat 'st_dev) (row-uint-ref buf 'stat 'st_ino) (row-sint-ref buf 'stat 'st_size)
+                   (row-sint-ref buf 'stat 'st_mtim_sec) (row-sint-ref buf 'stat 'st_mtim_nsec)
+                   (row-sint-ref buf 'stat 'st_ctim_sec) (row-sint-ref buf 'stat 'st_ctim_nsec))))
+      '(#t #t #t #t (#t #t #t #t #t #t #t)))
 (want "PN-S and on this row a file's size reads back as the bytes written"
       (let ((p (string-append here "/sized")))
         (call-with-output-file p (lambda (o) (put-string o "twelve bytes")))
@@ -879,7 +892,7 @@
 (want "PN-X2 ffi.sc binds through libc-entry exactly the names it binds that the reading holds"
       (list (list-sort string<? bound-by-entry)
             (filter (lambda (x) (member x inode64-reading)) bound-bare))
-      (list '("lstat" "opendir" "readdir" "stat") '()))
+      (list '("fstat" "lstat" "opendir" "readdir" "stat") '()))
 ;; NEVER: THE ROW CHOOSES NO SYMBOL. A child forced to Darwin/x86_64 loads
 ;; the FFI and stats a directory: the symbols are this process's own
 ;; family, so on any machine but an x86_64 Mac they stay bare -- a binding

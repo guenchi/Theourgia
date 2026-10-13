@@ -122,6 +122,8 @@
 ;;;   file-is-regular?    stat            unreadable-entry; #f when absent
 ;;;   path-device-inode   stat            unreadable-entry, ENOENT included
 ;;;   path-version        stat, times     unreadable-entry, ENOENT included
+;;;   path-stat           stat            unreadable-entry, ENOENT included
+;;;   fd-stat             fstat           unreadable-entry naming the path
 ;;;   file-size           open, lseek     unreadable-entry, ENOENT included
 ;;;   fd-open             open            unreadable-entry, ENOENT included
 ;;;     with 'create      create, open    durable-error from the create;
@@ -376,7 +378,7 @@
           barrier! rotation-probe-fault!
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
-          path-device-inode path-version real-path
+          path-device-inode path-version path-stat fd-stat real-path
           fs-error? fs-error-op fs-error-target fs-error-errno errno-text
           theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-probe-off? theourgia-stage known-stages
           report-fault?
@@ -910,6 +912,7 @@
   (define c-mkdir (foreign-procedure "mkdir" (string unsigned-16) int))
   (define c-stat  (foreign-procedure (libc-entry "stat")  (string u8*) int))
   (define c-lstat (foreign-procedure (libc-entry "lstat") (string u8*) int))
+  (define c-fstat (foreign-procedure (libc-entry "fstat") (int u8*) int))
   (define c-realpath (foreign-procedure "realpath" (string u8*) uptr))
   (define c-socket (foreign-procedure "socket" (int int int) int))
   (define c-connect (foreign-procedure "connect" (int u8* int) int))
@@ -3665,6 +3668,45 @@
         (list device inode (time-second modified) (time-nanosecond modified)
               (time-second changed) (time-nanosecond changed)
               (and (file-is-regular? path) (file-size path))))))
+
+  ;; ONE STAT, FIVE FIELDS: (device inode size mtime ctime), each time an
+  ;; exact pair (seconds . nanoseconds) read from the row's measured
+  ;; offsets (st_mtim_sec, st_mtim_nsec, st_ctim_sec, st_ctim_nsec,
+  ;; layout-probe 5), never a float. Size and the times are read signed
+  ;; (off_t, time_t, long), device and inode unsigned, as path-device-inode
+  ;; reads them.
+  (define (stat-fields buf)
+    (list (row-uint-ref buf 'stat 'st_dev)
+          (row-uint-ref buf 'stat 'st_ino)
+          (row-sint-ref buf 'stat 'st_size)
+          (cons (row-sint-ref buf 'stat 'st_mtim_sec) (row-sint-ref buf 'stat 'st_mtim_nsec))
+          (cons (row-sint-ref buf 'stat 'st_ctim_sec) (row-sint-ref buf 'stat 'st_ctim_nsec))))
+
+  ;; The five fields of what PATH names now, from one stat (following a
+  ;; symlink, as path-device-inode does). Non-mutating: unreadable-entry
+  ;; with the errno, absence included; stat-fail reaches it.
+  (define (path-stat path)
+    (unless (string? path)
+      (assertion-violation 'path-stat "path must be a string" path))
+    (when (stat-fault? path) (unreadable! path (stat-fault-errno)))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let ((rc (c-stat path buf)))
+        (when (< rc 0) (unreadable! path (errno)))
+        (stat-fields buf))))
+
+  ;; The five fields of what descriptor FD has open, from one fstat: the
+  ;; file it opened, whatever its path names now. The answer names the path
+  ;; it was opened on (or OPTS's subject, as fd-size does); stat-fail
+  ;; reaches it through that path.
+  (define (fd-stat fd . opts)
+    (unless (and (integer? fd) (exact? fd) (>= fd 0))
+      (assertion-violation 'fd-stat "not a descriptor" fd))
+    (let ((subject (subject-of fd opts)))
+      (when (and (string? subject) (stat-fault? subject)) (unreadable! subject (stat-fault-errno)))
+      (let ((buf (make-bytevector stat-buffer-size 0)))
+        (let ((rc (c-fstat fd buf)))
+          (when (< rc 0) (unreadable! subject (errno)))
+          (stat-fields buf)))))
 
   ;; ---- linking ----------------------------------------------------------
 
