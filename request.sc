@@ -55,7 +55,10 @@
           (rnrs bytevectors) (rnrs io ports) (rnrs exceptions)
           (only (theourgia wire) sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (theourgia trace) trace-event!))
+          (only (theourgia trace) trace-event!)
+          (rnrs hashtables) (rnrs records syntactic)
+          (only (chezscheme) make-weak-eq-hashtable)
+          (theourgia degeneracy))
 
   ;; 1 to 64 characters of [A-Za-z0-9._-], or a batch item naming the
   ;; batch and its index. The set is small on purpose: a request id
@@ -1260,6 +1263,29 @@
   ;;
   ;; Dependencies that have not been applied are PENDING, which is not a
   ;; membership question at all.
+  ;; THE BINDINGS A JUDGEMENT HAS MADE, indexed: the list, newest
+  ;; first, as the evidence lists membership was given, and beside it the
+  ;; same records by event and by sub. membership and the lookups below take
+  ;; either this or a plain list of evidence and answer alike.
+  (define-record-type (binding-index make-binding-index/raw binding-index?)
+    (fields (mutable list) by-event by-sub))
+  (define (make-binding-index)
+    (make-binding-index/raw '() (make-hashtable equal-hash equal?) (make-eqv-hashtable)))
+  (define (binding-add! ix e)
+    (binding-index-list-set! ix (cons e (binding-index-list ix)))
+    (hashtable-update! (binding-index-by-event ix) (ev-event e) (lambda (l) (cons e l)) '())
+    (hashtable-update! (binding-index-by-sub ix) (actor-sub (ev-actor e)) (lambda (l) (cons e l)) '()))
+  ;; The records of the evidence with this event, in the evidence's order.
+  (define (evidence-with-event evidence event)
+    (if (binding-index? evidence)
+        (hashtable-ref (binding-index-by-event evidence) event '())
+        (filter (lambda (e) (equal? (ev-event e) event)) evidence)))
+  ;; The records of the evidence at this sub, in the evidence's order.
+  (define (evidence-at-sub evidence sub)
+    (if (binding-index? evidence)
+        (hashtable-ref (binding-index-by-sub evidence) sub '())
+        (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) sub)) evidence)))
+
   (define (membership e evidence)
     (guard (ex (#t 'invalid)) (membership-checked e evidence)))
 
@@ -1269,7 +1295,7 @@
         ;; a record that belongs to no plan is its own member
         ((not plan-event) 'valid)
         ((not (plan-record-present? plan-event evidence)) 'undetermined)
-        ((let ((p (find (lambda (p) (equal? (ev-event p) plan-event)) evidence)))
+        ((let ((p (car (evidence-with-event evidence plan-event))))
            (or (not (identity=? (actor-identity (ev-actor e)) (actor-identity (ev-actor p))))
                (not (equal? (actor-fingerprint (ev-actor e)) (actor-fingerprint (ev-actor p))))
                (not (equal? (car (ev-actor e)) (car (ev-actor p))))
@@ -1339,7 +1365,24 @@
                     (loop (cdr items) (cons (car (car items)) seen)))))))
 
   ;; The immutable declaration has a complete, contiguous index set.
+  ;; ITS ANSWER IS KEPT PER PAYLOAD: a plan's entries are walked
+  ;; once, not once per member that asks. A record's payload is read from the
+  ;; log and never changed, so the object answers the same every time; the
+  ;; table holds it weakly, so a payload no record holds any more goes.
+  ;; Under the degeneracy switch a kept answer is walked again and compared.
+  (define plan?-answers (make-weak-eq-hashtable))
   (define (plan? p)
+    (if (pair? p)
+        (let ((known (hashtable-ref plan?-answers p 'unknown)))
+          (if (eq? known 'unknown)
+              (let ((answer (plan?/walk p))) (hashtable-set! plan?-answers p answer) answer)
+              (begin
+                (degeneracy-check
+                  (unless (eq? known (plan?/walk p))
+                    (assertion-violation 'degeneracy "plan? differs from its walk" p known)))
+                known)))
+        (plan?/walk p)))
+  (define (plan?/walk p)
     (and (list? p) (<= 5 (length p) 6) (eq? (car p) 'plan)
          (req-id-ok? (cadr p)) (string? (caddr p)) (event-id? (cadddr p))
          (list? (list-ref p 4))
@@ -1364,14 +1407,25 @@
       (for-each (lambda (e) (trace-event! 'identity-probe (ev-event e) mark)) evidence))
     (apply append (map identity-gates (group-by-identity evidence))))
 
-  (define (identity-gates es)
-    (let ((statuses '()) (bindings '()))
+  ;; THE WHOLE-BUCKET JUDGEMENT, WITH ITS LOOKUPS INDEXED. The
+  ;; algorithm is the one the reference below keeps verbatim: the plan and
+  ;; single slots first, then each index in order, each slot classified
+  ;; against the bindings the earlier slots made, then the plan-order pass
+  ;; over the records sorted by index. What changed is how each question is
+  ;; asked: a status by event from a table, not an assoc; a mark one entry,
+  ;; not a filter of every status; the bindings an index by event and by
+  ;; sub (binding-index), which membership's lookups read; a slot by index
+  ;; and a predecessor by (plan, index) or by event from tables built in one
+  ;; pass. The statuses come back in the order the reference gives them:
+  ;; each event once, the most recently marked first.
+  ;; -> (values statuses bindings), bindings newest first.
+  (define (identity-gates/full es)
+    (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
       (define (status e)
-        (let ((p (assoc (ev-event e) statuses))) (and p (cdr p))))
+        (let ((p (hashtable-ref statuses (ev-event e) #f))) (and p (car p))))
       (define (mark! e why)
-        (set! statuses (cons (cons (ev-event e) why)
-                              (filter (lambda (p) (not (equal? (car p) (ev-event e))))
-                                      statuses))))
+        (set! stamp (+ stamp 1))
+        (hashtable-set! statuses (ev-event e) (cons why stamp)))
       (define (declaration-ok? e)
         (let ((p (ev-payload e)) (a (ev-actor e)))
           (if (not (eq? (actor-sub a) 'plan))
@@ -1399,48 +1453,157 @@
                    (else (mark! e 'pending-plan))))))
             slot)
           (for-each (lambda (e) (mark! e (if (> (length valid) 1) 'plan-conflict 'valid))) valid)
-          (when (= 1 (length valid)) (set! bindings (cons (car valid) bindings)))))
-      ;; Unindexed records first: the plan must be available to its items.
-      (for-each
-        (lambda (sub)
-          (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
-        '(plan single))
-      (let ((indices (list-sort <
-                       (fold-left (lambda (out e)
-                         (let ((i (actor-sub (ev-actor e))))
-                           (if (and (integer? i) (not (memv i out))) (cons i out) out)))
-                         '() es))))
+          (when (= 1 (length valid)) (binding-add! bindings (car valid)))))
+      ;; ONE PASS over the records, in their order: each integer index's
+      ;; records, each (plan, index)'s and each event's.
+      (let ((at-index (make-eqv-hashtable)) (at-plan-index (make-hashtable equal-hash equal?))
+            (at-event (make-hashtable equal-hash equal?)))
         (for-each
-          (lambda (i)
-            ;; More than one plan event cannot supply one binding space.
-            (let ((slot (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) i)) es)))
+          (lambda (e)
+            (let* ((a (ev-actor e)) (i (actor-sub a)))
+              (hashtable-update! at-event (ev-event e) (lambda (l) (cons e l)) '())
+              (when (integer? i)
+                (hashtable-update! at-index i (lambda (l) (cons e l)) '())
+                (hashtable-update! at-plan-index (cons (actor-plan-event a) i) (lambda (l) (cons e l)) '()))))
+          es)
+        (let ((in-order (lambda (t k) (reverse (hashtable-ref t k '()))))
+              (indices (list-sort < (vector->list (hashtable-keys at-index)))))
+          ;; Unindexed records first: the plan must be available to its items.
+          (for-each
+            (lambda (sub)
+              (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
+            '(plan single))
+          (for-each
+            (lambda (i)
+              ;; More than one plan event cannot supply one binding space.
+              (let ((slot (in-order at-index i)))
+                (for-each
+                  (lambda (pe)
+                    (classify-slot!
+                      (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
+                  (fold-left (lambda (out e)
+                               (let ((pe (actor-plan-event (ev-actor e))))
+                                 (if (member pe out) out (cons pe out)))) '() slot))))
+            indices)
+          ;; THE ORDER PASS walks the same indices in order, each index's
+          ;; records in the bucket's order: the order the reference's stable
+          ;; sort by index gives, since a sub is an exact integer or a
+          ;; symbol and the symbols' records are not asked here.
+          (for-each
+            (lambda (i)
               (for-each
-                (lambda (pe)
-                  (classify-slot!
-                    (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
-                (fold-left (lambda (out e)
-                             (let ((pe (actor-plan-event (ev-actor e))))
-                               (if (member pe out) out (cons pe out)))) '() slot))))
-          indices))
-      (for-each
-        (lambda (e)
-          (let* ((a (ev-actor e)) (i (actor-sub a)) (pe (actor-plan-event a)))
-            (when (and (integer? i) (eq? (status e) 'valid))
-              (let ((previous
-                      (filter (lambda (p)
-                        (if (= i 0)
-                            (equal? (ev-event p) pe)
-                            (and (equal? (actor-plan-event (ev-actor p)) pe)
-                                 (eqv? (actor-sub (ev-actor p)) (- i 1))))) es)))
-                (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
-                  (cond
-                    ((null? previous) (mark! e 'plan-order))
-                    ((not (= 1 (length eligible))) (mark! e 'pending-plan))
-                    ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
-        (list-sort (lambda (a b)
-                     (< (if (integer? (actor-sub (ev-actor a))) (actor-sub (ev-actor a)) -1)
-                        (if (integer? (actor-sub (ev-actor b))) (actor-sub (ev-actor b)) -1))) es))
+                (lambda (e)
+                  (let ((pe (actor-plan-event (ev-actor e))))
+                    (when (eq? (status e) 'valid)
+                      (let ((previous (if (= i 0)
+                                          (in-order at-event pe)
+                                          (in-order at-plan-index (cons pe (- i 1))))))
+                        (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
+                          (cond
+                            ((null? previous) (mark! e 'plan-order))
+                            ((not (= 1 (length eligible))) (mark! e 'pending-plan))
+                            ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
+                (in-order at-index i)))
+            indices)))
+      (let-values (((events marks) (hashtable-entries statuses)))
+        (values (map (lambda (p) (cons (car p) (car (cdr p))))
+                     (list-sort (lambda (x y) (> (cdr (cdr x)) (cdr (cdr y))))
+                                (map cons (vector->list events) (vector->list marks))))
+                (binding-index-list bindings)))))
+
+  (define (identity-gates es)
+    (let-values (((statuses bindings) (identity-gates/full es)))
+      (degeneracy-check (identity-gates-compare es statuses bindings))
       statuses))
+
+  ;; THE REFERENCE, under the degeneracy switch only (degeneracy.sc): the
+  ;; whole-bucket judgement as it was before its lookups were indexed,
+  ;; verbatim but for its answer, run beside identity-gates/full on every
+  ;; bucket; a difference in the statuses or the bindings raises there.
+  (degeneracy-definitions
+    (define (identity-gates/reference es)
+      (let ((statuses '()) (bindings '()))
+        (define (status e)
+          (let ((p (assoc (ev-event e) statuses))) (and p (cdr p))))
+        (define (mark! e why)
+          (set! statuses (cons (cons (ev-event e) why)
+                                (filter (lambda (p) (not (equal? (car p) (ev-event e))))
+                                        statuses))))
+        (define (declaration-ok? e)
+          (let ((p (ev-payload e)) (a (ev-actor e)))
+            (if (not (eq? (actor-sub a) 'plan))
+                (not (and (pair? p) (memq (car p) '(plan batch))))
+                (and (or (plan? p) (receipt? p))
+                     (equal? (cadr p) (cdr (actor-identity a)))
+                     (equal? (caddr p) (actor-fingerprint a))
+                     (equal? (cadddr p) (actor-after a))))))
+        (define (classify-slot! slot)
+          (let ((valid '()))
+            (for-each
+              (lambda (e)
+                (cond
+                  ((not (ev-delivered? e)) (mark! e 'pending-plan))
+                  ((not (declaration-ok? e)) (mark! e 'plan-mismatch))
+                  ((and (integer? (actor-sub (ev-actor e)))
+                        (not (actor-plan-event (ev-actor e))))
+                   (mark! e 'plan-mismatch))
+                  ((not (actor-plan-event (ev-actor e)))
+                   (set! valid (cons e valid)))
+                  (else
+                   (case (membership e bindings)
+                     ((valid) (set! valid (cons e valid)))
+                     ((invalid) (mark! e 'plan-mismatch))
+                     (else (mark! e 'pending-plan))))))
+              slot)
+            (for-each (lambda (e) (mark! e (if (> (length valid) 1) 'plan-conflict 'valid))) valid)
+            (when (= 1 (length valid)) (set! bindings (cons (car valid) bindings)))))
+        ;; Unindexed records first: the plan must be available to its items.
+        (for-each
+          (lambda (sub)
+            (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
+          '(plan single))
+        (let ((indices (list-sort <
+                         (fold-left (lambda (out e)
+                           (let ((i (actor-sub (ev-actor e))))
+                             (if (and (integer? i) (not (memv i out))) (cons i out) out)))
+                           '() es))))
+          (for-each
+            (lambda (i)
+              ;; More than one plan event cannot supply one binding space.
+              (let ((slot (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) i)) es)))
+                (for-each
+                  (lambda (pe)
+                    (classify-slot!
+                      (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
+                  (fold-left (lambda (out e)
+                               (let ((pe (actor-plan-event (ev-actor e))))
+                                 (if (member pe out) out (cons pe out)))) '() slot))))
+            indices))
+        (for-each
+          (lambda (e)
+            (let* ((a (ev-actor e)) (i (actor-sub a)) (pe (actor-plan-event a)))
+              (when (and (integer? i) (eq? (status e) 'valid))
+                (let ((previous
+                        (filter (lambda (p)
+                          (if (= i 0)
+                              (equal? (ev-event p) pe)
+                              (and (equal? (actor-plan-event (ev-actor p)) pe)
+                                   (eqv? (actor-sub (ev-actor p)) (- i 1))))) es)))
+                  (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
+                    (cond
+                      ((null? previous) (mark! e 'plan-order))
+                      ((not (= 1 (length eligible))) (mark! e 'pending-plan))
+                      ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
+          (list-sort (lambda (a b)
+                       (< (if (integer? (actor-sub (ev-actor a))) (actor-sub (ev-actor a)) -1)
+                          (if (integer? (actor-sub (ev-actor b))) (actor-sub (ev-actor b)) -1))) es))
+        (values statuses bindings)))
+
+    (define (identity-gates-compare es statuses bindings)
+      (let-values (((statuses0 bindings0) (identity-gates/reference es)))
+        (unless (and (equal? statuses0 statuses) (equal? bindings0 bindings))
+          (assertion-violation 'degeneracy "identity-gates differ from the whole-bucket judgement"
+                               (map ev-event es) statuses statuses0)))))
 
   ;; ---- did this record come from that intent --------------------------------
 
@@ -1606,31 +1769,50 @@
                         (and (ev-delivered? e)
                              (eq? (ev-placement e) (quote valid-history))
                              (not (ev-marked? e (quote superseded)))
-                             (not (ev-marked? e (quote plan-mismatch)))
-                             (eqv? (actor-sub (ev-actor e)) index)))
-                      evidence)))
+                             (not (ev-marked? e (quote plan-mismatch)))))
+                      (evidence-at-sub evidence index))))
       (and (= 1 (length at)) (car at))))
 
   (define (plan-record-present? plan-event evidence)
     (exists (lambda (e)
               (and (ev-delivered? e)
-                   (equal? (ev-event e) plan-event)
                    (pair? (ev-payload e))
                    (plan? (ev-payload e))))
-            evidence))
+            (evidence-with-event evidence plan-event)))
 
   ;; The payload the plan declared for one index, or `absent`.
   (define (plan-payload-for plan-event index evidence)
-    (let loop ((es evidence))
+    (let loop ((es (evidence-with-event evidence plan-event)))
       (cond
         ((null? es) 'absent)
-        ((and (equal? (ev-event (car es)) plan-event)
-              (pair? (ev-payload (car es)))
+        ((and (pair? (ev-payload (car es)))
               (eq? (car (ev-payload (car es))) 'plan))
-         (let ((entries (list-ref (ev-payload (car es)) 4)))
-           (let ((entry (assv index entries)))
-             (if entry (cdr entry) 'absent))))
+         (let ((entry (plan-entry (ev-payload (car es)) index)))
+           (if entry (cdr entry) 'absent)))
         (else (loop (cdr es))))))
+
+  ;; A PLAN'S ENTRY BY INDEX, as assv over its entries finds it (the first
+  ;; with that index), from a table built once per payload and held weakly,
+  ;; as plan?'s answer is. Entries that are not a list of pairs are asked
+  ;; with assv itself, raising as it raises. Under the degeneracy switch a
+  ;; kept table's answer is compared with assv's.
+  (define plan-entries (make-weak-eq-hashtable))
+  (define (plan-entry payload index)
+    (let ((t (hashtable-ref plan-entries payload #f)))
+      (if t
+          (let ((entry (hashtable-ref t index #f)))
+            (degeneracy-check
+              (unless (eq? entry (assv index (list-ref payload 4)))
+                (assertion-violation 'degeneracy "a plan's entry differs from assv's" index entry)))
+            entry)
+          (let ((entries (list-ref payload 4)))
+            (if (and (list? entries) (for-all pair? entries))
+                (let ((t (make-eqv-hashtable)))
+                  (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
+                            entries)
+                  (hashtable-set! plan-entries payload t)
+                  (hashtable-ref t index #f))
+                (assv index entries))))))
 
   ;; `(#%new k)` stands for a block a previous sub-operation created, so
   ;; a payload still holding one cannot yet be compared with what was

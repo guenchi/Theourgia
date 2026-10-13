@@ -15,7 +15,8 @@
 (library (theourgia admission)
   (export make-admission admission-copy admission-add! admission-gates)
   (import (rnrs) (theourgia request)
-          (only (theourgia wire) sexpr->string-extended))
+          (only (theourgia wire) sexpr->string-extended)
+          (theourgia degeneracy))
 
   ;; This index tracks causal availability independently of application.
   ;; Revoking an applied gate still makes the reducer replay its retained set.
@@ -100,12 +101,31 @@
         (vector-for-each
           (lambda (id)
             (let* ((records (ref (admission-buckets a) id '()))
-                   (events (map event records))
+                   (events (make-hashtable equal-hash equal?))
                    (fresh (filter (lambda (p) (not (eq? (cdr p) 'valid)))
                                   (request-gates (map (lambda (r) (evidence a r)) records)
                                                  (and (pair? rehearsal?) (car rehearsal?))))))
-              (admission-gates-set! a
-                (append fresh (filter (lambda (p) (not (member (car p) events)))
-                                      (admission-gates a)))))) ids))
+              ;; THE BUCKET'S EVENTS AS A TABLE, so dropping its old gates is
+              ;; one lookup per gate, not a walk of the bucket per gate.
+              (for-each (lambda (r) (hashtable-set! events (event r) #t)) records)
+              (let ((before (admission-gates a)))
+                (admission-gates-set! a
+                  (append fresh (filter (lambda (p) (not (hashtable-contains? events (car p))))
+                                        before)))
+                (degeneracy-check (gates-compare records fresh before (admission-gates a)))))) ids))
       (admission-gates a)))
+
+  ;; THE REPLACEMENT AS IT WAS, under the degeneracy switch only
+  ;; (degeneracy.sc): the old gates whose event is among the bucket's, found
+  ;; by walking the bucket's events, dropped, and the fresh ones put first; a
+  ;; list that differs from the one kept raises at that record. The fresh
+  ;; gates themselves are checked where they are judged (request.sc,
+  ;; identity-gates).
+  (degeneracy-definitions
+    (define (gates-compare records fresh before kept)
+      (let* ((events (map event records))
+             (expected (append fresh (filter (lambda (p) (not (member (car p) events))) before))))
+        (unless (equal? expected kept)
+          (assertion-violation 'degeneracy "the gates differ from the whole-bucket replacement"
+                               (map event records) kept expected)))))
 )
