@@ -141,11 +141,13 @@
   (define (strings? xs) (and (list? xs) (for-all string? xs)))
 
   ;; THE HEADER, its clauses by name, each once:
-  ;;   (supply <kind> (writer "<w>") (language "<l>") (source (vscode "<v>"))
+  ;;   (supply <kind> (writer "<w>") (language "<l>") (source (<tool> "<v>"))
   ;;           (files ((<path> "<sha256>") ...)) (replaces (<path> ...)))
-  ;; The kind and the writer must be the ones the command names; the table
-  ;; a supply writes is identified by the command and the header together,
-  ;; never by one of them alone. -> (kind writer language version files replaces)
+  ;; The source names the tool that made the facts, any symbol, and its
+  ;; version, a string: (vscode "1.2.0"), (other-tool "1"). The kind and the
+  ;; writer must be the ones the command names; the table a supply writes is
+  ;; identified by the command and the header together, never by one of them
+  ;; alone. -> (kind writer language (<tool> "<v>") files replaces)
   (define header-keys '(writer language source files replaces))
   (define (read-supply-header d kind writer)
     (unless (and (list? d) (>= (length d) 2) (eq? (car d) 'supply) (symbol? (cadr d))
@@ -157,7 +159,7 @@
            (w (get 'writer)) (language (get 'language)) (source (get 'source))
            (files (get 'files)) (replaces (get 'replaces)))
       (unless (and (string? w) (string? language) (> (string-length language) 0)
-                   (list? source) (= 2 (length source)) (eq? (car source) 'vscode) (string? (cadr source))
+                   (list? source) (= 2 (length source)) (symbol? (car source)) (string? (cadr source))
                    (list? files)
                    (for-all (lambda (f) (and (list? f) (= 2 (length f)) (string? (car f))
                                              (> (string-length (car f)) 0) (hex64? (cadr f))))
@@ -167,7 +169,7 @@
         (malformed 1 'header))
       (unless (eq? (cadr d) kind) (malformed 1 'kind-mismatch))
       (unless (equal? w writer) (malformed 1 'writer-mismatch))
-      (list kind w language (cadr source) files replaces)))
+      (list kind w language source files replaces)))
 
   (define (depends? d) (and (list? d) (= 2 (length d)) (eq? (car d) 'depends) (pair? (cadr d)) (strings? (cadr d))))
   (define (exact-offset? x) (and (integer? x) (exact? x) (>= x 0)))
@@ -340,7 +342,7 @@
                 (equal? (car (car deps)) (cadr (caddr f)))))
          (let ((files (list-ref f 4))) (and (list? files) (pair? files) (for-all stamp? files)))
          (let ((v (list-ref f 5)))
-           (and (list? v) (= 3 (length v)) (eq? (car v) 'vscode) (for-all string? (cdr v))))))
+           (and (list? v) (= 3 (length v)) (symbol? (car v)) (for-all string? (cdr v))))))
   (define (make-fact own-file payload dep-stamps file-stamps via)
     (list 'fact own-file payload dep-stamps file-stamps via))
   (define (fact-own-file f) (cadr f))
@@ -419,7 +421,7 @@
     (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
       (let* ((data (supply-lines (supply-bytes path)))
              (header (read-supply-header (header-datum data) kind writer))
-             (language (caddr header)) (version (cadddr header))
+             (language (caddr header)) (source (cadddr header))
              (files (list-ref header 4)) (replaces (list-ref header 5))
              (facts (map-in-order (lambda (row) (cons (car row) (read-fact kind (cdr row) (car row)))) (cdr data)))
              (state (view))
@@ -447,7 +449,8 @@
                (src-of (lambda (id)
                          (let ((p (by-path (file-of id))))
                            (cadr (assoc id (list-ref p 5))))))
-               (via (list 'vscode version language))
+               ;; VIA IS THE SOURCE AS THE HEADER GAVE IT, with the language.
+               (via (list (car source) (cadr source) language))
                (made
                  (map-in-order (lambda (nf)
                         (let* ((n (car nf)) (subject (cadr nf)) (payload (caddr nf))

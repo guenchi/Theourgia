@@ -243,7 +243,7 @@ as a write's state section says when it cannot describe a block.
 `--signature` answers the signature an editor supplied for the block (see
 "Derived data from an editor"):
 
-    (ok (signature "<text>") (stale <n>) (via (vscode "<version>" "<languageId>")))
+    (ok (signature "<text>") (stale <n>) (via (<tool> "<version>" "<languageId>")))
     (ok (signature absent) (stale <n>) (via))
 
 from the committed store's facts, or with `--working` from the writer's own
@@ -355,7 +355,7 @@ A third place is an editor's: the calls it supplied (see "Derived data from
 an editor"). Those rows come after the store's own, and their via is the
 provenance that supplied them:
 
-    (ref (from <id>) (rel calls) (via (vscode "<version>" "<languageId>")))
+    (ref (from <id>) (rel calls) (via (<tool> "<version>" "<languageId>")))
 
 Once a calls table was read the answer carries `(stale <n>)`, the supplied
 calls into this block that were dropped because what they were computed from
@@ -919,7 +919,7 @@ rule over the wire. A TERM is a constant (a string, a symbol, an exact
 integer, or a list of those as the second argument of `member`), a
 variable (a symbol starting with `?`), or `_`, a variable never reported
 and never joined. A GOAL is a fact relation, a rule of the library, a test,
-or `(and <goal> ...)`. A rule body is a conjunction read left to right;
+or `(and <goal> ...)`; an `and` inside an `and` is its goals in place. A rule body is a conjunction read left to right;
 several rules with one head are a disjunction, and a rule may call itself.
 There is no negation: every answer is the least model of the rules, and
 the same whatever order the facts were written in.
@@ -2477,9 +2477,13 @@ The file is one S-expression per line; an empty line is skipped, and a
 line is numbered as the file is. Line 1 is the header:
 
     (supply <kind> (writer "<writer>") (language "<languageId>")
-            (source (vscode "<version>"))
+            (source (<tool> "<version>"))
             (files ((<path> "<sha256>") ...)) (replaces (<path> ...)))
 
+`source` names the tool that computed the facts -- any symbol, `vscode` for
+the editor plugin -- and its version, a string; every fact the supply writes
+carries it, with the language, as its `via`: `(source (other-tool "1"))`
+answers `(via (other-tool "1" "<languageId>"))`.
 `writer` is `-` for the committed store and must be the `--for` given;
 `files` is every file the projection wrote, with the sha256 of its bytes;
 `replaces` names the files whose facts this supply replaces. Every other

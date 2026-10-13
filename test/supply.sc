@@ -556,12 +556,13 @@
 (define (supply-now st writer lines replaces . opts)
   (let* ((version (if (pair? opts) (car opts) "1.140.0"))
          (language (if (and (pair? opts) (pair? (cdr opts))) (cadr opts) "javascript"))
+         (tool (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts))) (caddr opts) 'vscode))
          (d (if (equal? writer "-") (export-in st) (export-in st "--working" "--writer" writer)))
          (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
     (apply supply-in st
            (apply string-append
                   (line (list 'supply 'signatures (list 'writer writer) (list 'language language)
-                              (list 'source (list 'vscode version)) (list 'files files) (list 'replaces replaces)))
+                              (list 'source (list tool version)) (list 'files files) (list 'replaces replaces)))
                   lines)
            "signatures" (if (equal? writer "-") '() (list "--for" writer)))))
 (define (sig id text . depends) (line (list 'signature id text '(kind function) (list 'depends (cons id depends)))))
@@ -762,6 +763,14 @@
             (sig-of r1 r1-delta) (sig-of r1 r1-gamma))
       (list '(ok (supplied (facts 1) (files 1))) (list 'ok '(signature "delta()") '(stale 0) (via "1.140.0" "python"))
             (present "gamma(): number" "1.141.0")))
+
+;; F276: THE SOURCE IS ANY TOOL, a symbol, with its version: a supply from
+;; another tool is taken, and the via a fact answers with names it as given.
+(want "D8 a supply whose source is (other-tool \"1\") is taken, and alpha's signature answers via (other-tool \"1\" \"javascript\")"
+      (in-order (supply-now r1 "-" (list (sig r1-alpha "alpha(): other")) '("a.js") "1" "javascript" 'other-tool)
+                (sig-of r1 r1-alpha))
+      (list '(ok (supplied (facts 1) (files 1)))
+            '(ok (signature "alpha(): other") (stale 0) (via (other-tool "1" "javascript")))))
 
 ;; ---- D5, D14: an editor's keywords in search --------------------------------------
 (define r2 (make-store! "r2"))
