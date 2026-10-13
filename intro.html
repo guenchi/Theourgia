@@ -628,7 +628,7 @@ scene({tag:['feat','Feature 9 / 9'],title:'Rules are data; hosts supply facts',d
   this.log=el(`<div class="abs" style="width:1580px;height:96px;border-radius:16px;background:var(--bg2);border:2px solid var(--line)"><div class="lbl" style="position:absolute;left:16px;top:10px;font-size:15px">log · append-only facts</div></div>`,r);
   this.FACTS=[[0,'(calls retry backoff)',1.0],[1,'(attempt a3 retry)',1.6],[3,'(test W3 failed)',2.2],[2,'(observation a3 "W3 fails")',2.8],[0,'(diagnostic retry.ss 12)',3.4]];
   this.pills=this.FACTS.map(([h,f])=>el(`<div class="abs chip" style="font-size:18px;padding:7px 12px;background:#fff;border:2px solid var(--line);color:var(--fg)">${f}</div>`,r));
-  this.rule=el(`<div class="blk" style="width:640px;border-color:var(--acc2);padding:12px 18px"><div class="k" style="color:var(--acc2);font-size:14px">RULE · A BLOCK IN THE SAME STORE</div><div style="font:600 19px/1.55 var(--mono);margin-top:6px;white-space:pre">((disposition ?a "rerun")
+  this.rule=el(`<div class="blk" style="width:640px;border-color:var(--acc2);padding:12px 18px"><div class="k" style="color:var(--acc2);font-size:14px">RULE · DATA</div><div style="font:600 19px/1.55 var(--mono);margin-top:6px;white-space:pre">((disposition ?a "rerun")
  (attempt ?a ?b)
  (observation ?a ?w))</div></div>`,r);
   this.reasoner=el(`<div class="abs" style="width:330px;height:150px;border-radius:22px;background:var(--acc);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;box-shadow:0 12px 40px rgba(18,176,156,.3)"><div style="font:800 28px var(--mono)">reasoner</div><div style="font:600 17px var(--sans);opacity:.9">facts + rules as data → derived</div></div>`,r);
