@@ -4553,7 +4553,7 @@
       (if (null? is)
           (reverse out)
           (let* ((raw (car is))
-                 (rs (if (malformed-intent? raw) '() (intent-refs raw)))
+                 (rs (intent-timed 9 (if (malformed-intent? raw) '() (intent-refs raw))))
                  (fixed
                    (if (null? rs)
                        raw
@@ -4563,12 +4563,16 @@
                            ((and (pair? p) (eq? (car p) 'error)) p)
                            ((and (pair? a) (eq? (car a) 'error)) a)
                            (else (intent-with-refs raw p a))))))
+                 (refused (intent-timed 9
+                            (cond
+                              ((intent-reason raw)
+                               => (lambda (why)
+                                    (list 'error 'malformed-intent why)))
+                              ((reserved-relation raw)
+                               => (lambda (rel) (list 'error 'reserved-relation (list 'relation rel))))
+                              (else #f))))
                  (answer (cond
-                           ((intent-reason raw)
-                            => (lambda (why)
-                                 (list 'error 'malformed-intent why)))
-                           ((reserved-relation raw)
-                            => (lambda (rel) (list 'error 'reserved-relation (list 'relation rel))))
+                           (refused refused)
                            ((and (pair? fixed) (eq? (car fixed) 'error)) fixed)
                            (else
                      ;; A RAISE IN ONE SUB-OPERATION IS THAT SUB-OPERATION'S
@@ -4590,7 +4594,7 @@
                                        (list 'error 'unknown
                                              (list 'interrupted (failure-text e)))
                                        (raise e))))
-                       (one-intent! s state (actor-at n) fixed))))))
+                       (intent-timed 8 (one-intent! s state (actor-at n) fixed)))))))
             ;; A FAILED INTENT STOPS THE REST. Later intents were written
             ;; against a state this one was meant to produce; running them
             ;; anyway asks each to be judged against a history its author
@@ -4598,7 +4602,7 @@
             (cond
               ((eq? (car answer) 'error)
                (reverse (cons answer out)))
-              ((and after-each (after-each n answer))
+              ((and after-each (intent-timed 10 (after-each n answer)))
                => (lambda (stop) (reverse (cons stop (cons answer out)))))
               (else
                 (timing-call intent-window! (+ n 1))
@@ -4622,7 +4626,7 @@
                       (cons answer out))))))))
 
   (define (one-intent! s state actor intent)
-    (let ((v (session-view s)))
+    (let ((v (intent-timed 11 (session-view s))))
       (if (not v)
           ;; WHY THERE IS NO VIEW IS PART OF THE ANSWER. "No view" alone
           ;; sends a caller to look for a bug in its own sequencing when
@@ -4648,7 +4652,7 @@
                       ;;
                       ;; SAME PREDICATE THE REDUCER USES, so "appended"
                       ;; and "applicable" cannot come apart.
-                      ((caller-payload-reason payload)
+                      ((intent-timed 12 (caller-payload-reason payload))
                        => (lambda (why)
                             (list 'error 'malformed-intent
                                   (if (pair? why) why (list why)))))
@@ -4674,8 +4678,8 @@
                                ;; writer's link or unlink found, not what it left.
                                (matched (and (memq (car payload) '(link unlink))
                                              (edges-matched state payload)))
-                               (frame (make-frame (view-revision v) (view-epoch v)
-                                                  writer seq actor deps payload))
+                               (frame (intent-timed 13 (make-frame (view-revision v) (view-epoch v)
+                                                                   writer seq actor deps payload)))
                                (outcome (intent-timed 4 (session-append! s frame))))
                           ;; NOT EVERY FAILURE MEANS NOTHING HAPPENED.
                           ;; `refused-before-reserve` is the only outcome

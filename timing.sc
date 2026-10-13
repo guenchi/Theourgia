@@ -51,7 +51,12 @@
   ;; #t while the rules rehearse the branch dry: its intents and its plan are
   ;; not the request's, and neither is counted or printed
   (define quiet (vector #f))
-  (define intent-phases '#(refs check resolve deps append reduce applied receipt))
+  ;; The eight steps of an intent, then where the rest of its time goes:
+  ;; shape (run-intents!'s checks of the intent), after (the caller's
+  ;; after-each), intent (one-intent! whole, which holds check..receipt and
+  ;; the three after it), view, payload-check and frame (inside one-intent!).
+  (define intent-phases
+    '#(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame))
   (define intent-sums (make-vector (vector-length intent-phases) 0))
 
   ;; -> the request's start, its counters reset

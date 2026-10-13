@@ -118,7 +118,14 @@
 (define request-phases
   '(capture packet load-replay delivered-records applied-records intents verdict premises datum-src cursor rules
     plan-canonical plan-entries plan-append apply commit log-end total))
-(define intent-phase-names '(refs check resolve deps append reduce applied receipt))
+;; The eight steps of an intent; then intent (one-intent! whole), shape (the
+;; loop's checks of the intent) and after (the caller's after-each), which with
+;; refs are the loop's top level; and view, payload-check and frame, inside
+;; one-intent! as check..receipt are.
+(define intent-phase-names
+  '(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame))
+(define top-level-phases '(refs shape after intent))
+(define inside-intent-phases '(check resolve deps append reduce applied receipt view payload-check frame))
 (define (request-lines lines phase)
   (filter (lambda (d) (and (= (length d) 4) (eq? (cadr d) 'request) (eq? (caddr d) phase))) lines))
 (define (request-value lines phase)
@@ -129,9 +136,11 @@
 
 ;; THE WALL TIME AGAINST THE PHASES, from the stamped lines: each window's
 ;; wall time (its line's stamp less the previous window's) beside the sum of
-;; its phases, at 1000, 3000 and 7000 and over windows 200 to 7000; the time
-;; before the first window (from the last request line printed before it) and
-;; after the last (to the request's apply line). A reading, not a row.
+;; its top-level phases (refs, shape, after, intent: the others are inside
+;; intent), and what one-intent! spent outside its own phases, at 200, 1000,
+;; 3000, 5000 and 7000 and over windows 200 to 7000; the time before the first
+;; window (from the last request line printed before it) and after the last
+;; (to the request's apply line). A reading, not a row.
 (define (wall-against-phases ts-path)
   (let* ((stamped (filter (lambda (x) x)
                           (map (lambda (l)
@@ -142,13 +151,19 @@
          (windows (filter (lambda (x) (and (>= (length x) 5) (eq? (caddr x) 'intents))) stamped))
          (at (lambda (n) (find (lambda (x) (= (cadddr x) n)) windows)))
          (ms (lambda (s) (exact (round (* 1000 s)))))
-         (sum-ms (lambda (w) (exact (round (/ (apply + (map cadr (car (cddddr w)))) 1000)))))
+         (phase-ms (lambda (w names)
+                     (exact (round (/ (apply + (map (lambda (ph) (let ((e (assq ph (car (cddddr w))))) (if e (cadr e) 0))) names))
+                                      1000)))))
+         (sum-ms (lambda (w) (phase-ms w top-level-phases)))
+         (own-ms (lambda (w) (- (phase-ms w '(intent)) (phase-ms w inside-intent-phases))))
          (wall-ms (lambda (n) (let ((w (at n)) (v (at (- n 100)))) (and w v (ms (- (car w) (car v))))))))
-    (printf "~%wall against phases, ms per window: window  wall  phases  untimed~%")
+    (printf "~%wall against phases, ms per window: window  wall  top-level phases  untimed  one-intent!'s own  shape  after  view  payload-check  frame~%")
     (for-each (lambda (n)
                 (let ((w (at n)) (wall (wall-ms n)))
                   (when (and w wall)
-                    (printf "  ~a ~a ~a ~a~%" n wall (sum-ms w) (- wall (sum-ms w))))))
+                    (printf "  ~a ~a ~a ~a ~a ~a ~a ~a ~a ~a~%" n wall (sum-ms w) (- wall (sum-ms w)) (own-ms w)
+                            (phase-ms w '(shape)) (phase-ms w '(after)) (phase-ms w '(view))
+                            (phase-ms w '(payload-check)) (phase-ms w '(frame))))))
               '(200 1000 3000 5000 7000))
     (let* ((ns (map cadddr windows))
            (ws (filter (lambda (n) (and (> n 100) (wall-ms n))) ns))
@@ -160,7 +175,8 @@
                                 (and (pair? rs) (ms (- (car first) (car (car (reverse rs)))))))))
            (apply-line (find (lambda (x) (and (eq? (caddr x) 'request) (eq? (cadddr x) 'apply))) stamped))
            (after (and last apply-line (ms (- (car apply-line) (car last))))))
-      (printf "  windows 200..~a: wall ~a phases ~a untimed ~a~%" (if last (cadddr last) 'none) wall phases (- wall phases))
+      (printf "  windows 200..~a: wall ~a top-level phases ~a untimed ~a one-intent!'s own ~a~%" (if last (cadddr last) 'none)
+              wall phases (- wall phases) (apply + (map (lambda (n) (own-ms (at n))) ws)))
       (printf "  before the first window ~a, after the last to apply ~a~%" before after))))
 
 (define small (string-append root "/small"))
