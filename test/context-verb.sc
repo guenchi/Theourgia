@@ -1115,21 +1115,32 @@
 ;; of the budget. Charged as its value, #vu8(...) at three to four bytes a
 ;; byte, the block came in whole only at a budget the printed answer used
 ;; about a third of. The least budget is found by halving, the block's level
-;; rising with the budget.
-(define (tm-level b) (level-of (entry-of (ctx tm-s tm-T b) tm-block)))
-(define tm-full-at
-  (let ((top (+ tm-min 40000)))
-    (and tm-block (eq? (tm-level top) 'full)
-         (let search ((lo tm-min) (hi top))
+;; rising with the budget. Twice: the block HARD (TM-2: entered at identity,
+;; then raised a level) and the block PREFERRED (TM-3: relevant to a task
+;; whose title its text matches, and entered at its level at once).
+(define (least-whole-budget T block)
+  (let* ((level (lambda (b) (level-of (entry-of (ctx tm-s T b) block))))
+         (bottom (let ((c (clause (ctx tm-s T 1) 'minimum))) (if (and c (integer? (cadr c))) (cadr c) 1000)))
+         (top (+ bottom 40000)))
+    (and block (eq? (level top) 'full)
+         (let search ((lo bottom) (hi top))
            (if (<= (- hi lo) 1)
-               (if (eq? (tm-level lo) 'full) lo hi)
+               (if (eq? (level lo) 'full) lo hi)
                (let ((mid (div (+ lo hi) 2)))
-                 (if (eq? (tm-level mid) 'full) (search lo mid) (search mid hi))))))))
-(want "TM-2 a text-mode code block is entered whole at the least budget its printed entry fits: the answer at that budget uses more than half of it"
-      (and tm-full-at
-           (let ((u (used-of (ctx tm-s tm-T tm-full-at))))
-             (and (integer? u) (> (* 2 u) tm-full-at))))
+                 (if (eq? (level mid) 'full) (search lo mid) (search mid hi))))))))
+(define (whole-at-half? T block)
+  (let ((b (least-whole-budget T block)))
+    (and b
+         (let ((u (used-of (ctx tm-s T b))))
+           (and (integer? u) (> (* 2 u) b))))))
+(want "TM-2 a hard text-mode code block is entered whole at the least budget its printed entry fits: the answer at that budget uses more than half of it"
+      (whole-at-half? tm-T tm-block)
       #t)
+(define tm-R (make! tm-s "root" "the first line of the reader" "kind" "task"))
+(want "TM-3 a preferred text-mode code block, relevant to a task its text matches, is entered whole at the least budget its printed entry fits: the answer at that budget uses more than half of it"
+      (list (and (memq 'background (places (ctx tm-s tm-R 100000) tm-block)) #t)
+            (whole-at-half? tm-R tm-block))
+      '(#t #t))
 
 ;; ---- a text-mode code block's src, as a reader is given it ---------------------------------------------
 ;;
