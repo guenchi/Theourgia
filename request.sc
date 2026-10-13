@@ -1589,7 +1589,7 @@
   ;; whole judgement builds its index from empty in that order, and the
   ;; binding-view's lookups filter by the binding slot's position.
   (define-record-type (judgement make-judgement/raw judgement?)
-    (fields (mutable counter) ev rank slot members plan-slots index-groups class final fresh
+    (fields (mutable counter) ev rank slot members plan-slots index-groups seen class final fresh
             binding by-sub by-event plan-refs plan-answers plan-entries
             (mutable dirty-class) (mutable dirty-order)))
   (define (judgement-table) (make-hashtable equal-hash equal?))
@@ -1597,7 +1597,7 @@
     (make-judgement/raw 0 (judgement-table) (judgement-table) (judgement-table) (judgement-table)
                         (judgement-table) (judgement-table) (judgement-table) (judgement-table)
                         (judgement-table) (judgement-table) (judgement-table) (judgement-table)
-                        (judgement-table) (make-eq-hashtable) (make-eq-hashtable) '() '()))
+                        (judgement-table) (judgement-table) (make-eq-hashtable) (make-eq-hashtable) '() '()))
   ;; A COPY THAT SHARES NOTHING EITHER CHANGES: every table copied; the values
   ;; are lists and records, replaced on change, never changed in place (the
   ;; plan-refs tables are built once per plan payload and only read).
@@ -1606,6 +1606,7 @@
                         (hashtable-copy (judgement-ev j) #t) (hashtable-copy (judgement-rank j) #t)
                         (hashtable-copy (judgement-slot j) #t) (hashtable-copy (judgement-members j) #t)
                         (hashtable-copy (judgement-plan-slots j) #t) (hashtable-copy (judgement-index-groups j) #t)
+                        (hashtable-copy (judgement-seen j) #t)
                         (hashtable-copy (judgement-class j) #t)
                         (hashtable-copy (judgement-final j) #t) (hashtable-copy (judgement-fresh j) #t)
                         (hashtable-copy (judgement-binding j) #t)
@@ -1637,19 +1638,26 @@
           (else (position<? (cdr a) (cdr b)))))
   ;; ("#%new" x) references in a plan payload's declared intents: x -> indices
   (define (plan-new-refs payload)
-    (let ((t (judgement-table)))
+    (let ((t (judgement-table)) (once (judgement-table)))
       (guard (e (#t t))
         (when (and (pair? payload) (eq? (car payload) 'plan))
           (for-each
             (lambda (entry)
               (let walk ((x (cdr entry)))
                 (cond ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
-                       (let ((had (hashtable-ref t (cadr x) '())))
-                         (unless (memv (car entry) had)
-                           (hashtable-set! t (cadr x) (cons (car entry) had)))))
+                       (let ((mark (cons (cadr x) (car entry))))
+                         (unless (hashtable-contains? once mark)
+                           (hashtable-set! once mark #t)
+                           (hashtable-update! t (cadr x) (lambda (l) (cons (car entry) l)) '()))))
                       ((pair? x) (walk (car x)) (walk (cdr x))))))
             (list-ref payload 4)))
         t)))
+  ;; KEY added once to TABLE's list under GROUP (seen remembers which)
+  (define (register! j table kind group key)
+    (let ((mark (list kind group key)))
+      (unless (hashtable-contains? (judgement-seen j) mark)
+        (hashtable-set! (judgement-seen j) mark #t)
+        (hashtable-update! table group (lambda (l) (cons key l)) '()))))
   ;; a record's final status, and the bucket's non-valid ones beside it
   (define (set-final! j event status)
     (hashtable-set! (judgement-final j) event status)
@@ -1675,11 +1683,13 @@
           (when key
             (hashtable-set! (judgement-slot j) event key)
             (hashtable-update! (judgement-members j) key (lambda (l) (cons event l)) '())
+            ;; EVERY SLOT WHOSE RECORD NAMES A PLAN reads that plan's binding
+            ;; through membership: an integer slot, and a single record that
+            ;; names a plan event as well
+            (let ((pe (actor-plan-event (ev-actor e))))
+              (when pe (register! j (judgement-plan-slots j) 'plan pe key)))
             (when (pair? key)
-              (hashtable-update! (judgement-plan-slots j) (car key)
-                                 (lambda (l) (if (member key l) l (cons key l))) '())
-              (hashtable-update! (judgement-index-groups j) (cdr key)
-                                 (lambda (l) (if (member key l) l (cons key l))) '()))))
+              (register! j (judgement-index-groups j) 'index (cdr key) key))))
         (let ((p (ev-payload e)))
           (when (and (pair? p) (eq? (car p) 'plan))
             (hashtable-set! (judgement-plan-refs j) event (plan-new-refs p)))))
