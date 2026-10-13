@@ -1374,11 +1374,14 @@
          (for-all consumes-item? (caddr x))
          ;; ONE ITEM PER BLOCK. Two items naming the same block leave
          ;; "which version did this consume" without an answer, and the
-         ;; index this feeds is keyed on the pair.
-         (let loop ((items (caddr x)) (seen '()))
-           (or (null? items)
-               (and (not (member (car (car items)) seen))
-                    (loop (cdr items) (cons (car (car items)) seen)))))))
+         ;; index this feeds is keyed on the pair. The blocks seen are a
+         ;; table, so a plan of c items is checked in O(c), not O(c^2).
+         (let ((seen (make-hashtable equal-hash equal?)))
+           (let loop ((items (caddr x)))
+             (or (null? items)
+                 (and (not (hashtable-contains? seen (car (car items))))
+                      (begin (hashtable-set! seen (car (car items)) #t)
+                             (loop (cdr items)))))))))
 
   ;; The immutable declaration has a complete, contiguous index set.
   (define (plan? p)

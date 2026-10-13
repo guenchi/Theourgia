@@ -25,6 +25,7 @@ commitments-verb 64 68 650a1a7cf211da2ff807d0b644c1d0e0
 completion-shapes 6 10 8ffa7130e7b338d519282a6f3b83ce9d
 completion-stale 233 236 cbe69305f496166a31bc3f2d2936094e
 condition-render 11 18 3589d80b3cb5c989ee651f384ba1f41f
+consumes-shape 3 10 00f65e81cdf189abee899243907d5d1f
 consumption-index 64 67 9b45807c5b879d51bbfc4a01cbb71342
 contested-fields 6 9 7e5b5154b7aee9a194d9da08054fec32
 context-human 6 10 354f50257e22195e2eab30ea577febac
