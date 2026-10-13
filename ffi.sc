@@ -851,6 +851,16 @@
   (meta define timing-mode
     (let ((v (getenv "THEOURGIA_TIMING")))
       (and v (string=? v "1") #t)))
+  ;; THE WRAPPERS ARE DEFINED IN THE BRANCH ITSELF, so which of them exist is
+  ;; decided in the one expansion that decides whether timing-seam exists: a
+  ;; transformer that read the variable again when it was used could, with
+  ;; this library compiled unset and another expanded set, name a helper the
+  ;; compiled library does not have.
+  ;;   (timed <phase> <expr>): <expr>, timed as a request phase
+  ;;   (intent-timed <i> <expr>): <expr>, its time added to phase I of the window
+  ;;   (timing-call <name> <arg> ...): the seam's NAME applied, or #f -- unset,
+  ;;     the arguments are not evaluated
+  ;;   (timing-quiet <expr>): <expr>, nothing it does counted or printed
   (meta-cond
     (timing-mode
      ;; the seam's procedures, looked up once each
@@ -859,29 +869,24 @@
        (or (hashtable-ref timing-procs name #f)
            (let ((p (eval name (environment '(theourgia timing)))))
              (hashtable-set! timing-procs name p)
-             p))))
-    (else))
-  ;; (timed <phase> <expr>): <expr>, timed as a request phase
-  (define-syntax timed
-    (lambda (x)
-      (syntax-case x ()
-        ((_ what e) (if timing-mode #'((timing-seam 'timed-run) what (lambda () e)) #'e)))))
-  ;; (intent-timed <i> <expr>): <expr>, its time added to phase I of the window
-  (define-syntax intent-timed
-    (lambda (x)
-      (syntax-case x ()
-        ((_ i e) (if timing-mode #'((timing-seam 'intent-timed-run) i (lambda () e)) #'e)))))
-  ;; (timing-call <name> <arg> ...): the seam's procedure NAME applied, or #f;
-  ;; unset, the arguments are not evaluated
-  (define-syntax timing-call
-    (lambda (x)
-      (syntax-case x ()
-        ((_ name arg ...) (if timing-mode #'((timing-seam 'name) arg ...) #'#f)))))
-  ;; (timing-quiet <expr>): <expr>, nothing it does counted or printed
-  (define-syntax timing-quiet
-    (lambda (x)
-      (syntax-case x ()
-        ((_ e) (if timing-mode #'((timing-seam 'quiet-run) (lambda () e)) #'e)))))
+             p)))
+     (define-syntax timed
+       (syntax-rules () ((_ what e) ((timing-seam 'timed-run) what (lambda () e)))))
+     (define-syntax intent-timed
+       (syntax-rules () ((_ i e) ((timing-seam 'intent-timed-run) i (lambda () e)))))
+     (define-syntax timing-call
+       (syntax-rules () ((_ name arg ...) ((timing-seam 'name) arg ...))))
+     (define-syntax timing-quiet
+       (syntax-rules () ((_ e) ((timing-seam 'quiet-run) (lambda () e))))))
+    (else
+     (define-syntax timed
+       (syntax-rules () ((_ what e) e)))
+     (define-syntax intent-timed
+       (syntax-rules () ((_ i e) e)))
+     (define-syntax timing-call
+       (syntax-rules () ((_ name arg ...) #f)))
+     (define-syntax timing-quiet
+       (syntax-rules () ((_ e) e)))))
 
   (define libc
     (load-first-shared-object!

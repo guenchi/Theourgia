@@ -18,7 +18,9 @@
 ;;; (timed, intent-timed, timing-call, timing-quiet) read THEOURGIA_TIMING when
 ;;; they are expanded, as THEOURGIA_INJECT's branches are: set, a wrapped site
 ;;; expands to a call into this library through `environment`; unset, to the
-;;; bare expression, and nothing here is loaded or compiled.
+;;; bare expression, and nothing here is loaded (from source, nor compiled; a
+;;; build compiles this library like any other, and calls it only when built
+;;; with the variable set).
 ;;;
 ;;; ONE LINE PER READING, ON STDERR: `(timing request <phase> <us>)` for a
 ;;; request's phases, once each; `(timing intents <n> ((<phase> <us>) ...))`
