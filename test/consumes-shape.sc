@@ -102,11 +102,15 @@
             (state-consumed? applied "dw" "vb0") (state-consumed? applied "dw" "vb2999"))
       '(() 2 #t #t))
 
+;; The list is built before the clock is read (let*); the least of three
+;; calls is printed, so one collection does not make the reading.
 (define (ms-for n)
-  (let ((c (consumes-of (items-of (blocks n)))) (t (cpu-time)))
-    (consumes? c)
-    (- (cpu-time) t)))
-(printf "\nreading: consumes? cpu ms at 2000 / 4000 / 8000 items: ~a / ~a / ~a\n" (ms-for 2000) (ms-for 4000) (ms-for 8000))
+  (let ((c (consumes-of (items-of (blocks n)))))
+    (apply min (map (lambda (k)
+                      (let* ((t (cpu-time)) (answer (consumes? c)))
+                        (- (cpu-time) t)))
+                    '(1 2 3)))))
+(printf "\nreading: consumes? cpu ms (least of three) at 2000 / 4000 / 8000 items: ~a / ~a / ~a\n" (ms-for 2000) (ms-for 4000) (ms-for 8000))
 (printf "reading: CS-3's plan and two members applied in ~a cpu ms\n" apply-ms)
 
 (printf "\n~a failures\nrows: ~a\nconsumes-shape complete\n" bad rows)
