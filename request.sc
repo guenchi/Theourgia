@@ -1796,20 +1796,23 @@
 
   ;; A PLAN'S ENTRY BY INDEX, as assv over its entries finds it (the first
   ;; with that index). When EVIDENCE is a judgement's index, from a table
-  ;; built once per payload for that judgement; entries that are not a list
-  ;; of pairs, and a plain list of evidence, are asked with assv itself,
-  ;; raising as it raises.
+  ;; built once per payload for that judgement, its entries checked once
+  ;; then; entries that are not a list of pairs (kept as 'walk) and a plain
+  ;; list of evidence are asked with assv itself, raising as it raises.
   (define (plan-entry evidence payload index)
     (let ((entries (list-ref payload 4)))
-      (if (and (binding-index? evidence) (list? entries) (for-all pair? entries))
+      (if (binding-index? evidence)
           (let* ((tables (binding-index-plan-entries evidence))
                  (t (or (hashtable-ref tables payload #f)
-                        (let ((t (make-eqv-hashtable)))
-                          (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
-                                    entries)
+                        (let ((t (if (and (list? entries) (for-all pair? entries))
+                                     (let ((t (make-eqv-hashtable)))
+                                       (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
+                                                 entries)
+                                       t)
+                                     'walk)))
                           (hashtable-set! tables payload t)
                           t))))
-            (hashtable-ref t index #f))
+            (if (eq? t 'walk) (assv index entries) (hashtable-ref t index #f)))
           (assv index entries))))
 
   ;; `(#%new k)` stands for a block a previous sub-operation created, so
