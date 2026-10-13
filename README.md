@@ -582,7 +582,9 @@ bound beside the record:
 
 A repeated request (`--req`) answers `(ok (replay #t) (event (<writer> . <seq>)) (cut ...))`,
 the cut of the record it replays while that record is still the name's; once a later tag
-of the name has superseded it, the replay carries no cut.
+of the name has superseded it, the replay carries no cut. The cut is read back from the
+store after the write, so a named tag costs one reduce of the store beside the write: on a
+store of tens of thousands of blocks, seconds.
 
 Without a name, lists what is bound: an item a name, or an item each binding of a name
 written concurrently:
