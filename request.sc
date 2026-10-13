@@ -43,7 +43,7 @@
           ev-delivered? ev-marks ev-marked?
           comparison-set executed-member-set historical-set membership
           duplicate-slots plan-conflicts present-indices prefix?
-          request-decision request-gates plan? store-supplied-fields
+          request-decision request-gates identity-gates/full plan? store-supplied-fields
           receipt? receipt-req receipt-fingerprint receipt-after
           receipt-entries receipt-item-after receipt-covers?
           receipt-duplicate batch-item-state batch-state bind-new created-id

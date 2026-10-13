@@ -32,7 +32,13 @@
 ;; interleaved, a rehearsal's clone, a snapshot's rows restored, a contested
 ;; single slot, a plan whose declaration is not its actor's, a member with no
 ;; predecessor, an item whose "#%new" names an index not yet applied, and an
-;; index the plan does not declare.
+;; index the plan does not declare; and the edges a judgement of one
+;; arrival must follow rather than re-judging the bucket (F269 A2): a binding
+;; withdrawn at k after a later index bound through it, a binding established
+;; at k after its consumer was delivered (through an index and through
+;; single), a late plan, index 0 arriving after 1 and 2, one record waking two
+;; requests, an undelivered index 0 after a delivered index 1, and a later
+;; index's binding that the pass does not yet see.
 ;;
 ;; It runs in a child under each value of the switch: on, nothing may differ
 ;; (AI-1); off, the switch is off and the readings are the same (AI-2), and
@@ -84,6 +90,11 @@
       (reduce-apply! r origin 1 '()
                      (plan-of origin req (map (lambda (i) (cons i (intent (format "t~a" i)))) (iota n)))
                      (plan-actor origin req)))
+    ;; A put of TITLE under PARENT, and an insert declared under ("#%new" K).
+    (define (under title parent)
+      (list 'put (list (cons 'kind 'section) (cons 'title title) (cons 'parent parent) '(ord . 1))))
+    (define (new-intent title k)
+      (list 'insert (list "#%new" k) #f (list (cons 'kind 'section) (cons 'title title))))
     ;; Member I of that plan, recorded as writer W's SEQ with DEPS.
     (define (member! r w seq deps origin req i . title)
       (reduce-apply! r w seq deps (produced (if (pair? title) (car title) (format "t~a" i)))
@@ -260,6 +271,103 @@
           (read! 'undeclared-and-unbound r)
           (check! 'unbound-new-waits (eq? (gate r "ud100000" 1) 'pending-plan))
           (check! 'undeclared-index-mismatch (eq? (gate r "ud200000" 1) 'plan-mismatch)))
+        ;; (17) A BINDING WITHDRAWN: index 1 is bound through ("#%new" 0); a
+        ;; second valid record at 0 arrives, both conflict, the binding at 0
+        ;; goes, and index 1 can no longer be bound.
+        (let ((r (reduce-empty)) (o "wd000000"))
+          (reduce-apply! r o 1 '() (plan-of o "w" (list (cons 0 (intent "w0")) (cons 1 (new-intent "w1" 0))))
+                         (plan-actor o "w"))
+          (member! r o 2 '() o "w" 0 "w0")
+          (reduce-apply! r o 3 '() (under "w1" (format "~a.2" o)) (member-actor o "w" 1 (cons o 1)))
+          (check! 'withdrawn-bound-before (not (gate r o 3)))
+          (member! r "wd100000" 1 (list (cons o 1)) o "w" 0 "w0")
+          (read! 'withdrawn r)
+          (check! 'withdrawn-after
+                  (equal? (list (gate r o 2) (gate r "wd100000" 1) (gate r o 3)) '(plan-conflict plan-conflict pending-plan))))
+        ;; (18) A BINDING ESTABLISHED AFTER ITS CONSUMER: index 1, declared
+        ;; under ("#%new" 0), is delivered (it depends on the plan only) before
+        ;; index 0 arrives; nothing wakes it, and its classification changes.
+        (let ((r (reduce-empty)) (o "es000000"))
+          (reduce-apply! r o 1 '() (plan-of o "e" (list (cons 0 (intent "e0")) (cons 1 (new-intent "e1" 0))))
+                         (plan-actor o "e"))
+          (reduce-apply! r "es100000" 1 (list (cons o 1)) (under "e1" (format "~a.2" o)) (member-actor o "e" 1 (cons o 1)))
+          (check! 'established-before (eq? (gate r "es100000" 1) 'pending-plan))
+          (member! r o 2 '() o "e" 0 "e0")
+          (read! 'established r)
+          (check! 'established-after (equal? (list (gate r o 2) (gate r "es100000" 1)) '(#f plan-order))))
+        ;; (19) THE SAME THROUGH ("#%new" single): index 0 declared under the
+        ;; block the request's single record makes, which arrives later from
+        ;; another writer.
+        (let ((r (reduce-empty)) (o "sn000000"))
+          (reduce-apply! r o 1 '() (plan-of o "g" (list (cons 0 (new-intent "g0" 'single)))) (plan-actor o "g"))
+          (reduce-apply! r o 2 '() (under "g0" "sn100000.1") (member-actor o "g" 0 (cons o 1)))
+          (check! 'single-before (eq? (gate r o 2) 'pending-plan))
+          (reduce-apply! r "sn100000" 1 '() (produced "s") (list "test" (cons o "g") 'single "fp" #f (cons o 0)))
+          (read! 'single-new r)
+          (check! 'single-after (equal? (list (gate r o 2) (gate r "sn100000" 1)) '(#f #f))))
+        ;; (20) A LATE PLAN: two members delivered (another writer, no causal
+        ;; link to the plan) before their plan arrives.
+        (let ((r (reduce-empty)) (o "lp000000"))
+          (member! r "lp100000" 1 '() o "p" 0)
+          (member! r "lp100000" 2 '() o "p" 1)
+          (check! 'late-plan-before
+                  (equal? (list (gate r "lp100000" 1) (gate r "lp100000" 2)) '(pending-plan pending-plan)))
+          (plan! r o "p" 2)
+          (read! 'late-plan r)
+          (check! 'late-plan-after
+                  (equal? (list (gate r "lp100000" 1) (gate r "lp100000" 2)) '(plan-order pending-plan))))
+        ;; (21) INDEX 0 AFTER 1 AND 2: the members at 1 and 2 are judged with no
+        ;; record at 0; one arrives (refused) and the order chain moves.
+        (let ((r (reduce-empty)) (o "zx000000"))
+          (plan! r o "z" 3)
+          (member! r o 2 '() o "z" 1)
+          (member! r o 3 '() o "z" 2)
+          (check! 'index0-last-before (equal? (list (gate r o 2) (gate r o 3)) '(plan-order pending-plan)))
+          (member! r "zx100000" 1 (list (cons o 1)) o "z" 0 "wrong")
+          (read! 'index0-last r)
+          (check! 'index0-last-after
+                  (equal? (list (gate r "zx100000" 1) (gate r o 2) (gate r o 3)) '(plan-mismatch pending-plan pending-plan))))
+        ;; (22) ONE RECORD WAKES TWO BUCKETS: in each request a member at 0 waits
+        ;; on a plain record beside a rival already there; the record arrives,
+        ;; both members wake and conflict with their rivals.
+        (let ((r (reduce-empty)) (a "xa000000") (b "xb000000"))
+          (plan! r a "a" 1)
+          (plan! r b "b" 1)
+          (member! r "xa100000" 1 (list (cons a 1)) a "a" 0)
+          (member! r "xb100000" 1 (list (cons b 1)) b "b" 0)
+          (member! r a 2 (list (cons "xx000000" 1)) a "a" 0)
+          (member! r b 2 (list (cons "xx000000" 1)) b "b" 0)
+          (check! 'two-buckets-before
+                  (equal? (list (gate r a 2) (gate r "xa100000" 1) (gate r b 2) (gate r "xb100000" 1))
+                          '(pending-plan #f pending-plan #f)))
+          (reduce-apply! r "xx000000" 1 '() (produced "x"))
+          (read! 'two-buckets r)
+          (check! 'two-buckets-after
+                  (equal? (list (gate r a 2) (gate r "xa100000" 1) (gate r b 2) (gate r "xb100000" 1))
+                          '(plan-conflict plan-conflict plan-conflict plan-conflict))))
+        ;; (23) AN UNDELIVERED INDEX 0 AFTER A DELIVERED INDEX 1: the plan's
+        ;; inserts are independent; index 1 has no predecessor (plan-order)
+        ;; until a record at 0 arrives, undelivered, and is its predecessor.
+        (let ((r (reduce-empty)) (o "ux000000"))
+          (plan! r o "x" 2)
+          (member! r "ux100000" 1 (list (cons o 1)) o "x" 1)
+          (check! 'undelivered-index0-before (eq? (gate r "ux100000" 1) 'plan-order))
+          (member! r "ux200000" 2 (list (cons o 1)) o "x" 0)
+          (read! 'undelivered-index0 r)
+          (check! 'undelivered-index0-after
+                  (equal? (list (gate r "ux200000" 2) (gate r "ux100000" 1)) '(pending-plan pending-plan))))
+        ;; (24) A LATER INDEX'S BINDING IS NOT VISIBLE: index 1 declared under
+        ;; ("#%new" 2), and index 2 is already there and valid; the pass binds 2
+        ;; after it classifies 1, so 1 stays unbound.
+        (let ((r (reduce-empty)) (o "vf000000"))
+          (reduce-apply! r o 1 '()
+                         (plan-of o "v" (list (cons 0 (intent "v0")) (cons 1 (new-intent "v1" 2)) (cons 2 (intent "v2"))))
+                         (plan-actor o "v"))
+          (member! r o 2 '() o "v" 0 "v0")
+          (member! r "vf100000" 1 (list (cons o 1)) o "v" 2 "v2")
+          (reduce-apply! r "vf200000" 1 (list (cons o 1)) (under "v1" "vf100000.1") (member-actor o "v" 1 (cons o 1)))
+          (read! 'visibility r)
+          (check! 'visibility-later-index-unbound (eq? (gate r "vf200000" 1) 'pending-plan)))
         (list 'ok)))
     (write (list 'admission-index (degeneracy-active) (car result)
                  (if (eq? (car result) 'ok) (reverse readings) (cdr result))
@@ -293,11 +401,11 @@
       (list (and (pair? off) (cadr off)) (and (pair? off) (caddr off))
             (and (pair? on) (pair? off) (equal? (cdddr on) (cdddr off))))
       '(#f ok #t))
-(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone, the restored rows, the contested single slot, the plan whose declaration is not its actor's, the member with no predecessor, the unbound #%new and the undeclared index"
+(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone, the restored rows, the contested single slot, the plan whose declaration is not its actor's, the member with no predecessor, the unbound #%new, the undeclared index, the withdrawn and the late-established bindings, the single's binding, the late plan, index 0 last, two requests woken at once, the undelivered index 0 and the later index's binding"
       (and (pair? off) (eq? (caddr off) 'ok)
            (list (length (car (cddddr off)))
                  (filter (lambda (c) (not (cdr c))) (car (cddddr off)))))
-      '(26 ()))
+      '(41 ()))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%admission-index complete~%" bad rows)

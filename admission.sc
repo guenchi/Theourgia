@@ -122,6 +122,14 @@
   ;; gates themselves are checked where they are judged (request.sc,
   ;; identity-gates).
   (degeneracy-definitions
+    ;; THE REFERENCE: one bucket judged as a whole, from scratch, as every
+    ;; admission did before judgements followed only what an arrival can
+    ;; change. -> (values statuses bindings fresh), fresh being the non-valid
+    ;; statuses, in the order the whole judgement gives them.
+    (define (whole-bucket-judgement a id)
+      (let ((es (map (lambda (r) (evidence a r)) (ref (admission-buckets a) id '()))))
+        (let-values (((statuses bindings) (identity-gates/full es)))
+          (values statuses bindings (filter (lambda (p) (not (eq? (cdr p) 'valid))) statuses)))))
     (define (gates-compare records fresh before kept)
       (let* ((events (map event records))
              (expected (append fresh (filter (lambda (p) (not (member (car p) events))) before))))
