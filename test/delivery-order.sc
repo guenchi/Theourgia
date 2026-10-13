@@ -252,6 +252,11 @@
 ;; record claims its member's slot, and both members are in conflict -- two
 ;; gates, each naming the same version. Delivered with the second claim
 ;; last and with it before the plan's own member.
+;;
+;; THE GATES' ORDER IS CANONICAL (sorted by event, as the notes are), so the
+;; two deliveries give the same list. state-revoked must not depend on that
+;; order either, and the list it reads is handed to it reversed to say so: two
+;; deliveries that agree no longer exercise it.
 
 (define (dup-state order)
   (let ((r (reduce-empty)) (key (cons "dupm0000" "d")) (after (cons "dupm0000" 0)))
@@ -270,14 +275,18 @@
 (define-caught rival-first (dup-state 'rival-first))
 (define built5
   (let ((a (map car (reduce-gates rival-last))) (b (map car (reduce-gates rival-first))))
-    (and (= 2 (length a)) (equal? (by-print a) (by-print b)) (not (equal? a b)))))
-(want "DO-5 THE CONSTRUCTION: two members in conflict, their gates in two orders"
+    (and (= 2 (length a)) (equal? a b))))
+(want "DO-5 THE CONSTRUCTION: two members in conflict, and the two deliveries give the same gate list"
       built5 #t)
-(want "DO-5 state-revoked names one plan event for the version, the smallest by (writer, seq), on both deliveries"
-      (list built5
-            (map (lambda (r) (list (cadr (car r)) (cadr r))) (state-revoked rival-last "dw"))
-            (map (lambda (r) (list (cadr (car r)) (cadr r))) (state-revoked rival-first "dw")))
-      (list #t '(("vd" ("dupm0000" . 2))) '(("vd" ("dupm0000" . 2)))))
+(define (revoked-of r . gates)
+  (map (lambda (x) (list (cadr (car x)) (cadr x))) (apply state-revoked r "dw" gates)))
+(want "DO-5 state-revoked names one plan event for the version, the smallest by (writer, seq), on both deliveries and on the gate list reversed"
+      (let ((g (reduce-gates rival-last)))
+        (list (= 2 (length g))
+              (revoked-of rival-last) (revoked-of rival-first)
+              (revoked-of rival-last g) (revoked-of rival-last (reverse g))))
+      (list #t '(("vd" ("dupm0000" . 2))) '(("vd" ("dupm0000" . 2)))
+            '(("vd" ("dupm0000" . 2))) '(("vd" ("dupm0000" . 2)))))
 
 (printf "rows: ~a\n~a failures\ndelivery-order complete\n" rows bad)
 (system (string-append "rm -rf '" root "'"))

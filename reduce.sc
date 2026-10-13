@@ -375,11 +375,14 @@
   ;; in order. The first one met was the one kept, and the plans are met in
   ;; gate order, which is delivery order -- two conflicting plans gave
   ;; `drafts` a different plan event by route.
-  (define (state-revoked r owner)
+  ;; GATES, when given, stands in for the reduction's gate list: the answer
+  ;; must not depend on that list's order, and a test hands it one in
+  ;; another order to say so.
+  (define (state-revoked r owner . gates)
     (define (event<? a b)
       (or (string<? (car a) (car b)) (and (string=? (car a) (car b)) (< (cdr a) (cdr b)))))
     (define (version-of x) (cadr (car x)))
-    (let loop ((all (state-revoked-raw r owner)) (out '()))
+    (let loop ((all (state-revoked-raw r owner (if (pair? gates) (car gates) (reduction-gates r)))) (out '()))
       (if (null? all)
           (list-sort (lambda (x y) (string<? (version-of x) (version-of y))) out)
           (let* ((x (car all))
@@ -389,7 +392,7 @@
                         ((event<? (cadr x) (cadr have)) (cons x (remq have out)))
                         (else out)))))))
 
-  (define (state-revoked-raw r owner)
+  (define (state-revoked-raw r owner gates)
     (let ((c (reduction-consumption r)))
       (apply append
         (map (lambda (g)
@@ -413,7 +416,7 @@
                                     (not (state-consumed? r owner (cadr item))))
                                   (cadr seen)))
                      '())))
-             (reduction-gates r)))))
+             gates))))
 
   ;; WHAT A PLAN NAMED THIS VERSION, AND IS THAT PLAN'S CONSUMPTION
   ;; STANDING? A version that was named, is not consumed now, and whose
