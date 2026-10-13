@@ -100,27 +100,39 @@
 ;; ---- git -------------------------------------------------------------------
 ;;
 ;; One process per command, through /bin/sh: -> (values rc stdout-bytes).
-;; The exit status is printed after the output as a last line of its own, so
-;; the output's bytes are everything before the final LF. Pathspecs are
-;; literal, so a path is never a pattern.
+;; The exit status and the file git's standard error went to are printed
+;; after the output as a last line of their own, so the output's bytes are
+;; everything before the final LF. Pathspecs are literal, so a path is never
+;; a pattern, and no hook runs (core.hooksPath is /dev/null).
+;;
+;; NEVER: STANDARD ERROR IS NOT A SECOND PIPE READ AFTER THE FIRST. Read in
+;; turn, a git that fills the error pipe while its output is still being
+;; waited for blocks for good (conversion warnings from an add can). It goes
+;; to a temporary file, copied to this process's standard error afterwards.
 (define (git wt args . input)
   (let-values (((to from errs pid)
                 (open-process-ports
-                  (string-append "LC_ALL=C GIT_LITERAL_PATHSPECS=1 git -C " (quoted wt) " "
-                                 (join (map quoted args) " ") "; printf '\\n%s' $?")
+                  (string-append "e=$(mktemp) || { printf '\\n125 '; exit 0; }; "
+                                 "LC_ALL=C GIT_LITERAL_PATHSPECS=1 git -c core.hooksPath=/dev/null -C " (quoted wt) " "
+                                 (join (map quoted args) " ") " 2>\"$e\"; printf '\\n%s %s' \"$?\" \"$e\"")
                   (buffer-mode block) #f)))
     (when (pair? input) (put-bytevector to (car input)))
     (close-port to)
-    (let* ((out (let ((b (get-bytevector-all from))) (if (eof-object? b) (make-bytevector 0) b)))
-           (err (get-bytevector-all errs)))
+    (let ((out (let ((b (get-bytevector-all from))) (if (eof-object? b) (make-bytevector 0) b))))
+      (get-bytevector-all errs)
       (close-port from) (close-port errs)
-      (unless (eof-object? err) (let ((e (standard-error-port))) (put-bytevector e err) (flush-output-port e)))
       (let loop ((i (- (bytevector-length out) 1)))
         (cond ((< i 0) (values -1 out))
               ((= 10 (bytevector-u8-ref out i))
-               (let ((rc (string->number (utf8->string (let ((t (make-bytevector (- (bytevector-length out) i 1))))
-                                                         (bytevector-copy! out (+ i 1) t 0 (bytevector-length t)) t))))
-                     (body (let ((b (make-bytevector i))) (bytevector-copy! out 0 b 0 i) b)))
+               (let* ((last (utf8->string (let ((t (make-bytevector (- (bytevector-length out) i 1))))
+                                            (bytevector-copy! out (+ i 1) t 0 (bytevector-length t)) t)))
+                      (space (let find ((j 0)) (cond ((= j (string-length last)) #f) ((char=? (string-ref last j) #\space) j) (else (find (+ j 1))))))
+                      (rc (and space (string->number (substring last 0 space))))
+                      (err-file (and space (substring last (+ space 1) (string-length last))))
+                      (body (let ((b (make-bytevector i))) (bytevector-copy! out 0 b 0 i) b)))
+                 (when (and err-file (> (string-length err-file) 0))
+                   (let ((e (standard-error-port))) (put-bytevector e (entry-bytes err-file)) (flush-output-port e))
+                   (unlink! err-file))
                  (values (or rc -1) body)))
               (else (loop (- i 1))))))))
 ;; the output as text, a nonzero status refused as git-failed
@@ -369,8 +381,11 @@
                               added)
                     ;; PASS TWO: every added or content path, from the freeze export
                     (for-each (lambda (p)
+                                ;; NEVER: A CONTENT FILE IS REPLACED, NOT TRUNCATED IN PLACE:
+                                ;; another tracked path hard-linked to it would change too.
                                 (let ((dest (string-append wt "/" p)))
                                   (mkdir-p! (parent-of dest))
+                                  (when (eq? 'regular (type-at dest)) (unlink! dest))
                                   (overwrite-entry! dest (entry-bytes (string-append freeze-dir "/" p)))))
                               targets)
                     (remove-tree! scratch)
@@ -399,6 +414,13 @@
                       (for-each (lambda (p) (when (member p indexed) (refuse 'staged-set-mismatch (list 'still-indexed p))))
                                 removed))
                     (git-run wt (list "commit" "-q" "--no-verify" "--cleanup=verbatim" "-F" "-") (string->utf8 message))
+                    ;; the message read back: no hook ran, and nothing else may change it
+                    (let* ((c (git-bytes wt "cat-file" "commit" "HEAD"))
+                           (m (string->utf8 message))
+                           (n (bytevector-length c)) (k (bytevector-length m)))
+                      (unless (and (>= n k) (let loop ((i 0)) (or (= i k) (and (= (bytevector-u8-ref c (+ (- n k) i)) (bytevector-u8-ref m i)) (loop (+ i 1)))))
+                                   (>= (- n k) 2) (= 10 (bytevector-u8-ref c (- n k 1))) (= 10 (bytevector-u8-ref c (- n k 2))))
+                        (refuse 'commit-message-changed (list 'commit (chomp (git-text wt "rev-parse" "HEAD"))))))
                     (list 'ok (list 'commit (chomp (git-text wt "rev-parse" "HEAD")))
                           (list 'landing id) (list 'base base)
                           (list 'added added) (list 'content content) (list 'removed removed)

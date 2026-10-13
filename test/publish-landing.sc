@@ -180,6 +180,20 @@
           (list (head-of a) (name-status r) (blob r "new.txt"))
           '(ok "D\tgone.txt\nA\tnew.txt\nD\told.txt" "same\n"))))
 
+;; a hook that rewrites the message, and a tracked file hard-linked to the one
+;; the landing changes
+(let ((r (repo! '(("a.txt" . "one\n")) (lambda (wt)
+                                          (sh "ln " (quoted (string-append wt "/a.txt")) " " (quoted (string-append wt "/b.txt")))
+                                          (write-file! (string-append wt "/.git/hooks/prepare-commit-msg") "#!/bin/sh\nprintf 'HOOK: ' > \"$1.x\"; cat \"$1\" >> \"$1.x\"; mv \"$1.x\" \"$1\"\n")
+                                          (sh "chmod 755 " (quoted (string-append wt "/.git/hooks/prepare-commit-msg")))))))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "plain message")
+  (freeze! r)
+  (want "PL-4 a prepare-commit-msg hook does not run: the message is the block's text; a hard-linked tracked file is left as it was"
+        (list (head-of (publish! r)) (git (wt-of r) "log" "-1" "--format=%B")
+              (file-text (string-append (wt-of r) "/b.txt")) (name-status r))
+        '(ok "plain message" "one\n" "M\ta.txt")))
+
 ;; ---- PL-2, PL-3, PL-21: the worktree --------------------------------------------
 (printf "== PL-2, PL-3, PL-21, PL-35: the worktree before anything ==\n")
 (define (simple! . setup)
