@@ -56,8 +56,14 @@
   ;; after-each), intent (one-intent! whole, which holds check..receipt and
   ;; the three after it), view, payload-check and frame (inside one-intent!),
   ;; and actor (the record's actor, made before one-intent! is called).
+  ;; Inside append (log.sc real-append!): metadata-check (this writer's
+  ;; metadata readable), barrier (every writer's metadata flushed if it
+  ;; changed), versions (every writer's metadata versions compared, and a
+  ;; reload when they changed), catch-up (this writer's prefix discovered)
+  ;; and write (the record framed and written).
   (define intent-phases
-    '#(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor))
+    '#(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor
+       metadata-check barrier versions catch-up write))
   (define intent-sums (make-vector (vector-length intent-phases) 0))
 
   ;; -> the request's start, its counters reset

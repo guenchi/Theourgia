@@ -113,7 +113,8 @@
           (only (theourgia wire)
                 sexpr->string-extended string->sexpr-extended decode-line
                 record-envelope-refusal
-                escape-newlines encode-record storable-encode))
+                escape-newlines encode-record storable-encode)
+          (only (theourgia timing-wrappers) intent-timed))
 
   ;; ---- errors -------------------------------------------------------------
 
@@ -5701,7 +5702,7 @@
     ;; reserved, naming the file and what the operating system said. The
     ;; reading side stops that writer before its records; the writing
     ;; side stops before its next one. Neither pretends.
-    (let ((unreadable (unreadable-metadata (session-store s) (session-writer s))))
+    (let ((unreadable (intent-timed 15 (unreadable-metadata (session-store s) (session-writer s)))))
       (if unreadable
           (list 'refused-before-reserve 'metadata-unreadable
                 (list 'path (car unreadable))
@@ -5713,12 +5714,13 @@
           ;; crash. The versions are on disk by now either way; what this
           ;; decides is whether they are durable before anything is
           ;; computed from them.
-          (let ((durable (guard (e (#t 'barrier-failed)) (metadata-barrier! s))))
+          (let ((durable (guard (e (#t 'barrier-failed)) (intent-timed 16 (metadata-barrier! s)))))
             (if (eq? durable 'barrier-failed)
                 (list 'refused-before-reserve 'metadata-not-durable)
                 (begin
-                  (when (and (not (session-reset-pending s)) (versions-changed? s))
-                    (reload! s))
+                  (intent-timed 17
+                    (when (and (not (session-reset-pending s)) (versions-changed? s))
+                      (reload! s)))
                   (append-after-barrier! s frame)))))))
 
   ;; A SESSION HANDS ITS STATE OUTWARD ONLY WHEN ITS LOAD WAS DELIVERED
@@ -5929,7 +5931,7 @@
       ;; look; the sequence number and the append target both come from
       ;; what is on disk now, not from what was there at log-begin.
       (trace-event! 'catch-up writer #f)
-      (let ((p (discover-prefix store writer 'held-exclusive))
+      (let ((p (intent-timed 18 (discover-prefix store writer 'held-exclusive)))
             ;; asked before the session's first append only: its own
             ;; appends are what the guard's snapshot does not hold yet
             (guarded (and (not (session-write-started s)) (append-guard store writer))))
@@ -5948,7 +5950,7 @@
            (list 'refused-before-reserve 'integrity))
           ((not (eqv? (frame-expect-seq frame) (+ 1 (discovery-end-seq p))))
            (list 'refused-before-reserve 'expect-seq))
-          (else (frame-and-write! s frame p))))))
+          (else (intent-timed 19 (frame-and-write! s frame p)))))))
 
   ;; STEP 5: EVERYTHING THAT CAN REFUSE THE INPUT HAPPENS HERE, before a
   ;; byte of the store changes. The line is built in full -- encoded,

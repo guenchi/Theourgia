@@ -30,7 +30,7 @@
 ;;; before the wrappers were put there, and with them it did: every program
 ;;; loads ffi.sc, and its start-up from source measured about 3% slower with
 ;;; the wrappers defined in it and never used (2026-10-13, the gate's
-;;; alternation). Only store.sc and code-project.sc import them.
+;;; alternation). Only store.sc, code-project.sc and log.sc import them.
 ;;;
 ;;; THE WRAPPERS ARE DEFINED IN THE BRANCH ITSELF, so which of them exist is
 ;;; decided in the one expansion that decides whether timing-seam exists: a

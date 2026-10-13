@@ -123,8 +123,12 @@
 ;; record's actor, made before one-intent!), which with refs are the loop's top
 ;; level; and view, payload-check and frame, inside one-intent! as
 ;; check..receipt are.
+;; Inside append, the steps of log.sc's real-append!: metadata-check, barrier,
+;; versions, catch-up and write.
 (define intent-phase-names
-  '(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor))
+  '(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor
+    metadata-check barrier versions catch-up write))
+(define inside-append-phases '(metadata-check barrier versions catch-up write))
 (define top-level-phases '(refs shape after actor intent))
 (define inside-intent-phases '(check resolve deps append reduce applied receipt view payload-check frame))
 (define (request-lines lines phase)
@@ -178,7 +182,16 @@
            (after (and last apply-line (ms (- (car apply-line) (car last))))))
       (printf "  windows 200..~a: wall ~a top-level phases ~a untimed ~a one-intent!'s own ~a~%" (if last (cadddr last) 'none)
               wall phases (- wall phases) (apply + (map (lambda (n) (own-ms (at n))) ws)))
-      (printf "  before the first window ~a, after the last to apply ~a~%" before after))))
+      (printf "  before the first window ~a, after the last to apply ~a~%" before after))
+    (printf "~%append split, ms per window: window  append  metadata-check  barrier  versions  catch-up  write  append's own~%")
+    (for-each (lambda (n)
+                (let ((w (at n)))
+                  (when w
+                    (printf "  ~a ~a ~a ~a ~a ~a ~a ~a~%" n (phase-ms w '(append))
+                            (phase-ms w '(metadata-check)) (phase-ms w '(barrier)) (phase-ms w '(versions))
+                            (phase-ms w '(catch-up)) (phase-ms w '(write))
+                            (- (phase-ms w '(append)) (phase-ms w inside-append-phases))))))
+              '(100 1000 3000 5000 7000))))
 
 (define small (string-append root "/small"))
 (write-files! small 3)
@@ -200,8 +213,8 @@
 ;; expression and the seam's entry point, timing-seam, counted in the printed
 ;; expansion: unset it must not occur (and timing-call is #f), set it must.
 ;; (Chez's `expand` of a whole library form returns no body to read, so the
-;; wrappers are read where they expand.) (b) store.sc and code-project.sc,
-;; read as data, name neither timing-seam nor (theourgia timing): they reach
+;; wrappers are read where they expand.) (b) store.sc, code-project.sc and
+;; log.sc, read as data, name neither timing-seam nor (theourgia timing): they reach
 ;; the seam only through the wrappers, so an unset build of them holds none.
 (define (wrapper-expansions tag timing)
   (let ((script (string-append root "/expand-" tag ".ss"))
@@ -234,12 +247,12 @@
           ((vector? x) (walk (vector->list x)))
           (else #f))))
 (let ((unset (wrapper-expansions "unset" #f)) (set (wrapper-expansions "set" "1")))
-  (want "TC-E unset, each timing wrapper expands to its bare expression (timing-call to #f) and store.sc and code-project.sc name the seam only through the wrappers; set, each wrapper calls the seam"
+  (want "TC-E unset, each timing wrapper expands to its bare expression (timing-call to #f) and store.sc, code-project.sc and log.sc name the seam only through the wrappers; set, each wrapper calls the seam"
         (list unset
               (and (list? set) (pair? set) (list? (car set)) (map (lambda (n) (and (integer? n) (> n 0))) (car set)))
               (map (lambda (f) (holds? (call-with-input-file f read) 'timing-seam '(theourgia timing)))
-                   '("../store.sc" "../code-project.sc")))
-        '(((0 0 0 0) #f) (#t #t #t #t) (#f #f))))
+                   '("../store.sc" "../code-project.sc" "../log.sc")))
+        '(((0 0 0 0) #f) (#t #t #t #t) (#f #f #f))))
 
 (if (not (equal? (getenv "THEOURGIA_INSERT_COST") "1"))
     (printf "SKIP the curve: THEOURGIA_INSERT_COST is not 1 (one import of 7000 blocks; set it to read the series)~%")
