@@ -26,6 +26,7 @@
         (only (theourgia store) open-and-reduce)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia derived) projection-range)
+        (only (theourgia reduce) block-id)
         (only (theourgia arguments) parse-arguments argument-stdin))
 
 (define bad 0)
@@ -213,11 +214,13 @@
             (loc ab "m.sc" "--hunk" "@@ -1 +1 @@\n-l1\n+x\n@@ -4 +4 @@\n-l4\n+y\n")
             (loc ab "m.sc" "--hunk" "@@ -1 @@\n"))
       '((error not-a-hunk) (error one-hunk-only) (error not-a-hunk)))
-;; a text file whose mode is then set to datum: a file block, not text
-(let* ((d (fresh-store!)) (st (store-in d)))
-  (write-file! (string-append d "/src/f.txt") "x\n")
-  (ask st 'import-code (string-append d "/src"))
-  (ask st 'set (file-at st "f.txt") "mode" "datum")
+;; a block made a file with a path and no mode: a file block, not text (a
+;; text file's mode cannot change: set refuses mode-mismatch)
+(let* ((d (fresh-store!)) (st (store-in d))
+       (a (ask st 'insert "--title" "f"))
+       (f (let ((ev (car (cadr (assq 'events (cdr a)))))) (block-id (car ev) (cdr ev)))))
+  (ask st 'set f "kind" "file")
+  (ask st 'set f "path" "f.txt")
   (ask st 'tag "t0")
   (want "LC a path held by a file that is not text mode is not-a-text-file"
         (list (and (file-at st "f.txt") #t) (loc st "f.txt" "--bytes" "0:0"))

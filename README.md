@@ -696,8 +696,9 @@ The files whose exported bytes or presence differ between two cuts, sorted by pa
 second, `removed` when it is only at the first. What is compared is what `export-code
 --raw` writes: each text file's children's srcs run together. So a title, a level, a
 link or a language changes no file; two src edits that cancel across a block boundary
-answer nothing; a rename is the old path removed and the new one added; a file whose
-mode changes out of `text` is removed; and an empty file is present, not missing. Each
+answer nothing; a rename is the old path removed and the new one added (a file's mode
+cannot change once set, `set` refuses `mode-mismatch`, so a text file leaves the
+projection only by a path or a deletion); and an empty file is present, not missing. Each
 side is a tag name or a cut written out, read as `read --cut` reads one, and `from` and
 `to` name the cuts served.
 
