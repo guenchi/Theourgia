@@ -371,6 +371,15 @@
             ;; the client's only move is an explicit rebase. Or the cut
             ;; is fine and the block simply never had that hash there,
             ;; which is a claim the client got wrong.
+            ;; HALF A BASELINE IS NAMED BY WHAT IS MISSING. A version is
+            ;; checked at the cut it was read at, so each needs the other;
+            ;; one given alone used to be answered cut-unusable, which sent
+            ;; a caller who had given no cut looking for what was wrong
+            ;; with one.
+            ((and hash (not cut-text))
+             '(error invalid-working-baseline (reason cut-missing)))
+            ((and cut-text (not hash))
+             '(error invalid-working-baseline (reason based-on-missing)))
             ;; THE CUT CANNOT BE USED AT ALL -- it does not parse, or the
             ;; state it names cannot be rebuilt. Nothing about the hash
             ;; has been established, and the client's only move is an

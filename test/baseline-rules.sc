@@ -177,6 +177,22 @@
       '(invalid-working-baseline (reason block-not-at-cut)))
 (want "BR-03b TWIN: still nothing written" (envelope-bytes) before-unusable)
 
+;; ---- BR-03c half a baseline names the half that is missing ----------------
+;;
+;; A version is checked at the cut it was read at, so each option needs the
+;; other. Given alone, each was answered cut-unusable -- for --based-on alone
+;; a cut that was never given -- and the caller looked for what was wrong
+;; with a cut.
+(define no-cut (call 'write A "mine" "--based-on" h0))
+(want "BR-03c --based-on without --working-cut says the cut is missing"
+      (list (kind no-cut) (reason no-cut))
+      '(invalid-working-baseline (reason cut-missing)))
+(define no-version (call 'write A "mine" "--working-cut" c0))
+(want "BR-03c --working-cut without --based-on says the version is missing"
+      (list (kind no-version) (reason no-version))
+      '(invalid-working-baseline (reason based-on-missing)))
+(want "BR-03c TWIN: and neither wrote anything" (envelope-bytes) before-unusable)
+
 ;; ---- BR-04 what the envelope recorded ------------------------------------
 ;;
 ;; The store is at C1 now; the draft was saved against (h0, C0), and that
