@@ -1727,6 +1727,8 @@
 ;; replaced elsewhere; that this one should come from the tree is queued.
 ;; eval-runner.sc and eval-runner-exec.sc: the runner path of eval --lang (L).
 ;; completion.sc: the judgement of a plan's completion, entered by the store when one is reached (L).
+;; timing.sc and timing-wrappers.sc: the test-only timing seam and the wrappers that reach it only when
+;; THEOURGIA_TIMING=1 at their expansion (L).
 (want "GATE-C the scanned source files, named"
       ;; Compared as sorted BASENAMES, so the expectation does not depend on
       ;; which directory a source sits in: `mcp/server.sc` sorts among the
@@ -1749,7 +1751,7 @@
         "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "premises.sc" "proc.sc" "project.sc" "query.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "rules.sc" "sched.sc" "server.sc"
-        "source-lex.sc" "store.sc" "stream-client.sc" "stream-frames.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"
+        "source-lex.sc" "store.sc" "stream-client.sc" "stream-frames.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "timing-wrappers.sc" "timing.sc" "trace.sc"
         "view.sc" "wire.sc" "working.sc"))
 
 ;; ---- the two halves of "a place is where it is written", each with a case --

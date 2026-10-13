@@ -14,7 +14,7 @@
 ;; limitations under the License.
 
 ;; WHERE A WRITE REQUEST'S TIME GOES, read off the write path's timing seam
-;; (ffi.sc, THEOURGIA_TIMING=1; store.sc prints the lines).
+;; (timing-wrappers.sc, THEOURGIA_TIMING=1; store.sc prints the lines).
 ;;
 ;; An import is ONE write request (code-project.sc's import-code calls
 ;; with-store-write once with every intent), so its cost is read in two
@@ -25,7 +25,7 @@
 ;;
 ;; ALWAYS, AND CHEAP: with the variable unset a small import prints no
 ;; timing line (TC-0); set, it prints every request phase (TC-1). THE SWITCH
-;; IS READ AT EXPANSION (ffi.sc's wrappers, as THEOURGIA_INJECT is): unset,
+;; IS READ AT EXPANSION (timing-wrappers.sc's wrappers, as THEOURGIA_INJECT is): unset,
 ;; each wrapper expands to its bare expression, and store.sc and
 ;; code-project.sc reach the seam only through the wrappers (TC-E).
 ;;
@@ -127,7 +127,7 @@
         (list 'ok (map (lambda (ph) #t) request-phases))))
 
 ;; THE EXPANSION ITSELF, in two readings. (a) In a child under each value of
-;; the variable, each of ffi.sc's four wrappers is expanded around a plain
+;; the variable, each of timing-wrappers.sc's four wrappers is expanded around a plain
 ;; expression and the seam's entry point, timing-seam, counted in the printed
 ;; expansion: unset it must not occur (and timing-call is #f), set it must.
 ;; (Chez's `expand` of a whole library form returns no body to read, so the
@@ -139,7 +139,7 @@
         (out (string-append root "/expand-" tag ".out")))
     (call-with-output-file script
       (lambda (p)
-        (write '(import (chezscheme) (only (theourgia ffi) timed intent-timed timing-call timing-quiet)) p)
+        (write '(import (chezscheme) (only (theourgia timing-wrappers) timed intent-timed timing-call timing-quiet)) p)
         (write '(define (count-in text sub)
                   (let ((n (string-length sub)))
                     (let loop ((i 0) (k 0))

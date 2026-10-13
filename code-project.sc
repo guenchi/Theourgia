@@ -20,7 +20,7 @@
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
-          (only (theourgia ffi) timed)
+          (only (theourgia timing-wrappers) timed)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
                 entry-bytes)
           (only (theourgia markers) import-text?)
@@ -228,7 +228,7 @@
                (pc (and given (car given)))
                (finish (if given (cadr given) (lambda (a) a)))
                (run (if given (caddr given) (lambda (thunk) (thunk))))
-               ;; THE CAPTURE IS TIMED HERE (the timing seam, ffi.sc): it runs
+               ;; THE CAPTURE IS TIMED HERE (the timing seam, timing-wrappers.sc): it runs
                ;; before the write request's clock starts, and builds every
                ;; intent of the import. `capture` is the capture alone, inside
                ;; the thunk (a request whose packet already exists runs none);

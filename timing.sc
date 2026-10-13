@@ -14,7 +14,7 @@
 
 ;;; (theourgia timing) -- the write path's timing seam, THEOURGIA_TIMING=1 (test-only).
 ;;;
-;;; REACHED ONLY WHEN THE SWITCH WAS SET AT EXPANSION. ffi.sc's wrappers
+;;; REACHED ONLY WHEN THE SWITCH WAS SET AT EXPANSION. timing-wrappers.sc's wrappers
 ;;; (timed, intent-timed, timing-call, timing-quiet) read THEOURGIA_TIMING when
 ;;; they are expanded, as THEOURGIA_INJECT's branches are: set, a wrapped site
 ;;; expands to a call into this library through `environment`; unset, to the

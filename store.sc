@@ -73,7 +73,7 @@
           (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
-          (only (theourgia ffi) timed intent-timed timing-call timing-quiet)
+          (only (theourgia timing-wrappers) timed intent-timed timing-call timing-quiet)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
                 hold-point!)
@@ -3510,7 +3510,7 @@
               ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) deleted writer))
               (else (loop (cdr rs) ids deleted writer)))))))
 
-;; THE TIMING SEAM'S PHASES (ffi.sc's macros, THEOURGIA_TIMING=1 at expansion;
+;; THE TIMING SEAM'S PHASES (timing-wrappers.sc's macros, THEOURGIA_TIMING=1 at expansion;
   ;; test-only). A request's phases are timed once each, `(timing request
   ;; <phase> <us>)`; an intent's phases are summed over each window of 100
   ;; intents and printed at its end, `(timing intents <n> ((<phase> <us>)
