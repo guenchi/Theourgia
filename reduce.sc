@@ -1938,26 +1938,32 @@
   ;; `doc` row came first in three and the `section` row in the other
   ;; three, and a fixture that took `(car ...)` of the list went red one run
   ;; in five.
+  ;; THE ROWS IN THE TABLE'S CREATION ORDER, placed rows first and then the
+  ;; marked ones, as the computation this replaced gave them to the sort: the
+  ;; sort is stable, and two parents written differently that print alike
+  ;; (the symbol root and the string "root") compare equal in it, so their
+  ;; rows keep the order they came in.
   (define (state-outline r)
     (let* ((s (reduction-structure r))
+           (info (structure-info s))
            (conflicts (structure-conflicts s))
-           (rows '()))
-      (let-values (((ks vs) (hashtable-entries (structure-children s))))
-        (vector-for-each
-          (lambda (p cv)
-            (let ((v (cvec-vec cv)))
-              (let loop ((k 0))
-                (when (< k (cvec-count cv))
-                  (let ((e (vector-ref v k)))
-                    (unless (hashtable-contains? conflicts (cdr e))
-                      (set! rows (cons (list p (car e) (cdr e)) rows))))
-                  (loop (+ k 1))))))
-          ks vs))
-      (vector-for-each (lambda (id) (set! rows (cons (list 'root 0 id 'conflict) rows)))
-                       (hashtable-keys conflicts))
-      (vector-for-each (lambda (id) (set! rows (cons (list 'root 0 id 'unplaced) rows)))
-                       (hashtable-keys (structure-unplaced s)))
-      (list-sort outline-row<? rows)))
+           (blocks (reduction-blocks r))
+           (placed
+             (fold-right
+               (lambda (e out)
+                 (let ((f (hashtable-ref info (car e) #f)))
+                   (if (and f (fact-live? f) (fact-placed? f) (not (hashtable-contains? conflicts (car e))))
+                       (cons (list (fact-parent f) (fact-ord f) (car e)) out)
+                       out)))
+               '() blocks))
+           (marked
+             (fold-right
+               (lambda (e out)
+                 (cond ((hashtable-contains? conflicts (car e)) (cons (list 'root 0 (car e) 'conflict) out))
+                       ((hashtable-contains? (structure-unplaced s) (car e)) (cons (list 'root 0 (car e) 'unplaced) out))
+                       (else out)))
+               '() blocks)))
+      (list-sort outline-row<? (append placed marked))))
 
   (define (outline-row<? x y)
     (if (equal? (car x) (car y))
@@ -2416,14 +2422,14 @@
   ;; degeneracy switch (degeneracy.sc) the old computation runs after every
   ;; applied record and any difference is raised at that record.
   (define-record-type structure
-    (fields info children conflicts orphans unplaced nested oncycle))
+    (fields info children conflicts orphans unplaced nested oncycle marked))
   (define-record-type cvec (fields (mutable vec) (mutable count)))
 
   (define (make-empty-structure)
     (make-structure (make-hashtable string-hash string=?) (make-hashtable equal-hash equal?)
                     (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
                     (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
-                    (make-hashtable string-hash string=?)))
+                    (make-hashtable string-hash string=?) (make-cvec (make-vector 4 #f) 0)))
 
   ;; A REHEARSAL'S COPY gets containers of its own: a rehearsal mutates its
   ;; clone, and the clone's structure must not be the original's.
@@ -2431,15 +2437,16 @@
     (let ((children (make-hashtable equal-hash equal?)))
       (let-values (((ks vs) (hashtable-entries (structure-children s))))
         (vector-for-each
-          (lambda (k cv)
-            (let* ((n (cvec-count cv)) (v (cvec-vec cv)) (w (make-vector (vector-length v) #f)))
-              (let copy ((i 0)) (when (< i n) (vector-set! w i (vector-ref v i)) (copy (+ i 1))))
-              (hashtable-set! children k (make-cvec w n))))
+          (lambda (k cv) (hashtable-set! children k (cvec-copy cv)))
           ks vs))
       (make-structure (hashtable-copy (structure-info s) #t) children
                       (hashtable-copy (structure-conflicts s) #t) (hashtable-copy (structure-orphans s) #t)
                       (hashtable-copy (structure-unplaced s) #t) (hashtable-copy (structure-nested s) #t)
-                      (hashtable-copy (structure-oncycle s) #t))))
+                      (hashtable-copy (structure-oncycle s) #t) (cvec-copy (structure-marked s)))))
+  (define (cvec-copy cv)
+    (let* ((n (cvec-count cv)) (v (cvec-vec cv)) (w (make-vector (vector-length v) #f)))
+      (let copy ((i 0)) (when (< i n) (vector-set! w i (vector-ref v i)) (copy (+ i 1))))
+      (make-cvec w n)))
 
   ;; what the structure reads of a block
   (define (structure-facts b)
@@ -2490,6 +2497,17 @@
 
   (define (structure-mark! set id on?)
     (if on? (hashtable-set! set id #t) (hashtable-delete! set id)))
+  ;; MARKED: the conflicts and unplaced blocks, the rows state-outline puts
+  ;; under root at ord 0, kept sorted as (0 . id) so a root sibling question
+  ;; reads them by search rather than by enumerating every one
+  (define (structure-marked-sync! s id)
+    (let ((in? (or (hashtable-contains? (structure-conflicts s) id)
+                   (hashtable-contains? (structure-unplaced s) id)))
+          (cv (structure-marked s)) (key (cons 0 id)))
+      (let* ((i (cvec-lower cv key))
+             (here? (and (< i (cvec-count cv)) (equal? (vector-ref (cvec-vec cv) i) key))))
+        (cond ((and in? (not here?)) (cvec-insert! cv key))
+              ((and here? (not in?)) (cvec-remove! cv key))))))
   ;; the next block up a walk: the settled parent, when it is a string naming a
   ;; block the table holds (tombstoned or not)
   (define (structure-next s id)
@@ -2506,7 +2524,8 @@
   (define (structure-conflict! s id)
     (let ((f (hashtable-ref (structure-info s) id #f)))
       (structure-mark! (structure-conflicts s) id
-                       (and f (fact-live? f) (hashtable-contains? (structure-oncycle s) id)))))
+                       (and f (fact-live? f) (hashtable-contains? (structure-oncycle s) id)))
+      (structure-marked-sync! s id)))
   ;; the live placed children of ID: their orphan status follows ID's existence
   ;; and tomb
   (define (structure-children-orphans! s id)
@@ -2557,6 +2576,7 @@
       (when (and (fact-live? new) (fact-placed? new))
         (cvec-insert! (structure-cvec! s (fact-parent new)) (cons (fact-ord new) id)))
       (structure-mark! (structure-unplaced s) id (and (fact-live? new) (not (fact-placed? new))))
+      (structure-marked-sync! s id)
       (structure-mark! (structure-nested s) id
                        (and (fact-live? new) (fact-doc? new) (string? (fact-parent new))))
       (structure-orphan! s id)
@@ -2580,34 +2600,41 @@
   ;; ---- the siblings of one parent, as state-outline's rows under it give them
   ;; (ord, then id): the parent's live placed children not on a cycle and, under
   ;; root, every conflict and unplaced block at ord 0.
-  (define (structure-marked s)
-    (append (map (lambda (id) (cons 0 id)) (vector->list (hashtable-keys (structure-conflicts s))))
-            (map (lambda (id) (cons 0 id)) (vector->list (hashtable-keys (structure-unplaced s))))))
+  ;; the elements of a sorted vector from index K on, skipping those KEEP? refuses
+  (define (cvec-from cv k keep?)
+    (let loop ((k k))
+      (cond ((>= k (cvec-count cv)) #f)
+            ((keep? (vector-ref (cvec-vec cv) k)) (vector-ref (cvec-vec cv) k))
+            (else (loop (+ k 1))))))
+  (define (cvec-last cv keep?)
+    (let loop ((k (- (cvec-count cv) 1)))
+      (cond ((< k 0) #f)
+            ((keep? (vector-ref (cvec-vec cv) k)) (vector-ref (cvec-vec cv) k))
+            (else (loop (- k 1))))))
+  (define (cvec->list cv keep?)
+    (let loop ((k (- (cvec-count cv) 1)) (out '()))
+      (if (< k 0) out
+          (loop (- k 1) (let ((e (vector-ref (cvec-vec cv) k))) (if (keep? e) (cons e out) out))))))
+  ;; the later of two sibling entries (either may be #f)
+  (define (child-max a b) (cond ((not a) b) ((not b) a) ((child<? a b) b) (else a)))
+  (define (child-min a b) (cond ((not a) b) ((not b) a) ((child<? b a) b) (else a)))
   (define (state-siblings r parent)
     (let* ((s (reduction-structure r))
            (cv (hashtable-ref (structure-children s) parent #f))
-           (own (if cv
-                    (let loop ((k (- (cvec-count cv) 1)) (out '()))
-                      (if (< k 0) out
-                          (let ((e (vector-ref (cvec-vec cv) k)))
-                            (loop (- k 1) (if (hashtable-contains? (structure-conflicts s) (cdr e)) out (cons e out))))))
-                    '())))
-      (if (equal? parent 'root)
-          (list-sort child<? (append own (structure-marked s)))
-          own)))
+           (own (if cv (cvec->list cv (lambda (e) (not (hashtable-contains? (structure-conflicts s) (cdr e))))) '()))
+           (answer (if (equal? parent 'root)
+                       (list-sort child<? (append own (cvec->list (structure-marked s) (lambda (e) #t))))
+                       own)))
+      (degeneracy-check (siblings-list-compare r parent answer))
+      answer))
   ;; the last sibling's ord, or #f: what an insert or move with no `after` places
   ;; after
   (define (state-sibling-last-ord r parent)
     (let* ((s (reduction-structure r))
            (cv (hashtable-ref (structure-children s) parent #f))
-           (own (and cv (let loop ((k (- (cvec-count cv) 1)))
-                          (cond ((< k 0) #f)
-                                ((hashtable-contains? (structure-conflicts s) (cdr (vector-ref (cvec-vec cv) k)))
-                                 (loop (- k 1)))
-                                (else (vector-ref (cvec-vec cv) k))))))
-           (marked (and (equal? parent 'root)
-                        (fold-left (lambda (best e) (if (or (not best) (child<? best e)) e best)) #f (structure-marked s))))
-           (last (cond ((not own) marked) ((not marked) own) ((child<? own marked) marked) (else own)))
+           (own (and cv (cvec-last cv (lambda (e) (not (hashtable-contains? (structure-conflicts s) (cdr e)))))))
+           (marked (and (equal? parent 'root) (cvec-last (structure-marked s) (lambda (e) #t))))
+           (last (child-max own marked))
            (answer (and last (car last))))
       (degeneracy-check (sibling-compare r parent #f answer))
       answer))
@@ -2626,18 +2653,14 @@
                       (else #f)))
            (answer
              (and key
-                  (let* ((cv (hashtable-ref (structure-children s) parent #f))
-                         (own (and cv (let loop ((k (cvec-lower cv key)))
-                                        (cond ((>= k (cvec-count cv)) #f)
-                                              ((let ((e (vector-ref (cvec-vec cv) k)))
-                                                 (or (equal? e key) (cyclic? (cdr e))))
-                                               (loop (+ k 1)))
-                                              (else (vector-ref (cvec-vec cv) k))))))
+                  (let* ((later? (lambda (e) (child<? key e)))
+                         (cv (hashtable-ref (structure-children s) parent #f))
+                         (own (and cv (cvec-from cv (cvec-lower cv key)
+                                                 (lambda (e) (and (later? e) (not (cyclic? (cdr e))))))))
                          (marked (and (equal? parent 'root)
-                                      (fold-left (lambda (best e)
-                                                   (if (and (child<? key e) (or (not best) (child<? e best))) e best))
-                                                 #f (structure-marked s))))
-                         (next (cond ((not own) marked) ((not marked) own) ((child<? marked own) marked) (else own))))
+                                      (let ((m (structure-marked s)))
+                                        (cvec-from m (cvec-lower m key) later?))))
+                         (next (child-min own marked)))
                     (cons (car key) (and next (car next)))))))
       (degeneracy-check (sibling-compare r parent after answer))
       answer))
@@ -2755,6 +2778,10 @@
       (list-sort (lambda (a b) (< (car a) (car b)))
                  (map (lambda (row) (cons (cadr row) (caddr row)))
                       (filter (lambda (row) (equal? (car row) parent)) (outline-recomputed r)))))
+    (define (siblings-list-compare r parent answer)
+      (let ((expected (siblings-recomputed r parent)))
+        (unless (equal? expected answer)
+          (assertion-violation 'degeneracy "the sibling list differs from the outline's" parent answer expected))))
     (define (sibling-compare r parent after answer)
       (let* ((sibs (siblings-recomputed r parent))
              (expected
