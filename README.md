@@ -1178,8 +1178,8 @@ ones bound.
       ->  (error bad-request not-a-goal (goal (and (title ?a ?t))))
 
 A FACT RELATION answers what the store's providers already know, as tuples
-(`query.sc`, line 101): `(field "<a>" "slot" ?v)` answers `(row "x")`, the
-value as stored.
+(`query.sc`, line 101): `(field "<a>" "slot" ?v)` answers `(row "x")  (vars
+(?v))`, the value as stored.
 
 A RULE OF THE LIBRARY is a relation the library's rules define from facts
 and other rules. Several rules with one head are a disjunction, and a rule
@@ -1247,8 +1247,9 @@ digest.
 
 ### What `rule` checks when it is declared
 
-The `rule` verb answers its usage when `--on` is missing or when not exactly
-one of `--must` and `--must-not` is given. The value is then checked before
+Apart from its `--retire` and `--builtin <name>` forms, the `rule` verb
+answers its usage when `--on` is missing or when not exactly one of `--must`
+and `--must-not` is given. The value is then checked before
 anything is written (`query.sc`, line 245), and so is a rule value in a
 `batch`: it must be plain data, one clause of each kind, a plan's marker held
 nowhere; at least one kind (`rule-needs-kinds`), each one of the store's
