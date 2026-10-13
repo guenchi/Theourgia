@@ -1083,6 +1083,14 @@
                           (census-ask st 'diff "t0" "t1"))))
     (cons 'conflicts (seeded (lambda (st x s) (census-ask st 'conflicts))))
     (cons 'position (seeded (lambda (st x s) (census-ask st 'position))))
+    ;; one text file imported and tagged, so the range has a block
+    (cons 'locate (seeded (lambda (st x s)
+                            (let ((dir (string-append x "/locate-src")))
+                              (mkdir-p! dir)
+                              (census-write! (string-append dir "/l.txt") "l\n")
+                              (census-ask st 'import-code dir)
+                              (census-ask st 'tag "lc0")
+                              (census-ask st 'locate "l.txt" "--cut" "lc0" "--bytes" "0:1")))))
     ;; one text file imported between two tags, so the answer has an item
     (cons 'changed-files (seeded (lambda (st x s)
                                    (let ((dir (string-append x "/changed-src")))
@@ -1253,7 +1261,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code log names query refs search tag tasks uses whereis))
+      '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code locate log names query refs search tag tasks uses whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1272,7 +1280,7 @@
       (census-detail 'tagged)
       '((changed-files (path) . 0) (commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
-        (import-code (ok) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
+        (import-code (ok) . 0) (locate (block) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "F58 each not-items verb's answer head"
       (census-detail 'not-items)

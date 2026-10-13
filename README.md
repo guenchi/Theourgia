@@ -641,6 +641,48 @@ whatever draft writer D is. Nothing defaults a cursor from it; `--req` still nee
 the only one unreadable -- is refused `(error no-local-writer)`, with the load's
 `(incomplete ...)` beside it when a writer could not be read.
 
+### `locate`
+
+    (locate <path> ["--writer" <name>] ["--cut" <cut>] ["--bytes" <s:e>] ["--lines" <a:b>] ["--hunk" <hunk>])
+
+It answers:
+
+    (ok (items (block <id> <start> <end>) ...) (cut <cut>))
+
+The blocks of a text file that a range of its bytes touches, in document order, each
+whole with its own span. The coordinates are the file's RAW bytes -- its children's srcs
+run together, what `export-code --raw` writes -- so a range read off a raw export, or a
+diff of one, means the same bytes here. Give exactly one view, as `export-code`: `--writer
+<name>` (that writer's working view, which is the head when it has no drafts; the answer
+adds `(working #t)`) or `--cut <cut>`, a tag or a cut literal. And exactly one range:
+
+- `--bytes s:e`, the half-open interval [s, e), 0 <= s <= e <= the file's length;
+- `--lines a:b`, 1-based and inclusive, from the start of line a to the end of line b with
+  its LF. A file ending in LF has no empty last line: `a\n` is one line, an empty file none;
+- `--hunk <text>`, one unified-diff hunk (`--hunk -` reads it from standard input). Its
+  first line must be the header `@@ -N[,M] +P[,Q] @@`, and its OLD side is used: `-N,M`
+  is lines N to N+M-1, `-N` is `-N,1`, and `-N,0` is the empty range just after line N
+  (before the first line for N = 0). It is meaningful at the cut the diff was taken
+  against, so pass that cut. The old side includes the hunk's context lines, so a
+  default diff names the blocks its three lines of context touch as well; a diff taken
+  with `-U0` names only the changed lines, one hunk each. Text before the header refuses
+  `(error not-a-hunk)`, a second header `(error one-hunk-only)`; the body is not read.
+
+The bounds come first: a range outside the file is refused `(error range-outside (bytes
+<length>) (lines <count>))` before any block is looked at, so a file with no children
+answers no item for 0:0 and is refused for 1:1. A nonempty range answers every block it
+intersects -- an edit crossing a boundary is the list of blocks it touches, each to be
+rewritten whole -- and a zero-length block strictly inside it. An empty range answers
+every block that STARTS at its offset (several zero-length blocks and the block after
+them, all of them, so the caller chooses), the block it lies strictly inside, or, at the
+file's end, every block that ends there: an insertion before a block belongs to that
+block, an append to the last one. This is the opposite of a cursor's rule elsewhere,
+which gives an offset to the block ending there.
+
+A path no file block holds is refused `(error unknown-path <path>)`; one held by a file
+that is not text mode `(error not-a-text-file <path>)`; a file the export would refuse,
+with the export's own refusal. The answer reports no versions.
+
 ### `changed-files`
 
     (changed-files <cut> <cut>)

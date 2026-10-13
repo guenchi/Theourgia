@@ -1,0 +1,26 @@
+diff --git a/test/client-program.sc b/test/client-program.sc
+index 453c3e4..2887090 100644
+--- a/test/client-program.sc
++++ b/test/client-program.sc
+@@ -117 +117,4 @@
+-(define (daemons-alive)
++;; THE PATTERN IS WRITTEN [s]erve so the shell running the count, whose own
++;; command line holds the pattern's text, does not match it: macOS's and
++;; FreeBSD's pgrep leave out their ancestors, procps's does not.
++(define (alive-under dir)
+@@ -119 +122 @@
+-    (system (string-append "pgrep -f 'serve " store "' | wc -l | tr -d ' ' > " f))
++    (system (string-append "pgrep -f '[s]erve " dir "' | wc -l | tr -d ' ' > " f))
+@@ -121,0 +125 @@
++(define (daemons-alive) (alive-under store))
+@@ -130,0 +135,4 @@
++;; AND IT WAITS FOR THEM TO BE GONE, not a fixed second: on a loaded machine
++;; a daemon still exiting a second later was counted beside the one the next
++;; request started (P-20 read "2"). It polls the kill's own pattern until no
++;; process matches, every tenth of a second, for at most ten seconds.
+@@ -133 +141,4 @@
+-  (system "sleep 1"))
++  (let wait ((n 0))
++    (unless (or (string=? (alive-under here) "0") (>= n 100))
++      (system "sleep 0.1")
++      (wait (+ n 1)))))

@@ -17,7 +17,8 @@
           code-input-files code-safe-path? code-parent-directory duplicate-path-failure
           file-projection-key projected-files
           projection-outputs raw-projection path-collision spelling-key ambiguous-groups
-          volume-insensitivity changed-files-between)
+          volume-insensitivity changed-files-between
+          locate-file locate-pieces)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
@@ -346,13 +347,14 @@
     (let loop ((ids (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state))) (out '()))
       (if (null? ids)
           (reverse out)
-          (loop (cdr ids)
-                (cons (let* ((id (car ids)) (k (file-projection-key state id)))
-                        (unless (eq? (car k) 'key) (key-failure state k))
-                        (list (code-field state id 'path) id (language-for-name (code-field state id 'lang))
-                              (map (lambda (child) (list child (code-field state child 'src))) (code-children state id))
-                              (cadr k)))
-                      out)))))
+          (loop (cdr ids) (cons (projected-file state (car ids)) out)))))
+  ;; ONE TEXT FILE AS THE EXPORTER PROJECTS IT, or the exporter's refusal.
+  (define (projected-file state id)
+    (let ((k (file-projection-key state id)))
+      (unless (eq? (car k) 'key) (key-failure state k))
+      (list (code-field state id 'path) id (language-for-name (code-field state id 'lang))
+            (map (lambda (child) (list child (code-field state child 'src))) (code-children state id))
+            (cadr k))))
 
   ;; THE PROJECTION, ONE COMPUTATION FOR EVERY CONSUMER: -> ((<path> <bytes>)
   ;; ...) in the exporter's order, raw (the children's srcs run together) or
@@ -375,6 +377,146 @@
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
           (list 'ok (list 'files (length outputs)))))))
+
+  ;; ---- a file's byte or line range, or a diff hunk, to the blocks holding it --
+  ;;
+  ;; IN RAW COORDINATES: the file's bytes are its children's srcs run
+  ;; together, what export-code --raw writes, so a range read off a raw
+  ;; export or a git diff of one means the same bytes here. No offset is
+  ;; stored; the pieces are built from the export's own entries, in its
+  ;; order, each (source <id> <start> <end> 0 ()) -- projection-range's
+  ;; shape, with no controls and no inserted bytes.
+  ;;
+  ;; SPEC: (bytes s e), the half-open [s, e); (lines a b), 1-based and
+  ;; inclusive, from the start of line a to the end of line b with its LF;
+  ;; or (hunk <text>), one unified-diff hunk whose OLD side is used. A file
+  ;; ending in LF has no empty last line: "a\n" is one line, "" none.
+  ;; -> (ok (items (block <id> <start> <end>) ...)); refusals: unknown-path,
+  ;; not-a-text-file, the exporter's own for a file it would not write,
+  ;; range-outside (bounds first, before any block rule), not-a-hunk,
+  ;; one-hunk-only.
+  (define (locate-file state path spec)
+    (answer
+      (lambda ()
+        (let* ((holders (state-path-claimants state 'file 'text path))
+               (id (cond ((pair? holders) (car holders))
+                         ((exists (lambda (f) (equal? (code-field state f 'path) path)) (code-files state))
+                          (raise (list 'error 'not-a-text-file path)))
+                         (else (raise (list 'error 'unknown-path path)))))
+               (entries (cadddr (projected-file state id)))
+               (bytes (apply bytes-append (map cadr entries)))
+               (pieces (let loop ((es entries) (at 0) (out '()))
+                         (if (null? es) (reverse out)
+                             (let ((end (+ at (bytevector-length (cadr (car es))))))
+                               (loop (cdr es) end (cons (list 'source (car (car es)) at end 0 '()) out))))))
+               (range (spec-range bytes spec)))
+          (list 'ok (cons 'items (locate-pieces pieces (bytevector-length bytes) (car range) (cdr range))))))))
+
+  ;; THE BLOCKS A RANGE TOUCHES, EACH WHOLE: -> ((block <id> <start> <end>)
+  ;; ...) in document order, with each block's own span, for 0 <= s <= e <= len.
+  ;;
+  ;; A NONEMPTY [s, e) answers every piece it intersects, so an edit crossing
+  ;; a boundary is the list of blocks it touches and is never refused; a
+  ;; zero-length piece strictly inside the range is between the bytes the
+  ;; edit replaces and is answered too, one at s or e is not.
+  ;;
+  ;; NEVER: AN EMPTY [o, o) IS NOT projection-range's RULE, AND THE
+  ;; DIFFERENCE IS THE POINT. projection-range gives a cursor to the block
+  ;; that ENDS at o; an insertion before a block belongs to the block that
+  ;; STARTS there, so locate answers every piece starting at o (several
+  ;; zero-length ones and the block after them, all of them, in order: the
+  ;; caller chooses). Strictly inside a block it answers that block. The one
+  ;; exception is the file's end, where nothing starts: an append belongs to
+  ;; the last block, which ends there, so every piece ending at len is
+  ;; answered (the last block and the zero-length ones after it).
+  (define (locate-pieces pieces len s e)
+    (define (start-of p) (caddr p))
+    (define (end-of p) (cadddr p))
+    (define (item p) (list 'block (cadr p) (start-of p) (end-of p)))
+    (map item
+         (cond
+           ((< s e)
+            (filter (lambda (p) (if (= (start-of p) (end-of p))
+                                    (and (< s (start-of p)) (< (start-of p) e))
+                                    (and (< (start-of p) e) (> (end-of p) s))))
+                    pieces))
+           ((= s len) (filter (lambda (p) (= (end-of p) s)) pieces))
+           (else
+            (let ((starting (filter (lambda (p) (= (start-of p) s)) pieces)))
+              (if (pair? starting)
+                  starting
+                  (filter (lambda (p) (and (< (start-of p) s) (< s (end-of p)))) pieces)))))))
+
+  ;; SPEC TO A BYTE INTERVAL (s . e) of BYTES, the bounds checked first.
+  (define (spec-range bytes spec)
+    (let* ((len (bytevector-length bytes))
+           (starts (line-starts bytes))
+           (count (length starts))
+           (outside (lambda () (raise (list 'error 'range-outside (list 'bytes len) (list 'lines count)))))
+           (line-start (lambda (k) (list-ref starts (- k 1))))
+           (line-end (lambda (k) (if (< k count) (list-ref starts k) len)))
+           (lines (lambda (a b)
+                    (unless (and (<= 1 a) (<= a b) (<= b count)) (outside))
+                    (cons (line-start a) (line-end b)))))
+      (case (car spec)
+        ((bytes)
+         (let ((s (cadr spec)) (e (caddr spec)))
+           (unless (and (<= 0 s) (<= s e) (<= e len)) (outside))
+           (cons s e)))
+        ((lines) (lines (cadr spec) (caddr spec)))
+        ((hunk)
+         (let* ((old (hunk-old-side (cadr spec))) (n (car old)) (m (cdr old)))
+           (if (= m 0)
+               ;; an insertion after old line n, n 0 before the first
+               (begin (unless (<= 0 n count) (outside))
+                      (let ((o (if (= n 0) 0 (line-end n)))) (cons o o)))
+               (lines n (+ n m -1)))))
+        (else (assertion-violation 'locate-file "unknown range spec" spec)))))
+
+  ;; the offset each line starts at: one per line, none for an empty file,
+  ;; and no empty line after a final LF
+  (define (line-starts bytes)
+    (let ((len (bytevector-length bytes)))
+      (let loop ((i 0) (out (if (> len 0) '(0) '())))
+        (cond ((= i len) (reverse out))
+              ((and (= 10 (bytevector-u8-ref bytes i)) (< (+ i 1) len)) (loop (+ i 1) (cons (+ i 1) out)))
+              (else (loop (+ i 1) out))))))
+
+  ;; ONE HUNK'S OLD SIDE, (n . m), from text whose first line is the header
+  ;; "@@ -N[,M] +P[,Q] @@" (anything after the closing @@ is a section
+  ;; heading); "-N" with no count is "-N,1". The body is not read, except
+  ;; that a second header line refuses: one hunk names one range.
+  (define (hunk-old-side text)
+    (define (refuse what) (raise (list 'error what)))
+    (define (digits s i)
+      (let loop ((j i)) (if (and (< j (string-length s)) (char<=? #\0 (string-ref s j) #\9)) (loop (+ j 1)) j)))
+    (define (number s i j)
+      (unless (and (< i j) (<= (- j i) 18)) (refuse 'not-a-hunk))
+      (string->number (substring s i j) 10))
+    (let* ((lines (split-lines text))
+           (head (if (pair? lines) (car lines) ""))
+           (h (if (and (> (string-length head) 0) (char=? #\return (string-ref head (- (string-length head) 1))))
+                  (substring head 0 (- (string-length head) 1)) head)))
+      (unless (and (>= (string-length h) 4) (string=? "@@ -" (substring h 0 4))) (refuse 'not-a-hunk))
+      (when (exists (lambda (l) (and (>= (string-length l) 2) (string=? "@@" (substring l 0 2)))) (cdr lines))
+        (refuse 'one-hunk-only))
+      (let* ((n-end (digits h 4)) (n (number h 4 n-end))
+             (m-end (if (and (< n-end (string-length h)) (char=? #\, (string-ref h n-end))) (digits h (+ n-end 1)) n-end))
+             (m (if (= m-end n-end) 1 (number h (+ n-end 1) m-end))))
+        (unless (and (< (+ m-end 1) (string-length h)) (string=? " +" (substring h m-end (+ m-end 2))))
+          (refuse 'not-a-hunk))
+        (let* ((p-end (digits h (+ m-end 2)))
+               (_ (number h (+ m-end 2) p-end))
+               (q-end (if (and (< p-end (string-length h)) (char=? #\, (string-ref h p-end))) (digits h (+ p-end 1)) p-end)))
+          (when (> q-end p-end) (number h (+ p-end 1) q-end))
+          (unless (and (<= (+ q-end 3) (string-length h)) (string=? " @@" (substring h q-end (+ q-end 3))))
+            (refuse 'not-a-hunk))
+          (cons n m)))))
+  (define (split-lines text)
+    (let loop ((i 0) (start 0) (out '()))
+      (cond ((= i (string-length text)) (reverse (if (< start i) (cons (substring text start i) out) out)))
+            ((char=? #\newline (string-ref text i)) (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
+            (else (loop (+ i 1) start out)))))
 
   ;; ---- the files that differ between two cuts --------------------------------
   ;;

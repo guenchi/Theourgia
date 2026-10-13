@@ -122,6 +122,9 @@
         ((drafts discard restore diagnostics) '("--writer"))
         ;; An export takes a writer's view, or a causal cut, as read does.
         ((export-code export-md) '("--writer" "--cut"))
+        ;; A range of a file in a writer's view or at a cut; the hunk is text,
+        ;; "-" for standard input.
+        ((locate) '("--writer" "--cut" "--bytes" "--lines" "--hunk"))
         ;; `--cut` takes a causal cut, a literal or a tag name, as diff's do.
         ((read) '("--writer" "--cut"))
         ;; `--for` names whose view a supply was projected from, and so
@@ -397,6 +400,14 @@
               (if (and (eq? (car n) 'option) (string=? (cadr n) "--text")
                        (string=? (caddr n) "-"))
                   (list 'option "--text" (read-text))
+                  n))
+            nodes))
+      ;; `locate --hunk -`: the hunk, as insert's text is read
+      ((locate)
+       (map (lambda (n)
+              (if (and (eq? (car n) 'option) (string=? (cadr n) "--hunk")
+                       (string=? (caddr n) "-"))
+                  (list 'option "--hunk" (read-text))
                   n))
             nodes))
       (else nodes))))

@@ -154,7 +154,7 @@
     (write "a draft") (restore "a draft") (discard "a draft") (drafts "a draft listing")
     (diagnostics "an editor's supplied facts") (split-suggest "reads a file, not the store")
     (export-code "an export") (export-md "an export") (log "the log, not a read of the state")
-    (diff "two cuts, not one state") (changed-files "two cuts, not one state") (position "the log's position, not a read of blocks") (conflicts "conflicts, not a read of blocks")
+    (diff "two cuts, not one state") (changed-files "two cuts, not one state") (position "the log's position, not a read of blocks") (locate "a range's blocks and their spans, no versions") (conflicts "conflicts, not a read of blocks")
     (check "the store's health") (describe "the catalogue")
     (query "answers its own cut and a digest of its rows")
     (context "answers its own receipt: the premises of what it must show, its cut and its versions")
@@ -472,7 +472,8 @@
     (publish "takes another writer's segment file; this store has no other writer")
     (supply "takes an editor's derived table; this file supplies none")
     (restore "takes back a draft another writer's concurrent commit revoked; this store has one writer")
-    (subscribe "a stream a daemon carries; in process it answers needs-daemon, which is no success")))
+    (subscribe "a stream a daemon carries; in process it answers needs-daemon, which is no success")
+    (locate "reads a text file's raw bytes; this store's files are datum mode; test/locate.sc pins that its answer has no versions and its cut is its own")))
 (want "C48a-4 the verbs run below and the verbs named as not run are together the class none, each once"
       (in-order (symbols-sorted (append (map car none-calls) (map car none-not-run)))
                 (length (append (map car none-calls) (map car none-not-run))))
