@@ -121,10 +121,13 @@
 
   ;; ---- the reduction --------------------------------------------------------
 
-  ;; blocks   -- alist of id to block
+  ;; blocks-rev -- alist of id to block, NEWEST FIRST (one cons per block made);
+  ;;              block-index is the same blocks by id, and block-forward the
+  ;;              creation-order alist, cached (see reduction-blocks)
   ;; links    -- list of (from rel to event-id)
   ;; tags     -- alist of name to list of (cut . event-id)
-  ;; pasts    -- alist of event-id to that event's causal past
+  ;; pasts    -- alist of event-id to that event's causal past, newest first;
+  ;;             pasts-index is the same by event-id
   ;; applied  -- alist of writer to the highest sequence applied
   ;; pending  -- records whose premises have not all arrived
   ;; trace    -- event-ids in the order they were applied
@@ -132,7 +135,7 @@
   ;; declared-relations -- alist of a declared relation name to its candidates
   ;; declared-rules -- alist of a rule name to its candidates, the same way
   (define-record-type reduction
-    (fields (mutable blocks)
+    (fields (mutable blocks-rev)
             (mutable links)
             (mutable tags)
             (mutable pasts)
@@ -147,7 +150,45 @@
             ;; A REHEARSAL'S COPY (reduce-clone), and only that: a trace line
             ;; emitted while reducing it is marked (rehearsal), and the
             ;; store's fault seam is not consulted for it.
-            rehearsal?))
+            rehearsal?
+            (mutable block-index)
+            (mutable block-forward)
+            (mutable pasts-index)))
+
+  ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
+  ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
+  ;; and the change stream): the first ensure-block! of an id places it, a
+  ;; tombstone keeps its place, and an id is never made twice. A block is
+  ;; found by id through block-index; the alist is the reverse of
+  ;; blocks-rev, kept until the next block is made.
+  (define (reduction-blocks r)
+    (or (reduction-block-forward r)
+        (let ((forward (reverse (reduction-blocks-rev r))))
+          (reduction-block-forward-set! r forward)
+          forward)))
+  (define (make-block-index) (make-hashtable equal-hash equal?))
+  (define (blocks-reset! r)
+    (reduction-blocks-rev-set! r '())
+    (reduction-block-index-set! r (make-block-index))
+    (reduction-block-forward-set! r '()))
+
+  ;; AN EVENT'S CAUSAL PAST, by event id, or #f: the newest entry for it, as
+  ;; an assoc on the newest-first alist would answer.
+  (define (make-pasts-index) (make-hashtable equal-hash equal?))
+  (define (pasts-ref r event) (hashtable-ref (reduction-pasts-index r) event #f))
+  (define (pasts-add! r event past)
+    (reduction-pasts-set! r (cons (cons event past) (reduction-pasts r)))
+    (hashtable-set! (reduction-pasts-index r) event past))
+  (define (pasts-reset! r)
+    (reduction-pasts-set! r '())
+    (reduction-pasts-index-set! r (make-pasts-index)))
+  ;; The whole alist at once (a snapshot's restore): indexed oldest first, so
+  ;; the newest entry of an event is the one its id finds.
+  (define (pasts-restore! r alist)
+    (reduction-pasts-set! r alist)
+    (let ((index (make-pasts-index)))
+      (for-each (lambda (e) (hashtable-set! index (car e) (cdr e))) (reverse alist))
+      (reduction-pasts-index-set! r index)))
 
   ;; ---- the name of a draft's content ---------------------------------------
   ;;
@@ -603,7 +644,8 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() #f))
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() #f
+                    (make-block-index) '() (make-pasts-index)))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -612,18 +654,26 @@
   ;; answers every question the original answers, and reducing records into
   ;; it changes nothing the original holds. Not the snapshot round trip,
   ;; which drops pending records and filters the history to the cut.
+  ;; THE BLOCKS' RECORDS ARE COPIED ONCE: each fresh blk is the one the copy's
+  ;; index and its alist both hold. The pasts index is copied mutable, the
+  ;; copy adding to it as it reduces.
   (define (reduce-clone r)
-    (make-reduction (map (lambda (p)
-                           (let ((b (cdr p)))
-                             (cons (car p) (make-blk (blk-name b) (blk-fields b) (blk-position b) (blk-tomb b)))))
-                         (reduction-blocks r))
-                    (reduction-links r) (reduction-tags r) (reduction-pasts r)
-                    (reduction-applied r) (reduction-pending r) (reduction-trace r)
-                    (reduction-noted r) (reduction-history r) (reduction-gates r)
-                    (admission-copy (reduction-admission-index r))
-                    (consumption-copy (reduction-consumption r))
-                    (reduction-declared-relations r) (reduction-declared-rules r)
-                    #t))
+    (let* ((index (make-block-index))
+           (rev (map (lambda (p)
+                       (let* ((b (cdr p))
+                              (copy (make-blk (blk-name b) (blk-fields b) (blk-position b) (blk-tomb b))))
+                         (hashtable-set! index (car p) copy)
+                         (cons (car p) copy)))
+                     (reduction-blocks-rev r))))
+      (make-reduction rev
+                      (reduction-links r) (reduction-tags r) (reduction-pasts r)
+                      (reduction-applied r) (reduction-pending r) (reduction-trace r)
+                      (reduction-noted r) (reduction-history r) (reduction-gates r)
+                      (admission-copy (reduction-admission-index r))
+                      (consumption-copy (reduction-consumption r))
+                      (reduction-declared-relations r) (reduction-declared-rules r)
+                      #t
+                      index #f (hashtable-copy (reduction-pasts-index r) #t))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
@@ -768,12 +818,12 @@
   ;; applied, which is what makes it rare -- see the caller.
   (define (rebuild-request-state! r gates)
     (let ((records (reverse (reduction-history r))))
-      (reduction-blocks-set! r '())
+      (blocks-reset! r)
       (reduction-links-set! r '())
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r '())
       (reduction-declared-rules-set! r '())
-      (reduction-pasts-set! r '())
+      (pasts-reset! r)
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
       ;; THE INDEX IS DROPPED AND REBUILT WITH EVERYTHING ELSE. It is a
@@ -832,7 +882,7 @@
            (seq (rec-seq rec))
            (id (cons writer seq))
            (past (compute-past r writer seq (rec-deps rec))))
-      (reduction-pasts-set! r (cons (cons id past) (reduction-pasts r)))
+      (pasts-add! r id past)
       (reduction-trace-set! r (cons id (reduction-trace r)))
       ;; NOTED HERE, WHERE "APPLIED" IS TRUE. A record that is present
       ;; but gated has not been applied, and a plan whose members are
@@ -862,7 +912,7 @@
           ((null? ds) out)
           (else
            (let* ((d (car ds))
-                  (theirs (let ((e (assoc d (reduction-pasts r)))) (if e (cdr e) '()))))
+                  (theirs (or (pasts-ref r d) '())))
              (loop (cdr ds)
                    (past-join (past-join out (list (cons (car d) (cdr d)))) theirs))))))))
 
@@ -878,12 +928,16 @@
     (cons (cons value event-id) (supersede past candidates)))
 
   (define (find-block r id)
-    (let ((e (assoc id (reduction-blocks r)))) (and e (cdr e))))
+    (hashtable-ref (reduction-block-index r) id #f))
 
+  ;; A NEW BLOCK takes the next place in creation order: one cons, and the
+  ;; cached creation-order alist is dropped.
   (define (ensure-block! r id)
     (or (find-block r id)
         (let ((b (make-blk id '() '() #f)))
-          (reduction-blocks-set! r (append (reduction-blocks r) (list (cons id b))))
+          (hashtable-set! (reduction-block-index r) id b)
+          (reduction-blocks-rev-set! r (cons (cons id b) (reduction-blocks-rev r)))
+          (reduction-block-forward-set! r #f)
           b)))
 
   ;; ---- interpreting one payload ---------------------------------------------
@@ -2291,11 +2345,11 @@
   ;; comparing state-datum, which is what the three-way equality case
   ;; wants; a token is a different question and gets a different answer.
   (define (block-hash r id)
-    (let ((e (assoc id (reduction-blocks r))))
-      (and e
+    (let ((b (find-block r id)))
+      (and b
            (bytevector->hex
              (sha256 (string->utf8
-                       (sexpr->string-extended (storable-encode (block->datum r id (cdr e))))))))))
+                       (sexpr->string-extended (storable-encode (block->datum r id b)))))))))
 
   ;; THE DECLARATIONS ARE PART OF THE STATE, after the blocks, a name's
   ;; candidates by event; a store with none hashes the blocks alone, as it
@@ -2458,7 +2512,7 @@
       (cond
         ((> n s) #t)
         (else
-         (let ((past (let ((e (assoc (cons w n) (reduction-pasts r)))) (and e (cdr e)))))
+         (let ((past (pasts-ref r (cons w n))))
            (cond
              ((not past) (loop (+ n 1)))
              ((for-all (lambda (p)
@@ -2605,16 +2659,16 @@
 
   ;; Return the causal cut immediately after this applied event.
   (define (state-event-cut state event)
-    (let ((past (assoc event (reduction-pasts state))))
-      (and past (past-sorted (past-join (cdr past) (list event))))))
+    (let ((past (pasts-ref state event)))
+      (and past (past-sorted (past-join past (list event))))))
 
   ;; Return the causal cut immediately BEFORE this applied event: its
   ;; stored past, transitively closed (compute-past joins each premise's own
   ;; past), without the event itself. () for a writer's first event with no
   ;; dependencies; #f for an event this state has not applied.
   (define (state-event-past state event)
-    (let ((past (assoc event (reduction-pasts state))))
-      (and past (past-sorted (cdr past)))))
+    (let ((past (pasts-ref state event)))
+      (and past (past-sorted past))))
 
   ;; THE CANONICAL IDENTITY OF A CUT (design 9.3): writers in order, one
   ;; agreed spelling, sha256 of that text. Anything that uses a cut as a
@@ -2787,7 +2841,7 @@
                        (cadr row)))
             ((noted)
              (reduction-noted-set! r (append (reduction-noted r) (list (cadr row)))))
-            ((pasts) (reduction-pasts-set! r (expand-pasts (cadr row) cut)))
+            ((pasts) (pasts-restore! r (expand-pasts (cadr row) cut)))
             ((consumed) (restore-consumption! r (cadr row)))
             ((block)
              (let* ((id (cadr row))
