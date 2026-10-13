@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia render)
-  (export render-wire render-human answer-printing!)
+  (export render-wire render-human answer-printing! printed-entry)
   (import (chezscheme))
 
   ;; KEY: ONE PRINTER FOR EVERY ANSWER THIS SYSTEM GIVES. There used to be
@@ -96,8 +96,10 @@
                                 (cdr e)))
                      y))
                r))))
-  ;; A context entry's (block <record>) clause, and nothing else in it.
-  (define (entry-form e)
+  ;; A context entry's (block <record>) clause, and nothing else in it. EXPORTED:
+  ;; context's admission measures each entry as it will be printed, so a block
+  ;; it admits is charged the bytes the reader is given (context.sc).
+  (define (printed-entry e)
     (if (and (list? e) (pair? e))
         (cons (car e)
               (map (lambda (c)
@@ -119,10 +121,10 @@
        (cons 'ok
              (map (lambda (c)
                     (cond ((and (list? c) (= (length c) 2) (eq? (car c) 'for))
-                           (list 'for (entry-form (cadr c))))
+                           (list 'for (printed-entry (cadr c))))
                           ((and (list? c) (= (length c) 2) (memq (car c) context-sections)
                                 (not (memq (car c) '(for notes))) (list? (cadr c)))
-                           (list (car c) (map entry-form (cadr c))))
+                           (list (car c) (map printed-entry (cadr c))))
                           (else c)))
                   (cdr x))))
       ((and (pair? x) (eq? (car x) 'ok) (pair? (cdr x)))

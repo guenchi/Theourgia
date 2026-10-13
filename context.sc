@@ -59,7 +59,7 @@
           (only (theourgia store) search-state sealed-state? sealed-state-notes)
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
-          (only (theourgia render) render-wire)
+          (only (theourgia render) render-wire printed-entry)
           (only (theourgia query) make-query-session session-answer query-budget-default)
           (prefix (theourgia lifecycle) lc:)
           (only (theourgia extensions) context-usage))
@@ -92,6 +92,12 @@
   ;; command line write every answer with, its newline left out.
   (define (wire-length x)
     (- (bytevector-length (string->utf8 (render-wire x))) 1))
+  ;; AN ENTRY'S BYTES AS THE ANSWER PRINTS IT. The printer gives a text-mode
+  ;; code block's src and doc as text where the block holds bytes (render.sc),
+  ;; and an entry measured alone is not an answer the printer converts: charged
+  ;; as its value, a block entered whole cost three to four times what the
+  ;; reader is given, and the budget kept it at summary or identity.
+  (define (entry-length e) (wire-length (printed-entry e)))
 
   (define (unique xs)
     (let ((seen (make-hashtable equal-hash equal?)))
@@ -365,7 +371,7 @@
     (let* ((version (lambda (h) (let ((p (assoc h versions))) (and p (cdr p)))))
            (identity (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) 'identity)))
            (pair-of (lambda (h) (cons h (version h))))
-           (cost (lambda (h) (+ (wire-length (identity h)) (wire-length (pair-of h)))))
+           (cost (lambda (h) (+ (entry-length (identity h)) (wire-length (pair-of h)))))
            (others (cdr order))
            (n-others (length others))
            (costs (map cost others))
@@ -420,7 +426,7 @@
       (define (enter! s id e)
         (set-cdr! (assq s counts) (+ 1 (count-of s)))
         (set-cdr! (assq s sections) (append (cdr (assq s sections)) (list (cons id e)))))
-      (define (delta s e pair) (+ (wire-length e) (if (> (count-of s) 0) 1 0) (wire-length pair) 1))
+      (define (delta s e pair) (+ (entry-length e) (if (> (count-of s) 0) 1 0) (wire-length pair) 1))
       ;; B5: the hard blocks at identity, in hard order.
       (hashtable-set! levels t 'identity)
       (for-each (lambda (h)
@@ -434,10 +440,10 @@
       ;; B6: one pass of upgrades in hard order.
       (for-each (lambda (h)
                   (when (hashtable-ref levels h #f)
-                    (let ((at-identity (wire-length (identity h))))
+                    (let ((at-identity (entry-length (identity h))))
                       (let try ((ls '(full summary)))
                         (unless (null? ls)
-                          (let ((d (- (wire-length (entry view records h (version h) (whys h) (validity-clause h) (car ls)))
+                          (let ((d (- (entry-length (entry view records h (version h) (whys h) (validity-clause h) (car ls)))
                                       at-identity)))
                             (if (fits? (+ size d) budget)
                                 (begin (set! size (+ size d)) (hashtable-set! levels h (car ls)))

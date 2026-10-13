@@ -1109,6 +1109,28 @@
       tm-summary
       (list 'summary tm-first))
 
+;; AND IT IS CHARGED WHAT IT PRINTS. Admission measures each entry as the
+;; answer prints it, the text-mode block's src as text: at the least budget
+;; where the block is entered whole, the printed answer uses more than half
+;; of the budget. Charged as its value, #vu8(...) at three to four bytes a
+;; byte, the block came in whole only at a budget the printed answer used
+;; about a third of. The least budget is found by halving, the block's level
+;; rising with the budget.
+(define (tm-level b) (level-of (entry-of (ctx tm-s tm-T b) tm-block)))
+(define tm-full-at
+  (let ((top (+ tm-min 40000)))
+    (and tm-block (eq? (tm-level top) 'full)
+         (let search ((lo tm-min) (hi top))
+           (if (<= (- hi lo) 1)
+               (if (eq? (tm-level lo) 'full) lo hi)
+               (let ((mid (div (+ lo hi) 2)))
+                 (if (eq? (tm-level mid) 'full) (search lo mid) (search mid hi))))))))
+(want "TM-2 a text-mode code block is entered whole at the least budget its printed entry fits: the answer at that budget uses more than half of it"
+      (and tm-full-at
+           (let ((u (used-of (ctx tm-s tm-T tm-full-at))))
+             (and (integer? u) (> (* 2 u) tm-full-at))))
+      #t)
+
 ;; ---- a text-mode code block's src, as a reader is given it ---------------------------------------------
 ;;
 ;; A text-mode code block stores its src as bytes, and every PRINTED answer

@@ -1079,7 +1079,9 @@ the block's text cut back to the end of a line; `full`, which adds `(block
 <record>)`, the record a plain `read` answers.
 
 THE BUDGET is tokens of four bytes over the answer as the wire renders it,
-every clause but `(cut ...)` counted; nine tenths of it are usable, and an
+every clause but `(cut ...)` counted, and each entry is charged as it is
+printed: a text-mode code block's `src` and `doc` as the text they are, not
+as their bytes. Nine tenths of it are usable, and an
 `ok` answer without its cut is never larger. The envelope is reserved at
 its largest first, from the request and the hard set alone: the whole
 receipt, the notes, the budget clause at the budget's own digits,
