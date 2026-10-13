@@ -51,7 +51,7 @@
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
-          state-structure reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
+          state-structure state-siblings state-sibling-last-ord state-sibling-bracket reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
           cut-covers? state-put-events block-creation event-actor state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -64,6 +64,7 @@
           (rnrs unicode) (rnrs io simple)
           (only (rnrs io ports) call-with-string-output-port)
           (only (theourgia trace) trace-event!)
+          (theourgia degeneracy)
           (only (theourgia request) plan-member-intent store-supplied-fields
                 request-actor? actor-identity actor-sub
                 actor-plan-event make-evidence request-gates
@@ -153,7 +154,9 @@
             rehearsal?
             (mutable block-index)
             (mutable block-forward)
-            (mutable pasts-index)))
+            (mutable pasts-index)
+            ;; the block structure, maintained (F269 C)
+            (mutable structure)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
   ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
@@ -645,7 +648,8 @@
 
   (define (reduce-empty)
     (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() #f
-                    (make-block-index) '() (make-pasts-index)))
+                    (make-block-index) '() (make-pasts-index)
+                    (make-empty-structure)))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -673,7 +677,8 @@
                       (consumption-copy (reduction-consumption r))
                       (reduction-declared-relations r) (reduction-declared-rules r)
                       #t
-                      index #f (hashtable-copy (reduction-pasts-index r) #t))))
+                      index #f (hashtable-copy (reduction-pasts-index r) #t)
+                      (structure-copy (reduction-structure r)))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
@@ -819,6 +824,7 @@
   (define (rebuild-request-state! r gates)
     (let ((records (reverse (reduction-history r))))
       (blocks-reset! r)
+      (reduction-structure-set! r (make-empty-structure))
       (reduction-links-set! r '())
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r '())
@@ -903,7 +909,8 @@
       (interpret! r id past (rec-payload rec))
       (reduction-applied-set!
         r (cons (cons writer seq)
-                (remp (lambda (e) (string=? (car e) writer)) (reduction-applied r))))))
+                (remp (lambda (e) (string=? (car e) writer)) (reduction-applied r))))
+      (degeneracy-check (structure-compare! r id))))
 
   (define (compute-past r writer seq deps)
     (let* ((direct (if (> seq 1) (cons (cons writer (- seq 1)) deps) deps)))
@@ -938,6 +945,7 @@
           (hashtable-set! (reduction-block-index r) id b)
           (reduction-blocks-rev-set! r (cons (cons id b) (reduction-blocks-rev r)))
           (reduction-block-forward-set! r #f)
+          (structure-note! r id)
           b)))
 
   ;; ---- interpreting one payload ---------------------------------------------
@@ -1607,7 +1615,8 @@
             (ord (let ((e (assq 'ord alist))) (and e (cdr e)))))
         (blk-position-set!
           b (put-candidate past (blk-position b)
-                           (cons (or parent 'root) (or ord 0)) event-id)))))
+                           (cons (or parent 'root) (or ord 0)) event-id)))
+      (structure-note! r id)))
 
   (define (put-field fields name value event-id past)
     (let* ((have (let ((e (assq name fields))) (if e (cdr e) '())))
@@ -1623,14 +1632,16 @@
            ;; would make the deletion invisible to a concurrent write.
            (value (if (null? (cddr args)) absent (caddr args)))
            (b (ensure-block! r id)))
-      (blk-fields-set! b (put-field (blk-fields b) name value event-id past))))
+      (blk-fields-set! b (put-field (blk-fields b) name value event-id past))
+      (structure-note! r id)))
 
   (define (do-del! r event-id id)
     (let ((b (ensure-block! r id)))
       ;; PERMANENT, AND IT DOES NOT CLEAR THE FIELDS. Later writes are
       ;; still recorded as evidence; the block is simply not visible and
       ;; cannot be revived.
-      (unless (blk-tomb b) (blk-tomb-set! b event-id))))
+      (unless (blk-tomb b) (blk-tomb-set! b event-id))
+      (structure-note! r id)))
 
   (define (do-move! r event-id past args)
     (let* ((id (car args))
@@ -1638,7 +1649,8 @@
            (ord (caddr args))
            (b (ensure-block! r id)))
       (blk-position-set!
-        b (put-candidate past (blk-position b) (cons parent ord) event-id))))
+        b (put-candidate past (blk-position b) (cons parent ord) event-id))
+      (structure-note! r id)))
 
   ;; ---- edges (design 9.4) ---------------------------------------------------
 
@@ -1927,35 +1939,32 @@
   ;; three, and a fixture that took `(car ...)` of the list went red one run
   ;; in five.
   (define (state-outline r)
-    (let* ((structure (state-structure r))
-           (cyclic (cdr (assq 'conflicts structure)))
-           (unplaced (cdr (assq 'unplaced structure)))
-           (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) (reduction-blocks r)))
-           (placed (filter (lambda (e)
-                             (and (= 1 (length (blk-position (cdr e))))
-                                  (not (member (car e) cyclic))))
-                           alive))
-           (marked (map (lambda (e)
-                          (list 'root 0 (car e)
-                                (if (member (car e) cyclic) 'conflict 'unplaced)))
-                        (filter (lambda (e)
-                                  (or (member (car e) cyclic)
-                                      (member (car e) unplaced)))
-                                alive)))
-           (rows (append
-                   (map (lambda (e)
-                          (let* ((b (cdr e))
-                                 (p (car (car (blk-position b)))))
-                            (list (car p) (cdr p) (car e))))
-                        placed)
-                   marked)))
-      (list-sort (lambda (x y)
-                   (if (equal? (car x) (car y))
-                       (if (= (cadr x) (cadr y))
-                           (string<? (caddr x) (caddr y))
-                           (< (cadr x) (cadr y)))
-                       (string<? (format-parent (car x)) (format-parent (car y)))))
-                 rows)))
+    (let* ((s (reduction-structure r))
+           (conflicts (structure-conflicts s))
+           (rows '()))
+      (let-values (((ks vs) (hashtable-entries (structure-children s))))
+        (vector-for-each
+          (lambda (p cv)
+            (let ((v (cvec-vec cv)))
+              (let loop ((k 0))
+                (when (< k (cvec-count cv))
+                  (let ((e (vector-ref v k)))
+                    (unless (hashtable-contains? conflicts (cdr e))
+                      (set! rows (cons (list p (car e) (cdr e)) rows))))
+                  (loop (+ k 1))))))
+          ks vs))
+      (vector-for-each (lambda (id) (set! rows (cons (list 'root 0 id 'conflict) rows)))
+                       (hashtable-keys conflicts))
+      (vector-for-each (lambda (id) (set! rows (cons (list 'root 0 id 'unplaced) rows)))
+                       (hashtable-keys (structure-unplaced s)))
+      (list-sort outline-row<? rows)))
+
+  (define (outline-row<? x y)
+    (if (equal? (car x) (car y))
+        (if (= (cadr x) (cadr y))
+            (string<? (caddr x) (caddr y))
+            (< (cadr x) (cadr y)))
+        (string<? (format-parent (car x)) (format-parent (car y)))))
 
   (define (format-parent p) (if (symbol? p) (symbol->string p) p))
 
@@ -2381,7 +2390,263 @@
     (let ((cs (blk-position b)))
       (and (= 1 (length cs)) (car (car (car cs))))))
 
-  (define (state-structure r)
+  ;; ---- the structure, maintained (F269 C) -------------------------------------
+  ;;
+  ;; THE STRUCTURE IS KEPT, NOT RECOMPUTED. state-structure walked to the root
+  ;; from every live block, measuring and searching the block list at every
+  ;; step, and state-outline sorted every block; an insert's ord-for read the
+  ;; whole outline to find one parent's last child. Each change of a block's
+  ;; settled position, kind, tomb or existence now updates only what it can
+  ;; change, and the readers read what is kept:
+  ;;   INFO, id -> #(live? parent ord placed? doc?), for EVERY block the table
+  ;;     holds (tombstoned ones too): placed? is exactly one position candidate,
+  ;;     and parent and ord are that candidate's (the settled parent);
+  ;;   CHILDREN, parent -> its live placed children as (ord . id), sorted by
+  ;;     ord then id in a growable vector (cyclic children included: the
+  ;;     readers leave them out, as state-outline did);
+  ;;   CONFLICTS (live blocks on a cycle), ORPHANS (live, settled parent a
+  ;;     string naming no block or a tombstoned one), UNPLACED (live, not
+  ;;     exactly one candidate), NESTED (live, settled kind doc, string
+  ;;     parent), and ONCYCLE (every block on a cycle, tombstoned ones too,
+  ;;     since a walk passes through them).
+  ;; The relation is functional -- a block has at most one settled parent --
+  ;; so a change of one block's parent can break only the cycle it was on and
+  ;; close only one through itself: a walk from it finds both. The predicates
+  ;; are state-structure's and stream-frames' structural-sets'; under the
+  ;; degeneracy switch (degeneracy.sc) the old computation runs after every
+  ;; applied record and any difference is raised at that record.
+  (define-record-type structure
+    (fields info children conflicts orphans unplaced nested oncycle))
+  (define-record-type cvec (fields (mutable vec) (mutable count)))
+
+  (define (make-empty-structure)
+    (make-structure (make-hashtable string-hash string=?) (make-hashtable equal-hash equal?)
+                    (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
+                    (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
+                    (make-hashtable string-hash string=?)))
+
+  ;; A REHEARSAL'S COPY gets containers of its own: a rehearsal mutates its
+  ;; clone, and the clone's structure must not be the original's.
+  (define (structure-copy s)
+    (let ((children (make-hashtable equal-hash equal?)))
+      (let-values (((ks vs) (hashtable-entries (structure-children s))))
+        (vector-for-each
+          (lambda (k cv)
+            (let* ((n (cvec-count cv)) (v (cvec-vec cv)) (w (make-vector (vector-length v) #f)))
+              (let copy ((i 0)) (when (< i n) (vector-set! w i (vector-ref v i)) (copy (+ i 1))))
+              (hashtable-set! children k (make-cvec w n))))
+          ks vs))
+      (make-structure (hashtable-copy (structure-info s) #t) children
+                      (hashtable-copy (structure-conflicts s) #t) (hashtable-copy (structure-orphans s) #t)
+                      (hashtable-copy (structure-unplaced s) #t) (hashtable-copy (structure-nested s) #t)
+                      (hashtable-copy (structure-oncycle s) #t))))
+
+  ;; what the structure reads of a block
+  (define (structure-facts b)
+    (let* ((cs (blk-position b))
+           (placed? (and (pair? cs) (null? (cdr cs))))
+           (v (and placed? (car (car cs)))))
+      (vector (not (blk-tomb b)) (and placed? (car v)) (and placed? (cdr v)) placed?
+              (eq? 'doc (blk-kind b)))))
+  (define (fact-live? f) (vector-ref f 0))
+  (define (fact-parent f) (vector-ref f 1))
+  (define (fact-ord f) (vector-ref f 2))
+  (define (fact-placed? f) (vector-ref f 3))
+  (define (fact-doc? f) (vector-ref f 4))
+  ;; a block that exists and is nothing else yet: the first pass of a rebuild
+  (define absent-facts (vector #f #f #f #f #f))
+
+  ;; ---- the child vectors: sorted by ord, then id
+  (define (child<? a b)
+    (if (= (car a) (car b)) (string<? (cdr a) (cdr b)) (< (car a) (car b))))
+  ;; the first index whose element is not before KEY
+  (define (cvec-lower cv key)
+    (let loop ((lo 0) (hi (cvec-count cv)))
+      (if (< lo hi)
+          (let ((mid (div (+ lo hi) 2)))
+            (if (child<? (vector-ref (cvec-vec cv) mid) key) (loop (+ mid 1) hi) (loop lo mid)))
+          lo)))
+  (define (cvec-insert! cv key)
+    (let ((n (cvec-count cv)) (i (cvec-lower cv key)))
+      (when (= n (vector-length (cvec-vec cv)))
+        (let ((w (make-vector (max 4 (* 2 n)) #f)) (v (cvec-vec cv)))
+          (let copy ((k 0)) (when (< k n) (vector-set! w k (vector-ref v k)) (copy (+ k 1))))
+          (cvec-vec-set! cv w)))
+      (let ((v (cvec-vec cv)))
+        (let shift ((k n)) (when (> k i) (vector-set! v k (vector-ref v (- k 1))) (shift (- k 1))))
+        (vector-set! v i key)
+        (cvec-count-set! cv (+ n 1)))))
+  (define (cvec-remove! cv key)
+    (let ((n (cvec-count cv)) (i (cvec-lower cv key)) (v (cvec-vec cv)))
+      (when (and (< i n) (equal? (vector-ref v i) key))
+        (let shift ((k i)) (when (< k (- n 1)) (vector-set! v k (vector-ref v (+ k 1))) (shift (+ k 1))))
+        (vector-set! v (- n 1) #f)
+        (cvec-count-set! cv (- n 1)))))
+  (define (structure-cvec! s parent)
+    (or (hashtable-ref (structure-children s) parent #f)
+        (let ((cv (make-cvec (make-vector 4 #f) 0)))
+          (hashtable-set! (structure-children s) parent cv)
+          cv)))
+
+  (define (structure-mark! set id on?)
+    (if on? (hashtable-set! set id #t) (hashtable-delete! set id)))
+  ;; the next block up a walk: the settled parent, when it is a string naming a
+  ;; block the table holds (tombstoned or not)
+  (define (structure-next s id)
+    (let ((f (hashtable-ref (structure-info s) id #f)))
+      (and f (fact-placed? f)
+           (let ((p (fact-parent f)))
+             (and (string? p) (hashtable-contains? (structure-info s) p) p)))))
+  (define (structure-orphan! s id)
+    (let ((f (hashtable-ref (structure-info s) id #f)))
+      (structure-mark! (structure-orphans s) id
+                       (and f (fact-live? f) (fact-placed? f) (string? (fact-parent f))
+                            (let ((pf (hashtable-ref (structure-info s) (fact-parent f) #f)))
+                              (or (not pf) (not (fact-live? pf))))))))
+  (define (structure-conflict! s id)
+    (let ((f (hashtable-ref (structure-info s) id #f)))
+      (structure-mark! (structure-conflicts s) id
+                       (and f (fact-live? f) (hashtable-contains? (structure-oncycle s) id)))))
+  ;; the live placed children of ID: their orphan status follows ID's existence
+  ;; and tomb
+  (define (structure-children-orphans! s id)
+    (let ((cv (hashtable-ref (structure-children s) id #f)))
+      (when cv
+        (let loop ((k 0))
+          (when (< k (cvec-count cv))
+            (structure-orphan! s (cdr (vector-ref (cvec-vec cv) k)))
+            (loop (+ k 1)))))))
+  ;; ID's parent changed while it was on a cycle: the cycle is broken, and its
+  ;; other members -- reached from ID's OLD parent, whose walk comes back to ID --
+  ;; leave it
+  (define (structure-break! s id old)
+    (when (hashtable-contains? (structure-oncycle s) id)
+      (let ((limit (hashtable-size (structure-info s))))
+        (hashtable-delete! (structure-oncycle s) id)
+        (structure-conflict! s id)
+        (let loop ((cur (and old (fact-placed? old) (string? (fact-parent old)) (fact-parent old))) (k 0))
+          (when (and cur (not (string=? cur id)) (<= k limit))
+            (hashtable-delete! (structure-oncycle s) cur)
+            (structure-conflict! s cur)
+            (loop (structure-next s cur) (+ k 1)))))))
+  ;; ID's new parent may close a cycle through ID: walk up from it; coming back
+  ;; to ID makes every block on the walk a member
+  (define (structure-close! s id)
+    (let ((seen (make-hashtable string-hash string=?)))
+      (let loop ((cur (structure-next s id)) (path '()))
+        (cond
+          ((not cur) #f)
+          ((string=? cur id)
+           (for-each (lambda (m) (hashtable-set! (structure-oncycle s) m #t) (structure-conflict! s m))
+                     (cons id path)))
+          ((or (hashtable-contains? seen cur) (hashtable-contains? (structure-oncycle s) cur)) #f)
+          (else
+           (hashtable-set! seen cur #t)
+           (loop (structure-next s cur) (cons cur path)))))))
+
+  ;; THE ONE ENTRY: after any change of block ID -- its creation, a put, a set,
+  ;; a move, a delete -- update what that change can reach.
+  (define (structure-note! r id)
+    (let* ((s (reduction-structure r))
+           (old (hashtable-ref (structure-info s) id #f))
+           (new (structure-facts (find-block r id))))
+      (hashtable-set! (structure-info s) id new)
+      (when (and old (fact-live? old) (fact-placed? old))
+        (let ((cv (hashtable-ref (structure-children s) (fact-parent old) #f)))
+          (when cv (cvec-remove! cv (cons (fact-ord old) id)))))
+      (when (and (fact-live? new) (fact-placed? new))
+        (cvec-insert! (structure-cvec! s (fact-parent new)) (cons (fact-ord new) id)))
+      (structure-mark! (structure-unplaced s) id (and (fact-live? new) (not (fact-placed? new))))
+      (structure-mark! (structure-nested s) id
+                       (and (fact-live? new) (fact-doc? new) (string? (fact-parent new))))
+      (structure-orphan! s id)
+      (when (or (not old) (not (eq? (fact-live? old) (fact-live? new))))
+        (structure-children-orphans! s id))
+      (when (or (not old) (not (eq? (fact-placed? old) (fact-placed? new)))
+                (not (equal? (fact-parent old) (fact-parent new))))
+        (structure-break! s id old)
+        (structure-close! s id))
+      (structure-conflict! s id)))
+
+  ;; THE GRAPH FROM THE TABLE, for a state restored whole (rows->state): every
+  ;; block first exists, then each is noted, so a parent noted after its child
+  ;; still clears the child's orphan status and a cycle closes at its last member.
+  (define (structure-rebuild! r)
+    (let ((s (make-empty-structure)))
+      (reduction-structure-set! r s)
+      (for-each (lambda (e) (hashtable-set! (structure-info s) (car e) absent-facts)) (reduction-blocks r))
+      (for-each (lambda (e) (structure-note! r (car e))) (reduction-blocks r))))
+
+  ;; ---- the siblings of one parent, as state-outline's rows under it give them
+  ;; (ord, then id): the parent's live placed children not on a cycle and, under
+  ;; root, every conflict and unplaced block at ord 0.
+  (define (structure-marked s)
+    (append (map (lambda (id) (cons 0 id)) (vector->list (hashtable-keys (structure-conflicts s))))
+            (map (lambda (id) (cons 0 id)) (vector->list (hashtable-keys (structure-unplaced s))))))
+  (define (state-siblings r parent)
+    (let* ((s (reduction-structure r))
+           (cv (hashtable-ref (structure-children s) parent #f))
+           (own (if cv
+                    (let loop ((k (- (cvec-count cv) 1)) (out '()))
+                      (if (< k 0) out
+                          (let ((e (vector-ref (cvec-vec cv) k)))
+                            (loop (- k 1) (if (hashtable-contains? (structure-conflicts s) (cdr e)) out (cons e out))))))
+                    '())))
+      (if (equal? parent 'root)
+          (list-sort child<? (append own (structure-marked s)))
+          own)))
+  ;; the last sibling's ord, or #f: what an insert or move with no `after` places
+  ;; after
+  (define (state-sibling-last-ord r parent)
+    (let* ((s (reduction-structure r))
+           (cv (hashtable-ref (structure-children s) parent #f))
+           (own (and cv (let loop ((k (- (cvec-count cv) 1)))
+                          (cond ((< k 0) #f)
+                                ((hashtable-contains? (structure-conflicts s) (cdr (vector-ref (cvec-vec cv) k)))
+                                 (loop (- k 1)))
+                                (else (vector-ref (cvec-vec cv) k))))))
+           (marked (and (equal? parent 'root)
+                        (fold-left (lambda (best e) (if (or (not best) (child<? best e)) e best)) #f (structure-marked s))))
+           (last (cond ((not own) marked) ((not marked) own) ((child<? own marked) marked) (else own)))
+           (answer (and last (car last))))
+      (degeneracy-check (sibling-compare r parent #f answer))
+      answer))
+  ;; (ord . next-ord) for the sibling AFTER and the one following it (next-ord #f
+  ;; at the end), or #f when AFTER is not among PARENT's siblings
+  (define (state-sibling-bracket r parent after)
+    (let* ((s (reduction-structure r))
+           (f (hashtable-ref (structure-info s) after #f))
+           (cyclic? (lambda (id) (hashtable-contains? (structure-conflicts s) id)))
+           (key (cond ((and f (fact-live? f) (fact-placed? f) (equal? (fact-parent f) parent) (not (cyclic? after)))
+                       (cons (fact-ord f) after))
+                      ((and (equal? parent 'root)
+                            (or (hashtable-contains? (structure-conflicts s) after)
+                                (hashtable-contains? (structure-unplaced s) after)))
+                       (cons 0 after))
+                      (else #f)))
+           (answer
+             (and key
+                  (let* ((cv (hashtable-ref (structure-children s) parent #f))
+                         (own (and cv (let loop ((k (cvec-lower cv key)))
+                                        (cond ((>= k (cvec-count cv)) #f)
+                                              ((let ((e (vector-ref (cvec-vec cv) k)))
+                                                 (or (equal? e key) (cyclic? (cdr e))))
+                                               (loop (+ k 1)))
+                                              (else (vector-ref (cvec-vec cv) k))))))
+                         (marked (and (equal? parent 'root)
+                                      (fold-left (lambda (best e)
+                                                   (if (and (child<? key e) (or (not best) (child<? e best))) e best))
+                                                 #f (structure-marked s))))
+                         (next (cond ((not own) marked) ((not marked) own) ((child<? marked own) marked) (else own))))
+                    (cons (car key) (and next (car next)))))))
+      (degeneracy-check (sibling-compare r parent after answer))
+      answer))
+
+  ;; ---- the degeneracy switch's other half: the computation the structure
+  ;; replaced, run beside it after every applied record (THEOURGIA_DEGENERACY=1
+  ;; at expansion, degeneracy.sc). Unset, none of this is compiled.
+  (degeneracy-definitions
+  (define (structure-recomputed r)
     (let* ((blocks (reduction-blocks r))
            (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) blocks))
            (parent-of (lambda (id)
@@ -2453,6 +2718,71 @@
                                                  (let ((p (settled-parent (cdr e))))
                                                    (and p (string? p)))))
                                           alive)))))))
+
+  (define (outline-recomputed r)
+    (let* ((structure (structure-recomputed r))
+           (cyclic (cdr (assq 'conflicts structure)))
+           (unplaced (cdr (assq 'unplaced structure)))
+           (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) (reduction-blocks r)))
+           (placed (filter (lambda (e)
+                             (and (= 1 (length (blk-position (cdr e))))
+                                  (not (member (car e) cyclic))))
+                           alive))
+           (marked (map (lambda (e)
+                          (list 'root 0 (car e)
+                                (if (member (car e) cyclic) 'conflict 'unplaced)))
+                        (filter (lambda (e)
+                                  (or (member (car e) cyclic)
+                                      (member (car e) unplaced)))
+                                alive)))
+           (rows (append
+                   (map (lambda (e)
+                          (let* ((b (cdr e))
+                                 (p (car (car (blk-position b)))))
+                            (list (car p) (cdr p) (car e))))
+                        placed)
+                   marked)))
+      (list-sort (lambda (x y)
+                   (if (equal? (car x) (car y))
+                       (if (= (cadr x) (cadr y))
+                           (string<? (caddr x) (caddr y))
+                           (< (cadr x) (cadr y)))
+                       (string<? (format-parent (car x)) (format-parent (car y)))))
+                 rows)))
+
+    ;; the siblings as ord-for read them before: the outline's rows under PARENT
+    (define (siblings-recomputed r parent)
+      (list-sort (lambda (a b) (< (car a) (car b)))
+                 (map (lambda (row) (cons (cadr row) (caddr row)))
+                      (filter (lambda (row) (equal? (car row) parent)) (outline-recomputed r)))))
+    (define (sibling-compare r parent after answer)
+      (let* ((sibs (siblings-recomputed r parent))
+             (expected
+               (if (not after)
+                   (if (null? sibs) #f (car (car (reverse sibs))))
+                   (let loop ((xs sibs))
+                     (cond ((null? xs) #f)
+                           ((equal? (cdr (car xs)) after)
+                            (cons (car (car xs)) (if (null? (cdr xs)) #f (car (car (cdr xs))))))
+                           (else (loop (cdr xs))))))))
+        (unless (equal? expected answer)
+          (assertion-violation 'degeneracy "the siblings differ from the outline's" parent after answer expected))))
+    (define (structure-compare! r at)
+      (let ((kept (state-structure r)) (recomputed (structure-recomputed r)))
+        (unless (equal? kept recomputed)
+          (assertion-violation 'degeneracy "the structure differs at a record" at kept recomputed)))
+      (let ((kept (state-outline r)) (recomputed (outline-recomputed r)))
+        (unless (equal? kept recomputed)
+          (assertion-violation 'degeneracy "the outline differs at a record" at kept recomputed)))))
+
+  (define (state-structure r)
+    (let ((s (reduction-structure r)))
+      (list (cons 'conflicts (structure-ids (structure-conflicts s)))
+            (cons 'orphans (structure-ids (structure-orphans s)))
+            (cons 'unplaced (structure-ids (structure-unplaced s)))
+            (cons 'nested-documents (structure-ids (structure-nested s))))))
+
+  (define (structure-ids t) (list-sort string<? (vector->list (hashtable-keys t))))
 
   ;; A FIELD THAT IS CONTESTED HAS NO VALUE HERE. Two candidates for
   ;; `kind` is a conflict a reader is told about separately, and picking
@@ -2872,4 +3202,6 @@
       (fill-seen-from-history! r)
       (unless (exists (lambda (row) (eq? 'consumed (car row))) rows)
         (rebuild-consumption-from-history! r))
+      (structure-rebuild! r)
+      (degeneracy-check (structure-compare! r 'restored))
       r)))

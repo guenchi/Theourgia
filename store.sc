@@ -2601,28 +2601,19 @@
                (remp (lambda (e) (string=? (car e) writer))
                      (reduce-applied-cut state))))
 
-  (define (siblings state parent)
-    (list-sort (lambda (a b) (< (car a) (car b)))
-               (map (lambda (row) (cons (cadr row) (caddr row)))
-                    (filter (lambda (row) (equal? (car row) parent))
-                            (state-outline state)))))
-
   ;; PLACING IS ONE RULE WITH TWO CALLERS. insert and move both have to
   ;; answer "what ord goes between these siblings", and writing it twice
   ;; is how the two come to disagree about the end of the list.
+  ;; THE SIBLINGS ARE READ FROM THE MAINTAINED STRUCTURE (reduce.sc): the last
+  ;; one's ord, or the named one's and its successor's -- not the whole outline
+  ;; rebuilt and filtered for one parent per insert.
   (define (ord-for state parent after)
-    (let ((sibs (siblings state parent)))
-      (cond
-        ((not after)
-         (ord-between (if (null? sibs) #f (car (car (reverse sibs)))) #f))
-        (else
-         (let loop ((xs sibs))
-           (cond
-             ((null? xs) (list 'error 'unknown-sibling after))
-             ((equal? (cdr (car xs)) after)
-              (ord-between (car (car xs))
-                           (if (null? (cdr xs)) #f (car (car (cdr xs))))))
-             (else (loop (cdr xs)))))))))
+    (if (not after)
+        (ord-between (state-sibling-last-ord state parent) #f)
+        (let ((bracket (state-sibling-bracket state parent after)))
+          (if bracket
+              (ord-between (car bracket) (cdr bracket))
+              (list 'error 'unknown-sibling after)))))
 
   (define (unwrap intent)
     (if (eq? (car intent) 'expect) (caddr intent) intent))
