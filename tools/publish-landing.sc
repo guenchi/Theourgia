@@ -64,7 +64,8 @@
 
 (define actor "publish-landing")
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
-;; set once the first git mutation is made: a refusal after it says so
+;; what the worktree has been through, for a refusal to say: #f before the
+;; first git mutation, then staged, then (committed <id>)
 (define touched #f)
 
 ;; ---- small tools -----------------------------------------------------------
@@ -94,15 +95,20 @@
   (string-append "'" (apply string-append (map (lambda (c) (if (char=? c #\') "'\\''" (string c))) (string->list a))) "'"))
 (define (chomp s) (if (and (> (string-length s) 0) (char=? #\newline (string-ref s (- (string-length s) 1))))
                       (substring s 0 (- (string-length s) 1)) s))
+(define (hex->string h)
+  (let loop ((i 0) (out '()))
+    (if (>= (+ i 1) (string-length h))
+        (utf8->string (u8-list->bytevector (reverse out)))
+        (loop (+ i 2) (cons (string->number (substring h i (+ i 2)) 16) out)))))
 (define (string-set-of l) (let ((h (make-hashtable string-hash string=?))) (for-each (lambda (s) (hashtable-set! h s #t)) l) h))
 (define (in? h s) (hashtable-ref h s #f))
 
 ;; ---- git -------------------------------------------------------------------
 ;;
 ;; One process per command, through /bin/sh: -> (values rc stdout-bytes).
-;; The exit status and the file git's standard error went to are printed
-;; after the output as a last line of their own, so the output's bytes are
-;; everything before the final LF. Pathspecs are literal, so a path is never
+;; The exit status and the file git's standard error went to (its name in
+;; hex, so no byte of it is an LF) are printed after the output as a last line
+;; of their own, so the output's bytes are everything before the final LF. Pathspecs are literal, so a path is never
 ;; a pattern, and no hook runs (core.hooksPath is /dev/null).
 ;;
 ;; NEVER: STANDARD ERROR IS NOT A SECOND PIPE READ AFTER THE FIRST. Read in
@@ -114,7 +120,7 @@
                 (open-process-ports
                   (string-append "e=$(mktemp) || { printf '\\n125 '; exit 0; }; "
                                  "LC_ALL=C GIT_LITERAL_PATHSPECS=1 git -c core.hooksPath=/dev/null -C " (quoted wt) " "
-                                 (join (map quoted args) " ") " 2>\"$e\"; printf '\\n%s %s' \"$?\" \"$e\"")
+                                 (join (map quoted args) " ") " 2>\"$e\"; s=$?; printf '\\n%s %s' \"$s\" \"$(printf %s \"$e\" | od -An -tx1 | tr -d ' \\n')\"")
                   (buffer-mode block) #f)))
     (when (pair? input) (put-bytevector to (car input)))
     (close-port to)
@@ -128,7 +134,7 @@
                                             (bytevector-copy! out (+ i 1) t 0 (bytevector-length t)) t)))
                       (space (let find ((j 0)) (cond ((= j (string-length last)) #f) ((char=? (string-ref last j) #\space) j) (else (find (+ j 1))))))
                       (rc (and space (string->number (substring last 0 space))))
-                      (err-file (and space (substring last (+ space 1) (string-length last))))
+                      (err-file (and space (hex->string (substring last (+ space 1) (string-length last)))))
                       (body (let ((b (make-bytevector i))) (bytevector-copy! out 0 b 0 i) b)))
                  (when (and err-file (> (string-length err-file) 0))
                    (let ((e (standard-error-port))) (put-bytevector e (entry-bytes err-file)) (flush-output-port e))
@@ -371,7 +377,7 @@
                   (answer-ok (ask store 'export-code freeze-dir "--raw" "--cut" (cut-text freeze-cut)))
                   (let ((projected (raw-projection freeze-state)) (targets (append added content)))
                     ;; PASS ONE: the removals, then any directory left empty in the way
-                    (set! touched #t)
+                    (set! touched '(staged))
                     (when (pair? removed) (git-run wt (append (list "rm" "-q" "--") removed)))
                     (for-each (lambda (p)
                                 (for-each (lambda (a) (let ((d (string-append wt "/" a)))
@@ -414,13 +420,18 @@
                       (for-each (lambda (p) (when (member p indexed) (refuse 'staged-set-mismatch (list 'still-indexed p))))
                                 removed))
                     (git-run wt (list "commit" "-q" "--no-verify" "--cleanup=verbatim" "-F" "-") (string->utf8 message))
-                    ;; the message read back: no hook ran, and nothing else may change it
+                    (set! touched (list 'committed (chomp (git-text wt "rev-parse" "HEAD"))))
+                    ;; the message read back, all of it: the commit object's bytes
+                    ;; after its first blank line are exactly the block's text
                     (let* ((c (git-bytes wt "cat-file" "commit" "HEAD"))
-                           (m (string->utf8 message))
-                           (n (bytevector-length c)) (k (bytevector-length m)))
-                      (unless (and (>= n k) (let loop ((i 0)) (or (= i k) (and (= (bytevector-u8-ref c (+ (- n k) i)) (bytevector-u8-ref m i)) (loop (+ i 1)))))
-                                   (>= (- n k) 2) (= 10 (bytevector-u8-ref c (- n k 1))) (= 10 (bytevector-u8-ref c (- n k 2))))
-                        (refuse 'commit-message-changed (list 'commit (chomp (git-text wt "rev-parse" "HEAD"))))))
+                           (body (let loop ((i 0))
+                                   (cond ((>= (+ i 1) (bytevector-length c)) #f)
+                                         ((and (= 10 (bytevector-u8-ref c i)) (= 10 (bytevector-u8-ref c (+ i 1))))
+                                          (let ((b (make-bytevector (- (bytevector-length c) i 2))))
+                                            (bytevector-copy! c (+ i 2) b 0 (bytevector-length b)) b))
+                                         (else (loop (+ i 1)))))))
+                      (unless (and body (bytevector=? body (string->utf8 message)))
+                        (refuse 'commit-message-changed)))
                     (list 'ok (list 'commit (chomp (git-text wt "rev-parse" "HEAD")))
                           (list 'landing id) (list 'base base)
                           (list 'added added) (list 'content content) (list 'removed removed)
@@ -432,7 +443,7 @@
       (begin (write '(usage (publish-landing <store> <start-tag> <freeze-tag> <worktree>))) (newline) (exit 2))
       (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
                  (publish (absolute (car args)) (cadr args) (caddr args) (absolute (cadddr args))))))
-        (write (if (and touched (eq? (car a) 'error)) (append a '((state staged))) a))
+        (write (if (and touched (eq? (car a) 'error)) (append a (list (cons 'state touched))) a))
         (newline)
         (exit (if (eq? (car a) 'ok) 0 1)))))
 

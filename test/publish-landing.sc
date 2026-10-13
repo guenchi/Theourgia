@@ -379,8 +379,9 @@
   (landing! r "removal") (freeze! r)
   (write-file! (string-append shim "/git")
                (string-append "#!/bin/sh\n# after an rm, the removed file comes back with other bytes\n"
-                              "if [ \"$3\" = rm ]; then " (quoted real) " \"$@\"; rc=$?; printf 'back\\n' > \"$2/gone.txt\"; "
-                              (quoted real) " -C \"$2\" add -- gone.txt; exit $rc; fi\nexec " (quoted real) " \"$@\"\n"))
+                              "# the publisher calls git -c <config> -C <worktree> <command> ...\n"
+                              "if [ \"$5\" = rm ]; then " (quoted real) " \"$@\"; rc=$?; printf 'back\\n' > \"$4/gone.txt\"; "
+                              (quoted real) " -C \"$4\" add -- gone.txt; exit $rc; fi\nexec " (quoted real) " \"$@\"\n"))
   (sh "chmod 755 " (quoted (string-append shim "/git")))
   (let ((a (publish! r (string-append "PATH=" (quoted shim) ":\"$PATH\""))))
     (want "PL-26 an intended removal staged as a modification refuses staged-set-mismatch, the worktree left staged"
