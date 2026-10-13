@@ -172,7 +172,7 @@
           (reduce-apply! r o 3 '() (produced "t0") (member-actor o "p" 0 (cons o 2)))
           (read! 'two-plan-events r)
           (check! 'two-plan-events-the-first-stands (not (gate r o 2)))
-          (check! 'two-plan-events-the-other-is-judged-apart (memq (gate r o 3) '(plan-mismatch pending-plan))))
+          (check! 'two-plan-events-the-other-waits-for-a-plan-it-cannot-have (eq? (gate r o 3) 'pending-plan)))
         ;; (9) TWO REQUESTS INTERLEAVED: one bucket's gates stay while the
         ;; other's change.
         (let ((r (reduce-empty)) (a "ia000000") (b "ib000000"))
@@ -195,18 +195,30 @@
             (read! 'clone c)
             (read! 'clone-original r)
             (check! 'clone-original-unchanged (equal? (reduce-gates r) before))
-            (check! 'clone-its-own-conflict (eq? (gate c "ib100000" 1) 'plan-conflict)))
-          ;; (11) A SNAPSHOT'S ROWS RESTORED answer alike and go on alike.
-          ;; The restored admission is folded again from the request history,
-          ;; so its gates are compared as a set: the order they were found in
-          ;; is the fold's.
-          (let ((s (rows->state (state->rows r)))
-                (as-set (lambda (gates) (list-sort (lambda (x y) (string<? (format "~s" x) (format "~s" y))) gates))))
-            (member! s b 5 '() b "b" 2 "t2")
-            (member! r b 5 '() b "b" 2 "t2")
+            (check! 'clone-its-own-conflict (eq? (gate c "ib100000" 1) 'plan-conflict))))
+        ;; (11) A SNAPSHOT'S ROWS RESTORED answer alike and go on alike. The
+        ;; rows carry only the request history the applied cut covers
+        ;; (state->rows), so the state snapshotted has every record of its
+        ;; request applied; the restored admission is folded again from it,
+        ;; and the same two records -- the next member and a second record at
+        ;; that index -- go to both. Gates are compared as a set: the order
+        ;; they were found in is the fold's.
+        (let ((r (reduce-empty)) (o "rs000000")
+              (as-set (lambda (gates) (list-sort (lambda (x y) (string<? (format "~s" x) (format "~s" y))) gates))))
+          (plan! r o "s" 3)
+          (member! r o 2 '() o "s" 0)
+          (member! r o 3 '() o "s" 1)
+          (let ((s (rows->state (state->rows r))))
+            (check! 'restored-answers-as-the-original
+                    (and (null? (reduce-gates s)) (equal? (state-hash s) (state-hash r))))
+            (for-each (lambda (x)
+                        (member! x o 4 '() o "s" 2)
+                        (member! x "rs100000" 1 (list (cons o 3)) o "s" 2))
+                      (list r s))
             (read! 'restored s)
             (check! 'restored-goes-on-as-the-original
                     (and (equal? (as-set (reduce-gates s)) (as-set (reduce-gates r)))
+                         (equal? (list (gate s o 4) (gate s "rs100000" 1)) '(plan-conflict plan-conflict))
                          (equal? (state-hash s) (state-hash r))))))
         (list 'ok)))
     (write (list 'admission-index (degeneracy-active) (car result)
@@ -234,7 +246,7 @@
       (and (pair? off) (eq? (caddr off) 'ok)
            (list (length (car (cddddr off)))
                  (filter (lambda (c) (not (cdr c))) (car (cddddr off)))))
-      '(19 ()))
+      '(20 ()))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%admission-index complete~%" bad rows)

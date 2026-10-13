@@ -1365,24 +1365,7 @@
                     (loop (cdr items) (cons (car (car items)) seen)))))))
 
   ;; The immutable declaration has a complete, contiguous index set.
-  ;; ITS ANSWER IS KEPT PER PAYLOAD: a plan's entries are walked
-  ;; once, not once per member that asks. A record's payload is read from the
-  ;; log and never changed, so the object answers the same every time; the
-  ;; table holds it weakly, so a payload no record holds any more goes.
-  ;; Under the degeneracy switch a kept answer is walked again and compared.
-  (define plan?-answers (make-weak-eq-hashtable))
   (define (plan? p)
-    (if (pair? p)
-        (let ((known (hashtable-ref plan?-answers p 'unknown)))
-          (if (eq? known 'unknown)
-              (let ((answer (plan?/walk p))) (hashtable-set! plan?-answers p answer) answer)
-              (begin
-                (degeneracy-check
-                  (unless (eq? known (plan?/walk p))
-                    (assertion-violation 'degeneracy "plan? differs from its walk" p known)))
-                known)))
-        (plan?/walk p)))
-  (define (plan?/walk p)
     (and (list? p) (<= 5 (length p) 6) (eq? (car p) 'plan)
          (req-id-ok? (cadr p)) (string? (caddr p)) (event-id? (cadddr p))
          (list? (list-ref p 4))
@@ -1392,6 +1375,36 @@
                (and (pair? (car es)) (eqv? (caar es) i)
                     (list? (cdar es)) (pair? (cdar es)) (symbol? (cadar es))
                     (loop (cdr es) (+ i 1)))))))
+
+  ;; PLAN?, KEPT PER PAYLOAD, for admission's judgement only: a plan's
+  ;; entries are walked once, not once per member that asks. The payloads it
+  ;; is asked about are the records' own, retained by the reduction and never
+  ;; changed, so one object answers the same every time; the table holds them
+  ;; weakly, so a payload no record holds any more goes. The exported plan?
+  ;; walks every time: a caller's payload is not known to be left alone.
+  ;; Under the degeneracy switch a kept answer is walked again and compared.
+  (define plan?-answers (make-weak-eq-hashtable))
+  (define (plan?/kept p)
+    (if (pair? p)
+        (let ((known (hashtable-ref plan?-answers p 'unknown)))
+          (if (eq? known 'unknown)
+              (let ((answer (plan? p))) (hashtable-set! plan?-answers p answer) answer)
+              (begin
+                (degeneracy-check
+                  (unless (eq? known (plan? p))
+                    (degeneracy-differ! "plan? differs from its walk" p known)))
+                known)))
+        (plan? p)))
+
+  ;; A DIFFERENCE FOUND UNDER MEMBERSHIP'S GUARD, which answers `invalid` for
+  ;; anything raised and would swallow it: under the degeneracy switch the
+  ;; first one is kept here as well as raised, and identity-gates raises it
+  ;; after the judgement (identity-gates-compare).
+  (degeneracy-definitions
+    (define degeneracy-difference #f)
+    (define (degeneracy-differ! message . irritants)
+      (unless degeneracy-difference (set! degeneracy-difference (cons message irritants)))
+      (apply assertion-violation 'degeneracy message irritants)))
 
   (define (plan-consumes p)
     (and (plan? p) (= 6 (length p)) (list-ref p 5)))
@@ -1430,7 +1443,7 @@
         (let ((p (ev-payload e)) (a (ev-actor e)))
           (if (not (eq? (actor-sub a) 'plan))
               (not (and (pair? p) (memq (car p) '(plan batch))))
-              (and (or (plan? p) (receipt? p))
+              (and (or (plan?/kept p) (receipt? p))
                    (equal? (cadr p) (cdr (actor-identity a)))
                    (equal? (caddr p) (actor-fingerprint a))
                    (equal? (cadddr p) (actor-after a))))))
@@ -1452,8 +1465,9 @@
                    ((invalid) (mark! e 'plan-mismatch))
                    (else (mark! e 'pending-plan))))))
             slot)
-          (for-each (lambda (e) (mark! e (if (> (length valid) 1) 'plan-conflict 'valid))) valid)
-          (when (= 1 (length valid)) (binding-add! bindings (car valid)))))
+          (let ((why (if (and (pair? valid) (pair? (cdr valid))) 'plan-conflict 'valid)))
+            (for-each (lambda (e) (mark! e why)) valid))
+          (when (and (pair? valid) (null? (cdr valid))) (binding-add! bindings (car valid)))))
       ;; ONE PASS over the records, in their order: each integer index's
       ;; records, each (plan, index)'s and each event's.
       (let ((at-index (make-eqv-hashtable)) (at-plan-index (make-hashtable equal-hash equal?))
@@ -1476,14 +1490,17 @@
           (for-each
             (lambda (i)
               ;; More than one plan event cannot supply one binding space.
-              (let ((slot (in-order at-index i)))
+              ;; Each plan event's group is its (plan, index) table entry, in
+              ;; the order the reference's fold gives: last first seen first.
+              (let ((seen (make-hashtable equal-hash equal?)))
                 (for-each
-                  (lambda (pe)
-                    (classify-slot!
-                      (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
+                  (lambda (pe) (classify-slot! (in-order at-plan-index (cons pe i))))
                   (fold-left (lambda (out e)
                                (let ((pe (actor-plan-event (ev-actor e))))
-                                 (if (member pe out) out (cons pe out)))) '() slot))))
+                                 (if (hashtable-contains? seen pe)
+                                     out
+                                     (begin (hashtable-set! seen pe #t) (cons pe out)))))
+                             '() (in-order at-index i)))))
             indices)
           ;; THE ORDER PASS walks the same indices in order, each index's
           ;; records in the bucket's order: the order the reference's stable
@@ -1601,6 +1618,10 @@
 
     (define (identity-gates-compare es statuses bindings)
       (let-values (((statuses0 bindings0) (identity-gates/reference es)))
+        (when degeneracy-difference
+          (let ((d degeneracy-difference))
+            (set! degeneracy-difference #f)
+            (apply assertion-violation 'degeneracy (car d) (cdr d))))
         (unless (and (equal? statuses0 statuses) (equal? bindings0 bindings))
           (assertion-violation 'degeneracy "identity-gates differ from the whole-bucket judgement"
                                (map ev-event es) statuses statuses0)))))
@@ -1777,7 +1798,7 @@
     (exists (lambda (e)
               (and (ev-delivered? e)
                    (pair? (ev-payload e))
-                   (plan? (ev-payload e))))
+                   (plan?/kept (ev-payload e))))
             (evidence-with-event evidence plan-event)))
 
   ;; The payload the plan declared for one index, or `absent`.
@@ -1798,21 +1819,21 @@
   ;; kept table's answer is compared with assv's.
   (define plan-entries (make-weak-eq-hashtable))
   (define (plan-entry payload index)
-    (let ((t (hashtable-ref plan-entries payload #f)))
+    (let ((t (or (hashtable-ref plan-entries payload #f)
+                 (let ((entries (list-ref payload 4)))
+                   (and (list? entries) (for-all pair? entries)
+                        (let ((t (make-eqv-hashtable)))
+                          (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
+                                    entries)
+                          (hashtable-set! plan-entries payload t)
+                          t))))))
       (if t
           (let ((entry (hashtable-ref t index #f)))
             (degeneracy-check
               (unless (eq? entry (assv index (list-ref payload 4)))
-                (assertion-violation 'degeneracy "a plan's entry differs from assv's" index entry)))
+                (degeneracy-differ! "a plan's entry differs from assv's" index entry)))
             entry)
-          (let ((entries (list-ref payload 4)))
-            (if (and (list? entries) (for-all pair? entries))
-                (let ((t (make-eqv-hashtable)))
-                  (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
-                            entries)
-                  (hashtable-set! plan-entries payload t)
-                  (hashtable-ref t index #f))
-                (assv index entries))))))
+          (assv index (list-ref payload 4)))))
 
   ;; `(#%new k)` stands for a block a previous sub-operation created, so
   ;; a payload still holding one cannot yet be compared with what was
