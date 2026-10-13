@@ -842,12 +842,13 @@
   ;; THE WRITE PATH'S TIMING SEAM (test-only), DECIDED AT EXPANSION, the way
   ;; THEOURGIA_INJECT's branches are: THEOURGIA_TIMING=1 in the process that
   ;; expands this library. Unset, each wrapper below expands to the expression
-  ;; it wraps -- no closure, no call, no flag test -- and nothing of the seam
-  ;; is compiled but these macros. Set, a wrapper expands to a call into
+  ;; it wraps -- no closure, no call, no flag test -- and the seam is never
+  ;; loaded (from source, nor compiled; a build compiles timing.sc like any
+  ;; library and calls it only when built set). Set, a wrapper expands to a call into
   ;; (theourgia timing), the clock, counters, windows and printer, reached
   ;; through `environment`. Development runs from source, so expansion and run
   ;; are one process and the variable behaves as a run-time one; a compiled
-  ;; object carries the seam only when it was built with the variable set.
+  ;; object calls the seam only when it was built with the variable set.
   (meta define timing-mode
     (let ((v (getenv "THEOURGIA_TIMING")))
       (and v (string=? v "1") #t)))

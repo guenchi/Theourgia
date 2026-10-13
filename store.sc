@@ -3851,8 +3851,8 @@
                  (rs (if (malformed-intent? raw) '() (intent-refs raw)))
                  (fixed (if (null? rs)
                             raw
-                            (let ((pa (resolve-from made (car rs)))
-                                  (af (resolve-from made (cadr rs))))
+                            (let ((pa (intent-timed 0 (resolve-from made (car rs))))
+                                  (af (intent-timed 0 (resolve-from made (cadr rs)))))
                               (cond
                                 ((and (pair? pa) (eq? (car pa) 'error)) pa)
                                 ((and (pair? af) (eq? (car af) 'error)) af)
@@ -3897,7 +3897,8 @@
                        (one-intent! s state (item-actor req k declared) fixed))))))
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
-                (loop (cdr is) (+ k 1)
+                (begin (timing-call intent-window! (+ k 1))
+                       (loop (cdr is) (+ k 1)
                       ;; THE ID COMES FROM THE EVENT, NOT FROM THE REPORT.
                       ;; Which block an insert made is decided by the
                       ;; record's own coordinates and is knowable the
@@ -3914,7 +3915,7 @@
                         (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
                             (cons (cons k (block-id (car (car ev)) (cdr (car ev)))) made)
                             made))
-                      (cons answer out)))))))
+                      (cons answer out))))))))
 
   (define (item-actor req k after)
     (list (write-request-who req)
