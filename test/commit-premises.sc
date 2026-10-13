@@ -289,6 +289,10 @@
 (want "C48b-4 a query premise whose answer is unchanged although the cut moved commits"
       (rpc-ok? (run 'set B "title" "q2" "--premises" (format "~s" (list (list 'premise '(query (kind ?x decision)) d-now)))))
       #t)
+(define d-flat (digest-of "(kind ?x decision)"))
+(want "C48b-4 a query premise written with nested ands has the flat query's digest, and commits"
+      (rpc-ok? (run 'set B "title" "q2n" "--premises" (format "~s" (list (list 'premise '(query (and (and (kind ?x decision)))) d-flat)))))
+      #t)
 (want "C48b-4 a query premise that cannot be evaluated is premise-unevaluable"
       (let ((a (run 'set B "title" "q3" "--premises" (format "~s" (list (list 'premise '(query (nosuch ?x)) "0"))))))
         (and (pair? a) (list (car a) (cadr a))))

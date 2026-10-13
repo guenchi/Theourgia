@@ -203,15 +203,20 @@
 ;; A NESTED AND IN A RULE JUDGES A WRITE: the selector matches through its
 ;; nested and, the goal fails through its, and the failure names the goal
 ;; with ?w bound in every place.
-(tolerant (run 'rule "nested-judged" "--on" "doc" "--where" "(and (field ?w \"role\" \"nested\") (and (title ?w ?t)))"
-               "--must" "(and (title ?w ?t) (and (edge ?w depends-on ?s) (title ?s ?u)))"))
 (define NJ (tolerant (make 'doc "NJ")))
+(define NJ2 (tolerant (make 'doc "NJ2")))
+(tolerant (run 'set NJ "phase" "live"))
+(tolerant (run 'rule "nested-judged" "--on" "doc" "--where" "(and (field ?w \"role\" \"nested\") (and (field ?w \"phase\" \"live\")))"
+               "--must" "(and (title ?w ?t) (and (edge ?w depends-on ?s) (title ?s ?u)))"))
 (want "J a rule whose where and goal hold nested ands judges a write: refused, the goal named with ?w bound throughout"
       (let ((a (run 'set NJ "role" "nested")))
         (and (pair? a) (eq? (car a) 'error) (>= (length a) 4)
              (in-order (list-head a 3) (cadr (assq 'goal (car (cdr (list-ref a 3))))))))
       (list '(error refused rule-violation)
             (list 'and (list 'title NJ '?t) (list 'and (list 'edge NJ 'depends-on '?s) '(title ?s ?u)))))
+(want "J the selector's nested condition alone keeps a block out: NJ2, role nested and no phase, is not judged"
+      (car (run 'set NJ2 "role" "nested"))
+      'ok)
 (tolerant (run 'rule "nested-judged" "--retire"))
 
 ;; ---- the targets of a write -------------------------------------------------------------------

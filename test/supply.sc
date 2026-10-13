@@ -1049,6 +1049,11 @@
 (define r12t (make-store! "r12t"))
 (define r12t-alpha (id-in r12t "function alpha"))
 (define r12t-gamma (id-in r12t "function gamma"))
+(want "D6 refs gamma, supplied from another tool: the row's via and the answer's via name it"
+      (begin (supply-calls r12t (list (calls r12t-alpha r12t-gamma r12t-gamma)) '("a.js" "b.js") 'other-tool)
+             (let ((a (ask r12t 'refs r12t-gamma))) (list (refs-items a) (refs-clauses a))))
+      (list (list (list 'ref (list 'from r12t-alpha) '(rel calls) '(via (other-tool "1.140.0" "javascript"))))
+            (list '(stale 0) '(via (other-tool "1.140.0" "javascript")))))
 (want "D6 calls supplied from (other-tool \"1.140.0\"): reach alpha answers via (other-tool \"1.140.0\" \"javascript\")"
       (in-order (supply-calls r12t (list (calls r12t-alpha r12t-gamma r12t-gamma)) '("a.js" "b.js") 'other-tool)
                 (ask r12t 'reach r12t-alpha "--rel" "calls" "--depth" "1"))

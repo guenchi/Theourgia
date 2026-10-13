@@ -435,6 +435,9 @@
 (want "Q5 unrenderable names the relation that bound the value, not the first goal"
       (q (state-of (sec 1) `("a" 2 () (set "a.1" deep ,(nest 70)))) '(and (kind ?id section) (field ?id "deep" ?v)))
       '(error unrenderable (relation field) (reason nesting)))
+(want "Q5 through a nested and, unrenderable still names the relation that bound the value"
+      (q (state-of (sec 1) `("a" 2 () (set "a.1" deep ,(nest 70)))) '(and (kind ?id section) (and (field ?id "deep" ?v))))
+      '(error unrenderable (relation field) (reason nesting)))
 (define (joined strings)
   (if (null? strings) "" (fold-left (lambda (acc s) (string-append acc "\n" s)) (car strings) (cdr strings))))
 (want "Q5 the digest is sha256 of the rendered rows joined by newlines"
