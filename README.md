@@ -1168,14 +1168,14 @@ the term written in it is refused `not-a-term`.
 ### Goals
 
 A goal is a fact relation, a rule of the library, a test, or `(and <goal>
-...)`, which is a conjunction and is allowed only as the whole query (or as
-a rule's `--where` and goal), not nested inside another `and` and not in a
-library rule's body. The
-goals of a conjunction are solved left to right, each with what the earlier
-ones bound.
+...)`, a conjunction: it stands as the whole query (or as a rule's `--where`
+and goal), and an `and` inside an `and` is its goals in place, at any
+depth. It is not allowed in a library rule's body, and an empty `(and)` is
+no goal, nested or not. The goals of a conjunction are solved left to right,
+each with what the earlier ones bound.
 
-    (and (title ?a ?t) (and (title ?a ?t)))
-      ->  (error bad-request not-a-goal (goal (and (title ?a ?t))))
+    (and (title ?b ?t) (and (under ?b "<s>")))   ->  (row "<a>" "A") (row "<b>" "B")  (vars (?b ?t))
+    (and (and (title ?b ?t)) (and))              ->  (error bad-request not-a-goal (goal (and)))
 
 A FACT RELATION answers what the store's providers already know, as tuples
 (`query.sc`, line 101): `(field "<a>" "slot" ?v)` answers `(row "x")  (vars
