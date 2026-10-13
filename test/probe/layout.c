@@ -134,6 +134,17 @@ int main(void) {
          (unsigned long)offsetof(struct stat, MTIM), (unsigned long)sizeof(((struct stat *)0)->MTIM));
   printf("  (field st_ctim (member %s) (offset %lu) (size %lu))\n", XSTR(CTIM),
          (unsigned long)offsetof(struct stat, CTIM), (unsigned long)sizeof(((struct stat *)0)->CTIM));
+  /* The seconds and nanoseconds of mtime and ctime, each at its offset
+     within struct stat, so a reader takes the pair from the buffer with no
+     arithmetic of its own (layout-probe 5). */
+  printf("  (field st_mtim_sec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, MTIM.tv_sec), (unsigned long)sizeof(((struct stat *)0)->MTIM.tv_sec));
+  printf("  (field st_mtim_nsec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, MTIM.tv_nsec), (unsigned long)sizeof(((struct stat *)0)->MTIM.tv_nsec));
+  printf("  (field st_ctim_sec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, CTIM.tv_sec), (unsigned long)sizeof(((struct stat *)0)->CTIM.tv_sec));
+  printf("  (field st_ctim_nsec (offset %lu) (size %lu))\n",
+         (unsigned long)offsetof(struct stat, CTIM.tv_nsec), (unsigned long)sizeof(((struct stat *)0)->CTIM.tv_nsec));
   TYPE(dev_t);
   TYPE(ino_t);
   TYPE(mode_t);
@@ -523,11 +534,6 @@ int main(void) {
   printf("  (KERN_PROC_PID %ld)\n", (long)(KERN_PROC_PID));
 #else
   printf("  (KERN_PROC_PID absent)\n");
-#endif
-#ifdef KERN_PROC_ENV
-  printf("  (KERN_PROC_ENV %ld)\n", (long)(KERN_PROC_ENV));
-#else
-  printf("  (KERN_PROC_ENV absent)\n");
 #endif
 #ifdef EPERM
   printf("  (EPERM %ld)\n", (long)(EPERM));
