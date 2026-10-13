@@ -3885,7 +3885,8 @@
                                        (list 'error 'unknown
                                              (list 'interrupted (failure-text e)))
                                        (raise e))))
-                       (one-intent! s state (item-actor req k declared) fixed))))))
+                       (let ((actor (intent-timed 14 (item-actor req k declared))))
+                         (intent-timed 8 (one-intent! s state actor fixed))))))))
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
                 (begin (timing-call intent-window! (+ k 1))
@@ -4594,7 +4595,8 @@
                                        (list 'error 'unknown
                                              (list 'interrupted (failure-text e)))
                                        (raise e))))
-                       (intent-timed 8 (one-intent! s state (actor-at n) fixed)))))))
+                       (let ((actor (intent-timed 14 (actor-at n))))
+                         (intent-timed 8 (one-intent! s state actor fixed))))))))
             ;; A FAILED INTENT STOPS THE REST. Later intents were written
             ;; against a state this one was meant to produce; running them
             ;; anyway asks each to be judged against a history its author

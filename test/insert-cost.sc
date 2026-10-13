@@ -119,12 +119,13 @@
   '(capture packet load-replay delivered-records applied-records intents verdict premises datum-src cursor rules
     plan-canonical plan-entries plan-append apply commit log-end total))
 ;; The eight steps of an intent; then intent (one-intent! whole), shape (the
-;; loop's checks of the intent) and after (the caller's after-each), which with
-;; refs are the loop's top level; and view, payload-check and frame, inside
-;; one-intent! as check..receipt are.
+;; loop's checks of the intent), after (the caller's after-each) and actor (the
+;; record's actor, made before one-intent!), which with refs are the loop's top
+;; level; and view, payload-check and frame, inside one-intent! as
+;; check..receipt are.
 (define intent-phase-names
-  '(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame))
-(define top-level-phases '(refs shape after intent))
+  '(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor))
+(define top-level-phases '(refs shape after actor intent))
 (define inside-intent-phases '(check resolve deps append reduce applied receipt view payload-check frame))
 (define (request-lines lines phase)
   (filter (lambda (d) (and (= (length d) 4) (eq? (cadr d) 'request) (eq? (caddr d) phase))) lines))
@@ -136,8 +137,8 @@
 
 ;; THE WALL TIME AGAINST THE PHASES, from the stamped lines: each window's
 ;; wall time (its line's stamp less the previous window's) beside the sum of
-;; its top-level phases (refs, shape, after, intent: the others are inside
-;; intent), and what one-intent! spent outside its own phases, at 200, 1000,
+;; its top-level phases (refs, shape, after, actor, intent: the others are
+;; inside intent), and what one-intent! spent outside its own phases, at 200, 1000,
 ;; 3000, 5000 and 7000 and over windows 200 to 7000; the time before the first
 ;; window (from the last request line printed before it) and after the last
 ;; (to the request's apply line). A reading, not a row.
@@ -157,12 +158,12 @@
          (sum-ms (lambda (w) (phase-ms w top-level-phases)))
          (own-ms (lambda (w) (- (phase-ms w '(intent)) (phase-ms w inside-intent-phases))))
          (wall-ms (lambda (n) (let ((w (at n)) (v (at (- n 100)))) (and w v (ms (- (car w) (car v))))))))
-    (printf "~%wall against phases, ms per window: window  wall  top-level phases  untimed  one-intent!'s own  shape  after  view  payload-check  frame~%")
+    (printf "~%wall against phases, ms per window: window  wall  top-level phases  untimed  one-intent!'s own  shape  after  actor  view  payload-check  frame~%")
     (for-each (lambda (n)
                 (let ((w (at n)) (wall (wall-ms n)))
                   (when (and w wall)
-                    (printf "  ~a ~a ~a ~a ~a ~a ~a ~a ~a ~a~%" n wall (sum-ms w) (- wall (sum-ms w)) (own-ms w)
-                            (phase-ms w '(shape)) (phase-ms w '(after)) (phase-ms w '(view))
+                    (printf "  ~a ~a ~a ~a ~a ~a ~a ~a ~a ~a ~a~%" n wall (sum-ms w) (- wall (sum-ms w)) (own-ms w)
+                            (phase-ms w '(shape)) (phase-ms w '(after)) (phase-ms w '(actor)) (phase-ms w '(view))
                             (phase-ms w '(payload-check)) (phase-ms w '(frame))))))
               '(200 1000 3000 5000 7000))
     (let* ((ns (map cadddr windows))

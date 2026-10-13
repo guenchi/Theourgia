@@ -54,9 +54,10 @@
   ;; The eight steps of an intent, then where the rest of its time goes:
   ;; shape (run-intents!'s checks of the intent), after (the caller's
   ;; after-each), intent (one-intent! whole, which holds check..receipt and
-  ;; the three after it), view, payload-check and frame (inside one-intent!).
+  ;; the three after it), view, payload-check and frame (inside one-intent!),
+  ;; and actor (the record's actor, made before one-intent! is called).
   (define intent-phases
-    '#(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame))
+    '#(refs check resolve deps append reduce applied receipt intent shape after view payload-check frame actor))
   (define intent-sums (make-vector (vector-length intent-phases) 0))
 
   ;; -> the request's start, its counters reset
