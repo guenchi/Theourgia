@@ -114,11 +114,12 @@
 (define (out-of r) (cadr r))
 (define (err-of r) (caddr r))
 
-(define (daemons-alive)
+(define (alive-under dir)
   (let ((f (string-append here "/count.txt")))
-    (system (string-append "pgrep -f 'serve " store "' | wc -l | tr -d ' ' > " f))
+    (system (string-append "pgrep -f 'serve " dir "' | wc -l | tr -d ' ' > " f))
     (let ((t (file-text f)))
       (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
+(define (daemons-alive) (alive-under store))
 
 ;; NEVER: EVERY DAEMON THIS FILE CAUSED TO EXIST, not the one store that was
 ;; thought of when this was written. Rows added later make their own
@@ -128,9 +129,16 @@
 ;; not by any row here. The pattern is this run's own directory, which
 ;; every store of this fixture is under, and which carries this process's
 ;; pid so it cannot match another run's.
+;; AND IT WAITS FOR THEM TO BE GONE, not a fixed second: on a loaded machine
+;; a daemon still exiting a second later was counted beside the one the next
+;; request started (P-20 read "2"). It polls the kill's own pattern until no
+;; process matches, every tenth of a second, for at most ten seconds.
 (define (kill-daemons!)
   (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
-  (system "sleep 1"))
+  (let wait ((n 0))
+    (unless (or (string=? (alive-under here) "0") (>= n 100))
+      (system "sleep 0.1")
+      (wait (+ n 1)))))
 
 ;; ---- P-1 a store with no daemon --------------------------------------------
 
