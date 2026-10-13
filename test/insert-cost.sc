@@ -26,8 +26,8 @@
 ;; ALWAYS, AND CHEAP: with the variable unset a small import prints no
 ;; timing line (TC-0); set, it prints every request phase (TC-1). THE SWITCH
 ;; IS READ AT EXPANSION (ffi.sc's wrappers, as THEOURGIA_INJECT is): unset,
-;; store.sc and code-project.sc expand with no call into the seam at all,
-;; read off their expansions in a child per value (TC-E).
+;; each wrapper expands to its bare expression, and store.sc and
+;; code-project.sc reach the seam only through the wrappers (TC-E).
 ;;
 ;; AN OPT-IN FOR THE CURVE: with THEOURGIA_INSERT_COST=1, one synthetic import
 ;; of 3500 one-line files -- 7000 blocks, a file block and its code block
@@ -126,16 +126,20 @@
               (map (lambda (ph) (let ((v (request-value lines ph))) (and (integer? v) (>= v 0)))) request-phases))
         (list 'ok (map (lambda (ph) #t) request-phases))))
 
-;; THE EXPANSION ITSELF: in a child under each value of the variable,
-;; store.sc's and code-project.sc's library forms expanded and printed, and the
-;; seam's entry point, timing-seam, counted in the text. Unset it must not
-;; occur; set it must, in both.
-(define (expansion-counts tag timing)
+;; THE EXPANSION ITSELF, in two readings. (a) In a child under each value of
+;; the variable, each of ffi.sc's four wrappers is expanded around a plain
+;; expression and the seam's entry point, timing-seam, counted in the printed
+;; expansion: unset it must not occur (and timing-call is #f), set it must.
+;; (Chez's `expand` of a whole library form returns no body to read, so the
+;; wrappers are read where they expand.) (b) store.sc and code-project.sc,
+;; read as data, name neither timing-seam nor (theourgia timing): they reach
+;; the seam only through the wrappers, so an unset build of them holds none.
+(define (wrapper-expansions tag timing)
   (let ((script (string-append root "/expand-" tag ".ss"))
         (out (string-append root "/expand-" tag ".out")))
     (call-with-output-file script
       (lambda (p)
-        (write '(import (chezscheme)) p)
+        (write '(import (chezscheme) (only (theourgia ffi) timed intent-timed timing-call timing-quiet)) p)
         (write '(define (count-in text sub)
                   (let ((n (string-length sub)))
                     (let loop ((i 0) (k 0))
@@ -143,20 +147,30 @@
                             ((string=? (substring text i (+ i n)) sub) (loop (+ i 1) (+ k 1)))
                             (else (loop (+ i 1) k))))))
                p)
-        (write '(define (expansion-text path)
-                  (format "~s" (expand (call-with-input-file path read))))
-               p)
-        (write '(write (map (lambda (f) (count-in (expansion-text f) "timing-seam"))
-                            '("../store.sc" "../code-project.sc")))
+        (write '(write (list (map (lambda (f) (count-in (format "~s" (expand f)) "timing-seam"))
+                                  '((timed 'x (+ 1 2)) (intent-timed 3 (+ 1 2))
+                                    (timing-call delivered! (+ 1 2)) (timing-quiet (+ 1 2))))
+                             (expand '(timing-call delivered! (+ 1 2)))))
                p))
       'replace)
     (system (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
                            "scheme --script '" script "' > '" out "' 2>&1 < /dev/null"))
     (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-input-string (file-text out))))))
-(let ((unset (expansion-counts "unset" #f)) (set (expansion-counts "set" "1")))
-  (want "TC-E unset, store.sc's and code-project.sc's expansions hold no call into the timing seam; set, both do"
-        (list unset (and (list? set) (map (lambda (n) (and (integer? n) (> n 0))) set)))
-        '((0 0) (#t #t))))
+;; whether X, a datum, holds the symbol SYM or the list L anywhere
+(define (holds? x sym l)
+  (let walk ((x x))
+    (cond ((eq? x sym) #t)
+          ((equal? x l) #t)
+          ((pair? x) (or (walk (car x)) (walk (cdr x))))
+          ((vector? x) (walk (vector->list x)))
+          (else #f))))
+(let ((unset (wrapper-expansions "unset" #f)) (set (wrapper-expansions "set" "1")))
+  (want "TC-E unset, each timing wrapper expands to its bare expression (timing-call to #f) and store.sc and code-project.sc name the seam only through the wrappers; set, each wrapper calls the seam"
+        (list unset
+              (and (list? set) (pair? set) (list? (car set)) (map (lambda (n) (and (integer? n) (> n 0))) (car set)))
+              (map (lambda (f) (holds? (call-with-input-file f read) 'timing-seam '(theourgia timing)))
+                   '("../store.sc" "../code-project.sc")))
+        '(((0 0 0 0) #f) (#t #t #t #t) (#f #f))))
 
 (if (not (equal? (getenv "THEOURGIA_INSERT_COST") "1"))
     (printf "SKIP the curve: THEOURGIA_INSERT_COST is not 1 (one import of 7000 blocks; set it to read the series)~%")
