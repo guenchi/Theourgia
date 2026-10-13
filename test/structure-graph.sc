@@ -162,11 +162,16 @@
 (define (run-program tag program on?)
   (let ((script (string-append root "/scenario-" tag ".ss"))
         (out (string-append root "/scenario-" tag ".out"))
+        (err (string-append root "/scenario-" tag ".err"))
         (dir (string-append root "/store-" tag)))
     (call-with-output-file script (lambda (p) (for-each (lambda (f) (write f p) (newline p)) program)) 'replace)
     (system (string-append (if on? "THEOURGIA_DEGENERACY=1 " "env -u THEOURGIA_DEGENERACY ")
-                           "THEOURGIA_HOME='" root "/home' scheme --script '" script "' '" dir "' > '" out "' 2>&1 < /dev/null"))
-    (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-input-string (file-text out))))))
+                           "THEOURGIA_HOME='" root "/home' scheme --script '" script "' '" dir "' > '" out "' 2> '" err "' < /dev/null"))
+    ;; THE ANSWER IS ON STDOUT ALONE: the product announces THEOURGIA_HOME on
+    ;; stderr (ffi.sc), and an error's report goes there too
+    (guard (e (#t (list 'UNREADABLE (file-text out) (file-text err))))
+      (let ((x (read (open-input-string (file-text out)))))
+        (if (eof-object? x) (list 'UNREADABLE (file-text out) (file-text err)) x)))))
 
 ;; THE ORDER OF ROWS UNDER TWO PARENTS THAT PRINT ALIKE, read through what
 ;; the base also has (reduce-apply! and state-outline, no switch library), so
