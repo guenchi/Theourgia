@@ -1169,7 +1169,8 @@ the term written in it is refused `not-a-term`.
 
 A goal is a fact relation, a rule of the library, a test, or `(and <goal>
 ...)`, which is a conjunction and is allowed only as the whole query (or as
-a rule's `--where` and goal), never inside another goal or in a rule. The
+a rule's `--where` and goal), not nested inside another `and` and not in a
+library rule's body. The
 goals of a conjunction are solved left to right, each with what the earlier
 ones bound.
 
@@ -1192,15 +1193,15 @@ b)` (both strings) and `(member x <list>)` (`query.sc`, line 690). A test
 whose variable no earlier goal binds -- `_` included, which no goal binds --
 is refused `test-variable-unbound`:
 
-    (and (title ?b ?t) (string< ?t "B"))         ->  (row "<a>" "A")
-    (and (title ?b ?t) (member ?t ("A" "B")))    ->  (row "<a>" "A") (row "<b>" "B")
+    (and (title ?b ?t) (string< ?t "B"))         ->  (row "<a>" "A")  (vars (?b ?t))
+    (and (title ?b ?t) (member ?t ("A" "B")))    ->  (row "<a>" "A") (row "<b>" "B")  (vars (?b ?t))
     (= ?x "A")   ->  (error bad-request test-variable-unbound (variable ?x))
 
 A goal with no variable answers one empty row when it holds and no row when
 it does not:
 
     (edge "<a>" depends-on "<b>")   ->  (row)  (vars ())
-    (edge "<b>" depends-on "<a>")   ->  no row
+    (edge "<b>" depends-on "<a>")   ->  no row  (vars ())
 
 There is no negation and no rule builds a value, so every answer is the
 least model of the rules over the facts, whatever order the facts were
@@ -1218,7 +1219,7 @@ a constant against a fact). Two siblings:
 so the string `"x"` and the symbol `x` are two values, and a field set to
 the text `"1"` does not match the integer `1`:
 
-    (field "<a>" "slot" x)   ->  no row     (the field holds the string "x")
+    (field "<a>" "slot" x)   ->  no row  (vars ())   (the field holds the string "x")
 
 ### Settled fields only
 
@@ -1229,7 +1230,10 @@ read by the `field` build at line 525); `title` likewise answers only a
 settled string. A block whose placement is contested has no `under` row
 (line 537), and `kind` answers `conflict` rather than either kind. A query
 therefore says nothing about a contested value rather than something false;
-`conflicts` lists it.
+`conflicts` lists it. The one exception is `ref`: it reads a block's text as
+search reads it (`query.sc`, line 551, through `field-strings`), each
+candidate of a contested `src` included, so a reference in either candidate
+is a `ref` row.
 
 ### The state a query reads
 
@@ -1264,11 +1268,13 @@ A rule judges every committed write made after it is declared, on every
 route that writes. The rules that judge a write are the ones in force
 BEFORE it (`rules.sc`, line 266, reads the rules of the state before the
 write): a write that declares or changes a rule is judged by those already
-there. They are asked of the state the WHOLE write would produce -- every
-intent of a batch applied -- which the store computes by running the write
-once against a copy of its state, writing nothing (`store.sc`, line 3448),
-and then judging the write's targets (`store.sc`, line 3473); only a write
-that passes runs for real. A write that fails writes nothing and is refused
+there. The store runs the write's own code once against a copy of its state,
+writing nothing (`store.sc`, line 3448): the copy then holds what the write
+would produce -- every intent of a batch, or the prefix a failing one leaves
+-- and the write's targets are taken from it (`store.sc`, line 3473). A
+STATE rule is asked of that copy; a WRITE rule's plain facts read the state
+before the write and its `+` facts the copy (`rules.sc`, lines 296 and 318).
+Only a write that passes runs for real. A write that fails writes nothing and is refused
 `rule-violation`, every failing target and rule named (see `rule`).
 
 ## Following a store
