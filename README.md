@@ -572,17 +572,27 @@ already covers — which would produce a log that silently began in the middle.
 
     (tag (<name>) ("--premises" <datum>))
 
-It answers:
+With a name, binds it to the cut this store has **applied** — not the frontier it has
+discovered, which would name records no reader of this store could produce. The cut is
+taken before the record exists, so a tag is never inside the cut it binds, and an edit
+written afterwards does not move it. It is a write, and answers as one, with the cut it
+bound beside the record:
+
+    (ok (events ((<writer> . <seq>))) (state ()) (cursor (<writer> . <seq>)) (replay #f) (cut ((<writer> . <seq>) ...)))
+
+A repeated request (`--req`) answers `(ok (replay #t) (event (<writer> . <seq>)) (cut ...))`,
+the cut of the record it replays while that record is still the name's; once a later tag
+of the name has superseded it, the replay carries no cut.
+
+Without a name, lists what is bound: an item a name, or an item each binding of a name
+written concurrently:
 
     (tag (name "<name>") (cut ((<writer> . <seq>) ...)))
     (tag (name "<name>") (cut ((<writer> . <seq>) ...)) (event <writer> <seq>) (unsettled #t))
 
-With a name, binds it to the cut this store has **applied** — not the frontier it has
-discovered, which would name records no reader of this store could produce. The cut is
-taken before the record exists, so a tag is never inside the cut it binds, and an edit
-written afterwards does not move it.
-
-Without a name, lists what is bound. Writing a name again supersedes the earlier tag
+The listing is what is bound now. Every tag record stays in `log`, as an entry of verb
+`tag` with its event; the cut an earlier record bound is the one its own answer carried.
+Writing a name again supersedes the earlier tag
 **causally**: a session that had seen the first wins, while two written concurrently
 both stand and are reported as unsettled with their event ids rather than with a
 winner chosen here. Both records remain in the log either way; a tag is not a

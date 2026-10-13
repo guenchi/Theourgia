@@ -852,6 +852,28 @@
   ;; ONE INTENT, ONE WRITE SESSION. OPTIONS are the handler's, for the
   ;; premises the request carries (store.sc, premises-preflight); CHECK is the
   ;; verb's own preflight, asked after them.
+  ;; A NAMED TAG ANSWERS AS A WRITE DOES, AND CARRIES THE CUT IT BOUND: the
+  ;; answer's `(cut ...)` is the cut the record names, read back from the
+  ;; reduction as the tag's candidate for that record's event -- the one the
+  ;; listing gives it -- so a caller who froze on the tag has the literal
+  ;; without asking again. A replay names its record too, `(event ...)`, and
+  ;; carries the cut the same way. A record whose candidate is no longer the
+  ;; name's -- superseded since, which only a later replay can meet -- has no
+  ;; cut to give, and the answer is the write's alone.
+  (define (with-tag-cut store name answer)
+    (let* ((clauses (if (and (pair? answer) (eq? (car answer) 'ok) (list? (cdr answer))) (filter pair? (cdr answer)) '()))
+           (event (let ((es (assq 'events clauses)) (e (assq 'event clauses)))
+                    (cond ((and es (pair? (cdr es)) (pair? (cadr es)) (pair? (car (cadr es)))) (car (cadr es)))
+                          ((and e (pair? (cdr e)) (pair? (cadr e))) (cadr e))
+                          (else #f))))
+           (entry (and event (assoc name (state-tags (open-and-reduce store)))))
+           (candidate (and entry
+                           (find (lambda (c) (and (equal? (cadr c) (car event)) (equal? (caddr c) (cdr event))))
+                                 (cadr entry)))))
+      (if candidate
+          (append answer (list (list 'cut (car candidate))))
+          answer)))
+
   (define (one-write store actor intent req options . check)
     (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises")
                                                              (and (pair? check) (car check)))))
@@ -2198,7 +2220,7 @@
                                                         (caddr t))))
                                              (store-tags store)))))))
                 ((= 1 (length args))
-                 (guarded (lambda () (one-write store actor (list 'tag (car args)) req options))))
+                 (guarded (lambda () (with-tag-cut store (car args) (one-write store actor (list 'tag (car args)) req options)))))
                 (else (usage '(tag [<name>] ["--premises" <datum>]))))))
       (cons 'diff
             (lambda (store actor args req options state writer cwd)

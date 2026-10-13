@@ -2973,6 +2973,15 @@
       (begin (run d5 "tag" "a-first")
              (map name-of (lines-of (run d5 "tag"))))
       (list "a-first" "v1"))
+;; A NAMED TAG ANSWERS AS A WRITE, and carries the cut it bound: the one
+;; the listing gives the name, so a freeze needs no second call for it.
+(want "a named tag's answer carries the cut it bound, the cut the listing gives it"
+      (let* ((a (car (lines-of (run d5 "tag" "c-third"))))
+             (said (let ((c (and (pair? a) (assq 'cut (filter pair? (cdr a)))))) (and c (cadr c))))
+             (listed (let ((l (find (lambda (l) (equal? (name-of l) "c-third")) (lines-of (run d5 "tag")))))
+                       (and l (cut-of l)))))
+        (list (and (pair? a) (car a)) (and said #t) (equal? said listed)))
+      '(ok #t #t))
 
 (printf "\n== N5: diff compares two states, each read to its own cut ==\n")
 ;; NOT THE CURRENT STATE WITH SOMETHING SUBTRACTED. A cut names what had
@@ -4152,6 +4161,13 @@
       (let ((a (cadr (run-piped dT "" "tag" "v1" "--req" "t-1" "--cursor" cursor-WT))))
         (list (car a) (cadr a)))
       '(ok (replay #t)))
+(want "a replayed tag carries the same cut as the answer it replays"
+      (let* ((cut-in (lambda (a) (let ((c (and (pair? a) (assq 'cut (filter pair? (cdr a)))))) (and c (cadr c)))))
+             (first (cadr (run-piped dT "" "tag" "v2" "--req" "t-3" "--cursor" cursor-WT)))
+             (again (cadr (run-piped dT "" "tag" "v2" "--req" "t-3" "--cursor" cursor-WT))))
+        (list (and (cut-in first) #t) (and (pair? again) (assq 'replay (filter pair? (cdr again))) #t)
+              (equal? (cut-in first) (cut-in again))))
+      '(#t #t #t))
 ;; TWIN: THE LISTING FORM HAS NOTHING TO REPLAY and refuses an identity,
 ;; so the row above is about which request carries one rather than about
 ;; the name `tag`.
