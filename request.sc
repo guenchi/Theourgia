@@ -1685,9 +1685,11 @@
             (hashtable-update! (judgement-members j) key (lambda (l) (cons event l)) '())
             ;; EVERY SLOT WHOSE RECORD NAMES A PLAN reads that plan's binding
             ;; through membership: an integer slot, and a single record that
-            ;; names a plan event as well
+            ;; names a plan event as well. Not the plan slot: it is first in
+            ;; the order and sees no binding, its own included.
             (let ((pe (actor-plan-event (ev-actor e))))
-              (when pe (register! j (judgement-plan-slots j) 'plan pe key)))
+              (when (and pe (not (eq? key 'plan)))
+                (register! j (judgement-plan-slots j) 'plan pe key)))
             (when (pair? key)
               (register! j (judgement-index-groups j) 'index (cdr key) key))))
         (let ((p (ev-payload e)))

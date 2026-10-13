@@ -39,7 +39,8 @@
 ;; single), a late plan, index 0 arriving after 1 and 2, one record waking two
 ;; requests, an undelivered index 0 after a delivered index 1, and a later
 ;; index's binding that the pass does not yet see, and a single record that
-;; names a plan arriving before it.
+;; names a plan arriving before it, and a plan record naming the plan event
+;; of a plan that arrives after it.
 ;;
 ;; It runs in a child under each value of the switch: on, nothing may differ
 ;; (AI-1); off, the switch is off and the readings are the same (AI-2), and
@@ -378,6 +379,18 @@
           (plan! r o "q" 1)
           (read! 'single-naming-a-plan r)
           (check! 'single-naming-a-plan-after (eq? (gate r "sp100000" 1) 'plan-mismatch)))
+        ;; (26) A PLAN RECORD THAT NAMES A PLAN EVENT, delivered before the plan
+        ;; it names: it waits for that plan's binding, which the plan slot never
+        ;; sees; the plan arriving binds and is valid, and the waiting record is
+        ;; judged once.
+        (let ((r (reduce-empty)) (o "pn000000"))
+          (reduce-apply! r "pn100000" 1 '() (plan-of o "q" (list (cons 0 (intent "t0"))))
+                         (list "test" (cons o "q") 'plan "fp" (cons o 1) (cons o 0)))
+          (check! 'plan-naming-a-plan-before (eq? (gate r "pn100000" 1) 'pending-plan))
+          (plan! r o "q" 1)
+          (read! 'plan-naming-a-plan r)
+          (check! 'plan-naming-a-plan-after
+                  (equal? (list (gate r "pn100000" 1) (gate r o 1)) '(pending-plan #f))))
         (list 'ok)))
     (write (list 'admission-index (degeneracy-active) (car result)
                  (if (eq? (car result) 'ok) (reverse readings) (cdr result))
@@ -411,11 +424,11 @@
       (list (and (pair? off) (cadr off)) (and (pair? off) (caddr off))
             (and (pair? on) (pair? off) (equal? (cdddr on) (cdddr off))))
       '(#f ok #t))
-(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone, the restored rows, the contested single slot, the plan whose declaration is not its actor's, the member with no predecessor, the unbound #%new, the undeclared index, the withdrawn and the late-established bindings, the single's binding, the late plan, index 0 last, two requests woken at once, the undelivered index 0, the later index's binding and the single record naming a plan"
+(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone, the restored rows, the contested single slot, the plan whose declaration is not its actor's, the member with no predecessor, the unbound #%new, the undeclared index, the withdrawn and the late-established bindings, the single's binding, the late plan, index 0 last, two requests woken at once, the undelivered index 0, the later index's binding, the single record naming a plan and the plan record naming a later plan"
       (and (pair? off) (eq? (caddr off) 'ok)
            (list (length (car (cddddr off)))
                  (filter (lambda (c) (not (cdr c))) (car (cddddr off)))))
-      '(43 ()))
+      '(45 ()))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%admission-index complete~%" bad rows)
