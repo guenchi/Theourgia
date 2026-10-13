@@ -29,7 +29,10 @@
 ;; woken, two records at one index, a member out of order, a member whose
 ;; record is not what its plan declared, an integer member with no plan, two
 ;; plan records for one request, two plans at one index, two requests
-;; interleaved, a rehearsal's clone and a snapshot's rows restored.
+;; interleaved, a rehearsal's clone, a snapshot's rows restored, a contested
+;; single slot, a plan whose declaration is not its actor's, a member with no
+;; predecessor, an item whose "#%new" names an index not yet applied, and an
+;; index the plan does not declare.
 ;;
 ;; It runs in a child under each value of the switch: on, nothing may differ
 ;; (AI-1); off, the switch is off and the readings are the same (AI-2), and
@@ -220,6 +223,43 @@
                     (and (equal? (as-set (reduce-gates s)) (as-set (reduce-gates r)))
                          (equal? (list (gate s o 4) (gate s "rs100000" 1)) '(plan-conflict plan-conflict))
                          (equal? (state-hash s) (state-hash r))))))
+;; (12) TWO SINGLE RECORDS OF ONE REQUEST: the single slot contested.
+        (let ((r (reduce-empty)) (single (lambda (w) (list "test" (cons "sg000000" "s") 'single "fp" #f (cons "sg000000" 0)))))
+          (reduce-apply! r "sg100000" 1 '() (produced "s") (single "sg100000"))
+          (reduce-apply! r "sg200000" 1 '() (produced "s") (single "sg200000"))
+          (read! 'single-contested r)
+          (check! 'single-contested-both-plan-conflict
+                  (equal? (list (gate r "sg100000" 1) (gate r "sg200000" 1)) '(plan-conflict plan-conflict))))
+        ;; (13) A PLAN RECORD WHOSE DECLARATION IS NOT ITS ACTOR'S: the
+        ;; fingerprint differs, so declaration-ok? refuses it, and its member
+        ;; has no plan to be judged against.
+        (let ((r (reduce-empty)) (o "dc000000"))
+          (reduce-apply! r o 1 '() (list 'plan "d" "other-fp" (cons o 0) (list (cons 0 (intent "t0")))) (plan-actor o "d"))
+          (member! r o 2 '() o "d" 0)
+          (read! 'declaration r)
+          (check! 'declaration-mismatch-the-plan (eq? (gate r o 1) 'plan-mismatch))
+          (check! 'declaration-mismatch-the-member-waits (eq? (gate r o 2) 'pending-plan)))
+        ;; (14) A MEMBER WITH NO PREDECESSOR AT ALL: index 1 arrives, index 0
+        ;; never does.
+        (let ((r (reduce-empty)) (o "np000000"))
+          (plan! r o "n" 2)
+          (member! r o 2 '() o "n" 1)
+          (read! 'no-predecessor r)
+          (check! 'no-predecessor-plan-order (eq? (gate r o 2) 'plan-order)))
+        ;; (15) AN INDEX THE PLAN DOES NOT DECLARE, and (16) AN ITEM WHOSE
+        ;; "#%new" NAMES AN INDEX NOT YET APPLIED.
+        (let ((r (reduce-empty)) (o "ud000000"))
+          (reduce-apply! r o 1 '()
+                         (plan-of o "u" (list (cons 0 (intent "u0"))
+                                              (cons 1 (list 'insert (list "#%new" 0) #f (list (cons 'kind 'section) (cons 'title "u1"))))))
+                         (plan-actor o "u"))
+          (reduce-apply! r "ud100000" 1 (list (cons o 1))
+                         (list 'put (list (cons 'kind 'section) (cons 'title "u1") (cons 'parent (format "~a.2" o)) '(ord . 1)))
+                         (member-actor o "u" 1 (cons o 1)))
+          (member! r "ud200000" 1 (list (cons o 1)) o "u" 5 "u5")
+          (read! 'undeclared-and-unbound r)
+          (check! 'unbound-new-waits (eq? (gate r "ud100000" 1) 'pending-plan))
+          (check! 'undeclared-index-mismatch (eq? (gate r "ud200000" 1) 'plan-mismatch)))
         (list 'ok)))
     (write (list 'admission-index (degeneracy-active) (car result)
                  (if (eq? (car result) 'ok) (reverse readings) (cdr result))
@@ -242,11 +282,11 @@
       (list (and (pair? off) (cadr off)) (and (pair? off) (caddr off))
             (and (pair? on) (pair? off) (equal? (cdddr on) (cdddr off))))
       '(#f ok #t))
-(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone and the restored rows"
+(want "AI-3 every check of the scenarios holds: the import, the #%new chain and its wrong parent, the late members, the contested index, the gap, the mismatches, the two plans, the two plan events, the interleaved requests, the clone, the restored rows, the contested single slot, the plan whose declaration is not its actor's, the member with no predecessor, the unbound #%new and the undeclared index"
       (and (pair? off) (eq? (caddr off) 'ok)
            (list (length (car (cddddr off)))
                  (filter (lambda (c) (not (cdr c))) (car (cddddr off)))))
-      '(20 ()))
+      '(26 ()))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%admission-index complete~%" bad rows)
