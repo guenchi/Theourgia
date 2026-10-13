@@ -77,6 +77,13 @@
   (cond ((not (pair? a)) a)
         ((eq? (car a) 'error) (list 'error (cadr a)))
         (else (car a))))
+;; a list whose elements are evaluated left to right: R6RS leaves the order
+;; of a call's arguments open, and a row that publishes and then reads the
+;; repository must read it after
+(define-syntax in-order
+  (syntax-rules ()
+    ((_) '())
+    ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
 (define (clause-of a head) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
 
 ;; ---- a repository and its store -----------------------------------------------
@@ -180,6 +187,11 @@
           (list (head-of a) (name-status r) (blob r "new.txt"))
           '(ok "D\tgone.txt\nA\tnew.txt\nD\told.txt" "same\n"))))
 
+;; a repository of two files whose store has changed a.txt
+(define (simple! . setup)
+  (let ((r (apply repo! '(("a.txt" . "one\n") ("b.txt" . "two\n")) setup)))
+    (set-text! (st-of r) "a.txt" "uno\n")
+    r))
 ;; a hook that rewrites the message, and a tracked file hard-linked to the one
 ;; the landing changes
 (let ((r (repo! '(("a.txt" . "one\n")) (lambda (wt)
@@ -190,7 +202,7 @@
   (landing! r "plain message")
   (freeze! r)
   (want "PL-4 a prepare-commit-msg hook does not run: the message is the block's text; a hard-linked tracked file is left as it was"
-        (list (head-of (publish! r)) (git (wt-of r) "log" "-1" "--format=%B")
+        (in-order (head-of (publish! r)) (git (wt-of r) "log" "-1" "--format=%B")
               (file-text (string-append (wt-of r) "/b.txt")) (name-status r))
         '(ok "plain message" "one\n" "M\ta.txt")))
 
@@ -211,20 +223,18 @@
   (sh "mkdir -p " (quoted tmp))
   (landing! r "odd tmpdir") (freeze! r)
   (want "PL-4 a TMPDIR whose name holds an LF and a run of one byte still lands, git's error file read and removed"
-        (list (head-of (publish! r (string-append "TMPDIR=" (quoted tmp)))) (out-of (string-append "ls -A " (quoted tmp))))
+        (let* ((answer (publish! r (string-append "TMPDIR=" (quoted tmp))))
+               (left (out-of (string-append "ls -A " (quoted tmp)))))
+          (list (head-of answer) left))
         '(ok "")))
 
 ;; ---- PL-2, PL-3, PL-21: the worktree --------------------------------------------
 (printf "== PL-2, PL-3, PL-21, PL-35: the worktree before anything ==\n")
-(define (simple! . setup)
-  (let ((r (apply repo! '(("a.txt" . "one\n") ("b.txt" . "two\n")) setup)))
-    (set-text! (st-of r) "a.txt" "uno\n")
-    r))
 (let ((r (simple!)))
   (landing! r "x") (freeze! r)
   (write-file! (string-append (wt-of r) "/b.txt") "changed\n")
   (want "PL-2 a modified tracked file is a dirty worktree, refused with HEAD unchanged"
-        (list (head-of (publish! r)) (head-commit r))
+        (in-order (head-of (publish! r)) (head-commit r))
         (list '(error dirty) (base-of r))))
 (let ((r (simple!)))
   (landing! r "x") (freeze! r)
@@ -293,14 +303,14 @@
   (add-file! r "x" "now a file\n")
   (landing! r "x/y becomes x") (freeze! r)
   (want "PL-10 a directory becoming a file lands"
-        (list (head-of (publish! r)) (name-status r) (blob r "x"))
+        (in-order (head-of (publish! r)) (name-status r) (blob r "x"))
         '(ok "A\tx\nD\tx/y" "now a file\n")))
 (let ((r (repo! '(("x" . "a file\n") ("a.txt" . "one\n")))))
   (remove-file! (st-of r) "x")
   (add-file! r "x/y" "now inside\n")
   (landing! r "x becomes x/y") (freeze! r)
   (want "PL-27 a file becoming a directory lands"
-        (list (head-of (publish! r)) (name-status r) (blob r "x/y"))
+        (in-order (head-of (publish! r)) (name-status r) (blob r "x/y"))
         '(ok "D\tx\nA\tx/y" "now inside\n")))
 (let ((r (repo! '(("x/y" . "inside\n") (".gitignore" . "*.log\n")))))
   (write-file! (string-append (wt-of r) "/x/junk.log") "ignored\n")
@@ -308,7 +318,7 @@
   (add-file! r "x" "now a file\n")
   (landing! r "blocked") (freeze! r)
   (want "PL-28 an ignored file inside a directory becoming a file refuses destination-exists, with HEAD unchanged"
-        (list (head-of (publish! r)) (head-commit r))
+        (in-order (head-of (publish! r)) (head-commit r))
         (list '(error destination-exists) (base-of r))))
 
 ;; ---- PL-11, PL-12, PL-16, PL-17, PL-22: the base ------------------------------
@@ -325,7 +335,7 @@
   (checked "title" (ask (st-of r) 'set (car (children-at (st-of r) "a.txt")) "title" "renamed"))
   (landing! r "nothing") (freeze! r)
   (want "PL-12 a landing whose changed-files is empty refuses nothing-to-publish and makes no commit"
-        (list (head-of (publish! r)) (head-commit r))
+        (in-order (head-of (publish! r)) (head-commit r))
         (list '(error nothing-to-publish) (base-of r))))
 (let ((r (simple! (lambda (wt) (write-file! (string-append wt "/.gitattributes") "b.txt export-subst\n")
                                 (write-file! (string-append wt "/b.txt") "$Format:%H$\n")))))
@@ -369,7 +379,7 @@
   (add-file! r "new.sh" "echo new\n")
   (landing! r "exec") (freeze! r)
   (want "PL-18 the removal of a 100755 file lands; PL-19 an added .sh lands 0644"
-        (list (head-of (publish! r)) (name-status r) (mode-at r "new.sh"))
+        (in-order (head-of (publish! r)) (name-status r) (mode-at r "new.sh"))
         '(ok "M\ta.txt\nA\tnew.sh\nD\told.sh" "100644")))
 
 ;; ---- PL-23, PL-24, PL-25, PL-26: destinations and the staged set -------------------
@@ -378,14 +388,14 @@
   (add-file! r "d/new.txt" "under a link\n")
   (landing! r "link dir") (freeze! r)
   (want "PL-23 an added path under a symbolically linked directory refuses unsafe-destination"
-        (list (head-of (publish! r)) (head-commit r))
+        (in-order (head-of (publish! r)) (head-commit r))
         (list '(error unsafe-destination) (base-of r))))
 (let ((r (simple! (lambda (wt) (write-file! (string-append wt "/.gitignore") "secret.txt\n")))))
   (write-file! (string-append (wt-of r) "/secret.txt") "ignored\n")
   (add-file! r "secret.txt" "from the store\n")
   (landing! r "ignored") (freeze! r)
   (want "PL-24 an ignored file at an added path refuses destination-exists, the file untouched"
-        (list (head-of (publish! r)) (file-text (string-append (wt-of r) "/secret.txt")))
+        (in-order (head-of (publish! r)) (file-text (string-append (wt-of r) "/secret.txt")))
         '((error destination-exists) "ignored\n")))
 (let ((r (simple!)))
   (rename! (st-of r) "b.txt" ".git/config")
@@ -430,7 +440,7 @@
   (rename! (st-of r) "A.txt" "a.txt")
   (landing! r "case rename") (freeze! r)
   (want "PL-34 a case rename lands on this machine's volume, whatever it is"
-        (list (head-of (publish! r)) (name-status r) (blob r "a.txt"))
+        (in-order (head-of (publish! r)) (name-status r) (blob r "a.txt"))
         '(ok "D\tA.txt\nA\ta.txt" "one\n")))
 
 ;; ---- PL-32 the real probe; PL-33 another volume ---------------------------------
