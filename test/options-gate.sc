@@ -1727,6 +1727,7 @@
 ;; replaced elsewhere; that this one should come from the tree is queued.
 ;; eval-runner.sc and eval-runner-exec.sc: the runner path of eval --lang (L).
 ;; completion.sc: the judgement of a plan's completion, entered by the store when one is reached (L).
+;; degeneracy.sc: the test-only switch under which a maintained structure is checked against what it replaced (L).
 ;; timing.sc and timing-wrappers.sc: the test-only timing seam and the wrappers that reach it only when
 ;; THEOURGIA_TIMING=1 at their expansion (L).
 (want "GATE-C the scanned source files, named"
@@ -1745,7 +1746,7 @@
       '("admission.sc" "answers.sc" "arguments.sc" "attest.sc" "baseline.sc" "channel.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "commitments.sc" "completion.sc" "context.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
-        "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
+        "datum-project.sc" "degeneracy.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "field-reading.sc" "incomplete.sc" "json.sc"
         "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"

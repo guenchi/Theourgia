@@ -106,12 +106,12 @@ name-use-shapes 18 50 2cae3d0b3e48dfe98231546fcdcfcc48
 name-use-verbs 99 103 ffaad35e746d4c68449da6d3b19eccb5
 nesting-depth 9 12 9a3944f9206cdf8b993461029b1e62b4
 one-subtree 10 20 95b3008a0b1946c97d34ae02082b3fd2
-options-gate 33 37 a65477f1ac2e58ef3d4a9a89844710f9
+options-gate 33 37 83fb2bef0fdc64f5f3bca0dd165edec6
 paper-scenario 19 22 ea09bc850c464098cf9ab7afea95a944
 pin-store 8 14 0aead8b2430baea5844744d53bec3bbc
 plan-completion 13 16 5139807831136bb4d7635241d8dc6330
 plan-members 5 10 e6bb48c8f709cba20e058023ef52f7f9
-platform-rows 48 52 981df59dd4270c52cff5ad9752b2a0cb
+platform-rows 48 52 0820ef5043ddb333cbc169def6929f26
 project-template 74 79 a5af916ce6de13131c613f8e9b864ed3
 q1 48 58 7b2fe0ccc505fd965c4ebff9a2aa9e9d
 q10 6 15 56572a2988b6e9681e872ea5353e4788
