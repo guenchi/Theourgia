@@ -107,9 +107,13 @@
         (list (car p) (string=? (car p) "window-d"))
         (list w #f))
   (want "PO-4 a tracked commit with --cursor from position commits, and its replay names the event"
-        (list (head-of first)
-              (clause-of again 'replay)
-              (let ((e (clause-of again 'event))) (and e (equal? (car (cadr e)) w))))
+        ;; commit answers (ok (items <one answer per record>)); the replay is
+        ;; the item
+        (let ((item (and (pair? again) (eq? (car again) 'ok) (pair? (cdr again)) (pair? (cadr again))
+                         (eq? (car (cadr again)) 'items) (pair? (cdr (cadr again))) (cadr (cadr again)))))
+          (list (head-of first)
+                (clause-of item 'replay)
+                (let ((e (clause-of item 'event))) (and e (equal? (car (cadr e)) w)))))
         '(ok (replay #t) #t)))
 
 (sh "rm -rf " (quoted root))
