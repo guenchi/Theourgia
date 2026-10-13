@@ -183,7 +183,11 @@
       (printf "  windows 200..~a: wall ~a top-level phases ~a untimed ~a one-intent!'s own ~a~%" (if last (cadddr last) 'none)
               wall phases (- wall phases) (apply + (map (lambda (n) (own-ms (at n))) ws)))
       (printf "  before the first window ~a, after the last to apply ~a~%" before after))
-    (printf "~%append split, ms per window: window  append  metadata-check  barrier  versions  catch-up  write  append's own~%")
+    ;; FROM WINDOW 200: the plan record's own append, before the first intent,
+    ;; runs log.sc's steps too and is counted into the first window's five
+    ;; phases, but not into its append (the plan is a request phase), so the
+    ;; first window's split is not one window's.
+    (printf "~%append split, ms per window (from 200: the first holds the plan record's append): window  append  metadata-check  barrier  versions  catch-up  write  append's own~%")
     (for-each (lambda (n)
                 (let ((w (at n)))
                   (when w
@@ -191,7 +195,7 @@
                             (phase-ms w '(metadata-check)) (phase-ms w '(barrier)) (phase-ms w '(versions))
                             (phase-ms w '(catch-up)) (phase-ms w '(write))
                             (- (phase-ms w '(append)) (phase-ms w inside-append-phases))))))
-              '(100 1000 3000 5000 7000))))
+              '(200 1000 3000 5000 7000))))
 
 (define small (string-append root "/small"))
 (write-files! small 3)
