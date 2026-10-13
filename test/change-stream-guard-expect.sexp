@@ -6,6 +6,6 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the --cut usage forms are in the base now, and this change (two
-;; operator scripts under test/tools/) changes no scripted answer.
-()
+;; tag: a named tag's answer now carries (cut ...), the cut it bound, taken
+;; from the record it wrote.
+((tag "a named tag's answer carries the cut it bound, from the record it wrote"))

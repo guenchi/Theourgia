@@ -477,7 +477,8 @@
       (in-order (symbols-sorted (map car none)) (length none)))
 ;; A VERB WHOSE OWN ANSWER ALREADY SAID ITS CUT, before receipts existed:
 ;; snapshot names the cut it froze. That clause is the verb's, not a receipt.
-(define own-cut '(snapshot query context scope))
+;; A named tag says the cut it bound, from the record it wrote.
+(define own-cut '(snapshot query context scope tag))
 ;; AND ONE WHOSE OWN ANSWER SAYS ITS VERSIONS: context's receipt is its own,
 ;; the versions of what it shows beside it.
 (define own-versions '(context))
