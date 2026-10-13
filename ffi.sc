@@ -413,8 +413,10 @@
   ;; Every read or write of a field inside a struct the kernel fills or
   ;; reads goes through these, so the offset and the width both come from
   ;; the platform's row (theourgia platform-numbers). SIGNEDNESS IS THE
-  ;; READER'S, from the C type: the rows carry none, and st_size (off_t)
-  ;; is the one field read signed.
+  ;; READER'S: the rows carry none. st_size (off_t) and the times' seconds
+  ;; and nanoseconds (stat-fields) are read signed; device and inode are read
+  ;; unsigned on every platform, Darwin's signed dev_t included, because
+  ;; they are identities compared for equality (stat-fields says why).
   (define (row-uint-ref bv sname fname)
     (bytevector-uint-ref bv (platform-field sname fname 'offset) (native-endianness)
                          (platform-field sname fname 'size)))
