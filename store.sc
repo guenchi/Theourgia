@@ -33,7 +33,7 @@
           datum-mode-block? draft-on-datum-refusal
           store-check store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator
-          make-write-request write-request? store-successors store-intervals
+          make-write-request write-request? request-actors store-successors store-intervals
           request-verdict failure-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
@@ -3748,17 +3748,32 @@
   ;; whose two statements about where it belongs disagree -- and the Q
   ;; review found that exact shape reachable through a different door.
   (define (request-actor req sub plan-event)
-    (and req
-         (list (write-request-who req)
-               (request-identity (write-request-after req)
-                                 (write-request-req-id req))
-               sub
-               (request-fingerprint (write-request-who req)
-                                    (write-request-verb req)
-                                    (write-request-args req)
-                                    (write-request-after req))
-               plan-event
-               (write-request-after req))))
+    ((request-actors req plan-event) sub))
+
+  ;; A REQUEST'S ACTORS, ONE PER SUB-OPERATION, FROM ONE FINGERPRINT. The
+  ;; fingerprint is a hash over the request's whole arguments -- an import's
+  ;; are every intent it carries -- and it is the same for each of them, so
+  ;; it is computed once, when this is made, not once per record.
+  ;; -> a procedure from a sub to the actor request-actor answers for it (#f
+  ;; when REQ is #f). FINGERPRINT-OF, when given, stands in for the request's
+  ;; fingerprint: a test counts with it.
+  (define (request-actors req plan-event . fingerprint-of)
+    (let ((fingerprint (and req ((if (pair? fingerprint-of) (car fingerprint-of) write-request-fingerprint) req))))
+      (lambda (sub)
+        (and req
+             (list (write-request-who req)
+                   (request-identity (write-request-after req)
+                                     (write-request-req-id req))
+                   sub
+                   fingerprint
+                   plan-event
+                   (write-request-after req))))))
+
+  (define (write-request-fingerprint req)
+    (request-fingerprint (write-request-who req)
+                         (write-request-verb req)
+                         (write-request-args req)
+                         (write-request-after req)))
 
   ;; A BATCH: ONE RECEIPT, THEN THE ITEMS, EACH ITS OWN REQUEST.
   ;;
@@ -3820,6 +3835,7 @@
   ;; plan first; nothing does that yet, and when something does it is
   ;; that item's business and not the batch's.
   (define (run-items! s state req intents entries)
+    (define fingerprint (write-request-fingerprint req))
     (let loop ((is intents) (k 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
@@ -3885,7 +3901,7 @@
                                        (list 'error 'unknown
                                              (list 'interrupted (failure-text e)))
                                        (raise e))))
-                       (let ((actor (intent-timed 14 (item-actor req k declared))))
+                       (let ((actor (intent-timed 14 (item-actor req fingerprint k declared))))
                          (intent-timed 8 (one-intent! s state actor fixed))))))))
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
@@ -3909,15 +3925,13 @@
                             made))
                       (cons answer out))))))))
 
-  (define (item-actor req k after)
+  ;; FINGERPRINT is the batch request's, computed once by the loop.
+  (define (item-actor req fingerprint k after)
     (list (write-request-who req)
           (cons (car (write-request-after req))
                 (list 'batch (write-request-req-id req) k))
           'single
-          (request-fingerprint (write-request-who req)
-                               (write-request-verb req)
-                               (write-request-args req)
-                               (write-request-after req))
+          fingerprint
           #f
           after))
 
@@ -3998,7 +4012,8 @@
            (lambda (run after-each)
              (session-pending-count-set! s (length missing))
              (run-intents! s state
-                           (lambda (n) (request-actor req (list-ref indices n) plan-event))
+                           (let ((actors (request-actors req plan-event)))
+                             (lambda (n) (actors (list-ref indices n))))
                            run after-each))))))
 
   ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
@@ -4081,7 +4096,7 @@
                                 (list 'state '()) (list 'cursor plan-event)
                                 (list 'replay #f)))
                     (run-intents! s state
-                                  (lambda (n) (request-actor req n plan-event))
+                                  (request-actors req plan-event)
                                   intents)))))))
 
   ;; ONE RECORD, NO INTENT BEHIND IT. The plan is not something a caller
