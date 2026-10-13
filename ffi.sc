@@ -3673,8 +3673,10 @@
   ;; exact pair (seconds . nanoseconds) read from the row's measured
   ;; offsets (st_mtim_sec, st_mtim_nsec, st_ctim_sec, st_ctim_nsec,
   ;; layout-probe 5), never a float. Size and the times are read signed
-  ;; (off_t, time_t, long), device and inode unsigned, as path-device-inode
-  ;; reads them.
+  ;; (off_t, time_t, long). Device and inode are read unsigned on every
+  ;; platform, as path-device-inode reads them, although Darwin's dev_t is a
+  ;; signed 32-bit int: they are identities, compared for equality and never
+  ;; ordered, and the two readers must answer the same number for one file.
   (define (stat-fields buf)
     (list (row-uint-ref buf 'stat 'st_dev)
           (row-uint-ref buf 'stat 'st_ino)
