@@ -1173,6 +1173,9 @@ a rule's `--where` and goal), never inside another goal or in a rule. The
 goals of a conjunction are solved left to right, each with what the earlier
 ones bound.
 
+    (and (title ?a ?t) (and (title ?a ?t)))
+      ->  (error bad-request not-a-goal (goal (and (title ?a ?t))))
+
 A FACT RELATION answers what the store's providers already know, as tuples
 (`query.sc`, line 101): `(field <a> "slot" ?v)` answers `(row "x")`, the
 value as stored.
@@ -1213,7 +1216,9 @@ a constant against a fact). Two siblings:
       ->  (row "<a>" "<s>" "<b>") (row "<b>" "<s>" "<a>")  (vars (?x ?p ?y))
 
 so the string `"x"` and the symbol `x` are two values, and a field set to
-the text `"1"` does not match the integer `1`.
+the text `"1"` does not match the integer `1`:
+
+    (field "<a>" "slot" x)   ->  no row     (the field holds the string "x")
 
 ### Settled fields only
 
