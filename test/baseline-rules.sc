@@ -191,6 +191,16 @@
 (want "BR-03c --working-cut without --based-on says the version is missing"
       (list (kind no-version) (reason no-version))
       '(invalid-working-baseline (reason based-on-missing)))
+(define with-parent (call 'write A "mine" "--based-on" h0 "--working-parent-writer" writer "--working-parent" h0))
+(want "BR-03c with a parent named as well, the missing half is still named"
+      (list (kind with-parent) (reason with-parent))
+      '(invalid-working-baseline (reason cut-missing)))
+;; PIN: a rebase with half a baseline is the rebase's own refusal, which
+;; comes first.
+(define rebase-half (call 'write A "mine" "--rebase" "--based-on" h0))
+(want "BR-03c PIN a --rebase with half a baseline is refused as the rebase's"
+      (list (kind rebase-half) (reason rebase-half))
+      '(bad-request rebase-needs-baseline))
 (want "BR-03c TWIN: and neither wrote anything" (envelope-bytes) before-unusable)
 
 ;; ---- BR-04 what the envelope recorded ------------------------------------

@@ -349,8 +349,11 @@
             ((not (state-read state id)) (list 'error 'unknown-id id))
             ;; a datum block's code is its body; a draft is text (store.sc)
             ((datum-mode-block? state id) (draft-on-datum-refusal id))
+            ;; A PARENT NEEDS A BASELINE: an incomplete or unsafe parent, or one
+            ;; named with no baseline at all, is refused here; one named with
+            ;; HALF a baseline is answered below by the half that is missing.
             ((and (or parent-writer parent-version)
-                  (not (and parent-writer parent-version hash cut-text (safe-id? parent-writer))))
+                  (not (and parent-writer parent-version (safe-id? parent-writer) (or hash cut-text))))
              '(error invalid-working-baseline))
             ;; NEVER: A REBASE NAMES THE VERSION IT MERGED ONTO.
             ;;
