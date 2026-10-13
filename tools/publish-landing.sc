@@ -120,7 +120,7 @@
                 (open-process-ports
                   (string-append "e=$(mktemp) || { printf '\\n125 '; exit 0; }; "
                                  "LC_ALL=C GIT_LITERAL_PATHSPECS=1 git -c core.hooksPath=/dev/null -C " (quoted wt) " "
-                                 (join (map quoted args) " ") " 2>\"$e\"; s=$?; printf '\\n%s %s' \"$s\" \"$(printf %s \"$e\" | od -An -tx1 | tr -d ' \\n')\"")
+                                 (join (map quoted args) " ") " 2>\"$e\"; s=$?; printf '\\n%s %s' \"$s\" \"$(printf %s \"$e\" | od -An -v -tx1 | tr -d ' \\n')\"")
                   (buffer-mode block) #f)))
     (when (pair? input) (put-bytevector to (car input)))
     (close-port to)
@@ -320,6 +320,9 @@
                                           (number->string (process-id))))
              (scratch (string-append (if same-volume git-dir wt) "/" scratch-name))
              (made #f))
+        ;; a run that died with its scratch in the git directory left it there
+        (let ((left (filter (lambda (n) (prefix? n "theourgia-landing-")) (names-in git-dir))))
+          (when (pair? left) (refuse 'leftover-scratch (cons 'names (map (lambda (n) (string-append git-dir "/" n)) left)))))
         (dynamic-wind
           (lambda () #f)
           (lambda ()
@@ -420,6 +423,7 @@
                       (for-each (lambda (p) (when (member p indexed) (refuse 'staged-set-mismatch (list 'still-indexed p))))
                                 removed))
                     (git-run wt (list "commit" "-q" "--no-verify" "--cleanup=verbatim" "-F" "-") (string->utf8 message))
+                    (set! touched '(committed))
                     (set! touched (list 'committed (chomp (git-text wt "rev-parse" "HEAD"))))
                     ;; the message read back, all of it: the commit object's bytes
                     ;; after its first blank line are exactly the block's text

@@ -194,6 +194,26 @@
               (file-text (string-append (wt-of r) "/b.txt")) (name-status r))
         '(ok "plain message" "one\n" "M\ta.txt")))
 
+;; a git in front of the real one that amends the commit with another
+;; message; and a TMPDIR whose name holds an LF and 70 repeated bytes
+(let* ((r (simple!)) (shim (string-append (dir-of r) "/shim")) (real (chomp (out-of "command -v git"))))
+  (landing! r "the block's text") (freeze! r)
+  (write-file! (string-append shim "/git")
+               (string-append "#!/bin/sh\n# the publisher calls git -c <config> -C <worktree> <command> ...\n"
+                              "if [ \"$5\" = commit ]; then " (quoted real) " \"$@\" || exit $?; exec " (quoted real)
+                              " -C \"$4\" commit -q --amend -m other; fi\nexec " (quoted real) " \"$@\"\n"))
+  (sh "chmod 755 " (quoted (string-append shim "/git")))
+  (let ((a (publish! r (string-append "PATH=" (quoted shim) ":\"$PATH\""))))
+    (want "PL-4 a commit whose message is not the block's text refuses commit-message-changed, saying it is committed"
+          (list (head-of a) (clause-of a 'state))
+          (list '(error commit-message-changed) (list 'state 'committed (head-commit r))))))
+(let* ((r (simple!)) (tmp (string-append (dir-of r) "/tmp\n" (make-string 70 #\a))))
+  (sh "mkdir -p " (quoted tmp))
+  (landing! r "odd tmpdir") (freeze! r)
+  (want "PL-4 a TMPDIR whose name holds an LF and a run of one byte still lands, git's error file read and removed"
+        (list (head-of (publish! r (string-append "TMPDIR=" (quoted tmp)))) (out-of (string-append "ls -A " (quoted tmp))))
+        '(ok "")))
+
 ;; ---- PL-2, PL-3, PL-21: the worktree --------------------------------------------
 (printf "== PL-2, PL-3, PL-21, PL-35: the worktree before anything ==\n")
 (define (simple! . setup)
