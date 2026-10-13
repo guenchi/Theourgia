@@ -139,7 +139,7 @@ jobs:
           cd lib/theourgia/test
           # THE KNOWN-RED LIST GOES TO THE RUNNER TOO: a listed fixture's row
           # count that differs from the table is a reading there, not a refusal.
-          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot" THEOURGIA_KNOWN_RED="$W/harness/known-red.txt"
+          ( export THEOURGIA_LIBDIR="$W/lib" THEOURGIA_TEST_ROOT="$W/testroot" THEOURGIA_KNOWN_RED="$W/harness/known-red.txt" THEOURGIA_FIXTURE_LIMIT=1800
             [ -n "${BASE_LIBDIR:-}" ] && export THEOURGIA_BASE_LIBDIR="$BASE_LIBDIR"; . ./env.sh
             sh run-fixtures.sh "$W/out" > "$W/suite.log" 2>&1; echo $? > "$W/suite.rc" ) || true
           cd "$W"
