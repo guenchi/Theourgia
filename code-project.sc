@@ -18,7 +18,7 @@
           file-projection-key projected-files
           projection-outputs raw-projection path-collision spelling-key ambiguous-groups
           volume-insensitivity changed-files-between
-          locate-file locate-pieces)
+          locate-file locate-pieces landing-collision)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
@@ -578,6 +578,46 @@
                  (filter (lambda (g) (> (length g) 1))
                          (map (lambda (g) (list-sort string<? g))
                               (let-values (((ks vs) (hashtable-entries by-key))) (vector->list vs)))))))
+
+  ;; WHETHER A PUBLICATION WOULD MERGE TWO SPELLINGS ON ITS VOLUME, a pure
+  ;; function of the volume's probe result and the names, so it is asked of
+  ;; either result on any machine. CASE? and NORMALISATION? are what the probe
+  ;; found; TARGETS are the paths the landing writes (added and content);
+  ;; EXISTING are the worktree's entries, files and directories, that the
+  ;; landing leaves in place (removed paths are not among them, so a case
+  ;; rename lands: removals are applied first). -> #f, or (error
+  ;; case-collision|normalisation-collision (paths <p> <q>)), the first pair in
+  ;; sorted order.
+  ;;
+  ;; THE SET IS THE LANDING'S OWN: every target and every directory above one,
+  ;; compared with each other and with every existing entry. Two existing
+  ;; entries are never compared: an ambiguous pair the landing does not touch
+  ;; does not block it. The key is the volume's (spelling-key): case alone,
+  ;; NFC alone, or both, where the refusal is case-collision.
+  (define (landing-collision case? normalisation? targets existing)
+    (let ((kind (cond ((and case? normalisation?) 'both) (case? 'case) (normalisation? 'normalisation) (else #f))))
+      (and kind
+           (let ((by-key (make-hashtable string-hash string=?))
+                 (pairs '()))
+             (define (pair! p q) (set! pairs (cons (if (string<? p q) (list p q) (list q p)) pairs)))
+             (for-each
+               (lambda (s)
+                 (let* ((k (spelling-key kind s)) (others (hashtable-ref by-key k '())))
+                   (unless (member s others)
+                     (for-each (lambda (o) (pair! o s)) others)
+                     (hashtable-set! by-key k (cons s others)))))
+               (apply append (map (lambda (p) (cons p (path-ancestors p))) targets)))
+             (for-each
+               (lambda (e)
+                 (for-each (lambda (s) (unless (string=? s e) (pair! s e)))
+                           (hashtable-ref by-key (spelling-key kind e) '())))
+               existing)
+             (and (pair? pairs)
+                  (list 'error (if (eq? kind 'normalisation) 'normalisation-collision 'case-collision)
+                        (cons 'paths (car (list-sort (lambda (x y) (or (string<? (car x) (car y))
+                                                                      (and (string=? (car x) (car y))
+                                                                           (string<? (cadr x) (cadr y)))))
+                                                     pairs)))))))))
 
   ;; WHETHER THE VOLUME HOLDING DIR merges spellings, by creating one probe
   ;; there: a directory named with an uppercase ASCII letter and U+00E9 (NFC),

@@ -142,8 +142,8 @@
 (want "LC-4 --cut against the start tag equals --writer of a writer with no drafts, when nothing changed"
       (let ((at-cut (items-of (loc ab "m.sc" "--bytes" "7:11")))
             (working (items-of (ask ab 'locate "m.sc" "--writer" "w2" "--bytes" "7:11"))))
-        (list (equal? at-cut working) (length working)))
-      '(#t 2))
+        (list (equal? at-cut working) working))
+      (list #t ab-spans))
 (want "LC-5 an empty range at the boundary answers the block that starts there, where projection-range on the same pieces answers the one that ends there"
       (list (items-of (loc ab "m.sc" "--bytes" "9:9"))
             (projection-range (map (lambda (s) (list 'source (cadr s) (caddr s) (cadddr s) 0 '())) ab-spans) 9 9))

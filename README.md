@@ -2809,6 +2809,80 @@ The `lock` file is part of the store and is never recreated except by
 nobody holds the store, the lock file is missing. Either way,
 `touch <store>/lock` restores it.
 
+## Publishing a landing
+
+A change made in the store -- written, committed, frozen under a tag -- is
+published to a git repository by a script, not a verb:
+
+    scheme --script tools/publish-landing.sc <store> <start-tag> <freeze-tag> <worktree>
+
+`<start-tag>` names the store's state the worktree's HEAD holds, and
+`<freeze-tag>` the state to publish. The commit's message and the git id of
+the start tree are in a block, the LANDING, written and committed before the
+freeze tag is made (so the tag's cut holds it), and found by its fields: kind
+`decision`, status `done`, and the fields `slot` "landing", `freeze` "<the
+freeze tag's name>" and `base` "<the 40-hex git id of HEAD>"; its text is the
+message. For example:
+
+    theourgia insert --title "landing" --text "<the commit message>"
+    theourgia set <id> kind decision
+    theourgia set <id> slot landing
+    theourgia set <id> freeze <freeze-tag>
+    theourgia set <id> base <git id>
+    theourgia set <id> status done
+    theourgia tag <freeze-tag>
+
+Everything is checked before the worktree changes, each as a refusal:
+
+- each tag names one cut (`unknown-tag`, `tag-unsettled`);
+- exactly one landing block at the freeze cut (`missing-landing`,
+  `ambiguous-landing`; a contested field reads as missing), a decision whose
+  status is `(closed done)` -- a dropped one refuses -- with a 40-hex base
+  and a non-empty text (`invalid-landing` with the reason);
+- no `.theourgia-landing-*` entry at the worktree root (`leftover-scratch`:
+  a run that died left it, and the operator removes it); the worktree clean,
+  untracked files included (`dirty`); its HEAD the base (`wrong-head`);
+- the base equals the start cut's raw export path by path, compared with
+  the LITERAL blobs (`git ls-tree` and `git cat-file`, not `git archive`,
+  whose attributes can rewrite a file): only plain files are compared, and
+  dot-named paths, symbolic links and submodules -- and what the import read
+  through them -- are listed in the answer as `(skipped <path> <why>)`
+  (`base-mismatch` with the paths that differ);
+- `changed-files` between the cuts is not empty (`nothing-to-publish`: no
+  empty commit is made);
+- a content path is a 0644 file at the base and a removed path a 0644 or
+  0755 one; no touched path is a link or a submodule (`unsupported-entry`:
+  the store records no mode, so an executable cannot be edited, and an added
+  file lands 0644);
+- every destination: no `.git` component and not under the git directory
+  (`git-path`); every existing directory above it real, not a link or a
+  submodule (`unsafe-destination`); and an added path's place empty -- an
+  ignored file there counts -- unless the removals clear it, as when a
+  directory becomes a file or a file a directory, or `A` is removed and `a`
+  added (`destination-exists`);
+- no two spellings the landing writes, or one it writes and one that stays,
+  would be merged by the worktree's volume (`case-collision`,
+  `normalisation-collision`); an ambiguous pair the landing does not touch
+  never blocks it. Which kinds the volume merges is probed once, by a
+  directory made in the scratch directory and removed (`probe-failed`).
+
+Then it removes every removed path (`git rm`), and any directory that leaves
+empty in the way, copies every added or content path from the freeze cut's
+export, and stages them. The staged set is read back: exactly the intended
+paths with A, M or D, each staged blob equal to the projection's bytes (a
+`text`, `eol` or filter attribute would convert them: `staging-converted`)
+and no removed path left in the index (`staged-set-mismatch`); a refusal
+here leaves the worktree staged and says `(state staged)`. It commits with
+the block's text verbatim (`--no-verify`; author and committer from the
+repository's configuration), never pushes, and answers
+
+    (ok (commit <id>) (landing <block>) (base <id>) (added ...) (content ...) (removed ...) (skipped ...))
+
+The probe and the two exports need a scratch directory on the worktree's
+volume: the git directory when it is on the same device, else a hidden
+`.theourgia-landing-<pid>/` at the worktree root, removed before anything is
+staged.
+
 ## Requests and replay
 
 The block-editing verbs — `insert`, `set`, `move`, `del`, `link`, `unlink` —
@@ -3938,6 +4012,7 @@ them at all.**
 | `THEOURGIA_READ_CHUNK` | an exact positive integer: the streaming client reads at most that many bytes at a time, so a row can cut its lines where it likes; refused at load if it is anything else |
 | `THEOURGIA_BASE_LIBDIR` | `test/change-stream-guard.sc`'s base: a library root holding the base tree's `theourgia/` and `igropyr/`, whose daemon the guard compares with this tree's. Unset, the guard prints why and runs nothing. Read only by `test/` |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
+| `THEOURGIA_TEST_OTHER_VOLUME` | a writable directory on another volume than `THEOURGIA_TEST_ROOT`, for `test/publish-landing.sc`'s PL-33 (a linked worktree whose repository is on another volume); unset, the fixture tries `/tmp`, `/dev/shm` and `/var/tmp`, and when none is on another volume the row prints SKIP and why. Read only by `test/` |
 | `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
 | `THEOURGIA_LIBDIR` | read by `test/env.sh` and `test/paths.py`, not by any library. It is what makes a suite reading a PINNED one |

@@ -35,6 +35,8 @@
   ("code-project.sc" (volume-insensitivity) entry-name-type 3 keep a "not writer layout: changed-files' volume probe, one name under its three spellings, each asked with an lstat; a failure is probe-failed")
   ("code-project.sc" (read-tree) entry-name-type 1 keep a "not writer layout: the changed-files reference's own export directory, walked without following a link")
   ("code-project.sc" (remove-tree!) entry-name-type 1 keep a "not writer layout: the changed-files reference's scratch directory, removed without entering a symbolic link")
+  ("tools/publish-landing.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("tools/publish-landing.sc" (type-at) entry-name-type 1 keep a "not writer layout: the git worktree, the scratch directory and the two exports publish-landing reads, checks and removes, each name asked with an lstat; a failure other than absence raises")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -183,6 +185,11 @@
    refuse a
    "changed-files' volume probe: a lookup of the made probe under the other two spellings that raises is probe-failed, after the probe is removed (the third handler)"
    (e (#t #f)))
+  ("tools/publish-landing.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "publish-landing's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("code-project.sc" (volume-insensitivity) 3 guard
    (#t)
    refuse a
