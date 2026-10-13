@@ -576,15 +576,12 @@ With a name, binds it to the cut this store has **applied** — not the frontier
 discovered, which would name records no reader of this store could produce. The cut is
 taken before the record exists, so a tag is never inside the cut it binds, and an edit
 written afterwards does not move it. It is a write, and answers as one, with the cut it
-bound beside the record:
+bound, taken from the record it wrote:
 
     (ok (events ((<writer> . <seq>))) (state ()) (cursor (<writer> . <seq>)) (replay #f) (cut ((<writer> . <seq>) ...)))
 
-A repeated request (`--req`) answers `(ok (replay #t) (event (<writer> . <seq>)) (cut ...))`,
-the cut of the record it replays while that record is still the name's; once a later tag
-of the name has superseded it, the replay carries no cut. The cut is read back from the
-store after the write, so a named tag costs one reduce of the store beside the write: on a
-store of tens of thousands of blocks, seconds.
+A repeated request (`--req`) answers as any replay does, `(ok (replay #t) (event (<writer> . <seq>)))`,
+without the cut: the listing below gives it while the record is still the name's.
 
 Without a name, lists what is bound: an item a name, or an item each binding of a name
 written concurrently:

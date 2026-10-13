@@ -4753,7 +4753,12 @@
                                         (intent-timed 7 (state-section state payload writer seq))
                                         (list 'cursor (cons writer seq))
                                         (list 'replay #f))
-                                  (if matched (list (list 'matched matched)) '()))))))))))))))
+                                  (if matched (list (list 'matched matched)) '())
+                                  ;; A NAMED TAG SAYS THE CUT IT BOUND, from its own
+                                  ;; record: the cut was taken when the intent was
+                                  ;; resolved, under this write's lock, so no later
+                                  ;; write can stand between the record and the answer.
+                                  (if (eq? (car payload) 'tag) (list (list 'cut (caddr payload))) '()))))))))))))))
 
   ;; ---- init ----------------------------------------------------------------
 

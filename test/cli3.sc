@@ -4161,13 +4161,6 @@
       (let ((a (cadr (run-piped dT "" "tag" "v1" "--req" "t-1" "--cursor" cursor-WT))))
         (list (car a) (cadr a)))
       '(ok (replay #t)))
-(want "a replayed tag carries the same cut as the answer it replays"
-      (let* ((cut-in (lambda (a) (let ((c (and (pair? a) (assq 'cut (filter pair? (cdr a)))))) (and c (cadr c)))))
-             (first (cadr (run-piped dT "" "tag" "v2" "--req" "t-3" "--cursor" cursor-WT)))
-             (again (cadr (run-piped dT "" "tag" "v2" "--req" "t-3" "--cursor" cursor-WT))))
-        (list (and (cut-in first) #t) (and (pair? again) (assq 'replay (filter pair? (cdr again))) #t)
-              (equal? (cut-in first) (cut-in again))))
-      '(#t #t #t))
 ;; TWIN: THE LISTING FORM HAS NOTHING TO REPLAY and refuses an identity,
 ;; so the row above is about which request carries one rather than about
 ;; the name `tag`.
