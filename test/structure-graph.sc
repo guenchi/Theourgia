@@ -139,14 +139,15 @@
             (check! 'store-answers (equal? (list made imported (and x #t) (and y #t) (and z #t) moved deleted)
                                            '(ok ok #t #t #t ok ok)))
             (check! 'store-root-rows (= (root-count) (+ before 2))))
+          ;; writers not used above: each one's first record is its sequence 1
           (let ((r2 (reduce-empty)))
-            (ap! r2 "z" '(put ((parent . root) (ord . 0))))
             (ap! r2 "m" '(put ((parent . "root") (ord . 0))))
+            (ap! r2 "z" '(put ((parent . root) (ord . 0))))
             (ap! r2 "n" '(put ((parent . "root") (ord . 0))))
-            (ap! r2 "a" '(put ((parent . root) (ord . 0))))
+            (ap! r2 "g" '(put ((parent . root) (ord . 0))))
             (check! 'root-and-the-string-root-ordered
                     (and (equal? (state-outline r2)
-                                 (list (list 'root 0 (block-id "a" 1)) (list 'root 0 (block-id "z" 1))
+                                 (list (list 'root 0 (block-id "g" 1)) (list 'root 0 (block-id "z" 1))
                                        (list "root" 0 (block-id "m" 1)) (list "root" 0 (block-id "n" 1))))
                          (equal? (state-sibling-bracket r2 'root (block-id "z" 1)) '(0 . #f))
                          (equal? (state-sibling-bracket r2 "root" (block-id "m" 1)) '(0 . 0)))))

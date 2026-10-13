@@ -2775,13 +2775,9 @@
                             (list (car p) (cdr p) (car e))))
                         placed)
                    marked)))
-      (list-sort (lambda (x y)
-                   (if (equal? (car x) (car y))
-                       (if (= (cadr x) (cadr y))
-                           (string<? (caddr x) (caddr y))
-                           (< (cadr x) (cadr y)))
-                       (string<? (format-parent (car x)) (format-parent (car y)))))
-                 rows)))
+      ;; the one change to the verbatim copy: the comparator is outline-row<?,
+      ;; whose total order the kept structure follows
+      (list-sort outline-row<? rows)))
 
     ;; the siblings as ord-for read them before: the outline's rows under PARENT
     (define (siblings-recomputed r parent)
