@@ -945,7 +945,10 @@
           (hashtable-set! (reduction-block-index r) id b)
           (reduction-blocks-rev-set! r (cons (cons id b) (reduction-blocks-rev r)))
           (reduction-block-forward-set! r #f)
-          (structure-note! r id)
+          ;; NOT NOTED HERE: every caller (do-put!, do-set!, do-del!, do-move!)
+          ;; ends by noting the block, so a block made without its position
+          ;; never enters the unplaced set only to leave it a moment later,
+          ;; and rows->state rebuilds the structure whole
           b)))
 
   ;; ---- interpreting one payload ---------------------------------------------
@@ -1938,11 +1941,8 @@
   ;; `doc` row came first in three and the `section` row in the other
   ;; three, and a fixture that took `(car ...)` of the list went red one run
   ;; in five.
-  ;; THE ROWS IN THE TABLE'S CREATION ORDER, placed rows first and then the
-  ;; marked ones, as the computation this replaced gave them to the sort: the
-  ;; sort is stable, and two parents written differently that print alike
-  ;; (the symbol root and the string "root") compare equal in it, so their
-  ;; rows keep the order they came in.
+  ;; the live placed rows not on a cycle, and the marked rows under root at
+  ;; ord 0, in outline-row<?'s total order
   (define (state-outline r)
     (let* ((s (reduction-structure r))
            (info (structure-info s))
@@ -1965,12 +1965,18 @@
                '() blocks)))
       (list-sort outline-row<? (append placed marked))))
 
+  ;; A TOTAL ORDER. Two parents can print alike -- the symbol root and a
+  ;; string "root" naming a block of that id -- and compared by their printed
+  ;; form alone they tied, so the sort's answer for their rows depended on
+  ;; the order the rows came in. The symbol sorts first.
   (define (outline-row<? x y)
-    (if (equal? (car x) (car y))
-        (if (= (cadr x) (cadr y))
-            (string<? (caddr x) (caddr y))
-            (< (cadr x) (cadr y)))
-        (string<? (format-parent (car x)) (format-parent (car y)))))
+    (cond ((equal? (car x) (car y))
+           (if (= (cadr x) (cadr y))
+               (string<? (caddr x) (caddr y))
+               (< (cadr x) (cadr y))))
+          ((string=? (format-parent (car x)) (format-parent (car y)))
+           (symbol? (car x)))
+          (else (string<? (format-parent (car x)) (format-parent (car y))))))
 
   (define (format-parent p) (if (symbol? p) (symbol->string p) p))
 
@@ -2569,24 +2575,28 @@
     (let* ((s (reduction-structure r))
            (old (hashtable-ref (structure-info s) id #f))
            (new (structure-facts (find-block r id))))
-      (hashtable-set! (structure-info s) id new)
-      (when (and old (fact-live? old) (fact-placed? old))
-        (let ((cv (hashtable-ref (structure-children s) (fact-parent old) #f)))
-          (when cv (cvec-remove! cv (cons (fact-ord old) id)))))
-      (when (and (fact-live? new) (fact-placed? new))
-        (cvec-insert! (structure-cvec! s (fact-parent new)) (cons (fact-ord new) id)))
-      (structure-mark! (structure-unplaced s) id (and (fact-live? new) (not (fact-placed? new))))
-      (structure-marked-sync! s id)
-      (structure-mark! (structure-nested s) id
-                       (and (fact-live? new) (fact-doc? new) (string? (fact-parent new))))
-      (structure-orphan! s id)
-      (when (or (not old) (not (eq? (fact-live? old) (fact-live? new))))
-        (structure-children-orphans! s id))
-      (when (or (not old) (not (eq? (fact-placed? old) (fact-placed? new)))
-                (not (equal? (fact-parent old) (fact-parent new))))
-        (structure-break! s id old)
-        (structure-close! s id))
-      (structure-conflict! s id)))
+      ;; a change that moves none of the facts (a field other than kind) changes nothing
+      (unless (equal? old new)
+        (structure-note-change! s id old new))))
+  (define (structure-note-change! s id old new)
+    (hashtable-set! (structure-info s) id new)
+    (when (and old (fact-live? old) (fact-placed? old))
+      (let ((cv (hashtable-ref (structure-children s) (fact-parent old) #f)))
+        (when cv (cvec-remove! cv (cons (fact-ord old) id)))))
+    (when (and (fact-live? new) (fact-placed? new))
+      (cvec-insert! (structure-cvec! s (fact-parent new)) (cons (fact-ord new) id)))
+    (structure-mark! (structure-unplaced s) id (and (fact-live? new) (not (fact-placed? new))))
+    (structure-marked-sync! s id)
+    (structure-mark! (structure-nested s) id
+                     (and (fact-live? new) (fact-doc? new) (string? (fact-parent new))))
+    (structure-orphan! s id)
+    (when (or (not old) (not (eq? (fact-live? old) (fact-live? new))))
+      (structure-children-orphans! s id))
+    (when (or (not old) (not (eq? (fact-placed? old) (fact-placed? new)))
+              (not (equal? (fact-parent old) (fact-parent new))))
+      (structure-break! s id old)
+      (structure-close! s id))
+    (structure-conflict! s id))
 
   ;; THE GRAPH FROM THE TABLE, for a state restored whole (rows->state): every
   ;; block first exists, then each is noted, so a parent noted after its child
