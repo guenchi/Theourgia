@@ -104,7 +104,7 @@
                          (plan-of o "n" (cons (cons 0 (intent "n0"))
                                              (map (lambda (k) (cons k (list 'insert (list "#%new" (- k 1)) #f
                                                                             (list (cons 'kind 'section) (cons 'title (format "n~a" k))))))
-                                                  (iota 5 1))))
+                                                  '(1 2 3 4 5))))
                          (plan-actor o "n"))
           (reduce-apply! r o 2 '() (produced "n0") (member-actor o "n" 0 (cons o 1)))
           (for-each
@@ -113,7 +113,7 @@
                              (list 'put (list (cons 'kind 'section) (cons 'title (format "n~a" k))
                                               (cons 'parent (format "~a.~a" o (+ k 1))) '(ord . 1)))
                              (member-actor o "n" k (cons o 1))))
-            (iota 5 1))
+            '(1 2 3 4 5))
           (read! 'new-chain r)
           (check! 'new-chain-binds-each-item (and (null? (reduce-gates r)) (= 6 (length (state-datum r)))))
           ;; and one more whose parent is not the block its item names
@@ -271,7 +271,18 @@
     (call-with-output-file script (lambda (p) (for-each (lambda (f) (write f p) (newline p)) scenario)) 'replace)
     (system (string-append (if on? "THEOURGIA_DEGENERACY=1 " "env -u THEOURGIA_DEGENERACY ")
                            "THEOURGIA_HOME='" root "/home' scheme --script '" script "' > '" out "' 2>&1 < /dev/null"))
-    (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-input-string (file-text out))))))
+    ;; The answer is the child's (admission-index ...) datum, wherever it is
+    ;; among what the child printed: a compiler warning ahead of it is not
+    ;; the answer, and no such datum is UNREADABLE with the text.
+    (let ((text (file-text out)))
+      (or (guard (e (#t #f))
+            (let ((p (open-input-string text)))
+              (let loop ()
+                (let ((d (read p)))
+                  (cond ((eof-object? d) #f)
+                        ((and (pair? d) (eq? (car d) 'admission-index)) d)
+                        (else (loop)))))))
+          (list 'UNREADABLE text)))))
 
 (define on (run-scenario "on" #t))
 (define off (run-scenario "off" #f))
