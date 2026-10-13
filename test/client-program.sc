@@ -114,9 +114,12 @@
 (define (out-of r) (cadr r))
 (define (err-of r) (caddr r))
 
+;; THE PATTERN IS WRITTEN [s]erve so the shell running the count, whose own
+;; command line holds the pattern's text, does not match it: macOS's and
+;; FreeBSD's pgrep leave out their ancestors, procps's does not.
 (define (alive-under dir)
   (let ((f (string-append here "/count.txt")))
-    (system (string-append "pgrep -f 'serve " dir "' | wc -l | tr -d ' ' > " f))
+    (system (string-append "pgrep -f '[s]erve " dir "' | wc -l | tr -d ' ' > " f))
     (let ((t (file-text f)))
       (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
 (define (daemons-alive) (alive-under store))
