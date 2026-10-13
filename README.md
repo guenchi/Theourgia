@@ -1178,7 +1178,7 @@ ones bound.
       ->  (error bad-request not-a-goal (goal (and (title ?a ?t))))
 
 A FACT RELATION answers what the store's providers already know, as tuples
-(`query.sc`, line 101): `(field <a> "slot" ?v)` answers `(row "x")`, the
+(`query.sc`, line 101): `(field "<a>" "slot" ?v)` answers `(row "x")`, the
 value as stored.
 
 A RULE OF THE LIBRARY is a relation the library's rules define from facts
@@ -1230,10 +1230,11 @@ read by the `field` build at line 525); `title` likewise answers only a
 settled string. A block whose placement is contested has no `under` row
 (line 537), and `kind` answers `conflict` rather than either kind. A query
 therefore says nothing about a contested value rather than something false;
-`conflicts` lists it. The one exception is `ref`: it reads a block's text as
-search reads it (`query.sc`, line 551, through `field-strings`), each
-candidate of a contested `src` included, so a reference in either candidate
-is a `ref` row.
+`conflicts` lists it. Two relations read text as search reads it, each
+candidate of a contested field included (`field-strings`): `ref`, a
+reference in either candidate of a contested `src` (`query.sc`, line 551),
+and `score`, a hit on a contested title, `src` or keywords (`query.sc`, line
+663, through search).
 
 ### The state a query reads
 
@@ -1246,10 +1247,12 @@ digest.
 
 ### What `rule` checks when it is declared
 
-The value is checked before anything is written (`query.sc`, line 245): it
-must be plain data, one clause of each kind, a plan's marker held nowhere;
-`--on` must name at least one kind, each one of the store's kinds
-(`kind-not-known` otherwise); exactly one of `--must` and `--must-not`
+The `rule` verb answers its usage when `--on` is missing or when not exactly
+one of `--must` and `--must-not` is given. The value is then checked before
+anything is written (`query.sc`, line 245), and so is a rule value in a
+`batch`: it must be plain data, one clause of each kind, a plan's marker held
+nowhere; at least one kind (`rule-needs-kinds`), each one of the store's
+kinds (`kind-not-known`); exactly one polarity
 (`rule-needs-one-of-must-must-not`); and every goal given -- the selector
 and the goal -- is checked as a query's goals are, with `?w` bound first and
 the 7 rule-only facts known, so an unknown relation, a wrong arity, a
@@ -1274,8 +1277,10 @@ would produce -- every intent of a batch, or the prefix a failing one leaves
 -- and the write's targets are taken from it (`store.sc`, line 3473). A
 STATE rule is asked of that copy; a WRITE rule's plain facts read the state
 before the write and its `+` facts the copy (`rules.sc`, lines 296 and 318).
-Only a write that passes runs for real. A write that fails writes nothing and is refused
-`rule-violation`, every failing target and rule named (see `rule`).
+Only a write that passes runs for real. A write a rule fails writes nothing
+and is refused `rule-violation`, every failing target and rule named, or
+`rule-unevaluable` when a rule cannot be evaluated (see `rule`); a write
+that passes then runs as it would with no rule, its own refusals included.
 
 ## Following a store
 
