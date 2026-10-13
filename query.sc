@@ -799,8 +799,9 @@
     (define facts (if (and (pair? bound+facts) (pair? (cdr bound+facts))) (cadr bound+facts) '()))
     ;; AN AND IS A CONJUNCTION WHEREVER IT STANDS: (and a (and b c)) is the
     ;; conjunction a b c, its goals in the order written. An empty and is
-    ;; no goal, nested or not, and an and reached twice (a datum label's
-    ;; cycle) is refused rather than walked for ever.
+    ;; no goal, nested or not, and an and found inside itself (a datum
+    ;; label's cycle) is refused rather than walked for ever; one and shared
+    ;; by two places, which is no cycle, is read in each.
     (define (conjuncts goal)
       (let walk ((g goal) (seen '()))
         (unless (and (pair? g) (list? g) (symbol? (car g)))

@@ -401,6 +401,11 @@
   (want "C2 --clear removes the table its header names, and only that one"
         (in-order a (file-exists? (table "signatures-%2D-python.sexp")) (file-exists? js-table))
         (list '(ok (cleared (kind signatures) (writer "-") (language "python"))) #f #t)))
+(want "C3 --clear takes a header from another tool, as a supply does"
+      (supply (line (list 'supply 'signatures '(writer "-") '(language "python") '(source (other-tool "1"))
+                          '(files ()) '(replaces ())))
+              "signatures" "--clear")
+      '(ok (cleared (kind signatures) (writer "-") (language "python"))))
 (want "C3 --clear of a table that is not there answers the same"
       (supply (header 'signatures "-" '() '() "python") "signatures" "--clear")
       '(ok (cleared (kind signatures) (writer "-") (language "python"))))
@@ -1025,12 +1030,13 @@
 
 ;; ==== calls: refs and reach ====
 ;; -> the answer to a calls supply of `lines` made from the committed projection.
-(define (supply-calls st lines replaces)
+(define (supply-calls st lines replaces . tool)
   (let* ((d (export-in st))
          (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
     (supply-in st
                (apply string-append
-                      (line (list 'supply 'calls '(writer "-") '(language "javascript") '(source (vscode "1.140.0"))
+                      (line (list 'supply 'calls '(writer "-") '(language "javascript")
+                                  (list 'source (list (if (pair? tool) (car tool) 'vscode) "1.140.0"))
                                   (list 'files files) (list 'replaces replaces)))
                       lines)
                "calls")))
@@ -1038,6 +1044,16 @@
 (define (refs-items a) (and (pair? a) (eq? (car a) 'ok) (cdr (assq 'items (cdr a)))))
 (define (refs-clauses a) (filter (lambda (c) (and (pair? c) (memq (car c) '(via stale)))) (cdr a)))
 (define supplied-via '(via (vscode "1.140.0" "javascript")))
+
+;; F276: CALLS FROM ANOTHER TOOL: reach answers the via the header gave.
+(define r12t (make-store! "r12t"))
+(define r12t-alpha (id-in r12t "function alpha"))
+(define r12t-gamma (id-in r12t "function gamma"))
+(want "D6 calls supplied from (other-tool \"1.140.0\"): reach alpha answers via (other-tool \"1.140.0\" \"javascript\")"
+      (in-order (supply-calls r12t (list (calls r12t-alpha r12t-gamma r12t-gamma)) '("a.js" "b.js") 'other-tool)
+                (ask r12t 'reach r12t-alpha "--rel" "calls" "--depth" "1"))
+      (list '(ok (supplied (facts 1) (files 2)))
+            (list 'ok (list 'reached (list (list r12t-alpha 0) (list r12t-gamma 1))) '(stale 0) '(via (other-tool "1.140.0" "javascript")))))
 
 ;; ---- D6: a cycle, and depth -----------------------------------------------------------
 (define r12 (make-store! "r12"))

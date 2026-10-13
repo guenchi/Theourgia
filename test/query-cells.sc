@@ -311,6 +311,21 @@
                 (q q1 '(and (edge ?x depends-on ?y) (edge ?y depends-on ?z)))
                 (q q1 '(and (and (and (edge ?x depends-on ?y))))))
       '((("a.1" "a.2" "a.3")) (("a.1" "a.2" "a.3")) (("a.1" "a.2") ("a.2" "a.3"))))
+(want "Q8b across the nesting: a test inside a nested and reads an outer binding, a test after it reads a nested one"
+      (q q1 '(and (edge ?x depends-on ?y) (and (edge ?y depends-on ?z) (/= ?x ?z)) (string< ?x ?z)))
+      '(("a.1" "a.2" "a.3")))
+(want "Q8b a test inside a nested and whose variable only a later goal binds is refused, as it is flat"
+      (let ((a (q q1 '(and (and (/= ?x "a.1")) (edge ?x depends-on ?y))))) (and (pair? a) (list-head a (min 3 (length a)))))
+      '(error bad-request test-variable-unbound))
+;; A goal built in Scheme can hold a cycle no request text can: the and is
+;; its own child. It is refused, not walked for ever; one and in two places
+;; is no cycle and is read in each.
+(want "Q8b an and that is its own child is refused not-a-goal; one and shared by two places answers"
+      (in-order (let* ((g (list 'and '(edge ?x depends-on ?y) #f)))
+                  (set-car! (cddr g) g)
+                  (let ((a (q q1 g))) (and (pair? a) (list-head a 3))))
+                (let ((s '(and (edge ?x depends-on ?y)))) (q q1 (list 'and s s))))
+      '((error bad-request not-a-goal) (("a.1" "a.2") ("a.2" "a.3"))))
 (want "Q8b PIN an empty and, nested or not, is refused not-a-goal"
       (in-order (q q1 '(and (kind ?x _) (and))) (q q1 '(and)))
       '((error bad-request not-a-goal (goal (and))) (error bad-request not-a-goal (goal (and)))))
