@@ -31,7 +31,9 @@
 ;; which print alike and must still come out in one order.
 ;;
 ;; It runs in a child under each value of the switch: on, nothing may differ
-;; (SG-1); off, the switch is off and the readings are the same (SG-2).
+;; (SG-1); off, the switch is off and the readings are the same (SG-2), and
+;; every named check holds (SG-3). SG-4 pins the outline's total order with
+;; what the base also has.
 
 (import (chezscheme))
 
@@ -156,14 +158,37 @@
                  (if (eq? (car result) 'ok) (cadr result) (cdr result))
                  (reverse checks)))))
 
-(define (run-scenario tag on?)
+(define (run-scenario tag on?) (run-program tag scenario on?))
+(define (run-program tag program on?)
   (let ((script (string-append root "/scenario-" tag ".ss"))
         (out (string-append root "/scenario-" tag ".out"))
         (dir (string-append root "/store-" tag)))
-    (call-with-output-file script (lambda (p) (for-each (lambda (f) (write f p) (newline p)) scenario)) 'replace)
+    (call-with-output-file script (lambda (p) (for-each (lambda (f) (write f p) (newline p)) program)) 'replace)
     (system (string-append (if on? "THEOURGIA_DEGENERACY=1 " "env -u THEOURGIA_DEGENERACY ")
                            "THEOURGIA_HOME='" root "/home' scheme --script '" script "' '" dir "' > '" out "' 2>&1 < /dev/null"))
     (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-input-string (file-text out))))))
+
+;; THE ORDER OF ROWS UNDER TWO PARENTS THAT PRINT ALIKE, read through what
+;; the base also has (reduce-apply! and state-outline, no switch library), so
+;; the row is red on a tree whose sort lets the input order decide. Raw records
+;; name a string "root" parent beside root's own children (the command line
+;; always writes the symbol). Two rows, the string's first: a stable sort that
+;; ties them keeps that order; the total order puts the symbol first. Four
+;; rows: root's children as ord-for read them before, the outline's rows under
+;; root sorted by ord alone.
+(define order-program
+  '((import (chezscheme) (theourgia reduce))
+    (define (state-of . records)
+      (let ((r (reduce-empty)))
+        (for-each (lambda (w p) (reduce-apply! r w 1 '() p)) (map car records) (map cdr records))
+        r))
+    (define two (state-of '("m" . (put ((parent . "root") (ord . 0)))) '("z" . (put ((parent . root) (ord . 0))))))
+    (define four (state-of '("m" . (put ((parent . "root") (ord . 0)))) '("z" . (put ((parent . root) (ord . 0))))
+                           '("n" . (put ((parent . "root") (ord . 0)))) '("g" . (put ((parent . root) (ord . 0))))))
+    (write (list 'structure-graph-order
+                 (state-outline two)
+                 (map caddr (list-sort (lambda (a b) (< (cadr a) (cadr b)))
+                                       (filter (lambda (row) (eq? (car row) 'root)) (state-outline four))))))))
 
 (define on (run-scenario "on" #t))
 (define off (run-scenario "off" #f))
@@ -178,6 +203,10 @@
       (and (pair? off) (eq? (caddr off) 'ok)
            (filter (lambda (c) (not (cdr c))) (car (cddddr off))))
       '())
+(define order (run-program "order" order-program #f))
+(want "SG-4 a string \"root\" parent beside root's children: the outline's order is total, the symbol root first, and root's children as ord-for reads them are in id order"
+      order
+      '(structure-graph-order ((root 0 "z.1") ("root" 0 "m.1")) ("g.1" "z.1")))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%structure-graph complete~%" bad rows)
