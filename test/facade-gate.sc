@@ -1082,6 +1082,15 @@
                           (set! census-diff-block (census-get s 'B))
                           (census-ask st 'diff "t0" "t1"))))
     (cons 'conflicts (seeded (lambda (st x s) (census-ask st 'conflicts))))
+    ;; one text file imported between two tags, so the answer has an item
+    (cons 'changed-files (seeded (lambda (st x s)
+                                   (let ((dir (string-append x "/changed-src")))
+                                     (mkdir-p! dir)
+                                     (census-write! (string-append dir "/a.txt") "a\n")
+                                     (census-ask st 'tag "cf0")
+                                     (census-ask st 'import-code dir)
+                                     (census-ask st 'tag "cf1")
+                                     (census-ask st 'changed-files "cf0" "cf1")))))
     ;; THE REVIEW CHANNEL'S TWO DISPATCHER VERBS: a scope of B at t1 into a
     ;; fresh directory first (scope is core.sc's program, run here through
     ;; its library). Nothing in the scoped store was written by the letter's
@@ -1243,7 +1252,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit commitments conflicts def diagnostics diff drafts grep import-code log names query refs search tag tasks uses whereis))
+      '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code log names query refs search tag tasks uses whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1260,7 +1269,7 @@
 ;; is filtered out as not a real tag.
 (want "F58 each tagged verb's heads, and how many of its items carry none"
       (census-detail 'tagged)
-      '((commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
+      '((changed-files (path) . 0) (commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
         (import-code (ok) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))

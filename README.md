@@ -623,6 +623,42 @@ the whole numeric syntax, and `#e` with a large exponent asks it to build an int
 of any size from eleven characters of argument. A cut this store cannot reach is
 refused as `(error cut-unavailable (cut from|to) (reason ...))` rather than truncated to the part it can reach. A name that is not a tag is refused as `(error unknown-tag <name> (cut from|to))`, and a name whose tags are unsettled as `(error tag-unsettled <name> (cut from|to))` rather than resolved to one of them.
 
+### `changed-files`
+
+    (changed-files <cut> <cut>)
+
+It answers:
+
+    (ok (items (path <path> content|added|removed) ...) (from <cut>) (to <cut>))
+
+The files whose exported bytes or presence differ between two cuts, sorted by path:
+`content` when the file is at both and its bytes differ, `added` when it is only at the
+second, `removed` when it is only at the first. What is compared is what `export-code
+--raw` writes: each text file's children's srcs run together. So a title, a level, a
+link or a language changes no file; two src edits that cancel across a block boundary
+answer nothing; a rename is the old path removed and the new one added; a file whose
+mode changes out of `text` is removed; and an empty file is present, not missing. Each
+side is a tag name or a cut written out, read as `read --cut` reads one, and `from` and
+`to` name the cuts served.
+
+A history the store could not read in full refuses it as it refuses `export-code`,
+`(error incomplete-reduction (notes ...))`. A path the export cannot write is refused
+with the export's own reason -- `(error projection-invalid (reason unsafe-path))` for a
+contested or unsafe path, `duplicate-path` for two files at one path -- and a set of
+paths that cannot form a tree, one path a directory of another (`x` and `x/y`; `ab`
+and `abc` are fine), is refused `(error projection-invalid (reason path-collision)
+(paths <p> <q>) (cut from|to))`.
+
+Paths a volume would merge are not refused here, since a case-sensitive volume keeps
+them apart; the answer marks them, each clause only when it has a group:
+`(case-ambiguous ((<spelling> ...) ...))` for paths or directories equal under a
+per-character simple case fold of their raw spelling (what a volume that folds case
+alone merges: `A` and `a`, `A/x` and `a/y`), and `(normalisation-ambiguous (...))` for
+those equal in NFC with different bytes (an NFD and an NFC spelling of one name). A
+volume insensitive to both merges by the NFC of the case fold of the NFC, which no mark
+carries: a consumer that knows its volume is both computes that key itself. Chez's
+Unicode tables may differ from a volume's.
+
 ### `describe`
 
     (describe)
@@ -2799,7 +2835,7 @@ malformed manifest or retirement -- with the kind of damage (its name is
 also the reason) and `after`, the last sequence kept. The records up to
 `after` are delivered; nothing after the cut is. A verb that must not act
 on a partial history -- `export-code`,
-`export-md`, `import-md`, `import-code`, `def`, `snapshot`, `supply` -- refuses instead,
+`export-md`, `import-md`, `import-code`, `def`, `snapshot`, `supply`, `changed-files` -- refuses instead,
 `(error incomplete-reduction (notes ...))` with the same entries, before
 it writes a record or a snapshot. A cut refuses nothing else: every other
 operation reads a cut store as it always has (a write whose own writer's

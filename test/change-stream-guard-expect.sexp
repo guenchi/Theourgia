@@ -6,5 +6,7 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the named tag answer with its cut clause is in the base now.
-()
+;; describe and an unknown verb's answer list the verbs, and changed-files is
+;; a new one.
+((describe "the catalogue lists the new verb changed-files")
+ (no-such-verb "the unknown-verb refusal lists the verbs, changed-files among them"))

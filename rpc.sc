@@ -1256,6 +1256,8 @@
             "Name the current cut, or list the names already given." #f 'daemon)
       (list 'diff '(diff <cut> <cut>)
             "Report what changed between two cuts." #f 'daemon)
+      (list 'changed-files '(changed-files <cut> <cut>)
+            "List the files whose exported bytes or presence differ between two cuts, each as content, added or removed; a title, a level, a link or a language changes no file. Paths a case- or normalisation-insensitive volume would merge are listed as case-ambiguous or normalisation-ambiguous groups." #f 'daemon)
       (list 'conflicts '(conflicts)
             "List blocks whose writers disagree." #f 'daemon)
       (list 'subscribe subscribe-usage
@@ -2208,6 +2210,23 @@
                     (lambda ()
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
+      ;; THE FILES A LANDING WOULD PUBLISH: each cut loaded as a read at a cut
+      ;; is (store-state-at-cut, its refusals naming the side), then compared
+      ;; by their raw projections (code-project.sc, changed-files-between).
+      ;; An incomplete load refuses it, as export-code (undeclared-verbs).
+      (cons 'changed-files
+            (lambda (store actor args req options state writer cwd)
+              (if (not (= 2 (length args)))
+                  (usage '(changed-files <cut> <cut>))
+                  (guarded
+                    (lambda ()
+                      (let ((a (store-state-at-cut store state (car args) 'from)))
+                        (if (not (reduction? a))
+                            a
+                            (let ((b (store-state-at-cut store state (cadr args) 'to)))
+                              (if (not (reduction? b))
+                                  b
+                                  (changed-files-between store a b))))))))))
       (cons 'conflicts
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
@@ -2550,7 +2569,7 @@
   ;; one that is missing a writer. These are the second kind; every other
   ;; verb declares. A verb that builds no reduction declares too, and it
   ;; makes no difference: it never loads.
-  (define undeclared-verbs '(export-code export-md import-md import-code def snapshot supply))
+  (define undeclared-verbs '(export-code export-md import-md import-code def snapshot supply changed-files))
   ;; THE UNDECLARED VERBS ARE STRICT: a cut refuses them before they build
   ;; anything (the load raises), where every consumer outside a request
   ;; still loads a cut store as it always has.

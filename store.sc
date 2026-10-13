@@ -2291,9 +2291,12 @@
   ;; cut such as ((A . 1) (B . 0)) on an unchanged store was refused. Only
   ;; the entries above 0 are asked to be covered; the refusal names the
   ;; cut as it was asked.
-  (define (store-state-at-cut store supplied text)
-    (let* ((base (obtain-state store supplied #f))
-           (resolved (resolve-cut store (quote cut) text base)))
+  ;; SIDE names the cut in a refusal: `cut` for a read or an export, `from`
+  ;; or `to` for a verb that compares two (changed-files), as diff's do.
+  (define (store-state-at-cut store supplied text . side)
+    (let* ((side (if (pair? side) (car side) (quote cut)))
+           (base (obtain-state store supplied #f))
+           (resolved (resolve-cut store side text base)))
       (if (eq? (car resolved) (quote error))
           resolved
           (let ((verdict (cut-usable? base (cadr resolved))))
@@ -2308,7 +2311,7 @@
                               (list (quote asked) (cadr resolved))
                               (list (quote served) (reduce-applied-cut past))))))
                 (list (quote error) (quote cut-unavailable)
-                      (list (quote cut) (quote cut))
+                      (list (quote cut) side)
                       (list (quote reason) (if (pair? verdict) (cadr verdict) verdict))))))))
 
   ;; A DIFF'S TWO CUTS ARE JUDGED AND THEN REPLAYED, and each replay is asked

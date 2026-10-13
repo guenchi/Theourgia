@@ -15,14 +15,17 @@
 (library (theourgia code-project)
   (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory duplicate-path-failure
-          file-projection-key projected-files)
+          file-projection-key projected-files
+          projection-outputs raw-projection path-collision spelling-key ambiguous-groups
+          volume-insensitivity changed-files-between)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia timing-wrappers) timed)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
-                entry-bytes)
+                entry-bytes entry-name-type mkdir-exclusive! rmdir! unlink! process-id machine-home)
+          (theourgia degeneracy)
           (only (theourgia markers) import-text?)
           (only (theourgia wire) storable-encode sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex))
@@ -351,18 +354,201 @@
                               (cadr k)))
                       out)))))
 
+  ;; THE PROJECTION, ONE COMPUTATION FOR EVERY CONSUMER: -> ((<path> <bytes>)
+  ;; ...) in the exporter's order, raw (the children's srcs run together) or
+  ;; marked. export-code writes it; changed-files compares it (raw) without
+  ;; writing anything.
+  (define (projection-outputs store state raw?)
+    (let ((cut (reduce-applied-cut state)))
+      (map (lambda (f)
+             (let ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f)))
+               (list rel (if raw? (apply bytes-append (map cadr entries))
+                             (projection-encode entry (list (store-id-of store) id cut) entries)))))
+           (projected-files state))))
+  (define (raw-projection state) (projection-outputs #f state #t))
+
   (define (export-code-view store dir raw? view)
     (answer
       (lambda ()
-        (let* ((state (view)) (cut (reduce-applied-cut state))
-               (files (projected-files state))
-               (outputs
-                 (map (lambda (f)
-                        (let ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f)))
-                          (list rel (if raw? (apply bytes-append (map cadr entries))
-                                        (projection-encode entry (list (store-id-of store) id cut) entries)))))
-                      files)))
+        (let* ((state (view))
+               (outputs (projection-outputs store state raw?)))
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
-          (list 'ok (list 'files (length files)))))))
+          (list 'ok (list 'files (length outputs)))))))
+
+  ;; ---- the files that differ between two cuts --------------------------------
+  ;;
+  ;; WHAT IS COMPARED IS WHAT IS PUBLISHED: each text file's raw bytes (its
+  ;; children's srcs run together) and its presence. A title, a level, a link
+  ;; or a mode between two non-text modes changes no published byte and is not
+  ;; reported; two src changes that cancel across a block boundary report
+  ;; nothing; missing and empty are different (an empty file is present).
+
+  ;; the directories above a path, nearest the root first: "a/b/c" -> ("a" "a/b")
+  (define (path-ancestors p)
+    (let loop ((i 0) (out '()))
+      (cond ((= i (string-length p)) (reverse out))
+            ((char=? (string-ref p i) #\/) (loop (+ i 1) (cons (substring p 0 i) out)))
+            (else (loop (+ i 1) out)))))
+
+  ;; A SET OF PATHS THAT CANNOT FORM A TREE: a path that is another's
+  ;; DIRECTORY prefix (p followed by "/" begins q): x and x/y, not ab and abc.
+  ;; -> (p q) for the first such pair, or #f.
+  (define (path-collision paths)
+    (let ((dirs (make-hashtable string-hash string=?)))
+      (for-each (lambda (q) (for-each (lambda (d) (unless (hashtable-ref dirs d #f) (hashtable-set! dirs d q)))
+                                      (path-ancestors q)))
+                paths)
+      (let loop ((ps (list-sort string<? paths)))
+        (cond ((null? ps) #f)
+              ((hashtable-ref dirs (car ps) #f) => (lambda (q) (list (car ps) q)))
+              (else (loop (cdr ps)))))))
+
+  ;; THE KEY A VOLUME MERGES SPELLINGS BY. A volume insensitive to case alone
+  ;; (NTFS) merges by a SIMPLE per-character fold of the raw string, with no
+  ;; normalisation; one insensitive to normalisation alone (APFS case-
+  ;; sensitive) by NFC; one insensitive to both (APFS, Linux casefold) by
+  ;; NFC of the fold of NFC -- folding can leave canonically equivalent but
+  ;; unequal strings (U+0390 against U+03AA U+0301), hence the final NFC.
+  ;; Full string-foldcase is not used: it merges Strasse and Strasse written
+  ;; with U+00DF, which a per-character fold keeps apart. The known limit:
+  ;; Chez's Unicode tables may differ from a volume's.
+  (define (simple-fold s) (list->string (map char-foldcase (string->list s))))
+  (define (spelling-key kind s)
+    (case kind
+      ((case) (simple-fold s))
+      ((normalisation) (string-normalize-nfc s))
+      ((both) (string-normalize-nfc (simple-fold (string-normalize-nfc s))))
+      (else (assertion-violation 'spelling-key "kind must be case, normalisation or both" kind))))
+
+  ;; THE GROUPS OF SPELLINGS A VOLUME OF THAT KIND WOULD MERGE, over every
+  ;; path and every directory above one: -> a list of groups, each the sorted
+  ;; distinct raw spellings sharing a key, only groups of two or more, sorted.
+  (define (ambiguous-groups kind paths)
+    (let ((by-key (make-hashtable string-hash string=?)) (seen (make-hashtable string-hash string=?)))
+      (for-each
+        (lambda (e)
+          (unless (hashtable-ref seen e #f)
+            (hashtable-set! seen e #t)
+            (hashtable-update! by-key (spelling-key kind e) (lambda (l) (cons e l)) '())))
+        (apply append (map (lambda (p) (cons p (path-ancestors p))) paths)))
+      (list-sort (lambda (x y) (string<? (car x) (car y)))
+                 (filter (lambda (g) (> (length g) 1))
+                         (map (lambda (g) (list-sort string<? g))
+                              (let-values (((ks vs) (hashtable-entries by-key))) (vector->list vs)))))))
+
+  ;; WHETHER THE VOLUME HOLDING DIR merges spellings, by creating one probe
+  ;; there: a directory named with an uppercase ASCII letter and U+00E9 (NFC),
+  ;; asked for under the lowercase spelling (case) and the NFD spelling
+  ;; (normalisation), then removed. -> (values case? normalisation?); a probe
+  ;; that cannot be made raises (error probe-failed (dir <dir>)). An existing
+  ;; path cannot serve: an ASCII-only tree has none to ask under two spellings.
+  (define (volume-insensitivity dir)
+    (let try ((k 0))
+      (let* ((stem (string-append dir "/.theourgia-probe-" (number->string (process-id)) "-" (number->string k) "-"))
+             (made (guard (e (#t 'failed)) (mkdir-exclusive! (string-append stem "A" (string #\xE9))))))
+        (cond
+          ((eq? made 'failed) (raise (list 'error 'probe-failed (list 'dir dir))))
+          ((eq? made 'exists) (if (< k 16) (try (+ k 1)) (raise (list 'error 'probe-failed (list 'dir dir)))))
+          (else
+           (let ((case? (not (eq? 'absent (entry-name-type (string-append stem "a" (string #\xE9))))))
+                 (normalisation? (not (eq? 'absent (entry-name-type (string-append stem "A" (string #\e #\x301)))))))
+             (rmdir! (string-append stem "A" (string #\xE9)))
+             (values case? normalisation?)))))))
+
+  ;; -> ((path <p> <reason>) ...) sorted by p: content (present at both, bytes
+  ;; differ), added (absent at a), removed (absent at b).
+  (define (changed-items ra rb)
+    (let ((a (make-hashtable string-hash string=?)) (b (make-hashtable string-hash string=?)))
+      (for-each (lambda (o) (hashtable-set! a (car o) (cadr o))) ra)
+      (for-each (lambda (o) (hashtable-set! b (car o) (cadr o))) rb)
+      (let ((paths (list-sort string<? (vector->list (hashtable-keys
+                     (let ((u (hashtable-copy a #t))) (vector-for-each (lambda (k) (hashtable-set! u k #t)) (hashtable-keys b)) u))))))
+        (filter values
+                (map (lambda (p)
+                       (let ((x (hashtable-ref a p #f)) (y (hashtable-ref b p #f)))
+                         (cond ((not x) (list 'path p 'added))
+                               ((not y) (list 'path p 'removed))
+                               ((bytevector=? x y) #f)
+                               (else (list 'path p 'content)))))
+                     paths)))))
+
+  ;; changed-files over two states already loaded at their cuts: the
+  ;; projection's refusals (unsafe-path, duplicate-path, unexportable-block)
+  ;; answered as the exporter answers them, then a set that cannot form a
+  ;; tree refused path-collision naming its cut, then the items, the two
+  ;; cuts, and a mark for each kind of volume that would merge spellings.
+  (define (changed-files-between store a b)
+    (answer
+      (lambda ()
+        (let* ((ra (raw-projection a)) (rb (raw-projection b))
+               (pa (map car ra)) (pb (map car rb))
+               (collision (lambda (paths side)
+                            (let ((c (path-collision paths)))
+                              (and c (list 'error 'projection-invalid '(reason path-collision)
+                                           (list 'paths (car c) (cadr c)) (list 'cut side)))))))
+          (or (collision pa 'from)
+              (collision pb 'to)
+              (let* ((marks (lambda (kind name)
+                              (let ((groups (unique-groups (append (ambiguous-groups kind pa) (ambiguous-groups kind pb)))))
+                                (if (null? groups) '() (list (list name groups))))))
+                     (result (append (list 'ok (cons 'items (changed-items ra rb))
+                                           (list 'from (reduce-applied-cut a)) (list 'to (reduce-applied-cut b)))
+                                     (marks 'case 'case-ambiguous)
+                                     (marks 'normalisation 'normalisation-ambiguous))))
+                (degeneracy-check (set! result (changed-files-reference store a b pa pb result)))
+                result))))))
+  (define (unique-groups gs)
+    (let loop ((gs (list-sort (lambda (x y) (string<? (car x) (car y))) gs)) (out '()))
+      (cond ((null? gs) (reverse out))
+            ((member (car gs) out) (loop (cdr gs) out))
+            (else (loop (cdr gs) (cons (car gs) out))))))
+
+  ;; ---- the reference, under THEOURGIA_DEGENERACY: the same answer by a
+  ;; second route. Both cuts are written out with the exporter into two fresh
+  ;; directories and compared file by file. It checks the comparison and the
+  ;; presence logic; a projection or reduction defect reaches both routes
+  ;; alike. A temporary volume that would merge spellings the cuts hold
+  ;; cannot materialise them, so then the reference is not taken and the
+  ;; answer says (reference-unavailable <kind>).
+  (degeneracy-definitions
+    (define (changed-files-reference store a b pa pb answer)
+      (let* ((root (string-append (machine-home) "/changed-files-reference-" (number->string (process-id))))
+             (_ (begin (mkdir-p! (machine-home)) (remove-tree! root) (mkdir-p! root))))
+        (let-values (((case? normalisation?) (volume-insensitivity root)))
+          (let* ((paths (append pa pb))
+                 (blocked
+                   (cond ((and case? normalisation?
+                               (or (pair? (ambiguous-groups 'both pa)) (pair? (ambiguous-groups 'both pb))))
+                          'both)
+                         ((and case? (or (pair? (ambiguous-groups 'case pa)) (pair? (ambiguous-groups 'case pb)))) 'case)
+                         ((and normalisation? (or (pair? (ambiguous-groups 'normalisation pa))
+                                                  (pair? (ambiguous-groups 'normalisation pb))))
+                          'normalisation)
+                         (else #f))))
+            (if blocked
+                (begin (remove-tree! root) (append answer (list (list 'reference-unavailable blocked))))
+                (let ((da (string-append root "/a")) (db (string-append root "/b")))
+                  (export-code-view store da #t (lambda () a))
+                  (export-code-view store db #t (lambda () b))
+                  (let ((reference (changed-items (read-tree da) (read-tree db)))
+                        (items (cdr (cadr answer))))
+                    (remove-tree! root)
+                    (unless (equal? reference items)
+                      (assertion-violation 'degeneracy "changed-files differs from the materialised reference"
+                                           items reference))
+                    answer)))))))
+    ;; every regular file under DIR as ((<relative path> <bytes>) ...)
+    (define (read-tree dir)
+      (if (eq? 'absent (entry-name-type dir))
+          '()
+          (map (lambda (rel) (list rel (entry-bytes (string-append dir "/" rel)))) (directory-files dir))))
+    (define (remove-tree! path)
+      (case (entry-name-type path)
+        ((absent) #f)
+        ((directory)
+         (for-each (lambda (name) (unless (member name '("." "..")) (remove-tree! (string-append path "/" name))))
+                   (directory-entries path))
+         (rmdir! path))
+        (else (unlink! path)))))
 )
