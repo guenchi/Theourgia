@@ -24,7 +24,10 @@
 ;; rising series.
 ;;
 ;; ALWAYS, AND CHEAP: with the variable unset a small import prints no
-;; timing line (TC-0); set, it prints every request phase (TC-1).
+;; timing line (TC-0); set, it prints every request phase (TC-1). THE SWITCH
+;; IS READ AT EXPANSION (ffi.sc's wrappers, as THEOURGIA_INJECT is): unset,
+;; store.sc and code-project.sc expand with no call into the seam at all,
+;; read off their expansions in a child per value (TC-E).
 ;;
 ;; AN OPT-IN FOR THE CURVE: with THEOURGIA_INSERT_COST=1, one synthetic import
 ;; of 3500 one-line files -- 7000 blocks, a file block and its code block
@@ -122,6 +125,38 @@
         (list (answer-head (car r))
               (map (lambda (ph) (let ((v (request-value lines ph))) (and (integer? v) (>= v 0)))) request-phases))
         (list 'ok (map (lambda (ph) #t) request-phases))))
+
+;; THE EXPANSION ITSELF: in a child under each value of the variable,
+;; store.sc's and code-project.sc's library forms expanded and printed, and the
+;; seam's entry point, timing-seam, counted in the text. Unset it must not
+;; occur; set it must, in both.
+(define (expansion-counts tag timing)
+  (let ((script (string-append root "/expand-" tag ".ss"))
+        (out (string-append root "/expand-" tag ".out")))
+    (call-with-output-file script
+      (lambda (p)
+        (write '(import (chezscheme)) p)
+        (write '(define (count-in text sub)
+                  (let ((n (string-length sub)))
+                    (let loop ((i 0) (k 0))
+                      (cond ((> (+ i n) (string-length text)) k)
+                            ((string=? (substring text i (+ i n)) sub) (loop (+ i 1) (+ k 1)))
+                            (else (loop (+ i 1) k))))))
+               p)
+        (write '(define (expansion-text path)
+                  (format "~s" (expand (call-with-input-file path read))))
+               p)
+        (write '(write (map (lambda (f) (count-in (expansion-text f) "timing-seam"))
+                            '("../store.sc" "../code-project.sc")))
+               p))
+      'replace)
+    (system (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
+                           "scheme --script '" script "' > '" out "' 2>&1 < /dev/null"))
+    (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-input-string (file-text out))))))
+(let ((unset (expansion-counts "unset" #f)) (set (expansion-counts "set" "1")))
+  (want "TC-E unset, store.sc's and code-project.sc's expansions hold no call into the timing seam; set, both do"
+        (list unset (and (list? set) (map (lambda (n) (and (integer? n) (> n 0))) set)))
+        '((0 0) (#t #t))))
 
 (if (not (equal? (getenv "THEOURGIA_INSERT_COST") "1"))
     (printf "SKIP the curve: THEOURGIA_INSERT_COST is not 1 (one import of 7000 blocks; set it to read the series)~%")

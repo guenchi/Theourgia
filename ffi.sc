@@ -397,7 +397,7 @@
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
           process-id wall-clock-ms machine-home env-or libc-entry-name
-          timing-enabled? monotonic-us timing-line!)
+          timed intent-timed timing-call timing-quiet)
   (import (chezscheme)
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
@@ -839,26 +839,49 @@
     (let ((t (current-time)))
       (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
 
-  ;; THE WRITE PATH'S TIMING SEAM (test-only, like THEOURGIA_TRACE):
-  ;; THEOURGIA_TIMING=1 makes store.sc's write path print where a request's
-  ;; time goes, one line per phase on stderr, `(timing <what> ...)`. Read
-  ;; once at load, as the trace switch is; unset, every timed phase is the
-  ;; call it wraps and nothing is printed. The clock is the monotonic one,
-  ;; in microseconds: the per-intent phases are well under a millisecond,
-  ;; and a wall clock can step.
-  (define timing-setting (equal? (getenv "THEOURGIA_TIMING") "1"))
-  (define (timing-enabled?) timing-setting)
-  (define (monotonic-us)
-    (let ((t (current-time 'time-monotonic)))
-      (+ (* 1000000 (time-second t)) (quotient (time-nanosecond t) 1000))))
-  ;; A failure to print is swallowed, as the trace's is: timing must not turn
-  ;; a write that worked into one that raised.
-  (define (timing-line! . fields)
-    (guard (e (#t #f))
-      (let ((p (current-error-port)))
-        (write (cons 'timing fields) p)
-        (newline p)
-        (flush-output-port p))))
+  ;; THE WRITE PATH'S TIMING SEAM (test-only), DECIDED AT EXPANSION, the way
+  ;; THEOURGIA_INJECT's branches are: THEOURGIA_TIMING=1 in the process that
+  ;; expands this library. Unset, each wrapper below expands to the expression
+  ;; it wraps -- no closure, no call, no flag test -- and nothing of the seam
+  ;; is compiled but these macros. Set, a wrapper expands to a call into
+  ;; (theourgia timing), the clock, counters, windows and printer, reached
+  ;; through `environment`. Development runs from source, so expansion and run
+  ;; are one process and the variable behaves as a run-time one; a compiled
+  ;; object carries the seam only when it was built with the variable set.
+  (meta define timing-mode
+    (let ((v (getenv "THEOURGIA_TIMING")))
+      (and v (string=? v "1") #t)))
+  (meta-cond
+    (timing-mode
+     ;; the seam's procedures, looked up once each
+     (define timing-procs (make-eq-hashtable))
+     (define (timing-seam name)
+       (or (hashtable-ref timing-procs name #f)
+           (let ((p (eval name (environment '(theourgia timing)))))
+             (hashtable-set! timing-procs name p)
+             p))))
+    (else))
+  ;; (timed <phase> <expr>): <expr>, timed as a request phase
+  (define-syntax timed
+    (lambda (x)
+      (syntax-case x ()
+        ((_ what e) (if timing-mode #'((timing-seam 'timed-run) what (lambda () e)) #'e)))))
+  ;; (intent-timed <i> <expr>): <expr>, its time added to phase I of the window
+  (define-syntax intent-timed
+    (lambda (x)
+      (syntax-case x ()
+        ((_ i e) (if timing-mode #'((timing-seam 'intent-timed-run) i (lambda () e)) #'e)))))
+  ;; (timing-call <name> <arg> ...): the seam's procedure NAME applied, or #f;
+  ;; unset, the arguments are not evaluated
+  (define-syntax timing-call
+    (lambda (x)
+      (syntax-case x ()
+        ((_ name arg ...) (if timing-mode #'((timing-seam 'name) arg ...) #'#f)))))
+  ;; (timing-quiet <expr>): <expr>, nothing it does counted or printed
+  (define-syntax timing-quiet
+    (lambda (x)
+      (syntax-case x ()
+        ((_ e) (if timing-mode #'((timing-seam 'quiet-run) (lambda () e)) #'e)))))
 
   (define libc
     (load-first-shared-object!

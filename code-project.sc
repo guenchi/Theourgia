@@ -20,7 +20,7 @@
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
-          (only (theourgia ffi) timing-enabled? monotonic-us timing-line!)
+          (only (theourgia ffi) timed)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
                 entry-bytes)
           (only (theourgia markers) import-text?)
@@ -234,15 +234,9 @@
                ;; the thunk (a request whose packet already exists runs none);
                ;; `packet` is the whole frozen operation around it -- its
                ;; directory, lock and packet file included.
-               (packet (let* ((t0 (and (timing-enabled?) (monotonic-us)))
-                              (p (frozen-operation store req
-                                   (lambda ()
-                                     (let* ((c0 (and (timing-enabled?) (monotonic-us)))
-                                            (c (capture-import store dir allow-delete? symbols)))
-                                       (when c0 (timing-line! 'request 'capture (- (monotonic-us) c0)))
-                                       c)))))
-                         (when t0 (timing-line! 'request 'packet (- (monotonic-us) t0)))
-                         p))
+               (packet (timed 'packet
+                         (frozen-operation store req
+                           (lambda () (timed 'capture (capture-import store dir allow-delete? symbols))))))
                (captured (cadr packet)))
           (run
             (lambda ()

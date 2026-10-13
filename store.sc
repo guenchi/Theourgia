@@ -73,7 +73,7 @@
           (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
-          (only (theourgia ffi) timing-enabled? monotonic-us timing-line!)
+          (only (theourgia ffi) timed intent-timed timing-call timing-quiet)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
                 hold-point!)
@@ -137,7 +137,7 @@
   ;; a state the rest of the pass may still change.
   (define (deliver-into r cut . defer)
     (lambda (writer seg off seq ts actor deps payload)
-      (when (timing-enabled?) (vector-set! delivered 0 (+ 1 (vector-ref delivered 0))))
+      (timing-call delivered!)
       (if (not (within? cut writer seq))
           'skipped
           (let ((answer (reduce-apply! r writer seq deps (stored->payload payload) actor)))
@@ -260,7 +260,7 @@
   ;; reduction-for), seeded from the snapshot where a write session replays
   ;; the whole log, and the two lines say how far apart they are.
   (define (obtain-state store supplied declaration . rest)
-    (timed 'read-load-replay (lambda () (apply obtain-state* store supplied declaration rest))))
+    (timed 'read-load-replay (apply obtain-state* store supplied declaration rest)))
   (define (obtain-state* store supplied declaration . rest)
     (let ((cut (if (null? rest) #f (car rest))))
       (if (and supplied (not cut))
@@ -3213,7 +3213,7 @@
   ;; It is what every exit owes.
   (define (commit-then s thunk)
     (let* ((answers (guard (e (#t (vector 'raised e))) (thunk)))
-           (outcome (timed 'commit (lambda () (guard (e (#t 'barrier-failed)) (session-commit! s))))))
+           (outcome (timed 'commit (guard (e (#t 'barrier-failed)) (session-commit! s)))))
       (cond
         ((eq? outcome 'barrier-failed)
          (list (list 'error 'unknown (list 'commit-barrier-failed))))
@@ -3510,38 +3510,12 @@
               ((link unlink) (loop (cdr rs) (add (list (cadr p) (cadddr p))) deleted writer))
               (else (loop (cdr rs) ids deleted writer)))))))
 
-;; THE TIMING SEAM'S PHASES (ffi.sc, THEOURGIA_TIMING=1; test-only). A
-  ;; request's phases are timed once each, `(timing request <phase> <us>)`;
-  ;; an intent's phases are summed over each window of 100 intents and
-  ;; printed at its end, `(timing intents <n> ((<phase> <us>) ...))`, so a
-  ;; cost that grows inside one request shows as a rising series. Unset,
-  ;; each wrapper is the call it wraps.
-  (define (timed what thunk)
-    (if (and (timing-enabled?) (not (vector-ref intent-quiet 0)))
-        (let* ((t0 (monotonic-us)) (v (thunk)))
-          (timing-line! 'request what (- (monotonic-us) t0))
-          v)
-        (thunk)))
-;; every record delivered, applied or not, while the timing seam is on
-  (define delivered (vector 0))
-  ;; #t while the rules rehearse the branch dry: its intents and its plan
-  ;; are not the request's, and neither is counted or printed
-  (define intent-quiet (vector #f))
-  (define intent-phases '#(refs check resolve deps append reduce applied receipt))
-  (define intent-sums (make-vector (vector-length intent-phases) 0))
-  (define (intent-timed i thunk)
-    (if (and (timing-enabled?) (not (vector-ref intent-quiet 0)))
-        (let* ((t0 (monotonic-us)) (v (thunk)))
-          (vector-set! intent-sums i (+ (vector-ref intent-sums i) (- (monotonic-us) t0)))
-          v)
-        (thunk)))
-  (define (intent-window! n)
-    (when (and (timing-enabled?) (not (vector-ref intent-quiet 0)) (> n 0) (= 0 (mod n 100)))
-      (timing-line! 'intents n
-                    (let loop ((k (- (vector-length intent-phases) 1)) (out '()))
-                      (if (< k 0) out
-                          (loop (- k 1) (cons (list (vector-ref intent-phases k) (vector-ref intent-sums k)) out)))))
-      (vector-fill! intent-sums 0)))
+;; THE TIMING SEAM'S PHASES (ffi.sc's macros, THEOURGIA_TIMING=1 at expansion;
+  ;; test-only). A request's phases are timed once each, `(timing request
+  ;; <phase> <us>)`; an intent's phases are summed over each window of 100
+  ;; intents and printed at its end, `(timing intents <n> ((<phase> <us>)
+  ;; ...))`, so a cost that grows inside one request shows as a rising series.
+  ;; Unset, every wrapper here is the expression it wraps.
 
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
@@ -3554,11 +3528,11 @@
           ;; is written into.
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty))
-          (t-start (and (timing-enabled?) (begin (vector-fill! intent-sums 0) (vector-set! delivered 0 0) (monotonic-us)))))
-      (let* ((s (timed 'load-replay (lambda () (log-begin store (deliver-into state #f)))))
-             (replayed (when (timing-enabled?)
-                         (timing-line! 'request 'delivered-records (vector-ref delivered 0))
-                         (timing-line! 'request 'applied-records
+          (t-start (timing-call request-begin!)))
+      (let* ((s (timed 'load-replay (log-begin store (deliver-into state #f))))
+             (replayed (begin
+                         (timing-call request-line! 'delivered-records (timing-call delivered-count))
+                         (timing-call request-line! 'applied-records
                                        (apply + (map (lambda (e) (if (and (pair? e) (integer? (cdr e))) (cdr e) 0))
                                                      (reduce-applied-cut state))))))
              ;; THE RECEIPT A RULE CHECK READS: the blocks the write's premise
@@ -3630,7 +3604,7 @@
               ;; do not run for a request that declares none. `proc` only
               ;; reads the state and answers a list -- it writes nothing,
               ;; so asking it early costs nothing and changes nothing.
-              (let* ((intents (timed 'intents (lambda () (proc state (session-view s)))))
+              (let* ((intents (timed 'intents (proc state (session-view s))))
                      ;; KEY: A COMMIT IS A PLAN EVEN WHEN IT CARRIES ONE
                      ;; SUB-OPERATION, and both of the two places that
                      ;; decide that have to say so. This one gives the
@@ -3638,13 +3612,13 @@
                      ;; one-intent commit made a retry ask the question a
                      ;; single-record request asks, and the answer to
                      ;; that question about a plan is `unknown`.
-                     (verdict (timed 'verdict (lambda () (and req (request-verdict store req
+                     (verdict (timed 'verdict (and req (request-verdict store req
                                                         (reduce-applied-cut state)
                                                         (if plan?
                                                             (length intents)
                                                             (and (not (= (length intents) 1)) (length intents)))
                                                         (reduce-gates state)
-                                                        (and (or plan? (null? intents)) 'plan)))))))
+                                                        (and (or plan? (null? intents)) 'plan))))))
                 (if (and verdict (not (eq? (car verdict) 'execute))
                          (not (and (eq? (car verdict) 'complete) (>= (length verdict) 4))))
                     ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. The
@@ -3675,10 +3649,10 @@
                     (commit-then s
                       (lambda ()
                         (let ((bad (and (not (and verdict (eq? (car verdict) 'complete)))
-                                        (or (timed 'premises (lambda () (and preflight (preflight state))))
-                                            (timed 'datum-src (lambda () (datum-src-refusal state intents)))
+                                        (or (timed 'premises (and preflight (preflight state)))
+                                            (timed 'datum-src (datum-src-refusal state intents))
                                             (begin (announce-count! s intents)
-                                                   (timed 'cursor (lambda () (and req (cursor-unreachable store s req)))))))))
+                                                   (timed 'cursor (and req (cursor-unreachable store s req))))))))
                           ;; THE WRITING BRANCH, as one procedure of the reduction and
                           ;; the session it writes through. It runs once for real;
                           ;; when a rule or a typed declaration is live it runs first
@@ -3732,17 +3706,12 @@
                              (write-batch! s state req intents))))
                           (cond
                             (bad (list bad))
-                            ((timed 'rules
-                                    (lambda ()
-                                      (dynamic-wind
-                                        (lambda () (vector-set! intent-quiet 0 #t))
-                                        (lambda () (rehearsal-refusal state s branch receipt))
-                                        (lambda () (vector-set! intent-quiet 0 #f)))))
+                            ((timed 'rules (timing-quiet (rehearsal-refusal state s branch receipt)))
                              => list)
-                            (else (timed 'apply (lambda () (vector-fill! intent-sums 0) (branch state s))))))))))))))
+                            (else (timed 'apply (begin (timing-call reset-sums!) (branch state s))))))))))))))
           (lambda ()
-            (guard (e (#t #f)) (timed 'log-end (lambda () (log-end! s))))
-            (when t-start (timing-line! 'request 'total (- (monotonic-us) t-start))))))))
+            (guard (e (#t #f)) (timed 'log-end (log-end! s)))
+            (when t-start (timing-call request-line! 'total (- (timing-call monotonic-us) t-start))))))))
 
   ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a
   ;; name, `store-evidence` finds nothing when the request comes back,
@@ -4051,8 +4020,8 @@
   ;; record waited in pending for ever. The intents are made canonical
   ;; here, once, and both the plan and the run below use them.
   (define (write-plan-then! s state req intents . rest)
-    (let* ((intents (timed 'plan-canonical (lambda () (map (lambda (i) (canonical-intent state i)) intents))))
-           (entries (timed 'plan-entries (lambda () (plan-entries intents))))
+    (let* ((intents (timed 'plan-canonical (map (lambda (i) (canonical-intent state i)) intents)))
+           (entries (timed 'plan-entries (plan-entries intents)))
            (consumes (and (pair? rest) (car rest)))
            ;; THE SIXTH ELEMENT IS WRITTEN ONLY WHEN THERE IS ONE. A plan
            ;; without it consumed nothing, which is exactly what every
@@ -4068,7 +4037,7 @@
                             (write-request-after req)
                             entries)
                       (if consumes (list consumes) '())))
-           (answer (timed 'plan-append (lambda () (append-payload! s state (request-actor req 'plan #f) payload)))))
+           (answer (timed 'plan-append (append-payload! s state (request-actor req 'plan #f) payload))))
       (if (eq? (car answer) 'error)
           (list answer)
           (let ((plan-event (cadr (assq 'event (cdr answer))))
@@ -4596,8 +4565,8 @@
                  (fixed
                    (if (null? rs)
                        raw
-                       (let ((p (intent-timed 0 (lambda () (resolve-from made (car rs)))))
-                             (a (intent-timed 0 (lambda () (resolve-from made (cadr rs))))))
+                       (let ((p (intent-timed 0 (resolve-from made (car rs))))
+                             (a (intent-timed 0 (resolve-from made (cadr rs)))))
                          (cond
                            ((and (pair? p) (eq? (car p) 'error)) p)
                            ((and (pair? a) (eq? (car a) 'error)) a)
@@ -4640,7 +4609,7 @@
               ((and after-each (after-each n answer))
                => (lambda (stop) (reverse (cons stop (cons answer out)))))
               (else
-                (intent-window! (+ n 1))
+                (timing-call intent-window! (+ n 1))
                 (loop (cdr is) (+ n 1)
                       ;; THE ID COMES FROM THE EVENT, NOT FROM THE REPORT.
                       ;; Which block an insert made is decided by the
@@ -4670,10 +4639,10 @@
             (if why (list 'error 'no-view why) (list 'error 'no-view)))
           (let ((writer (view-writer v))
                 (seq (view-expect-seq v)))
-            (let ((bad (intent-timed 1 (lambda () (check-expectation state intent)))))
+            (let ((bad (intent-timed 1 (check-expectation state intent))))
               (if bad
                   bad
-                  (let ((payload (intent-timed 2 (lambda () (resolve state writer seq intent)))))
+                  (let ((payload (intent-timed 2 (resolve state writer seq intent))))
                     (cond
                       ((eq? (car payload) 'error) payload)
                       ;; THE PAYLOAD IS CHECKED, NOT ONLY THE INTENT. The
@@ -4708,14 +4677,14 @@
                                           (and (or (not d) (eq? (car d) 'retired)) 'retired)))))
                        '(ok (unchanged)))
                       (else
-                        (let* ((deps (intent-timed 3 (lambda () (deps-for-payload state writer payload))))
+                        (let* ((deps (intent-timed 3 (deps-for-payload state writer payload)))
                                ;; COUNTED BEFORE THE RECORD IS APPLIED: what the
                                ;; writer's link or unlink found, not what it left.
                                (matched (and (memq (car payload) '(link unlink))
                                              (edges-matched state payload)))
                                (frame (make-frame (view-revision v) (view-epoch v)
                                                   writer seq actor deps payload))
-                               (outcome (intent-timed 4 (lambda () (session-append! s frame)))))
+                               (outcome (intent-timed 4 (session-append! s frame))))
                           ;; NOT EVERY FAILURE MEANS NOTHING HAPPENED.
                           ;; `refused-before-reserve` is the only outcome
                           ;; that says the log is untouched; the record
@@ -4741,9 +4710,9 @@
                               (begin
                                 ;; THE ACTOR GOES IN HERE TOO -- see the
                                 ;; note in `append-payload!`.
-                                (intent-timed 5 (lambda () (reduce-apply! state writer seq deps payload actor)))
-                                (intent-timed 6 (lambda () (session-applied! s (session-epoch s)
-                                                                             (reduce-applied-cut state))))
+                                (intent-timed 5 (reduce-apply! state writer seq deps payload actor))
+                                (intent-timed 6 (session-applied! s (session-epoch s)
+                                                                             (reduce-applied-cut state)))
                                 ;; NEVER: A link OR unlink SAYS WHAT IT MATCHED.
                                 ;; An unlink that names no edge is still a
                                 ;; record (the set semantics: an edge the
@@ -4753,7 +4722,7 @@
                                 (append
                                   (list 'ok
                                         (list 'events (list (cons writer seq)))
-                                        (intent-timed 7 (lambda () (state-section state payload writer seq)))
+                                        (intent-timed 7 (state-section state payload writer seq))
                                         (list 'cursor (cons writer seq))
                                         (list 'replay #f))
                                   (if matched (list (list 'matched matched)) '()))))))))))))))
