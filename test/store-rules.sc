@@ -207,6 +207,16 @@
              "(cited ?w ?s)" "(unread ?s)" "(receipt-carried)" "(title ?w ?t)"))
       '(write write write write write write write state))
 (tolerant (run 'rule "cls" "--retire"))
+;; A NESTED AND IS READ THROUGH: its goals are the rule's goals, for the class
+;; and for the relations a rule may not name. The write rule is retired at
+;; once, so it judges no later write here.
+(want "R a nested and is read through: a rule-only fact inside it makes a write rule, a relation reading outside the log inside it is refused"
+      (in-order (let ((a (tolerant (run 'rule "nested-cls" "--on" "section" "--must" "(and (title ?w ?t) (and (cited ?w ?s)))"))))
+                  (and (pair? a) (eq? (car a) 'ok)
+                       (let ((v (assq 'nested-cls (state-declared-rules (state))))) (and v (cadr (assq 'class (cadr v)))))))
+                (refusal "--on" "code" "--must" "(and (title ?w ?t) (and (score ?w \"x\" ?s)))"))
+      '(write (error bad-request rule-relation-not-allowed (relation score))))
+(tolerant (run 'rule "nested-cls" "--retire"))
 (define before-refusals (tolerant (events)))
 (define bytes-before-refusals (tolerant (log-bytes S writer)))
 (want "R a goal naming a relation that reads outside the log is refused, as a fact and through a rule"

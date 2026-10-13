@@ -304,6 +304,16 @@
            (list "edge" '(nosuch ?x) '(edge ?x) '(and (= ?x "a.1") (kind ?x _)) '(score ?id ?t ?n)))
       '((bad-request not-a-goal) (bad-request unknown-relation) (bad-request wrong-arity)
         (bad-request test-variable-unbound) (bad-request unbound-argument)))
+;; Q8b: AN AND NESTED IN AN AND is its goals in place, at any depth; an empty
+;; one is still no goal.
+(want "Q8b a nested and answers the rows of the flat conjunction, and a deeply nested one those of its goal"
+      (in-order (q q1 '(and (edge ?x depends-on ?y) (and (edge ?y depends-on ?z))))
+                (q q1 '(and (edge ?x depends-on ?y) (edge ?y depends-on ?z)))
+                (q q1 '(and (and (and (edge ?x depends-on ?y))))))
+      '((("a.1" "a.2" "a.3")) (("a.1" "a.2" "a.3")) (("a.1" "a.2") ("a.2" "a.3"))))
+(want "Q8b PIN an empty and, nested or not, is refused not-a-goal"
+      (in-order (q q1 '(and (kind ?x _) (and))) (q q1 '(and)))
+      '((error bad-request not-a-goal (goal (and))) (error bad-request not-a-goal (goal (and)))))
 (want "Q8 score unbound names the relation and the position"
       (q chain '(score ?id ?t ?n))
       '(error bad-request unbound-argument (relation score) (position 2)))

@@ -26,7 +26,8 @@
 ;;; (member x <list>). A rule body is a conjunction of goals read left to
 ;;; right; several rules with one head are a disjunction; a rule may call
 ;;; itself; a head argument is a variable or a constant. `(and <goal> ...)`
-;;; is a conjunction as a goal, allowed only as a query. There is no
+;;; is a conjunction as a goal, allowed only as a query, at any depth: a
+;;; nested and is its goals in place. There is no
 ;;; negation: a program of positive rules has one least model whatever the
 ;;; order of evaluation.
 ;;;
@@ -244,8 +245,10 @@
   ;; log is refused.
   (define (rule-value-check value)
     (define (clause k) (assq k value))
+    ;; The relations a goal names, through every nested and: the goals
+    ;; query-goals answers for it, which it has already accepted.
     (define (goal-relations g)
-      (if (and (pair? g) (eq? (car g) 'and)) (map car (cdr g)) (list (car g))))
+      (map car (query-goals g (append rule-library rule-only-heads) '(?w))))
     (define (goal-refusal g)
       (or (guard (e ((refusal? e) (refusal-answer e)))
             (query-goals g (append rule-library rule-only-heads) '(?w))
@@ -794,15 +797,20 @@
   (define (query-goals goal rules . bound+facts)
     (define bound (if (pair? bound+facts) (list (car bound+facts)) '()))
     (define facts (if (and (pair? bound+facts) (pair? (cdr bound+facts))) (cadr bound+facts) '()))
-    (unless (and (pair? goal) (list? goal) (symbol? (car goal)))
-      (refuse 'error 'bad-request 'not-a-goal (list 'goal goal)))
-    (let ((goals (if (eq? (car goal) 'and) (cdr goal) (list goal))))
-      (when (null? goals) (refuse 'error 'bad-request 'not-a-goal (list 'goal goal)))
+    ;; AN AND IS A CONJUNCTION WHEREVER IT STANDS: (and a (and b c)) is the
+    ;; conjunction a b c, its goals in the order written. An empty and is
+    ;; no goal, nested or not, and an and reached twice (a datum label's
+    ;; cycle) is refused rather than walked for ever.
+    (define (conjuncts goal)
+      (let walk ((g goal) (seen '()))
+        (unless (and (pair? g) (list? g) (symbol? (car g)))
+          (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
+        (cond ((not (eq? (car g) 'and)) (list g))
+              ((or (null? (cdr g)) (memq g seen)) (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
+              (else (apply append (map (lambda (c) (walk c (cons g seen))) (cdr g)))))))
+    (let ((goals (conjuncts goal)))
       (for-each
         (lambda (g)
-          (unless (and (pair? g) (list? g) (symbol? (car g)))
-            (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
-          (when (eq? (car g) 'and) (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
           (let ((n (arity-of (car g) rules facts)))
             (unless n
               (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g))
