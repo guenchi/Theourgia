@@ -1256,6 +1256,8 @@
             "Name the current cut, or list the names already given." #f 'daemon)
       (list 'diff '(diff <cut> <cut>)
             "Report what changed between two cuts." #f 'daemon)
+      (list 'position '(position)
+            "Say the local log writer's last sequence, the cursor a tracked request may name: (position (<writer> . <n>)), 0 before its first record. The writer is the store's log writer, not a draft writer." #f 'daemon)
       (list 'changed-files '(changed-files <cut> <cut>)
             "List the files whose exported bytes or presence differ between two cuts, each as content, added or removed; a title, a level, a link or a language changes no file. Paths a case- or normalisation-insensitive volume would merge are listed as case-ambiguous or normalisation-ambiguous groups." #f 'daemon)
       (list 'conflicts '(conflicts)
@@ -2210,6 +2212,15 @@
                     (lambda ()
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
+      ;; WHERE THE LOCAL LOG WRITER STANDS (store.sc, store-position): the way to
+      ;; get a cursor before deciding to send a tracked request. A load that
+      ;; could not read a writer carries its (incomplete ...) as every answer
+      ;; does.
+      (cons 'position
+            (lambda (store actor args req options state writer cwd)
+              (if (not (null? args))
+                  (usage '(position))
+                  (guarded (lambda () (store-position store))))))
       ;; THE FILES A LANDING WOULD PUBLISH: each cut loaded as a read at a cut
       ;; is (store-state-at-cut, its refusals naming the side), then compared
       ;; by their raw projections (code-project.sc, changed-files-between).

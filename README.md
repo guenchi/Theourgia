@@ -623,6 +623,24 @@ the whole numeric syntax, and `#e` with a large exponent asks it to build an int
 of any size from eleven characters of argument. A cut this store cannot reach is
 refused as `(error cut-unavailable (cut from|to) (reason ...))` rather than truncated to the part it can reach. A name that is not a tag is refused as `(error unknown-tag <name> (cut from|to))`, and a name whose tags are unsettled as `(error tag-unsettled <name> (cut from|to))` rather than resolved to one of them.
 
+### `position`
+
+    (position)
+
+It answers:
+
+    (ok (position (<writer> . <n>)))
+
+The local log writer's last sequence: the writer whose log this store appends to here,
+and the sequence of its last record, 0 before its first. It is read from the load's
+own discovery, with no write. It is the way to get a `--cursor` for a tracked request
+(*Requests and replay*): the cursor names the LOG writer that appends the request's
+records, so the cursor for `commit --writer <D>` is this writer's position, not D's,
+whatever draft writer D is. Nothing defaults a cursor from it; `--req` still needs
+`--cursor`. A store with no local writer it may write as -- none, every one retired, or
+the only one unreadable -- is refused `(error no-local-writer)`, with the load's
+`(incomplete ...)` beside it when a writer could not be read.
+
 ### `changed-files`
 
     (changed-files <cut> <cut>)

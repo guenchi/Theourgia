@@ -31,7 +31,7 @@
           store-init! nearest-ids store-snapshot!
           batch-answer
           datum-mode-block? draft-on-datum-refusal
-          store-check store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
+          store-check store-position store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator
           make-write-request write-request? request-actors store-successors store-intervals
           request-verdict failure-text)
@@ -5153,6 +5153,26 @@
         ;; inner read may have closed things on its way out, and a
         ;; cleanup that raised would replace the answer -- or the
         ;; original failure -- with one manufactured here.
+        (lambda () (guard (e (#t #f)) (load-commit! ls))))))
+
+  ;; THE LOCAL LOG WRITER'S LAST SEQUENCE, read from a read load's own
+  ;; discovery: -> (ok (position (<writer> . <n>))), n 0 for a writer with no
+  ;; record yet, or (error no-local-writer) when no local writer may be
+  ;; written as -- none, every one retired, or the only one unreadable (its
+  ;; discovery's origin is then unreadable, so local-writer-of passes it, and
+  ;; the dispatcher carries the load's (incomplete ...) beside the refusal).
+  ;; It is the position a tracked request's --cursor may name: the cursor's
+  ;; writer is the log writer that appends the request's records, whatever
+  ;; draft writer a commit names. Nothing defaults a cursor from it.
+  (define (store-position store)
+    (let ((ls (log-open store)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda ()
+          (let ((w (local-writer-of store ls)))
+            (if w
+                (list 'ok (list 'position (cons w (discovery-end-seq (load-prefix ls w)))))
+                '(error no-local-writer))))
         (lambda () (guard (e (#t #f)) (load-commit! ls))))))
 
   (define (store-check-with store ls)

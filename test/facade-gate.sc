@@ -1082,6 +1082,7 @@
                           (set! census-diff-block (census-get s 'B))
                           (census-ask st 'diff "t0" "t1"))))
     (cons 'conflicts (seeded (lambda (st x s) (census-ask st 'conflicts))))
+    (cons 'position (seeded (lambda (st x s) (census-ask st 'position))))
     ;; one text file imported between two tags, so the answer has an item
     (cons 'changed-files (seeded (lambda (st x s)
                                    (let ((dir (string-append x "/changed-src")))
@@ -1259,7 +1260,7 @@
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check collect-into context del describe discard export-code export-md import-md init insert
-        link move outline publish reach relation restore review-results rule set snapshot split-suggest supply template unlink write))
+        link move outline position publish reach relation restore review-results rule set snapshot split-suggest supply template unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt subscribe))
@@ -1277,7 +1278,7 @@
       (census-detail 'not-items)
       '((batch . batch) (check . check) (collect-into . ok) (context . ok) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
-        (link . ok) (move . ok) (outline . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (review-results . ok) (rule . ok) (set . ok)
+        (link . ok) (move . ok) (outline . ok) (position . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (review-results . ok) (rule . ok) (set . ok)
         (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))
 
 ;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A
