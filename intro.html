@@ -310,7 +310,7 @@ scene({dur:7.5,build(r){
 }});
 
 // ============================== FEATURE 1 ==================================
-scene({tag:['feat','Feature 1 / 8'],title:'A query API small enough to memorize',dur:7.5,build(r){
+scene({tag:['feat','Feature 1 / 9'],title:'A query API small enough to memorize',dur:7.5,build(r){
   this.term=el(`<div class="abs term" style="width:1040px;height:500px"><div class="l0"></div><div class="out"></div><div class="l1" style="margin-top:14px"></div><div class="out2"></div></div>`,r);
   this.l0=this.term.querySelector('.l0');this.l1=this.term.querySelector('.l1');
   const rows=[['x9a3vtll.4','"Goals"','38'],['x9a3vtll.9','"Retry policy"','112'],['8pniyrtk.j','"Timeouts"','64'],['q7m2hs0c.1','"parse-block"','205']];
@@ -331,7 +331,7 @@ scene({tag:['feat','Feature 1 / 8'],title:'A query API small enough to memorize'
 }});
 
 // ============================== FEATURE 2 ==================================
-scene({tag:['feat','Feature 2 / 8'],title:'Docs, code, tests — one graph, any language',dur:7.5,build(r){
+scene({tag:['feat','Feature 2 / 9'],title:'Docs, code, tests — one graph, any language',dur:7.5,build(r){
   // four code blocks in four languages, all equal nodes between the requirement and its test
   const B=[['DESIGN','Retry policy §4','8pniyrtk.2','var(--acc2)',230,250],['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,500],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,215],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,375],['RUST','fn jitter(ms: u64) …','x9a3vtll.7','#b7410e',760,535],['GO','func Retry(ctx, fn) …','q7m2hs0c.4','#0089ad',760,695],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,380],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,640]];
   this.b=B.map(([k,tt,id,c,x,y])=>({x,y,e:el(`<div class="blk" style="border-color:${c}"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${id}</div></div>`,r)}));
@@ -370,7 +370,7 @@ scene({tag:['feat','Feature 2 / 8'],title:'Docs, code, tests — one graph, any 
 }});
 
 // ============================== FEATURE 3 ==================================
-scene({tag:['feat','Feature 3 / 8'],title:'Every reference to a block, for the price of a lookup',dur:9.5,build(r){
+scene({tag:['feat','Feature 3 / 9'],title:'Every reference to a block, for the price of a lookup',dur:9.5,build(r){
   this.c=el(`<div class="blk" style="border-color:var(--violet);border-width:3px"><div class="k" style="color:var(--violet)">CODE</div><div class="t">(define retry …)</div><div class="id">8pniyrtk.j</div></div>`,r);
   this.q=el(`<div class="abs chip" style="background:#1e1d1a;color:#7fd6c9">refs 8pniyrtk.j</div>`,r);
   const R=[['DESIGN','Retry policy §4',-470,-170],['PROSE','Ops guide ¶3',470,-170],['TEST','test W3',-470,170],['LESSON','Jitter matters',470,170]];
@@ -397,7 +397,7 @@ scene({tag:['feat','Feature 3 / 8'],title:'Every reference to a block, for the p
 }});
 
 // ============================== FEATURE 4 ==================================
-scene({tag:['feat','Feature 4 / 8'],title:'Same question, same context, every time',dur:11.5,build(r){
+scene({tag:['feat','Feature 4 / 9'],title:'Same question, same context, every time',dur:11.5,build(r){
   // part A: query
   this.qt=el(`<div class="abs term" style="width:1000px;height:360px"><div class="ls"></div></div>`,r);
   this.qs=[['(query blast-radius 8pniyrtk.j)','→ 4 blocks, 2 tests'],['(query open-rulings)','→ R4 “cap retries?”'],['(query definition \'backoff)','→ q7m2hs0c.1 (the live one)']].map(([a,b])=>el(`<div style="margin-bottom:12px"><span class="k"></span> <span class="n"></span></div>`,this.qt.querySelector('.ls')));
@@ -429,7 +429,7 @@ scene({tag:['feat','Feature 4 / 8'],title:'Same question, same context, every ti
 }});
 
 // ============================== FEATURE 5 ==================================
-scene({tag:['feat','Feature 5 / 8'],title:'You and the agent, looking at the same file',dur:11,build(r){
+scene({tag:['feat','Feature 5 / 9'],title:'You and the agent, looking at the same file',dur:11,build(r){
   this.ide=el(`<div class="abs" style="width:1360px;height:560px;border-radius:18px;overflow:hidden;background:#fff;border:2px solid var(--line);box-shadow:0 16px 50px rgba(60,50,30,.14);display:flex">
     <div style="width:260px;background:var(--bg2);border-right:2px solid var(--line);padding:22px;font:600 21px/2 var(--mono);color:var(--dim)"><div class="lbl" style="font-size:16px">workspace</div><div>▾ src</div><div style="padding-left:20px;color:var(--fg)">retry.ss</div><div class="dr" style="margin-top:14px">▾ drafts/agent-b</div><div class="dr" style="padding-left:20px;color:var(--orange)">retry.ss ●</div></div>
     <div style="flex:1;padding:40px 44px;font:500 28px/1.75 var(--mono);position:relative">
@@ -460,7 +460,7 @@ scene({tag:['feat','Feature 5 / 8'],title:'You and the agent, looking at the sam
 }});
 
 // ============================== FEATURE 6 ==================================
-scene({tag:['feat','Feature 6 / 8'],title:'Ten agents race in parallel. The main tree doesn’t flinch.',dur:16.6,build(r){
+scene({tag:['feat','Feature 6 / 9'],title:'Ten agents race in parallel. The main tree doesn’t flinch.',dur:16.6,build(r){
   // opening beat: ten scratchpads, ten competing implementations, each compiled, run and tested in its own environment
   const AG='abcdefghij',COL=['#12b09c','#e08a1e','#3572a5','#d2493a','#9a6b12','#0f6f68','#5b3fc4','#0d8a7a','#8a4b12','#1a8f8f'];
   this.FAIL=[3,6,8];
@@ -508,7 +508,7 @@ scene({tag:['feat','Feature 6 / 8'],title:'Ten agents race in parallel. The main
 }});
 
 // ============================== FEATURE 7 ==================================
-scene({tag:['feat','Feature 7 / 8'],title:'A store you can run code against',dur:10.5,build(r){
+scene({tag:['feat','Feature 7 / 9'],title:'A store you can run code against',dur:10.5,build(r){
   this.code=el(`<div class="abs term" style="width:760px;height:260px;font-size:27px"><div class="c1"></div><div class="c2"></div><div style="margin-top:16px">(<span class="k">greet</span> <span class="s">"agent"</span>)</div></div>`,r);
   this.c1=this.code.querySelector('.c1');this.c2=this.code.querySelector('.c2');
   this.box=el(`<div class="abs" style="width:520px;height:260px;border-radius:22px;border:3px solid var(--acc);background:#e9f7f4;padding:20px 24px"><div class="lbl" style="color:var(--acc2);font-size:17px">sandboxed child process</div><div class="gs" style="margin-top:16px;display:flex;flex-direction:column;gap:14px"></div></div>`,r);
@@ -538,7 +538,7 @@ scene({tag:['feat','Feature 7 / 8'],title:'A store you can run code against',dur
 }});
 
 // ============================== FEATURE 8 ==================================
-scene({tag:['feat','Feature 8 / 8'],title:'Communication between sessions of different models',dur:17,build(r){
+scene({tag:['feat','Feature 8 / 9'],title:'Communication between sessions of different models',dur:17,build(r){
   // one review round through the store, with the ids of the first real run (a Codex session on GPT-6 as the reader)
   const card=(kind,c,title,id,w)=>`<div class="blk" style="width:${w}px;border-color:${c};padding:9px 16px"><div class="k" style="color:${c};font-size:13px">${kind}</div><div class="t" style="font-size:20px;margin-top:2px">${title}</div><div class="id" style="font-size:14px">${id}</div></div>`;
   const panel=(x,label)=>el(`<div class="abs" style="width:620px;height:612px;border-radius:22px;border:2.5px solid var(--line);background:rgba(255,255,255,.55)"><div class="lbl" style="position:absolute;left:22px;top:-30px;font-size:17px;color:var(--fg)">${label}</div></div>`,r);
@@ -615,6 +615,61 @@ scene({tag:['feat','Feature 8 / 8'],title:'Communication between sessions of dif
     mk(this.m.f1,this.M.f1,this.m.code,this.M.code,13.6,46);mk(this.m.f2,this.M.f2,this.m.code,this.M.code,14.0,72);
   }
   this.paths.forEach(([p,tx,len,a],i)=>{p.style.opacity=t>a?1:0;p.style.strokeDasharray=t>a+.6?'9 7':`${len}`;p.style.strokeDashoffset=t>a+.6?0:len*(1-P(t,a,a+.6));tx.style.opacity=(i%2==0)?P(t,a+.4,a+.7):0});
+}});
+
+// ============================== FEATURE 9 ==================================
+scene({tag:['feat','Feature 9 / 9'],title:'Rules are data; hosts supply facts',dur:16.5,build(r){
+  // the stance and its target layering, not a finished feature: hosts in any language only hand in facts,
+  // the rules are blocks in the same store, and every reader gets the same derived signal
+  this.HX=[160,570,980,1390];
+  const hosts=[['EDITOR','TypeScript','#3178c6'],['AGENT','Claude','#12b09c'],['AGENT','Codex','#3d3a35'],['SCRIPT','Python','var(--violet)']];
+  this.hosts=hosts.map(([k,l,c])=>el(`<div class="blk" style="width:370px;border-color:${c};padding:12px 18px"><div class="k" style="color:${c};font-size:14px">HOST · ${k}</div><div class="t" style="font-size:24px">${l}</div><div class="rx" style="margin-top:8px;height:30px"></div></div>`,r));
+  this.store=el(`<div class="abs" style="width:1640px;height:400px;border-radius:24px;border:3px solid var(--fg);background:rgba(255,255,255,.6)"><div class="lbl" style="position:absolute;left:22px;top:-30px;font-size:17px;color:var(--fg)">one store</div></div>`,r);
+  this.log=el(`<div class="abs" style="width:1580px;height:96px;border-radius:16px;background:var(--bg2);border:2px solid var(--line)"><div class="lbl" style="position:absolute;left:16px;top:10px;font-size:15px">log · append-only facts</div></div>`,r);
+  this.FACTS=[[0,'(calls retry backoff)',1.0],[1,'(attempt a3 retry)',1.6],[3,'(test W3 failed)',2.2],[2,'(observation a3 "W3 fails")',2.8],[0,'(diagnostic retry.ss 12)',3.4]];
+  this.pills=this.FACTS.map(([h,f])=>el(`<div class="abs chip" style="font-size:18px;padding:7px 12px;background:#fff;border:2px solid var(--line);color:var(--fg)">${f}</div>`,r));
+  this.rule=el(`<div class="blk" style="width:640px;border-color:var(--acc2);padding:12px 18px"><div class="k" style="color:var(--acc2);font-size:14px">RULE · A BLOCK IN THE SAME STORE</div><div style="font:600 19px/1.55 var(--mono);margin-top:6px;white-space:pre">(rule (disposition ?a "rerun")
+  (attempt ?a ?block)
+  (observation ?a ?what))</div></div>`,r);
+  this.reasoner=el(`<div class="abs" style="width:330px;height:150px;border-radius:22px;background:var(--acc);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;box-shadow:0 12px 40px rgba(18,176,156,.3)"><div style="font:800 28px var(--mono)">reasoner</div><div style="font:600 17px var(--sans);opacity:.9">facts + rules as data → derived</div></div>`,r);
+  this.wires=el(`<svg class="full"><g stroke="var(--acc)" stroke-width="3" fill="none" stroke-dasharray="6 6"><path class="w1"/><path class="w2"/></g></svg>`,r);
+  this.disp=el(`<div class="abs chip" style="font-size:21px;background:#e3f6ef;color:var(--str);border:2.5px solid #9fd9c2">(disposition a3 "rerun")</div>`,r);
+  this.copies=this.HX.map(()=>el(`<div class="abs chip" style="font-size:16px;padding:6px 10px;background:#e3f6ef;color:var(--str);border:2px solid #9fd9c2">(disposition a3 "rerun")</div>`,r));
+  this.same=el(`<div class="abs lbl" style="width:1920px;text-align:center;font-size:18px;color:var(--str)">same signal for every reader · informational, not a command</div>`,r);
+  this.bad=el(`<div class="abs chip" style="font-size:18px;background:#fff;border:2px solid var(--red);color:var(--red)">def judge(a): …</div>`,r);
+  this.no=el(`<div class="abs toast bad" style="font-size:20px">hosts supply facts, not semantics</div>`,r);
+  // the target layering
+  const LAY=[['L5','hosts','editors, agents, scripts — in any language; they send facts down, never semantics'],['L4','wire','one data grammar; daemon, CLI and MCP answer byte for byte the same'],['L3','policy','write-time rules, admission, campaigns — all written as data'],['L2','reasoner','facts at a cut + rules as data → derived relations'],['L1','state','a cut folded into blocks, fields and edges'],['L0','log','append-only records and cuts: fast and small']];
+  this.layers=LAY.map(([n,a,b],i)=>el(`<div class="abs" style="width:1240px;height:76px;border-radius:14px;border:2.5px solid ${i==3?'var(--acc)':'var(--line)'};background:${i==3?'#e3f6ef':'#fff'};display:flex;align-items:center;gap:22px;padding:0 24px"><span style="font:800 26px var(--mono);color:var(--acc2);width:52px">${n}</span><span style="font:700 26px var(--sans);width:150px">${a}</span><span style="font:500 21px var(--sans);color:var(--dim)">${b}</span></div>`,r));
+  this.target=el(`<div class="abs chip" style="font-size:18px;background:var(--fg);color:#fff">the target shape</div>`,r);
+  this.down=el(`<div class="abs" style="width:190px;display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center"><div style="font:800 22px var(--mono);color:var(--acc2)">facts ↓</div><div style="width:4px;height:250px;border-radius:2px;background:linear-gradient(var(--acc),rgba(18,176,156,.15))"></div><div style="font:600 19px/1.35 var(--sans);color:var(--dim)">each layer depends only on the ones below</div></div>`,r);
+},update(t){
+  const A=1-P(t,10.2,10.8);
+  this.hosts.forEach((h,i)=>{const p=pop(t,.1+i*.12);S(h,{o:p.o*A,s:p.s,x:this.HX[i],y:240})});
+  S(this.store,{o:P(t,.3,.7)*A,x:140,y:520});S(this.log,{o:P(t,.4,.8)*A,x:170,y:560});
+  // facts fall from their host into the next free slot of the log
+  let slot=190;
+  this.pills.forEach((e,i)=>{const [h,,a]=this.FACTS[i];const p=P(t,a,a+.7);const w=e.offsetWidth;
+    const fx=this.HX[h]+40,fy=330,tx=slot,ty=600;slot+=w+12;
+    S(e,{o:(t>a?1:0)*A,x:L(fx,tx,p),y:L(fy,ty,p)})});
+  const pr=pop(t,.6);S(this.rule,{o:pr.o*A,s:pr.s,x:170,y:700});
+  // a host tries to hand down a judgement in its own language; it does not get in
+  const bp=P(t,4.4,5.0),bb=P(t,5.0,5.5);
+  S(this.bad,{o:(t>4.4&&t<6.4?1:0)*A*(1-P(t,6,6.4)),x:this.HX[1]+40,y:t<5?L(330,488,bp):L(488,420,bb),r:t>5?L(0,-8,bb):0});
+  S(this.no,{...pop(t,5.1),x:this.HX[1]+380,y:440});this.no.style.opacity=pop(t,5.1).o*(1-P(t,6.6,7))*A;
+  S(this.reasoner,{o:P(t,5.8,6.2)*A,x:880,y:720,s:1+(t>6.4&&t<7.2?.05*Math.sin((t-6.4)*12):0)});
+  const w1=this.wires.querySelector('.w1'),w2=this.wires.querySelector('.w2');
+  w1.setAttribute('d','M960 656 C960 690 1000 700 1045 720');w2.setAttribute('d','M810 790 C840 790 850 795 880 795');
+  this.wires.style.opacity=P(t,6.2,6.6)*A;
+  const dp=pop(t,7);S(this.disp,{o:dp.o*A,s:dp.s,x:1250,y:770});
+  // the one derived signal reaches every host, the same for all
+  this.copies.forEach((c,i)=>{const a=7.8+i*.08,p=P(t,a,a+.8);S(c,{o:(t>a?1:0)*A,x:L(1260,this.HX[i]+18,p),y:L(780,326,p)-Math.sin(p*Math.PI)*60})});
+  S(this.same,{o:P(t,8.8,9.2)*A,y:440});
+  // the target layering
+  const B=P(t,10.6,11.2);
+  this.layers.forEach((l,i)=>{const p=pop(t,10.8+i*.18);S(l,{o:p.o*B,s:p.s,x:380,y:250+i*92})});
+  S(this.target,{...pop(t,12.2),x:1620-this.target.offsetWidth,y:196});this.target.style.opacity=pop(t,12.2).o*B;
+  S(this.down,{o:P(t,12.6,13)*B,x:170,y:262});
 }});
 
 // ============================== OUTRO ======================================
