@@ -566,8 +566,8 @@ scene({tag:['feat','Feature 8 / 8'],title:'Communication between sessions of dif
   this.ghost=[0,1,2,3,4].map(()=>el(`<div class="abs" style="height:70px;border-radius:16px;border:2.5px dashed var(--acc);background:rgba(18,176,156,.08)"></div>`,r));
   this.term=el(`<div class="abs term" style="width:384px;font-size:16.5px;line-height:1.6;padding:16px 20px;white-space:pre"><div class="a"></div><div class="b" style="color:#8a857a"></div></div>`,r);
   this.ta=this.term.querySelector('.a');this.tb=this.term.querySelector('.b');
-  this.author=el(botHTML('#12b09c','claude · Fable 5'),r);
-  this.reader=el(botHTML('#3d3a35','codex · GPT-6'),r);
+  this.author=el(botHTML('#12b09c','claude · Fable'),r);
+  this.reader=el(botHTML('#3d3a35','codex · Astra'),r);
   this.bub=el(`<div class="bubble" style="font:600 20px var(--mono)"></div>`,r);
   this.stamp=el(`<div class="abs toast ok" style="font-size:24px">a message is a block · reading mail is a query</div>`,r);
   this.paths=null;
