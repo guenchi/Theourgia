@@ -31,6 +31,10 @@
   ("code-project.sc" (directory-files walk) file-is-directory? 1 keep a "not writer layout: import-code input tree")
   ("code-project.sc" (directory-files walk) file-is-regular? 1 keep a "not writer layout: import-code input tree")
   ("code-project.sc" (directory-files) file-is-directory? 1 keep a "not writer layout: import-code input dir")
+  ("code-project.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("code-project.sc" (volume-insensitivity) entry-name-type 3 keep a "not writer layout: changed-files' volume probe, one name under its three spellings, each asked with an lstat; a failure is probe-failed")
+  ("code-project.sc" (read-tree) entry-name-type 1 keep a "not writer layout: the changed-files reference's own export directory, walked without following a link")
+  ("code-project.sc" (remove-tree!) entry-name-type 1 keep a "not writer layout: the changed-files reference's scratch directory, removed without entering a symbolic link")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -169,6 +173,21 @@
    propagate c
    "K2: capture-import lets incomplete-reduction and unreadable-entry through"
    (e (#t (projection-failure (quote unavailable-cut)))))
+  ("code-project.sc" (volume-insensitivity) 1 guard
+   (#t)
+   refuse a
+   "changed-files' volume probe: a spelling that cannot be asked or a probe directory that cannot be made is (error probe-failed (dir ...)), before anything is created or with nothing created"
+   (e (#t (quote failed))))
+  ("code-project.sc" (volume-insensitivity) 2 guard
+   (#t)
+   refuse a
+   "changed-files' volume probe: a lookup of the made probe under the other two spellings that raises is probe-failed, after the probe is removed (the third handler)"
+   (e (#t #f)))
+  ("code-project.sc" (volume-insensitivity) 3 guard
+   (#t)
+   refuse a
+   "changed-files' volume probe: a probe directory that cannot be removed is probe-failed rather than a probe left behind unreported"
+   (e (#t #f)))
   ("code-suggest.sc" (split-suggest) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a

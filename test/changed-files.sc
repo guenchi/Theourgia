@@ -91,6 +91,16 @@
     (find (lambda (id) (equal? (code-field state id 'path) path)) (code-files state))))
 (define (children-at st path) (code-children (open-and-reduce st) (file-at st path)))
 (define (cf st a b) (ask st 'changed-files a b))
+;; The text of the file at PATH, imported as one block, set to TEXT through
+;; the store: its block written and committed. Not a second import of the
+;; source directory -- files without markers import as new files at the same
+;; paths, and the cut would refuse duplicate-path.
+(define (set-text! st path text)
+  (let ((kids (children-at st path)))
+    (unless (= 1 (length kids)) (assertion-violation 'changed-files "not one block" path kids))
+    (ask st 'write (car kids) text "--writer" "w1")
+    (let ((c (ask st 'commit "--writer" "w1")))
+      (unless (eq? 'ok (head-of c)) (assertion-violation 'changed-files "commit refused" path c)))))
 ;; A first import of a Scheme file split at its definitions: split-suggest's
 ;; review copy, imported in place of the file.
 (define (split-store! path text)
@@ -112,18 +122,20 @@
                          ("README.md" . "# r\n"))))
        (st (store-of s)))
   (ask st 'tag "t0")
-  (write-file! (string-append (src-of s) "/test/client-program.sc") "(define a 2)\n")
-  (write-file! (string-append (src-of s) "/test/rows-baseline.txt") "x 1 3\n")
-  (ask st 'import-code (src-of s))
+  (set-text! st "test/client-program.sc" "(define a 2)\n")
+  (set-text! st "test/rows-baseline.txt" "x 1 3\n")
   (ask st 'tag "t1")
   (want "CF-1 the trial's two files are content changes, and nothing else is listed"
         (items-of (cf st "t0" "t1"))
         '((path "test/client-program.sc" content) (path "test/rows-baseline.txt" content)))
   (want "CF-12 the answer names both cuts, as their resolved literals"
-        (let ((a (cf st "t0" "t1")))
-          (list (and (clause-of a 'from) (list? (cadr (clause-of a 'from))) #t)
-                (and (clause-of a 'to) (list? (cadr (clause-of a 'to))) #t)
-                (equal? (clause-of a 'from) (clause-of a 'to))))
+        ;; each a non-empty cut of (writer . sequence) pairs, and the two
+        ;; differ: two writes lie between the tags
+        (let* ((a (cf st "t0" "t1"))
+               (cut (lambda (head) (let ((c (clause-of a head))) (and c (cadr c)))))
+               (a-cut? (lambda (c) (and (list? c) (pair? c)
+                                        (for-all (lambda (p) (and (pair? p) (string? (car p)) (integer? (cdr p)))) c)))))
+          (list (a-cut? (cut 'from)) (a-cut? (cut 'to)) (equal? (cut 'from) (cut 'to))))
         '(#t #t #f))
   (want "CF-4 equal cuts answer no item"
         (items-of (cf st "t1" "t1"))
@@ -195,10 +207,11 @@
         (head-of (cf st "t0" "t1"))
         '(error projection-invalid (reason unsafe-path)))
   (sh "chmod 000 " (quoted (writer-directory st M)))
-  (let ((answer (cf st "t0" "t0")))
+  (let* ((answer (cf st "t0" "t0"))
+         (exported (ask st 'export-code (string-append root "/cf9-export"))))
     (sh "chmod 700 " (quoted (writer-directory st M)))
     (want "CF-9 an incomplete load refuses as export-code does"
-          (list (head-of answer) (head-of (ask st 'export-code (string-append root "/cf9-export"))))
+          (list (head-of answer) (head-of exported))
           '((error incomplete-reduction) (error incomplete-reduction)))))
 
 ;; ---- CF-10, CF-13 the directory-prefix rule -------------------------------------
@@ -289,11 +302,13 @@
     (sh "THEOURGIA_DEGENERACY=1 THEOURGIA_HOME=" (quoted child-home) " scheme --script " (quoted script)
         " > " (quoted out) " 2> " (quoted (string-append root "/child.err")) " < /dev/null")
     (guard (e (#t 'UNREADABLE)) (call-with-input-file out read))))
-(let* ((s (file-store! '(("a.txt" . "one\n") ("b.txt" . "two\n")))) (st (store-of s))
-       (b (file-at st "b.txt")))
+;; c.txt becomes .c: a name the import's walk would skip, which the export
+;; writes and the reference must read.
+(let* ((s (file-store! '(("a.txt" . "one\n") ("b.txt" . "two\n") ("c.txt" . "three\n")))) (st (store-of s))
+       (b (file-at st "b.txt")) (c (file-at st "c.txt")))
   (ask st 'tag "t0")
-  (write-file! (string-append (src-of s) "/a.txt") "uno\n")
-  (ask st 'import-code (src-of s))
+  (set-text! st "a.txt" "uno\n")
+  (ask st 'set c "path" ".c")
   (ask st 'tag "t1")
   (ask st 'set b "path" "A.txt")
   (ask st 'tag "t2")
@@ -302,12 +317,14 @@
                (define (answer a b) (guard (e (#t (list 'RAISED (if (condition? e) (condition-message e) e))))
                                       (rpc-dispatch ,st (list 'changed-files a b) "test")))
                (write (list (answer "t0" "t1") (answer "t1" "t2")))))))
-    (want "CF-11 under the switch the reference compares and agrees where the cuts are unambiguous, and on the A/a cut records reference-unavailable exactly when the temporary volume folds case"
-          (list (and (pair? r) (pair? (car r)) (car (car r)))
+    (want "CF-11 under the switch the reference compares and agrees where the cuts are unambiguous, a dot-named file included, and on the A/a cut records reference-unavailable exactly when the temporary volume folds case"
+          (list (and (pair? r) (pair? (car r)) (items-of (car r)))
+                (and (pair? r) (pair? (car r)) (car (car r)))
                 (and (pair? r) (pair? (car r)) (assq 'reference-unavailable (cdr (car r))) #t)
                 (and (pair? r) (pair? (cdr r)) (pair? (cadr r)) (car (cadr r)))
                 (and (pair? r) (pair? (cdr r)) (pair? (cadr r)) (assq 'reference-unavailable (cdr (cadr r)))))
-          (list 'ok #f 'ok (cond ((and probe-case probe-normalisation) '(reference-unavailable both))
+          (list '((path ".c" added) (path "a.txt" content) (path "c.txt" removed))
+                'ok #f 'ok (cond ((and probe-case probe-normalisation) '(reference-unavailable both))
                                  (probe-case '(reference-unavailable case))
                                  (else #f))))))
 

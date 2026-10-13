@@ -441,20 +441,41 @@
   ;; there: a directory named with an uppercase ASCII letter and U+00E9 (NFC),
   ;; asked for under the lowercase spelling (case) and the NFD spelling
   ;; (normalisation), then removed. -> (values case? normalisation?); a probe
-  ;; that cannot be made raises (error probe-failed (dir <dir>)). An existing
-  ;; path cannot serve: an ASCII-only tree has none to ask under two spellings.
+  ;; that cannot be made, asked or removed raises (error probe-failed (dir
+  ;; <dir>)). An existing path cannot serve: an ASCII-only tree has none to
+  ;; ask under two spellings.
+  ;;
+  ;; NEVER: A NAME IS TAKEN ONLY WHEN ALL THREE SPELLINGS ARE ABSENT. Only the
+  ;; first is created exclusively; on a volume that keeps them apart, a
+  ;; leftover directory under the second or third spelling would answer
+  ;; present and read as a merge. A name with any spelling present moves on
+  ;; to the next k.
+  ;;
+  ;; NEVER: THE PROBE IS REMOVED WHETHER OR NOT THE QUESTIONS ANSWERED. A
+  ;; lookup that raises is a failed probe, after the removal, not a probe
+  ;; left behind.
   (define (volume-insensitivity dir)
+    (define (failed) (raise (list 'error 'probe-failed (list 'dir dir))))
     (let try ((k 0))
+      (when (> k 16) (failed))
       (let* ((stem (string-append dir "/.theourgia-probe-" (number->string (process-id)) "-" (number->string k) "-"))
-             (made (guard (e (#t 'failed)) (mkdir-exclusive! (string-append stem "A" (string #\xE9))))))
+             (made-name (string-append stem "A" (string #\xE9)))
+             (folded (string-append stem "a" (string #\xE9)))
+             (decomposed (string-append stem "A" (string #\e #\x301)))
+             (made (guard (e (#t 'failed))
+                     (if (for-all (lambda (p) (eq? 'absent (entry-name-type p))) (list made-name folded decomposed))
+                         (mkdir-exclusive! made-name)
+                         'exists))))
         (cond
-          ((eq? made 'failed) (raise (list 'error 'probe-failed (list 'dir dir))))
-          ((eq? made 'exists) (if (< k 16) (try (+ k 1)) (raise (list 'error 'probe-failed (list 'dir dir)))))
+          ((eq? made 'failed) (failed))
+          ((eq? made 'exists) (try (+ k 1)))
           (else
-           (let ((case? (not (eq? 'absent (entry-name-type (string-append stem "a" (string #\xE9))))))
-                 (normalisation? (not (eq? 'absent (entry-name-type (string-append stem "A" (string #\e #\x301)))))))
-             (rmdir! (string-append stem "A" (string #\xE9)))
-             (values case? normalisation?)))))))
+           (let* ((seen (guard (e (#t #f))
+                          (list (not (eq? 'absent (entry-name-type folded)))
+                                (not (eq? 'absent (entry-name-type decomposed))))))
+                  (removed (guard (e (#t #f)) (rmdir! made-name) #t)))
+             (unless (and seen removed) (failed))
+             (values (car seen) (cadr seen))))))))
 
   ;; -> ((path <p> <reason>) ...) sorted by p: content (present at both, bytes
   ;; differ), added (absent at a), removed (absent at b).
@@ -531,18 +552,47 @@
                 (let ((da (string-append root "/a")) (db (string-append root "/b")))
                   (export-code-view store da #t (lambda () a))
                   (export-code-view store db #t (lambda () b))
-                  (let ((reference (changed-items (read-tree da) (read-tree db)))
+                  (let ((reference (compare-trees (read-tree da) (read-tree db)))
                         (items (cdr (cadr answer))))
                     (remove-tree! root)
                     (unless (equal? reference items)
                       (assertion-violation 'degeneracy "changed-files differs from the materialised reference"
                                            items reference))
                     answer)))))))
-    ;; every regular file under DIR as ((<relative path> <bytes>) ...)
+    ;; NEVER: NOT changed-items. The second route compares by its own loop, so
+    ;; a defect in the product's comparison is not repeated here. Both inputs
+    ;; come sorted by path from read-tree; a path at one side only is added or
+    ;; removed, and one at both is content when its bytes differ.
+    (define (compare-trees ta tb)
+      (let loop ((ta ta) (tb tb) (out '()))
+        (cond ((and (null? ta) (null? tb)) (reverse out))
+              ((or (null? tb) (and (pair? ta) (string<? (car (car ta)) (car (car tb)))))
+               (loop (cdr ta) tb (cons (list 'path (car (car ta)) 'removed) out)))
+              ((or (null? ta) (string<? (car (car tb)) (car (car ta))))
+               (loop ta (cdr tb) (cons (list 'path (car (car tb)) 'added) out)))
+              ((bytevector=? (cadr (car ta)) (cadr (car tb))) (loop (cdr ta) (cdr tb) out))
+              (else (loop (cdr ta) (cdr tb) (cons (list 'path (car (car ta)) 'content) out))))))
+    ;; every regular file under DIR as ((<relative path> <bytes>) ...), sorted
+    ;; by path.
+    ;;
+    ;; NEVER: NOT directory-files, which skips every name beginning with a dot
+    ;; (an import input's hidden files). The export writes a file at .hidden,
+    ;; and a reference that cannot see it would disagree with a right answer.
+    ;; Only "." and ".." are skipped; anything but a file or a directory in a
+    ;; directory the exporter just wrote is a defect, raised.
     (define (read-tree dir)
-      (if (eq? 'absent (entry-name-type dir))
-          '()
-          (map (lambda (rel) (list rel (entry-bytes (string-append dir "/" rel)))) (directory-files dir))))
+      (list-sort (lambda (x y) (string<? (car x) (car y)))
+        (let walk ((rel ""))
+          (let ((path (if (string=? rel "") dir (string-append dir "/" rel))))
+            (case (entry-name-type path)
+              ((absent) '())
+              ((directory)
+               (apply append (map (lambda (name)
+                                    (if (member name '("." "..")) '()
+                                        (walk (if (string=? rel "") name (string-append rel "/" name)))))
+                                  (directory-entries path))))
+              ((regular) (list (list rel (entry-bytes path))))
+              (else (assertion-violation 'degeneracy "the reference export holds an entry that is neither a file nor a directory" path)))))))
     (define (remove-tree! path)
       (case (entry-name-type path)
         ((absent) #f)
