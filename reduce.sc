@@ -2679,134 +2679,134 @@
   ;; replaced, run beside it after every applied record (THEOURGIA_DEGENERACY=1
   ;; at expansion, degeneracy.sc). Unset, none of this is compiled.
   (degeneracy-definitions
-  (define (structure-recomputed r)
-    (let* ((blocks (reduction-blocks r))
-           (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) blocks))
-           (parent-of (lambda (id)
-                        (let ((e (assoc id blocks)))
-                          (and e (settled-parent (cdr e))))))
-           (tombed? (lambda (id)
-                      (let ((e (assoc id blocks))) (and e (blk-tomb (cdr e)) #t))))
-           ;; A CYCLE IS FOUND BY WALKING UP, and the walk is bounded by
-           ;; the number of blocks: anything longer has revisited a name.
-           (on-cycle?
-             (lambda (id)
-               (let loop ((cur id) (steps 0) (seen '()))
-                 (cond
-                   ((> steps (length blocks)) #t)
-                   ((member cur seen) (equal? cur id))
-                   (else
-                    (let ((p (parent-of cur)))
-                      (cond
-                        ((not p) #f)
-                        ((symbol? p) #f)
-                        ((equal? p id) #t)
-                        (else (loop p (+ steps 1) (cons cur seen)))))))))))
-      (list
-        (cons 'conflicts
-              (list-sort string<?
-                         (map car (filter (lambda (e)
-                                            (and (not (blk-tomb (cdr e)))
-                                                 (on-cycle? (car e))))
-                                          alive))))
-        ;; A DELETE DOES NOT CASCADE. The child is still there and still
-        ;; readable; what it has lost is a place to be shown.
-        ;;
-        ;; A PARENT THAT IS NOT HERE AT ALL LEAVES THE CHILD IN THE SAME
-        ;; position as one that was deleted: nothing to hang it under.
-        ;; The local verbs refuse an unknown parent, so this arrives from
-        ;; a writer whose record named a block this store has not
-        ;; received -- which is exactly when a reader most needs telling.
-        (cons 'orphans
-              (list-sort string<?
-                         (map car (filter (lambda (e)
-                                            (let ((p (settled-parent (cdr e))))
-                                              (and p (string? p)
-                                                   (or (tombed? p)
-                                                       (not (assoc p blocks))))))
-                                          alive))))
-        (cons 'unplaced
-              (list-sort string<?
-                         (map car (filter (lambda (e)
-                                            (not (= 1 (length (blk-position (cdr e))))))
-                                          alive))))
-        ;; A DOCUMENT IS A FILE, AND A FILE IS NOT INSIDE ANOTHER FILE.
-        ;; The write path refuses to put one there, so this arrives only
-        ;; from history written before that rule, or from another store.
-        ;; It is reported rather than repaired: the record exists and
-        ;; says what it says, and a reader that silently moved the block
-        ;; would be inventing a history nobody wrote.
-        ;;
-        ;; IT IS NOTICED WHERE IT IS MADE AND WHERE IT IS SEEN (F85 R3): the
-        ;; three write refusals in store.sc, and this report, which
-        ;; `conflicts` answers as `nested-document` for each, so a malformed
-        ;; store is loud. Readers do not branch on it: to `read --recursive`,
-        ;; `grep --under` and the markdown export it is a block like any other
-        ;; under its parent, written into the file of the top-level document
-        ;; above it when that one is written.
-        (cons 'nested-documents
-              (list-sort string<?
-                         (map car (filter (lambda (e)
-                                            (and (eq? 'doc (blk-kind (cdr e)))
-                                                 (let ((p (settled-parent (cdr e))))
-                                                   (and p (string? p)))))
-                                          alive)))))))
+    (define (structure-recomputed r)
+      (let* ((blocks (reduction-blocks r))
+             (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) blocks))
+             (parent-of (lambda (id)
+                          (let ((e (assoc id blocks)))
+                            (and e (settled-parent (cdr e))))))
+             (tombed? (lambda (id)
+                        (let ((e (assoc id blocks))) (and e (blk-tomb (cdr e)) #t))))
+             ;; A CYCLE IS FOUND BY WALKING UP, and the walk is bounded by
+             ;; the number of blocks: anything longer has revisited a name.
+             (on-cycle?
+               (lambda (id)
+                 (let loop ((cur id) (steps 0) (seen '()))
+                   (cond
+                     ((> steps (length blocks)) #t)
+                     ((member cur seen) (equal? cur id))
+                     (else
+                      (let ((p (parent-of cur)))
+                        (cond
+                          ((not p) #f)
+                          ((symbol? p) #f)
+                          ((equal? p id) #t)
+                          (else (loop p (+ steps 1) (cons cur seen)))))))))))
+        (list
+          (cons 'conflicts
+                (list-sort string<?
+                           (map car (filter (lambda (e)
+                                              (and (not (blk-tomb (cdr e)))
+                                                   (on-cycle? (car e))))
+                                            alive))))
+          ;; A DELETE DOES NOT CASCADE. The child is still there and still
+          ;; readable; what it has lost is a place to be shown.
+          ;;
+          ;; A PARENT THAT IS NOT HERE AT ALL LEAVES THE CHILD IN THE SAME
+          ;; position as one that was deleted: nothing to hang it under.
+          ;; The local verbs refuse an unknown parent, so this arrives from
+          ;; a writer whose record named a block this store has not
+          ;; received -- which is exactly when a reader most needs telling.
+          (cons 'orphans
+                (list-sort string<?
+                           (map car (filter (lambda (e)
+                                              (let ((p (settled-parent (cdr e))))
+                                                (and p (string? p)
+                                                     (or (tombed? p)
+                                                         (not (assoc p blocks))))))
+                                            alive))))
+          (cons 'unplaced
+                (list-sort string<?
+                           (map car (filter (lambda (e)
+                                              (not (= 1 (length (blk-position (cdr e))))))
+                                            alive))))
+          ;; A DOCUMENT IS A FILE, AND A FILE IS NOT INSIDE ANOTHER FILE.
+          ;; The write path refuses to put one there, so this arrives only
+          ;; from history written before that rule, or from another store.
+          ;; It is reported rather than repaired: the record exists and
+          ;; says what it says, and a reader that silently moved the block
+          ;; would be inventing a history nobody wrote.
+          ;;
+          ;; IT IS NOTICED WHERE IT IS MADE AND WHERE IT IS SEEN (F85 R3): the
+          ;; three write refusals in store.sc, and this report, which
+          ;; `conflicts` answers as `nested-document` for each, so a malformed
+          ;; store is loud. Readers do not branch on it: to `read --recursive`,
+          ;; `grep --under` and the markdown export it is a block like any other
+          ;; under its parent, written into the file of the top-level document
+          ;; above it when that one is written.
+          (cons 'nested-documents
+                (list-sort string<?
+                           (map car (filter (lambda (e)
+                                              (and (eq? 'doc (blk-kind (cdr e)))
+                                                   (let ((p (settled-parent (cdr e))))
+                                                     (and p (string? p)))))
+                                            alive)))))))
 
-  (define (outline-recomputed r)
-    (let* ((structure (structure-recomputed r))
-           (cyclic (cdr (assq 'conflicts structure)))
-           (unplaced (cdr (assq 'unplaced structure)))
-           (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) (reduction-blocks r)))
-           (placed (filter (lambda (e)
-                             (and (= 1 (length (blk-position (cdr e))))
-                                  (not (member (car e) cyclic))))
-                           alive))
-           (marked (map (lambda (e)
-                          (list 'root 0 (car e)
-                                (if (member (car e) cyclic) 'conflict 'unplaced)))
-                        (filter (lambda (e)
-                                  (or (member (car e) cyclic)
-                                      (member (car e) unplaced)))
-                                alive)))
-           (rows (append
-                   (map (lambda (e)
-                          (let* ((b (cdr e))
-                                 (p (car (car (blk-position b)))))
-                            (list (car p) (cdr p) (car e))))
-                        placed)
-                   marked)))
-      ;; the one change to the verbatim copy: the comparator is outline-row<?,
-      ;; whose total order the kept structure follows
-      (list-sort outline-row<? rows)))
+    (define (outline-recomputed r)
+      (let* ((structure (structure-recomputed r))
+             (cyclic (cdr (assq 'conflicts structure)))
+             (unplaced (cdr (assq 'unplaced structure)))
+             (alive (filter (lambda (e) (not (blk-tomb (cdr e)))) (reduction-blocks r)))
+             (placed (filter (lambda (e)
+                               (and (= 1 (length (blk-position (cdr e))))
+                                    (not (member (car e) cyclic))))
+                             alive))
+             (marked (map (lambda (e)
+                            (list 'root 0 (car e)
+                                  (if (member (car e) cyclic) 'conflict 'unplaced)))
+                          (filter (lambda (e)
+                                    (or (member (car e) cyclic)
+                                        (member (car e) unplaced)))
+                                  alive)))
+             (rows (append
+                     (map (lambda (e)
+                            (let* ((b (cdr e))
+                                   (p (car (car (blk-position b)))))
+                              (list (car p) (cdr p) (car e))))
+                          placed)
+                     marked)))
+        ;; the one change to the verbatim copy: the comparator is outline-row<?,
+        ;; whose total order the kept structure follows
+        (list-sort outline-row<? rows)))
 
-    ;; the siblings as ord-for read them before: the outline's rows under PARENT
-    (define (siblings-recomputed r parent)
-      (list-sort (lambda (a b) (< (car a) (car b)))
-                 (map (lambda (row) (cons (cadr row) (caddr row)))
-                      (filter (lambda (row) (equal? (car row) parent)) (outline-recomputed r)))))
-    (define (siblings-list-compare r parent answer)
-      (let ((expected (siblings-recomputed r parent)))
-        (unless (equal? expected answer)
-          (assertion-violation 'degeneracy "the sibling list differs from the outline's" parent answer expected))))
-    (define (sibling-compare r parent after answer)
-      (let* ((sibs (siblings-recomputed r parent))
-             (expected
-               (if (not after)
-                   (if (null? sibs) #f (car (car (reverse sibs))))
-                   (let loop ((xs sibs))
-                     (cond ((null? xs) #f)
-                           ((equal? (cdr (car xs)) after)
-                            (cons (car (car xs)) (if (null? (cdr xs)) #f (car (car (cdr xs))))))
-                           (else (loop (cdr xs))))))))
-        (unless (equal? expected answer)
-          (assertion-violation 'degeneracy "the siblings differ from the outline's" parent after answer expected))))
-    (define (structure-compare! r at)
-      (let ((kept (state-structure r)) (recomputed (structure-recomputed r)))
-        (unless (equal? kept recomputed)
-          (assertion-violation 'degeneracy "the structure differs at a record" at kept recomputed)))
-      (let ((kept (state-outline r)) (recomputed (outline-recomputed r)))
-        (unless (equal? kept recomputed)
-          (assertion-violation 'degeneracy "the outline differs at a record" at kept recomputed)))))
+      ;; the siblings as ord-for read them before: the outline's rows under PARENT
+      (define (siblings-recomputed r parent)
+        (list-sort (lambda (a b) (< (car a) (car b)))
+                   (map (lambda (row) (cons (cadr row) (caddr row)))
+                        (filter (lambda (row) (equal? (car row) parent)) (outline-recomputed r)))))
+      (define (siblings-list-compare r parent answer)
+        (let ((expected (siblings-recomputed r parent)))
+          (unless (equal? expected answer)
+            (assertion-violation 'degeneracy "the sibling list differs from the outline's" parent answer expected))))
+      (define (sibling-compare r parent after answer)
+        (let* ((sibs (siblings-recomputed r parent))
+               (expected
+                 (if (not after)
+                     (if (null? sibs) #f (car (car (reverse sibs))))
+                     (let loop ((xs sibs))
+                       (cond ((null? xs) #f)
+                             ((equal? (cdr (car xs)) after)
+                              (cons (car (car xs)) (if (null? (cdr xs)) #f (car (car (cdr xs))))))
+                             (else (loop (cdr xs))))))))
+          (unless (equal? expected answer)
+            (assertion-violation 'degeneracy "the siblings differ from the outline's" parent after answer expected))))
+      (define (structure-compare! r at)
+        (let ((kept (state-structure r)) (recomputed (structure-recomputed r)))
+          (unless (equal? kept recomputed)
+            (assertion-violation 'degeneracy "the structure differs at a record" at kept recomputed)))
+        (let ((kept (state-outline r)) (recomputed (outline-recomputed r)))
+          (unless (equal? kept recomputed)
+            (assertion-violation 'degeneracy "the outline differs at a record" at kept recomputed)))))
 
   (define (state-structure r)
     (let ((s (reduction-structure r)))
