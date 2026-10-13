@@ -17,7 +17,7 @@
 ;; span. Files are built with known block texts (a split import, each block
 ;; then written), and every answer is compared with spans the fixture adds up
 ;; from those texts. LC-5 sets locate's empty-range rule beside
-;; projection-range's opposite one on the same pieces; LC-9 is the trial's
+;; projection-range's opposite one on the same pieces; LC-8 TRIAL is the trial's
 ;; own edit: test/client-program.sc at 20b4878 imported split, and the
 ;; changed-line hunks of its next commit's diff (locate-data/).
 
@@ -67,7 +67,10 @@
 (define (clause-of a head) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
 
 
+(define (path-parent p)
+  (let loop ((i (- (string-length p) 1))) (cond ((< i 0) ".") ((char=? (string-ref p i) #\/) (substring p 0 i)) (else (loop (- i 1))))))
 (define (write-file! path text)
+  (sh "mkdir -p " (quoted (path-parent path)))
   (call-with-port (open-file-output-port path (file-options no-fail)) (lambda (p) (put-bytevector p (string->utf8 text)))))
 (define (file-text path) (call-with-port (open-file-input-port path) (lambda (p) (let ((b (get-bytevector-all p))) (if (eof-object? b) "" (utf8->string b))))))
 (define n 0)
@@ -92,6 +95,7 @@
 (define (split-import! d path text)
   (let ((st (store-in d)))
     (write-file! (string-append d "/raw/" path) text)
+    (sh "mkdir -p " (quoted (path-parent (string-append d "/src/" path))))
     (ask st 'split-suggest (string-append d "/raw/" path) "--output" (string-append d "/src/" path))
     (unless (eq? 'ok (head-of (ask st 'import-code (string-append d "/src"))))
       (assertion-violation 'locate "split import failed" path))
@@ -134,7 +138,7 @@
 (want "LC-3 a hunk whose old-side lines 3 and 4 straddle the boundary answers both blocks"
       (items-of (loc ab "m.sc" "--hunk" "@@ -3,2 +3,2 @@\n-l3\n-l4\n+x\n+y\n"))
       ab-spans)
-(want "LC-4 --cut at the start tag equals --writer of a writer with no drafts, when nothing changed"
+(want "LC-4 --cut against the start tag equals --writer of a writer with no drafts, when nothing changed"
       (let ((at-cut (items-of (loc ab "m.sc" "--bytes" "7:11")))
             (working (items-of (ask ab 'locate "m.sc" "--writer" "w2" "--bytes" "7:11"))))
         (list (equal? at-cut working) (length working)))
@@ -158,6 +162,19 @@
 (want "LC-8 a -6,0 hunk at the last line is an append, and answers the last block, which ends there"
       (items-of (loc ab "m.sc" "--hunk" "@@ -6,0 +7 @@\n+x\n"))
       (pick ab-spans 1))
+
+;; ---- LC-9 a writer with no drafts reads the head ------------------------------
+(let ((st (blocks-store! "n.sc" '("a\n" "b\n"))))
+  (ask st 'tag "t0")
+  (ask st 'write (cadr (children-at st "n.sc")) "bb\n" "--writer" "w1")
+  (ask st 'commit "--writer" "w1")
+  (ask st 'tag "t1")
+  (want "LC-9 --writer of a writer with no drafts equals the head, the cut after a later commit, not the start tag"
+        (let ((working (items-of (ask st 'locate "n.sc" "--writer" "w2" "--bytes" "0:4"))))
+          (list (map cddr working)
+                (equal? working (items-of (ask st 'locate "n.sc" "--cut" "t1" "--bytes" "0:4")))
+                (equal? working (items-of (ask st 'locate "n.sc" "--cut" "t0" "--bytes" "0:4")))))
+        '(((0 2) (2 5)) #t #f)))
 
 ;; ---- LC-6 a file with no children ------------------------------------------
 (printf "== LC-6, LC-7: no children, a zero-length child ==\n")
@@ -196,13 +213,15 @@
             (loc ab "m.sc" "--hunk" "@@ -1 +1 @@\n-l1\n+x\n@@ -4 +4 @@\n-l4\n+y\n")
             (loc ab "m.sc" "--hunk" "@@ -1 @@\n"))
       '((error not-a-hunk) (error one-hunk-only) (error not-a-hunk)))
+;; a text file whose mode is then set to datum: a file block, not text
 (let* ((d (fresh-store!)) (st (store-in d)))
-  (write-file! (string-append d "/src/rr.sc") "(library (rr) (export h) (import (rnrs))\n(define (h) 1))\n")
-  (ask st 'import-code (string-append d "/src") "--datum")
+  (write-file! (string-append d "/src/f.txt") "x\n")
+  (ask st 'import-code (string-append d "/src"))
+  (ask st 'set (file-at st "f.txt") "mode" "datum")
   (ask st 'tag "t0")
   (want "LC a path held by a file that is not text mode is not-a-text-file"
-        (loc st "rr.sc" "--bytes" "0:0")
-        '(error not-a-text-file "rr.sc")))
+        (list (and (file-at st "f.txt") #t) (loc st "f.txt" "--bytes" "0:0"))
+        '(#t (error not-a-text-file "f.txt"))))
 (want "LC exactly one view: --writer and --cut together are refused, neither is the usage form"
       (list (ask ab 'locate "m.sc" "--writer" "w2" "--cut" "t0" "--bytes" "0:1")
             (head-of (ask ab 'locate "m.sc" "--bytes" "0:1"))
@@ -218,8 +237,8 @@
               (clause-of working 'working) (clause-of working 'versions)))
       '(ok #t #f (working #t) #f))
 
-;; ---- LC-9 the trial's own edit -----------------------------------------------
-(printf "== LC-9: test/client-program.sc at 20b4878 and its next commit's hunks ==\n")
+;; ---- LC-8 TRIAL the trial's own edit -----------------------------------------------
+(printf "== LC-8 TRIAL: test/client-program.sc at 20b4878 and its next commit's hunks ==\n")
 (define base-text (file-text "locate-data/client-program-20b4878.txt"))
 (define (hunks diff)
   ;; each "@@" line with the lines under it, up to the next
@@ -247,14 +266,14 @@
          (answered (lambda (diff)
                      (map (lambda (h) (map cadr (items-of (loc st "test/client-program.sc" "--hunk" h))))
                           (hunks (file-text diff))))))
-    (want "LC-9 SETUP the split import is the trial's: 63 blocks, run together equal to the file, the two definitions found"
+    (want "LC-8 TRIAL SETUP the split import is the trial's: 63 blocks, run together equal to the file, the two definitions found"
           (list (length kids) (string=? (apply string-append srcs) base-text) (and daemons-alive kill-daemons #t))
           '(63 #t #t))
-    (want "LC-9 the five changed-line hunks (-U0) answer daemons-alive's block and kill-daemons!'s, and nothing else"
+    (want "LC-8 TRIAL the five changed-line hunks (-U0) answer daemons-alive's block and kill-daemons!'s, and nothing else"
           (let ((per (answered "locate-data/client-program-46f14c8-U0.diff")))
             (list (length per) (fold-left (lambda (acc l) (fold-left (lambda (a x) (if (member x a) a (append a (list x)))) acc l)) '() per)))
           (list 5 (list daemons-alive kill-daemons)))
-    (want "LC-9 CONTROL: with three lines of context the first hunk also answers the two blocks before, out-of's and err-of's"
+    (want "LC-8 TRIAL CONTROL: with three lines of context the first hunk also answers the two blocks before, out-of's and err-of's"
           (let ((first (car (answered "locate-data/client-program-46f14c8-U3.diff"))))
             (list (length first) (list-tail first 2)))
           (list 4 (list daemons-alive kill-daemons)))))

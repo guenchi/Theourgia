@@ -1340,7 +1340,7 @@
 ;; that it existed somewhere.
 (want "GATE-C the verbs whose form is written in more than one place"
       (length compared)
-      34)
+      33)
 
 (want "GATE-C no verb's two spellings of its usage form disagree"
       disagreeing
@@ -1405,7 +1405,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(collect collect-into commit commitments context eval import-code insert names outline query read relation review-results rule scope serve subscribe supply tasks template uses))
+      '(collect collect-into commit commitments context eval import-code insert locate names outline query read relation review-results rule scope serve subscribe supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
