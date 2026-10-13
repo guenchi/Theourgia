@@ -183,6 +183,8 @@
      "RS-11c's fixture checks it was handed a socket root under /tmp/ths. before locking it; it writes nothing there")
     ("paths.py" "/tmp"
      "solo fallback after both variables, for a socket-capable directory")
+    ("publish-landing.sc" "/tmp"
+     "PL-33 tries /tmp as a directory that may be on another volume than the scratch root; it makes a repository there only when it is, and removes it")
     ("run-fixtures.sh" "mktemp -d /tmp/ths.XXXXXX"
      "the runner makes the socket root")))
 

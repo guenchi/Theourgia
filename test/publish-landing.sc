@@ -162,7 +162,8 @@
                 (name-status r) (and (clause-of a 'commit) (equal? (cadr (clause-of a 'commit)) (head-commit r))))
           '(ok #t #t "M\ttest/client-program.sc\nM\ttest/rows-baseline.txt" #t))
     (want "PL-4 the commit message is the block's text, verbatim"
-          (let ((c (git (wt-of r) "cat-file" "commit" "HEAD")))
+          ;; not through git, which drops the output's last LF
+          (let ((c (out-of (string-append "git -C " (quoted (wt-of r)) " cat-file commit HEAD"))))
             (let loop ((i 0)) (if (string=? "\n\n" (substring c i (+ i 2))) (substring c (+ i 2) (string-length c)) (loop (+ i 1)))))
           "test: client-program's daemon count does not match its own shell\n")
     (want "PL-1 nothing is left behind: the worktree clean, no scratch directory, the parent the base"
@@ -422,10 +423,11 @@
           " && git -C " (quoted main) " worktree add -q --detach " (quoted (wt-of r)) " " (base-of r))
       (set-text! (st-of r) "a.txt" "uno\n")
       (landing! r "linked") (freeze! r)
-      (let ((a (publish! r)))
+      (let* ((a (publish! r))
+             (seen (list (head-of a) (name-status r) (out-of (string-append "ls -A " (quoted (wt-of r)))))))
         (sh "rm -rf " (quoted main))
         (want "PL-33 a linked worktree whose repository is on another volume lands through the hidden directory, gone before the commit"
-              (list (head-of a) (name-status r) (out-of (string-append "ls -A " (quoted (wt-of r)))))
+              seen
               '(ok "M\ta.txt" ".git\na.txt\n")))))
 
 (sh "rm -rf " (quoted root))

@@ -128,8 +128,10 @@
   (let-values (((rc out) (git wt args)))
     (unless (= rc 0) (refuse 'git-failed (cons 'command args) (list 'status rc)))
     (utf8->string out)))
-(define (git-bytes wt . args)
-  (let-values (((rc out) (git wt args)))
+(define (git-bytes wt . args) (git-run wt args))
+;; ARGS as a list, and the bytes for its standard input when given
+(define (git-run wt args . input)
+  (let-values (((rc out) (apply git wt args input)))
     (unless (= rc 0) (refuse 'git-failed (cons 'command args) (list 'status rc)))
     out))
 ;; NUL-separated fields
@@ -271,15 +273,23 @@
 
 ;; ---- the run -------------------------------------------------------------------------
 
-(define (publish store start freeze wt)
-  (let* ((start-cut (tag-cut store start))
+;; THE WORKTREE BY ITS OWN SPELLING: git's top level, required to be the
+;; directory named (same device and inode), so every path compared with the
+;; git directory's below is in git's spelling (a "/." or a symbolic link in
+;; the name given would otherwise make a prefix test miss).
+(define (worktree-root given)
+  (let ((top (chomp (git-text given "rev-parse" "--show-toplevel"))))
+    (unless (equal? (list-head (path-stat top) 2) (list-head (path-stat given) 2)) (refuse 'not-a-worktree-root given))
+    top))
+
+(define (publish store start freeze given)
+  (let* ((wt (worktree-root given))
+         (start-cut (tag-cut store start))
          (freeze-cut (tag-cut store freeze))
          (freeze-state (let ((s (store-state-at-cut store #f (cut-text freeze-cut))))
                          (if (reduction? s) s (raise s)))))
     (let-values (((id message base) (landing-at freeze-state freeze)))
-      ;; the worktree: its root, no leftover scratch, clean, at the base
-      (let ((top (chomp (git-text wt "rev-parse" "--show-toplevel"))))
-        (unless (equal? (list-head (path-stat top) 2) (list-head (path-stat wt) 2)) (refuse 'not-a-worktree-root wt)))
+      ;; the worktree: no leftover scratch, clean, at the base
       (let ((left (filter (lambda (n) (prefix? n ".theourgia-landing-")) (names-in wt))))
         (when (pair? left) (refuse 'leftover-scratch (cons 'names left))))
       (unless (= 0 (bytevector-length (git-bytes wt "status" "--porcelain" "--untracked-files=all" "-z")))
@@ -350,7 +360,7 @@
                   (let ((projected (raw-projection freeze-state)) (targets (append added content)))
                     ;; PASS ONE: the removals, then any directory left empty in the way
                     (set! touched #t)
-                    (when (pair? removed) (git-bytes wt (append (list "rm" "-q" "--") removed)))
+                    (when (pair? removed) (git-run wt (append (list "rm" "-q" "--") removed)))
                     (for-each (lambda (p)
                                 (for-each (lambda (a) (let ((d (string-append wt "/" a)))
                                                         (when (and (eq? 'directory (type-at d)) (cleared? wt a removed-set))
@@ -365,7 +375,7 @@
                               targets)
                     (remove-tree! scratch)
                     (set! made #f)
-                    (when (pair? targets) (git-bytes wt (append (list "add" "-f" "--") targets)))
+                    (when (pair? targets) (git-run wt (append (list "add" "-f" "--") targets)))
                     ;; THE STAGED SET, read back
                     (let ((want (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
                                            (append (map (lambda (p) (list "A" p)) added) (map (lambda (p) (list "M" p)) content)
@@ -381,11 +391,14 @@
                                   (unless (and x (bytevector=? (cadr x) (git-bytes wt "cat-file" "blob" (string-append ":" p))))
                                     (refuse 'staging-converted p))))
                               targets)
-                    (for-each (lambda (p)
-                                (unless (= 0 (bytevector-length (git-bytes wt "ls-files" "--stage" "-z" "--" p)))
-                                  (refuse 'staged-set-mismatch (list 'still-indexed p))))
-                              removed)
-                    (git-bytes wt (list "commit" "-q" "--no-verify" "--cleanup=verbatim" "-F" "-") (string->utf8 message))
+                    ;; NEVER: NOT "NO OUTPUT". A pathspec x also selects x/y, which
+                    ;; a file becoming a directory has just staged; the index entry
+                    ;; must be absent at exactly the removed path.
+                    (let ((indexed (map (lambda (rec) (let loop ((i 0)) (if (char=? (string-ref rec i) #\tab) (substring rec (+ i 1) (string-length rec)) (loop (+ i 1)))))
+                                        (nul-fields (git-text wt "ls-files" "--stage" "-z")))))
+                      (for-each (lambda (p) (when (member p indexed) (refuse 'staged-set-mismatch (list 'still-indexed p))))
+                                removed))
+                    (git-run wt (list "commit" "-q" "--no-verify" "--cleanup=verbatim" "-F" "-") (string->utf8 message))
                     (list 'ok (list 'commit (chomp (git-text wt "rev-parse" "HEAD")))
                           (list 'landing id) (list 'base base)
                           (list 'added added) (list 'content content) (list 'removed removed)
