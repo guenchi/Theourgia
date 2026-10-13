@@ -77,7 +77,7 @@
           load-declaration-set! load-declaration-of
           session-delivered? snapshot-unreadable-notes
           local-writer-of
-          log-begin log-end! session? session-store session-epoch session-writer
+          log-begin log-end! session? session-store session-epoch session-writer session-own-prefix
           session-append! session-dry-clone session-dry?
           session-frontiers session-view session-view-refusal session-applied! session-load
           make-frame frame? frame-view-id frame-epoch frame-writer
@@ -114,7 +114,8 @@
                 sexpr->string-extended string->sexpr-extended decode-line
                 record-envelope-refusal
                 escape-newlines encode-record storable-encode)
-          (only (theourgia timing-wrappers) intent-timed))
+          (only (theourgia timing-wrappers) intent-timed)
+          (theourgia degeneracy))
 
   ;; ---- errors -------------------------------------------------------------
 
@@ -1995,6 +1996,14 @@
   ;; owner file and whatever the caller passed -- and a frame naming a
   ;; different writer is then indistinguishable from a caller asking for
   ;; someone else's view.
+  ;; A WRITER'S PREFIX AS THE SESSION KNOWS IT: the discovery it validated or
+  ;; advanced (read through the accessors catch-up and the write path use:
+  ;; quarantine, integrity, end-seq, physical-current, torn), every segment
+  ;; name in order, the physical current's expected size, and the (mtime .
+  ;; ctime) pairs of its last stat. Built anew at every change.
+  (define-record-type kept-prefix
+    (fields discovery names expected stamp))
+
   (define-record-type session
     (fields store lock (mutable load) on-deliver writer
             (mutable epoch) (mutable applied) (mutable revision)
@@ -2048,7 +2057,12 @@
             ;; declaration the session was begun with.
             declaration
             ;; A REHEARSAL'S SESSION (session-dry-clone), and only that.
-            dry?))
+            dry?
+            ;; THE OWN WRITER'S KEPT PREFIX (kept-prefix, below), or #f: what the
+            ;; session last validated of its own writer, advanced by its own
+            ;; writes, so an append need not read the writer's log again.
+            ;; Replaced, never changed in place (a dry clone shares it).
+            (mutable own-prefix)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -2270,6 +2284,9 @@
                        (refusal (or stopped (and (not local) (unreadable-writer-refusal ls))))
                        (entry (and local (assoc local (load-session-prefixes ls))))
                        (end (and entry (discovery-end-seq (cdr entry))))
+                       ;; THE SEED: open-load's own discovery of this writer, kept
+                       ;; when one stat and one listing agree with it (D1)
+                       (seed (and entry (seed-own-prefix store local (cdr entry))))
                        (s (make-session store lock ls on-deliver local
                                         0 '() 0 #f #f
                                         (and end (+ 1 end))
@@ -2286,7 +2303,7 @@
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
                                         (and end (+ end 1)) #f
-                                        refusal declaration #f)))
+                                        refusal declaration #f seed)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -2827,6 +2844,9 @@
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
+      ;; WHAT THE SESSION KEPT OF ITS OWN WRITER IS DROPPED: the next append
+      ;; validates in full (D2b).
+      (session-own-prefix-set! s #f)
       ;; WHAT WAS DELIVERED IS A FACT ABOUT AN EPOCH. Carrying the list
       ;; across a reload let session-reject! accept a record that the new
       ;; boundary has removed and that this epoch never delivered.
@@ -5637,7 +5657,8 @@
                   (session-start-seq s) (session-write-started s)
                   (session-unreadable-refusal s)
                   (session-declaration s)
-                  #t))
+                  #t
+                  (session-own-prefix s)))
 
   ;; THE LOGICAL SUCCESS OF AN APPEND AT SEQ: the next sequence, the record
   ;; waiting for its application, the revision, and that this session has
@@ -5923,34 +5944,176 @@
       (snapshot-write! path cut rows)
       (list 'written path cut)))
 
+  ;; ---- the kept prefix (an append does not read the writer's whole log) --
+
+  (define (segment-path store writer n)
+    (string-append (writer-directory store writer) "/" (segment-file-name n)))
+
+  ;; THE SEED, AND THE RE-SEED AFTER A FULL VALIDATE: discovery D of the
+  ;; session's own writer, kept when it can be: a local writer, a physical
+  ;; current, no torn tail, no integrity error; ONE stat of the physical
+  ;; current, whose size must be the validated extent (the endpoint's offset
+  ;; when the endpoint is in it, 0 when it is empty); ONE listing of the
+  ;; segment files, whose names must be the segments the discovery covered
+  ;; (those with a range, and the physical current: only the newest segment
+  ;; can be empty, after a rotation that has written nothing yet). Anything
+  ;; else, or a raise, keeps nothing and the next append validates in full.
+  (define (seed-own-prefix store writer d)
+    (guard (e (#t #f))
+      (let ((phys (discovery-physical-current d)))
+        (and (eq? (discovery-origin d) 'local)
+             (pair? phys)
+             (not (discovery-torn d))
+             (null? (discovery-integrity d))
+             (let* ((expected (if (eqv? (discovery-end-segment d) (car phys)) (discovery-end-offset d) 0))
+                    (st (path-stat (segment-path store writer (car phys))))
+                    (names (enumerate-segment-files store writer))
+                    (covered (list-sort < (let ((r (map car (discovery-segment-ranges d))))
+                                            (if (memv (car phys) r) r (cons (car phys) r))))))
+               (and (= (list-ref st 2) expected)
+                    (equal? names covered)
+                    (make-kept-prefix (kept-discovery d (discovery-end-segment d) (discovery-end-offset d)
+                                                      (discovery-end-seq d) (discovery-segment-ranges d) phys)
+                                      names expected (cons (list-ref st 3) (list-ref st 4)))))))))
+
+  ;; THE DISCOVERY AS KEPT: D's coordinates as given, D's metadata, and no
+  ;; current-buffer (no reader of it remains on the append path after the
+  ;; catch-up, and the segment's bytes are not held for the session's life).
+  (define (kept-discovery d end-segment end-offset end-seq ranges phys)
+    (make-discovery (discovery-origin d) end-segment end-offset end-seq ranges phys #f
+                    (discovery-torn d) (discovery-integrity d) (discovery-quarantine d)
+                    (discovery-retired d) (discovery-versions d) (discovery-retired-tail d)
+                    (discovery-cut d)))
+
+  ;; THE KEPT PREFIX AFTER THE SESSION'S OWN WRITE OF LINE (sequence SEQ) to
+  ;; TARGET through FD, or #f: the prefix advanced by that one frame when the
+  ;; disk agrees -- the descriptor written and the path's file are one file
+  ;; (device and inode), the path's size is the kept size plus the line (0
+  ;; plus the line in a segment the write rotated to), and, after a rotation,
+  ;; the segment it left is still the size the session kept for it. Anything
+  ;; else, or a raise, keeps nothing and the next append validates in full.
+  (define (advanced-own-prefix s fd seq line target target-path fresh?)
+    (let ((kept (session-own-prefix s)))
+      (and kept
+           (guard (e (#t #f))
+             (let* ((d (kept-prefix-discovery kept))
+                    (left (car (discovery-physical-current d)))
+                    (size (+ (if fresh? 0 (kept-prefix-expected kept)) (bytevector-length line)))
+                    (by-fd (fd-stat fd target-path))
+                    (by-path (path-stat target-path))
+                    (ranges (discovery-segment-ranges d))
+                    (last-range (and (pair? ranges) (list-ref ranges (- (length ranges) 1)))))
+               (and (eqv? (car by-fd) (car by-path))
+                    (eqv? (cadr by-fd) (cadr by-path))
+                    (= (list-ref by-path 2) size)
+                    (or (not fresh?)
+                        (= (list-ref (path-stat (segment-path (session-store s) (session-writer s) left)) 2)
+                           (kept-prefix-expected kept)))
+                    (make-kept-prefix
+                      (kept-discovery d target size seq
+                                      (if (and last-range (eqv? (car last-range) target))
+                                          (append (list-head ranges (- (length ranges) 1))
+                                                  (list (list target (cadr last-range) seq)))
+                                          (append ranges (list (list target seq seq))))
+                                      (list target size))
+                      (if fresh? (append (kept-prefix-names kept) (list target)) (kept-prefix-names kept))
+                      size
+                      (cons (list-ref by-path 3) (list-ref by-path 4)))))))))
+
+  ;; THE DEGENERACY ORACLE (D4): after a committed append that leaves a kept
+  ;; prefix, the writer's log validated in full, one stat and one listing are
+  ;; compared with it field by field; a difference raises naming the field.
+  (degeneracy-definitions
+    (define (kept-prefix-compare! s store writer outcome)
+      (let ((kept (session-own-prefix s)))
+        (when (and kept (pair? outcome) (eq? (car outcome) 'committed))
+          (let* ((k (kept-prefix-discovery kept))
+                 (d (discover-prefix store writer 'held-exclusive))
+                 (phys (discovery-physical-current d))
+                 (st (path-stat (segment-path store writer (car phys))))
+                 (differs (lambda (field a b)
+                            (unless (equal? a b)
+                              (assertion-violation 'degeneracy "the kept prefix differs from the validated one"
+                                                   field a b)))))
+            (differs 'end-seq (discovery-end-seq k) (discovery-end-seq d))
+            (differs 'end-segment (discovery-end-segment k) (discovery-end-segment d))
+            (differs 'end-offset (discovery-end-offset k) (discovery-end-offset d))
+            (differs 'physical-current (discovery-physical-current k) phys)
+            (differs 'segment-ranges (discovery-segment-ranges k) (discovery-segment-ranges d))
+            (differs 'quarantine (discovery-quarantine k) (discovery-quarantine d))
+            (differs 'integrity (discovery-integrity k) (discovery-integrity d))
+            (differs 'torn (discovery-torn k) (discovery-torn d))
+            (differs 'retired (discovery-retired k) (discovery-retired d))
+            (differs 'versions (discovery-versions k) (discovery-versions d))
+            (differs 'size (kept-prefix-expected kept) (list-ref st 2))
+            (differs 'stamp (kept-prefix-stamp kept) (cons (list-ref st 3) (list-ref st 4)))
+            (differs 'names (kept-prefix-names kept) (enumerate-segment-files store writer)))))))
+
+  ;; THE TAIL CHECK: the physical current's size and times are the kept ones,
+  ;; and the segment files are the kept list. A raise is a mismatch.
+  (define (kept-prefix-current? store writer kept)
+    (guard (e (#t #f))
+      (let* ((phys (discovery-physical-current (kept-prefix-discovery kept)))
+             (st (path-stat (segment-path store writer (car phys)))))
+        (and (= (list-ref st 2) (kept-prefix-expected kept))
+             (equal? (cons (list-ref st 3) (list-ref st 4)) (kept-prefix-stamp kept))
+             (equal? (enumerate-segment-files store writer) (kept-prefix-names kept))))))
+
+  ;; -> (discovery . path): the kept prefix when the tail check passes
+  ;; (consumed-prefix), else a full validate, re-seeding from it
+  ;; (validated-in-full). One value: intent-timed passes one through.
+  (define (catch-up-prefix s store writer)
+    (let ((kept (session-own-prefix s)))
+      (if (and kept (kept-prefix-current? store writer kept))
+          (cons (kept-prefix-discovery kept) 'consumed-prefix)
+          (let ((p (discover-prefix store writer 'held-exclusive)))
+            (session-own-prefix-set! s (seed-own-prefix store writer p))
+            (cons p 'validated-in-full)))))
+
   (define (catch-up-and-append! s frame)
     (let* ((store (session-store s))
            (writer (session-writer s)))
       ;; THE CATCH-UP IS INSIDE THE LOCK AND IT IS NOT OPTIONAL. Another
       ;; process may have appended and rotated since this session's last
       ;; look; the sequence number and the append target both come from
-      ;; what is on disk now, not from what was there at log-begin.
+      ;; what is on disk now, not from what was there at log-begin. What the
+      ;; session kept of its own writer stands for a full read only while the
+      ;; tail check finds the disk as it left it.
       (trace-event! 'catch-up writer #f)
-      (let ((p (intent-timed 18 (discover-prefix store writer 'held-exclusive)))
-            ;; asked before the session's first append only: its own
-            ;; appends are what the guard's snapshot does not hold yet
-            (guarded (and (not (session-write-started s)) (append-guard store writer))))
-        (cond
-          ;; THE STORE WAS REPLACED UNDER THE PROCESS THAT HOLDS IT. What it
-          ;; published is not on the disk any more, and an append would
-          ;; continue a history this process never read.
-          (guarded (cons 'refused-before-reserve guarded))
-          ;; THE FORK IN THIS WRITER'S OWN HISTORY. Its predecessors are
-          ;; no longer history, so an append that continues from them
-          ;; would be building on a prefix the store has disavowed.
-          ((discovery-quarantine p)
-           (list 'refused-before-reserve 'quarantined))
-          ((pair? (discovery-integrity p))
-           (session-poisoned-set! s #t)
-           (list 'refused-before-reserve 'integrity))
-          ((not (eqv? (frame-expect-seq frame) (+ 1 (discovery-end-seq p))))
-           (list 'refused-before-reserve 'expect-seq))
-          (else (intent-timed 19 (frame-and-write! s frame p)))))))
+      ;; asked before the session's first append only: its own appends are
+      ;; what the guard's snapshot does not hold yet. A refusal here comes
+      ;; before the prefix is read, so it records no catch-up path.
+      (let ((guarded (and (not (session-write-started s)) (append-guard store writer))))
+        (if guarded
+            ;; THE STORE WAS REPLACED UNDER THE PROCESS THAT HOLDS IT. What it
+            ;; published is not on the disk any more, and an append would
+            ;; continue a history this process never read.
+            (cons 'refused-before-reserve guarded)
+            (let* ((caught (intent-timed 18 (catch-up-prefix s store writer)))
+                   (p (car caught))
+                   (path (cdr caught)))
+              ;; WHICH PATH ANSWERED: the kept prefix or a full validate. On
+              ;; every build; read through the trace.
+              (trace-event! 'catch-up-path writer path)
+              (barrier! 'after-tail-check)
+              (cond
+                ;; THE FORK IN THIS WRITER'S OWN HISTORY. Its predecessors are
+                ;; no longer history, so an append that continues from them
+                ;; would be building on a prefix the store has disavowed.
+                ((discovery-quarantine p)
+                 (list 'refused-before-reserve 'quarantined))
+                ((pair? (discovery-integrity p))
+                 (session-poisoned-set! s #t)
+                 (list 'refused-before-reserve 'integrity))
+                ((not (eqv? (frame-expect-seq frame) (+ 1 (discovery-end-seq p))))
+                 (list 'refused-before-reserve 'expect-seq))
+                (else
+                 ;; A RAISE BETWEEN HERE AND THE ACCOUNTING drops the kept
+                 ;; prefix: the next append validates in full (D2c).
+                 (let ((outcome (guard (e (#t (session-own-prefix-set! s #f) (raise e)))
+                                  (intent-timed 19 (frame-and-write! s frame p)))))
+                   (degeneracy-check (kept-prefix-compare! s store writer outcome))
+                   outcome))))))))
 
   ;; STEP 5: EVERYTHING THAT CAN REFUSE THE INPUT HAPPENS HERE, before a
   ;; byte of the store changes. The line is built in full -- encoded,
@@ -5984,7 +6147,15 @@
   ;; writer before this is reached -- session-view withholds the view and
   ;; binding-refusal names it -- and a second check of the same rule is a
   ;; second supplier that can disagree with the first.
+  ;; A REFUSAL AFTER A ROTATION drops the kept prefix: the next segment is on
+  ;; the disk and the session's prefix does not hold it.
   (define (reserve-then-write! s frame p line seq target target-path fresh?)
+    (let ((outcome (reserve-then-write-checked! s frame p line seq target target-path fresh?)))
+      (when (and fresh? (pair? outcome) (eq? (car outcome) 'refused-before-reserve))
+        (session-own-prefix-set! s #f))
+      outcome))
+
+  (define (reserve-then-write-checked! s frame p line seq target target-path fresh?)
     (let* ((store (session-store s))
            (writer (session-writer s))
            (identity (verify-instance store)))
@@ -6206,6 +6377,9 @@
           (cond
             ((eq? outcome 'write-failed)
              (close-quietly fd)
+             ;; WHAT THE SESSION KEPT OF ITS WRITER NO LONGER DESCRIBES IT
+             ;; when bytes may be on the disk, and is dropped for both answers.
+             (session-own-prefix-set! s #f)
              (if (= (vector-ref wrote 0) 0)
                  (list 'reserved-not-written seq)
                  (list 'partial-write seq (vector-ref wrote 0))))
@@ -6229,11 +6403,16 @@
              ;; fails after a write would otherwise escape as an
              ;; exception, losing the fact that the record IS on disk --
              ;; and the caller would resubmit it.
-             (begin
+             ;;
+             ;; THE KEPT PREFIX ADVANCES BY THIS FRAME, checked against the
+             ;; descriptor and the path before the close, and set beside the
+             ;; accounting.
+             (let ((advanced (advanced-own-prefix s fd seq line target target-path fresh?)))
                (close-quietly fd)
                (trace-event! 'apply (cons writer seq) #f)
                (note-touched! s target)
                (append-transition! s seq)
+               (session-own-prefix-set! s advanced)
                (list 'committed seq target))))))))
 
   (define (note-touched! s segment)
