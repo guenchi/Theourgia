@@ -5954,10 +5954,12 @@
   ;; current, no torn tail, no integrity error; ONE stat of the physical
   ;; current, whose size must be the validated extent (the endpoint's offset
   ;; when the endpoint is in it, 0 when it is empty); ONE listing of the
-  ;; segment files, whose names must be the segments the discovery covered
-  ;; (those with a range, and the physical current: only the newest segment
-  ;; can be empty, after a rotation that has written nothing yet). Anything
-  ;; else, or a raise, keeps nothing and the next append validates in full.
+  ;; segment files, which must end at the physical current and hold every
+  ;; segment the discovery covered (those with a range). A listed segment it
+  ;; did not cover had no record when it was validated -- an older segment is
+  ;; left empty when a line too large for it rotated past it -- and the lock
+  ;; held since that validation keeps it so. Anything else, or a raise, keeps
+  ;; nothing and the next append validates in full.
   (define (seed-own-prefix store writer d)
     (guard (e (#t #f))
       (let ((phys (discovery-physical-current d)))
@@ -5967,11 +5969,11 @@
              (null? (discovery-integrity d))
              (let* ((expected (if (eqv? (discovery-end-segment d) (car phys)) (discovery-end-offset d) 0))
                     (st (path-stat (segment-path store writer (car phys))))
-                    (names (enumerate-segment-files store writer))
-                    (covered (list-sort < (let ((r (map car (discovery-segment-ranges d))))
-                                            (if (memv (car phys) r) r (cons (car phys) r))))))
+                    (names (enumerate-segment-files store writer)))
                (and (= (list-ref st 2) expected)
-                    (equal? names covered)
+                    (pair? names)
+                    (eqv? (car (last-pair names)) (car phys))
+                    (for-all (lambda (c) (memv c names)) (map car (discovery-segment-ranges d)))
                     (make-kept-prefix (kept-discovery d (discovery-end-segment d) (discovery-end-offset d)
                                                       (discovery-end-seq d) (discovery-segment-ranges d) phys)
                                       names expected (cons (list-ref st 3) (list-ref st 4)))))))))
@@ -6047,7 +6049,8 @@
             (differs 'versions (discovery-versions k) (discovery-versions d))
             (differs 'size (kept-prefix-expected kept) (list-ref st 2))
             (differs 'stamp (kept-prefix-stamp kept) (cons (list-ref st 3) (list-ref st 4)))
-            (differs 'names (kept-prefix-names kept) (enumerate-segment-files store writer)))))))
+            (differs 'names (kept-prefix-names kept) (enumerate-segment-files store writer))
+            (differs 'metadata-versions (session-versions s) (metadata-versions store)))))))
 
   ;; THE TAIL CHECK: the physical current's size and times are the kept ones,
   ;; and the segment files are the kept list. A raise is a mismatch.

@@ -574,7 +574,7 @@
                          ((member (car l) acc) (dedupe (cdr l) acc))
                          (else (dedupe (cdr l) (cons (car l) acc))))))
       (list-sort string<?
-                 '("apply" "catch-up" "copy" "create" "enter-critical" "flock" "frame"
+                 '("apply" "catch-up" "catch-up-path" "copy" "create" "enter-critical" "flock" "frame"
                    "fsync" "parse" "registry-check" "registry-write" "rename"
                    "unlock" "write")))
 ;; DEDUPLICATION THROWS AWAY THE THING THAT MATTERS. `apply` appearing

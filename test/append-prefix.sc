@@ -36,9 +36,11 @@
 ;;
 ;; THE WINDOW ROWS park a child at a barrier (THEOURGIA_INJECT=on,
 ;; THEOURGIA_BARRIER=<name>:<fifo>) while this process changes the segment
-;; under it: after-tail-check, between the tail check and the write, and
-;; before-rotate-write, before a rotation leaves the current segment. Both
-;; barriers exist only on this tree, so master reads never-parked.
+;; under it: after-tail-check, between the tail check and the write (new on
+;; this tree, so master reads never-parked), and before-rotate-write, before a
+;; rotation leaves the current segment (master has it, and answers there with
+;; no session-own-prefix to read). Each child appends a second time in the same
+;; session and reports the path that append took.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi) (theourgia trace))
 
 (define child? (equal? (getenv "APPEND_PREFIX_ROLE") "child"))
@@ -156,11 +158,19 @@
   (guard (e (#t #f)) (eval 'session-own-prefix (environment '(theourgia log)))))
 (define (kept? s) (if own-prefix-reader (and (own-prefix-reader s) #t) 'no-reader))
 
+;; One append, as a reducer drives it: a reset handshake answered first when the
+;; session withholds its view for one, and a committed record confirmed as
+;; applied, so the next append has a view.
 (define (append-one! s payload)
+  (when (and (not (session-view s)) (session-reset-pending s))
+    (session-reset-done! s (session-epoch s)))
   (let ((v (session-view s)))
     (if v
-        (session-append! s (make-frame (view-revision v) (view-epoch v) (view-writer v)
-                                       (view-expect-seq v) "agent:claude" '() payload))
+        (let ((res (session-append! s (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                                  (view-expect-seq v) "agent:claude" '() payload))))
+          (when (and (pair? res) (eq? (car res) 'committed))
+            (session-applied! s (session-epoch s) (list (cons W (cadr res)))))
+          res)
         (list 'no-view #f))))
 (define fixed-ts 1757300000003)
 ;; Past segment 1's age limit (its first record's time plus an hour): the
@@ -208,8 +218,9 @@
           (paths-of (cdr run))
           (cadr (car run)))))
 
-;; AP-5: the own writer's owner.sexp rewritten with the same bytes between
-;; two appends: its version changes, so the session reloads. The frame built
+;; AP-5: a newline added to the own writer's owner.sexp between two appends:
+;; the same datum, another content, so its version changes (file-version hashes
+;; the content) and the session reloads. The frame built
 ;; before the reload is refused for its epoch; the next, from a new view,
 ;; validates in full.
 (define (ap-5)
@@ -217,7 +228,7 @@
   (let ((run (in-session fixed-ts
                (lambda (s)
                  (let* ((a (append-one! s '(put "w.3" ())))
-                        (rewrite (put! (wfile "owner.sexp") (string->utf8 owner-text)))
+                        (rewrite (put! (wfile "owner.sexp") (cat (slurp (wfile "owner.sexp")) (string->utf8 "\n"))))
                         (b (append-one! s '(put "w.4" ())))
                         (c (append-one! s '(put "w.4" ()))))
                    (list (list a b c) (kept? s)))))))
@@ -326,26 +337,49 @@
 
 (define answer-path (string-append d "-answer"))
 (define child-path (string-append d "-child.sc"))
-;; One append in a child under CLOCK; it writes (<answer's head> <kept?>) to
-;; answer-path.
+;; Two appends in one session in a child under CLOCK; it writes (<first
+;; answer's head> <kept? after it> <the second append's catch-up paths>) to
+;; answer-path, a head being raised when the append raised. A committed first
+;; append is confirmed as applied, so the second has a view.
 (define (write-child! clock)
   (put! child-path
         (string->utf8
           (string-append
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
+            "(import (theourgia trace))\n"
             "(define reader (guard (e (#t #f)) (eval 'session-own-prefix (environment '(theourgia log)))))\n"
+            "(define (one! s payload)\n"
+            "  (let ((v (session-view s)))\n"
+            "    (if (not v) (list 'no-view)\n"
+            "        (guard (e (#t (list 'raised)))\n"
+            "          (session-append! s (make-frame (view-revision v) (view-epoch v) (view-writer v)\n"
+            "                                         (view-expect-seq v) \"agent:claude\" '() payload))))))\n"
+            "(define (paths text)\n"
+            "  (let loop ((i 0) (acc '()))\n"
+            "    (let ((j (let find ((k i)) (cond ((> (+ k 20) (string-length text)) #f)\n"
+            "                                    ((string=? (substring text k (+ k 20)) \"(trace catch-up-path\") k)\n"
+            "                                    (else (find (+ k 1)))))))\n"
+            "      (if (not j) (reverse acc)\n"
+            "          (let ((e (let find ((k j)) (if (char=? (string-ref text k) #\\newline) k (find (+ k 1))))))\n"
+            "            (loop e (cons (let ((l (substring text j e)))\n"
+            "                            (cond ((string=? (substring l (- (string-length l) 16) (string-length l)) \"consumed-prefix)\") 'consumed-prefix)\n"
+            "                                  (else 'validated-in-full)))\n"
+            "                          acc)))))))\n"
             "(define res\n"
             "  (guard (e (#t (list 'raised)))\n"
             "    (parameterize ((log-clock (lambda () " (number->string clock) ")))\n"
             "      (let* ((s (log-begin \"" d "\" (lambda args 'applied)))\n"
-            "             (v (session-view s))\n"
-            "             (r (session-append! s (make-frame (view-revision v) (view-epoch v)\n"
-            "                                               (view-writer v) (view-expect-seq v)\n"
-            "                                               \"agent:claude\" '() '(put \"w.3\" ()))))\n"
-            "             (k (if reader (and (reader s) #t) 'no-reader)))\n"
+            "             (r (one! s '(put \"w.3\" ())))\n"
+            "             (k (if reader (and (reader s) #t) 'no-reader))\n"
+            "             (confirm (when (eq? (car r) 'committed)\n"
+            "                        (session-applied! s (session-epoch s) (list (cons (session-writer s) (cadr r))))))\n"
+            "             (port (open-output-string))\n"
+            "             (second (parameterize ((current-error-port port))\n"
+            "                       (trace-enable! #t)\n"
+            "                       (let ((x (one! s '(put \"w.4\" ())))) (trace-enable! #f) x))))\n"
             "        (guard (e (#t #f)) (session-commit! s))\n"
-            "        (log-end! s)\n"
-            "        (list (car r) k)))))\n"
+            "        (guard (e (#t #f)) (log-end! s))\n"
+            "        (list (car r) k (paths (get-output-string port)))))))\n"
             "(call-with-port (open-file-output-port \"" answer-path "\" (file-options no-fail))\n"
             "  (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))\n"))))
 (define (answer)
@@ -369,40 +403,79 @@
 (define ap-4 (child-with-fault "write-eio-after-partial@commit:file=000001.sexp"))
 (want "AP-4 ANSWER the append answers partial-write"
       (and (pair? ap-4) (car ap-4)) 'partial-write)
-(want "AP-4 PATH the session keeps no prefix after a partial write"
-      (and (pair? ap-4) (pair? (cdr ap-4)) (cadr ap-4)) #f)
+(want "AP-4 PATH the session keeps no prefix after a partial write, and its next append validates in full"
+      (and (pair? ap-4) (cdr ap-4)) '(#f (validated-in-full)))
 
 ;; A child under CLOCK parked at BARRIER; ACTION runs while it waits; then it
 ;; is released and its answer read. never-parked when it never got there.
+;; THE RELEASE IS A FEEDER, not one write: the barrier parks at every pass, and
+;; the child's second append may pass it again. The feeder writes to the fifo
+;; until the answer is there and is then stopped; printf is the shell's own,
+;; so stopping the subshell ends a write still waiting for a reader.
 (define (child-at-barrier clock barrier action)
-  (let ((fifo (string-append d "-fifo")) (trace (string-append d "-trace")) (pidf (string-append d "-pid")))
-    (system (string-append "rm -f " fifo " " trace " " pidf " " answer-path))
+  (let ((fifo (string-append d "-fifo")) (trace (string-append d "-trace")) (pidf (string-append d "-pid"))
+        (feeder (string-append d "-feeder")))
+    (system (string-append "rm -f " fifo " " trace " " pidf " " feeder " " answer-path))
     (system (string-append "mkfifo " fifo))
     (write-child! clock)
     (system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_BARRIER=" barrier ":" fifo
                            " scheme --script " child-path " < /dev/null > /dev/null 2> " trace
                            " & echo $! > " pidf))
-    (if (not (wait-for trace (lambda (p) (has-substring? (text-of p) (string-append "(trace barrier " barrier " #f)"))) 200))
+    (if (not (wait-for trace (lambda (p) (has-substring? (text-of p) (string-append "(trace barrier " barrier " #f)"))) 1200))
         (begin (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")) 'never-parked)
         (begin
           (action)
-          (system (string-append "printf x > " fifo))
-          (if (wait-for answer-path file-exists? 200) (answer) 'no-answer)))))
+          (system (string-append "( while :; do printf x > " fifo "; done ) > /dev/null 2>&1 & echo $! > " feeder))
+          (let ((got (if (wait-for answer-path file-exists? 1200) (answer) 'no-answer)))
+            (system (string-append "kill -9 $(cat " feeder ") 2>/dev/null"))
+            (unless (eq? got 'no-answer) (system "sleep 0.1"))
+            (if (eq? got 'no-answer)
+                (begin (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")) 'no-answer)
+                (answer)))))))
+
+(printf "== AP-10: a raise between the catch-up and the accounting ==\n")
+(define ap-10 (child-with-fault "stat-fail@commit:file=000001.sexp"))
+(want "AP-10 ANSWER a failed size probe raises out of the append, and nothing is written"
+      (list (and (pair? ap-10) (car ap-10)) (len-of (wpath 1)))
+      (list 'raised (* 2 R)))
+(want "AP-10 PATH the session keeps no prefix after the raise, and its next append validates in full"
+      (and (pair? ap-10) (cdr ap-10)) '(#f (validated-in-full)))
+
+(printf "== AP-9: a refusal after a rotation ==\n")
+(build!)
+;; The first append does not rotate; the instance file is then made
+;; unreadable as data, and the second append, past segment 1's age, rotates
+;; and is refused at the instance check that follows the rotation.
+(define ap-9
+  (parameterize ((log-clock (lambda () fixed-ts)))
+    (let* ((s (log-begin d (lambda args 'applied)))
+           (a (append-one! s '(put "w.3" ())))
+           (tamper (put! (string-append d "/instance.sexp") (string->utf8 "((oops\n")))
+           (b (caught (parameterize ((log-clock (lambda () age-ts))) (append-one! s '(put "w.4" ())))))
+           (k (kept? s)))
+      (guard (e (#t (if #f #f))) (session-commit! s))
+      (guard (e (#t (if #f #f))) (log-end! s))
+      (list a b (len-of (wpath 2)) k))))
+(want "AP-9 ANSWER the rotating append is refused for the malformed instance; the new segment is there and empty"
+      (list (car ap-9) (cadr ap-9) (caddr ap-9))
+      '((committed 3 1) (refused-before-reserve instance-malformed) 0))
+(want "AP-9 PATH the session keeps no prefix after a refusal that follows a rotation"
+      (cadddr ap-9) #f)
 
 (printf "== AP-7(b): a frame appended from outside inside the window ==\n")
 (build!)
 (define ap-7b (child-at-barrier fixed-ts "after-tail-check"
                                 (lambda () (put! (wpath 1) (cat (slurp (wpath 1)) (r 3))))))
-(want "AP-7b PATH the write lands after the outside frame; the post-write size check keeps no prefix"
-      ap-7b '(committed #f))
+(want "AP-7b PATH the write lands after the outside frame; the post-write size check keeps no prefix, and the next append validates in full"
+      ap-7b '(committed #f (validated-in-full)))
 
 (printf "== AP-2(c): the outgoing segment grows inside a rotation ==\n")
 (build!)
 (define ap-2c (child-at-barrier age-ts "before-rotate-write"
                                 (lambda () (put! (wpath 1) (cat (slurp (wpath 1)) (r 3))))))
-(want "AP-2c PATH the write lands in segment 2; the outgoing segment is not the size kept, so no prefix is kept"
+(want "AP-2c PATH the write lands in segment 2; the outgoing segment is not the size kept, so no prefix is kept, and the next append validates in full"
       (list ap-2c (len-of (wpath 1)))
-      (list '(committed #f) (* 3 R)))
+      (list '(committed #f (validated-in-full)) (* 3 R)))
 
 (printf "== the degeneracy child ==\n")
 (define degeneracy-child
@@ -418,7 +491,8 @@
           degeneracy-child)
       '(ok #t))
 
-(system (string-append "rm -rf " d " " d "-home " d "-answer " d "-child.sc " d "-fifo " d "-trace " d "-pid"))
+(system (string-append "rm -rf " d " " d "-home " d "-answer " d "-child.sc " d "-fifo " d "-trace " d "-pid " d "-feeder "
+                       d "-degeneracy.out " d "-degeneracy.err"))
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "append-prefix complete\n")
