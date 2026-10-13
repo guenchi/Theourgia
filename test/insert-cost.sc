@@ -33,7 +33,10 @@
 ;; of 3500 one-line files -- 7000 blocks, a file block and its code block
 ;; each -- prints the series at 1000, 3000 and 7000 intents and the ratio of
 ;; the last window to the tenth per phase. The rows assert only the shape;
-;; the readings are the deliverable.
+;; the readings are the deliverable. The curve's stderr is also stamped line
+;; by line as it arrives, so each window's wall time is printed beside the sum
+;; of its phases (what no phase timed), and both files are kept under the test
+;; root when the import completes and the root is removed.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia store) open-and-reduce)
@@ -78,15 +81,28 @@
 ;; child's: TIMING is "1" or #f (unset).
 ;; A TRACKED REQUEST carries its id and the cursor it was made at: the store's
 ;; writer and the last of its records applied (none yet on a fresh store: 0).
-(define (import-in-child! tag dir timing)
+;; STAMPED, the child's stderr also goes through a filter that writes each
+;; line, as it arrives, to <tag>.err.ts with the wall clock's seconds in front:
+;; the window lines are flushed as they are printed, so the time between two
+;; of them is that window's wall time, which the phases' sums are read against.
+;; <tag>.err is the same lines unstamped, as without it.
+(define stamp-filter
+  (string-append "perl -MTime::HiRes=time -e '"
+                 "open(R, \">\", shift) or die; open(T, \">\", shift) or die; "
+                 "select((select(R), $| = 1)[0]); select((select(T), $| = 1)[0]); "
+                 "while (<STDIN>) { print R $_; printf T \"%.6f %s\", time, $_ }'"))
+(define (import-in-child! tag dir timing . stamped)
   (let* ((store (string-append root "/" tag "-store")) (err (string-append root "/" tag ".err"))
          (made (rpc-dispatch store '(init) "test"))
          (writer (cadr (assq 'writer (cdr made))))
          (seen (assoc writer (reduce-applied-cut (open-and-reduce store))))
-         (cursor (string-append writer ":" (number->string (if seen (cdr seen) 0)))))
-    (system (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
-                           "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --cursor '" cursor "' --wire"
-                           " > '" root "/" tag ".out' 2> '" err "' < /dev/null"))
+         (cursor (string-append writer ":" (number->string (if seen (cdr seen) 0))))
+         (child (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
+                               "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --cursor '" cursor "' --wire")))
+    (system (if (and (pair? stamped) (car stamped))
+                (string-append "( " child " 2>&1 > '" root "/" tag ".out' < /dev/null ) | "
+                               stamp-filter " '" err "' '" err ".ts'")
+                (string-append child " > '" root "/" tag ".out' 2> '" err "' < /dev/null")))
     (list (file-text (string-append root "/" tag ".out")) (timing-lines err) (file-text err))))
 (define (contains? s sub)
   (let ((n (string-length sub)))
@@ -110,6 +126,42 @@
 ;; the answer's first datum, its head: ok, or what refused
 (define (answer-head out)
   (let ((d (guard (e (#t #f)) (read (open-input-string out))))) (and (pair? d) (car d))))
+
+;; THE WALL TIME AGAINST THE PHASES, from the stamped lines: each window's
+;; wall time (its line's stamp less the previous window's) beside the sum of
+;; its phases, at 1000, 3000 and 7000 and over windows 200 to 7000; the time
+;; before the first window (from the last request line printed before it) and
+;; after the last (to the request's apply line). A reading, not a row.
+(define (wall-against-phases ts-path)
+  (let* ((stamped (filter (lambda (x) x)
+                          (map (lambda (l)
+                                 (guard (e (#t #f))
+                                   (let* ((p (open-input-string l)) (t (read p)) (d (read p)))
+                                     (and (real? t) (pair? d) (eq? (car d) 'timing) (cons t d)))))
+                               (lines-of (file-text ts-path)))))
+         (windows (filter (lambda (x) (and (>= (length x) 5) (eq? (caddr x) 'intents))) stamped))
+         (at (lambda (n) (find (lambda (x) (= (cadddr x) n)) windows)))
+         (ms (lambda (s) (exact (round (* 1000 s)))))
+         (sum-ms (lambda (w) (exact (round (/ (apply + (map cadr (car (cddddr w)))) 1000)))))
+         (wall-ms (lambda (n) (let ((w (at n)) (v (at (- n 100)))) (and w v (ms (- (car w) (car v))))))))
+    (printf "~%wall against phases, ms per window: window  wall  phases  untimed~%")
+    (for-each (lambda (n)
+                (let ((w (at n)) (wall (wall-ms n)))
+                  (when (and w wall)
+                    (printf "  ~a ~a ~a ~a~%" n wall (sum-ms w) (- wall (sum-ms w))))))
+              '(200 1000 3000 5000 7000))
+    (let* ((ns (map cadddr windows))
+           (ws (filter (lambda (n) (and (> n 100) (wall-ms n))) ns))
+           (wall (apply + (map wall-ms ws)))
+           (phases (apply + (map (lambda (n) (sum-ms (at n))) ws)))
+           (first (and (pair? windows) (car windows)))
+           (last (and (pair? windows) (car (reverse windows))))
+           (before (and first (let ((rs (filter (lambda (x) (and (eq? (caddr x) 'request) (< (car x) (car first)))) stamped)))
+                                (and (pair? rs) (ms (- (car first) (car (car (reverse rs)))))))))
+           (apply-line (find (lambda (x) (and (eq? (caddr x) 'request) (eq? (cadddr x) 'apply))) stamped))
+           (after (and last apply-line (ms (- (car apply-line) (car last))))))
+      (printf "  windows 200..~a: wall ~a phases ~a untimed ~a~%" (if last (cadddr last) 'none) wall phases (- wall phases))
+      (printf "  before the first window ~a, after the last to apply ~a~%" before after))))
 
 (define small (string-append root "/small"))
 (write-files! small 3)
@@ -177,7 +229,7 @@
     (let* ((big (string-append root "/big"))
            (files 3500))
       (write-files! big files)
-      (let* ((r (import-in-child! "curve" big "1"))
+      (let* ((r (import-in-child! "curve" big "1" #t))
              (lines (cadr r))
              (series (filter (lambda (d) (and (>= (length d) 4) (eq? (cadr d) 'intents))) lines))
              (window (lambda (n) (let ((w (find (lambda (d) (= (caddr d) n)) series))) (and w (cadddr w)))))
@@ -199,7 +251,14 @@
                                       (equal? (map car w) intent-phase-names)
                                       (for-all (lambda (e) (and (= (length e) 2) (integer? (cadr e)) (>= (cadr e) 0))) w))))
                              series))
-              (list 'ok (map (lambda (k) (* 100 (+ k 1))) (iota 70)) #t)))))
+              (list 'ok (map (lambda (k) (* 100 (+ k 1))) (iota 70)) #t))
+        (wall-against-phases (string-append root "/curve.err.ts"))
+        ;; KEPT: the import completes and the root goes, so both files are
+        ;; copied beside it first, under the test root, named by this process.
+        (let ((keep (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp") "/insert-cost-curve-"
+                                   (number->string (get-process-id)))))
+          (system (string-append "cp '" root "/curve.err' '" keep ".err'; cp '" root "/curve.err.ts' '" keep ".err.ts'"))
+          (printf "kept: ~a.err ~a.err.ts~%" keep keep)))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%insert-cost complete~%" bad rows)
