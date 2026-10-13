@@ -57,7 +57,6 @@
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia trace) trace-event!)
           (rnrs hashtables) (rnrs records syntactic)
-          (only (chezscheme) make-weak-eq-hashtable)
           (theourgia degeneracy))
 
   ;; 1 to 64 characters of [A-Za-z0-9._-], or a batch item naming the
@@ -1267,10 +1266,27 @@
   ;; first, as the evidence lists membership was given, and beside it the
   ;; same records by event and by sub. membership and the lookups below take
   ;; either this or a plain list of evidence and answer alike.
+  ;;
+  ;; IT ALSO KEEPS, FOR THE ONE JUDGEMENT IT BELONGS TO, each plan payload's
+  ;; plan? answer and its entries by index, so a plan of k entries is walked
+  ;; once per judgement, not once per member that asks. Nothing outlives the
+  ;; judgement: a payload's answer is never carried from one call to the
+  ;; next, so a caller's payload need not be left alone between calls. A
+  ;; plain list is asked by walking, as before.
   (define-record-type (binding-index make-binding-index/raw binding-index?)
-    (fields (mutable list) by-event by-sub))
+    (fields (mutable list) by-event by-sub plan-answers plan-entries))
   (define (make-binding-index)
-    (make-binding-index/raw '() (make-hashtable equal-hash equal?) (make-eqv-hashtable)))
+    (make-binding-index/raw '() (make-hashtable equal-hash equal?) (make-eqv-hashtable)
+                            (make-eq-hashtable) (make-eq-hashtable)))
+  ;; plan? of PAYLOAD, kept in the judgement's index when EVIDENCE is one.
+  (define (plan?/in evidence payload)
+    (if (and (binding-index? evidence) (pair? payload))
+        (let ((t (binding-index-plan-answers evidence)))
+          (let ((known (hashtable-ref t payload 'unknown)))
+            (if (eq? known 'unknown)
+                (let ((answer (plan? payload))) (hashtable-set! t payload answer) answer)
+                known)))
+        (plan? payload)))
   (define (binding-add! ix e)
     (binding-index-list-set! ix (cons e (binding-index-list ix)))
     (hashtable-update! (binding-index-by-event ix) (ev-event e) (lambda (l) (cons e l)) '())
@@ -1376,36 +1392,6 @@
                     (list? (cdar es)) (pair? (cdar es)) (symbol? (cadar es))
                     (loop (cdr es) (+ i 1)))))))
 
-  ;; PLAN?, KEPT PER PAYLOAD, for admission's judgement only: a plan's
-  ;; entries are walked once, not once per member that asks. The payloads it
-  ;; is asked about are the records' own, retained by the reduction and never
-  ;; changed, so one object answers the same every time; the table holds them
-  ;; weakly, so a payload no record holds any more goes. The exported plan?
-  ;; walks every time: a caller's payload is not known to be left alone.
-  ;; Under the degeneracy switch a kept answer is walked again and compared.
-  (define plan?-answers (make-weak-eq-hashtable))
-  (define (plan?/kept p)
-    (if (pair? p)
-        (let ((known (hashtable-ref plan?-answers p 'unknown)))
-          (if (eq? known 'unknown)
-              (let ((answer (plan? p))) (hashtable-set! plan?-answers p answer) answer)
-              (begin
-                (degeneracy-check
-                  (unless (eq? known (plan? p))
-                    (degeneracy-differ! "plan? differs from its walk" p known)))
-                known)))
-        (plan? p)))
-
-  ;; A DIFFERENCE FOUND UNDER MEMBERSHIP'S GUARD, which answers `invalid` for
-  ;; anything raised and would swallow it: under the degeneracy switch the
-  ;; first one is kept here as well as raised, and identity-gates raises it
-  ;; after the judgement (identity-gates-compare).
-  (degeneracy-definitions
-    (define degeneracy-difference #f)
-    (define (degeneracy-differ! message . irritants)
-      (unless degeneracy-difference (set! degeneracy-difference (cons message irritants)))
-      (apply assertion-violation 'degeneracy message irritants)))
-
   (define (plan-consumes p)
     (and (plan? p) (= 6 (length p)) (list-ref p 5)))
 
@@ -1443,7 +1429,7 @@
         (let ((p (ev-payload e)) (a (ev-actor e)))
           (if (not (eq? (actor-sub a) 'plan))
               (not (and (pair? p) (memq (car p) '(plan batch))))
-              (and (or (plan?/kept p) (receipt? p))
+              (and (or (plan? p) (receipt? p))
                    (equal? (cadr p) (cdr (actor-identity a)))
                    (equal? (caddr p) (actor-fingerprint a))
                    (equal? (cadddr p) (actor-after a))))))
@@ -1618,10 +1604,6 @@
 
     (define (identity-gates-compare es statuses bindings)
       (let-values (((statuses0 bindings0) (identity-gates/reference es)))
-        (when degeneracy-difference
-          (let ((d degeneracy-difference))
-            (set! degeneracy-difference #f)
-            (apply assertion-violation 'degeneracy (car d) (cdr d))))
         (unless (and (equal? statuses0 statuses) (equal? bindings0 bindings))
           (assertion-violation 'degeneracy "identity-gates differ from the whole-bucket judgement"
                                (map ev-event es) statuses statuses0)))))
@@ -1798,7 +1780,7 @@
     (exists (lambda (e)
               (and (ev-delivered? e)
                    (pair? (ev-payload e))
-                   (plan?/kept (ev-payload e))))
+                   (plan?/in evidence (ev-payload e))))
             (evidence-with-event evidence plan-event)))
 
   ;; The payload the plan declared for one index, or `absent`.
@@ -1808,32 +1790,27 @@
         ((null? es) 'absent)
         ((and (pair? (ev-payload (car es)))
               (eq? (car (ev-payload (car es))) 'plan))
-         (let ((entry (plan-entry (ev-payload (car es)) index)))
+         (let ((entry (plan-entry evidence (ev-payload (car es)) index)))
            (if entry (cdr entry) 'absent)))
         (else (loop (cdr es))))))
 
   ;; A PLAN'S ENTRY BY INDEX, as assv over its entries finds it (the first
-  ;; with that index), from a table built once per payload and held weakly,
-  ;; as plan?'s answer is. Entries that are not a list of pairs are asked
-  ;; with assv itself, raising as it raises. Under the degeneracy switch a
-  ;; kept table's answer is compared with assv's.
-  (define plan-entries (make-weak-eq-hashtable))
-  (define (plan-entry payload index)
-    (let ((t (or (hashtable-ref plan-entries payload #f)
-                 (let ((entries (list-ref payload 4)))
-                   (and (list? entries) (for-all pair? entries)
+  ;; with that index). When EVIDENCE is a judgement's index, from a table
+  ;; built once per payload for that judgement; entries that are not a list
+  ;; of pairs, and a plain list of evidence, are asked with assv itself,
+  ;; raising as it raises.
+  (define (plan-entry evidence payload index)
+    (let ((entries (list-ref payload 4)))
+      (if (and (binding-index? evidence) (list? entries) (for-all pair? entries))
+          (let* ((tables (binding-index-plan-entries evidence))
+                 (t (or (hashtable-ref tables payload #f)
                         (let ((t (make-eqv-hashtable)))
                           (for-each (lambda (en) (unless (hashtable-contains? t (car en)) (hashtable-set! t (car en) en)))
                                     entries)
-                          (hashtable-set! plan-entries payload t)
-                          t))))))
-      (if t
-          (let ((entry (hashtable-ref t index #f)))
-            (degeneracy-check
-              (unless (eq? entry (assv index (list-ref payload 4)))
-                (degeneracy-differ! "a plan's entry differs from assv's" index entry)))
-            entry)
-          (assv index (list-ref payload 4)))))
+                          (hashtable-set! tables payload t)
+                          t))))
+            (hashtable-ref t index #f))
+          (assv index entries))))
 
   ;; `(#%new k)` stands for a block a previous sub-operation created, so
   ;; a payload still holding one cannot yet be compared with what was

@@ -17,7 +17,7 @@
 ;;
 ;; request.sc judges a request's records with its lookups indexed -- the
 ;; statuses and the bindings by event, a slot by index, a predecessor by
-;; (plan, index), a plan's validity and its entries kept per payload -- and
+;; (plan, index), a plan's validity and its entries kept per judgement -- and
 ;; admission.sc drops a bucket's old gates by a table of its events. Under
 ;; the degeneracy switch (THEOURGIA_DEGENERACY=1 at expansion, degeneracy.sc)
 ;; the whole-bucket judgement as it was runs beside the new one on every
@@ -246,8 +246,8 @@
           (member! r o 2 '() o "n" 1)
           (read! 'no-predecessor r)
           (check! 'no-predecessor-plan-order (eq? (gate r o 2) 'plan-order)))
-        ;; (15) AN INDEX THE PLAN DOES NOT DECLARE, and (16) AN ITEM WHOSE
-        ;; "#%new" NAMES AN INDEX NOT YET APPLIED.
+        ;; (15) AN ITEM WHOSE "#%new" NAMES AN INDEX NOT YET APPLIED, and
+        ;; (16) AN INDEX THE PLAN DOES NOT DECLARE.
         (let ((r (reduce-empty)) (o "ud000000"))
           (reduce-apply! r o 1 '()
                          (plan-of o "u" (list (cons 0 (intent "u0"))
