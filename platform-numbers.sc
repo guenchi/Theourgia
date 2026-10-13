@@ -64,9 +64,9 @@
 
   (define readings
   (list
-    ;; Linux x86_64, glibc 2.39: GitHub Actions ubuntu-latest, run 36600347509 (linux-ubuntu-latest.sexp).
+    ;; Linux x86_64, glibc 2.39: GitHub Actions ubuntu-latest, run 38448821346 (linux-ubuntu-latest.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "x86_64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -83,6 +83,10 @@
         (field st_atim (member st_atim) (offset 72) (size 16))
         (field st_mtim (member st_mtim) (offset 88) (size 16))
         (field st_ctim (member st_ctim) (offset 104) (size 16))
+        (field st_mtim_sec (offset 88) (size 8))
+        (field st_mtim_nsec (offset 96) (size 8))
+        (field st_ctim_sec (offset 104) (size 8))
+        (field st_ctim_nsec (offset 112) (size 8))
         (type dev_t (size 8))
         (type ino_t (size 8))
         (type mode_t (size 4))
@@ -210,9 +214,9 @@
         (ECONNREFUSED 111)
         (ENOTSOCK 88)
         ))
-    ;; Linux aarch64, glibc 2.39: GitHub Actions ubuntu-24.04-arm, run 36600347509 (linux-ubuntu-2404-arm.sexp).
+    ;; Linux aarch64, glibc 2.39: GitHub Actions ubuntu-24.04-arm, run 38448821346 (linux-ubuntu-2404-arm.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "aarch64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -229,6 +233,10 @@
         (field st_atim (member st_atim) (offset 72) (size 16))
         (field st_mtim (member st_mtim) (offset 88) (size 16))
         (field st_ctim (member st_ctim) (offset 104) (size 16))
+        (field st_mtim_sec (offset 88) (size 8))
+        (field st_mtim_nsec (offset 96) (size 8))
+        (field st_ctim_sec (offset 104) (size 8))
+        (field st_ctim_nsec (offset 112) (size 8))
         (type dev_t (size 8))
         (type ino_t (size 8))
         (type mode_t (size 4))
@@ -358,7 +366,7 @@
         ))
     ;; FreeBSD 15.0 amd64: the Paris server (freebsd-15-paris.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "amd64") (system "FreeBSD") (release "15.0-RELEASE")
       (libc "freebsd 15")
       (pointer-size 8)
@@ -375,6 +383,10 @@
         (field st_atim (member st_atim) (offset 48) (size 16))
         (field st_mtim (member st_mtim) (offset 64) (size 16))
         (field st_ctim (member st_ctim) (offset 80) (size 16))
+        (field st_mtim_sec (offset 64) (size 8))
+        (field st_mtim_nsec (offset 72) (size 8))
+        (field st_ctim_sec (offset 80) (size 8))
+        (field st_ctim_nsec (offset 88) (size 8))
         (type dev_t (size 8))
         (type ino_t (size 8))
         (type mode_t (size 2))
@@ -506,7 +518,7 @@
         ))
     ;; Darwin arm64, macOS 25.3: the development machine (darwin-arm64-local.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "arm64") (system "Darwin") (release "25.3.0")
       (libc "darwin")
       (pointer-size 8)
@@ -523,6 +535,10 @@
         (field st_atim (member st_atimespec) (offset 32) (size 16))
         (field st_mtim (member st_mtimespec) (offset 48) (size 16))
         (field st_ctim (member st_ctimespec) (offset 64) (size 16))
+        (field st_mtim_sec (offset 48) (size 8))
+        (field st_mtim_nsec (offset 56) (size 8))
+        (field st_ctim_sec (offset 64) (size 8))
+        (field st_ctim_nsec (offset 72) (size 8))
         (type dev_t (size 4))
         (type ino_t (size 8))
         (type mode_t (size 2))
@@ -656,11 +672,11 @@
         (ENOTSOCK 38)
         ))
     ;; Darwin x86_64, macOS 25.3: the probe compiled -arch x86_64 and run under
-    ;; Rosetta on the development machine, 2026-10-01 (darwin-x86_64-rosetta.sexp);
+    ;; Rosetta on the development machine, 2026-10-13 (darwin-x86_64-rosetta.sexp);
     ;; every line equals the arm64 row but the machine. The headers it was
     ;; compiled with select the $INODE64 family, which ffi.sc binds there.
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "x86_64") (system "Darwin") (release "25.3.0")
       (libc "darwin")
       (pointer-size 8)
@@ -677,6 +693,10 @@
         (field st_atim (member st_atimespec) (offset 32) (size 16))
         (field st_mtim (member st_mtimespec) (offset 48) (size 16))
         (field st_ctim (member st_ctimespec) (offset 64) (size 16))
+        (field st_mtim_sec (offset 48) (size 8))
+        (field st_mtim_nsec (offset 56) (size 8))
+        (field st_ctim_sec (offset 64) (size 8))
+        (field st_ctim_nsec (offset 72) (size 8))
         (type dev_t (size 4))
         (type ino_t (size 8))
         (type mode_t (size 2))
