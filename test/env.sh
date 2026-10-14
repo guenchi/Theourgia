@@ -19,4 +19,9 @@ if [ -n "$THEOURGIA_LIBDIR" ]; then
 else
   export CHEZSCHEMELIBDIRS=/Users/guenchi/Workshop
 fi
-export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
+# SOURCE ONLY: EVERY EXTENSION IS PAIRED WITH AN OBJECT EXTENSION THAT NEVER
+# EXISTS. In this variable `a::b` pairs a source extension with an object one
+# and a bare `a` takes `.so`, so `.sc:.sls:.scm` would load a stale compiled
+# object beside any source. The suite never runs compiled code; docs-check's
+# LE rows read what Chez makes of this line.
+export CHEZSCHEMELIBEXTS=".sc::.no-obj:.sls::.no-obj:.scm::.no-obj"

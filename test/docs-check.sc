@@ -27,7 +27,8 @@
 
 (import (rnrs)
         (only (chezscheme) with-input-from-file call-with-input-file
-              get-string-all directory-list file-exists? load)
+              get-string-all directory-list file-exists? load
+              library-extensions parameterize open-process-ports)
         (only (theourgia arguments) parse-arguments)
         (only (theourgia rpc) rpc-verbs write-protocol verb-catalogue register-verbs!)
         (only (theourgia extensions) extension-verbs)
@@ -960,6 +961,68 @@
             (> (length advertised) 20)
             (> (length call-site-names) 10))
       '(#t #t #t #t))
+
+;; ---- LE: the library extensions the suite runs with (F178) -------------------
+;;
+;; NEVER: A SOURCE EXTENSION WITHOUT ITS OWN OBJECT EXTENSION. In
+;; CHEZSCHEMELIBEXTS `a::b` pairs a source extension with an object one and a
+;; bare `a` takes `.so`; the old `.sc::.sls::.scm` read as
+;; ((".sc" . ".sls") ("" . ".so") (".scm" . ".so")) and kept a stale object
+;; out only by accident. What is read here is what Chez itself makes of the
+;; string: the parameter given the string parses it as the variable is parsed
+;; at start-up (measured on the three spellings, F178).
+;;
+;; The string after PREFIX on the one line of TEXT that BEGINS with PREFIX, up
+;; to the next double quote; or (not-one <count>) unless exactly one line does.
+;; NOTE: A LINE THAT BEGINS WITH IT, so a commented-out setting (a leading `#`
+;; or `;;`) is not read as the setting.
+(define (quoted-after text prefix)
+  (let ((hits (filter (lambda (l) (starts-with? l prefix)) (lines-of text))))
+    (if (= 1 (length hits))
+        (let* ((l (car hits)) (from (string-length prefix)))
+          (let end ((j from))
+            (cond ((>= j (string-length l)) (list 'unterminated l))
+                  ((char=? (string-ref l j) #\") (substring l from j))
+                  (else (end (+ j 1))))))
+        (list 'not-one (length hits)))))
+;; THE VALUE A SHELL FILE EXPORTS, read by sourcing it, not by reading its text:
+;; a shell line can assign twice, append after a closing quote, or be commented
+;; out, and a scan of the text answers for none of those (F178 reviews r1, r2).
+;; A child sh starts with NAME unset, or with NAME exported as INHERITED when
+;; that is a string, sources FILE from this directory, and a further child
+;; prints NAME -- so only an EXPORTED value is read, as a suite run started
+;; after sourcing would get it (r3). A FILE that fails to source prints nothing.
+(define (sourced-value file name inherited)
+  (let-values (((to from err pid)
+                (open-process-ports
+                  (string-append (if (string? inherited)
+                                     (string-append name "='" inherited "'; export " name "; ")
+                                     (string-append "unset " name "; "))
+                                 ". ./" file " > /dev/null 2>&1 && sh -c 'printf \"%s\" \"$" name "\"'")
+                  (buffer-mode block) (native-transcoder))))
+    (close-port to)
+    (let ((s (get-string-all from)))
+      (get-string-all err)
+      (close-port from)
+      (close-port err)
+      (if (eof-object? s) "" s))))
+(define (extensions-of spelling)
+  (if (string? spelling)
+      (parameterize ((library-extensions spelling)) (library-extensions))
+      spelling))
+(define source-only
+  '((".sc" . ".no-obj") (".sls" . ".no-obj") (".scm" . ".no-obj")))
+
+(want "LE-1 startup-ratio's launcher runs from source only: every source extension is paired with .no-obj"
+      (extensions-of (quoted-after (file-text "startup-ratio.sc") "(define source-exts \""))
+      source-only)
+
+;; KEY: TWICE, AND THE SECOND START INHERITS AN OBJECT-ENABLED VALUE: a file that
+;; keeps an inherited value (`${VAR:-...}`) passes the first and not the second.
+(want "LE-2 env.sh, which every suite run sources, exports source only, whether the caller had the variable unset or set to load objects"
+      (list (extensions-of (sourced-value "env.sh" "CHEZSCHEMELIBEXTS" #f))
+            (extensions-of (sourced-value "env.sh" "CHEZSCHEMELIBEXTS" ".sc::.so")))
+      (list source-only source-only))
 
 (display (string-append "rows: " (number->string rows) "\n"
                         (number->string bad) " failures\n"

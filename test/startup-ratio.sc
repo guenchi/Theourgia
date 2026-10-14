@@ -225,7 +225,7 @@
 ;; and the trace file (C6) is that list, so a launcher that swapped a pair's
 ;; starts writes the swapped order. Answers the two arms' samples in pair
 ;; order and arm B's exit statuses.
-(define source-exts ".sc::.sls::.scm")
+(define source-exts ".sc::.no-obj:.sls::.no-obj:.scm::.no-obj")
 (define started '())
 (define (start-ms arm label)
   (set! started (cons label started))
@@ -768,14 +768,12 @@
 ;; EVERY SOURCE EXTENSION THE LAUNCHER PERMITS, in its order, read from the
 ;; same `source-exts` string (F54 review r1: a .sls library was reachable by
 ;; arm B and invisible here).
+;; NEVER: PARSED BY CHEZ, NOT BY HAND (F178). This split the string on "::",
+;; which is not what "::" means there -- it pairs a source extension with an
+;; object one -- and the launcher's string was written to that same misreading.
+;; The source extensions are the cars of what Chez makes of the string.
 (define source-suffixes
-  (let split ((s source-exts) (acc '()))
-    (let ((i (let find ((j 0)) (cond ((>= (+ j 1) (string-length s)) #f)
-                                     ((string=? (substring s j (+ j 2)) "::") j)
-                                     (else (find (+ j 1)))))))
-      (if i
-          (split (substring s (+ i 2) (string-length s)) (cons (substring s 0 i) acc))
-          (reverse (cons s acc))))))
+  (map car (parameterize ((library-extensions source-exts)) (library-extensions))))
 (define (library-file dir name)
   (let ((stem (string-append dir (apply string-append (map (lambda (s) (string-append "/" (symbol->string s))) name)))))
     (find exists? (map (lambda (x) (string-append stem x)) source-suffixes))))
