@@ -6059,15 +6059,26 @@
             (differs 'names (kept-prefix-names kept) (enumerate-segment-files store writer))
             (differs 'metadata-versions (session-versions s) (metadata-versions store)))))))
 
+  ;; THE SEGMENT NAMES IN THE WRITER'S DIRECTORY, from the listing alone: no
+  ;; stat per entry, so the tail check costs one listing however many segments
+  ;; the writer has. An entry named like a segment that is not a regular file
+  ;; is listed here and not in enumerate-segment-files, so it reads as a
+  ;; mismatch and the append validates in full.
+  (define (segment-names store writer)
+    (let ((names (list-entries (writer-directory store writer))))
+      (if (eq? names 'absent)
+          '()
+          (list-sort < (filter (lambda (n) n) (map segment-file-number names))))))
+
   ;; THE TAIL CHECK: the physical current's size and times are the kept ones,
-  ;; and the segment files are the kept list. A raise is a mismatch.
+  ;; and the segment names are the kept list. A raise is a mismatch.
   (define (kept-prefix-current? store writer kept)
     (guard (e (#t #f))
       (let* ((phys (discovery-physical-current (kept-prefix-discovery kept)))
              (st (path-stat (segment-path store writer (car phys)))))
         (and (= (list-ref st 2) (kept-prefix-expected kept))
              (equal? (cons (list-ref st 3) (list-ref st 4)) (kept-prefix-stamp kept))
-             (equal? (enumerate-segment-files store writer) (kept-prefix-names kept))))))
+             (equal? (segment-names store writer) (kept-prefix-names kept))))))
 
   ;; -> (discovery . path): the kept prefix when the tail check passes
   ;; (consumed-prefix), else a full validate, re-seeding from it

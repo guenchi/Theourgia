@@ -70,6 +70,26 @@
   )
 
 (handlers
+  ("log.sc" (seed-own-prefix) 1 guard
+   (#t)
+   conservative a
+   "the kept prefix's FAILURE RULE (F280): a raise while seeding keeps nothing, and the next append validates the writer's log in full, which states any unreadable entry itself"
+   (e (#t #f)))
+  ("log.sc" (kept-prefix-current?) 1 guard
+   (#t)
+   conservative a
+   "the kept prefix's FAILURE RULE (F280): a raise in the tail check is a mismatch, and the append validates the writer's log in full, which states any unreadable entry itself"
+   (e (#t #f)))
+  ("log.sc" (advanced-own-prefix) 1 guard
+   (#t)
+   conservative a
+   "the kept prefix's FAILURE RULE (F280): a raise in the post-write check keeps nothing, the write's own outcome stands, and the next append validates in full"
+   (e (#t #f)))
+  ("log.sc" (catch-up-and-append!) 1 guard
+   (#t)
+   propagate a
+   "the kept prefix's FAILURE RULE (F280): a raise between the catch-up and the accounting clears the kept prefix and is raised on unchanged"
+   (e (#t (session-own-prefix-set! s #f) (raise e))))
   ("build.ss" (declares-a-library?) 1 guard
    (#t)
    unrelated a

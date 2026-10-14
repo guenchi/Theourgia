@@ -259,7 +259,21 @@
                    (list (list a b) (kept? s)))))))
     (list (list (car (car run)) (len-of (wpath 1))) (paths-of (cdr run)) (cadr (car run)))))
 
-(define scenarios (list (cons 'ap-2 ap-2) (cons 'ap-3 ap-3) (cons 'ap-5 ap-5) (cons 'ap-7a ap-7a) (cons 'ap-8 ap-8)))
+;; AP-11: an empty next segment created from outside between two appends: the
+;; current segment's size and times do not move, the segment names do, and the
+;; append validates in full and writes into the new segment.
+(define (ap-11)
+  (build!)
+  (let ((run (in-session fixed-ts
+               (lambda (s)
+                 (let* ((a (append-one! s '(put "w.3" ())))
+                        (outside (put! (wpath 2) (make-bytevector 0)))
+                        (b (append-one! s '(put "w.4" ()))))
+                   (list (list a b) (kept? s)))))))
+    (list (list (car (car run)) (len-of (wpath 1)) (len-of (wpath 2))) (paths-of (cdr run)) (cadr (car run)))))
+
+(define scenarios (list (cons 'ap-2 ap-2) (cons 'ap-3 ap-3) (cons 'ap-5 ap-5) (cons 'ap-7a ap-7a) (cons 'ap-8 ap-8)
+                        (cons 'ap-11 ap-11)))
 
 ;; THE CHILD: the scenarios' answers, one datum, then nothing else.
 (when child?
@@ -315,6 +329,14 @@
       (list '((committed 3 1) (refused-before-reserve expect-seq)) (* 2 R)))
 (want "AP-8 PATH the tail check sees the size move and the append validates in full"
       (list (paths-from 'ap-8) (kept-after 'ap-8))
+      '((consumed-prefix validated-in-full) #t))
+
+(printf "== AP-11: a segment created from outside between two appends ==\n")
+(want "AP-11 ANSWER the second append lands in the new segment"
+      (answers-of 'ap-11)
+      (list '((committed 3 1) (committed 4 2)) (* 3 R) R))
+(want "AP-11 PATH the segment names moved, so the append validates in full, and the prefix is kept after"
+      (list (paths-from 'ap-11) (kept-after 'ap-11))
       '((consumed-prefix validated-in-full) #t))
 
 (printf "== AP-6: the own writer quarantined mid-session ==\n")
