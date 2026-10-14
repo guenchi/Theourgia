@@ -272,8 +272,23 @@
                    (list (list a b) (kept? s)))))))
     (list (list (car (car run)) (len-of (wpath 1)) (len-of (wpath 2))) (paths-of (cdr run)) (cadr (car run)))))
 
+;; AP-12: an older segment replaced from outside by a directory of the same
+;; name between two appends. The current segment does not move and the names
+;; do not either; the regular files do, so the append validates in full, which
+;; finds the history starting at record 3 and refuses for integrity.
+(define (ap-12)
+  (build!)
+  (put! (wpath 2) (r 3))
+  (let ((run (in-session fixed-ts
+               (lambda (s)
+                 (let* ((a (append-one! s '(put "w.4" ())))
+                        (outside (system (string-append "rm " (wpath 1) " && mkdir " (wpath 1))))
+                        (b (append-one! s '(put "w.5" ()))))
+                   (list (list a b) (kept? s)))))))
+    (list (list (car (car run)) (len-of (wpath 2))) (paths-of (cdr run)) (cadr (car run)))))
+
 (define scenarios (list (cons 'ap-2 ap-2) (cons 'ap-3 ap-3) (cons 'ap-5 ap-5) (cons 'ap-7a ap-7a) (cons 'ap-8 ap-8)
-                        (cons 'ap-11 ap-11)))
+                        (cons 'ap-11 ap-11) (cons 'ap-12 ap-12)))
 
 ;; THE CHILD: the scenarios' answers, one datum, then nothing else.
 (when child?
@@ -338,6 +353,14 @@
 (want "AP-11 PATH the segment names moved, so the append validates in full, and the prefix is kept after"
       (list (paths-from 'ap-11) (kept-after 'ap-11))
       '((consumed-prefix validated-in-full) #t))
+
+(printf "== AP-12: an older segment replaced by a directory between two appends ==\n")
+(want "AP-12 ANSWER the second append is refused for integrity: the history no longer starts at record 1"
+      (answers-of 'ap-12)
+      (list '((committed 4 2) (refused-before-reserve integrity)) (* 2 R)))
+(want "AP-12 PATH the segment files moved, so the append validates in full, and nothing is kept from a discovery with an integrity error"
+      (list (paths-from 'ap-12) (kept-after 'ap-12))
+      '((consumed-prefix validated-in-full) #f))
 
 (printf "== AP-6: the own writer quarantined mid-session ==\n")
 (build!)
