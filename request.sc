@@ -1673,12 +1673,8 @@
       (judgement-dirty-order-set! j (cons key (judgement-dirty-order j)))))
 
   ;; E (evidence) arrives at the bucket, or arrives again (delivered now, its
-  ;; past known). PROBE? is true for the admitted record itself, which writes
-  ;; the one identity-probe line of its admission (REHEARSAL? marks it); a
-  ;; record its delivery woke writes none, as the whole judgement did.
-  (define (judgement-arrive! j e rehearsal? probe?)
-    (when probe?
-      (trace-event! 'identity-probe (ev-event e) (and rehearsal? '(rehearsal))))
+  ;; past known). The probe trace is admission's (admission.sc).
+  (define (judgement-arrive! j e)
     (let ((event (ev-event e)))
       (unless (hashtable-contains? (judgement-ev j) event)
         (hashtable-set! (judgement-rank j) event (judgement-counter j))

@@ -16,6 +16,7 @@
   (export make-admission admission-copy admission-add! admission-gates)
   (import (rnrs) (theourgia request)
           (only (theourgia wire) sexpr->string-extended)
+          (only (theourgia trace) trace-enabled? trace-event!)
           (theourgia degeneracy))
 
   ;; This index tracks causal availability independently of application.
@@ -116,15 +117,22 @@
       (schedule! rec)
       ;; THE ARRIVALS: the record, then every record its delivery woke, each in
       ;; its own bucket's judgement (the record itself once, delivered or not).
-      (when id (judgement-arrive! (bucket-judgement a id) (evidence a rec) marked #t))
+      (when id (judgement-arrive! (bucket-judgement a id) (evidence a rec)))
       (for-each (lambda (w)
                   (let ((wid (identity w)))
                     (when (and wid (not (eq? w rec)))
-                      (judgement-arrive! (bucket-judgement a wid) (evidence a w) marked #f))))
+                      (judgement-arrive! (bucket-judgement a wid) (evidence a w)))))
                 (reverse woken))
       (let-values (((keys ids) (hashtable-entries changed)))
         (vector-for-each
           (lambda (id)
+            ;; THE PROBE TRACE IS THE WHOLE JUDGEMENT'S: every touched bucket,
+            ;; in this table's order, probes each of its records, newest first,
+            ;; marked in a rehearsal -- written only while tracing is on, so an
+            ;; untraced admission does not walk the bucket.
+            (when (trace-enabled?)
+              (for-each (lambda (r) (trace-event! 'identity-probe (event r) (and marked '(rehearsal))))
+                        (ref (admission-buckets a) id '())))
             (let ((j (ref (admission-judgements a) id #f)))
               (when j
                 (judgement-run! j)
