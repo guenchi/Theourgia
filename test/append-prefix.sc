@@ -328,10 +328,11 @@
       (guard (e (#t (if #f #f))) (session-commit! s))
       (guard (e (#t (if #f #f))) (log-end! s))
       (list a b (paths-of text)))))
-(want "AP-6 the append in flight when the own writer is quarantined is refused, recording no catch-up path"
-      (list (car ap-6) (and (pair? (cadr ap-6)) (memq (car (cadr ap-6)) '(refused-before-reserve no-view)) #t)
-            (caddr ap-6))
-      '((committed 3 1) #t ()))
+;; The quarantine's fork at 3 clips the history to record 2, below what the
+;; reducer was told it applied, so the reload asks for a reset first.
+(want "AP-6 the append in flight when the own writer is quarantined is refused for the reset it needs, recording no catch-up path"
+      ap-6
+      '((committed 3 1) (refused-before-reserve reset-pending) ()))
 
 ;; ---- the children ---------------------------------------------------------
 
@@ -340,7 +341,9 @@
 ;; Two appends in one session in a child under CLOCK; it writes (<first
 ;; answer's head> <kept? after it> <the second append's catch-up paths>) to
 ;; answer-path, a head being raised when the append raised. A committed first
-;; append is confirmed as applied, so the second has a view.
+;; append is confirmed as applied, so the second has a view. The answer is
+;; written beside the path and renamed onto it, so a reader that sees the path
+;; reads the whole datum.
 (define (write-child! clock)
   (put! child-path
         (string->utf8
@@ -380,8 +383,9 @@
             "        (guard (e (#t #f)) (session-commit! s))\n"
             "        (guard (e (#t #f)) (log-end! s))\n"
             "        (list (car r) k (paths (get-output-string port)))))))\n"
-            "(call-with-port (open-file-output-port \"" answer-path "\" (file-options no-fail))\n"
-            "  (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))\n"))))
+            "(call-with-port (open-file-output-port \"" answer-path ".tmp\" (file-options no-fail))\n"
+            "  (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))\n"
+            "(rename-file \"" answer-path ".tmp\" \"" answer-path "\")\n"))))
 (define (answer)
   (guard (e (#t (list 'unreadable (text-of answer-path))))
     (read (open-string-input-port (text-of answer-path)))))
@@ -411,7 +415,9 @@
 ;; THE RELEASE IS A FEEDER, not one write: the barrier parks at every pass, and
 ;; the child's second append may pass it again. The feeder writes to the fifo
 ;; until the answer is there and is then stopped; printf is the shell's own,
-;; so stopping the subshell ends a write still waiting for a reader.
+;; so stopping the subshell ends a write still waiting for a reader. SIGPIPE
+;; is ignored there: a reader that closed between the open and the write must
+;; not end the feeder before the next pass.
 (define (child-at-barrier clock barrier action)
   (let ((fifo (string-append d "-fifo")) (trace (string-append d "-trace")) (pidf (string-append d "-pid"))
         (feeder (string-append d "-feeder")))
@@ -425,19 +431,19 @@
         (begin (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")) 'never-parked)
         (begin
           (action)
-          (system (string-append "( while :; do printf x > " fifo "; done ) > /dev/null 2>&1 & echo $! > " feeder))
+          (system (string-append "( trap '' PIPE; while :; do printf x > " fifo "; done ) > /dev/null 2>&1 & echo $! > " feeder))
           (let ((got (if (wait-for answer-path file-exists? 1200) (answer) 'no-answer)))
             (system (string-append "kill -9 $(cat " feeder ") 2>/dev/null"))
-            (unless (eq? got 'no-answer) (system "sleep 0.1"))
-            (if (eq? got 'no-answer)
-                (begin (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")) 'no-answer)
-                (answer)))))))
+            (when (eq? got 'no-answer) (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")))
+            got)))))
 
 (printf "== AP-10: a raise between the catch-up and the accounting ==\n")
 (define ap-10 (child-with-fault "stat-fail@commit:file=000001.sexp"))
-(want "AP-10 ANSWER a failed size probe raises out of the append, and nothing is written"
+;; The fault is one-shot: the child's second append, in the same session,
+;; writes the record the first did not.
+(want "AP-10 ANSWER a failed size probe raises out of the append; the retry in the same session commits it"
       (list (and (pair? ap-10) (car ap-10)) (len-of (wpath 1)))
-      (list 'raised (* 2 R)))
+      (list 'raised (* 3 R)))
 (want "AP-10 PATH the session keeps no prefix after the raise, and its next append validates in full"
       (and (pair? ap-10) (cdr ap-10)) '(#f (validated-in-full)))
 
@@ -452,15 +458,17 @@
            (a (append-one! s '(put "w.3" ())))
            (tamper (put! (string-append d "/instance.sexp") (string->utf8 "((oops\n")))
            (b (caught (parameterize ((log-clock (lambda () age-ts))) (append-one! s '(put "w.4" ())))))
-           (k (kept? s)))
+           (k (kept? s))
+           (text (traced (lambda () (caught (parameterize ((log-clock (lambda () age-ts)))
+                                              (append-one! s '(put "w.4" ()))))))))
       (guard (e (#t (if #f #f))) (session-commit! s))
       (guard (e (#t (if #f #f))) (log-end! s))
-      (list a b (len-of (wpath 2)) k))))
+      (list a b (len-of (wpath 2)) k (paths-of text)))))
 (want "AP-9 ANSWER the rotating append is refused for the malformed instance; the new segment is there and empty"
       (list (car ap-9) (cadr ap-9) (caddr ap-9))
       '((committed 3 1) (refused-before-reserve instance-malformed) 0))
-(want "AP-9 PATH the session keeps no prefix after a refusal that follows a rotation"
-      (cadddr ap-9) #f)
+(want "AP-9 PATH the session keeps no prefix after a refusal that follows a rotation, and its next append validates in full"
+      (list-tail ap-9 3) '(#f (validated-in-full)))
 
 (printf "== AP-7(b): a frame appended from outside inside the window ==\n")
 (build!)
@@ -491,7 +499,7 @@
           degeneracy-child)
       '(ok #t))
 
-(system (string-append "rm -rf " d " " d "-home " d "-answer " d "-child.sc " d "-fifo " d "-trace " d "-pid " d "-feeder "
+(system (string-append "rm -rf " d " " d "-home " d "-answer " d "-answer.tmp " d "-child.sc " d "-fifo " d "-trace " d "-pid " d "-feeder "
                        d "-degeneracy.out " d "-degeneracy.err"))
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

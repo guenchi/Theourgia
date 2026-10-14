@@ -5955,11 +5955,12 @@
   ;; current, whose size must be the validated extent (the endpoint's offset
   ;; when the endpoint is in it, 0 when it is empty); ONE listing of the
   ;; segment files, which must end at the physical current and hold every
-  ;; segment the discovery covered (those with a range). A listed segment it
-  ;; did not cover had no record when it was validated -- an older segment is
-  ;; left empty when a line too large for it rotated past it -- and the lock
-  ;; held since that validation keeps it so. Anything else, or a raise, keeps
-  ;; nothing and the next append validates in full.
+  ;; segment the discovery covered (those with a range); any other segment it
+  ;; lists must be empty now, as an older segment is left when a line too
+  ;; large for it rotated past it. The discovery keeps no list of the empty
+  ;; segments it saw, so one created since with a record in it is told apart
+  ;; by its size, one stat each. Anything else, or a raise, keeps nothing and
+  ;; the next append validates in full.
   (define (seed-own-prefix store writer d)
     (guard (e (#t #f))
       (let ((phys (discovery-physical-current d)))
@@ -5973,7 +5974,13 @@
                (and (= (list-ref st 2) expected)
                     (pair? names)
                     (eqv? (car (last-pair names)) (car phys))
-                    (for-all (lambda (c) (memv c names)) (map car (discovery-segment-ranges d)))
+                    (let ((covered (map car (discovery-segment-ranges d))))
+                      (and (for-all (lambda (c) (memv c names)) covered)
+                           (for-all (lambda (n)
+                                      (or (memv n covered)
+                                          (eqv? n (car phys))
+                                          (= 0 (list-ref (path-stat (segment-path store writer n)) 2))))
+                                    names)))
                     (make-kept-prefix (kept-discovery d (discovery-end-segment d) (discovery-end-offset d)
                                                       (discovery-end-seq d) (discovery-segment-ranges d) phys)
                                       names expected (cons (list-ref st 3) (list-ref st 4)))))))))
