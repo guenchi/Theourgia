@@ -28,7 +28,8 @@
 ;; Neither exists on master, so PATH rows are red there by construction.
 ;;
 ;; THE DEGENERACY ROW runs the in-process scenarios again in a child of this
-;; file expanded with THEOURGIA_DEGENERACY=1: after every committed append
+;; file (named by its absolute path, so a runner can find it) expanded with
+;; THEOURGIA_DEGENERACY=1: after every committed append
 ;; that leaves a kept prefix, the writer's log is validated in full and
 ;; compared with it field by field, and a difference raises. The child
 ;; prints its answers; the row asks that it finished and answered as this
@@ -410,6 +411,12 @@
 (want "AP-4 PATH the session keeps no prefix after a partial write, and its next append validates in full"
       (and (pair? ap-4) (cdr ap-4)) '(#f (validated-in-full)))
 
+;; The child whose pid PIDF holds, stopped only while that pid still runs the
+;; child's program: a child that has finished may have had its pid reused.
+(define (stop-child! pidf)
+  (system (string-append "p=$(cat " pidf " 2>/dev/null); [ -n \"$p\" ] && ps -p $p -o command= 2>/dev/null | grep -q -- "
+                         child-path " && kill -9 $p 2>/dev/null")))
+
 ;; A child under CLOCK parked at BARRIER; ACTION runs while it waits; then it
 ;; is released and its answer read. never-parked when it never got there.
 ;; THE RELEASE IS A FEEDER, not one write: the barrier parks at every pass, and
@@ -428,13 +435,13 @@
                            " scheme --script " child-path " < /dev/null > /dev/null 2> " trace
                            " & echo $! > " pidf))
     (if (not (wait-for trace (lambda (p) (has-substring? (text-of p) (string-append "(trace barrier " barrier " #f)"))) 1200))
-        (begin (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")) 'never-parked)
+        (begin (stop-child! pidf) 'never-parked)
         (begin
           (action)
           (system (string-append "( trap '' PIPE; while :; do printf x > " fifo "; done ) > /dev/null 2>&1 & echo $! > " feeder))
           (let ((got (if (wait-for answer-path file-exists? 1200) (answer) 'no-answer)))
             (system (string-append "kill -9 $(cat " feeder ") 2>/dev/null"))
-            (when (eq? got 'no-answer) (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null")))
+            (when (eq? got 'no-answer) (stop-child! pidf))
             got)))))
 
 (printf "== AP-10: a raise between the catch-up and the accounting ==\n")
@@ -489,7 +496,11 @@
 (define degeneracy-child
   (let ((out (string-append d "-degeneracy.out")) (err (string-append d "-degeneracy.err")))
     (system (string-append "THEOURGIA_DEGENERACY=1 APPEND_PREFIX_ROLE=child scheme --script "
-                           (car (command-line)) " < /dev/null > " out " 2> " err))
+                           (let ((self (car (command-line))))
+                             (if (and (> (string-length self) 0) (char=? #\/ (string-ref self 0)))
+                                 self
+                                 (string-append (current-directory) "/" self)))
+                           " < /dev/null > " out " 2> " err))
     (guard (e (#t (list 'unreadable (text-of out) (text-of err))))
       (read (open-string-input-port (text-of out))))))
 (want "AP-D under the degeneracy switch the scenarios finish (every kept prefix equal to a full validate) and answer as here"
