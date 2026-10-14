@@ -44,11 +44,12 @@
 ;; so a one-file import that deleted anything would show.
 ;;
 ;; RT-7'S EXEMPLARS ARE THE TREE AS IT IS: eval-worker.sc splits (a program
-;; with top-level defines and no uncertain token), admission.sc is one block
-;; with no warning (a library: its defines are inside the library form), and
-;; code-project.sc falls back, lexically-uncertain (a library holding a
-;; character literal). When the Scheme profile learns library bodies and
-;; character literals, the exemplars move and this row is pinned again.
+;; with top-level defines and no uncertain token), and so do admission.sc and
+;; code-project.sc: the Scheme profile splits a library at the definitions in
+;; its body and reads a character literal through the escape, and its only
+;; uncertain token is #;, which neither holds. If the profile changes what it
+;; splits or what it is uncertain about, the exemplars move and this row is
+;; pinned again.
 ;;
 ;; AN OPT-IN, FOR ITS COST: the tree, split, imports in about eight minutes
 ;; here, and RT-4 imports it a second time -- about nineteen minutes in all,
@@ -391,13 +392,13 @@
 (printf "RT-7 classes: fell back ~a, one block ~a, split ~a\n" (length fell-back) (length one-block) (length split))
 (printf "RT-7 fell back: ~s\n" (map (lambda (s) (list (car s) (cadr (fallback-of (cdr s))))) fell-back))
 (printf "RT-7 one block: ~s\n" (map car one-block))
-(want "RT-7 the three classes sum to the Scheme files scanned; eval-worker.sc splits into more than one child, admission.sc is one block with no warning, code-project.sc falls back lexically-uncertain"
+(want "RT-7 the three classes sum to the Scheme files scanned; eval-worker.sc splits into more than one child, and admission.sc and code-project.sc split"
       (in-order (= (+ (length fell-back) (length one-block) (length split)) (length scheme-files))
                 (> (length scheme-files) 0)
                 (let ((s (named "eval-worker.sc"))) (and s (list (class-of s) (> (or (store-child-count (car s)) 0) 1))))
                 (let ((s (named "admission.sc"))) (and s (class-of s)))
-                (let ((s (named "code-project.sc"))) (and s (list (class-of s) (cadr (fallback-of (cdr s)))))))
-      '(#t #t (split #t) one-block (fell-back lexically-uncertain)))
+                (let ((s (named "code-project.sc"))) (and s (class-of s))))
+      '(#t #t (split #t) split split))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\ntree-round-trip complete\n" bad rows)
