@@ -195,3 +195,4 @@
 
 (system (string-append "rm -rf " here))
 (printf "\n~a failures\nrows: ~a\neval-ready complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

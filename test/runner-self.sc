@@ -1373,3 +1373,4 @@
 (printf "~a failures\n" bad)
 (sh "rm -rf " root)
 (printf "runner-self complete\n")
+(exit (if (zero? bad) 0 1))

@@ -243,3 +243,4 @@
 (printf "~a failures\n" bad)
 (system (string-append "rm -rf " here))
 (printf "one-subtree complete\n")
+(exit (if (zero? bad) 0 1))

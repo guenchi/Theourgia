@@ -351,3 +351,4 @@
 ;; A run that did not reach here is not a pass; the runner greps for it.
 (printf "rows: ~a\n" rows-run)
 (printf "log1 complete\n")
+(exit (if (zero? bad) 0 1))

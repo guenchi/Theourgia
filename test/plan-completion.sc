@@ -215,3 +215,4 @@
       'writer-required)
 
 (printf "rows: ~a\n~a failures\nplan-completion complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

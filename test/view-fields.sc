@@ -184,3 +184,4 @@
       (list 'condition #t (list (list 'id brittle-id))))
 
 (printf "rows: ~a\n~a failures\nview-fields complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

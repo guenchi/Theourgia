@@ -419,3 +419,4 @@
       '(#t #t))
 
 (printf "rows: ~a\n~a failures\nrevoke-restore complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

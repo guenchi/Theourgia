@@ -344,3 +344,4 @@
       "b1 text")
 
 (printf "rows: ~a\n~a failures\nretire-race complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

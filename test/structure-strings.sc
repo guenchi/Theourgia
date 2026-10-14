@@ -144,3 +144,4 @@
 (printf "~a failures\n" bad)
 (system (string-append "rm -rf " root))
 (printf "structure-strings complete\n")
+(exit (if (zero? bad) 0 1))

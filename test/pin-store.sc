@@ -172,3 +172,4 @@
       #f)
 
 (printf "rows: ~a\n~a failures\npin-store complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

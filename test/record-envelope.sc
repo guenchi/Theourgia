@@ -1142,3 +1142,4 @@
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "record-envelope complete\n")
+(exit (if (zero? bad) 0 1))

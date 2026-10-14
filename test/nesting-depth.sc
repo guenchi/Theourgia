@@ -254,3 +254,4 @@
 (want "ND-06 the bare codec refuses at 65 levels" (codec-edge) 65)
 
 (printf "rows: ~a\n~a failures\nnesting-depth complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

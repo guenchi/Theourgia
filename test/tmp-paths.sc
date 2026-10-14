@@ -849,3 +849,4 @@ for path in sys.argv[1:]:
       '(() ()))
 
 (printf "\n~a failures\nrows: ~a\ntmp-paths complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

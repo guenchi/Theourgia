@@ -160,3 +160,4 @@
 ;; A run that did not reach here is not a pass. The runner requires
 ;; this line AND a zero failure count: they are two propositions.
 (printf "smoke-wire complete\n")
+(exit (if (zero? fails) 0 1))

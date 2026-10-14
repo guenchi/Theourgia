@@ -251,3 +251,4 @@
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "log5 complete\n")
+(exit (if (zero? bad) 0 1))

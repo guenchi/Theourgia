@@ -964,3 +964,4 @@
       (judgement-loaded) 1)
 
 (printf "rows: ~a\n~a failures\ncompletion-stale complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

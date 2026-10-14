@@ -242,3 +242,4 @@
         (list 'ok 5 deep-id 'version 'unavailable 'reason '(cut versions))))
 
 (printf "rows: ~a\n~a failures\nview-rpc complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

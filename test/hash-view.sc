@@ -214,3 +214,4 @@
       'derived-field)
 
 (printf "rows: ~a\n~a failures\nhash-view complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

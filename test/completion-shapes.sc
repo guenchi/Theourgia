@@ -297,3 +297,4 @@
 (want "G nothing raises" (length (filter cadddr results)) 0)
 
 (printf "rows: ~a\n~a failures\ncompletion-shapes complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

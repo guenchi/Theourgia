@@ -126,3 +126,4 @@
       (list-ref after 2) '(malformed-intent (invalid-doc)))
 
 (printf "rows: ~a\n~a failures\ndoc-predicate complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

@@ -552,3 +552,4 @@
       (field r-none 'retrieve) #f)
 
 (printf "rows: ~a\n~a failures\nsince-contract complete\n" rows-run failures)
+(exit (if (zero? failures) 0 1))

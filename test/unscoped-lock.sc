@@ -216,3 +216,4 @@
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "unscoped-lock complete\n")
+(exit (if (zero? bad) 0 1))

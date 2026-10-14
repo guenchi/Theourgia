@@ -152,3 +152,4 @@
       '(#t #f))
 
 (printf "rows: ~a\n~a failures\nfacade-exports complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

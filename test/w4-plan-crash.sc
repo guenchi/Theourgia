@@ -317,3 +317,4 @@
 ;; under `working/`.
 
 (printf "rows: ~a\n~a failures\nw4-plan-crash complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

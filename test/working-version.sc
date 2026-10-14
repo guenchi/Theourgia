@@ -329,3 +329,4 @@
       '(#f #f #f (("a" . 1))))
 
 (printf "rows: ~a\n~a failures\nworking-version complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

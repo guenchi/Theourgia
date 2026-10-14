@@ -269,3 +269,4 @@
 (want "BR-07 TWIN: so it commits without a refusal" (rpc-ok? (call 'commit A)) #t)
 
 (printf "rows: ~a\n~a failures\nbaseline-rules complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

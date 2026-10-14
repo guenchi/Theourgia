@@ -426,3 +426,4 @@
       '(#t (behind (("eightzzz" . 10))) (behind-records (("eightzzz" . 2)))))
 
 (printf "rows: ~a\n~a failures\nbehind complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

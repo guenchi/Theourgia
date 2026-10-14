@@ -120,3 +120,4 @@
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "expansion-branches complete\n")
+(exit (if (zero? bad) 0 1))

@@ -500,3 +500,4 @@
 
 (system (string-append "rm -rf " here " " sock-base "/es-" pid-text "-*"))
 (printf "\n~a failures\nrows: ~a\nentry-split complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

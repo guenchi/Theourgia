@@ -155,3 +155,4 @@
 
 (system (string-append "chmod -R u+rwx " here " 2>/dev/null; rm -rf " here))
 (printf "\n~a failures\nrows: ~a\neval-raise complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

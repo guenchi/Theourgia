@@ -203,3 +203,4 @@
 ;; indistinguishable in its output.
 (printf "rows: ~a\n" rows-run)
 (printf "log2 complete\n")
+(exit (if (zero? bad) 0 1))

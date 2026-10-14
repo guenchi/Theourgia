@@ -531,3 +531,4 @@
       (map car (state-seen reversed "dw" "v3")) (list (cons "dup00000" 1)))
 
 (printf "rows: ~a\n~a failures\nconsumption-index complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

@@ -735,3 +735,4 @@
 (system (string-append "chmod -R u+rwx " f100a-dir " && rm -rf " f100a-dir))
 
 (printf "rows: ~a\n~a failures\nfacade-ffi complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

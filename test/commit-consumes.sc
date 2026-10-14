@@ -332,3 +332,4 @@
       (eq? live-state (state)) #f)
 
 (printf "rows: ~a\n~a failures\ncommit-consumes complete\n" rows bad)
+(exit (if (zero? bad) 0 1))

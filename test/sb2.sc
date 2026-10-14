@@ -271,3 +271,4 @@
 
 (system (string-append "chmod -R u+rwx " root " 2>/dev/null; rm -rf " root))
 (printf "\n~a failures\nrows: ~a\nsb2 complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

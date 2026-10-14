@@ -128,3 +128,4 @@
 
 (system (string-append "rm -rf " here))
 (printf "\n~a failures\nrows: ~a\nexit-codes complete\n" bad rows)
+(exit (if (zero? bad) 0 1))

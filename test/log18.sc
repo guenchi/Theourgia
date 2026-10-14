@@ -685,3 +685,4 @@
 ;; line AND a zero failure count: they are two propositions.
 (printf "rows: ~a\n" rows-run)
 (printf "log18 complete\n")
+(exit (if (zero? bad) 0 1))
