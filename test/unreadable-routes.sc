@@ -1421,6 +1421,73 @@
                       '(exiting (reason store-actor-down)))
                 #f))))
 
+;; SG-6 (F268): store-gone while STARTING, with the same held start. The store
+;; is moved aside while it is held; the signal watcher, started before the
+;; store, samples it absent twice and sends store-gone, which main remembers.
+;; The trace shows the slot after each signal: the first kind remembered stays,
+;; and only `again` replaces it. The store is RESTORED before the release, so
+;; the start succeeds and the remembered kind decides the exit; without the
+;; restore the start fails, and that wins.
+(define (aside! s) (system (string-append "mv " s " " s ".aside")))
+(define (restore! s) (system (string-append "mv " s ".aside " s)))
+(define (kinds-are ks) (lambda (got) (equal? got ks)))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sg6a")) (sock (string-append d "/sock"))
+       (h (serve-held! "sg6a" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (gone (begin (aside! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone)) 8000)))
+       (termed (begin (term! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone store-gone)) 5000)))
+       (rc (begin (restore! s) (finish-held! h))))
+  (want "SG-6 store-gone, then one TERM, while the store is held: the slot keeps store-gone; restored before the release, the start drains with no listener: store-gone, rc 0, no socket"
+        (list held gone termed rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t 0 '((draining (in-flight 0)) (exiting (reason store-gone))) #f)))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sg6b")) (sock (string-append d "/sock"))
+       (h (serve-held! "sg6b" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (termed (begin (term! s) (wait-for-kinds (caddr h) just-drain? 5000)))
+       (gone (begin (aside! s) (wait-for-kinds (caddr h) (kinds-are '(drain drain)) 8000)))
+       (rc (begin (restore! s) (finish-held! h))))
+  (want "SG-6 one TERM, then store-gone, while the store is held: the slot keeps drain; restored before the release: drained, rc 0, no socket"
+        (list held termed gone rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t 0 '((draining (in-flight 0)) (exiting (reason drained))) #f)))
+
+;; NOTE: STORE-GONE IS NOT A SIGTERM: `again` comes only from the second TERM.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sg6c")) (sock (string-append d "/sock"))
+       (h (serve-held! "sg6c" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (gone (begin (aside! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone)) 8000)))
+       (termed1 (begin (term! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone store-gone)) 5000)))
+       (termed2 (begin (term! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone store-gone again)) 5000)))
+       (rc (begin (restore! s) (finish-held! h))))
+  (want "SG-6 store-gone, then two TERMs, while the store is held: again replaces the slot; after ready: second-signal, rc 75, no socket"
+        (list held gone termed1 termed2 rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t #t 75 '((exiting (reason second-signal))) #f)))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sg6d")) (sock (string-append d "/sock"))
+       (h (serve-held! "sg6d" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (gone (begin (aside! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone)) 8000)))
+       (rc (finish-held! h))
+       (said (datums-of-text (text-of-file (cadr h)))))
+  (restore! s)
+  (want "SG-6 store-gone while the store is held, released WITHOUT restoring it: the start fails, and that wins: store-actor-down, rc 75, no socket"
+        (list held gone rc (and (pair? said) (list-ref said (- (length said) 1))) (file-exists? sock))
+        (list #t #t 75 '(exiting (reason store-actor-down)) #f)))
+
+;; SG-6b EXACTLY ONCE: the store kept absent for three more checks while held.
+;; Read again after the settle, as S-b does: a watcher that resent store-gone
+;; would show a second store-gone by now.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sg6e")) (sock (string-append d "/sock"))
+       (h (serve-held! "sg6e" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (gone (begin (aside! s) (wait-for-kinds (caddr h) (kinds-are '(store-gone)) 8000)))
+       (kinds-after (begin (system "sleep 3") (trace-kinds (caddr h))))
+       (rc (begin (restore! s) (finish-held! h))))
+  (want "SG-6b store-gone is received exactly once while the store stays absent through several checks; restored and released: store-gone, rc 0"
+        (list held gone kinds-after rc (datums-of-text (text-of-file (cadr h))))
+        (list #t #t '(store-gone) 0 '((draining (in-flight 0)) (exiting (reason store-gone))))))
+
 ;; F (F110, point 8): theourgiad's report channel after --detach is the log.
 ;; A thin client's first start detaches a daemon whose serve.log begins with
 ;; its serving line, and on this success that line carries no written,

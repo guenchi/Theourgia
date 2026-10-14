@@ -1155,6 +1155,11 @@
    unrelated a
    "store-check: load-commit! cleanup"
    (e (#t #f)))
+  ("daemon.sc" (store-check) 1 guard
+   ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #t)
+   conservative a
+   "F268's once-a-second presence check: ENOENT or ENOTDIR is an absence; any other failure is a failed check, counted as present (a permission or I/O fault never ends a daemon, the ruled safe branch)"
+   (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) (quote absent)) (#t (quote failed))))
   ("store.sc" (store-position) 1 guard
    (#t)
    unrelated a

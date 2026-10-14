@@ -20,7 +20,7 @@
 ;;; talk to; `f0-ondemand.sc` measured that cost at 200ms from source.
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
-  (export socket-path run-root store-key
+  (export socket-path run-root store-key resolved-name
           call! answer-limit no-daemon-errno?
           socket-path-fits? path-too-long close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal

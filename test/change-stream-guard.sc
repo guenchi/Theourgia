@@ -106,6 +106,17 @@
            (let run ((j (+ i 2))) (if (and (< j (string-length text)) (char-numeric? (string-ref text j))) (run (+ j 1))
                                       (loop j (append (list #\# #\- #\w) out)))))
           (else (loop (+ i 1) (cons (string-ref text i) out))))))
+;; TEXT without its (trace store-check ...) lines, each with its newline.
+(define (without-store-checks text)
+  (define (check? l) (and (>= (string-length l) 19) (string=? (substring l 0 19) "(trace store-check ")))
+  (let loop ((cs (string->list text)) (line '()) (out '()))
+    (cond ((null? cs)
+           (let ((l (list->string (reverse line))))
+             (apply string-append (reverse (if (or (null? line) (check? l)) out (cons l out))))))
+          ((char=? (car cs) #\newline)
+           (let ((l (list->string (reverse line))))
+             (loop (cdr cs) '() (if (check? l) out (cons "\n" (cons l out))))))
+          (else (loop (cdr cs) (cons (car cs) line) out)))))
 (define (normalize-for d text)
   (normalize (session-pids (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME"))))
 (define (normalize text)
@@ -220,12 +231,17 @@
                       (printf "   unlisted difference ~s:~%   base ~a~%   tree ~a~%" l (cdr (assq l rb)) (cdr (assq l rn)))))
                   differing))
       ;; THE TRACE of one read and one commit, each daemon's lines between two markers.
+      ;; NOTE: THE STORE CHECK'S LINES ARE LEFT OUT OF BOTH: the signal watcher
+      ;; samples the store about once a second, on its own clock and not because
+      ;; of the requests, so whether one falls in this window is chance, and the
+      ;; base has none.
       (let ((trace-of (lambda (d)
                         (let* ((before (string-length (file-text (cadddr d)))))
                           (ask-raw d 'read (list seed))
                           (ask-raw d 'set (list seed "src" "traced"))
                           (sleep-ms 300)
-                          (normalize-for d (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d)))))))))
+                          (normalize-for d (without-store-checks
+                                             (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))))
         (want "F10-9 the trace of a read and a commit is byte for byte the base's"
               (let ((tb (trace-of b)) (tn (trace-of n))) (if (equal? tb tn) 'equal (list tb tn)))
               'equal))

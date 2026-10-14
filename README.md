@@ -3928,6 +3928,21 @@ still running at five seconds reports `(exiting (reason drain-timeout)
 `(exiting (reason second-signal))`, exit 75 -- a drain that is taking too
 long is exactly when somebody needs to be able to end it.
 
+**A store whose directory disappears is drained the same way.** About once a
+second the daemon checks its store's resolved name -- the directory its socket
+is keyed by, with symlinks followed, so a symlink spelling and its target share
+one daemon. When that directory is absent on two checks in a row, the daemon
+reports `(store-gone (store <path>))`, drains as for `SIGTERM`, and exits
+`(exiting (reason store-gone))` with status 0, one to two seconds after (forty
+polls plus the check: an approximate interval, not a deadline). Removing a
+symlink spelling while the directory stays is not a disappearance. Nor is a
+check that fails -- a permission or I/O error -- which never ends the daemon,
+nor an atomic swap of the directory, which never leaves the name absent. A store
+replaced under a running daemon, by another directory or by something that is
+not a directory, is not detected. The check is one `stat` a second on the
+daemon's own thread, so a filesystem that hangs holds the daemon while it does,
+as any request on it would.
+
 **`(error store-busy (path <path>))`** is an answer, not a crash: a
 request waited for the store's lock past its five-second budget because
 something else was holding it. That is an ordinary state of the world.

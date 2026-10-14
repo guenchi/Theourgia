@@ -23,7 +23,9 @@
 (import (chezscheme) (theourgia sched) (theourgia net)
         (only (theourgia ffi) lock-try-acquire! lock-release!)
         (only (theourgia rpc) request-frame)
-        (only (theourgia working) draft-lock-path))
+        (only (theourgia working) draft-lock-path)
+        (only (theourgia daemon) store-check-step)
+        (only (theourgia reduce) block-id))
 
 (define bad 0)
 (define rows 0)
@@ -177,6 +179,14 @@
 
 ;; BARRIER, when given, is THEOURGIA_BARRIER's value, <name>:<fifo>.
 (define (start-tagged-daemon! suffix fault . barrier)
+  (start-tagged-daemon-with! suffix fault (and (pair? barrier) (car barrier)) "" (lambda (st) st)))
+
+;; THE SAME START, WITH TWO MORE CHOICES (F268): ENV is more assignments for
+;; the daemon's environment, each followed by a space, and SPELL maps the
+;; store directory to the name the daemon initialises and serves, making
+;; whatever that name needs (a symlink to it, a directory below it). The
+;; answer's store is still the directory itself.
+(define (start-tagged-daemon-with! suffix fault barrier env spell)
   ;; NOTE: THE TAG CARRIES THE FAULT, so two armed runs do not collide on
   ;; one runner file -- `call-with-output-file` refuses an existing one,
   ;; and that refusal killed the whole fixture rather than one row.
@@ -193,21 +203,22 @@
          (pf (string-append scratch-base "/dmn-c" tag ".pid"))
          (rc (string-append scratch-base "/dmn-c" tag ".rc")))
     (system (string-append "rm -rf " st " " sk " " pf " " rc "; mkdir -p " st))
-    (call-with-output-file rn
-      (lambda (port)
-        (for-each (lambda (l) (display l port) (newline port))
-          (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
-                ;; NOTE: `'truncate`, BECAUSE A RUNNER MAY BE STARTED TWICE.
-                ;; `call-with-output-file` refuses an existing file, and
-                ;; the takeover row starts this same runner a second
-                ;; time -- measured: the second daemon died on the pid
-                ;; file before it reached `serve`, and the row read as
-                ;; "the new daemon does not answer", which is a
-                ;; statement about the daemon and was about this line.
-                (string-append "(call-with-output-file \"" pf
-                               "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
-                (string-append "(rpc-dispatch \"" st "\" '(init) \"tester\")")
-                (string-append "(serve \"" st "\" \"" sk "\")")))))
+    (let ((served (spell st)))
+      (call-with-output-file rn
+        (lambda (port)
+          (for-each (lambda (l) (display l port) (newline port))
+            (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
+                  ;; NOTE: `'truncate`, BECAUSE A RUNNER MAY BE STARTED TWICE.
+                  ;; `call-with-output-file` refuses an existing file, and
+                  ;; the takeover row starts this same runner a second
+                  ;; time -- measured: the second daemon died on the pid
+                  ;; file before it reached `serve`, and the row read as
+                  ;; "the new daemon does not answer", which is a
+                  ;; statement about the daemon and was about this line.
+                  (string-append "(call-with-output-file \"" pf
+                                 "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
+                  (string-append "(rpc-dispatch \"" served "\" '(init) \"tester\")")
+                  (string-append "(serve \"" served "\" \"" sk "\")"))))))
     ;; NEVER: TRACING IS TURNED ON BY THE ENVIRONMENT, NOT BY A CALL. The
     ;; platform layer calls `trace-enable!` from THEOURGIA_TRACE when it
     ;; LOADS, so a `(trace-enable! #t)` written before the libraries are
@@ -219,9 +230,9 @@
     ;; the same expansion branch as the row it is a twin of -- otherwise
     ;; it would be testing a different build and could say nothing about
     ;; this one.
-    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on "
+    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on " env
                            (if fault (string-append "THEOURGIA_FAULT=" fault " ") "")
-                           (if (pair? barrier) (string-append "THEOURGIA_BARRIER=" (car barrier) " ") "")
+                           (if barrier (string-append "THEOURGIA_BARRIER=" barrier " ") "")
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
@@ -655,6 +666,144 @@
     (cond ((>= i (string-length text)) n)
           ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ n 1)))
           (else (loop (+ i 1) n)))))
+
+;; ---- a daemon whose store directory is removed (F268) -----------------------
+;;
+;; THE DECISION IS A PURE STEP, read here without a process or a clock: the
+;; samples go in one at a time, and what comes back is whether each one sent
+;; store-gone. The process rows below pin only the wiring, the reasons and the
+;; exit status.
+(define (store-check-sends samples)
+  (let loop ((ss samples) (count 0) (sent #f) (out '()))
+    (if (null? ss)
+        (reverse out)
+        (let-values (((count2 send?) (store-check-step count sent (car ss))))
+          (loop (cdr ss) count2 (or sent send?) (cons send? out))))))
+
+(want "PF-1 two absences in a row send store-gone, at the second and not the first"
+      (store-check-sends '(absent absent)) '(#f #t))
+;; NOTE: EACH RESET ROW ENDS WITH TWO MORE ABSENCES, so a step that never sends
+;; cannot pass it: the reset is read as a count that starts again.
+(want "PF-2 a present sample between two absences resets the count"
+      (store-check-sends '(absent present absent absent)) '(#f #f #f #t))
+(want "PF-3 a failed sample resets the count as a present one does: a failed check is not an absence"
+      (store-check-sends '(absent failed absent absent)) '(#f #f #f #t))
+(want "PF-4 store-gone is sent once for the daemon's life: never again after it, whatever follows"
+      (store-check-sends '(absent absent absent absent present absent absent)) '(#f #t #f #f #f #f #f))
+(want "PF-5 two suffice: from a count of one, one absence sends, and the count is two"
+      (call-with-values (lambda () (store-check-step 1 #f 'absent)) list) '(2 #t))
+
+;; How many times NEEDLE occurs in TEXT.
+(define (count-in text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0) (k 0))
+      (cond ((> (+ i n) m) k)
+            ((string=? (substring text i (+ i n)) needle) (loop (+ i n) (+ k 1)))
+            (else (loop (+ i 1) k))))))
+;; Waits, bounded, until a tagged daemon's log holds NEEDLE at least N times.
+;; NOTE: N IS COUNTED FROM WHAT THE LOG HELD BEFORE THE ROW ACTED, so a sample
+;; taken before the act is never read as one taken after it.
+(define (wait-for-count d needle n ms)
+  (let wait ((k 0))
+    (cond ((>= (count-in (tagged-log d) needle) n) #t)
+          ((> k (div ms 50)) #f)
+          (else (sleep-ms 50) (wait (+ k 1))))))
+(define (wait-for-file path ms)
+  (let wait ((k 0))
+    (cond ((file-exists? path) #t)
+          ((> k (div ms 50)) #f)
+          (else (sleep-ms 50) (wait (+ k 1))))))
+;; THE LAST LINE OF A TAGGED DAEMON'S LOG THAT IS NOT A TRACE, or #f.
+;; NOTE: NOT THE LAST LINE: the exit's tidying (the socket's unlink, the lock's
+;; release) is traced after the exiting report, under the same trace switch.
+(define (last-report-line d)
+  (let ((reports (filter (lambda (l) (not (starts-with? l "(trace ")))
+                         (log-tail d 1000000))))
+    (and (pair? reports) (list-ref reports (- (length reports) 1)))))
+(define present-sample "(trace store-check present #f)")
+(define failed-sample "(trace store-check failed #f)")
+
+;; THE ATOMIC SWAP the stable mirror's publish makes: one rename that
+;; exchanges two directories, so neither name is ever absent. macOS has
+;; renamex_np(RENAME_SWAP), Linux renameat2(RENAME_EXCHANGE); both flags are 2.
+(define swap-script (string-append scratch-base "/dmn-swap-" pid-text ".py"))
+(define (write-swap-script!)
+  (call-with-output-file swap-script
+    (lambda (o)
+      (for-each (lambda (l) (put-string o l) (newline o))
+        (list "import ctypes, ctypes.util, platform, sys"
+              "libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)"
+              "a, b = sys.argv[1].encode(), sys.argv[2].encode()"
+              "if sys.platform == 'darwin':"
+              "    r = libc.renamex_np(a, b, 2)"
+              "else:"
+              "    f = getattr(libc, 'renameat2', None)"
+              "    r = f(-100, a, -100, b, 2) if f else libc.syscall({'x86_64': 316, 'aarch64': 276}[platform.machine()], -100, a, -100, b, 2)"
+              "sys.exit(0 if r == 0 else 1)")))
+    'truncate))
+(define (freebsd-here?) (contains? (symbol->string (machine-type)) "fb"))
+(define (root-here?) (eqv? 0 (shell-number "id -u")))
+
+;; The id of the block an insert answer made, from its events clause, or #f.
+(define (inserted-id text)
+  (let ((a (guard (e (#t #f)) (read (open-string-input-port text)))))
+    (and (pair? a) (eq? 'ok (car a)) (list? a)
+         (let ((ev (assq 'events (cdr a))))
+           (and ev (pair? (cdr ev)) (pair? (cadr ev)) (pair? (car (cadr ev)))
+                (let ((e (car (cadr ev)))) (block-id (car e) (cdr e))))))))
+
+;; A STORE-GONE DRAIN HELD OPEN BY A REQUEST: the daemon's draft-lock hold
+;; (write-after-create, released by a file) parks a draft `write` inside the
+;; writer, as executed work main is waiting on; then the store is moved aside
+;; (<store>.aside) and the row waits for the store-gone line.
+;; -> (d release held? gone? factor).
+;; NOTE: MOVED ASIDE, NOT DELETED: the held write opens its draft lock inside
+;; the store when it is released, and a lock that cannot be opened is retried
+;; as busy for five seconds, past the drain's own budget. A row that is to see
+;; the request complete puts the store back before it releases it.
+;; NOTE: A `write` AND NOT `drafts`: the draft list is read without the draft
+;; lock, so a `drafts` request never reaches this hold and is over at once.
+;; The block it writes is inserted first; an insert takes no draft lock.
+(define (store-gone-held! suffix)
+  (let* ((rel (string-append scratch-base "/dmn-rel-" pid-text "-" suffix))
+         (_ (system (string-append "rm -f " rel " " rel ".held")))
+         (d (start-tagged-daemon-with! suffix #f #f
+                                       (string-append "THEOURGIA_HOLD=write-after-create:" rel " ")
+                                       (lambda (st) st)))
+         (f (load-factor))
+         (inserted (ask-tagged d "insert \"--title\" \"HELD-BLOCK\"" 8000))
+         (id (and (string? (cadr inserted)) (inserted-id (cadr inserted)))))
+    (when id
+      (spawn (lambda ()
+               (ask-tagged d (string-append "write \"" id "\" \"held bytes\" \"--writer\" \"w1\"") 30000))))
+    (let* ((held (if id
+                     (wait-for-file (string-append rel ".held") (scaled 8000 f))
+                     (list 'no-block-id (cadr inserted))))
+           (_ (system (string-append "mv " (tagged-store d) " " (tagged-store d) ".aside")))
+           (gone (wait-in-file (list-ref d 3) "(store-gone (store " (scaled 5000 f))))
+      (list d rel held gone f))))
+
+;; A CONNECTION THAT SENDS NOTHING, held open until the daemon closes it. The
+;; asker hears (idle-conn open) once connected, then (idle-conn closed-by-daemon)
+;; or (idle-conn timed-out).
+(define (hold-connection-open! sock ms)
+  (let ((asker self))
+    (spawn
+      (lambda ()
+        (connect! sock)
+        (receive
+          (after 4000 (send asker (list 'idle-conn 'no-connect)))
+          (`(connected ,p ,ref)
+           (conn-read-start! ref)
+           (send asker (list 'idle-conn 'open))
+           (let hear ()
+             (receive
+               (after ms (send asker (list 'idle-conn 'timed-out)))
+               (`(data ,r ,bv) (hear))
+               (`(eof ,r) (send asker (list 'idle-conn 'closed-by-daemon)))
+               (`#(DOWN ,w ,why) (send asker (list 'idle-conn 'closed-by-daemon)))))))))))
+(define (take-idle-conn ms)
+  (receive (after ms 'nothing-heard) (`(idle-conn ,what) what)))
 
 (start-scheduler
   (lambda ()
@@ -2349,6 +2498,170 @@
                             'and-the-new-one-answers
                             (list 'after-said (cadr after))))
                   '(served-before socket-was-left and-the-new-one-answers)))))
+
+      ;; ---- SG-1 an idle daemon whose store directory is removed (F268) ----
+      ;;
+      ;; NEVER: A DAEMON NOBODY TALKS TO STILL NOTICES. Before the check, an idle
+      ;; daemon never looked at the disk again and outlived its store by days.
+      ;; KEY: AND THE REASON AND THE STATUS ARE READ, not only the exit: a store
+      ;; removed is a drain, status 0, and the last line says why.
+      (let* ((d (start-tagged-daemon! "sgone" #f))
+             (f (load-factor)))
+        (system (string-append "rm -rf " (tagged-store d)))
+        (let ((code (tagged-exit d (scaled 5000 f))))
+          (stop-tagged-daemon! d)
+          (want "SG-1 an idle daemon whose store directory is removed reports store-gone and exits store-gone, 0"
+                (list code
+                      (if (contains? (tagged-log d) "(store-gone (store ") 'said-store-gone 'NO-STORE-GONE-LINE)
+                      (let ((last (last-report-line d)))
+                        (if (and last (contains? last "(exiting (reason store-gone))"))
+                            'last-report-store-gone
+                            (list 'last-report last))))
+                '((exited 0) said-store-gone last-report-store-gone))))
+
+      ;; ---- SG-2 an atomic swap of the store directory is not a removal -----
+      ;;
+      ;; NEVER: THE NAME IS NEVER ABSENT, SO NOTHING IS GONE. The stable mirror
+      ;; publishes by exchanging two directories in one rename; a daemon on
+      ;; it must stay. KEY: two checks are read after the swap, both present,
+      ;; so "still alive" is not "not checked yet".
+      (if (freebsd-here?)
+          (printf "SKIP SG-2 an atomic swap of the store directory: FreeBSD has no exchange rename (macOS has renamex_np RENAME_SWAP, Linux renameat2 RENAME_EXCHANGE), and the stable mirror's publish this models never runs there; a two-rename move cannot guarantee its gap avoids two checks\n")
+          (let* ((d (start-tagged-daemon! "sgswap" #f))
+                 (st (tagged-store d))
+                 (f (load-factor)))
+            (write-swap-script!)
+            (system (string-append "cp -R " st " " st ".swap"))
+            (let* ((before (count-in (tagged-log d) present-sample))
+                   (swapped (= 0 (system (string-append "python3 " swap-script " " st " " st ".swap"))))
+                   (checked (wait-for-count d present-sample (+ before 2) (scaled 4000 f)))
+                   (code (tagged-exit d 0)))
+              (stop-tagged-daemon! d)
+              (want "SG-2 a store directory exchanged in one rename is not gone: two checks after it read present, no store-gone, the daemon alive"
+                    (list (if swapped 'swapped 'SWAP-FAILED)
+                          (if checked 'checked-present-twice (list 'present-checks (- (count-in (tagged-log d) present-sample) before)))
+                          (if (contains? (tagged-log d) "store-gone") 'SAID-STORE-GONE 'no-store-gone)
+                          (if (eq? (car code) 'still-running-after) 'alive code))
+                    '(swapped checked-present-twice no-store-gone alive)))))
+
+      ;; ---- SG-4 a failed check does not end the watcher ---------------------
+      ;;
+      ;; NEVER: A STAT THAT FAILS IS NOT AN ABSENCE, AND IT DOES NOT KILL THE
+      ;; PROCESS THAT READS SIGTERM. The store is served one directory below a
+      ;; parent the row makes unreadable, so each check fails with EACCES; then
+      ;; the mode is restored and one SIGTERM must still drain. A watcher that
+      ;; died on the raise would leave the signal unread for ever.
+      ;; NOTE: AS ROOT the parent's mode stops nothing and every check reads
+      ;; present, so the row would measure nothing: it is skipped there, saying
+      ;; why. The gate runs as an ordinary user.
+      (if (root-here?)
+          (printf "SKIP SG-4 a failed check does not end the watcher: this process runs as root, which a parent at mode 000 does not stop, so no check can fail; run as an ordinary user\n")
+          (let* ((d (start-tagged-daemon-with! "sgfail" #f #f ""
+                      (lambda (st) (system (string-append "mkdir -p " st "/s")) (string-append st "/s"))))
+                 (st (tagged-store d))
+                 (f (load-factor)))
+            (system (string-append "chmod 000 " st))
+            (let ((failed-twice (wait-for-count d failed-sample 2 (scaled 4000 f))))
+              (system (string-append "chmod 755 " st))
+              (signal-tagged! d "TERM")
+              (let ((code (tagged-exit d (scaled 5000 f))))
+                (stop-tagged-daemon! d)
+                (want "SG-4 two failed checks (a parent the daemon may not search) are not a removal, and one SIGTERM afterwards still drains: drained, 0"
+                      (list (if failed-twice 'failed-twice (list 'failed-checks (count-in (tagged-log d) failed-sample)))
+                            (if (contains? (tagged-log d) "store-gone") 'SAID-STORE-GONE 'no-store-gone)
+                            code
+                            (if (contains? (tagged-log d) "(exiting (reason drained))") 'exited-drained (log-tail d 2)))
+                      '(failed-twice no-store-gone (exited 0) exited-drained))))))
+
+      ;; ---- SG-5 SIGTERM during a store-gone drain ---------------------------
+      ;;
+      ;; NEVER: ONE SIGTERM DOES NOT RESTART THE DRAIN OR CHANGE ITS REASON. The
+      ;; drain is held open by a request parked in the writer, released by a
+      ;; file only after the signal, so the order is set by the row and not by
+      ;; a clock. KEY: `(draining (in-flight 1))` is read, so the drain did
+      ;; begin with the request still running, and it is the only drain line:
+      ;; a SIGTERM that re-entered the drain would print a second one.
+      ;; NOTE: THE STORE IS PUT BACK BEFORE THE RELEASE, so the write can take its
+      ;; lock and finish; the drain's reason was set when it began and stays.
+      (let* ((h (store-gone-held! "sgterm1")) (d (car h)) (f (list-ref h 4)))
+        (signal-tagged! d "TERM")
+        (sleep-ms 300)
+        (system (string-append "mv " (tagged-store d) ".aside " (tagged-store d)))
+        (call-with-output-file (cadr h) (lambda (o) (put-string o "go")) 'truncate)
+        (let ((code (tagged-exit d (scaled 6000 f))))
+          (stop-tagged-daemon! d)
+          (want "SG-5 one SIGTERM during a store-gone drain held open by a request keeps the drain and its reason: exits store-gone, 0, when the request completes"
+                (list (caddr h) (cadddr h)
+                      (let ((log (tagged-log d)))
+                        (if (and (contains? log "(draining (in-flight 1))") (= 1 (count-in log "(draining ")))
+                            'drain-held-open-and-entered-once
+                            (log-tail d 6)))
+                      code
+                      (if (contains? (tagged-log d) "(exiting (reason store-gone))") 'exited-store-gone (log-tail d 2)))
+                '(#t #t drain-held-open-and-entered-once (exited 0) exited-store-gone))))
+      ;; TWIN: a second SIGTERM still means stop now.
+      (let* ((h (store-gone-held! "sgterm2")) (d (car h)) (f (list-ref h 4)))
+        (signal-tagged! d "TERM")
+        (sleep-ms 150)
+        (signal-tagged! d "TERM")
+        (let ((code (tagged-exit d (scaled 3000 f))))
+          (call-with-output-file (cadr h) (lambda (o) (put-string o "go")) 'truncate)
+          (stop-tagged-daemon! d)
+          (want "SG-5 TWIN: a second SIGTERM during a store-gone drain exits second-signal, 75, without waiting for the request"
+                (list (caddr h) (cadddr h) code
+                      (if (contains? (tagged-log d) "(exiting (reason second-signal))") 'exited-second-signal (log-tail d 2)))
+                '(#t #t (exited 75) exited-second-signal))))
+
+      ;; ---- SG-7 the reason through a connection's completion ----------------
+      ;;
+      ;; NEVER: THE REASON IS READ WHERE EVERY COMPLETION PATH REPORTS. A
+      ;; connection that is open when the drain begins holds it until the
+      ;; connection closes, and the exit comes from conn-done, not from the
+      ;; drain's entry. KEY: the connection is seen closed BY THE DAEMON, so it
+      ;; was open when the drain began.
+      (let* ((d (start-tagged-daemon! "sgconn" #f))
+             (f (load-factor)))
+        (hold-connection-open! (tagged-socket d) (scaled 15000 f))
+        (let ((opened (take-idle-conn 5000)))
+          (sleep-ms 300)
+          (system (string-append "rm -rf " (tagged-store d)))
+          (let* ((closed (take-idle-conn (scaled 8000 f)))
+                 (code (tagged-exit d (scaled 3000 f))))
+            (stop-tagged-daemon! d)
+            (want "SG-7 a store-gone drain with a connection open ends when the daemon closes it: exits store-gone, 0"
+                  (list opened closed code
+                        (if (contains? (tagged-log d) "(exiting (reason store-gone))") 'exited-store-gone (log-tail d 2)))
+                  '(open closed-by-daemon (exited 0) exited-store-gone)))))
+
+      ;; ---- SG-9 the resolved name ------------------------------------------
+      ;;
+      ;; NEVER: THE DAEMON WATCHES THE DIRECTORY ITS SOCKET STANDS FOR, not the
+      ;; spelling it was started with. A symlink spelling and its target share
+      ;; one socket, so removing the symlink leaves a daemon the target's
+      ;; clients still use; removing the target is the store gone.
+      (let* ((link-to (lambda (st) (system (string-append "ln -s " st " " st ".link")) (string-append st ".link")))
+             (d (start-tagged-daemon-with! "sglink" #f #f "" link-to))
+             (f (load-factor)))
+        (system (string-append "rm " (tagged-store d) ".link"))
+        (let* ((before (count-in (tagged-log d) present-sample))
+               (checked (wait-for-count d present-sample (+ before 2) (scaled 4000 f)))
+               (code (tagged-exit d 0)))
+          (stop-tagged-daemon! d)
+          (want "SG-9 a daemon started through a symlink spelling: the symlink removed, the target left, is not gone: two checks read present, the daemon alive"
+                (list (if checked 'checked-present-twice (list 'present-checks (- (count-in (tagged-log d) present-sample) before)))
+                      (if (contains? (tagged-log d) "store-gone") 'SAID-STORE-GONE 'no-store-gone)
+                      (if (eq? (car code) 'still-running-after) 'alive code))
+                '(checked-present-twice no-store-gone alive))))
+      (let* ((link-to (lambda (st) (system (string-append "ln -s " st " " st ".link")) (string-append st ".link")))
+             (d (start-tagged-daemon-with! "sglink2" #f #f "" link-to))
+             (f (load-factor)))
+        (system (string-append "rm -rf " (tagged-store d)))
+        (let ((code (tagged-exit d (scaled 5000 f))))
+          (stop-tagged-daemon! d)
+          (want "SG-9 a daemon started through a symlink spelling: the target removed, the symlink left dangling, is gone: store-gone, 0"
+                (list code
+                      (if (contains? (tagged-log d) "(exiting (reason store-gone))") 'exited-store-gone (log-tail d 2)))
+                '((exited 0) exited-store-gone))))
 
       (stop-daemon!)
       ;; NEVER: THIS RUN CLEANS UP AFTER ITSELF, BY ITS OWN PID. Every row

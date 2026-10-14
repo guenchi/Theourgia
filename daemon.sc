@@ -37,7 +37,7 @@
 ;;; its death (§7.6.32 A). Closing one is killing that adapter.
 
 (library (theourgia daemon)
-  (export serve write-report-line!)
+  (export serve write-report-line! store-check-step)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports) (rnrs hashtables)
           (only (chezscheme) real-time getenv write newline read void let-values
@@ -61,7 +61,7 @@
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error)
-          (only (theourgia client) socket-path envelope-version)
+          (only (theourgia client) socket-path envelope-version resolved-name)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
@@ -86,7 +86,7 @@
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
-                mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode
+                mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode path-stat
                 entry-type unreadable-entry? unreadable-entry-errno
                 write-one! with-mutation-record mutation-record theourgia-stage)
           (only (theourgia answers) classify-failure combine-report))
@@ -157,24 +157,76 @@
   (define drain-poll-ms 25)
   (define drain-budget-ms 5000)
 
-  (define (watch-for-signals! main-pid)
+  ;; ---- the store's presence (F268) ----------------------------------------
+  ;;
+  ;; AN IDLE DAEMON LOOKS AT ITS STORE ONLY HERE. The change probe runs while
+  ;; somebody subscribes and a request probes before it is answered, so a
+  ;; daemon nobody talks to never looked at the disk again, and one whose
+  ;; store was removed served nothing for days. Every 40th poll (about once a
+  ;; second) the watcher stats the store's RESOLVED name, the one its socket
+  ;; is keyed by (client.sc's resolved-name): a symlink spelling and its
+  ;; target share this daemon, so the directory removed is gone and a symlink
+  ;; spelling removed is not. The stat follows links. A sample is present,
+  ;; absent (ENOENT or ENOTDIR) or failed (any other error); something other
+  ;; than a directory at the name is a store replaced, not one gone, and reads
+  ;; as present.
+  ;;
+  ;; NEVER: A FAILED CHECK IS NOT AN ABSENCE. A permission or I/O fault must
+  ;; never end a daemon; it resets the count as a present one does. Two
+  ;; absences in a row are gone, so an atomic swap of the directory (one
+  ;; rename, never an absent name) is not mistaken for it.
+  ;;
+  ;; NOTE: THE STAT IS ONE SYNCHRONOUS CALL ON THE SCHEDULER'S THREAD, and every
+  ;; process waits while it runs (as with flock, below). Requests already make
+  ;; such calls; new is one a second on an idle daemon. A SIGTERM is counted by
+  ;; the handler meanwhile and read when the stat returns.
+  (define store-check-polls 40)
+  (define (store-check name)
+    (guard (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) '(ENOENT ENOTDIR))) 'absent)
+              (#t 'failed))
+      (path-stat name)
+      'present))
+
+  ;; THE DECISION, A PURE STEP so its rule is pinned without a clock: COUNT is
+  ;; the absences in a row so far, SENT? whether store-gone was already sent,
+  ;; SAMPLE present, absent or failed. -> (values count' send?): count' is
+  ;; count+1 on absent and 0 otherwise; send? is #t when count' has reached
+  ;; two and nothing was sent before, so it is sent once for the daemon's life.
+  (define (store-check-step count sent? sample)
+    (let ((count2 (if (eq? sample 'absent) (+ count 1) 0)))
+      (values count2 (and (>= count2 2) (not sent?)))))
+
+  (define (watch-for-signals! main-pid store-name)
     (register-signal-handler signal-term
                              (lambda (signo) (set! sigterm-count (+ sigterm-count 1))))
     (spawn
       (lambda ()
-        (let poll ((told 0))
+        ;; NEVER: STORE-GONE HAS ITS OWN SENT FLAG, independent of `told` and of
+        ;; the SIGTERM count, so F112's rule below is untouched.
+        (let poll ((told 0) (wakes 1) (absences 0) (gone-sent #f))
           (sleep-ms drain-poll-ms)
-          (cond
-            ;; `again` IS SENT ONCE (F112). It used to be sent on every poll
-            ;; once the count reached 2 -- a second path to the same exit that
-            ;; masked the ready clause's remembered `again` (MD-3, the
-            ;; startup-exit design R5). The mailbox is reliable: one send is
-            ;; enough, and after it the loop only polls.
-            ((and (>= sigterm-count 2) (< told 2)) (send main-pid (list 'signal 'again)) (poll 2))
-            ((and (>= sigterm-count 1) (= told 0))
-             (send main-pid (list 'signal 'drain))
-             (poll 1))
-            (else (poll told)))))))
+          (let-values (((absences gone-sent)
+                        (if (< wakes store-check-polls)
+                            (values absences gone-sent)
+                            (let ((sample (store-check store-name)))
+                              (trace-event! 'store-check sample #f)
+                              (let-values (((count send?) (store-check-step absences gone-sent sample)))
+                                (when send? (send main-pid (list 'signal 'store-gone)))
+                                (values count (or gone-sent send?)))))))
+            (let ((wakes (if (< wakes store-check-polls) (+ wakes 1) 1)))
+              (cond
+                ;; `again` IS SENT ONCE (F112). It used to be sent on every poll
+                ;; once the count reached 2 -- a second path to the same exit that
+                ;; masked the ready clause's remembered `again` (MD-3, the
+                ;; startup-exit design R5). The mailbox is reliable: one send is
+                ;; enough, and after it the loop only polls.
+                ((and (>= sigterm-count 2) (< told 2))
+                 (send main-pid (list 'signal 'again))
+                 (poll 2 wakes absences gone-sent))
+                ((and (>= sigterm-count 1) (= told 0))
+                 (send main-pid (list 'signal 'drain))
+                 (poll 1 wakes absences gone-sent))
+                (else (poll told wakes absences gone-sent)))))))))
 
   ;; ---- serve -------------------------------------------------------------
 
@@ -459,7 +511,8 @@
            ;; NOTE: INSTALLED BEFORE ANYTHING CAN BE ACCEPTED, so a signal
            ;; that arrives during the store's first load is not lost --
            ;; the count is read by a process, and the process is here.
-           (watch-for-signals! me)
+           ;; The name the socket is keyed by, resolved once (F268).
+           (watch-for-signals! me (resolved-name store))
            (let* ((store-pid (spawn (lambda () (store-loop store me))))
                   ;; A WITHHELD PUBLICATION ASKS FOR A FRESH FOLD (F77c): a
                   ;; write whose session was not delivered publishes nothing,
@@ -499,7 +552,8 @@
   ;; 13 the conn processes that have been told to drain, 14 main's startup
   ;; record, 15 the start's attempt token (F100b points 2 and 9), 16 the
   ;; phase, 17 the signal remembered while STARTING (the startup-exit design,
-  ;; archive/theourgia-f100b-m2a-startup-exit-design.md v3).
+  ;; archive/theourgia-f100b-m2a-startup-exit-design.md v3), 18 the drain's
+  ;; reason (drained or store-gone), set once when the drain is entered.
   ;;
   ;; THE PHASE DECIDES WHAT AN EVENT ENDS IN. STARTING runs from the store's
   ;; spawn to its outcome (`ready` or `startup-failed`); SERVING follows
@@ -509,7 +563,7 @@
   ;; signal during STARTING is remembered, with its kind, until the outcome.
   (define (make-main-state lock socket store store-pid listener main-record attempt)
     (vector lock socket store store-pid listener '() '() #f '() '() self #f '() '() main-record attempt
-            'starting #f))
+            'starting #f #f))
 
   (define (state-lock st) (vector-ref st 0))
   (define (state-socket st) (vector-ref st 1))
@@ -528,6 +582,8 @@
   (define (state-phase-set! st v) (vector-set! st 16 v))
   (define (state-remembered st) (vector-ref st 17))
   (define (state-remembered-set! st v) (vector-set! st 17 v))
+  (define (state-drain-reason st) (vector-ref st 18))
+  (define (state-drain-reason-set! st v) (vector-set! st 18 v))
   (define (state-roles st) (vector-ref st roles-slot))
   (define (state-roles-set! st v) (vector-set! st roles-slot v))
   (define (state-handling st) (vector-ref st handling-slot))
@@ -619,8 +675,8 @@
          ((again)
           (report-quietly `(exiting (reason second-signal)))
           (leave st 75))
-         ((drain)
-          (enter-drain! st)
+         ((drain store-gone)
+          (enter-drain! st (if (eq? (state-remembered st) 'store-gone) 'store-gone 'drained))
           (finish-if-drained st)
           (watch-loop st))
          (else
@@ -690,9 +746,13 @@
       (`(signal ,which)
        (cond
          ;; STARTING: REMEMBERED, WITH ITS KIND, until the store's outcome (the
-         ;; startup-exit design R5, R6). `again` outranks `drain`.
+         ;; startup-exit design R5, R6). `again` replaces whatever is remembered;
+         ;; otherwise the first remembered kind stays (drain or store-gone, F268),
+         ;; so a store-gone is not stored as drain and its reason lost.
          ((eq? (state-phase st) 'starting)
-          (let ((kind (if (or (eq? which 'again) (eq? (state-remembered st) 'again)) 'again 'drain)))
+          (let ((kind (cond ((eq? which 'again) 'again)
+                            ((state-remembered st) (state-remembered st))
+                            (else which))))
             (state-remembered-set! st kind)
             (trace-event! 'signal-remembered kind #f))
           (watch-loop st))
@@ -701,7 +761,9 @@
           (leave st 75))
          ((state-draining st) (watch-loop st))
          (else
-          (enter-drain! st)
+          (when (eq? which 'store-gone)
+            (report-quietly `(store-gone (store ,(state-store st)))))
+          (enter-drain! st (if (eq? which 'store-gone) 'store-gone 'drained))
           ;; NOTE: AND BACK INTO THE LOOP. `finish-if-drained` leaves only
           ;; when the drain is already over; on every other path main has
           ;; to keep watching, because the clock that ends a drain that
@@ -829,8 +891,10 @@
   ;; the right one. Refusing a correct answer so that two paths agree
   ;; would be putting the rule ahead of the result.
 ;; The drain's entry, once: from a first signal while SERVING, or from a
-  ;; drain remembered while STARTING when `ready` arrives.
-  (define (enter-drain! st)
+  ;; drain remembered while STARTING when `ready` arrives. REASON is drained or
+  ;; store-gone; it is kept from here to the exit line, never overwritten.
+  (define (enter-drain! st reason)
+    (unless (state-drain-reason st) (state-drain-reason-set! st reason))
     (state-draining-set! st (real-time))
     (report-quietly `(draining (in-flight ,(length (state-running st)))))
     (when (state-listener st) (send (state-listener st) (list 'stop)))
@@ -842,7 +906,7 @@
     (when (and (state-draining st)
                (null? (state-running st))
                (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st))))
-      (report-quietly `(exiting (reason drained)))
+      (report-quietly `(exiting (reason ,(or (state-drain-reason st) 'drained))))
       (leave st 0)))
 
   (define (forget-pid who alist)

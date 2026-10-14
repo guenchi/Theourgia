@@ -684,7 +684,18 @@
   (let ((f (string-append root "/acts.txt")))
     (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c '" pattern "' > '" f "' || true"))
     (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
-(define (daemon-acts) (- (count-lines "(trace ") (count-lines "daemon-dispatch") (count-lines "(trace routed ")))
+;; NOTE: THE STORE CHECK'S LINES ARE NOT ACTS: the signal watcher samples the
+;; store about once a second on its own clock, so between two client runs some
+;; always fall, whatever the verb did.
+;; NEVER: ONE READING OF THE LOG, NOT ONE PER PATTERN. The watcher appends while
+;; the row reads, so counts taken from separate reads of the live log disagree
+;; by the lines written between them, and a difference of them is off by those.
+(define (daemon-acts)
+  (let ((f (string-append root "/acts.txt")))
+    (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep '(trace '"
+                           " | grep -v 'daemon-dispatch' | grep -v '(trace routed '"
+                           " | grep -c -v '(trace store-check ' > '" f "' || true"))
+    (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
 (define (client store . verb)
   (let ((out (string-append root "/client.out")))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_HOME=" root "/home "
