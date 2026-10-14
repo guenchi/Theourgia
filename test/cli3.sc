@@ -949,6 +949,45 @@
                        'NO-NEAREST-CLAUSE)))
         (list right (cadr d) (if (memq 'direct near) 'offers-the-right-spelling near)))
       (list 'def 'unknown-name 'offers-the-right-spelling))
+;; AND MORE THAN A COUPLE OF LETTERS: the edit-distance match reaches two, so a
+;; name given in capitals found nothing (CRC32-HEX for crc32-hex). The prefix and
+;; containment matches fold case.
+(want "N4f a name given in capitals still finds the right spelling under nearest"
+      (let* ((d (car (cadr (run d4d "whereis" "DIRECT"))))
+             (near (if (and (pair? d) (eq? (car d) 'error) (= 4 (length d)))
+                       (cdr (cadddr d))
+                       'NO-NEAREST-CLAUSE)))
+        (list (cadr d) (if (memq 'direct near) 'offers-the-right-spelling near)))
+      (list 'unknown-name 'offers-the-right-spelling))
+;; AND IT COMES FIRST, NOT ONLY AMONG THE FIVE. Five names sharing the folded
+;; prefix and sorting before it (capitals sort before small letters) filled the
+;; answer and left the right spelling out; a name equal to the query but for
+;; case now leads.
+(define d4crowd (fresh-store!))
+(init! d4crowd)
+(define src4crowd (string-append scratch "/src4crowd"))
+(system (string-append "rm -rf " src4crowd "; mkdir -p " src4crowd))
+(put! (string-append src4crowd "/crowd.sc")
+      (string->utf8
+        (string-append
+          "(library (probe crowd)
+"
+          "  (export DIRECT-a DIRECT-b DIRECT-c DIRECT-d DIRECT-e direct)
+"
+          "  (import (rnrs))
+"
+          "  (define (DIRECT-a) 1) (define (DIRECT-b) 2) (define (DIRECT-c) 3)
+"
+          "  (define (DIRECT-d) 4) (define (DIRECT-e) 5) (define (direct) 6))
+")))
+(run d4crowd "import-code" src4crowd "--datum")
+(want "N4g the case-equal name leads nearest, ahead of five folded prefix matches that sort before it"
+      (let* ((d (car (cadr (run d4crowd "whereis" "DIRECT"))))
+             (near (if (and (pair? d) (eq? (car d) 'error) (= 4 (length d)))
+                       (cdr (cadddr d))
+                       'NO-NEAREST-CLAUSE)))
+        (list (cadr d) (and (pair? near) (car near)) (and (list? near) (length near))))
+      (list 'unknown-name 'direct 5))
 
 (printf "\n== N4e: the store a caller gets when they type the short command ==\n")
 ;; NEVER: EVERY CELL IN THIS SEGMENT TOOK THE OPT-IN PATH. `import-code`

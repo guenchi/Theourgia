@@ -539,8 +539,10 @@ entirely. Definitions come first.
 The name must match whole and EXACTLY: these are Scheme identifiers, where two
 spellings that differ by case are two different names, so
 the lookup does not fold case. A name given in the wrong case is refused like any
-other name that is not there -- and the right spelling is normally one edit away,
-so it comes back under `nearest`.
+other name that is not there -- and the right spelling comes back under `nearest`,
+first: a name equal to the query but for case leads the list, and the prefix and
+containment matches below ignore case, so `CRC32-HEX` offers `crc32-hex` even
+though six letters differ.
 
 A name that is nowhere is refused with `(error unknown-name <name> (nearest ...))`,
 naming up to five of the closest names it does know: those sharing a prefix first,

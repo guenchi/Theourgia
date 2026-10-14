@@ -1480,27 +1480,43 @@
   ;; `reaper-start` and `reaper-stop` offered only the first, because the
   ;; second shares no prefix and is not contained -- and it is exactly the
   ;; name a reader who typed `reaper-star` might have meant.
+  ;;
+  ;; THE PREFIX AND CONTAINMENT MATCHES IGNORE CASE, and still answer the stored
+  ;; spelling. The lookup itself is exact (two spellings are two names); this is
+  ;; only where to point a caller who typed the wrong case. Within two edits was
+  ;; not enough: CRC32-HEX differs from crc32-hex in six letters.
+  ;;
+  ;; NEVER: A NAME EQUAL TO THE QUERY BUT FOR CASE COMES FIRST. It is the one the
+  ;; caller meant, and as one prefix match among others sorted by spelling it
+  ;; could fall past the five the answer keeps (DIRECT-a .. DIRECT-e before
+  ;; direct).
   (define (nearest-names index wanted)
     (let* ((all (vector->list (hashtable-keys index)))
+           (w (string-foldcase wanted))
+           (same (filter (lambda (k) (string=? (string-foldcase k) w)) all))
            (prefix (filter (lambda (k)
-                             (and (>= (string-length k) (string-length wanted))
-                                  (string=? (substring k 0 (string-length wanted)) wanted)))
+                             (let ((f (string-foldcase k)))
+                               (and (not (member k same))
+                                    (>= (string-length f) (string-length w))
+                                    (string=? (substring f 0 (string-length w)) w))))
                            all))
            (inside (filter (lambda (k)
-                             (and (not (member k prefix))
-                                  (let ((n (string-length k)) (m (string-length wanted)))
+                             (and (not (member k same)) (not (member k prefix))
+                                  (let* ((f (string-foldcase k)) (n (string-length f)) (m (string-length w)))
                                     (and (<= m n)
                                          (let loop ((i 0))
                                            (cond ((> (+ i m) n) #f)
-                                                 ((string=? (substring k i (+ i m)) wanted) #t)
+                                                 ((string=? (substring f i (+ i m)) w) #t)
                                                  (else (loop (+ i 1)))))))))
                            all))
            (near (filter (lambda (k)
-                           (and (not (member k prefix))
+                           (and (not (member k same))
+                                (not (member k prefix))
                                 (not (member k inside))
                                 (<= (edit-distance k wanted) 2)))
                          all))
-           (ranked (append (list-sort string<? prefix)
+           (ranked (append (list-sort string<? same)
+                           (list-sort string<? prefix)
                            (list-sort string<? inside)
                            (list-sort string<? near))))
       (let take ((l ranked) (n 0) (out '()))
