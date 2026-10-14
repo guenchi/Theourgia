@@ -175,7 +175,7 @@ tmp-paths 47 122 62dcb7aa19c432f740b3b4d9db027380
 tree-round-trip 0 5 3fb82603f94c056ecbff456037b720f0
 unreadable-acknowledge-routes 68 77 f41d6aa66bc309ba2015b66d9315074c
 unreadable-adopt 34 47 5fd5d9cdf1ec3a2c22ef87ab5656eccf
-unreadable-census 42 47 1ef39476f7246abe0dac1e2a3d2a27a7
+unreadable-census 42 47 5517cf123e1fc83cd56b3526174f5886
 unreadable-drafts 16 24 843bd3f4efb488a1c67bd08440860dc4
 unreadable-publish 12 20 1bd757617c5384250f492cc79efdc2fc
 unreadable-routes 76 87 032738ddf8497f5a612bfe61ea20f4e3

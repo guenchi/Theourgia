@@ -906,3 +906,4 @@
       '(unpinned))
 
 (printf "\n~a failures\nrows: ~a\nunreadable-census complete\n" bad rows)
+(exit (if (zero? bad) 0 1))
