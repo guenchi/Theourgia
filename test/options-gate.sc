@@ -1730,6 +1730,8 @@
 ;; degeneracy.sc: the test-only switch under which a maintained structure is checked against what it replaced (L).
 ;; timing.sc and timing-wrappers.sc: the test-only timing seam and the wrappers that reach it only when
 ;; THEOURGIA_TIMING=1 at their expansion (L).
+;; landing-files.sc: the work behind locate and changed-files, entered on their first use, and the
+;; projection rules tools/publish-landing.sc publishes with (L).
 (want "GATE-C the scanned source files, named"
       ;; Compared as sorted BASENAMES, so the expectation does not depend on
       ;; which directory a source sits in: `mcp/server.sc` sorts among the
@@ -1749,7 +1751,7 @@
         "datum-project.sc" "degeneracy.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "extensions.sc" "ffi.sc" "field-reading.sc" "incomplete.sc" "json.sc"
-        "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
+        "landing-files.sc" "languages.sc" "lifecycle.sc" "log.sc" "markers.sc" "md.sc" "name-use.sc" "net.sc"
         "operation-packet.sc" "platform-numbers.sc" "premises.sc" "proc.sc" "project.sc" "query.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "rules.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "stream-client.sc" "stream-frames.sc" "tasks.sc" "template-read.sc" "template.sc" "templates.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "timing-wrappers.sc" "timing.sc" "trace.sc"

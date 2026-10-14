@@ -19,7 +19,9 @@
 ;;; THEOURGIA_INJECT is read, ffi.sc): the forms a library wraps in
 ;;; `degeneracy-definitions` are definitions only then, and the expressions it
 ;;; wraps in `degeneracy-check` run only then; unset, both expand to nothing,
-;;; and nothing they hold is compiled or run. The point (SDF 3.9, degeneracy):
+;;; and nothing they hold is compiled or run. `(degeneracy-value <on> <off>)`
+;;; is <on> under the switch and <off> without it, the other expression not
+;;; compiled at all. The point (SDF 3.9, degeneracy):
 ;;; the old computation runs beside the new one after every record, and a
 ;;; difference is red at the record where it appears.
 ;;;
@@ -28,7 +30,7 @@
 ;;; they are used.
 
 (library (theourgia degeneracy)
-  (export degeneracy-definitions degeneracy-check degeneracy-active)
+  (export degeneracy-definitions degeneracy-check degeneracy-active degeneracy-value)
   (import (chezscheme))
 
   (meta define degeneracy-mode
@@ -45,12 +47,17 @@
        (syntax-rules () ((_ e ...) (begin e ... (if #f #f)))))
      ;; (degeneracy-active): #t, so a row can show it ran under the switch
      (define-syntax degeneracy-active
-       (syntax-rules () ((_) #t))))
+       (syntax-rules () ((_) #t)))
+     ;; (degeneracy-value <on> <off>): <on>; <off> is not compiled
+     (define-syntax degeneracy-value
+       (syntax-rules () ((_ on off) on))))
     (else
      (define-syntax degeneracy-definitions
        (syntax-rules () ((_ form ...) (begin))))
      (define-syntax degeneracy-check
        (syntax-rules () ((_ e ...) (if #f #f))))
      (define-syntax degeneracy-active
-       (syntax-rules () ((_) #f)))))
+       (syntax-rules () ((_) #f)))
+     (define-syntax degeneracy-value
+       (syntax-rules () ((_ on off) off)))))
 )

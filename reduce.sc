@@ -67,7 +67,7 @@
           (theourgia degeneracy)
           (only (theourgia request) plan-member-intent store-supplied-fields
                 request-actor? actor-identity actor-sub
-                actor-plan-event make-evidence request-gates
+                actor-plan-event make-evidence
                 plan? plan-consumes consumes?)
           (theourgia admission)
           (only (theourgia datum-metadata) datum-doc-marker? datum-doc-format?)

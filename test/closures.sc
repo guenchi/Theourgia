@@ -131,7 +131,7 @@
 (want "CL-00 and every name the rows below ask about is in it"
       (filter (lambda (n) (not (assq n graph)))
               '(reduce markers datum-metadata rpc view
-                query rules commitments tasks template name-use context premises))
+                query rules commitments tasks template name-use context premises landing-files))
       '())
 
 (for-each report '(reduce markers datum-metadata view rpc))
@@ -318,13 +318,17 @@
 ;; follow, so a verb library that kept its own import of rpc would be invisible
 ;; from query's closure. All eight roots are in CL-00's presence control: a
 ;; root missing from the graph would read () here for nothing.
+;;
+;; (theourgia landing-files) is a root for the same reason: the landing verbs'
+;; work is entered by rpc on first use, never imported, so it must not carry
+;; the wire either.
 (define wire-side '(rpc daemon client))
 (for-each
   (lambda (root)
     (want (string-append "CL-R " (symbol->string root) "'s closure holds none of rpc, daemon and client")
           (filter (lambda (n) (memq n wire-side)) (closure root))
           '()))
-  '(query rules commitments tasks template name-use context premises))
+  '(query rules commitments tasks template name-use context premises landing-files))
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

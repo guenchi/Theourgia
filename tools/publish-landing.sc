@@ -58,7 +58,7 @@
         (only (theourgia reduce) reduction? state-read)
         (only (theourgia query) make-query-session session-answer)
         (only (theourgia lifecycle) lifecycle decision-state-of)
-        (only (theourgia code-project) raw-projection volume-insensitivity landing-collision spelling-key)
+        (only (theourgia landing-files) raw-projection volume-insensitivity landing-collision spelling-key)
         (only (theourgia ffi) entry-bytes entry-name-type directory-entries mkdir-p! mkdir-exclusive!
               rmdir! unlink! overwrite-entry! path-stat process-id))
 

@@ -762,6 +762,14 @@
   ;; before tables existed, and loads nothing for them.
   (define (derived name) (eval name (environment '(theourgia derived))))
 
+  ;; ---- the landing verbs' work, loaded on use ----------------------------------
+  ;;
+  ;; NEVER: THIS LIBRARY DOES NOT IMPORT (theourgia landing-files), for the
+  ;; reason above: locate and changed-files are built-in verbs, parsed here,
+  ;; and their work is entered on the first of them a process runs, so a start
+  ;; that answers any other verb does not load it.
+  (define (landing name) (eval name (environment '(theourgia landing-files))))
+
   ;; ---- validity: the lifecycle provider, loaded on use --------------------------
   ;;
   ;; NEVER: THIS LIBRARY DOES NOT IMPORT (theourgia lifecycle), for the reason
@@ -2222,7 +2230,7 @@
                     (lambda ()
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
-      ;; A RANGE OF A FILE TO THE BLOCKS HOLDING IT (code-project.sc, locate-file),
+      ;; A RANGE OF A FILE TO THE BLOCKS HOLDING IT (landing-files.sc, locate-file),
       ;; in one writer's working view or at a cut, as export-code's views are.
       ;; One of --bytes, --lines and --hunk; a malformed span is the usage form.
       (cons 'locate
@@ -2238,10 +2246,10 @@
                   ((or (not (= 1 (length args))) (not spec) (not (or w c))) (usage locate-usage))
                   ((and w c) '(error bad-request incompatible-cut-options))
                   (c (guarded (lambda ()
-                                (export-at-cut store state c (lambda (view) (locate-file (view) (car args) spec))))))
+                                (export-at-cut store state c (lambda (view) ((landing 'locate-file) (view) (car args) spec))))))
                   (else (guarded (lambda ()
                                    (working-export store state writer
-                                     (lambda (view) (locate-file (view) (car args) spec))))))))))
+                                     (lambda (view) ((landing 'locate-file) (view) (car args) spec))))))))))
       ;; WHERE THE LOCAL LOG WRITER STANDS (store.sc, store-position): the way to
       ;; get a cursor before deciding to send a tracked request. A load that
       ;; could not read a writer carries its (incomplete ...) as every answer
@@ -2253,7 +2261,7 @@
                   (guarded (lambda () (store-position store))))))
       ;; THE FILES A LANDING WOULD PUBLISH: each cut loaded as a read at a cut
       ;; is (store-state-at-cut, its refusals naming the side), then compared
-      ;; by their raw projections (code-project.sc, changed-files-between).
+      ;; by their raw projections (landing-files.sc, changed-files-between).
       ;; An incomplete load refuses it, as export-code (undeclared-verbs).
       (cons 'changed-files
             (lambda (store actor args req options state writer cwd)
@@ -2267,7 +2275,7 @@
                             (let ((b (store-state-at-cut store state (cadr args) 'to)))
                               (if (not (reduction? b))
                                   b
-                                  (changed-files-between store a b))))))))))
+                                  ((landing 'changed-files-between) store a b))))))))))
       (cons 'conflicts
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))

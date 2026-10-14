@@ -438,6 +438,36 @@
                  (filter (lambda (c) (not (cdr c))) (car (cddddr off)))))
       '(46 ()))
 
+;; THE REFERENCE IS NOT IN THE PRODUCT. identity-gates/full, the whole-bucket
+;; judgement AI-1 compares with, is built only under the switch: a child
+;; without it reads #f where the procedure would be, a child with it reads a
+;; procedure. AI-2 shows the outputs agree; this shows the code is absent.
+(define (reference-kind on?)
+  (let ((script (string-append root "/reference-" (if on? "on" "off") ".ss"))
+        (out (string-append root "/reference-" (if on? "on" "off") ".out")))
+    (call-with-output-file script
+      (lambda (p)
+        (write '(import (chezscheme) (only (theourgia request) identity-gates/full)) p) (newline p)
+        (write '(write (list 'reference-kind (cond ((procedure? identity-gates/full) 'procedure)
+                                                   ((not identity-gates/full) 'absent)
+                                                   (else 'other))))
+               p)
+        (newline p))
+      'replace)
+    (system (string-append (if on? "THEOURGIA_DEGENERACY=1 " "env -u THEOURGIA_DEGENERACY ")
+                           "scheme --script '" script "' > '" out "' 2>&1 < /dev/null"))
+    (or (guard (e (#t #f))
+          (let ((p (open-input-string (file-text out))))
+            (let loop ()
+              (let ((d (read p)))
+                (cond ((eof-object? d) #f)
+                      ((and (pair? d) (eq? (car d) 'reference-kind)) (cadr d))
+                      (else (loop)))))))
+        (list 'UNREADABLE (file-text out)))))
+(want "AI-4 the whole-bucket reference is absent from the product (#f without the switch) and a procedure under it"
+      (list (reference-kind #f) (reference-kind #t))
+      '(absent procedure))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "~%~a failures~%rows: ~a~%admission-index complete~%" bad rows)
 (exit (if (= bad 0) 0 1))

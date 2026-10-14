@@ -43,7 +43,7 @@
           ev-delivered? ev-marks ev-marked?
           comparison-set executed-member-set historical-set membership
           duplicate-slots plan-conflicts present-indices prefix?
-          request-decision request-gates identity-gates/full plan? store-supplied-fields
+          request-decision identity-gates/full plan? store-supplied-fields
           make-judgement judgement-copy judgement-arrive! judgement-run! judgement-finals
           judgement-bound-events judgement-fresh-gates judgement-holds?
           receipt? receipt-req receipt-fingerprint receipt-after
@@ -933,13 +933,6 @@
                        (if (and i (not (memv i out))) (cons i out) out)))
                    '() items))))
 
-  (define (item-at items index)
-    (let loop ((es items))
-      (cond
-        ((null? es) #f)
-        ((eqv? (identity-index (car es)) index) (car es))
-        (else (loop (cdr es))))))
-
   (define (item-naming-missing items present n)
     (let loop ((es items))
       (cond
@@ -1046,22 +1039,6 @@
          => (lambda (clash) (list (quote unknown) (list (quote range-overlaps) clash))))
         ((null? present) (list (quote planned)))
         (else (list (quote partial) present)))))
-
-  ;; THE HISTORICAL SET, and this is the question it exists for. A record
-  ;; that was set aside -- superseded by a resolution, or marked as
-  ;; disagreeing with its plan -- says nothing about what the batch did,
-  ;; and everything about whether the index it names is really untouched.
-  (define (named-missing-index items present n)
-    (let loop ((es (historical-set items)))
-      (cond
-        ((null? es) #f)
-        ((let ((sub (actor-sub (ev-actor (car es)))))
-           (and (integer? sub) (exact? sub)
-                (< sub n)
-                (not (memv sub present))
-                sub))
-         => (lambda (sub) sub))
-        (else (loop (cdr es))))))
 
   ;; Each missing index is asked about its OWN cursor. Taking the
   ;; batch's cursor for all of them would test a position no missing item
@@ -1212,7 +1189,6 @@
 
   ;; Where a record was found, and whether that place is part of the
   ;; history a reader can verify.
-  (define (in-valid-history? e) (eq? (ev-placement e) 'valid-history))
   (define (readable-but-unverifiable? e)
     (and (memq (ev-placement e) '(damaged incoming unlisted)) #t))
   (define (broken-placement? e)
@@ -1415,19 +1391,9 @@
   (define (plan-consumes p)
     (and (plan? p) (= 6 (length p)) (list-ref p 5)))
 
-  ;; One admission table for reduction and request evidence. Inputs have
-  ;; causal availability (before plan filtering); deps may include their
-  ;; transitive past. Validate each index using only earlier, unique valid
-  ;; bindings, detect duplicates, THEN check execution order.
-  ;; REHEARSAL?, when given and true, marks the probes' trace lines
-  ;; (rehearsal): they were made reducing a rehearsal's copy of a reduction.
-  (define (request-gates evidence . rehearsal?)
-    (let ((mark (and (pair? rehearsal?) (car rehearsal?) '(rehearsal))))
-      (for-each (lambda (e) (trace-event! 'identity-probe (ev-event e) mark)) evidence))
-    (apply append (map identity-gates (group-by-identity evidence))))
-
-  ;; THE WHOLE-BUCKET JUDGEMENT, WITH ITS LOOKUPS INDEXED. The
-  ;; algorithm is the one the reference below keeps verbatim: the plan and
+  ;; THE WHOLE-BUCKET JUDGEMENT, WITH ITS LOOKUPS INDEXED: the reference the
+  ;; kept judgement is compared with, under the degeneracy switch only
+  ;; (identity-gates/full below is #f without it). The plan and
   ;; single slots first, then each index in order, each slot classified
   ;; against the bindings the earlier slots made, then the plan-order pass
   ;; over the records sorted by index. What changed is how each question is
@@ -1435,8 +1401,8 @@
   ;; not a filter of every status; the bindings an index by event and by
   ;; sub (binding-index), which membership's lookups read; a slot by index
   ;; and a predecessor by (plan, index) or by event from tables built in one
-  ;; pass. The statuses come back in the order the reference gives them:
-  ;; each event once, the most recently marked first.
+  ;; pass. The statuses come back each event once, the most recently marked
+  ;; first.
   ;; -> (values statuses bindings), bindings newest first.
   ;; A RECORD'S DECLARATION AGREES WITH ITS ACTOR: a plan or receipt only
   ;; under the plan sub, naming the actor's request, fingerprint and cursor;
@@ -1492,79 +1458,79 @@
         ((not (linked-to? e (ev-event (car eligible)))) 'plan-order)
         (else #f))))
 
-  (define (identity-gates/full es)
-    (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
-      (define (status e)
-        (let ((p (hashtable-ref statuses (ev-event e) #f))) (and p (car p))))
-      (define (mark! e why)
-        (set! stamp (+ stamp 1))
-        (hashtable-set! statuses (ev-event e) (cons why stamp)))
-      (define (classify-slot! slot)
-        (let-values (((marks bound) (slot-classification slot bindings)))
-          (for-each (lambda (m) (mark! (car m) (cdr m))) marks)
-          (when bound (binding-add! bindings bound))))
-      ;; ONE PASS over the records, in their order: each integer index's
-      ;; records, each (plan, index)'s and each event's.
-      (let ((at-index (make-eqv-hashtable)) (at-plan-index (make-hashtable equal-hash equal?))
-            (at-event (make-hashtable equal-hash equal?)))
-        (for-each
-          (lambda (e)
-            (let* ((a (ev-actor e)) (i (actor-sub a)))
-              (hashtable-update! at-event (ev-event e) (lambda (l) (cons e l)) '())
-              (when (integer? i)
-                (hashtable-update! at-index i (lambda (l) (cons e l)) '())
-                (hashtable-update! at-plan-index (cons (actor-plan-event a) i) (lambda (l) (cons e l)) '()))))
-          es)
-        (let ((in-order (lambda (t k) (reverse (hashtable-ref t k '()))))
-              (indices (list-sort < (vector->list (hashtable-keys at-index)))))
-          ;; Unindexed records first: the plan must be available to its items.
-          (for-each
-            (lambda (sub)
-              (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
-            '(plan single))
-          (for-each
-            (lambda (i)
-              ;; More than one plan event cannot supply one binding space.
-              ;; Each plan event's group is its (plan, index) table entry, in
-              ;; the order the reference's fold gives: last first seen first.
-              (let ((seen (make-hashtable equal-hash equal?)))
-                (for-each
-                  (lambda (pe) (classify-slot! (in-order at-plan-index (cons pe i))))
-                  (fold-left (lambda (out e)
-                               (let ((pe (actor-plan-event (ev-actor e))))
-                                 (if (hashtable-contains? seen pe)
-                                     out
-                                     (begin (hashtable-set! seen pe #t) (cons pe out)))))
-                             '() (in-order at-index i)))))
-            indices)
-          ;; THE ORDER PASS walks the same indices in order, each index's
-          ;; records in the bucket's order: the order the reference's stable
-          ;; sort by index gives, since a sub is an exact integer or a
-          ;; symbol and the symbols' records are not asked here.
-          (for-each
-            (lambda (i)
+  ;; Built only under the degeneracy switch: without it the binding is #f and
+  ;; the procedure's code is not compiled into the product.
+  (define identity-gates/full
+    (degeneracy-value
+      (lambda (es)
+        (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
+          (define (status e)
+            (let ((p (hashtable-ref statuses (ev-event e) #f))) (and p (car p))))
+          (define (mark! e why)
+            (set! stamp (+ stamp 1))
+            (hashtable-set! statuses (ev-event e) (cons why stamp)))
+          (define (classify-slot! slot)
+            (let-values (((marks bound) (slot-classification slot bindings)))
+              (for-each (lambda (m) (mark! (car m) (cdr m))) marks)
+              (when bound (binding-add! bindings bound))))
+          ;; ONE PASS over the records, in their order: each integer index's
+          ;; records, each (plan, index)'s and each event's.
+          (let ((at-index (make-eqv-hashtable)) (at-plan-index (make-hashtable equal-hash equal?))
+                (at-event (make-hashtable equal-hash equal?)))
+            (for-each
+              (lambda (e)
+                (let* ((a (ev-actor e)) (i (actor-sub a)))
+                  (hashtable-update! at-event (ev-event e) (lambda (l) (cons e l)) '())
+                  (when (integer? i)
+                    (hashtable-update! at-index i (lambda (l) (cons e l)) '())
+                    (hashtable-update! at-plan-index (cons (actor-plan-event a) i) (lambda (l) (cons e l)) '()))))
+              es)
+            (let ((in-order (lambda (t k) (reverse (hashtable-ref t k '()))))
+                  (indices (list-sort < (vector->list (hashtable-keys at-index)))))
+              ;; Unindexed records first: the plan must be available to its items.
               (for-each
-                (lambda (e)
-                  (let ((pe (actor-plan-event (ev-actor e))))
-                    (when (eq? (status e) 'valid)
-                      (let ((why (order-status e
-                                               (if (= i 0)
-                                                   (in-order at-event pe)
-                                                   (in-order at-plan-index (cons pe (- i 1))))
-                                               status)))
-                        (when why (mark! e why))))))
-                (in-order at-index i)))
-            indices)))
-      (let-values (((events marks) (hashtable-entries statuses)))
-        (values (map (lambda (p) (cons (car p) (car (cdr p))))
-                     (list-sort (lambda (x y) (> (cdr (cdr x)) (cdr (cdr y))))
-                                (map cons (vector->list events) (vector->list marks))))
-                (binding-index-list bindings)))))
-
-  (define (identity-gates es)
-    (let-values (((statuses bindings) (identity-gates/full es)))
-      (degeneracy-check (identity-gates-compare es statuses bindings))
-      statuses))
+                (lambda (sub)
+                  (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
+                '(plan single))
+              (for-each
+                (lambda (i)
+                  ;; More than one plan event cannot supply one binding space.
+                  ;; Each plan event's group is its (plan, index) table entry, in
+                  ;; the order the reference's fold gives: last first seen first.
+                  (let ((seen (make-hashtable equal-hash equal?)))
+                    (for-each
+                      (lambda (pe) (classify-slot! (in-order at-plan-index (cons pe i))))
+                      (fold-left (lambda (out e)
+                                   (let ((pe (actor-plan-event (ev-actor e))))
+                                     (if (hashtable-contains? seen pe)
+                                         out
+                                         (begin (hashtable-set! seen pe #t) (cons pe out)))))
+                                 '() (in-order at-index i)))))
+                indices)
+              ;; THE ORDER PASS walks the same indices in order, each index's
+              ;; records in the bucket's order: the order the reference's stable
+              ;; sort by index gives, since a sub is an exact integer or a
+              ;; symbol and the symbols' records are not asked here.
+              (for-each
+                (lambda (i)
+                  (for-each
+                    (lambda (e)
+                      (let ((pe (actor-plan-event (ev-actor e))))
+                        (when (eq? (status e) 'valid)
+                          (let ((why (order-status e
+                                                   (if (= i 0)
+                                                       (in-order at-event pe)
+                                                       (in-order at-plan-index (cons pe (- i 1))))
+                                                   status)))
+                            (when why (mark! e why))))))
+                    (in-order at-index i)))
+                indices)))
+          (let-values (((events marks) (hashtable-entries statuses)))
+            (values (map (lambda (p) (cons (car p) (car (cdr p))))
+                         (list-sort (lambda (x y) (> (cdr (cdr x)) (cdr (cdr y))))
+                                    (map cons (vector->list events) (vector->list marks))))
+                    (binding-index-list bindings)))))
+      #f))
 
   ;; ONE BUCKET'S JUDGEMENT, KEPT AND MOVED BY ARRIVALS (judging only what an
   ;; arrival can change). The whole judgement above starts from nothing on
@@ -1827,95 +1793,6 @@
   ;; -> #t when EVENT is one of the bucket's records
   (define (judgement-holds? j event) (hashtable-contains? (judgement-ev j) event))
 
-    ;; THE REFERENCE, under the degeneracy switch only (degeneracy.sc): the
-  ;; whole-bucket judgement as it was before its lookups were indexed,
-  ;; verbatim but for its answer, run beside identity-gates/full on every
-  ;; bucket; a difference in the statuses or the bindings raises there.
-  (degeneracy-definitions
-    (define (identity-gates/reference es)
-      (let ((statuses '()) (bindings '()))
-        (define (status e)
-          (let ((p (assoc (ev-event e) statuses))) (and p (cdr p))))
-        (define (mark! e why)
-          (set! statuses (cons (cons (ev-event e) why)
-                                (filter (lambda (p) (not (equal? (car p) (ev-event e))))
-                                        statuses))))
-        (define (declaration-ok? e)
-          (let ((p (ev-payload e)) (a (ev-actor e)))
-            (if (not (eq? (actor-sub a) 'plan))
-                (not (and (pair? p) (memq (car p) '(plan batch))))
-                (and (or (plan? p) (receipt? p))
-                     (equal? (cadr p) (cdr (actor-identity a)))
-                     (equal? (caddr p) (actor-fingerprint a))
-                     (equal? (cadddr p) (actor-after a))))))
-        (define (classify-slot! slot)
-          (let ((valid '()))
-            (for-each
-              (lambda (e)
-                (cond
-                  ((not (ev-delivered? e)) (mark! e 'pending-plan))
-                  ((not (declaration-ok? e)) (mark! e 'plan-mismatch))
-                  ((and (integer? (actor-sub (ev-actor e)))
-                        (not (actor-plan-event (ev-actor e))))
-                   (mark! e 'plan-mismatch))
-                  ((not (actor-plan-event (ev-actor e)))
-                   (set! valid (cons e valid)))
-                  (else
-                   (case (membership e bindings)
-                     ((valid) (set! valid (cons e valid)))
-                     ((invalid) (mark! e 'plan-mismatch))
-                     (else (mark! e 'pending-plan))))))
-              slot)
-            (for-each (lambda (e) (mark! e (if (> (length valid) 1) 'plan-conflict 'valid))) valid)
-            (when (= 1 (length valid)) (set! bindings (cons (car valid) bindings)))))
-        ;; Unindexed records first: the plan must be available to its items.
-        (for-each
-          (lambda (sub)
-            (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
-          '(plan single))
-        (let ((indices (list-sort <
-                         (fold-left (lambda (out e)
-                           (let ((i (actor-sub (ev-actor e))))
-                             (if (and (integer? i) (not (memv i out))) (cons i out) out)))
-                           '() es))))
-          (for-each
-            (lambda (i)
-              ;; More than one plan event cannot supply one binding space.
-              (let ((slot (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) i)) es)))
-                (for-each
-                  (lambda (pe)
-                    (classify-slot!
-                      (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
-                  (fold-left (lambda (out e)
-                               (let ((pe (actor-plan-event (ev-actor e))))
-                                 (if (member pe out) out (cons pe out)))) '() slot))))
-            indices))
-        (for-each
-          (lambda (e)
-            (let* ((a (ev-actor e)) (i (actor-sub a)) (pe (actor-plan-event a)))
-              (when (and (integer? i) (eq? (status e) 'valid))
-                (let ((previous
-                        (filter (lambda (p)
-                          (if (= i 0)
-                              (equal? (ev-event p) pe)
-                              (and (equal? (actor-plan-event (ev-actor p)) pe)
-                                   (eqv? (actor-sub (ev-actor p)) (- i 1))))) es)))
-                  (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
-                    (cond
-                      ((null? previous) (mark! e 'plan-order))
-                      ((not (= 1 (length eligible))) (mark! e 'pending-plan))
-                      ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
-          (list-sort (lambda (a b)
-                       (< (if (integer? (actor-sub (ev-actor a))) (actor-sub (ev-actor a)) -1)
-                          (if (integer? (actor-sub (ev-actor b))) (actor-sub (ev-actor b)) -1))) es))
-        (values statuses bindings)))
-
-    (define (identity-gates-compare es statuses bindings)
-      (let-values (((statuses0 bindings0) (identity-gates/reference es)))
-        (unless (and (equal? statuses0 statuses) (equal? bindings0 bindings))
-          (assertion-violation 'degeneracy "identity-gates differ from the whole-bucket judgement"
-                               (map ev-event es) statuses statuses0)))))
-
   ;; ---- did this record come from that intent --------------------------------
 
   ;; A PLAN DECLARES AN INTENT, NOT A RESULT. "Persist the plan before
@@ -2131,12 +2008,6 @@
   ;; is not a symbol an R6RS reader will take. `#%absent`, `#%quote` and
   ;; `#%dot` are spelled the same way.
   (define new-marker "#%new")
-
-  (define (unresolved-new? x)
-    (cond
-      ((and (pair? x) (equal? (car x) new-marker)) #t)
-      ((pair? x) (or (unresolved-new? (car x)) (unresolved-new? (cdr x))))
-      (else #f)))
 
     ;; THE FINGERPRINT IS OVER A CANONICAL SERIALISATION, not over the
   ;; fields compared one by one. Comparing field by field invites a

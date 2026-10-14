@@ -24,7 +24,8 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia code-project) code-files code-field code-children volume-insensitivity)
+        (only (theourgia code-project) code-files code-field code-children)
+        (only (theourgia landing-files) volume-insensitivity)
         (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia wire) encode-record storable-encode))
 

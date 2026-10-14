@@ -281,6 +281,32 @@
             (list (length first) (list-tail first 2)))
           (list 4 (list daemons-alive kill-daemons)))))
 
+;; ---- LC-L the landing verbs' work is loaded on use, not at start-up ---------
+;; A FRESH PROCESS THAT DISPATCHES ITSELF, as the local route does: after an
+;; unknown verb (theourgia landing-files) is not among its loaded libraries;
+;; after a changed-files between two real cuts -- one that reaches the work --
+;; it is. This file does not import the library either.
+(let ((st (blocks-store! "lz.sc" '("a\n" "b\n"))))
+  (ask st 'tag "t0")
+  (ask st 'write (cadr (children-at st "lz.sc")) "bb\n" "--writer" "w1")
+  (ask st 'commit "--writer" "w1")
+  (ask st 'tag "t1")
+  (let ((child (string-append root "/lazy.sc")) (out (string-append root "/lazy.out")))
+    (write-file! child
+      (string-append
+        "(import (chezscheme) (theourgia rpc))\n"
+        "(define (loaded?) (and (member '(theourgia landing-files) (library-list)) #t))\n"
+        (format "(define store ~s)\n" st)
+        "(rpc-dispatch store '(no-such-verb) \"test\")\n"
+        "(define before (loaded?))\n"
+        "(define answer (rpc-dispatch store '(changed-files \"t0\" \"t1\") \"test\"))\n"
+        "(write (list before (car answer) (loaded?)))\n"))
+    (want "LC-L the landing work is absent after an unknown verb, and present after a changed-files that reached it"
+          (begin
+            (sh "THEOURGIA_LOCAL=1 scheme --script " (quoted child) " > " (quoted out) " 2>/dev/null < /dev/null")
+            (guard (e (#t (list 'UNREADABLE (file-text out)))) (read (open-string-input-port (file-text out)))))
+          '(#f ok #t))))
+
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nlocate complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
