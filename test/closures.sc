@@ -130,7 +130,8 @@
       (> (length graph) 20) #t)
 (want "CL-00 and every name the rows below ask about is in it"
       (filter (lambda (n) (not (assq n graph)))
-              '(reduce markers datum-metadata rpc view))
+              '(reduce markers datum-metadata rpc view
+                query rules commitments tasks template name-use context premises))
       '())
 
 (for-each report '(reduce markers datum-metadata view rpc))
@@ -304,6 +305,26 @@
 (want "C-3 the streaming reader's closure is the client library's, and none of the server"
       (list (closure 'stream-client) (server-parts-of 'stream-client))
       (list '(answers client digest ffi incomplete platform-numbers render stream-client trace) '()))
+
+;; ---- CL-R the reasoner and the registered verbs below the wire ---------
+;;
+;; KEY: THE REASONER DOES NOT IMPORT THE WIRE. A registered verb is handed the
+;; dispatcher's helpers as its first argument (rpc.sc, extension-dispatch-entry);
+;; it does not import rpc to reach them, so neither it nor the query session
+;; it imports carries rpc, the client or the daemon.
+;;
+;; ONE ROW PER ROOT, not one for the reasoner alone: the registered verbs are
+;; named in extensions.sc only as quoted data, which the import walk does not
+;; follow, so a verb library that kept its own import of rpc would be invisible
+;; from query's closure. All eight roots are in CL-00's presence control: a
+;; root missing from the graph would read () here for nothing.
+(define wire-side '(rpc daemon client))
+(for-each
+  (lambda (root)
+    (want (string-append "CL-R " (symbol->string root) "'s closure holds none of rpc, daemon and client")
+          (filter (lambda (n) (memq n wire-side)) (closure root))
+          '()))
+  '(query rules commitments tasks template name-use context premises))
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

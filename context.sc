@@ -52,7 +52,6 @@
 (library (theourgia context)
   (export context-verb)
   (import (rnrs) (rnrs mutable-pairs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
@@ -162,7 +161,7 @@
 
   ;; THE RECORD A PLAIN READ ANSWERS, asked of the read handler itself and kept
   ;; for the request: one place reads a block for a reader.
-  (define (record-reader store view)
+  (define (record-reader dispatch-helper store view)
     (let ((kept (make-hashtable string-hash string=?)))
       (lambda (id)
         (or (hashtable-ref kept id #f)
@@ -186,7 +185,7 @@
 
   ;; ---- the verb -------------------------------------------------------------------------
 
-  (define (context-verb store actor args req options state writer cwd)
+  (define (context-verb dispatch-helper store actor args req options state writer cwd)
     (let* ((t (argument-option options "--for"))
            (budget-text (argument-option options "--budget"))
            (budget (and (string? budget-text) ((dispatch-helper 'count-argument) budget-text)))
@@ -202,7 +201,7 @@
                (if (or (not row) (cdr (assq 'deleted row)))
                    ((dispatch-helper 'read) store actor (list t) req '() state writer cwd)
                    (guard (e ((refusal? e) (refusal-answer e)))
-                     (assemble store view t budget all? (appended-clause state view))))))))))
+                     (assemble dispatch-helper store view t budget all? (appended-clause state view))))))))))
 
   ;; WHAT THE DISPATCHER WILL APPEND after this answer, or #f: the clause that
   ;; says which writers the state could not read. It is part of the bytes a
@@ -215,7 +214,7 @@
 
   (define role-order '(unit member unsettled supersedes cause implementer stale))
 
-  (define (assemble store view t budget all? appended)
+  (define (assemble dispatch-helper store view t budget all? appended)
     (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
            (goals (hard-goals t))
            (answers (map (lambda (g) (ask S g)) goals))
@@ -271,7 +270,7 @@
         ;; cannot be taken, so the state exists.
         (if (pair? unhashable)
             (list 'error 'unhashable-hard-block (cons 'id unhashable))
-            (budgeted store view (record-reader store view) S t budget all? order versions whys validity-clause place notes receipt
+            (budgeted dispatch-helper store view (record-reader dispatch-helper store view) S t budget all? order versions whys validity-clause place notes receipt
                       (lambda (h) (hashtable-ref validity h 'valid)) appended)))))
 
   ;; AUTHORITY IS THE RECORD'S: its effective class, an absent one by kind.
@@ -367,7 +366,7 @@
   ;; the newline after it.
   (define (answer-bytes form) (+ 1 (wire-length form)))
 
-  (define (budgeted store view records S t budget all? order versions whys validity-clause place notes receipt validity-of appended)
+  (define (budgeted dispatch-helper store view records S t budget all? order versions whys validity-clause place notes receipt validity-of appended)
     (let* ((version (lambda (h) (let ((p (assoc h versions))) (and p (cdr p)))))
            (identity (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) 'identity)))
            (pair-of (lambda (h) (cons h (version h))))
@@ -401,7 +400,7 @@
            (base-size (+ tail (answer-bytes (base budget)))))
       (if (not (fits? base-size budget))
           (list 'error 'budget-too-small (list 'minimum (minimum-budget base tail)))
-          (admit store view records S t budget all? order whys validity-clause place notes receipt validity-of
+          (admit dispatch-helper store view records S t budget all? order whys validity-clause place notes receipt validity-of
                  version identity pair-of cost base-size tail))))
 
   ;; THE SMALLEST BUDGET THE RESERVATION AND THE BLOCK ASKED FOR FIT IN. The
@@ -414,7 +413,7 @@
              (need (max low (div (+ (* 10 size) 35) 36))))
         (if (< need (expt 10 digits)) need (loop (+ digits 1))))))
 
-  (define (admit store view records S t budget all? order whys validity-clause place notes receipt validity-of
+  (define (admit dispatch-helper store view records S t budget all? order whys validity-clause place notes receipt validity-of
                  version identity pair-of cost base-size tail)
     (let ((size base-size)
           (levels (make-hashtable string-hash string=?))
@@ -452,7 +451,7 @@
       ;; B7: the preferred material in what room is left.
       (let* ((hard-entry (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) (hashtable-ref levels h 'identity))))
              (L (lc:lifecycle view))
-             (preferred (preferred-steps store view S t all? order place L))
+             (preferred (preferred-steps dispatch-helper store view S t all? order place L))
              (excluded (map (lambda (n) (cons n 0)) excluded-names))
              (chosen '()))
         (for-each
@@ -483,7 +482,7 @@
   ;; <levels allowed> <candidates>), a candidate (<id> <why> ...). A candidate
   ;; is never a hard block or the block asked for, and is in the earliest step
   ;; that names it.
-  (define (preferred-steps store view S t all? order place L)
+  (define (preferred-steps dispatch-helper store view S t all? order place L)
     (let* ((seen (make-hashtable string-hash string=?))
            (rank (lambda (h) (or (index-of h order) 1000000)))
            (in-force? (lambda (id) (memq (car (lc:validity-of L id)) '(valid needs-review))))
@@ -543,7 +542,7 @@
            ;; 5: the blocks relevant to the block's title and text, by score.
            (step5 (take (map (lambda (h) (list (car h) (list 'why 'relevant (cdr h))))
                              (by (lambda (a b) (or (> (cdr a) (cdr b)) (and (= (cdr a) (cdr b)) (string<? (car a) (car b)))))
-                                 (relevant store view t all? L)))
+                                 (relevant dispatch-helper store view t all? L)))
                         admitted?))
            ;; 6: the ancestors of hard blocks, nearest first.
            (step6 (take (apply append
@@ -561,7 +560,7 @@
   ;; THE HITS OF SEARCH for the block's title, and for its text when it has
   ;; one: the best score of each block. Without --all-validity, search's own
   ;; filter leaves out what is superseded or refuted, as `score` does.
-  (define (relevant store view t all? L)
+  (define (relevant dispatch-helper store view t all? L)
     (let* ((row (state-read view t))
            (texts (filter (lambda (s) (> (string-length s) 0)) (list (text-field row 'title) (text-field row 'src))))
            (best (make-hashtable string-hash string=?)))

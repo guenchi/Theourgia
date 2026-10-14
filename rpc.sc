@@ -813,22 +813,8 @@
       (if (eq? (car r) 'ok)
           (append init-answer (list (list 'template named)) (cdr r))
           (append r (list '(store-created))))))
-  (define (derived-tables? store kind)
-    (let ((dir (string-append store "/derived")) (prefix (string-append (symbol->string kind) "-")))
-      (and (eq? (entry-type dir) 'directory)
-           (exists (lambda (n) (and (> (string-length n) (string-length prefix))
-                                    (string=? prefix (substring n 0 (string-length prefix)))))
-                   (directory-entries dir))
-           #t)))
-
-  ;; AN EDITOR'S KEYWORDS, as `search` consults them: from the committed
-  ;; store's table, judged against the state searched, asked only when the
-  ;; query has a word; #f when no table exists. One procedure, so the query
-  ;; relation `score` gets exactly the hits `search` does.
-  (define (search-keyword-hook store)
-    (lambda (st)
-      (and (derived-tables? store 'signatures)
-           ((derived 'keyword-hook) store st))))
+  ;; derived-tables? and search-keyword-hook are store.sc's: the facts' library
+  ;; and the dispatcher both read them from there.
 
   ;; IMPORT-MD'S ANSWER, with the request's premises. Its files are read
   ;; inside the write session, before the check: a raise there is answered
@@ -1375,8 +1361,11 @@
       (and e
            (let ((h (list-ref e 7)))
              (cons verb
+                   ;; THE DISPATCHER'S HELPERS ARE HANDED, FIRST, as to the
+                   ;; derived verbs: a registered library does not import
+                   ;; this one to reach them.
                    (lambda arguments
-                     (apply (eval (cdr h) (environment (car h))) arguments)))))))
+                     (apply (eval (cdr h) (environment (car h))) dispatch-helper arguments)))))))
 
   ;; THE STORE'S TEMPLATE, AS DESCRIBE ADDS IT: its roots and its relations,
   ;; or #f.

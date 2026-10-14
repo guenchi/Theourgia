@@ -42,7 +42,6 @@
 (library (theourgia template)
   (export template-verb template-apply! template-datum-for)
   (import (rnrs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia store) open-and-reduce with-store-write premises-preflight judgement-refusal?)
           (only (theourgia reduce) state-read state-block-ids block-id
@@ -57,7 +56,7 @@
 
   ;; `template apply <name>`, `template apply --file <template-file>`,
   ;; `template export`, with the eight arguments every handler takes.
-  (define (template-verb store actor args req options state writer cwd)
+  (define (template-verb dispatch-helper store actor args req options state writer cwd)
     (let ((file (argument-option options "--file")))
       (cond
         ((and (equal? args '("export")) (not file))

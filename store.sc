@@ -33,6 +33,7 @@
           datum-mode-block? draft-on-datum-refusal
           store-check store-position store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator
+          derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
           request-verdict failure-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -1605,6 +1606,26 @@
 
   ;; THE SEARCH OF ONE STATE: what store-search answers, over a state the
   ;; caller already holds; store-search opens the store and asks it.
+  ;; WHETHER THE STORE HOLDS A DERIVED TABLE OF KIND: a name in <store>/derived/
+  ;; beginning with the kind, read without loading anything.
+  (define (derived-tables? store kind)
+    (let ((dir (string-append store "/derived")) (prefix (string-append (symbol->string kind) "-")))
+      (and (eq? (entry-type dir) 'directory)
+           (exists (lambda (n) (and (> (string-length n) (string-length prefix))
+                                    (string=? prefix (substring n 0 (string-length prefix)))))
+                   (directory-entries dir))
+           #t)))
+
+  ;; AN EDITOR'S KEYWORDS, as `search` consults them: from the committed
+  ;; store's table, judged against the state searched, asked only when the
+  ;; query has a word; #f when no table exists. One procedure, so the query
+  ;; relation `score` gets exactly the hits `search` does. (theourgia derived)
+  ;; is entered here, on first use, as the dispatcher enters it.
+  (define (search-keyword-hook store)
+    (lambda (st)
+      (and (derived-tables? store 'signatures)
+           ((eval 'keyword-hook (environment '(theourgia derived))) store st))))
+
   (define (store-search store query . rest)
     (apply search-state (open-and-reduce store) query rest))
 

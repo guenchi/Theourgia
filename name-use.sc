@@ -55,7 +55,6 @@
           import-library-name library-name-proper live-kind register-name-use-form! default-identifier-pattern
           name-use-rule-fires?)
   (import (rnrs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-field-contested?)
           (only (theourgia store) library-locator)
@@ -655,7 +654,7 @@
         (and row (not (cdr (assq 'deleted row)))
              (guard (e (#t #f)) (field-of row 'kind))))))
 
-  (define (names-verb store actor args req options state writer cwd)
+  (define (names-verb dispatch-helper store actor args req options state writer cwd)
     (if (not (and (= 1 (length args)) (> (string-length (car args)) 0)))
         ((dispatch-helper 'usage) names-usage)
         ((dispatch-helper 'guarded)
@@ -671,7 +670,7 @@
                          (list (cons 'name-use (cdr (assq 'contract u))))
                          ((dispatch-helper 'receipt) view (list (car args))))))))))
 
-  (define (uses-verb store actor args req options state writer cwd)
+  (define (uses-verb dispatch-helper store actor args req options state writer cwd)
     (let ((under (argument-option options "--under")))
       (if (or (not (= 1 (length args))) (= 0 (string-length (car args)))
               (and under (= 0 (string-length under))))
@@ -682,9 +681,9 @@
                     (scope (and under (subtree-ids view under))))
                (if (and under (not scope))
                    ((dispatch-helper 'unknown-id) view under)
-                   (uses-answer view (car args) scope))))))))
+                   (uses-answer dispatch-helper view (car args) scope))))))))
 
-  (define (uses-answer view name scope)
+  (define (uses-answer dispatch-helper view name scope)
     (let* ((table (name-use-table view))
            ;; The scope as a set, built once: every hit and every skipped
            ;; block is asked about it.

@@ -108,7 +108,7 @@
 (define (q r . opts)
   (without-receipt (q-with-receipt r opts)))
 (define (q-with-receipt r opts)
-  (commitments-answer r
+  (commitments-answer dispatch-helper r
                       (if (memq 'all opts) 'all 'open)
                       (and (memq 'drifted opts) #t)
                       (let ((s (memq 'since opts))) (and s (cadr s)))

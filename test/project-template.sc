@@ -412,7 +412,7 @@
 
 (define (state-of-records . events)
   (let ((r (reduce-empty))) (for-each (lambda (e) (apply reduce-apply! r e)) events) r))
-(define (open-ids r) (map cadr (filter (lambda (x) (eq? (car x) 'decision)) (cdadr (commitments-answer r 'open #f #f "root")))))
+(define (open-ids r) (map cadr (filter (lambda (x) (eq? (car x) 'decision)) (cdadr (commitments-answer dispatch-helper r 'open #f #f "root")))))
 (define (decision-with status-records)
   (apply state-of-records
          (append (list '("a" 1 () (put ((kind . decision) (title . "D"))))

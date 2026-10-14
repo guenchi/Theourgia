@@ -34,8 +34,8 @@
   (import (rnrs)
           (only (theourgia reduce) state-read block-hash state-field-events state-edges cut-covers?)
           (only (theourgia wire) string->sexpr-extended sexpr->string-extended)
-          (only (theourgia rpc) dispatch-helper)
-          (only (theourgia query) make-query-session session-answer query-budget-default))
+          (only (theourgia query) make-query-session session-answer query-budget-default)
+          (only (theourgia store) search-keyword-hook))
 
   ;; HOW MANY TIMES A COMPILED CHECK WAS ASKED, in this process: a fixture
   ;; reads it beside each answer to tell a check that ran from one that did
@@ -119,7 +119,7 @@
         (set! calls (+ calls 1))
         (let ((session #f))
           (define (S) (or session (begin (set! session (make-query-session state '() query-budget-default
-                                                                            ((dispatch-helper 'keyword-hook) store)))
+                                                                            (search-keyword-hook store)))
                                          session)))
           (let loop ((ps premises) (failed '()))
             (if (null? ps)

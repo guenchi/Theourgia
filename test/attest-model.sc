@@ -216,7 +216,7 @@
                          '("a" 3 () (set "a.1" title "D edited after"))))
 (want "B3c a decision that implements itself is discharged, and its state is implemented, never review"
       (in-order (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'decision)))
-                                  (cdr (cadr (commitments-answer self-d 'open #f #f #f)))))
+                                  (cdr (cadr (commitments-answer dispatch-helper self-d 'open #f #f #f)))))
                 (state-of-decision self-d "a.1")
                 (validity self-d "a.1"))
       '(() (implemented) (valid)))
@@ -454,10 +454,10 @@
 ;; exactly when the provider says open, and its drifted implementers are
 ;; exactly those whose own content moved past every witness.
 (define (open-ids s) (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'decision)))
-                                       (cdr (cadr (commitments-answer s 'open #f #f #f))))))
+                                       (cdr (cadr (commitments-answer dispatch-helper s 'open #f #f #f))))))
 (define (drifted-of s id)
   (let ((row (find (lambda (x) (and (pair? x) (eq? (car x) 'decision) (equal? (cadr x) id)))
-                   (cdr (cadr (commitments-answer s 'all #f #f #f))))))
+                   (cdr (cadr (commitments-answer dispatch-helper s 'all #f #f #f))))))
     (let ((d (and row (assq 'drifted (cddr row))))) (if d (map car (cdr d)) '()))))
 (define with-task (b8+ '("a" 4 () (put ((kind . task) (title . "t") (status . "todo"))))
                        '("a" 5 () (link "a.4" implements "a.1"))))

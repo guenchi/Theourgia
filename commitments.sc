@@ -41,7 +41,6 @@
 (library (theourgia commitments)
   (export commitments-verb commitments-answer)
   (import (rnrs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-put-events state-event-cut
                 cut-covers? block-id state-field-contested?)
@@ -54,7 +53,7 @@
                 decision-statuses rows-left-out))
 
   ;; The handler, with the eight arguments every verb's handler takes.
-  (define (commitments-verb store actor args req options state writer cwd)
+  (define (commitments-verb dispatch-helper store actor args req options state writer cwd)
     (let ((open (argument-option options "--open"))
           (all (argument-option options "--all"))
           (drifted (argument-option options "--drifted"))
@@ -67,7 +66,7 @@
             ((dispatch-helper 'guarded)
              (lambda ()
                (let ((view ((dispatch-helper 'reduction-for) store state)))
-                 (commitments-answer view (if all 'all 'open) (and drifted #t) since under))))))))
+                 (commitments-answer dispatch-helper view (if all 'all 'open) (and drifted #t) since under))))))))
 
   ;; ---- reading one field ----------------------------------------------------
 
@@ -121,7 +120,7 @@
   ;; not (rows-left-out, field-reading.sc), so a narrowed ledger of obligations
   ;; never reads as the whole one, and the count obeys the same filters. An
   ;; item, not a clause, because the human rendering prints items.
-  (define (commitments-answer view which drifted-only since under)
+  (define (commitments-answer dispatch-helper view which drifted-only since under)
     (let* ((root (and (not under) (query-scope-root view 'commitments)))
            (scope (cond ((equal? under "root") #f)
                         (under (subtree-ids view under))

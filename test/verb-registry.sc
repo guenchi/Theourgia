@@ -122,9 +122,10 @@
 ;; A SECOND CLIENT OF THE REGISTRY, from a library this fixture writes: a
 ;; registry that worked for the one entry it was written for would pass
 ;; every row about `commitments`.
+;; A registered handler is handed the dispatcher's helpers first.
 (write-file! (string-append root "/lib/fixture/probe.sc")
   "(library (fixture probe) (export probe-verb) (import (rnrs))
-     (define (probe-verb store actor args req options state writer cwd)
+     (define (probe-verb helper store actor args req options state writer cwd)
        (list 'ok (list 'items (list 'probe (if (assoc \"--loud\" (map cdr (filter pair? options))) 'loud 'quiet) args)))))")
 (library-directories (cons (string-append root "/lib") (library-directories)))
 (define probe-entry

@@ -85,7 +85,7 @@
 
 ;; ---- commitments: a decision's status, and a kind -------------------------------------------------------
 
-(define (commitments s) (items-of (commitments-answer s 'all #f #f "root")))
+(define (commitments s) (items-of (commitments-answer dispatch-helper s 'all #f #f "root")))
 (want "commitments: a decision's status written once with the conflict's shape is unreadable; two writers make conflict"
       (in-order (status-of (find-item (commitments (written-once `((kind . decision) (title . "d") (status . ,(shaped 'done 'open)))))
                                       'decision "a.1"))
@@ -102,7 +102,7 @@
 
 ;; ---- tasks: a task's status --------------------------------------------------------------------------------
 
-(define (tasks s) (items-of (tasks-answer s #f #f "root")))
+(define (tasks s) (items-of (tasks-answer dispatch-helper s #f #f "root")))
 (want "tasks: a task's status written once with the conflict's shape is unreadable; two writers make conflict"
       (in-order (status-of (find-item (tasks (written-once `((kind . task) (title . "t") (status . ,(shaped 'done 'todo)))))
                                       'task "a.1"))

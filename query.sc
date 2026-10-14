@@ -58,7 +58,6 @@
           query-relations-text
           query-budget-default)
   (import (rnrs) (rnrs mutable-pairs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
@@ -951,7 +950,7 @@
 
   ;; ---- the verb ---------------------------------------------------------------------------------
 
-  (define (query-verb store actor args req options state writer cwd)
+  (define (query-verb dispatch-helper store actor args req options state writer cwd)
     (cond
       ;; A THIRD TABLE AFTER THE TWO: the store's declared relations,
       ;; (declared <name> <kind> (from <selector>) (to <selector>)), or

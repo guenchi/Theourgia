@@ -30,7 +30,6 @@
 (library (theourgia tasks)
   (export tasks-verb tasks-answer)
   (import (rnrs)
-          (only (theourgia rpc) dispatch-helper)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
@@ -39,7 +38,7 @@
           (only (theourgia template-read) query-scope-root)
           (only (theourgia extensions) tasks-usage))
 
-  (define (tasks-verb store actor args req options state writer cwd)
+  (define (tasks-verb dispatch-helper store actor args req options state writer cwd)
     (let ((status (argument-option options "--status"))
           (batch (argument-option options "--batch"))
           (under (argument-option options "--under")))
@@ -51,7 +50,7 @@
         (else
          ((dispatch-helper 'guarded)
           (lambda ()
-            (tasks-answer ((dispatch-helper 'reduction-for) store state)
+            (tasks-answer dispatch-helper ((dispatch-helper 'reduction-for) store state)
                           (and status (string->symbol status)) batch under)))))))
 
   (define (live? state id)
@@ -93,7 +92,7 @@
   ;; answer does not, so a narrowed listing never reads as a whole one and the
   ;; count obeys the same filters as the rows. An item and not a clause beside
   ;; the items: the human rendering prints items and drops other clauses.
-  (define (tasks-answer state status batch under)
+  (define (tasks-answer dispatch-helper state status batch under)
     (let* ((root (and (not under) (query-scope-root state 'tasks)))
            (scope (cond ((and under (equal? under "root")) #f)
                         (under (subtree-ids state under))
