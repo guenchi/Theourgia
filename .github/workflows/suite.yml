@@ -48,6 +48,14 @@ jobs:
           ref=$(printf '%s\n' "$first" | sed -n -E 's/^suite ([0-9a-f]{40})( .*)?$/\1/p')
           [ -n "$ref" ] || { echo "the commit's first line is not 'suite <full 40-character commit id>': a short id cannot be fetched; nothing to run"; exit 1; }
           echo "REF=$ref" >> "$GITHUB_ENV"; echo "under test: $ref"
+          # THE BASE MAY BE NAMED: `suite <commit> base <commit>`. A landing is a
+          # fast-forward of a branch, so the tested tip's first parent is the
+          # branch's own last intermediate commit, not the master it landed on;
+          # the guard compared against that parent reads the landing's own
+          # history as a difference (seen 2026-10-14 on a nine-commit landing).
+          # The trigger names the master the landing started from when it knows it.
+          base=$(printf '%s\n' "$first" | sed -n -E 's/^suite [0-9a-f]{40} base ([0-9a-f]{40})$/\1/p')
+          echo "BASE_REF=$base" >> "$GITHUB_ENV"; [ -n "$base" ] && echo "base named: $base" || true
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.REF }}
@@ -92,14 +100,22 @@ jobs:
       - name: the base tree
         run: |
           mkdir -p base
-          if git -C lib/theourgia fetch -q --no-tags --depth 2 origin "$REF" \
+          if [ -n "${BASE_REF:-}" ] && git -C lib/theourgia fetch -q --no-tags --depth 1 origin "$BASE_REF" \
+             && parent=$(git -C lib/theourgia rev-parse -q --verify "$BASE_REF^{commit}"); then
+            mkdir -p base/theourgia
+            git -C lib/theourgia archive "$parent" | tar -x -C base/theourgia
+            cp -R lib/igropyr base/igropyr
+            rm -rf base/igropyr/.git base/theourgia/.github
+            echo "BASE_LIBDIR=$PWD/base" >> "$GITHUB_ENV"
+            echo "base: $parent (named by the trigger)"
+          elif git -C lib/theourgia fetch -q --no-tags --depth 2 origin "$REF" \
              && parent=$(git -C lib/theourgia rev-parse -q --verify "$REF^1"); then
             mkdir -p base/theourgia
             git -C lib/theourgia archive "$parent" | tar -x -C base/theourgia
             cp -R lib/igropyr base/igropyr
             rm -rf base/igropyr/.git base/theourgia/.github
             echo "BASE_LIBDIR=$PWD/base" >> "$GITHUB_ENV"
-            echo "base: $parent (the first parent of $REF)"
+            echo "base: $parent (the first parent of $REF; a multi-commit landing's own parent, not its master, unless the trigger names the base)"
           else
             echo "no first parent for $REF: the base-relative rows will skip"
           fi
