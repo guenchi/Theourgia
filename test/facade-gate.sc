@@ -383,20 +383,23 @@
 ;; appearing inside `view.sc` would have been absorbed by the entry already
 ;; there.
 ;;
-;; So the definitions are counted separately and subtracted. `view.sc` then has
-;; zero real calls and does not appear at all; if it ever calls its own
-;; `view-read` from somewhere else, it appears, and this row goes red. Nothing
-;; here needs a comment to be read correctly.
+;; So the definitions are counted separately and subtracted. `view.sc`'s one
+;; real call is block-code-field, the code projection's lookup (below); if it
+;; ever calls its own `view-read` from somewhere else as well, its count moves
+;; and this row goes red. Nothing here needs a comment to be read correctly.
 ;;
 ;; What the three are:
 ;;   store.sc        the one guarded read, which is the property above
 ;;   rpc.sc          rendering -- the outline's label and the `read` verb,
 ;;                   all three through one reader that names a block whose
 ;;                   derivation raises
-;;   code-project.sc the code projection, which needs the DERIVED name
-;;                   because a code block's name is not in its stored fields
+;;   view.sc         block-code-field, the code projection's lookup (code-project
+;;                   imports it as code-field), which needs the DERIVED name
+;;                   because a code block's name is not in its stored fields;
+;;                   it lives in view.sc so rpc's set can ask a block's mode
+;;                   without loading the projection library
 ;;
-;; NEITHER of the other two readers is guarded, and `code-project.sc`'s walks
+;; NEITHER of the other two readers is guarded, and the code projection's walks
 ;; every block in the store. That is recorded as a finding rather than fixed
 ;; here: whether a block that cannot be read should be labelled by its id in
 ;; the outline, or make `export-code` REFUSE rather than quietly write one file
@@ -428,7 +431,7 @@
 
 (want "S-B1 the store reads a block in exactly one place, and these are all the readers"
       (list-sort (lambda (a b) (string<? (car a) (car b))) view-read-hits)
-      '(("code-project.sc" . 1) ("rpc.sc" . 1) ("store.sc" . 1)))
+      '(("rpc.sc" . 1) ("store.sc" . 1) ("view.sc" . 1)))
 
 ;; ---- S-B2b no two places construct the same item tag ----------------------
 ;;

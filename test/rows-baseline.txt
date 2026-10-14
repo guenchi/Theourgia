@@ -36,7 +36,7 @@ context-verb 97 100 6f7dfc5911c50133ab6eb7b01c41dbb1
 crash 15 19 7dc2d98b549e4f3cbbef2f17820a2c6a
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 72 75 947d455ecd153b220d8759607cbe18ee
-daemon-link-gate 43 46 cea34b20543f41532539d2f004f9967b
+daemon-link-gate 36 39 cea34b20543f41532539d2f004f9967b
 daemon-socket 9 12 2f95a9b3504a89359ac5296a245e25b9
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
@@ -69,7 +69,7 @@ f2-keywords 11 14 e10942c35d6f1dc6f1ff4f15fcf61c95
 f3-wire-utf8 7 11 1edddabb206938d0642919c0ef4d6699
 facade-exports 7 10 70d8aaefaa62675fb36b5b76ae92f8f5
 facade-ffi 72 79 6f8668528fd268ed2980ad43bba8e21d
-facade-gate 33 87 4a8a1db0e29af23e260cc6ad6f99f0b0
+facade-gate 33 87 cd237b97bad8662aa68fa127b74deb92
 facade-net 31 34 abe0752bb8466e0a5890264bdb7c32e4
 facade-proc 20 23 676123c7f130cdf01371dd65595e96a6
 facade-record 71 74 195b053b381f604e0ddf1b10c4d06e99
@@ -182,7 +182,7 @@ unreadable-routes 81 92 c2ce189dc758ef6c58a9c9d0e36f38f0
 unreadable-writer 77 105 02bf715469664791c23b71bdfa074356
 unscoped-lock 2 11 6a2f19098d23a42d63b97f2d28bcdcc2
 validity 35 38 9eeea59e2540cc721dd6399273b683db
-verb-libraries-lazy 25 30 f2a2cf91cb121fbb7b94db916316954e
+verb-libraries-lazy 25 31 f2a2cf91cb121fbb7b94db916316954e
 verb-registry 23 28 d50758223a8afc222a5a2a222ec53e57
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9
