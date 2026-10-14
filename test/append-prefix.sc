@@ -495,12 +495,12 @@
 (printf "== the degeneracy child ==\n")
 (define degeneracy-child
   (let ((out (string-append d "-degeneracy.out")) (err (string-append d "-degeneracy.err")))
-    (system (string-append "THEOURGIA_DEGENERACY=1 APPEND_PREFIX_ROLE=child scheme --script "
+    (system (string-append "THEOURGIA_DEGENERACY=1 APPEND_PREFIX_ROLE=child scheme --script '"
                            (let ((self (car (command-line))))
                              (if (and (> (string-length self) 0) (char=? #\/ (string-ref self 0)))
                                  self
                                  (string-append (current-directory) "/" self)))
-                           " < /dev/null > " out " 2> " err))
+                           "' < /dev/null > " out " 2> " err))
     (guard (e (#t (list 'unreadable (text-of out) (text-of err))))
       (read (open-string-input-port (text-of out))))))
 (want "AP-D under the degeneracy switch the scenarios finish (every kept prefix equal to a full validate) and answer as here"
