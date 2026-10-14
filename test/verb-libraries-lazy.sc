@@ -31,7 +31,7 @@
 ;; (theourgia derived), which imports code-project.
 
 (import (chezscheme)
-        (only (theourgia rpc) rpc-dispatch)
+        (only (theourgia rpc) rpc-dispatch rpc-ok?)
         (only (theourgia store) open-and-reduce)
         (only (theourgia reduce) state-block-ids state-read)
         (only (theourgia digest) sha256 bytevector->hex))
@@ -79,16 +79,17 @@
 (define (ask st . req) (rpc-dispatch st req "test"))
 (define (must st . req)
   (let ((a (apply ask st req)))
-    (unless (and (pair? a) (eq? (car a) 'ok)) (assertion-violation 'verb-libraries-lazy "setup refused" req a))
+    (unless (rpc-ok? a) (assertion-violation 'verb-libraries-lazy "setup refused" req a))
     a))
 
-;; The head of an answer: ok, or the refusal's kind (and a bad request's reason).
+;; The head of an answer: ok when rpc's own rule says so (an import answers
+;; (import ...)), else the refusal's kind (and a bad request's reason).
 (define child-text
   (string-append
     "(import (chezscheme) (theourgia rpc))\n"
     "(define (head a)\n"
     "  (cond ((not (pair? a)) a)\n"
-    "        ((eq? (car a) 'ok) 'ok)\n"
+    "        ((rpc-ok? a) 'ok)\n"
     "        ((and (pair? (cdr a)) (eq? (cadr a) 'bad-request) (pair? (cddr a))) (list (car a) (cadr a) (caddr a)))\n"
     "        ((pair? (cdr a)) (list (car a) (cadr a)))\n"
     "        (else a)))\n"
@@ -135,8 +136,9 @@
         (assertion-violation 'verb-libraries-lazy "no such block"))))
 (define note (block-where m (lambda (st id) (equal? (field-of st id 'title) "A note"))))
 (define library (block-where c (lambda (st id) (eq? (field-of st id 'kind) 'library))))
-(define pf (block-where c (lambda (st id) (and (eq? (field-of st id 'kind) 'code) (eq? (field-of st id 'mode) 'datum)
-                                               (equal? (field-of st id 'name) "pf")))))
+;; the library's one definition: a code block in datum mode (its name is
+;; derived by the view, not stored)
+(define pf (block-where c (lambda (st id) (and (eq? (field-of st id 'kind) 'code) (eq? (field-of st id 'mode) 'datum)))))
 (define (out name) (string-append root "/out-" name))
 
 (printf "== none of the four ==\n")
@@ -159,7 +161,10 @@
       '((error bad-request incompatible-cut-options) ()))
 
 (printf "== exactly the verb's own ==\n")
-(want "VL-10 a text import-code loads code-project" (in-child a 'import-code src) '(ok (code-project)))
+;; Into stores of their own: a second unmarked import of a file is a second
+;; file at its path, and a Markdown import after the note's title was set
+;; would ask to delete the section the source no longer names.
+(want "VL-10 a text import-code loads code-project" (in-child (fresh-store! "a2") 'import-code src) '(ok (code-project)))
 (want "VL-11 a datum import-code loads code-project and datum-project" (in-child c 'import-code lib "--datum")
       '(ok (code-project datum-project)))
 (want "VL-12 export-code loads code-project" (in-child a 'export-code (out "c1")) '(ok (code-project)))
@@ -177,7 +182,9 @@
 (want "VL-18 split-suggest loads code-project and code-suggest"
       (in-child a 'split-suggest (string-append src "/a.sc") "--output" (string-append root "/review/a.sc"))
       '(ok (code-project code-suggest)))
-(want "VL-19 import-md loads code-project and project" (in-child m 'import-md md) '(ok (code-project project)))
+(want "VL-19 import-md loads code-project and project" (in-child (fresh-store! "m2") 'import-md md) '(ok (code-project project)))
+;; export-md writes into a directory that exists
+(sh "mkdir -p " (quoted (out "m1")))
 (want "VL-20 export-md loads code-project and project" (in-child m 'export-md (out "m1")) '(ok (code-project project)))
 (want "VL-21 read --recursive loads code-project and project" (in-child m 'read note "--recursive")
       '(ok (code-project project)))
