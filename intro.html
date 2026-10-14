@@ -538,7 +538,7 @@ scene({tag:['feat','Feature 7 / 9'],title:'A store you can run code against',dur
 }});
 
 // ============================== FEATURE 8 ==================================
-scene({tag:['feat','Feature 8 / 9'],title:'Communication between sessions of different models',dur:17,build(r){
+scene({tag:['feat','Feature 8 / 9'],title:'Sessions of different models, talking through the store',dur:17,build(r){
   // one review round through the store, with the ids of the first real run (a Codex session on GPT-6 as the reader)
   const card=(kind,c,title,id,w)=>`<div class="blk" style="width:${w}px;border-color:${c};padding:9px 16px"><div class="k" style="color:${c};font-size:13px">${kind}</div><div class="t" style="font-size:20px;margin-top:2px">${title}</div><div class="id" style="font-size:14px">${id}</div></div>`;
   const panel=(x,label)=>el(`<div class="abs" style="width:620px;height:612px;border-radius:22px;border:2.5px solid var(--line);background:rgba(255,255,255,.55)"><div class="lbl" style="position:absolute;left:22px;top:-30px;font-size:17px;color:var(--fg)">${label}</div></div>`,r);
