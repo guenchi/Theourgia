@@ -370,18 +370,42 @@
 ;; The new reason needs a local writer. A store with neither an instance
 ;; nor a local writer is not a checkout to adopt as an identity: adopt does
 ;; not take the identity path for it, so it mints no instance -- instance.sexp
-;; is still absent afterwards. (What adopt answers for such a store is the
-;; base's answer, unchanged here.)
+;; is still absent afterwards. AND IT IS REFUSED BY NAME (F131): with no local
+;; writer there is nothing to retire and nobody to succeed. It answered
+;; internal, from steps that derived everything from a writer that was #f.
 (let* ((h (home! "g4c")) (s (string-append root "/g4c/store")))
   (sh "mkdir -p " (quoted s))
   (let* ((i (ask h s "init")) (w (writer-of i)))
     (sh "rm -f " (quoted (string-append s "/instance.sexp")) " "
         (quoted (string-append s "/writers/" w "/owner.sexp")))
     (let ((a (ask h s "adopt")))
-      (want "G4c a store with no instance AND no local writer is not adopted as instance-absent: no identity clause, no instance minted"
-            (list (and (pair? a) (not (eq? (car a) 'ok))) (clause-of a 'identity)
+      (want "G4c a store with no instance AND no local writer is refused no-local-writer: no identity clause, no instance minted"
+            (list (head-of a) (clause-of a 'identity)
                   (file-exists? (string-append s "/instance.sexp")))
-            (list #t #f #f)))))
+            (list '(error no-local-writer) #f #f)))))
+;; TWIN: the same refusal for a store whose instance is in place and whose
+;; local writer is gone, and the instance is left exactly as it was.
+(let* ((h (home! "g4c2")) (s (string-append root "/g4c2/store")))
+  (sh "mkdir -p " (quoted s))
+  (let* ((i (ask h s "init")) (w (writer-of i))
+         (inst (string-append s "/instance.sexp")))
+    (sh "rm -f " (quoted (string-append s "/writers/" w "/owner.sexp")))
+    (let* ((before (text-of-file inst)) (a (ask h s "adopt")))
+      (want "G4c TWIN a store with its instance and no local writer is refused no-local-writer, its instance unchanged"
+            (list (head-of a) (> (string-length before) 0) (equal? before (text-of-file inst)))
+            (list '(error no-local-writer) #t #t)))))
+;; AND A COPIED STORE WITH NO LOCAL WRITER: the copy's instance mismatches, so
+;; adopt-needed? answers identity before it asks for the writer. The refusal is
+;; asked of the writer, and the instance is not re-minted.
+(let* ((h (home! "g4c3")) (orig (string-append root "/g4c3/orig")) (s (string-append root "/g4c3/copy")))
+  (sh "mkdir -p " (quoted orig))
+  (let* ((i (ask h orig "init")) (w (writer-of i)) (inst (string-append s "/instance.sexp")))
+    (sh "cp -R " (quoted orig) " " (quoted s))
+    (sh "rm -f " (quoted (string-append s "/writers/" w "/owner.sexp")))
+    (let* ((before (text-of-file inst)) (a (ask h s "adopt")))
+      (want "G4c TWIN a copied store with no local writer is refused no-local-writer, not adopted as an identity, its instance unchanged"
+            (list (head-of a) (clause-of a 'identity) (> (string-length before) 0) (equal? before (text-of-file inst)))
+            (list '(error no-local-writer) #f #t #t)))))
 
 ;; The reason needs the FILE to be absent. An instance.sexp that is present
 ;; but holds the datum #f verifies as absent too; adopt must not mint over

@@ -5337,11 +5337,23 @@
     (or (adopt-preflight store)
         (adopt-decided! store)))
 
+  ;; NEVER: NO LOCAL WRITER IS A REFUSAL, NOT A REASON TO ADOPT (F131).
+  ;; adopt-needed? answers (no-local-writer) when the store has no writer of
+  ;; this machine's, and that answer is not #f; taken as a reason, the steps
+  ;; below derived everything from a writer that is #f and answered internal.
+  ;; AND IT IS ASKED OF THE WRITER, NOT OF THE REASON: a copied store whose
+  ;; local writer is gone answers (identity ...) first, and its adopt minted a
+  ;; new instance before failing on the same #f. There is nothing to retire and
+  ;; nobody to succeed, so it is refused by name before any adoption step.
   (define (adopt-decided! store)
     (let ((why (adopt-needed? store)))
-      (if (not why)
-          (list 'refused 'not-needed
-                (list 'checked '(identity retired missing-generation registry-ahead damage)))
+      (cond
+        ((not why)
+         (list 'refused 'not-needed
+               (list 'checked '(identity retired missing-generation registry-ahead damage))))
+        ((not (local-writer-name store))
+         (list 'refused 'no-local-writer))
+        (else
           (let* ((store-id (store-id-of store))
                  (old (local-writer-name store))
                  (instance (adopt-nonce store why))
@@ -5448,7 +5460,7 @@
               ;; did not match, or instance-absent for a checkout.
               (if (eq? (car why) 'identity)
                   (list (list 'identity (cadr why)))
-                  '()))))))
+                  '())))))))
 
   ;; A RECOVERY ADOPT KEEPS THE NONCE; AN IDENTITY MISMATCH MINTS ONE
   ;; FIRST, before the registry is consulted, so a copied store's old
