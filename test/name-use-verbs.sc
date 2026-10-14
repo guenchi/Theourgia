@@ -617,7 +617,6 @@
 (want "U24b the library imports exactly these names"
       library-imports
       '((rnrs)
-        (only (theourgia rpc) dispatch-helper)
         (only (theourgia arguments) argument-option)
         (only (theourgia reduce) state-read state-block-ids state-field-contested?)
         (only (theourgia store) library-locator)
