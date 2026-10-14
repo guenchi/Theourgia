@@ -439,3 +439,4 @@
 (printf "~a failures\n" bad)
 (sh "rm -rf " root)
 (printf "launch-self complete\n")
+(exit (if (zero? bad) 0 1))
