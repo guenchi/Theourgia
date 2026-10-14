@@ -52,7 +52,8 @@
           (only (theourgia field-reading) field-of conflict-values lenient-status
                 decision-statuses rows-left-out))
 
-  ;; The handler, with the eight arguments every verb's handler takes.
+  ;; The handler: the dispatcher's helpers, then the eight arguments every
+  ;; verb's handler takes.
   (define (commitments-verb dispatch-helper store actor args req options state writer cwd)
     (let ((open (argument-option options "--open"))
           (all (argument-option options "--all"))

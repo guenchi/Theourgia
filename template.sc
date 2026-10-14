@@ -55,7 +55,8 @@
           (only (theourgia markers) src-text))
 
   ;; `template apply <name>`, `template apply --file <template-file>`,
-  ;; `template export`, with the eight arguments every handler takes.
+  ;; `template export`: the dispatcher's helpers, then the eight arguments
+  ;; every handler takes.
   (define (template-verb dispatch-helper store actor args req options state writer cwd)
     (let ((file (argument-option options "--file")))
       (cond

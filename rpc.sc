@@ -1273,8 +1273,8 @@
   ;; value-options flag-options (library . name)): the first five project
   ;; into the catalogue, so describe and the MCP shell's tools see it as they
   ;; see a built-in; the options go to the parser (set-extension-options!);
-  ;; and the verb dispatches to the handler named, with the same
-  ;; eight-argument contract as every built-in handler.
+  ;; and the verb dispatches to the handler named, handed the dispatcher's
+  ;; helpers first and then the eight arguments every built-in handler takes.
   ;;
   ;; NEVER: REGISTERING DOES NOT LOAD THE HANDLER'S LIBRARY. The handler is a
   ;; name, entered on dispatch as (theourgia derived) is above, so a start
