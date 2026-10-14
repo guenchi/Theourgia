@@ -40,11 +40,11 @@
 ;;;
 ;;; WHO CALLS WHICH. Anything answering a person or an editor wants the
 ;;; view: `rpc.sc`'s `read`, `outline` and `title-of`, and
-;;; `code-project.sc`'s `code-field`. Anything deciding what is stored,
+;;; `block-code-field` (code-project.sc's `code-field`). Anything deciding what is stored,
 ;;; what conflicts or what a hash is over wants `state-read`.
 
 (library (theourgia view)
-  (export view-read)
+  (export view-read block-code-field)
   (import (rnrs)
           (only (theourgia reduce) state-read)
           (only (theourgia languages) language-for-name)
@@ -90,4 +90,13 @@
         ((eq? (get 'mode) 'datum) (datum-view b))
         ((eq? (get 'mode) 'text) (text-view b fs (get 'src) (get 'lang)))
         (else b))))
+
+  ;; ONE FIELD OF A BLOCK AS A READER SEES IT, or #f: code-project's
+  ;; code-field, here so a caller that needs only this lookup (rpc's set,
+  ;; asking a block's mode) does not load the projection library for it.
+  ;; THE VIEW, because a projection writes what a reader would see -- a code
+  ;; block's `name` is derived from its source and is not in the stored
+  ;; fields at all.
+  (define (block-code-field state id name)
+    (let* ((b (view-read state id)) (p (and b (assq name (cdr (assq 'fields b)))))) (and p (cdr p))))
 )

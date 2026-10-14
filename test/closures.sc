@@ -131,7 +131,8 @@
 (want "CL-00 and every name the rows below ask about is in it"
       (filter (lambda (n) (not (assq n graph)))
               '(reduce markers datum-metadata rpc view
-                query rules commitments tasks template name-use context premises landing-files))
+                query rules commitments tasks template name-use context premises landing-files
+                code-project code-suggest datum-project project code-markers datum-match operation-packet))
       '())
 
 (for-each report '(reduce markers datum-metadata view rpc))
@@ -140,9 +141,11 @@
 (want "CL-02 the marker grammar cannot reach a derived view" (reaches 'markers) '())
 (want "CL-03 datum metadata cannot reach a derived view" (reaches 'datum-metadata) '())
 
-;; THE TWIN. Same question, a layer that is supposed to answer yes.
-(want "CL-04 rpc does reach all five, which is how we know the walk walks"
-      (reaches 'rpc)
+;; THE TWIN. Same question, a layer that is supposed to answer yes:
+;; datum-project, whose own imports reach the other four (rpc enters it on
+;; first use and so no longer does).
+(want "CL-04 datum-project does reach all five, which is how we know the walk walks"
+      (reaches 'datum-project)
       (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b))) derived))
 
 ;; AND THE PROJECTION LIVES SOMEWHERE. `view-read` was moved out of the
@@ -329,6 +332,27 @@
           (filter (lambda (n) (memq n wire-side)) (closure root))
           '()))
   '(query rules commitments tasks template name-use context premises landing-files))
+
+;; ---- CL-V the verb libraries are not in the start-up closure ----------------
+;;
+;; KEY: rpc ENTERS code-project, code-suggest, datum-project AND project ON
+;; FIRST USE (rpc.sc, the verb libraries' entries), so core.sc's start-up
+;; closure holds none of them, nor code-markers, datum-match and
+;; operation-packet, which only they import. The control: the walk read the
+;; program (rpc and view are in it). The twin: the closures of datum-project,
+;; code-suggest and project together hold all seven, so a walk that found
+;; none of them is not a walk that cannot find them.
+(define verb-libraries '(code-project code-suggest datum-project project code-markers datum-match operation-packet))
+(define core-start (closure-of-all (program-imports-of "core.sc")))
+(want "CL-V CONTROL: core.sc's start-up closure holds rpc and view"
+      (list (and (memq 'rpc core-start) #t) (and (memq 'view core-start) #t))
+      '(#t #t))
+(want "CL-V core.sc's start-up closure holds none of the seven verb libraries"
+      (filter (lambda (n) (memq n core-start)) verb-libraries)
+      '())
+(want "CL-V TWIN: the closures of datum-project, code-suggest and project hold all seven"
+      (filter (lambda (n) (not (memq n (closure-of-all '(datum-project code-suggest project))))) verb-libraries)
+      '())
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

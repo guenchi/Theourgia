@@ -18,6 +18,7 @@
           file-projection-key projected-files
           projection-outputs projected-file (rename (answer code-project-answer)))
   (import (only (theourgia view) view-read)
+          (rename (only (theourgia view) block-code-field) (block-code-field code-field))
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
@@ -27,12 +28,9 @@
           (only (theourgia markers) import-text?)
           (only (theourgia wire) storable-encode sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex))
-  (define (code-field state id name)
-    ;; THE VIEW, because a projection writes what a reader would see --
-    ;; a code block's `name` is derived from its source and is not in the
-    ;; stored fields at all. The two calls below stay on `state-read`:
-    ;; they ask whether a block EXISTS, which no derivation changes.
-    (let* ((b (view-read state id)) (p (and b (assq name (cdr (assq 'fields b)))))) (and p (cdr p))))
+  ;; code-field is view.sc's block-code-field, imported under this name and
+  ;; exported again. The two calls below stay on `state-read`: they ask
+  ;; whether a block EXISTS, which no derivation changes.
   (define (alive? state id)
     (let ((b (state-read state id))) (and b (not (cdr (assq 'deleted b))))))
   (define (code-children state id)

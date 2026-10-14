@@ -38,7 +38,7 @@
           request-frame transport-unreachable?
           count-argument outline-text write-protocol verb-catalogue
           describe-log-error eval-usage subscribe-shape-error)
-  (import (only (theourgia view) view-read)
+  (import (only (theourgia view) view-read block-code-field)
           (only (theourgia render) render-wire)
           (only (theourgia client) request-frame verb-spelling-error no-daemon-errno?)
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -46,8 +46,7 @@
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
           (rnrs hashtables)
           (theourgia store) (theourgia reduce) (theourgia log)
-          (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
-          (theourgia datum-project)
+          (theourgia working) (theourgia baseline)
           (only (theourgia datum-code) datum-source-read)
           (only (theourgia template-read) store-template template-roots template-relations)
           (only (theourgia ffi) read-entry entry-type directory-entries fs-error? with-mutation-record mutation-record)
@@ -55,7 +54,7 @@
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
           (rnrs eval)
-          (theourgia arguments) (theourgia project) (theourgia md)
+          (theourgia arguments) (theourgia md)
           (only (theourgia markers) src-text))
 
   ;; ---- answers --------------------------------------------------------------
@@ -770,6 +769,20 @@
   ;; that answers any other verb does not load it.
   (define (landing name) (eval name (environment '(theourgia landing-files))))
 
+  ;; ---- the verb libraries, loaded on use ---------------------------------------
+  ;;
+  ;; NEVER: THIS LIBRARY DOES NOT IMPORT code-project, code-suggest,
+  ;; datum-project OR project, for the reason above: their verbs (import-code,
+  ;; export-code, split-suggest, def, export-md, import-md, read --recursive)
+  ;; are built-in and parsed here, and each library is entered on the first of
+  ;; its verbs a process runs, so a start that answers any other verb loads
+  ;; none of them (nor code-markers, datum-match and operation-packet, which
+  ;; only they import).
+  (define (code-project-entry name) (eval name (environment '(theourgia code-project))))
+  (define (code-suggest-entry name) (eval name (environment '(theourgia code-suggest))))
+  (define (datum-project-entry name) (eval name (environment '(theourgia datum-project))))
+  (define (project-entry name) (eval name (environment '(theourgia project))))
+
   ;; ---- validity: the lifecycle provider, loaded on use --------------------------
   ;;
   ;; NEVER: THIS LIBRARY DOES NOT IMPORT (theourgia lifecycle), for the reason
@@ -830,7 +843,7 @@
   (define (import-md-answer store dir actor options)
     (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
       (run (lambda ()
-             (let ((r (import-md-report store dir actor (argument-option options "--allow-delete") check)))
+             (let ((r ((project-entry 'import-md-report) store dir actor (argument-option options "--allow-delete") check)))
                (finish (if (and (list? (car r)) (= 1 (length (car r))) (judgement-refusal? (car (car r))))
                            (car (car r))
                            (append (list 'import (car r))
@@ -916,7 +929,7 @@
                                              (list field (caddr rest))
                                              (list 'known (cdr (assq field vocabulary-fields))))))))
                          ((and (string=? (cadr rest) "body")
-                               (eq? (code-field (reduction-for store state) (car rest) 'mode) 'datum))
+                               (eq? (block-code-field (reduction-for store state) (car rest) 'mode) 'datum))
                           (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
                             (if (= (length forms) 1) (caar forms)
                                 (raise '(error bad-source (reason expected-one-form))))))
@@ -1634,7 +1647,7 @@
       (cons 'split-suggest
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
-                  (guarded (lambda () (split-suggest (car args)
+                  (guarded (lambda () ((code-suggest-entry 'split-suggest) (car args)
                                                      (argument-option options "--output")
                                                      (argument-option options "--symbols"))))
                   (usage '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])))))
@@ -1649,11 +1662,11 @@
                 (else
                  (guarded (lambda ()
                    (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
-                     (if (argument-option options "--datum") (import-datum store (car args) actor req (list check finish run))
-                         (import-code store (car args) actor req
+                     (if (argument-option options "--datum") ((datum-project-entry 'import-datum) store (car args) actor req (list check finish run))
+                         ((code-project-entry 'import-code) store (car args) actor req
                                       (argument-option options "--allow-delete") (list check finish run)
                                       (let ((path (argument-option options "--symbols")))
-                                        (and path (cons (lambda () (read-import-symbols path)) import-symbol-cuts))))))))))))
+                                        (and path (cons (lambda () ((code-suggest-entry 'read-import-symbols) path)) (code-suggest-entry 'import-symbol-cuts)))))))))))))
       ;; AN EXPORT AT A CAUSAL CUT (`--cut`) IS THE SAME EXPORT OVER THE STATE AT
       ;; THE CUT, as read's: the cut is resolved and judged by store-state-at-cut,
       ;; which answers cut-unavailable and cut-moved as it does for read; the
@@ -1672,16 +1685,16 @@
                            (export-at-cut store state (argument-option options "--cut")
                              (lambda (view)
                                (if (argument-option options "--datum")
-                                   (export-datum-view store (car args) view)
-                                   (export-code-view store (car args) (argument-option options "--raw") view)))))
+                                   ((datum-project-entry 'export-datum-view) store (car args) view)
+                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view)))))
                           ((argument-option options "--working")
                            (working-export store state writer
                              (lambda (view)
                                (if (argument-option options "--datum")
-                                   (export-datum-view store (car args) view)
-                                   (export-code-view store (car args) (argument-option options "--raw") view)))))
-                          ((argument-option options "--datum") (export-datum store (car args)))
-                          (else (export-code store (car args) (argument-option options "--raw"))))))
+                                   ((datum-project-entry 'export-datum-view) store (car args) view)
+                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view)))))
+                          ((argument-option options "--datum") ((datum-project-entry 'export-datum) store (car args)))
+                          (else ((code-project-entry 'export-code) store (car args) (argument-option options "--raw"))))))
                   (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])))))
       ;; THE TABLE'S WRITER IS --for, AND THE VIEW IS THAT WRITER'S: the
       ;; committed state for "-" (no --for), the writer's working view
@@ -1698,7 +1711,7 @@
               (if (= (length args) 2)
                   (guarded (lambda ()
                     (let-values (((check finish run) (premises-preflight store (argument-option options "--premises") #f)))
-                      (def-datum store (car args) (argument-option options "--under") (cadr args) actor req (list check finish run)))))
+                      ((datum-project-entry 'def-datum) store (car args) (argument-option options "--under") (cadr args) actor req (list check finish run)))))
                   (usage '(def <name> ["--under" <library>] <source> ["--premises" <datum>])))))
       (cons 'import-md
             (lambda (store actor args req options state writer cwd)
@@ -1720,11 +1733,11 @@
                        '(error bad-request incompatible-cut-options))
                       ((argument-option options "--cut")
                        (export-at-cut store state (argument-option options "--cut")
-                         (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids")))))
+                         (lambda (view) ((project-entry 'export-md-view) (car args) view (argument-option options "--with-ids")))))
                       ((argument-option options "--working")
                        (working-export store state writer
-                         (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids")))))
-                      (else (export-md store (car args) (argument-option options "--with-ids")))))))))
+                         (lambda (view) ((project-entry 'export-md-view) (car args) view (argument-option options "--with-ids")))))
+                      (else ((project-entry 'export-md) store (car args) (argument-option options "--with-ids")))))))))
       (cons 'adopt
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
@@ -1867,8 +1880,8 @@
                                   (b (state-read state (car rest))))
                              (cond
                                ((not b) (unknown-id state (car rest)))
-                               (deep? (append (text (block-text state (car rest) #f))
-                                              (receipt state (subtree-ids state (car rest)))))
+                               (deep? (append (text ((project-entry 'block-text) state (car rest) #f))
+                                              (receipt state ((project-entry 'subtree-ids) state (car rest)))))
                                (else
                                 ;; ONE BLOCK'S OWN BYTES, which is not the
                                 ;; same question and is answered from the
@@ -1909,7 +1922,7 @@
                        (guarded
                          (lambda ()
                            (let* ((state (reduction-for store state))
-                                  (ids (subtree-ids state (car rest))))
+                                  (ids ((project-entry 'subtree-ids) state (car rest))))
                              (if (not ids)
                                  (unknown-id state (car rest))
                                  ;; The items are the records a plain read gives,
