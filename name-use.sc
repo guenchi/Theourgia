@@ -59,7 +59,7 @@
           (only (theourgia reduce) state-read state-block-ids state-field-contested?)
           (only (theourgia store) library-locator)
           (only (theourgia project) subtree-ids)
-          (only (theourgia datum-code) datum-names record-definition-shape?)
+          (only (theourgia datum-code) datum-names record-definition-shape? formals? formals-names)
           (only (theourgia languages) language-for-name language-property)
           (only (theourgia regex) regex-compile regex-match-at)
           (only (theourgia extensions) names-usage uses-usage)
@@ -79,26 +79,10 @@
 
   (define (bound? s env) (memq s env))
 
-  ;; A formals list: a list or an improper list of symbols, or one symbol,
-  ;; no name twice. Anything else makes the form malformed, and it falls back.
-  (define (formals? f)
-    (and (let shape ((f f))
-           (cond ((symbol? f) #t)
-                 ((null? f) #t)
-                 ((pair? f) (and (symbol? (car f)) (shape (cdr f))))
-                 (else #f)))
-         (distinct? (formals-names f))))
-
   ;; -> #t when no symbol occurs twice in NAMES.
   (define (distinct? names)
     (let ((seen (make-eq-hashtable)))
       (for-all (lambda (n) (and (not (hashtable-ref seen n #f)) (begin (hashtable-set! seen n #t) #t))) names)))
-
-  ;; The names a formals list binds: a list, an improper list or one symbol.
-  (define (formals-names f)
-    (cond ((symbol? f) (list f))
-          ((pair? f) (append (formals-names (car f)) (formals-names (cdr f))))
-          (else '())))
 
   (define (walk x env)
     (cond
@@ -151,12 +135,9 @@
                      (or (null? names) (distinct? (cdr names))))))
              (else #f)))))
 
-  ;; The names a definition defines. define-values' formals are its names;
-  ;; the others are datum-names', the one reading of a definition's names.
-  (define (defined-names d)
-    (if (eq? (car d) 'define-values)
-        (formals-names (cadr d))
-        (datum-names d)))
+  ;; The names a definition defines: datum-names', the one reading of a
+  ;; definition's names, define-values' formals included.
+  (define (defined-names d) (datum-names d))
 
   ;; The uses inside one definition, with ENV holding every name bound at
   ;; its position (a body's own definitions included).

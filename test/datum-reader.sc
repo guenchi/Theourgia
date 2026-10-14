@@ -10,6 +10,8 @@
     ((define-record-type (point make-point point?) (fields (immutable x get-x) (mutable y get-y set-y!)))
      (point make-point point? get-x get-y set-y!))
     ((define-record-type point (fields x (mutable y))) (point make-point point? point-x point-y point-y-set!))
+    ((define-values (a b) (values 1 2)) (a b)) ((define-values (a . r) (values 1 2)) (a r))
+    ((define-values r (values 1 2)) (r))
     ((begin (define wrapped 1)) ()) ((unknown thing 1) ())))
 (for-each (lambda (row) (want "CD-01 complete binding set" (datum-names (car row)) (cadr row))) names)
 ;; CD-04 A MALFORMED DEFINITION ANSWERS ITS NAMES AND NEVER RAISES. A stored
@@ -44,7 +46,17 @@
     ("a fields clause whose tail is an atom" (define-record-type p (fields . x)) (p make-p p?))
     ("a field whose name is a number" (define-record-type p (fields (immutable 5))) (p make-p p?))
     ("a mutable field with an accessor and no mutator" (define-record-type p (fields (mutable x get-x))) (p make-p p?))
-    ("a mutable field whose name is a number" (define-record-type p (fields (mutable 5))) (p make-p p?))))
+    ("a mutable field whose name is a number" (define-record-type p (fields (mutable 5))) (p make-p p?))
+    ("a define-values whose formals repeat a name" (define-values (a a) (values 1 2)) ())
+    ("a define-values with a formal that is not a symbol" (define-values (a 1) (values 1 2)) ())
+    ("a define-values without its expression" (define-values (a b)) ())
+    ("a define-values with two expressions" (define-values (a) 1 2) ())
+    ("a define-values whose formals are an improper list ending in a number" (define-values (a . 5) 1) ())))
+;; CD-04 A CIRCULAR FORMALS LIST IS NOT FORMALS: answered (), not followed for
+;; ever. The datum is built, since the source reader refuses labels.
+(want "CD-04 a define-values whose formals are a cycle"
+      (names-or-raise (let ((f (list 'a))) (set-cdr! f f) (list 'define-values f 1)))
+      '())
 (let ((forms (parse ";; docs\n(define (f x) ; inside\n x)\n#;(define ignored 1)\n(define x 1/2)")))
   (want "CD-02 adjacent comments attach without moving body data" (cadar forms) ";; docs\n")
   (want "CD-02 internal comment reports independently counted coordinates"

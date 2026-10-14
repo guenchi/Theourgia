@@ -330,7 +330,7 @@
                 (datum-uses (internal-define "../datum-code.sc" 'datum-names)))
       '((car cdr cut-covers? fold-left for-all pair?)
         (= > >= append apply assq cadddr caddr cadr car cddr cdr eq? for-all
-         length list list? map memq not pair? record-definition-shape?
+         formals-names formals? length list list? map memq not pair? record-definition-shape?
          string->symbol string-append symbol->string symbol?)))
 
 ;; K10b: EVERY FORM OF TWO WHOLE PRODUCT FILES, walked with no catch taken.
@@ -621,7 +621,7 @@
         (only (theourgia reduce) state-read state-block-ids state-field-contested?)
         (only (theourgia store) library-locator)
         (only (theourgia project) subtree-ids)
-        (only (theourgia datum-code) datum-names record-definition-shape?)
+        (only (theourgia datum-code) datum-names record-definition-shape? formals? formals-names)
         (only (theourgia languages) language-for-name language-property)
         (only (theourgia regex) regex-compile regex-match-at)
         (only (theourgia extensions) names-usage uses-usage)

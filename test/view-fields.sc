@@ -108,13 +108,9 @@
 ;; so that `names` being the whole list and `name` being the first of
 ;; them are two statements and not one.
 ;;
-;; NOTE: IT IS NOT `define-values`, WHICH THIS READER DOES NOT NAME.
-;; Measured: `datum-names` handles `define`, `define-syntax` and
-;; `define-record-type`, and answers `()` for `(define-values (a b)
-;; (values 1 2))` -- a legal R6RS definition form. That is a gap in the
-;; reader, reported rather than worked around here; a cell written on it
-;; would be asserting a feature instead of the split this file is about.
-;; `define-record-type` binds four names and makes the same point.
+;; NOTE: IT IS `define-record-type`, WHICH BINDS FOUR NAMES. `datum-names`
+;; has named `define-values`' formals too since F205; this file's point is
+;; the split between `names` and `name`, and either form makes it.
 (with-store-write store
   (lambda (s v)
     (list (list 'insert 'root #f

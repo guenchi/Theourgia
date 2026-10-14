@@ -323,6 +323,22 @@
                 (let ((it (answer-clause w 'items))) (and it (length (filter (lambda (r) (and (pair? r) (eq? (car r) 'def))) (cdr it))))))
           '(ok #t 1 #t #f 1))))
 
+;; F205: A DEFINITION MADE WITH define-values DEFINES ITS FORMALS. datum-names
+;; read only define, define-syntax and define-record-type, so these names were
+;; in the code and not in the definition index: whereis found their exports and
+;; no definition.
+(let* ((ra (raw-area! "dv")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/v.sc")
+          "(library (v) (export a b r) (import (rnrs))\n(define-values (a b . r) (values 1 2 3 4)))\n")
+  (import-raw! store input)
+  (let ((defs (lambda (name)
+                (let* ((w (safely (lambda () (rpc-dispatch store (list 'whereis name) "test"))))
+                       (it (answer-clause w 'items)))
+                  (and it (length (filter (lambda (r) (and (pair? r) (eq? (car r) 'def))) (cdr it))))))))
+    (want "F205-1 whereis finds each name a define-values binds: a list's, and an improper list's rest, one definition each"
+          (list (defs "a") (defs "b") (defs "r"))
+          '(1 1 1))))
+
 ;; U2: an edited raw file: one body changed, one form added, one omitted.
 (let* ((ra (raw-area! "u2")) (store (car ra)) (input (cadr ra)))
   (write! (string-append input "/p.sc") p-text)

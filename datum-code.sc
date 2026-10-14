@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia datum-code)
-  (export datum-source-read datum-names datum-print record-definition-shape?)
+  (export datum-source-read datum-names datum-print record-definition-shape? formals? formals-names)
   (import (rnrs) (theourgia source-lex) (theourgia text-code)
           (only (theourgia ffi) source-reader-open source-reader-next source-reader-at source-datum-print))
 
@@ -55,12 +55,36 @@
                 (distinct? (map car clauses))
                 (not (and (assq 'parent clauses) (assq 'parent-rtd clauses)))))))
 
+  ;; The names a formals list binds: a list, an improper list or one symbol.
+  (define (formals-names f)
+    (cond ((symbol? f) (list f))
+          ((pair? f) (append (formals-names (car f)) (formals-names (cdr f))))
+          (else '())))
+
+  ;; A formals list: a list or an improper list of symbols, or one symbol, no
+  ;; name twice. Read here, beside datum-names, because define-values' formals
+  ;; are the names it binds; name-use reads lambda's formals with the same two.
+  ;; NEVER: A CYCLE IS NOT FORMALS, AND IS ANSWERED, NOT FOLLOWED. A stored body
+  ;; can be any datum, a circular one included; the walk remembers the pairs it
+  ;; has passed, so formals? answers #f for one -- and formals-names is only read
+  ;; after formals? has said #t.
+  (define (formals? f)
+    (and (let shape ((f f) (seen '()))
+           (cond ((symbol? f) #t)
+                 ((null? f) #t)
+                 ((pair? f) (and (not (memq f seen)) (symbol? (car f)) (shape (cdr f) (cons f seen))))
+                 (else #f)))
+         (let distinct ((ns (formals-names f)))
+           (or (null? ns) (and (not (memq (car ns) (cdr ns))) (distinct (cdr ns)))))))
+
   ;; The names a definition binds. TOTAL BY CONSTRUCTION: a stored body can
   ;; be any datum, and every shape is decided at the entry -- a define by its
-  ;; head, a record definition by record-definition-shape? -- before a name
-  ;; is read from it. A record definition that does not fit its shape binds
-  ;; only its type's own names, when its name spec is one R6RS allows, and
-  ;; otherwise none.
+  ;; head, define-values by its formals, a record definition by
+  ;; record-definition-shape? -- before a name is read from it. A record
+  ;; definition that does not fit its shape binds only its type's own names,
+  ;; when its name spec is one R6RS allows, and otherwise none; a define-values
+  ;; whose formals are not formals, or that is not (define-values formals
+  ;; expression), binds none.
   (define (datum-names body)
     (define (suffix name ending) (string->symbol (string-append (symbol->string name) ending)))
     (define (type-names head)
@@ -82,6 +106,10 @@
          (cond ((symbol? head) (list head))
                ((and (eq? (car body) 'define) (pair? head) (symbol? (car head))) (list (car head)))
                (else '()))))
+      ((eq? (car body) 'define-values)
+       (if (and (= (length body) 3) (formals? (cadr body)))
+           (formals-names (cadr body))
+           '()))
       ((eq? (car body) 'define-record-type)
        (let ((head (cadr body)))
          (if (not (record-definition-shape? body))
