@@ -1135,6 +1135,11 @@
    unrelated a
    "store-check: load-commit! cleanup"
    (e (#t #f)))
+  ("store.sc" (store-position) 1 guard
+   (#t)
+   unrelated a
+   "store-position: load-commit! cleanup, as store-check's"
+   (e (#t #f)))
   ("template-read.sc" (parse-template-text) 1 guard
    (#t)
    unrelated a

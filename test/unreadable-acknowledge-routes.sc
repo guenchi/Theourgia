@@ -237,6 +237,7 @@
     ("store.sc" "store-evidence" "open-and-reduce" 1 request)
     ("store.sc" "store-grep" "open-and-reduce" 1 request)
     ("store.sc" "store-log" "log-open" 1 request)
+    ("store.sc" "store-position" "log-open" 1 request)
     ("store.sc" "store-refs" "open-and-reduce" 1 request)
     ("store.sc" "store-search" "open-and-reduce" 1 request)
     ("store.sc" "store-snapshot!" "log-begin" 1 request)
