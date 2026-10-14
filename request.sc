@@ -57,7 +57,6 @@
           (rnrs bytevectors) (rnrs io ports) (rnrs exceptions)
           (only (theourgia wire) sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (theourgia trace) trace-event!)
           (rnrs hashtables) (rnrs records syntactic)
           (theourgia degeneracy))
 
