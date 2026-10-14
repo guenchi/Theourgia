@@ -1637,21 +1637,22 @@
           ((> (car a) (car b)) #f)
           (else (position<? (cdr a) (cdr b)))))
   ;; ("#%new" x) references in a plan payload's declared intents: x -> indices
+  ;; A payload that is not a plan (plan?) declares no reference: the whole
+  ;; judgement reads its entries only through plan?/in, which refuses it.
   (define (plan-new-refs payload)
     (let ((t (judgement-table)) (once (judgement-table)))
-      (guard (e (#t t))
-        (when (and (pair? payload) (eq? (car payload) 'plan))
-          (for-each
-            (lambda (entry)
-              (let walk ((x (cdr entry)))
-                (cond ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
-                       (let ((mark (cons (cadr x) (car entry))))
-                         (unless (hashtable-contains? once mark)
-                           (hashtable-set! once mark #t)
-                           (hashtable-update! t (cadr x) (lambda (l) (cons (car entry) l)) '()))))
-                      ((pair? x) (walk (car x)) (walk (cdr x))))))
-            (list-ref payload 4)))
-        t)))
+      (when (plan? payload)
+        (for-each
+          (lambda (entry)
+            (let walk ((x (cdr entry)))
+              (cond ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
+                     (let ((mark (cons (cadr x) (car entry))))
+                       (unless (hashtable-contains? once mark)
+                         (hashtable-set! once mark #t)
+                         (hashtable-update! t (cadr x) (lambda (l) (cons (car entry) l)) '()))))
+                    ((pair? x) (walk (car x)) (walk (cdr x))))))
+          (list-ref payload 4)))
+      t))
   ;; KEY added once to TABLE's list under GROUP (seen remembers which)
   (define (register! j table kind group key)
     (let ((mark (list kind group key)))
@@ -1672,9 +1673,12 @@
       (judgement-dirty-order-set! j (cons key (judgement-dirty-order j)))))
 
   ;; E (evidence) arrives at the bucket, or arrives again (delivered now, its
-  ;; past known). One identity-probe line per arrival. REHEARSAL? marks it.
-  (define (judgement-arrive! j e rehearsal?)
-    (trace-event! 'identity-probe (ev-event e) (and rehearsal? '(rehearsal)))
+  ;; past known). PROBE? is true for the admitted record itself, which writes
+  ;; the one identity-probe line of its admission (REHEARSAL? marks it); a
+  ;; record its delivery woke writes none, as the whole judgement did.
+  (define (judgement-arrive! j e rehearsal? probe?)
+    (when probe?
+      (trace-event! 'identity-probe (ev-event e) (and rehearsal? '(rehearsal))))
     (let ((event (ev-event e)))
       (unless (hashtable-contains? (judgement-ev j) event)
         (hashtable-set! (judgement-rank j) event (judgement-counter j))

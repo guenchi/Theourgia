@@ -116,11 +116,11 @@
       (schedule! rec)
       ;; THE ARRIVALS: the record, then every record its delivery woke, each in
       ;; its own bucket's judgement (the record itself once, delivered or not).
-      (when id (judgement-arrive! (bucket-judgement a id) (evidence a rec) marked))
+      (when id (judgement-arrive! (bucket-judgement a id) (evidence a rec) marked #t))
       (for-each (lambda (w)
                   (let ((wid (identity w)))
                     (when (and wid (not (eq? w rec)))
-                      (judgement-arrive! (bucket-judgement a wid) (evidence a w) marked))))
+                      (judgement-arrive! (bucket-judgement a wid) (evidence a w) marked #f))))
                 (reverse woken))
       (let-values (((keys ids) (hashtable-entries changed)))
         (vector-for-each
