@@ -26,7 +26,7 @@
 ;; anything is compared.
 
 (import (chezscheme)
-        (only (theourgia rpc) rpc-dispatch rpc-ok?)
+        (only (theourgia rpc) rpc-dispatch rpc-ok? register-verbs!)
         (only (theourgia store) store-publish-hook!)
         (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia trace) trace-enable!)
@@ -339,6 +339,55 @@
        (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr answer))))
 (let ((rec1 (encode-record 1 1757300000001 "a" '() '(set "t" x "x"))))
   (call-with-port (open-file-output-port m1-seg (file-options no-fail)) (lambda (o) (put-bytevector o rec1))))
+
+(printf "== what escapes the verb still carries the clause ==\n")
+;; A REGISTERED VERB THAT HEARS AN UNREADABLE WRITER AND THEN RAISES. Its
+;; handler reads the store through a nested dispatch -- an outline, heard by
+;; the owning dispatch's listener, since the handler is given the owning
+;; dispatch's key -- and then raises: a serious condition, an (error ...)
+;; datum, or a warning raised continuably, as its argument says. The
+;; library is made here, at run time, and registered like any extension.
+(eval '(library (escape probe)
+         (export probe-verb)
+         (import (chezscheme) (only (theourgia rpc) rpc-dispatch))
+         (define (probe-verb helper store actor args req options state writer cwd)
+           (rpc-dispatch store '(outline) actor)
+           (cond ((equal? args '("datum")) (raise '(error test-raised)))
+                 ((equal? args '("warning")) (raise-continuable (make-warning)) '(ok continued))
+                 (else (error 'escape-probe "boom"))))))
+(register-verbs! (list (list 'escape-probe '(escape-probe <kind>) "a probe: a nested read, then a raise" #f 'daemon '() '()
+                             '((escape probe) . probe-verb))))
+(define (escape-reading a)
+  (if (and (pair? a) (eq? (car a) 'error) (pair? (cdr a)))
+      (list (car a) (cadr a)
+            (let ((r (and (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'reason))) (cddr a))))) (or r 'no-reason))
+            (incomplete-dirs a))
+      a))
+(let* ((s (fresh-store!)) (dir (writer-directory s M)))
+  (chmod! "000" dir)
+  (let* ((cond-answer (caught (rpc-dispatch s '(escape-probe "condition") "test")))
+         (datum-answer (caught (rpc-dispatch s '(escape-probe "datum") "test")))
+         (warning-answer (caught (rpc-dispatch s '(escape-probe "warning") "test"))))
+    (chmod! "700" dir)
+    (want "ESC-1 a serious condition raised after an unreadable writer was heard is answered internal, with the incomplete clause"
+          (escape-reading cond-answer)
+          (list 'error 'internal '(reason "boom") (list dir)))
+    (want "ESC-2 a raised (error ...) datum after an unreadable writer was heard is answered as itself, with the incomplete clause"
+          (escape-reading datum-answer)
+          (list 'error 'test-raised 'no-reason (list dir)))
+    ;; NEVER: A WARNING RAISED CONTINUABLY IS ANSWERED. The owning dispatch
+    ;; catches only (error ...) data and serious conditions; a warning
+    ;; still leaves the dispatch as a raise, to the caller's own backstop.
+    (want "ESC-3 a warning raised continuably is not answered: it still leaves the dispatch as a raise"
+          (and (pair? warning-answer) (car warning-answer))
+          'RAISED)))
+;; TWIN: on a healthy store the same raises are answered the same way, and
+;; with no clause: nothing was heard.
+(let ((s (fresh-store!)))
+  (want "ESC-4 TWIN on a healthy store both raises are answered the same, with no clause"
+        (list (escape-reading (caught (rpc-dispatch s '(escape-probe "condition") "test")))
+              (escape-reading (caught (rpc-dispatch s '(escape-probe "datum") "test"))))
+        (list '(error internal (reason "boom") no-clause) '(error test-raised no-reason no-clause))))
 
 (printf "== F100b M1: the translation points ==\n")
 ;; P1-a (rpc-dispatch, durable, empty record; PR-01).

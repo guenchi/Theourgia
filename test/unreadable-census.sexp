@@ -1336,10 +1336,10 @@
    "a request's --premises the store cannot check (premise-not-understood, premise-inconsistent) is the request's answer, read at the dispatcher's entry; the set is the request's argument, never a file"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("rpc.sc" (rpc-dispatch-parsed) 1 guard
-   ((and refused (classify-failure refused (mutation-record))) (classify-failure e (mutation-record)))
+   ((and refused (classify-failure refused (mutation-record))) (classify-failure e (mutation-record)) (and (list? e) (pair? e) (eq? (car e) (quote error))) (serious-condition? e))
    refuse a
-   "F77c: a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a nested dispatch opens no scope; anything else propagates"
-   (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((classify-failure e (mutation-record)) => (lambda (a) a))))
+   "F77c: a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a raised (error ...) datum is answered as itself and a serious condition as (error internal (reason <message>)), so both carry the incomplete clause of what the dispatch heard; a nested dispatch opens no scope; a non-serious raise (a continuable warning) and any other raised value propagate"
+   (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((serious-condition? e) (list (quote error) (quote internal) (list (quote reason) (condition-text e))))))
   ("theourgia.sc" (stream-terminal) 1 guard
    (#t)
    unrelated a

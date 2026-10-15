@@ -59,7 +59,7 @@
 ;;; own terms).
 
 (library (theourgia answers)
-  (export classify-failure combine-report with-written)
+  (export classify-failure combine-report with-written condition-text)
   (import (chezscheme)
           (only (theourgia ffi)
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
@@ -90,6 +90,13 @@
     (cond (n (errno-text n))
           ((eq? op 'write) "short write")
           (else (errno-text n))))
+
+;; WHAT AN UNCLASSIFIED FAILURE SAYS: its message when it has one, else
+  ;; `raised`. Shared by the backstops that answer it as
+  ;; (error internal (reason <this>)): the daemon's answer-for and the owning
+  ;; dispatch (rpc.sc), so both routes say the same.
+  (define (condition-text e)
+    (if (and (condition? e) (message-condition? e)) (condition-message e) 'raised))
 
   (define (failure-kind c)
     (cond

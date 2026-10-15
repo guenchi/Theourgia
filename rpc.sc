@@ -50,7 +50,7 @@
           (only (theourgia datum-code) datum-source-read)
           (only (theourgia template-read) store-template template-roots template-relations)
           (only (theourgia ffi) read-entry entry-type directory-entries fs-error? with-mutation-record mutation-record)
-          (only (theourgia answers) classify-failure)
+          (only (theourgia answers) classify-failure condition-text)
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
           (rnrs eval)
@@ -2567,9 +2567,19 @@
   ;; unreadable-behind). A dispatch nested inside another reuses the
   ;; outer one's key, so its loads are heard by the answer that goes out.
   ;;
-  ;; NOTE: AN ANSWER THAT LEAVES AS A RAISE HAS NO TAIL TO CARRY THE CLAUSE.
-  ;; The daemon's answer-for turns such a raise into an answer after this
-  ;; point; that answer does not carry it.
+  ;; WHAT ESCAPES THE VERB IS ANSWERED HERE, SO IT CARRIES THE CLAUSE.
+  ;; A raised (error ...) datum is answered as itself, and a SERIOUS
+  ;; condition as (error internal (reason <its message>)) -- the shape the
+  ;; daemon's answer-for gives -- and both then reach with-incomplete-clause
+  ;; with what this dispatch heard. Before, they left as a raise, and the
+  ;; backstop that answered them (the daemon's) had no notes to add, while
+  ;; the command line's had none at all: the program ended on an uncaught
+  ;; exception. Only the owning dispatch answers: a nested one raises on, to
+  ;; the outer answer, which is the one that goes out.
+  ;; NEVER: A NON-SERIOUS RAISE IS CAUGHT. A warning raised continuably is
+  ;; meant to let the computation go on; answering it would end it. It, and
+  ;; a raised value that is neither a condition nor an (error ...) datum,
+  ;; still propagate, to the caller's own backstop.
   ;;
   ;; THE TRANSLATION POINT (F100b point 1). The outermost dispatch -- the one
   ;; that owns the load listener, `own?` -- opens its own mutation-record
@@ -2579,8 +2589,10 @@
   ;; been changed, `incomplete` with what had. A NESTED dispatch opens no
   ;; scope of its own: its changes are part of the outer one's record, and
   ;; a scope of its own would hide them from the outer answer (scopes do
-  ;; not pass their entries outward). What the table does not classify
-  ;; leaves as it did, to the caller's own backstop.
+  ;; not pass their entries outward). What the table does not classify is
+  ;; answered as the note above says when it is an (error ...) datum or a
+  ;; serious condition; anything else leaves as it did, to the
+  ;; caller's own backstop.
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
     (let* ((own? (and (string? store) (not (load-listener-of store))))
            (key (if own? (string-copy store) store))
@@ -2604,7 +2616,10 @@
                             ;; carrying on is not a way round it.
                             (let ((a (guard (e ((and refused (classify-failure refused (mutation-record)))
                                                 => (lambda (a) a))
-                                               ((classify-failure e (mutation-record)) => (lambda (a) a)))
+                                               ((classify-failure e (mutation-record)) => (lambda (a) a))
+                                               ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
+                                               ((serious-condition? e)
+                                                (list 'error 'internal (list 'reason (condition-text e)))))
                                        (dynamic-wind
                                          (lambda () (load-listener-add! key hear!))
                                          (lambda () (apply dispatch-verb key verb nodes actor rest))

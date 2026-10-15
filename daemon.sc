@@ -89,7 +89,7 @@
                 mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode path-stat
                 entry-type unreadable-entry? unreadable-entry-errno
                 write-one! with-mutation-record mutation-record theourgia-stage)
-          (only (theourgia answers) classify-failure combine-report))
+          (only (theourgia answers) classify-failure combine-report condition-text))
 
   ;; ---- where a daemon lives ---------------------------------------------
   ;;
@@ -1731,9 +1731,6 @@
            (raise (condition (make-message-condition "injected writer raise beside a holder")
                              (make-irritants-condition (list name seq)))))
          (loop (+ served 1))))))
-
-  (define (condition-text e)
-    (if (and (condition? e) (message-condition? e)) (condition-message e) 'raised))
 
   ;; ---- the listener ------------------------------------------------------
   ;;
