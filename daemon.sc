@@ -73,7 +73,7 @@
                 unreadable-behind incomplete-clause)
           (only (theourgia reduce) reduce-applied-cut)
           (only (theourgia incomplete) incomplete-accepted)
-          (only (theourgia arguments) parse-arguments argument-option)
+          (only (theourgia arguments) parse-arguments argument-option transport-option-refusal)
           ;; KEY: THE SAME LEXICAL RULE GUARDS BOTH DIRECTIONS. A request and
           ;; a reply are read by the same reader, and what that reader must
           ;; not be handed is one fact, not two: it lives beside the packer
@@ -1282,6 +1282,19 @@
                                   more
                                   (list (list 'current current) (list 'daemon daemon-token))))))
       (cond
+        ;; A TRANSPORT OPTION IS REFUSED FIRST, BY NAME (F296). A subscription
+        ;; is carried past rpc-dispatch, whose refusal every other verb meets,
+        ;; so without this `--wire`, `--help` or `-h` after the revision was
+        ;; taken as the resume token. These are the request's RAW arguments
+        ;; -- the connection already turned away an argument list that does
+        ;; not parse (request-shape-error) -- so `--` still makes what follows
+        ;; text, as the dispatcher reads it. Asked here and not in
+        ;; subscribe-shape-error: the dispatched handler gives that one the
+        ;; positionals, with `--` already removed.
+        ((let ((nodes (parse-arguments 'subscribe args)))
+           (and (list? nodes) (not (and (pair? nodes) (eq? (car nodes) 'error)))
+                (transport-option-refusal nodes)))
+         => (lambda (refusal) (cons refusal '())))
         ((subscribe-shape-error args) => (lambda (refusal) (cons refusal '())))
         ((not rev) (cons '(error bad-request invalid-revision) '()))
         ;; ANOTHER INCARNATION'S TOKEN IS JUDGED BEFORE ITS REVISION: a

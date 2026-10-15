@@ -597,6 +597,35 @@
                                  (and (pair? a) (list (car a) (cadr a) (caddr a)))))
                  '("x" "-1" "2"))
             '((error bad-request invalid-revision) (error bad-request invalid-revision) (error bad-request invalid-revision)))
+      ;; A TRANSPORT OPTION ON THE STREAM'S OWN ROUTE (F296): the daemon hands
+      ;; a subscription to the store past the dispatcher's refusal, so before
+      ;; F296 `--help` after revision 0 was a resume token and was accepted.
+      ;; Each is refused by name with the dispatcher's datum. Any other answer
+      ;; is read as its head, so a red shows what was answered instead.
+      (want "F10-1 a transport option after the revision is refused by name, as the dispatched routes refuse it"
+            (map (lambda (args) (let ((a (acceptance-of (await-lines (spawn-subscriber! d args) 1 5000))))
+                                  (if (and (list? a) (>= (length a) 3) (eq? (car a) 'error))
+                                      (list (car a) (cadr a) (caddr a) (clause 'option a) (clause 'belongs-to a))
+                                      (list 'answered (if (pair? a) (car a) a) (and (pair? a) (pair? (cdr a)) (cadr a))))))
+                 '(("changes" "0" "--wire") ("changes" "0" "--help") ("changes" "0" "-h") ("changes" "0" "--store" "elsewhere")
+                   ("changes" "0" "--actor" "someone") ("changes" "0" "--socket" "x.sock") ("changes" "0" "-h" "--wire")))
+            '((error bad-request transport-option-in-rpc ("--wire") (shell))
+              (error bad-request transport-option-in-rpc ("--help") (shell))
+              (error bad-request transport-option-in-rpc ("-h") (shell))
+              (error bad-request transport-option-in-rpc ("--store") (shell))
+              (error bad-request transport-option-in-rpc ("--actor") (shell))
+              (error bad-request transport-option-in-rpc ("--socket") (shell))
+              (error bad-request transport-option-in-rpc ("-h") (shell))))
+      ;; TWIN: after `--` the same spellings are text, on both routes. On the
+      ;; stream's route a fourth argument is the usage, as before; on the
+      ;; dispatched route, which hands the handler positionals with `--`
+      ;; removed, `--help` is a third argument and the answer needs-daemon.
+      (want "F10-1 after --, a transport spelling is text: the stream route answers the usage, the dispatched route needs-daemon"
+            (list (let ((a (acceptance-of (await-lines (spawn-subscriber! d '("changes" "0" "--" "--help")) 1 5000))))
+                    (and (pair? a) (list (car a) (and (pair? (cdr a)) (car (cadr a))))))
+                  (let ((a (rpc-dispatch (d-store d) '(subscribe "changes" "0" "--" "--help") "tester")))
+                    (and (pair? a) (list (car a) (cadr a) (clause 'reason a)))))
+            '((usage subscribe) (error bad-request (needs-daemon))))
       (insert! d "one")
       (want "F10-1 a resume (rev > 0) without the token is refused missing-token"
             (let ((a (acceptance-of (await-lines (spawn-subscriber! d '("changes" "2")) 1 5000))))

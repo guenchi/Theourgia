@@ -156,7 +156,7 @@ were somehow special to each one.
 is there. NOTE: It is a debugging path: it skips the daemon rather than
 doing something the daemon cannot.
 
-`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent, and `--help` and `-h` are answered by the command line itself; a request dispatched by the server or the MCP shell still naming one of these six (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to shell))`, naming the first one written. As the value of another option either is read as that value; as a positional -- a search's query, say -- put it after `--`. Every MCP tool's description says the tool is bound to one store and actor.
+`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent, and `--help` and `-h` are answered by the command line itself; a server refuses any of these six in the arguments of a request that reaches it (a raw socket request, or an MCP tool call) with `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to shell))`, naming the first one written. Refusals judged before the arguments' meaning answer first: arguments that do not parse, an unknown verb, a request for another store. As the value of another option either is read as that value; as a positional -- a search's query, say -- put it after `--`. Every MCP tool's description says the tool is bound to one store and actor.
 
 ## Writing for agents
 
