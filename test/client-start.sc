@@ -562,7 +562,7 @@
 ;; a filesystem failure into the one table answer (F100b point 4).
 ;; `extensions` is allowed for the reason written there too: the program asks
 ;; the parser, with the registered verbs' tables, whether a call asks for help
-;; (F167), and that library is data.
+;; (the registered verbs' tables), and that library is data.
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
 (want "IMPORTS and the client program's closure is exactly what it should be"
@@ -586,7 +586,7 @@
 ;; daemon was alive when the last row finished used to survive the run:
 ;; measured by the suite's leak gate, which counts processes and is the
 ;; only thing here that was looking.
-;; ---- CS-H --help and -h answer the usage and touch nothing (F167) ------------
+;; ---- CS-H --help and -h answer the usage and touch nothing ------------------
 ;;
 ;; NEVER: ASKING HOW TO CALL A VERB STARTS, OPENS AND CREATES NOTHING. Each run
 ;; is a program started from an EMPTY directory, so the store it would fall
@@ -594,7 +594,7 @@
 ;; reads the exit status, the answer -- the first datum on STANDARD OUTPUT,
 ;; with standard error kept apart, since a program's notices go there and
 ;; the answer must not -- and what is in the directory and the run root
-;; afterwards. Before F167 the client took --help as a positional,
+;; afterwards. Before --help was answered, the client took it as a positional,
 ;; resolved the store "." and started a daemon on it, which failed and left
 ;; the run root behind.
 (define (absolute p) (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) p (string-append (current-directory) "/" p)))

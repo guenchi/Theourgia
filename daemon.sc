@@ -1282,7 +1282,7 @@
                                   more
                                   (list (list 'current current) (list 'daemon daemon-token))))))
       (cond
-        ;; A TRANSPORT OPTION IS REFUSED FIRST, BY NAME (F296). A subscription
+        ;; A TRANSPORT OPTION IS REFUSED FIRST, BY NAME. A subscription
         ;; is carried past rpc-dispatch, whose refusal every other verb meets,
         ;; so without this `--wire`, `--help` or `-h` after the revision was
         ;; taken as the resume token. These are the request's RAW arguments

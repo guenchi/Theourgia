@@ -483,17 +483,17 @@
   ("timing.sc" (timing-line!) 2 guard
    (#t)
    unrelated a
-   "the same printer's write region (F298): the line and its flush are written with interrupts disabled, and the catch-all inside the region keeps a failure local so the region ends by returning; stderr, not a store entry"
+   "the same printer's write region: the line and its flush are written with interrupts disabled, and the catch-all inside the region keeps a failure local so the region ends by returning; stderr, not a store entry"
    (e (#t #f)))
   ("ffi.sc" (trace-sink-installed) 1 guard
    (#t)
    unrelated a
-   "the trace line sink's write region (F298): one put-string and its flush with interrupts disabled; the catch-all inside the region keeps a failure local so the region ends by returning, and a trace failure is swallowed anyway, as trace-event!'s is; stderr, not a store entry"
+   "the trace line sink's write region: one put-string and its flush with interrupts disabled; the catch-all inside the region keeps a failure local so the region ends by returning, and a trace failure is swallowed anyway, as trace-event!'s is; stderr, not a store entry"
    (e (#t (if #f #f))))
   ("ffi.sc" (hold-point!) 1 guard
    (#t)
    propagate a
-   "the hold notice's write region (F298, injection only): the catch-all inside the region returns the condition so the region ends by returning, and it is raised again after the region; stderr, not a store entry"
+   "the hold notice's write region (injection only): the catch-all inside the region returns the condition so the region ends by returning, and it is raised again after the region; stderr, not a store entry"
    (e (#t e)))
   ("ffi.sc" (redirect-stdio!) 1 guard
    (#t)

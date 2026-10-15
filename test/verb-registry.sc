@@ -355,7 +355,7 @@
 (define core-closure (closure-of "../core.sc"))
 (define daemon-closure (closure-of "../theourgiad.sc"))
 (define client-closure (closure-of "../theourgia.sc"))
-;; ALL THREE HOLD THE REGISTRY'S DATA (F167): the two that register it, and
+;; ALL THREE HOLD THE REGISTRY'S DATA: the two that register it, and
 ;; the client, which reads the registered verbs' option tables from it to ask
 ;; the parser whether a call is a request for help. Data only: no program's
 ;; static closure holds a handler's library, which is what this row guards.

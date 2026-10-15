@@ -511,7 +511,7 @@
            (and end (dashed-tokens (substring text at end)))))))
 
 ;; THE FLAGS EVERY VERB TAKES are arguments.sc's `global-flags`, read as data
-;; from its definition: `--wire`, and `--help` and `-h` (F167). Read, not
+;; from its definition: `--wire`, and `--help` and `-h`. Read, not
 ;; spelled here, so a flag added there is censused here; and read as data,
 ;; because `-h` has one dash and the token scan above sees only two.
 (define global-flags
@@ -548,7 +548,7 @@
 ;; one of them does.
 ;; THE SHORT OPTIONS THE SECTION NAMES, written `-x`: one dash, one letter,
 ;; then the closing backtick or a space. dashed-tokens sees only two dashes,
-;; so without these an advertised `-h` would never be asked about (F167).
+;; so without these an advertised `-h` would never be asked about.
 (define (short-tokens text)
   (let loop ((i 0) (out '()))
     (cond

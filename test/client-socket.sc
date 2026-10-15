@@ -593,7 +593,7 @@
 ;; a filesystem failure into the one table answer (F100b point 4).
 ;; `extensions` is allowed for the reason written there too: the program asks
 ;; the parser, with the registered verbs' tables, whether a call asks for help
-;; (F167), and that library is data.
+;; (the registered verbs' tables), and that library is data.
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
 (want "IMPORTS and the client program's closure is exactly what it should be"

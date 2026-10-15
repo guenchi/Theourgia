@@ -39,7 +39,7 @@
 
   ;; A failure to print is swallowed, as the trace's is: timing must not turn
   ;; a write that worked into one that raised.
-  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED (F298), for the reason the
+  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED, for the reason the
   ;; trace's line is: the error port is every actor's, and a line written in
   ;; pieces can be split by another actor's flush. The guard is inside the
   ;; region, so a failed write is handled there and the region ends by

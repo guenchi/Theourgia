@@ -2210,7 +2210,7 @@
   (want "X4 the daemon route answers each of the four with the same datum, byte for byte"
         (map (lambda (l) (text-of l)) (cdr daemon-route))
         (map named four))
-  ;; AND --help AND -h, WHICH THE COMMAND LINE ANSWERS ITSELF (F167): through
+  ;; AND --help AND -h, WHICH THE COMMAND LINE ANSWERS ITSELF: through
   ;; the shell, on the child's route and the daemon's, each is refused by name
   ;; and nothing runs -- a help request is never carried out as the verb.
   (want "X4 --help and -h are the command line's: each is refused by name on the child route and the daemon route, and no child ran"

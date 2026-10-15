@@ -743,7 +743,7 @@
                        (and (pair? argv) (string=? (car argv) "eval") (environment-wire?)))))
   (with-mutation-record (lambda ()
   (guard (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag))))
-  ;; --help AND -h ANSWER THE VERB'S USAGE, AND NOTHING ELSE IS DONE (F167):
+  ;; --help AND -h ANSWER THE VERB'S USAGE, AND NOTHING ELSE IS DONE:
   ;; before the verb's own program, the store, the socket or a dispatch, so
   ;; asking how to call a verb never starts, opens or creates anything. The
   ;; answer is (ok (usage <form>)), the form the verb is published with, so

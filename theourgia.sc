@@ -30,7 +30,7 @@
 ;;; passed through in the order it arrived, byte for byte. A client that
 ;;; parsed properly would need every verb's option table, and that table
 ;;; is knowledge about verbs.
-;;; ONE QUESTION IS ASKED OF THE PARSER (F167): is this a request for help.
+;;; ONE QUESTION IS ASKED OF THE PARSER: is this a request for help.
 ;;; It is answered with the program's own tables, the registered verbs'
 ;;; included, because a scan cannot tell `--title -h` from `-h`, and getting
 ;;; it wrong either way is a help request that starts a daemon or an ordinary
@@ -100,7 +100,7 @@
 ;; it by then, because the verb comes first among the things that are not
 ;; `where` options.
 ;; THE PARSER'S TABLES FOR THE REGISTERED VERBS, from the same data the program
-;; registers (F167): a request for help is read by the parser here exactly as
+;; registers: a request for help is read by the parser here exactly as
 ;; the program will read it, so only a request for help leaves this path.
 (set-extension-options! (extension-option-table extension-verbs))
 
@@ -422,7 +422,7 @@
     ;; NEVER: THE LOCAL ROUTE IS BY NAME, AND THE NAMES ARE THE THREE ABOVE.
     ;; `THEOURGIA_LOCAL` sends everything that way, which is a debugging
     ;; path and is documented as one.
-    ;; --help AND -h ARE ANSWERED BY THE PROGRAM, NOT A DAEMON (F167): asking
+    ;; --help AND -h ARE ANSWERED BY THE PROGRAM, NOT A DAEMON: asking
     ;; for a verb's usage must not resolve a store or start anything, so a
     ;; request for help goes to the program here, verb first, which answers
     ;; before it looks for either. Read by the PARSER, with the program's

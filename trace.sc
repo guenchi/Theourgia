@@ -74,7 +74,7 @@
   ;; something reasonable.
   (define (write-field p x) (display x p))
 
-  ;; ONE LINE IS ONE STRING, HANDED OVER WHOLE (F298). The line used to be
+  ;; ONE LINE IS ONE STRING, HANDED OVER WHOLE. The line used to be
   ;; written in seven pieces -- four put-strings and three displays -- with a
   ;; flush after the last, and every actor of
   ;; a process writes to the same port: an actor preempted between two

@@ -133,14 +133,14 @@
 (define (wait-gave-out! what waited bound factor observed)
   (printf "WAIT GAVE OUT: ~a after ~a ms (bound ~a ms, load factor ~,2f, load1 ~a on ~a cores): saw ~s~%"
           what waited (exact (round bound)) (inexact factor) (load1) cores observed))
-;; A DAEMON'S LOG, ONE LINE AT A TIME (F298). Every line a daemon writes is
+;; A DAEMON'S LOG, ONE LINE AT A TIME. Every line a daemon writes is
 ;; one datum, and the reader takes each line on its own: a line that is not
 ;; exactly one datum is left out, and costs only itself. The reader this
 ;; replaces read the whole text as one stream and stopped at the first error;
 ;; a trace line torn by another actor's flush then either ended the reading
 ;; or opened a list that took in every line until its own close came --
-;; F10-4 read the last publication as 227 of 260 that way, with all 260
-;; framed. torn-trace-lines says when a log holds such a line.
+;; the retention row read the last publication as 227 of 260 that way, with
+;; all 260 framed. torn-trace-lines says when a log holds such a line.
 ;; -> the index of the newline ending the line that starts at I, or the length.
 (define (line-end text i)
   (let ((n (string-length text)))
@@ -174,7 +174,7 @@
             (loop (+ j 1) (if torn (+ count 1) count)
                   (or first (and torn (cons i (substring text i (if (< j n) (line-end text (+ j 1)) n)))))))))))
 ;; THE NUMBERS AFTER "(trace <name> " IN THE TEXT, wherever they stand, read
-;; without the reader: a witness that a torn line cannot hide (F297).
+;; without the reader: a witness that a torn line cannot hide.
 (define (raw-trace-numbers text name)
   (let* ((needle (string-append "(trace " (symbol->string name) " ")) (k (string-length needle)) (n (string-length text)))
     (let loop ((i 0) (out '()))
@@ -629,16 +629,16 @@
                  (list 'no-frame seen)))
               (else (sleep-ms 50) (wait)))))))
 
-;; ---- F298: a trace line is written whole -----------------------------------
+;; ---- TL: a trace line is written whole -------------------------------------
 ;;
 ;; THE FLOOD: a child program in which K actors each write M trace lines,
 ;; every one preempted somewhere inside its event -- each actor sets the timer
 ;; to a few ticks just before calling trace-event!, so the interrupt lands in
 ;; the middle of building or writing the line. Its stderr goes to a file, and
 ;; the row reads that file line by line. Uses only trace-event!, which every
-;; version has, so the same program reads the code before F298, where seven
-;; writes to the shared port per line tore lines: 610 of 4000 lines torn in each
-;; of five probe runs, and none after.
+;; version has, so the same program reads the code before the line sink,
+;; where seven writes to the shared port per line tore lines: 610 of 4000
+;; lines torn in each of five probe runs, and none after.
 (define flood-actors 8)
 (define flood-events 500)
 (define flood-ticks 40)
@@ -687,29 +687,29 @@
 
 (start-scheduler
   (lambda ()
-    ;; ==== F298: a trace line is written whole ====
-    (printf "~%== F298: a trace line is written whole ==~%")
+    ;; ==== TL: a trace line is written whole ====
+    (printf "~%== TL: a trace line is written whole ==~%")
     ;; ONE STRING PER EVENT, TO THE SINK: a counting sink stands in for the
     ;; installed one while one event is traced, with interrupts disabled so
     ;; no other actor's event can reach it, and both are put back. The sink
-    ;; is looked up by name so that the code before F298, which has none,
-    ;; reads as `no-line-sink` and the rows after it still run.
+    ;; is looked up by name so that the code before the line sink, which has
+    ;; none, reads as `no-line-sink` and the rows after it still run.
     (let* ((env (guard (e (#t #f)) (environment '(theourgia trace))))
            (get (and env (guard (e (#t #f)) (eval 'trace-line-sink env))))
            (put (and env (guard (e (#t #f)) (eval 'trace-line-sink-set! env)))))
-      (want "F298 trace-event! hands the sink the port and the whole line, once per event"
+      (want "TL-1 trace-event! hands the sink the port and the whole line, once per event"
             (if (not (and get put))
                 'no-line-sink
                 (with-interrupts-disabled
                   (let ((was-on (trace-enabled?)) (was (get)) (calls '()))
                     (put (lambda (p line) (set! calls (cons (list (eq? p (current-error-port)) line) calls))))
                     (trace-enable! #t)
-                    (trace-event! 'f298-probe "a b" 76)
+                    (trace-event! 'sink-probe "a b" 76)
                     (trace-enable! was-on)
                     (put was)
                     (reverse calls))))
-            '((#t "(trace f298-probe a b 76)\n"))))
-    (want "F298 a flood of trace lines from actors preempted inside their events: every line whole, none torn"
+            '((#t "(trace sink-probe a b 76)\n"))))
+    (want "TL-2 a flood of trace lines from actors preempted inside their events: every line whole, none torn"
           (run-flood! "flood")
           (list #t (* flood-actors flood-events) 0 #f))
 
@@ -732,12 +732,13 @@
                                  (and (pair? a) (list (car a) (cadr a) (caddr a)))))
                  '("x" "-1" "2"))
             '((error bad-request invalid-revision) (error bad-request invalid-revision) (error bad-request invalid-revision)))
-      ;; A TRANSPORT OPTION ON THE STREAM'S OWN ROUTE (F296): the daemon hands
+      ;; A TRANSPORT OPTION ON THE STREAM'S OWN ROUTE: the daemon hands
       ;; a subscription to the store past the dispatcher's refusal, so before
-      ;; F296 `--help` after revision 0 was a resume token and was accepted.
+      ;; this refusal `--help` after revision 0 was a resume token and was
+      ;; accepted.
       ;; Each is refused by name with the dispatcher's datum. Any other answer
       ;; is read as its head, so a red shows what was answered instead.
-      (want "F10-1 a transport option after the revision is refused by name, as the dispatched routes refuse it"
+      (want "SUB-T1 a transport option after the revision is refused by name, as the dispatched routes refuse it"
             (map (lambda (args) (let ((a (acceptance-of (await-lines (spawn-subscriber! d args) 1 5000))))
                                   (if (and (list? a) (>= (length a) 3) (eq? (car a) 'error))
                                       (list (car a) (cadr a) (caddr a) (clause 'option a) (clause 'belongs-to a))
@@ -755,7 +756,7 @@
       ;; stream's route a fourth argument is the usage, as before; on the
       ;; dispatched route, which hands the handler positionals with `--`
       ;; removed, `--help` is a third argument and the answer needs-daemon.
-      (want "F10-1 after --, a transport spelling is text: the stream route answers the usage, the dispatched route needs-daemon"
+      (want "SUB-T2 after --, a transport spelling is text: the stream route answers the usage, the dispatched route needs-daemon"
             (list (let ((a (acceptance-of (await-lines (spawn-subscriber! d '("changes" "0" "--" "--help")) 1 5000))))
                     (and (pair? a) (list (car a) (and (pair? (cdr a)) (car (cadr a))))))
                   (let ((a (rpc-dispatch (d-store d) '(subscribe "changes" "0" "--" "--help") "tester")))
@@ -1820,7 +1821,7 @@
       (let* ((oldest (+ base 3)) (current (+ base 258))
              (b (spawn-subscriber! d (list "changes" (number->string (- oldest 1)) token)))
              (ls (await-lines b 257 30000)))
-;; FOUR WITNESSES OF ONE FACT (F297), so a red names the one that
+        ;; FOUR WITNESSES OF ONE FACT, so a red names the one that
         ;; fell short: the trace as the log reader reads it; the trace's
         ;; text, read without the reader; the number of published lines in
         ;; that text, one per publication since the start; and the last
@@ -1828,8 +1829,8 @@
         ;; second and third, lines lost before the file; all four, the
         ;; publications.
         (let* ((text (d-log d)) (raw (raw-trace-numbers text 'published)) (revs (revs-of b)))
-          (note-torn! "F10-4 W2" text)
-          (want "F10-4 258 publications counted four ways: the read trace, its text, its lines, the replayed frames"
+          (note-torn! "retention W2" text)
+          (want "PUB-4 258 publications counted four ways: the read trace, its text, its lines, the replayed frames"
                 (list (last-published d) (and (pair? raw) (apply max raw)) (length raw) (and (pair? revs) (car (last-pair revs))))
                 (list current current current current)))
         (want "F10-4 a resume at oldest-1 is accepted and replays all 256 retained frames, in order, without lagging"
@@ -2148,10 +2149,10 @@
                (_ (await-lines a 4 30000))
                (times (trace-values d 'frame-time)))
           (printf "   frame times (ms), three publications on the cost store: ~s~%" times)
-          ;; A TORN TRACE LINE IS SAID HERE TOO (F297): the per-set wait counts
-          ;; the text and the count reads the lines, and F294's red read two
-          ;; lines for three sets.
-          (note-torn! "F10-8" (d-log d))
+          ;; A TORN TRACE LINE IS SAID HERE TOO: the per-set wait counts
+          ;; the text and the count reads the lines, and a red under load
+          ;; once read two lines for three sets.
+          (note-torn! "frame cost" (d-log d))
           (want "F10-8 three frames on the cost store, one for each set, each computed in at most 20 ms"
                 (list per-set (length times) (for-all (lambda (t) (and (number? t) (<= t 20))) times))
                 '(((ok 1) (ok 1) (ok 1)) 3 #t)))

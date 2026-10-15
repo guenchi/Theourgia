@@ -178,7 +178,7 @@
      (for-each (lambda (f) (walk f visit)) (vector->list form)))
     (else #f)))
 
-;; A SPELLING IS `--name`, OR A SHORT `-x` (one dash, one letter: `-h`, F167).
+;; A SPELLING IS `--name`, OR A SHORT `-x` (one dash, one letter: `-h`).
 (define (dashed? x) (and (string? x) (>= (string-length x) 2)
                          (or (string=? (substring x 0 2) "--")
                              (and (= (string-length x) 2) (char=? (string-ref x 0) #\-)
@@ -1843,7 +1843,7 @@
 
 (system (string-append "rm -rf " scratch))
 
-;; ---- OG-H: --help and -h (F167) ------------------------------------------------
+;; ---- OG-H: --help and -h ----------------------------------------------------
 ;;
 ;; NEVER: A REQUEST FOR HELP IS A FLAG THE PARSER READ, NOT A WORD THAT APPEARS.
 ;; The command line answers the usage when the parsed nodes hold --help or

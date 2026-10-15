@@ -586,7 +586,7 @@
     ;; TRACING ON WITH `THEOURGIA_TRACE=1`, never with a call.
     (begin (trace-enable! (equal? (getenv "THEOURGIA_TRACE") "1")) #t))
 
-  ;; AND THE LINE SINK THAT NO PREEMPTION CAN SPLIT (F298). Every actor of
+  ;; AND THE LINE SINK THAT NO PREEMPTION CAN SPLIT. Every actor of
   ;; a process shares the error port, and a timer interrupt can land
   ;; anywhere in a write -- inside one put-string as well as between two.
   ;; With interrupts disabled the whole line and its flush go out together;
@@ -2890,7 +2890,7 @@
                (cond
                  ((file-exists? release) (void))
                  ((>= waited hold-ms)
-                  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED (F298), as
+                  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED, as
                   ;; the trace's line. A failure still raises, as it did, but
                   ;; only after the region: caught inside, raised outside.
                   (let* ((p (current-error-port))

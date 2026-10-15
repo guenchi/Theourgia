@@ -260,7 +260,7 @@
 ;; `(theourgia ffi)`, which the closure already holds, and does no
 ;; filesystem work of its own: it adds no edge to the server.
 ;;
-;; KEY: `extensions` IS ALLOWED HERE, FOR ONE QUESTION (F167). The program
+;; KEY: `extensions` IS ALLOWED HERE, FOR ONE QUESTION. The program
 ;; asks the parser whether a call is a request for help, with the same tables
 ;; the server parses with, the registered verbs' among them; their options
 ;; come from `(theourgia extensions)`, which is data and imports `(rnrs base)`

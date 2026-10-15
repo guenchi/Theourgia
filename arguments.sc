@@ -62,7 +62,7 @@
   ;; description protocol? route value-options flag-options handler), as
   ;; (theourgia extensions) lays it out. The registry sets it from what it
   ;; registered, and the thin client from the same data, so the two parse a
-  ;; registered verb's arguments alike (F167).
+  ;; registered verb's arguments alike.
   (define (extension-option-table entries)
     (map (lambda (e) (list (list-ref e 0) (list-ref e 5) (list-ref e 6))) entries))
   (define (extension-options-of verb pick)
@@ -168,7 +168,7 @@
   ;; routed, so one naming any of these is refused there rather than obeyed:
   ;; the dispatcher's check and the MCP shell's check on `eval` read this one
   ;; list, and the refusal is `transport-option-in-rpc` on both.
-  ;; NEVER: --help AND -h ARE THE COMMAND LINE'S TOO (F167). The command line
+  ;; NEVER: --help AND -h ARE THE COMMAND LINE'S TOO. The command line
   ;; answers them itself, with the verb's usage and no store; a request that
   ;; reaches a server still holding one is refused like the others, so that
   ;; an `insert --help` sent over a socket or through the MCP shell is not run
