@@ -51,7 +51,8 @@
         (only (theourgia store) open-and-reduce seal-state)
         (only (theourgia reduce) state-structure reduction-facts)
         (only (theourgia stream-frames) structural-sets change-items)
-        (only (theourgia render) render-human render-wire))
+        (only (theourgia render) render-human render-wire)
+        (only (theourgia trace) trace-enabled? trace-enable! trace-event!))
 
 (define bad 0)
 (define rows 0)
@@ -132,11 +133,63 @@
 (define (wait-gave-out! what waited bound factor observed)
   (printf "WAIT GAVE OUT: ~a after ~a ms (bound ~a ms, load factor ~,2f, load1 ~a on ~a cores): saw ~s~%"
           what waited (exact (round bound)) (inexact factor) (load1) cores observed))
-(define (read-all-data text)
-  (let ((p (open-string-input-port text)))
-    (let loop ((out '()))
-      (let ((x (guard (e (#t (eof-object))) (read p))))
-        (if (eof-object? x) (reverse out) (loop (cons x out)))))))
+;; A DAEMON'S LOG, ONE LINE AT A TIME (F298). Every line a daemon writes is
+;; one datum, and the reader takes each line on its own: a line that is not
+;; exactly one datum is left out, and costs only itself. The reader this
+;; replaces read the whole text as one stream and stopped at the first error;
+;; a trace line torn by another actor's flush then either ended the reading
+;; or opened a list that took in every line until its own close came --
+;; F10-4 read the last publication as 227 of 260 that way, with all 260
+;; framed. torn-trace-lines says when a log holds such a line.
+;; -> the index of the newline ending the line that starts at I, or the length.
+(define (line-end text i)
+  (let ((n (string-length text)))
+    (let find ((k i)) (cond ((>= k n) n) ((char=? (string-ref text k) #\newline) k) (else (find (+ k 1)))))))
+;; -> the one datum LINE holds, as a one-element list, or #f.
+(define (line-datum line)
+  (guard (e (#t #f))
+    (let* ((p (open-string-input-port line)) (x (read p)))
+      (and (not (eof-object? x)) (eof-object? (read p)) (list x)))))
+(define (log-data text)
+  (let ((n (string-length text)))
+    (let loop ((i 0) (out '()))
+      (if (>= i n)
+          (reverse out)
+          (let* ((j (line-end text i)) (one (line-datum (substring text i j))))
+            (loop (+ j 1) (if one (cons (car one) out) out)))))))
+;; THE TORN LINES OF A LOG: a "(trace " that does not begin its line, and a
+;; line beginning "(trace " that is not exactly one datum.
+;; -> (count first-offset first-text), the text being that line and the next.
+(define (torn-trace-lines text)
+  (let ((n (string-length text)) (needle "(trace "))
+    (let loop ((i 0) (count 0) (first #f))
+      (if (>= i n)
+          (list count (and first (car first)) (and first (cdr first)))
+          (let* ((j (line-end text i))
+                 (line (substring text i j))
+                 (torn (or (and (> (string-length line) 1) (contains? (substring line 1 (string-length line)) needle))
+                           (and (>= (string-length line) (string-length needle))
+                                (string=? (substring line 0 (string-length needle)) needle)
+                                (not (line-datum line))))))
+            (loop (+ j 1) (if torn (+ count 1) count)
+                  (or first (and torn (cons i (substring text i (if (< j n) (line-end text (+ j 1)) n)))))))))))
+;; THE NUMBERS AFTER "(trace <name> " IN THE TEXT, wherever they stand, read
+;; without the reader: a witness that a torn line cannot hide (F297).
+(define (raw-trace-numbers text name)
+  (let* ((needle (string-append "(trace " (symbol->string name) " ")) (k (string-length needle)) (n (string-length text)))
+    (let loop ((i 0) (out '()))
+      (cond ((> (+ i k) n) (reverse out))
+            ((string=? (substring text i (+ i k)) needle)
+             (let digits ((j (+ i k)))
+               (if (and (< j n) (char-numeric? (string-ref text j)))
+                   (digits (+ j 1))
+                   (loop j (if (> j (+ i k)) (cons (string->number (substring text (+ i k) j)) out) out)))))
+            (else (loop (+ i 1) out))))))
+;; Printed, not asserted: a torn line is evidence that later runs remove.
+(define (note-torn! label text)
+  (let ((t (torn-trace-lines text)))
+    (when (> (car t) 0)
+      (printf "NOTE ~a: ~a torn trace line(s), the first at byte ~a: ~s~%" label (car t) (cadr t) (caddr t)))))
 
 ;; ---- daemons ------------------------------------------------------------------
 ;;
@@ -404,7 +457,7 @@
 (define (frame-cut f) (let ((c (clause 'cut f))) (and c (car c))))
 ;; The last revision the daemon's trace says it published.
 (define (last-published d)
-  (let loop ((ds (read-all-data (d-log d))) (n #f))
+  (let loop ((ds (log-data (d-log d))) (n #f))
     (cond ((null? ds) n)
           ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'published))
            (loop (cdr ds) (caddar ds)))
@@ -457,7 +510,7 @@
 ;; THE NUMBERS A TRACE CARRIES: for each (trace <name> <n> ...) line of the
 ;; daemon's log, <n>, in order.
 (define (trace-values d name)
-  (let loop ((ds (read-all-data (d-log d))) (out '()))
+  (let loop ((ds (log-data (d-log d))) (out '()))
     (cond ((null? ds) (reverse out))
           ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) name) (pair? (cddar ds)))
            (loop (cdr ds) (cons (caddar ds) out)))
@@ -576,8 +629,90 @@
                  (list 'no-frame seen)))
               (else (sleep-ms 50) (wait)))))))
 
+;; ---- F298: a trace line is written whole -----------------------------------
+;;
+;; THE FLOOD: a child program in which K actors each write M trace lines,
+;; every one preempted somewhere inside its event -- each actor sets the timer
+;; to a few ticks just before calling trace-event!, so the interrupt lands in
+;; the middle of building or writing the line. Its stderr goes to a file, and
+;; the row reads that file line by line. Uses only trace-event!, which every
+;; version has, so the same program reads the code before F298, where seven
+;; writes to the shared port per line tore lines: 610 of 4000 lines torn in each
+;; of five probe runs, and none after.
+(define flood-actors 8)
+(define flood-events 500)
+(define flood-ticks 40)
+(define (run-flood! tag)
+  (let* ((dir (string-append scratch-base "/cs-" pid-text "-" tag))
+         (prog (string-append dir "/flood.sc"))
+         (err (string-append dir "/flood.err"))
+         (out (string-append dir "/flood.out")))
+    (system (string-append "rm -rf '" dir "'; mkdir -p '" dir "'"))
+    (call-with-output-file prog
+      (lambda (port)
+        (for-each (lambda (l) (display l port) (newline port))
+          (list "(import (chezscheme) (theourgia sched) (only (theourgia ffi) trace-event!))"
+                "(start-scheduler"
+                "  (lambda ()"
+                "    (let ((me self))"
+                (format "      (do ((i 0 (+ i 1))) ((= i ~a))" flood-actors)
+                "        (let ((name (string->symbol (string-append \"a\" (number->string i)))))"
+                "          (spawn (lambda ()"
+                (format "                   (do ((j 0 (+ j 1))) ((= j ~a))" flood-events)
+                (format "                     (set-timer (+ 1 (mod (+ (* 7 j) (* 13 (string-length (symbol->string name)))) ~a)))" flood-ticks)
+                "                     (trace-event! 'flood name j))"
+                "                   (send me '(done))))))"
+                (format "      (let wait ((n 0)) (unless (= n ~a) (receive (`(done) (wait (+ n 1))))))" flood-actors)
+                "      (flush-output-port (current-error-port))"
+                "      (display \"flood complete\") (newline)"
+                "      (exit 0))))")))
+      'truncate)
+    ;; TRACING IS TURNED ON BY THE ENVIRONMENT, not by a call: loading the
+    ;; platform layer sets the switch from THEOURGIA_TRACE and overwrites a
+    ;; call made before it (ffi.sc, trace-switch-installed). The first probe
+    ;; of this row called trace-enable! and wrote no line at all.
+    (system (string-append "env THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
+                           " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                           " scheme --script '" prog "' > '" out "' 2> '" err "' < /dev/null"))
+    (let* ((text (file-text err))
+           (lines (let loop ((i 0) (acc '()))
+                    (if (>= i (string-length text)) (reverse acc)
+                        (let ((j (line-end text i))) (loop (+ j 1) (cons (substring text i j) acc))))))
+           (whole (filter (lambda (l) (let ((d (line-datum l)))
+                                        (and d (pair? (car d)) (= 4 (length (car d)))
+                                             (eq? (caar d) 'trace) (eq? (cadar d) 'flood)
+                                             (symbol? (caddr (car d))) (integer? (cadddr (car d)))))) lines)))
+      (list (contains? (file-text out) "flood complete") (length whole) (car (torn-trace-lines text))
+            (and (> (car (torn-trace-lines text)) 0) (caddr (torn-trace-lines text)))))))
+
 (start-scheduler
   (lambda ()
+    ;; ==== F298: a trace line is written whole ====
+    (printf "~%== F298: a trace line is written whole ==~%")
+    ;; ONE STRING PER EVENT, TO THE SINK: a counting sink stands in for the
+    ;; installed one while one event is traced, with interrupts disabled so
+    ;; no other actor's event can reach it, and both are put back. The sink
+    ;; is looked up by name so that the code before F298, which has none,
+    ;; reads as `no-line-sink` and the rows after it still run.
+    (let* ((env (guard (e (#t #f)) (environment '(theourgia trace))))
+           (get (and env (guard (e (#t #f)) (eval 'trace-line-sink env))))
+           (put (and env (guard (e (#t #f)) (eval 'trace-line-sink-set! env)))))
+      (want "F298 trace-event! hands the sink the port and the whole line, once per event"
+            (if (not (and get put))
+                'no-line-sink
+                (with-interrupts-disabled
+                  (let ((was-on (trace-enabled?)) (was (get)) (calls '()))
+                    (put (lambda (p line) (set! calls (cons (list (eq? p (current-error-port)) line) calls))))
+                    (trace-enable! #t)
+                    (trace-event! 'f298-probe "a b" 76)
+                    (trace-enable! was-on)
+                    (put was)
+                    (reverse calls))))
+            '((#t "(trace f298-probe a b 76)\n"))))
+    (want "F298 a flood of trace lines from actors preempted inside their events: every line whole, none torn"
+          (run-flood! "flood")
+          (list #t (* flood-actors flood-events) 0 #f))
+
     ;; ==== F10-1: the subscription's acceptance and its refusals ====
     (printf "~%== F10-1: subscribe changes <rev> ==~%")
     (let* ((d (start-daemon! "f1" ""))
@@ -1280,7 +1415,7 @@
           (let* ((made (fill-until-pending! d 40))
                  (_ (sleep-ms 500))
                  (paused-log (d-log d))
-                 (after-fault (let find ((ds (read-all-data paused-log)) (seen #f) (out '()))
+                 (after-fault (let find ((ds (log-data paused-log)) (seen #f) (out '()))
                                 (cond ((null? ds) (if seen (reverse out) 'no-fault-trace))
                                       ((and (not seen) (pair? (car ds)) (eq? (caar ds) 'trace) (equal? (cdar ds) (list 'fault (string->symbol fault) #f)))
                                        (find (cdr ds) #t out))
@@ -1513,7 +1648,7 @@
       ;; BY POSITION, AND RIGHT: the first line after the acceptance is the
       ;; failed reload's notice; a second notice may follow it, never precede.
       (let* ((ls (await-lines s 2 6000)) (f (and (> (length ls) 1) (car (frames-of ls))))
-             (traced (let find ((ds (read-all-data (d-log d))))
+             (traced (let find ((ds (log-data (d-log d))))
                        (cond ((null? ds) 'no-trace)
                              ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'reload-failed))
                               (caddar ds))
@@ -1620,7 +1755,7 @@
         ;; the reload's: a NEW load runs first, and it passes the barrier's
         ;; hold again before anything is published.
         (want "F10-10 the withheld session published nothing itself: after its trace, a new load passes the barrier before the next publication"
-              (let find ((ds (read-all-data (d-log d))) (state 'before))
+              (let find ((ds (log-data (d-log d))) (state 'before))
                 (cond ((null? ds) state)
                       ((not (and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)))) (find (cdr ds) state))
                       ((and (eq? state 'before) (eq? (cadar ds) 'publish-withheld)) (find (cdr ds) 'withheld))
@@ -1639,7 +1774,7 @@
         ;; bound, and the row then reads what is there.
         (let* ((published-after
                  (lambda ()
-                   (let find ((ds (read-all-data (d-log d))) (seen #f) (n 0))
+                   (let find ((ds (log-data (d-log d))) (seen #f) (n 0))
                      (cond ((null? ds) (and seen n))
                            ((and (pair? (car ds)) (eq? (caar ds) 'trace) (pair? (cdar ds)) (eq? (cadar ds) 'publish-withheld))
                             (find (cdr ds) #t n))
@@ -1685,8 +1820,18 @@
       (let* ((oldest (+ base 3)) (current (+ base 258))
              (b (spawn-subscriber! d (list "changes" (number->string (- oldest 1)) token)))
              (ls (await-lines b 257 30000)))
-        (want "F10-4 258 publications counted by the published trace"
-              (last-published d) current)
+;; FOUR WITNESSES OF ONE FACT (F297), so a red names the one that
+        ;; fell short: the trace as the log reader reads it; the trace's
+        ;; text, read without the reader; the number of published lines in
+        ;; that text, one per publication since the start; and the last
+        ;; revision b was replayed. The first short alone is the reader; the
+        ;; second and third, lines lost before the file; all four, the
+        ;; publications.
+        (let* ((text (d-log d)) (raw (raw-trace-numbers text 'published)) (revs (revs-of b)))
+          (note-torn! "F10-4 W2" text)
+          (want "F10-4 258 publications counted four ways: the read trace, its text, its lines, the replayed frames"
+                (list (last-published d) (and (pair? raw) (apply max raw)) (length raw) (and (pair? revs) (car (last-pair revs))))
+                (list current current current current)))
         (want "F10-4 a resume at oldest-1 is accepted and replays all 256 retained frames, in order, without lagging"
               (list (and (pair? (acceptance-of ls)) (car (acceptance-of ls)))
                     (equal? (revs-of b) (let loop ((r current) (out '())) (if (< r oldest) out (loop (- r 1) (cons r out)))))
@@ -2003,6 +2148,10 @@
                (_ (await-lines a 4 30000))
                (times (trace-values d 'frame-time)))
           (printf "   frame times (ms), three publications on the cost store: ~s~%" times)
+          ;; A TORN TRACE LINE IS SAID HERE TOO (F297): the per-set wait counts
+          ;; the text and the count reads the lines, and F294's red read two
+          ;; lines for three sets.
+          (note-torn! "F10-8" (d-log d))
           (want "F10-8 three frames on the cost store, one for each set, each computed in at most 20 ms"
                 (list per-set (length times) (for-all (lambda (t) (and (number? t) (<= t 20))) times))
                 '(((ok 1) (ok 1) (ok 1)) 3 #t)))

@@ -36,7 +36,7 @@
 ;;; have to know which of the two it is looking at.
 
 (library (theourgia trace)
-  (export trace-enabled? trace-enable! trace-event!)
+  (export trace-enabled? trace-enable! trace-event! trace-line-sink trace-line-sink-set!)
   (import (rnrs base) (rnrs control) (rnrs io ports)
           (rnrs io simple) (rnrs exceptions) (rnrs unicode))
 
@@ -74,15 +74,41 @@
   ;; something reasonable.
   (define (write-field p x) (display x p))
 
+  ;; ONE LINE IS ONE STRING, HANDED OVER WHOLE (F298). The line used to be
+  ;; written in seven pieces -- four put-strings and three displays -- with a
+  ;; flush after the last, and every actor of
+  ;; a process writes to the same port: an actor preempted between two
+  ;; pieces -- or inside one, a display of 76 was seen split between its
+  ;; digits -- had its half-line pushed out by the next actor's flush, and
+  ;; a reader of the log then took the rest of the log as part of one
+  ;; datum. So the line is assembled first, on a string port, and the sink
+  ;; is given the port and the whole string.
+  ;;
+  ;; THE SINK IS INJECTED, LIKE THE SWITCH. Writing the string so that no
+  ;; preemption can fall inside it takes the host's scheduler, which this
+  ;; library does not know: the platform layer installs a sink that writes
+  ;; and flushes with interrupts disabled. The default, for a host that
+  ;; installs none, writes the string in one put-string and flushes.
+  ;; A one-slot vector, for the reason `enabled` is one.
+  (define (default-line-sink p line)
+    (put-string p line)
+    (flush-output-port p))
+  (define line-sink (vector default-line-sink))
+  (define (trace-line-sink) (vector-ref line-sink 0))
+  (define (trace-line-sink-set! sink) (vector-set! line-sink 0 sink))
+
+  ;; THE PORT IS LOOKED UP ON EVERY EVENT, as it always was: a test that
+  ;; rebinds the current error port reads the trace it made.
   (define (trace-event! op subject bytes)
     (when (trace-enabled?)
       (guard (e (#t (if #f #f)))
-        (let ((p (current-error-port)))
-          (put-string p "(trace ")
-          (write-field p op)
-          (put-string p " ")
-          (write-field p subject)
-          (put-string p " ")
-          (write-field p bytes)
-          (put-string p ")\n")
-          (flush-output-port p))))))
+        (let ((line (call-with-string-output-port
+                      (lambda (s)
+                        (put-string s "(trace ")
+                        (write-field s op)
+                        (put-string s " ")
+                        (write-field s subject)
+                        (put-string s " ")
+                        (write-field s bytes)
+                        (put-string s ")\n")))))
+          ((vector-ref line-sink 0) (current-error-port) line))))))

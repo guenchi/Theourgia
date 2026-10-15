@@ -39,12 +39,20 @@
 
   ;; A failure to print is swallowed, as the trace's is: timing must not turn
   ;; a write that worked into one that raised.
+  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED (F298), for the reason the
+  ;; trace's line is: the error port is every actor's, and a line written in
+  ;; pieces can be split by another actor's flush. The guard is inside the
+  ;; region, so a failed write is handled there and the region ends by
+  ;; returning.
   (define (timing-line! . fields)
     (guard (e (#t #f))
-      (let ((p (current-error-port)))
-        (write (cons 'timing fields) p)
-        (newline p)
-        (flush-output-port p))))
+      (let ((p (current-error-port))
+            (line (call-with-string-output-port
+                    (lambda (s) (write (cons 'timing fields) s) (newline s)))))
+        (with-interrupts-disabled
+          (guard (e (#t #f))
+            (put-string p line)
+            (flush-output-port p))))))
 
   ;; every record delivered, applied or not, since the request began
   (define delivered (vector 0))

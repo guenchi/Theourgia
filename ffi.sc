@@ -382,7 +382,7 @@
           fs-error? fs-error-op fs-error-target fs-error-errno errno-text
           theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-probe-off? theourgia-stage known-stages
           report-fault?
-          trace-enabled? trace-enable! trace-event!
+          trace-enabled? trace-enable! trace-event! trace-line-sink trace-line-sink-set!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
           entry-type entry-name-type read-entry list-entries
           unreadable-entry? unreadable-entry-path unreadable-entry-reason
@@ -585,6 +585,29 @@
     ;; script and #f inside the scheduler. ⇒ ACROSS PROCESSES, TURN
     ;; TRACING ON WITH `THEOURGIA_TRACE=1`, never with a call.
     (begin (trace-enable! (equal? (getenv "THEOURGIA_TRACE") "1")) #t))
+
+  ;; AND THE LINE SINK THAT NO PREEMPTION CAN SPLIT (F298). Every actor of
+  ;; a process shares the error port, and a timer interrupt can land
+  ;; anywhere in a write -- inside one put-string as well as between two.
+  ;; With interrupts disabled the whole line and its flush go out together;
+  ;; the interrupt is held until the region ends and the actor yields
+  ;; then. The write blocks every actor while it runs in any case, since
+  ;; there is one OS thread, so the region costs the scheduler nothing
+  ;; more.
+  ;; THE GUARD IS INSIDE THE REGION: a failed write is handled where it
+  ;; happens and the region always ends by returning. Chez restores the
+  ;; interrupt state on a non-local exit too, so this is not what makes the
+  ;; region safe; it keeps the failure local, and a trace failure is
+  ;; swallowed anyway (trace.sc). Installed at load, like the switch.
+  (define trace-sink-installed
+    (begin
+      (trace-line-sink-set!
+        (lambda (p line)
+          (with-interrupts-disabled
+            (guard (e (#t (if #f #f)))
+              (put-string p line)
+              (flush-output-port p)))))
+      #t))
 
   ;; ---- the filesystem operations that are not R6RS ------------------------
   ;;
@@ -2867,11 +2890,17 @@
                (cond
                  ((file-exists? release) (void))
                  ((>= waited hold-ms)
-                  (let ((p (current-error-port)))
-                    (put-string p "(theourgia hold-expired ")
-                    (put-string p (symbol->string stage))
-                    (put-string p ")\n")
-                    (flush-output-port p)))
+                  ;; ONE STRING, WRITTEN WITH INTERRUPTS DISABLED (F298), as
+                  ;; the trace's line. A failure still raises, as it did, but
+                  ;; only after the region: caught inside, raised outside.
+                  (let* ((p (current-error-port))
+                         (line (string-append "(theourgia hold-expired " (symbol->string stage) ")\n"))
+                         (failed (with-interrupts-disabled
+                                   (guard (e (#t e))
+                                     (put-string p line)
+                                     (flush-output-port p)
+                                     #f))))
+                    (when failed (raise failed))))
                  (else (hold-sleeper 20) (loop (+ waited 20)))))))))
 
      (define (barrier! name)
