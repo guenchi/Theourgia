@@ -1248,10 +1248,12 @@ small example each. The language itself is introduced under `query` and
 `rule`, and its relations are the two lists under `query`, which are
 generated from `query.sc`'s own tables and compared with them by a test:
 they are not copied here, so there is one list to keep right. The counts,
-read from `query.sc`: 24 fact relations (the table at line 101), 4 tests
-(line 127), and 19 rule relations defined by the library's 38 rules (line
-133, one line each in the table at line 185); a rule of the store may also
-name the 7 facts only a rule check has (line 211).
+read from `query.sc`'s tables: 24 fact relations (`query.sc`,
+`fact-relations`), 4 tests (`query.sc`, `tests`), and 19 rule relations
+defined by the library's 38 rules (`query.sc`, `rule-library`, one line each
+in `rule-lines`); a rule of the store may also name the 7 facts only a rule
+check has (`query.sc`, `rule-only-facts`). A citation names the definition,
+not a line, so it stays true as the file changes.
 
 The examples read one store:
 
@@ -1271,7 +1273,8 @@ the other order with other ids.
 A term is a CONSTANT -- a string, a symbol, or an exact integer, and, as the
 second argument of `member` only, a list of those -- a VARIABLE, a symbol
 whose first character is `?`, or `_`, which matches anything and is never
-reported or joined (`query.sc`, lines 83-89). A position that does not take
+reported or joined (`query.sc`, `variable?`, `wildcard?`, `simple-constant?`
+and `list-constant?`). A position that does not take
 the term written in it is refused `not-a-term`.
 
     (title ?b "Spec")        ->  (row "<s>")  (vars (?b))
@@ -1290,7 +1293,7 @@ each with what the earlier ones bound.
     (and (and (title ?b ?t)) (and))              ->  (error bad-request not-a-goal (goal (and)))
 
 A FACT RELATION answers what the store's providers already know, as tuples
-(`query.sc`, line 101): `(field "<a>" "slot" ?v)` answers `(row "x")  (vars
+(`query.sc`, `fact-relations`): `(field "<a>" "slot" ?v)` answers `(row "x")  (vars
 (?v))`, the value as stored.
 
 A RULE OF THE LIBRARY is a relation the library's rules define from facts
@@ -1301,7 +1304,7 @@ may call itself:
     (affects "<b>" ?x)       ->  (row "<a>")  (vars (?x))
 
 A TEST asks about values already bound: `(= a b)`, `(/= a b)`, `(string< a
-b)` (both strings) and `(member x <list>)` (`query.sc`, line 690). A test
+b)` (both strings) and `(member x <list>)` (`query.sc`, `test-holds?`). A test
 whose variable no earlier goal binds -- `_` included, which no goal binds --
 is refused `test-variable-unbound`:
 
@@ -1322,8 +1325,8 @@ written in, and the evaluation ends.
 ### One variable, one value
 
 A variable named twice must take one value in both places; values are
-compared by `equal?` (`query.sc`, line 705, and `filter-by` at line 685 for
-a constant against a fact). Two siblings:
+compared by `equal?` (`query.sc`, `unify`, and `filter-by` for a constant
+against a fact). Two siblings:
 
     (and (under ?x ?p) (under ?y ?p) (/= ?x ?y))
       ->  (row "<a>" "<s>" "<b>") (row "<b>" "<s>" "<a>")  (vars (?x ?p ?y))
@@ -1337,22 +1340,22 @@ the text `"1"` does not match the integer `1`:
 
 A fact speaks only of what the store has SETTLED. A field two writers wrote
 without seeing each other is contested, and no `field` row is answered for
-it until a writer who has seen both writes it again (`query.sc`, line 472,
-read by the `field` build at line 525); `title` likewise answers only a
-settled string. A block whose placement is contested has no `under` row
-(line 537), and `kind` answers `conflict` rather than either kind. A query
+it until a writer who has seen both writes it again (`query.sc`, `settled?`,
+read by the field arm of `build`); `title` likewise answers only a settled
+string. A block whose placement is contested has no `under` row (`query.sc`,
+`build`), and `kind` answers `conflict` rather than either kind. A query
 therefore says nothing about a contested value rather than something false;
 `conflicts` lists it. Two relations read text as search reads it, each
 candidate of a contested field included (`field-strings`): `ref`, a
-reference in either candidate of a contested `src` (`query.sc`, line 551),
-and `score`, a hit on a contested title, `src` or keywords (`query.sc`, line
-663, through search).
+reference in either candidate of a contested `src` (`query.sc`, `build`),
+and `score`, a hit on a contested title, `src` or keywords (`query.sc`,
+`fact-tuples`, through search).
 
 ### The state a query reads
 
 A query reads the committed state at one cut -- never a draft, never the
 log -- and its answer names that cut, `(cut <cut>)`, the applied cut of the
-state it read (`query.sc`, line 972): a later commit gives a later cut. The
+state it read (`query.sc`, `query-verb`): a later commit gives a later cut. The
 rows are sorted and deduplicated by their bytes and the digest covers the
 rows, not the cut, so the same bindings at another cut have the same
 digest.
@@ -1362,7 +1365,7 @@ digest.
 Apart from its `--retire` and `--builtin <name>` forms, the `rule` verb
 answers its usage when `--on` is missing or when not exactly one of `--must`
 and `--must-not` is given. The value is then checked before
-anything is written (`query.sc`, line 245), and so is a rule value in a
+anything is written (`query.sc`, `rule-value-check`), and so is a rule value in a
 `batch`: it must be plain data, one clause of each kind, a plan's marker held
 nowhere; at least one kind (`rule-needs-kinds`), each one of the store's
 kinds (`kind-not-known`); exactly one polarity
@@ -1382,14 +1385,15 @@ goal names a rule-only fact, STATE otherwise.
 
 A rule judges every committed write made after it is declared, on every
 route that writes. The rules that judge a write are the ones in force
-BEFORE it (`rules.sc`, line 266, reads the rules of the state before the
-write): a write that declares or changes a rule is judged by those already
+BEFORE it (`rules.sc`, `rule-refusal` reads the rules of the state before
+the write): a write that declares or changes a rule is judged by those already
 there. The store runs the write's own code once against a copy of its state,
-writing nothing (`store.sc`, line 3448): the copy then holds what the write
+writing nothing (`store.sc`, `rehearsal-refusal`): the copy then holds what the write
 would produce -- every intent of a batch, or the prefix a failing one leaves
--- and the write's targets are taken from it (`store.sc`, line 3473). A
+-- and the write's targets are taken from it (`store.sc`, `rehearsal-refusal`). A
 STATE rule is asked of that copy; a WRITE rule's plain facts read the state
-before the write and its `+` facts the copy (`rules.sc`, lines 296 and 318).
+before the write and its `+` facts the copy (`rules.sc`, `rule-refusal` and
+`write-facts`).
 Only a write that passes runs for real. A write a rule fails writes nothing
 and is refused `rule-violation`, every failing target and rule named, or
 `rule-unevaluable` when a rule cannot be evaluated (see `rule`); a write

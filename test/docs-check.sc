@@ -973,6 +973,164 @@
                 (else (loop (cdr ls) (cons (string-append (car ls) "\n") out))))))
       '("THEOURGIA_RUNNER_NORMALISED"))
 
+;; ---- DOC-L: the language chapter cites definitions, not lines -----------------
+;;
+;; THE CHAPTER "The query and rule language, construct by construct" points
+;; at the code it describes as (`<file>.sc`, `<name>` ...): a definition's
+;; name, which stays true as the file changes, where a line number did not.
+;; Each cited name must be a definition in the file the citation names, so
+;; a renamed or removed definition turns this red; and no "line <n>" may
+;; come back.
+(define (substring-index text needle from)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i from))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) i)
+            (else (loop (+ i 1)))))))
+(define language-chapter
+  (let ((a (substring-index readme "## The query and rule language" 0)))
+    (if (not a)
+        ""
+        (let ((b (substring-index readme "\n## " (+ a 1))))
+          (substring readme a (or b (string-length readme)))))))
+;; THE CITATION GRAMMAR, narrow on purpose: a parenthesis opened by a
+;; backquoted file name ending in `.sc` and a comma, closed by its own
+;; parenthesis (others nested in it counted, backquoted text skipped) within
+;; its paragraph -- a blank line ends the search -- and holding one or more
+;; backquoted names and nothing else backquoted. What does not match, once
+;; it has begun so, is not skipped: it is reported, as (<file> #f <why>).
+;; -> the index of the close, or #f.
+(define (closing-paren text i)
+  (let ((n (string-length text)))
+    (let loop ((j (+ i 1)) (depth 1) (quoted #f))
+      (cond ((>= j n) #f)
+            ((and (char=? (string-ref text j) #\newline) (< (+ j 1) n)
+                  (char=? (string-ref text (+ j 1)) #\newline))
+             #f)
+            ((char=? (string-ref text j) #\`) (loop (+ j 1) depth (not quoted)))
+            (quoted (loop (+ j 1) depth quoted))
+            ((char=? (string-ref text j) #\() (loop (+ j 1) (+ depth 1) quoted))
+            ((char=? (string-ref text j) #\))
+             (if (= depth 1) j (loop (+ j 1) (- depth 1) quoted)))
+            (else (loop (+ j 1) depth quoted))))))
+;; -> ((<file> <name>) ... (<file> #f <why>) ...), in order.
+(define cited-definitions
+  (let loop ((i 0) (out '()))
+    (let ((open (substring-index language-chapter "(`" i)))
+      (if (not open)
+          (reverse out)
+          (let* ((tick (substring-index language-chapter "`" (+ open 2)))
+                 (file (and tick (substring language-chapter (+ open 2) tick))))
+            (if (not (and file (> (string-length file) 3)
+                          (string=? (substring file (- (string-length file) 3) (string-length file)) ".sc")
+                          (< (+ tick 1) (string-length language-chapter))
+                          (char=? (string-ref language-chapter (+ tick 1)) #\,)))
+                (loop (+ open 2) out)
+                (let ((close (closing-paren language-chapter open)))
+                  (if (not close)
+                      (loop (+ open 2) (cons (list file #f "no closing parenthesis in its paragraph") out))
+                      (let names ((j (+ tick 1)) (found '()))
+                        (let* ((s (substring-index language-chapter "`" j))
+                               (e (and s (< s close) (substring-index language-chapter "`" (+ s 1)))))
+                          (if (and e (< e close))
+                              (names (+ e 1) (cons (list file (substring language-chapter (+ s 1) e)) found))
+                              (loop (+ close 1)
+                                    (if (null? found)
+                                        (cons (list file #f "no backquoted name") out)
+                                        (append found out))))))))))))))
+;; THE NAMES A PORT'S DATA DEFINES, as the reader sees them: every (define
+;; (<name> ...) ...) and (define <name> ...) anywhere in the data -- every
+;; pair, proper or not, and every vector is walked, each once, so a datum
+;; label's cycle ends. A comment, a block comment or a string is not data,
+;; so a definition spelled in one is not counted; indentation does not
+;; matter.
+(define (definitions-in-port p)
+  (define seen (make-eq-hashtable))
+  (define (walk x acc)
+    (cond ((or (not (or (pair? x) (vector? x))) (hashtable-ref seen x #f)) acc)
+          (else
+           (hashtable-set! seen x #t)
+           (cond ((vector? x) (fold-left (lambda (a y) (walk y a)) acc (vector->list x)))
+                 ;; A DEFINE RECORDS ITS NAME, and then its target and body are
+                 ;; walked like any other data, so nothing inside either is
+                 ;; passed over.
+                 ((and (eq? (car x) 'define) (pair? (cdr x)))
+                  (let ((target (cadr x)))
+                    (walk (cdr x)
+                          (cond ((symbol? target) (cons target acc))
+                                ((and (pair? target) (symbol? (car target))) (cons (car target) acc))
+                                (else acc)))))
+                 (else (walk (cdr x) (walk (car x) acc)))))))
+  (let loop ((acc '()))
+    (let ((x (read p)))
+      (if (eof-object? x) acc (loop (walk x acc))))))
+;; A FILE'S, read once. A file the reader cannot read is remembered with
+;; why, and a row says so: its names would otherwise all read as missing.
+(define definitions-cache '())
+(define read-failures '())
+(define (definitions-of file)
+  (cond
+    ((assoc file definitions-cache) => cdr)
+    (else
+     (let ((names (guard (e (#t (set! read-failures
+                                  (cons (list file (if (message-condition? e) (condition-message e) 'raised))
+                                        read-failures))
+                                '()))
+                    (call-with-input-file (string-append "../" file) definitions-in-port))))
+       (set! definitions-cache (cons (cons file names) definitions-cache))
+       names))))
+(define (defined-in? file name)
+  (and (memq (string->symbol name) (definitions-of file)) #t))
+(want "DOC-L CONTROL: the chapter was read and cites definitions"
+      (list (> (string-length language-chapter) 5000) (> (length cited-definitions) 10)
+            (> (length (definitions-of "query.sc")) 50))
+      '(#t #t #t))
+(want "DOC-L every definition the language chapter cites is defined in the file it names"
+      (filter (lambda (c) (not (and (cadr c) (defined-in? (car c) (cadr c))))) cited-definitions)
+      '())
+;; CONTROL OF THE READER ITSELF: a definition in a block comment, a line
+;; comment or a string is not one; a tab-indented one, a nested one, one in an
+;; improper body, one in a vector and one inside a define's target are.
+(want "DOC-L CONTROL: the definition reader counts definitions, not text that spells them"
+      (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+                 (definitions-in-port
+                   (open-string-input-port
+                     (string-append "#| (define (ghost) 1) |#\n"
+                                    ";; (define (lined) 1)\n"
+                                    "(define s \"(define (in-a-string) 1)\")\n"
+                                    "\t(define (tabbed) 1)\n"
+                                    "(library (l) (export) (import (rnrs)) (define (outer) (define inner 1) inner))\n"
+                                    "(define outer2 (define inner2 1) . tail)\n"
+                                    "#((define vec-inner 1))\n"
+                                    "(define (outer3 (define hidden 1)) 0)\n"))))
+      '(hidden inner inner2 outer outer2 outer3 s tabbed vec-inner))
+(want "DOC-L every file the chapter cites was read"
+      (begin (for-each (lambda (c) (definitions-of (car c))) cited-definitions) read-failures)
+      '())
+;; A LINE NUMBER, WRITTEN ANY WAY: the word line or lines, not the end of a
+;; longer word, then any run of spaces or line breaks, then a digit. The
+;; chapter has no other use for those words before a number.
+(define (line-number-at text at)
+  (let* ((n (string-length text))
+         (k (+ at 4))
+         (k (if (and (< k n) (char=? (string-ref text k) #\s)) (+ k 1) k))
+         (word-start (or (= at 0) (not (let ((c (string-ref text (- at 1))))
+                                             (or (char-alphabetic? c) (char-numeric? c)
+                                                 (memv c '(#\- #\_ #\? #\! #\*))))))))
+    (and word-start
+         (let gap ((j k) (spaced #f))
+           (cond ((>= j n) #f)
+                 ((memv (string-ref text j) '(#\space #\newline)) (gap (+ j 1) #t))
+                 (else (and spaced (char-numeric? (string-ref text j))
+                            (substring text at (min n (+ j 4))))))))))
+(want "DOC-L the language chapter cites no line numbers"
+      (let loop ((i 0) (out '()))
+        (let ((at (substring-index language-chapter "line" i)))
+          (if (not at)
+              (reverse out)
+              (loop (+ at 4) (let ((hit (line-number-at language-chapter at))) (if hit (cons hit out) out))))))
+      '())
+
 ;; ---- the instrument -----------------------------------------------------------
 ;;
 ;; NEVER: ALL FOUR ROWS ABOVE ARE SATISFIED BY READING NOTHING. An empty
