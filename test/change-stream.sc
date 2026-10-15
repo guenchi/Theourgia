@@ -1948,13 +1948,35 @@
         ;; the shortcut row below (the fixture's time, not the daemon's)
         (set! cost-before (open-and-reduce st))
         ;; the publications change one of the 5000, so it stays the cost store
-        (let loop ((k 1)) (when (<= k 3) (ask d 'set "costwrtr.1" "src" (string-append "cost run " (number->string k))) (loop (+ k 1))))
-        (await-lines a 4 30000)
-        (let ((times (trace-values d 'frame-time)))
+        ;; NEVER: ONE SET, THEN ITS OWN FRAME, THEN THE NEXT SET, each with its own
+        ;; wait (F294). On a gate under load this row read two frame-time lines
+        ;; for three sets, each frame well inside its bound, and green twice
+        ;; alone. The sets are answered one at a time, and each publication is
+        ;; either framed before its answer or, withheld, has its reload queued
+        ;; before the answer and so before the next set: they do not share a
+        ;; frame. What the
+        ;; reading does not say is which wait gave out -- a set's answer (15 s)
+        ;; or the one 30 s wait for all three frames. So each set now waits up
+        ;; to 30 s for its own frame-time line before the next is sent, and the
+        ;; row reads, per set, the answer's head and the frames it made: a set
+        ;; that failed, timed out, or made no frame says which.
+        (let* ((per-set
+                 (let loop ((k 1) (out '()))
+                   (if (> k 3)
+                       (reverse out)
+                       (let* ((before (length (trace-values d 'frame-time)))
+                              (answer (ask d 'set "costwrtr.1" "src" (string-append "cost run " (number->string k)))))
+                         (await-trace d "(trace frame-time " (+ before 1) 30000)
+                         (loop (+ k 1)
+                               (cons (list (if (pair? answer) (car answer) answer)
+                                           (- (length (trace-values d 'frame-time)) before))
+                                     out))))))
+               (_ (await-lines a 4 30000))
+               (times (trace-values d 'frame-time)))
           (printf "   frame times (ms), three publications on the cost store: ~s~%" times)
-          (want "F10-8 three frames on the cost store, each computed in at most 20 ms"
-                (list (length times) (for-all (lambda (t) (and (number? t) (<= t 20))) times))
-                '(3 #t)))
+          (want "F10-8 three frames on the cost store, one for each set, each computed in at most 20 ms"
+                (list per-set (length times) (for-all (lambda (t) (and (number? t) (<= t 20))) times))
+                '(((ok 1) (ok 1) (ok 1)) 3 #t)))
         ;; THE SHORTCUTS CHANGE NO ITEM: on the cost store, the product's
         ;; change-items equals the reference (the comparison without them)
         ;; item for item, across the three sets (one block's field differs,
