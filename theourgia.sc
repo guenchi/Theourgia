@@ -30,6 +30,11 @@
 ;;; passed through in the order it arrived, byte for byte. A client that
 ;;; parsed properly would need every verb's option table, and that table
 ;;; is knowledge about verbs.
+;;; ONE QUESTION IS ASKED OF THE PARSER (F167): is this a request for help.
+;;; It is answered with the program's own tables, the registered verbs'
+;;; included, because a scan cannot tell `--title -h` from `-h`, and getting
+;;; it wrong either way is a help request that starts a daemon or an ordinary
+;;; call sent down the wrong path. Nothing else here reads the parse.
 
 (import (chezscheme)
         (only (theourgia client)
@@ -41,7 +46,9 @@
         ;; neither the dispatcher, nor the scheduler, nor the network. It
         ;; is imported so that "does this verb read standard input" can be
         ;; asked of the tables that answer it everywhere else.
-        (only (theourgia arguments) parse-arguments argument-wants-stdin?)
+        (only (theourgia arguments) parse-arguments argument-wants-stdin? help-requested?
+              set-extension-options! extension-option-table)
+        (only (theourgia extensions) extension-verbs)
         ;; THE TABLE AND THE RECORD (F100b point 4). (theourgia client)
         ;; already brings ffi into this program's closure; (theourgia
         ;; answers) is one small library that does no filesystem work.
@@ -92,6 +99,23 @@
 ;; unknown option cannot swallow the verb -- the verb is already behind
 ;; it by then, because the verb comes first among the things that are not
 ;; `where` options.
+;; THE PARSER'S TABLES FOR THE REGISTERED VERBS, from the same data the program
+;; registers (F167): a request for help is read by the parser here exactly as
+;; the program will read it, so only a request for help leaves this path.
+(set-extension-options! (extension-option-table extension-verbs))
+
+;; THE SAME ARGUMENTS WITH THE VERB FIRST, which is where the program here
+;; reads it. The verb's position follows scan's rules: a where-option and its
+;; value and `--wire` before it are skipped, and nothing after `--` is a verb.
+(define (verb-first argv)
+  (let loop ((xs argv) (before '()))
+    (cond ((null? xs) argv)
+          ((string=? (car xs) "--") argv)
+          ((and (member (car xs) where-options) (pair? (cdr xs)))
+           (loop (cddr xs) (cons (cadr xs) (cons (car xs) before))))
+          ((string=? (car xs) "--wire") (loop (cdr xs) (cons (car xs) before)))
+          (else (cons (car xs) (append (reverse before) (cdr xs)))))))
+
 (define (scan argv)
   (let loop ((xs argv) (verb #f) (args '()) (store #f) (actor #f)
              (socket #f) (wire? #f) (literal? #f))
@@ -398,6 +422,16 @@
     ;; NEVER: THE LOCAL ROUTE IS BY NAME, AND THE NAMES ARE THE THREE ABOVE.
     ;; `THEOURGIA_LOCAL` sends everything that way, which is a debugging
     ;; path and is documented as one.
+    ;; --help AND -h ARE ANSWERED BY THE PROGRAM, NOT A DAEMON (F167): asking
+    ;; for a verb's usage must not resolve a store or start anything, so a
+    ;; request for help goes to the program here, verb first, which answers
+    ;; before it looks for either. Read by the PARSER, with the program's
+    ;; tables, over the arguments the program will read -- this argv with its
+    ;; verb taken out -- so `--title -h`, `--title -- --help` and text after a
+    ;; real `--` are decided here as there, and every other call keeps this
+    ;; path: its socket checks, its writer, its streaming, its daemon start.
+    (when (help-requested? (parse-arguments verb (cdr (verb-first argv))))
+      (run-server-here! (verb-first argv)))
     (when (or (local-by-name? verb) (env-value "THEOURGIA_LOCAL"))
       (run-server-here! argv))
     (let* ((socket (or given-socket (socket-path store)))

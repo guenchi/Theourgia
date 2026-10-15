@@ -199,7 +199,7 @@
 ;; NEVER: AND THE OTHER WAY. Without this row the README could advertise
 ;; nothing at all and stay green -- which is how a document falls behind:
 ;; not by saying something false, but by never mentioning what arrived.
-(define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket"))
+(define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket" "--help" "-h"))
 
 (define every-spelling
   (let ((text (file-text "../arguments.sc")))
@@ -510,11 +510,20 @@
          (let ((end (index-of text ")" at)))
            (and end (dashed-tokens (substring text at end)))))))
 
-;; `--wire` is the flag half of the same idea, spelled in a different
-;; place; it is named here because the table it lives in is `(cons
-;; "--wire" (case verb ...))` and a scan for a quoted list would miss it.
+;; THE FLAGS EVERY VERB TAKES are arguments.sc's `global-flags`, read as data
+;; from its definition: `--wire`, and `--help` and `-h` (F167). Read, not
+;; spelled here, so a flag added there is censused here; and read as data,
+;; because `-h` has one dash and the token scan above sees only two.
+(define global-flags
+  (let* ((text (file-text "../arguments.sc"))
+         (at (index-of text "(define global-flags '" 0)))
+    (and at
+         (guard (e (#t #f))
+           (let ((d (read (open-string-input-port
+                            (substring text (+ at (string-length "(define global-flags '")) (string-length text))))))
+             (and (list? d) (for-all string? d) d))))))
 (define every-verb-options
-  (and transport-options (cons "--wire" transport-options)))
+  (and transport-options global-flags (append global-flags transport-options)))
 
 (define global-section
   (let ((at (index-of readme "## Global options" 0)))
@@ -526,19 +535,34 @@
       (if global-section 'present 'MISSING)
       'present)
 
+;; NOTE: EACH AS THE TABLE SPELLS IT, after its opening backtick: `-h` is inside
+;; `--help`, and a bare search would find one wherever the other is.
 (want "DOC-4 every option the parser takes for all verbs is in that section"
       (if (and global-section every-verb-options)
-          (filter (lambda (o) (not (contains? global-section o))) every-verb-options)
+          (filter (lambda (o) (not (contains? global-section (string-append "`" o)))) every-verb-options)
           'COULD-NOT-READ-ONE-OF-THEM)
       '())
 
 ;; NEVER: AND THE OTHER WAY, so the section cannot list an option that is not
 ;; global -- which would tell a reader every verb takes something only
 ;; one of them does.
+;; THE SHORT OPTIONS THE SECTION NAMES, written `-x`: one dash, one letter,
+;; then the closing backtick or a space. dashed-tokens sees only two dashes,
+;; so without these an advertised `-h` would never be asked about (F167).
+(define (short-tokens text)
+  (let loop ((i 0) (out '()))
+    (cond
+      ((> (+ i 4) (string-length text)) (reverse out))
+      ((and (char=? (string-ref text i) #\`) (char=? (string-ref text (+ i 1)) #\-)
+            (char-alphabetic? (string-ref text (+ i 2)))
+            (memv (string-ref text (+ i 3)) '(#\` #\space)))
+       (loop (+ i 3) (if (member (substring text (+ i 1) (+ i 3)) out) out
+                         (cons (substring text (+ i 1) (+ i 3)) out))))
+      (else (loop (+ i 1) out)))))
 (want "DOC-4 every option that section lists really is taken by every verb"
       (if (and global-section every-verb-options)
           (filter (lambda (o) (not (member o every-verb-options)))
-                  (dashed-tokens global-section))
+                  (append (dashed-tokens global-section) (short-tokens global-section)))
           'COULD-NOT-READ-ONE-OF-THEM)
       '())
 

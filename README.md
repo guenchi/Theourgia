@@ -148,13 +148,15 @@ were somehow special to each one.
 | `--wire` | print the answer as one S-expression per line rather than for a person to read |
 | `--req <id>` | the request's identity, so a retry is recognised as the same request rather than a second one |
 | `--cursor <w:n>` | the position this request is composed against |
+| `--help` | answer the verb's usage, `(ok (usage <form>))`, with status 0; no store is opened, created or served and no daemon is started |
+| `-h` | the same as `--help` |
 `THEOURGIA_WRITER` is the writer a request is for when it names no writer of its own; unset or empty, there is none, and it never falls back to the actor. `THEOURGIA_WIRE=1` does what `--wire` does, for `eval` only.
 
 `THEOURGIA_LOCAL=1` answers in this process even when a daemon's socket
 is there. NOTE: It is a debugging path: it skips the daemon rather than
 doing something the daemon cannot.
 
-`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent; a request that reaches a server still naming one (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to shell))`, naming the first one written. Every MCP tool's description says the tool is bound to one store and actor.
+`--store`, `--actor`, `--wire` and `--socket` say where a request goes and are consumed before it is sent, and `--help` and `-h` are answered by the command line itself; a request dispatched by the server or the MCP shell still naming one of these six (a raw socket request, or an MCP tool call) is refused with `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to shell))`, naming the first one written. As the value of another option either is read as that value; as a positional -- a search's query, say -- put it after `--`. Every MCP tool's description says the tool is bound to one store and actor.
 
 ## Writing for agents
 

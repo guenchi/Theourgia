@@ -37,7 +37,7 @@
 (import (rnrs)
         (only (chezscheme) with-input-from-file system get-process-id call-with-input-file
               get-string-all file-exists? load)
-        (only (theourgia arguments) parse-arguments)
+        (only (theourgia arguments) parse-arguments help-requested? transport-option-refusal)
         (only (theourgia rpc) rpc-verbs verb-catalogue register-verbs!)
         (only (theourgia extensions) extension-verbs))
 
@@ -178,8 +178,11 @@
      (for-each (lambda (f) (walk f visit)) (vector->list form)))
     (else #f)))
 
+;; A SPELLING IS `--name`, OR A SHORT `-x` (one dash, one letter: `-h`, F167).
 (define (dashed? x) (and (string? x) (>= (string-length x) 2)
-                         (string=? (substring x 0 2) "--")))
+                         (or (string=? (substring x 0 2) "--")
+                             (and (= (string-length x) 2) (char=? (string-ref x 0) #\-)
+                                  (char-alphabetic? (string-ref x 1))))))
 
 (define (strings-in form)
   (let ((acc '()))
@@ -220,7 +223,7 @@
 
 ;; ACCEPTED FOR EVERY VERB, so naming one in a single verb's usage form
 ;; would say it is special to that verb.
-(define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket"))
+(define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket" "--help" "-h"))
 
 ;; NOTE: NOT "TOP LEVEL": every definition in these files sits inside a
 ;; `library` form, so a scan of the file's own top level finds nothing
@@ -1839,6 +1842,31 @@
       '(#t #f #t #f))
 
 (system (string-append "rm -rf " scratch))
+
+;; ---- OG-H: --help and -h (F167) ------------------------------------------------
+;;
+;; NEVER: A REQUEST FOR HELP IS A FLAG THE PARSER READ, NOT A WORD THAT APPEARS.
+;; The command line answers the usage when the parsed nodes hold --help or
+;; -h as a flag; the same token taken as an option's value, or written after
+;; `--`, is that value or that positional and asks for nothing.
+(want "OG-H --help and -h, as flags of any verb, ask for the usage"
+      (list (help-requested? (parse-arguments 'insert '("--help")))
+            (help-requested? (parse-arguments 'insert '("--title" "x" "-h")))
+            (help-requested? (parse-arguments 'read '("x.1" "--help"))))
+      '(#t #t #t))
+(want "OG-H a help token taken as a value, or after --, asks for nothing"
+      (list (help-requested? (parse-arguments 'insert '("--title" "-h")))
+            (help-requested? (parse-arguments 'search '("--" "--help")))
+            (help-requested? (parse-arguments 'insert '("--title" "x"))))
+      '(#f #f #f))
+;; NEVER: AND A SERVER REFUSES ONE: --help belongs to the command line, so a
+;; request that reaches the dispatcher or the MCP shell still holding it is
+;; refused by name rather than run without its flag.
+(want "OG-H a request still holding --help or -h is refused as the shell's"
+      (list (transport-option-refusal (parse-arguments 'insert '("--title" "x" "--help")))
+            (transport-option-refusal (parse-arguments 'insert '("-h"))))
+      '((error bad-request transport-option-in-rpc (option "--help") (belongs-to shell))
+        (error bad-request transport-option-in-rpc (option "-h") (belongs-to shell))))
 
 (display (string-append "rows: " (number->string rows) "\n"
                         (number->string bad) " failures\n"

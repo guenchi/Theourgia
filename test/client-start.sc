@@ -560,6 +560,9 @@
 ;; keeping a second copy of it, and the table reaches nothing else.
 ;; `answers` is allowed for a reason also written there: the program turns
 ;; a filesystem failure into the one table answer (F100b point 4).
+;; `extensions` is allowed for the reason written there too: the program asks
+;; the parser, with the registered verbs' tables, whether a call asks for help
+;; (F167), and that library is data.
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
 (want "IMPORTS and the client program's closure is exactly what it should be"
@@ -575,7 +578,7 @@
             (else
              (let ((edges (cond ((assq (car todo) import-graph) => cdr) (else '()))))
                (loop (append edges (cdr todo)) (cons (car todo) seen)))))))
-      '(answers arguments client digest ffi incomplete platform-numbers render trace))
+      '(answers arguments client digest extensions ffi incomplete platform-numbers render trace))
 
 
 (system (string-append "chmod 700 " ro))
@@ -583,6 +586,64 @@
 ;; daemon was alive when the last row finished used to survive the run:
 ;; measured by the suite's leak gate, which counts processes and is the
 ;; only thing here that was looking.
+;; ---- CS-H --help and -h answer the usage and touch nothing (F167) ------------
+;;
+;; NEVER: ASKING HOW TO CALL A VERB STARTS, OPENS AND CREATES NOTHING. Each run
+;; is a program started from an EMPTY directory, so the store it would fall
+;; back to is that directory, with its own empty run root and home; the row
+;; reads the exit status, the answer -- the first datum on STANDARD OUTPUT,
+;; with standard error kept apart, since a program's notices go there and
+;; the answer must not -- and what is in the directory and the run root
+;; afterwards. Before F167 the client took --help as a positional,
+;; resolved the store "." and started a daemon on it, which failed and left
+;; the run root behind.
+(define (absolute p) (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) p (string-append (current-directory) "/" p)))
+(define (run-from-empty! tag program args)
+  (let* ((cwd (string-append here "/" tag "-cwd")) (run (string-append sock-here "/" tag "-run"))
+         (home (string-append here "/" tag "-home")) (out (string-append here "/" tag ".out"))
+         (err (string-append here "/" tag ".err")) (rcf (string-append here "/" tag ".rc")))
+    (system (string-append "rm -rf " cwd " " run " " home "; mkdir -p " cwd " " run " " home))
+    (system (string-append "cd " cwd " && env -u THEOURGIA_STORE -u THEOURGIA_LOCAL"
+                           " CHEZSCHEMELIBDIRS='" (getenv "CHEZSCHEMELIBDIRS") "'"
+                           " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                           " THEOURGIA_HOME=" home " THEOURGIA_RUN=" run
+                           " scheme --script " (absolute tree-root) "/" program " " args
+                           " > " out " 2> " err " < /dev/null; echo $? > " rcf))
+    (let* ((rc-text (file-text rcf))
+           (rc (and (> (string-length rc-text) 0) (string->number (substring rc-text 0 (- (string-length rc-text) 1)))))
+           (first (guard (e (#t #f)) (read (open-input-string (file-text out))))))
+      (list rc first (append (directory-list cwd) (directory-list run))))))
+;; -> the verb the answer is the usage of, when it is (ok (usage (<verb> ...))).
+(define (usage-of answer)
+  (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer))
+       (let ((u (cadr answer)))
+         (and (pair? u) (eq? (car u) 'usage) (pair? (cdr u)) (pair? (cadr u)) (car (cadr u))))))
+
+(let ((r (run-from-empty! "help1" "theourgia.sc" "insert --help --wire")))
+  (want "CS-H the client: insert --help answers insert's usage, status 0, and creates nothing in the directory or the run root"
+        (list (car r) (usage-of (cadr r)) (caddr r))
+        '(0 insert ())))
+(let ((r (run-from-empty! "help2" "theourgia.sc" "insert -h --wire")))
+  (want "CS-H the client: -h is --help"
+        (list (car r) (usage-of (cadr r)) (caddr r))
+        '(0 insert ())))
+(let ((r (run-from-empty! "help3" "core.sc" (string-append "insert --help --wire --store " here "/help3-absent"))))
+  (want "CS-H the core: insert --help with a store that does not exist answers the usage, status 0, and the store is still absent"
+        (list (car r) (usage-of (cadr r)) (file-exists? (string-append here "/help3-absent")))
+        '(0 insert #f)))
+(let ((r (run-from-empty! "help4" "theourgiad.sc" "serve --help")))
+  (want "CS-H the daemon program: serve --help answers serve's usage, status 0, and binds and starts nothing"
+        (list (car r) (usage-of (cadr r)) (caddr r))
+        '(0 serve ())))
+;; TWIN: after `--`, --help is text, not a request for help, and the client's
+;; parser says so as the program's would; so the call keeps the client's own
+;; path to the store -- here the empty directory, which is no store -- and no
+;; usage is answered.
+(let ((r (run-from-empty! "help5" "theourgia.sc" "insert --wire -- --help")))
+  (want "CS-H TWIN: insert -- --help is not a request for help: no usage answer, and not status 0"
+        (list (and (car r) (not (= (car r) 0))) (usage-of (cadr r)))
+        '(#t #f)))
+
 (kill-daemon!)
 (system (string-append "chmod -R u+rwx " sock-here " 2>/dev/null; rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-start complete\n" rows bad)

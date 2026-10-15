@@ -743,6 +743,18 @@
                        (and (pair? argv) (string=? (car argv) "eval") (environment-wire?)))))
   (with-mutation-record (lambda ()
   (guard (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag))))
+  ;; --help AND -h ANSWER THE VERB'S USAGE, AND NOTHING ELSE IS DONE (F167):
+  ;; before the verb's own program, the store, the socket or a dispatch, so
+  ;; asking how to call a verb never starts, opens or creates anything. The
+  ;; answer is (ok (usage <form>)), the form the verb is published with, so
+  ;; it prints and exits 0 as any answer does. A verb with no published form
+  ;; goes on to the answer it would have had.
+  (let* ((verb (string->symbol (car argv)))
+         (nodes (parse-arguments verb (cdr argv)))
+         (entry (and (help-requested? nodes) (assq verb (verb-catalogue)))))
+    (when entry
+      (print-answer (list 'ok (list 'usage (cadr entry))) (and (argument-option nodes "--wire") #t))
+      (exit 0)))
   ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which
   ;; no longer exists; there is no second implementation to keep in step.
   ;; `serve` is not this program's any more: the daemon is `theourgiad.sc`

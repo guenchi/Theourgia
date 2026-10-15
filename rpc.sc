@@ -1372,8 +1372,7 @@
                    (assertion-violation 'register-verbs! "the name is given twice in the batch" name))
                   (else (loop (cdr es) (cons name seen))))))))
     (set! extensions (append extensions batch))
-    (set-extension-options!
-      (map (lambda (e) (list (list-ref e 0) (list-ref e 5) (list-ref e 6))) extensions)))
+    (set-extension-options! (extension-option-table extensions)))
 
   ;; (verb . handler) for a registered verb, or #f; the handler's library is
   ;; entered here, on the dispatch that needs it.

@@ -133,7 +133,7 @@ byte for byte. The daemon never runs user code, and the shell loads no core.
   that name -- so a parse refusal is the one the command line gives for the
   same argv. A caller's own `--writer v` still wins. Its cwd is the shell's.
 * **The transport is not the caller's to name.** An argv that parses with
-  an option `--store`, `--actor`, `--wire` or `--socket` answers
+  an option `--store`, `--actor`, `--wire`, `--socket`, `--help` or `-h` answers
   `(error bad-request transport-option-in-rpc (option "<option>") (belongs-to
   shell))`, naming the first one written, as a result and runs nothing -- the
   same datum the daemon's route answers. Every tool's description says the

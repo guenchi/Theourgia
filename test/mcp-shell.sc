@@ -2210,6 +2210,17 @@
   (want "X4 the daemon route answers each of the four with the same datum, byte for byte"
         (map (lambda (l) (text-of l)) (cdr daemon-route))
         (map named four))
+  ;; AND --help AND -h, WHICH THE COMMAND LINE ANSWERS ITSELF (F167): through
+  ;; the shell, on the child's route and the daemon's, each is refused by name
+  ;; and nothing runs -- a help request is never carried out as the verb.
+  (want "X4 --help and -h are the command line's: each is refused by name on the child route and the daemon route, and no child ran"
+        (let* ((before (length (counter-lines (cadr d))))
+               (child (stub-talk d "" (list hello ready (eval-call '("--help" "(+ 1 2)")) (eval-call '("-h" "(+ 1 2)")))))
+               (ran (- (length (counter-lines (cadr d))) before))
+               (daemon (talk (list hello ready (call-tool "theourgia_read" '("--help" "x.1"))
+                                   (call-tool "theourgia_read" '("-h" "x.1"))))))
+          (list (map text-of (cdr child)) ran (map text-of (cdr daemon))))
+        (list (list (named "--help") (named "-h")) 0 (list (named "--help") (named "-h"))))
   (want "X4 the first transport option written is the one named"
         (text-of (cadr (talk (list hello ready (call-tool "theourgia_read" '("--wire" "--store" "elsewhere" "x.1"))))))
         (named "--wire"))

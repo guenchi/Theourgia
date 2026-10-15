@@ -102,6 +102,12 @@
   (let ((nodes (parse-arguments 'serve (cdr argv))))
     (when (and (pair? nodes) (eq? (car nodes) 'error))
       (say nodes) (say (list 'usage serve-usage)) (exit 1))
+    ;; --help AND -h ANSWER serve's USAGE, status 0, before anything is
+    ;; checked, bound or started (F167), as the command line does for every
+    ;; other verb.
+    (when (help-requested? nodes)
+      (say (list 'ok (list 'usage serve-usage)))
+      (exit 0))
     (let ((unknown (serve-unknown-option nodes)))
       (when unknown
         (say (list 'error 'bad-request '(reason unknown-option)

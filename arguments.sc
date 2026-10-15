@@ -46,7 +46,8 @@
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin argument-wants-stdin?
           argument-stdin-placeholder? working-id? parse-shell-arguments
-          transport-options transport-option-refusal set-extension-options!)
+          transport-options transport-option-refusal set-extension-options!
+          global-flags help-requested? extension-option-table)
   (import (rnrs base) (rnrs lists))
 
   ;; THE OPTIONS OF VERBS REGISTERED FROM OUTSIDE THE CORE, as
@@ -57,6 +58,13 @@
   ;; branch for it. This library does not import the registry.
   (define extension-options '())
   (define (set-extension-options! table) (set! extension-options table))
+  ;; THE TABLE FROM THE ENTRIES, read in one place: an entry is (verb usage
+  ;; description protocol? route value-options flag-options handler), as
+  ;; (theourgia extensions) lays it out. The registry sets it from what it
+  ;; registered, and the thin client from the same data, so the two parse a
+  ;; registered verb's arguments alike (F167).
+  (define (extension-option-table entries)
+    (map (lambda (e) (list (list-ref e 0) (list-ref e 5) (list-ref e 6))) entries))
   (define (extension-options-of verb pick)
     (let ((e (assq verb extension-options))) (if e (pick (cdr e)) '())))
 
@@ -160,7 +168,25 @@
   ;; routed, so one naming any of these is refused there rather than obeyed:
   ;; the dispatcher's check and the MCP shell's check on `eval` read this one
   ;; list, and the refusal is `transport-option-in-rpc` on both.
-  (define transport-options '("--store" "--actor" "--wire" "--socket"))
+  ;; NEVER: --help AND -h ARE THE COMMAND LINE'S TOO (F167). The command line
+  ;; answers them itself, with the verb's usage and no store; a request that
+  ;; reaches a server still holding one is refused like the others, so that
+  ;; an `insert --help` sent over a socket or through the MCP shell is not run
+  ;; as an insert.
+  (define transport-options '("--store" "--actor" "--wire" "--socket" "--help" "-h"))
+
+  ;; THE FLAGS EVERY VERB TAKES: the answer's form, and the request for the
+  ;; verb's usage. One list, read by flag-options and censused by docs-check.
+  (define global-flags '("--wire" "--help" "-h"))
+
+  ;; -> #t when NODES ask for the verb's usage: --help or -h as a flag, so
+  ;; never a value another option took and never anything after `--`.
+  (define (help-requested? nodes)
+    (and (list? nodes)
+         (exists (lambda (n) (and (pair? n) (eq? (car n) 'flag) (pair? (cdr n))
+                                  (member (cadr n) '("--help" "-h"))
+                                  #t))
+                 nodes)))
 
   ;; THE REFUSAL, ONE DATUM FOR BOTH ROUTES: the first transport option the
   ;; caller wrote, as written, and where it belongs -- a bare
@@ -188,7 +214,7 @@
     (case verb ((commit) '("--working-version")) ((scope) '("--roots")) ((rule) '("--on")) (else '())))
 
   (define (flag-options verb)
-    (cons "--wire" (append (case verb
+    (append global-flags (append (case verb
       ;; NOTE: `--detach` CHANGES WHAT THE PROCESS DOES BEFORE IT SERVES, not
       ;; how it answers: it leaves the caller's session, drops the
       ;; caller's stdio and then behaves exactly like the foreground

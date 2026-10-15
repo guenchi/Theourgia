@@ -355,11 +355,15 @@
 (define core-closure (closure-of "../core.sc"))
 (define daemon-closure (closure-of "../theourgiad.sc"))
 (define client-closure (closure-of "../theourgia.sc"))
-(want "A1 no program's static closure holds the commitments library; the two that register hold the registry's data"
+;; ALL THREE HOLD THE REGISTRY'S DATA (F167): the two that register it, and
+;; the client, which reads the registered verbs' option tables from it to ask
+;; the parser whether a call is a request for help. Data only: no program's
+;; static closure holds a handler's library, which is what this row guards.
+(want "A1 no program's static closure holds the commitments library; all three hold the registry's data"
       (map (lambda (c) (list (and (member "../commitments.sc" c) #t) (and (member "../extensions.sc" c) #t)
                              (> (length c) 3)))
            (list core-closure daemon-closure client-closure))
-      '((#f #t #t) (#f #t #t) (#f #f #t)))
+      '((#f #t #t) (#f #t #t) (#f #t #t)))
 
 ;; AND AT RUN TIME, through the programs themselves: a copy of the library
 ;; that writes a file when its body runs, first on the library path. An

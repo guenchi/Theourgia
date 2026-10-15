@@ -259,6 +259,12 @@
 ;; `(theourgia answers)` imports `(chezscheme)` and names from
 ;; `(theourgia ffi)`, which the closure already holds, and does no
 ;; filesystem work of its own: it adds no edge to the server.
+;;
+;; KEY: `extensions` IS ALLOWED HERE, FOR ONE QUESTION (F167). The program
+;; asks the parser whether a call is a request for help, with the same tables
+;; the server parses with, the registered verbs' among them; their options
+;; come from `(theourgia extensions)`, which is data and imports `(rnrs base)`
+;; only: it adds no edge to the server either.
 (define program-imports
   (map cadr (filter (lambda (r) (pair? (cdr r)))
                     (imports-of-file 'theourgia (string-append root "/theourgia.sc")))))
@@ -275,7 +281,7 @@
 ;; platform number the FFI uses comes from the running platform's row.
 (want "C-2 and the client program's closure is exactly what it should be"
       (closure-of-all program-imports)
-      '(answers arguments client digest ffi incomplete platform-numbers render trace))
+      '(answers arguments client digest extensions ffi incomplete platform-numbers render trace))
 
 ;; ---- C-3 the change stream's two libraries are entered on demand -----------
 ;;
