@@ -492,9 +492,12 @@
 ;; constructor, the predicate and each field's accessor and mutator), and
 ;; the same inside a top-level begin. A name a macro use introduces is not
 ;; read. The second check is the other half of the same class: the import
-;; specs together, built as one environment, must not bring one name with
-;; two bindings (eval-worker.sc imported eval-context's display beside
-;; Chez's).
+;; specs together must not bring one name with two bindings (eval-worker.sc
+;; imported eval-context's display beside Chez's). It is read by compiling,
+;; as a program, the program's import form alone, which is the refusal the
+;; build meets. NEVER: NOT BY `environment`: given the same specs it takes
+;; one of the two bindings and refuses nothing -- measured, the twin below
+;; read #f that way.
 (define six-programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "eval-runner-exec.sc" "mcp/server.sc"))
 (define (program-forms rel) (read-all (string-append programs-root "/" rel)))
 (define (imported-names forms)
@@ -537,12 +540,20 @@
                  ((eq? (car f) 'define-record-type) (record-names (cadr f) (cddr f)))
                  (else '())))
          forms)))
-;; #f when the program's import specs make one environment, else what the
-;; expander said: a name brought twice with two bindings is refused here
+;; #f when the program's import form compiles as a program of its own,
+;; else what the compiler said; the object goes to a scratch directory and
+;; whatever the compiler prints to a string
 (define (import-conflict forms)
-  (let ((imp (find (lambda (f) (and (pair? f) (eq? (car f) 'import))) forms)))
-    (guard (e (#t (if (message-condition? e) (condition-message e) 'refused)))
-      (and imp (apply environment (cdr imp)) #f))))
+  (let ((imp (find (lambda (f) (and (pair? f) (eq? (car f) 'import))) forms))
+        (d (row-dir!)))
+    (and imp
+         (let ((src (string-append d "/imports.sc")) (obj (string-append d "/imports.so")))
+           (call-with-output-file src (lambda (p) (write imp p) (newline p) (put-string p "(void)\n")))
+           (guard (e (#t (if (message-condition? e) (condition-message e) 'refused)))
+             (let ((sink (open-output-string)))
+               (parameterize ((current-output-port sink) (console-output-port sink))
+                 (compile-program src obj)))
+             #f)))))
 ;; -> ((<file> <name> ...) ...) for every program defining an imported name
 (define (name-collisions forms-of)
   (filter (lambda (r) (pair? (cdr r)))
@@ -566,10 +577,10 @@
             (hashtable-ref (imported-names (program-forms "eval-worker.sc")) 'protocol #f))
       (list '(("eval-worker.sc" protocol)) '(("eval-worker.sc" protocol)) '(("eval-worker.sc" protocol))
             '(("eval-worker.sc" car)) (map (lambda (rel) #t) six-programs) #t))
-(want "PROGNAMES-3 every program's import specs, built as one environment, bring no name with two bindings"
+(want "PROGNAMES-3 every program's import form compiles as a program: no name is brought with two bindings"
       (filter cadr (map (lambda (rel) (list rel (import-conflict (program-forms rel)))) six-programs))
       '())
-(want "PROGNAMES-4 TWIN: eval-worker.sc's imports with (theourgia eval-context) whole beside (chezscheme) are refused as one environment"
+(want "PROGNAMES-4 TWIN: eval-worker.sc's import form with (theourgia eval-context) whole beside (chezscheme) does not compile"
       (let* ((forms (program-forms "eval-worker.sc"))
              (with (map (lambda (f) (if (and (pair? f) (eq? (car f) 'import))
                                         (append f (list '(theourgia eval-context)))
