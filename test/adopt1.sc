@@ -273,7 +273,7 @@
 ;; membership and still be wrong, so this row names WHICH of the two it has
 ;; to be -- the one that is not retired, which is the one a client should
 ;; place its cursor on.
-(want "F45 with two writers the local one is the adopted writer, not the retired one"
+(want "MACHINE-1 with two writers the local one is the adopted writer, not the retired one"
       (let* ((c (store-check d2))
              (local (assq 'local-writer (cdr c)))
              (ws (map car (cadr (assq 'writers (cdr c))))))
@@ -768,7 +768,7 @@
 ;; FOR, AND IT HAD NO ROW. That function used to answer the first RETIRED
 ;; writer when the search ran out, and this fixture builds the one state where
 ;; that branch is reached -- a retirement whose successor is gone. Without the
-;; capture below, putting the old fallback back passes every F45 row, because
+;; capture below, putting the old fallback back passes every MACHINE row, because
 ;; all of them look at stores that have a writer this machine may write as.
 (define f45-all-retired-check #f)
 (define f45-all-retired-refusal #f)
@@ -973,11 +973,11 @@
 ;; `retired`, which tells the client to adopt. A received store cannot adopt
 ;; anything, and says `no-local-writer`. Collapsing the two into one answer is
 ;; what `log13` caught.
-(want "F45 and in the all-retired state the refusal says retired, not no-local-writer"
+(want "MACHINE-2 and in the all-retired state the refusal says retired, not no-local-writer"
       f45-all-retired-refusal
       '(retired))
 
-(want "F45 when every local writer is retired there is no writer to name"
+(want "MACHINE-3 when every local writer is retired there is no writer to name"
       (list (if (assq 'local-writer (cdr f45-all-retired-check)) 'A-WRITER-WAS-NAMED 'absent)
             ;; and the store still has that writer listed, so the absence is
             ;; about locality and not about the writer having vanished
@@ -990,7 +990,7 @@
         (uncertain-load copy8 new8))
       (list (list (list new8 end8 #f)) (list 'uncertain-cache 'absent)))
 
-;; ---- F45: which writer is this machine's ---------------------------------
+;; ---- MACHINE: which writer is this machine's -----------------------------
 ;;
 ;; KEY: `local` IS NOT ABOUT THE MACHINE. A writer is local when
 ;; `writers/<id>/owner.sexp` exists INSIDE THE STORE, and that file travels
@@ -1007,7 +1007,7 @@
 ;; NEVER: THE EXPECTATION IS DERIVED FROM THE ANSWER'S OWN WRITERS CLAUSE.
 ;; Writer names are generated, so a row naming one would be a coin toss that
 ;; passes today. What is being asserted is that the two AGREE.
-(want "F45 check names the local writer, and it is the writer it lists"
+(want "MACHINE-4 check names the local writer, and it is the writer it lists"
       ;; NEVER: EXACTLY ONE CLAUSE, AND EXACTLY TWO ELEMENTS IN IT. `assq`
       ;; answers the first match, so a second `local-writer` clause -- or one
       ;; carrying extra elements -- is invisible to a row that only looks at
@@ -1043,13 +1043,13 @@
                                         (list (cons 'kind 'section)
                                               (cons 'title "FromElsewhere"))))))
 
-(want "F45 the foreign writer's record publishes into this store"
+(want "MACHINE-5 the foreign writer's record publishes into this store"
       (car (log-publish! f45-mixed "mirrorzz" 1 f45-foreign (segment-sha f45-foreign)))
       'published)
 
 (define f45-mixed-check (store-check f45-mixed))
 
-(want "F45 with a local writer and a mirrored one, the local one is named"
+(want "MACHINE-6 with a local writer and a mirrored one, the local one is named"
       (let ((local (assq 'local-writer (cdr f45-mixed-check)))
             (ws (map car (cadr (assq 'writers (cdr f45-mixed-check))))))
         (list (and local (cadr local))
@@ -1063,7 +1063,7 @@
 (system (string-append "rm -rf " f45-mixed "/writers/" f45-local-writer))
 (define f45-elsewhere-check (store-check f45-mixed))
 
-(want "F45 a store whose only writer is a mirrored one has no local writer, and that writer is intact"
+(want "MACHINE-7 a store whose only writer is a mirrored one has no local writer, and that writer is intact"
       (let* ((local (assq 'local-writer (cdr f45-elsewhere-check)))
              (ws (cadr (assq 'writers (cdr f45-elsewhere-check))))
              (mirrored (assoc "mirrorzz" ws)))
@@ -1107,7 +1107,7 @@
 ;; with `retired`; handed #f the write path raised `~s is not a string`. The
 ;; write path now uses a selection that still names a retired writer, and
 ;; `check` keeps the one that does not.
-(want "F45 a store whose writers are all somebody else's refuses by naming that"
+(want "MACHINE-8 a store whose writers are all somebody else's refuses by naming that"
       ;; NOTE: BOTH OF THESE ARE THE RECEIVED KIND. `f45-mixed` has had its
       ;; local writer's directory removed and `f45-received` never had an
       ;; owner file -- neither is the all-retired case, which is a different
@@ -1115,7 +1115,7 @@
       (list (refusal-of-write f45-mixed) (refusal-of-write f45-received))
       (list '(no-local-writer) '(no-local-writer)))
 
-(want "F45 a writer with neither an owner file nor a manifest is also not this machine's"
+(want "MACHINE-9 a writer with neither an owner file nor a manifest is also not this machine's"
       (let* ((ws (cadr (assq 'writers (cdr f45-received-check))))
              (w (car ws)))
         (list (if (assq 'local-writer (cdr f45-received-check)) 'PRESENT 'absent)

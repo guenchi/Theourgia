@@ -82,7 +82,7 @@
 ;; an edit somebody makes on purpose.
 ;;
 ;; KEY: AN EXCEPTION IS A FILE AND THE EXACT TEXT OF ONE LINE, NOT A LINE
-;; NUMBER (F86). Keyed by number, any line inserted above the datum moved
+;; NUMBER. Keyed by number, any line inserted above the datum moved
 ;; it off the excepted number and turned ASCII-2 red, and a renumbering
 ;; was never checked against what the line says. Keyed by content, the
 ;; line may move anywhere in its file and stays excepted; if its text
@@ -299,7 +299,7 @@
               (if (cleared-floor? (car r)) (quote PASSED-THE-FLOOR) (quote refused))))
       (list #t (quote refused)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -411,7 +411,7 @@
 ;; mutation turns this row red.
 ;;
 ;; KEY: EACH SPECIMEN CARRIES THE EXCEPTED CONTENT. The exemption is keyed
-;; by the line's text (F86), so a specimen holding some other CJK line
+;; by the line's text, so a specimen holding some other CJK line
 ;; would be refused under both mutations and could not tell them apart:
 ;; the row has to ask its question where the answer differs. (When the key
 ;; was a line number the same rule put the CJK on that number.)
@@ -436,7 +436,7 @@
   (want "ASCII-2 TWIN: a CJK line in the excepted file whose content is not the excepted line is refused"
         (length (caddr (scan-as-tree d))) 1))
 
-;; F86: THE EXCEPTION FOLLOWS ITS LINE, AND NOTHING ELSE. Both rows start
+;; EXCEPTION: THE EXCEPTION FOLLOWS ITS LINE, AND NOTHING ELSE. Both rows start
 ;; from the real client-start.sc, so they ask about the line as it is.
 ;;
 (define client-start-text
@@ -452,14 +452,14 @@
   (system (string-append "mkdir -p " d "/test"))
   (put! (string-append d "/test/client-start.sc")
         (string-append ";; one line inserted above everything\n" client-start-text))
-  (want "F86-1 client-start.sc with one line inserted above the datum still passes: the exception moved with its line"
+  (want "EXCEPTION-1 client-start.sc with one line inserted above the datum still passes: the exception moved with its line"
         (let ((r (scan-as-tree d))) (list (car r) (caddr r)))
         (list 1 (quote ()))))
 (let ((d (fresh! "exception-copied")))
   (system (string-append "mkdir -p " d "/test"))
   (put! (string-append d "/test/client-start.sc")
         (string-append client-start-text excepted-text "\n"))
-  (want "F86-3 a second copy of the excepted line in client-start.sc is refused: the exception excuses one line"
+  (want "EXCEPTION-2 a second copy of the excepted line in client-start.sc is refused: the exception excuses one line"
         (map (lambda (h) (root-relative (car h))) (caddr (scan-as-tree d)))
         (list "test/client-start.sc")))
 (let ((d (fresh! "exception-changed")))
@@ -468,7 +468,7 @@
         (or (replace-first client-start-text excepted-text
                            (or (replace-first excepted-text "\x5B58;" "\x5728;") "NO-CJK-IN-THE-EXCEPTION"))
             "NO-EXCEPTED-LINE-IN-CLIENT-START"))
-  (want "F86-2 client-start.sc whose excepted line's content changes by one character fails, naming the file"
+  (want "EXCEPTION-3 client-start.sc whose excepted line's content changes by one character fails, naming the file"
         (map (lambda (h) (root-relative (car h))) (caddr (scan-as-tree d)))
         (list "test/client-start.sc")))
 

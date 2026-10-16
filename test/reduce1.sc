@@ -1380,7 +1380,7 @@
         (reduce-apply! r "a" 2 '() '(set "a.1" title "next")))
       'accepted)
 
-(printf "== F42 kind: the caller is judged, the record is not ==\n")
+(printf "== KINDS: the caller is judged, the record is not ==\n")
 ;; NEVER: REPLAY MUST NOT ACQUIRE AN OPINION ABOUT KINDS. The table lives on
 ;; the caller path on purpose. A store written by another version -- or by a
 ;; later one, which is the case that matters -- carries kinds this build has

@@ -71,7 +71,7 @@
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -290,19 +290,20 @@
 ;; lines below -- two copies of one list, in the file whose subject is two
 ;; copies of one form.
 ;;
-;; NEVER: AND THE LIST IS READ FROM THE PROGRAMS, NOT TYPED HERE (F64). It
+;; NEVER: AND THE LIST IS READ FROM THE PROGRAMS, NOT TYPED HERE. It
 ;; was the literal `'(eval serve)`, while `rpc-verbs` was derived from the
 ;; dispatcher's own table; `core.sc` dispatched `eval` and `theourgiad.sc`
 ;; dispatched `serve` each with a `string=?`, so a third verb added to either
 ;; joined no list, was compared against nothing, and turned no row red. Each
 ;; program now dispatches from one `own-verbs` table, and `own-verbs.sc`
-;; reads both, raising rather than answering empty -- the F64 rows below
-;; hold it to that.
+;; reads both, raising rather than answering empty -- the OWNVERBS rows
+;; below hold it to that.
 ;;
 ;; NEVER: EACH VERB'S FORM IS LOOKED FOR IN THE PROGRAM THAT ANSWERS IT.
-;; Since F46 `serve-usage` is `theourgiad.sc`'s, and with `core.sc` the only
+;; Since the program split `serve-usage` is `theourgiad.sc`'s, and with `core.sc` the only
 ;; program read here, `serve` read as a verb with no usage form: GATE-A and
-;; GATE-B2 went red on the split's own tree. That is F64, and the paragraph at
+;; GATE-B2 went red on the split's own tree. That is the OWNVERBS reading, and
+;; the paragraph at
 ;; the partition row says what the partition does and does not promise.
 (define script-dir
   (let* ((self (car (command-line)))
@@ -414,7 +415,7 @@
             (and (memq 'eval (rpc-verbs)) #t))
       '(#t #t #f))
 
-;; ---- F64: the programs' own verbs are read, and the reader can say no -----
+;; ---- OWNVERBS: the programs' own verbs are read, and the reader can say no
 ;;
 ;; NEVER: THE CENSUS IS ONLY AS GOOD AS ITS READER. A reader that answered an
 ;; empty list when it could not find the table would make every row above
@@ -422,34 +423,34 @@
 ;; row here: no define, a table naming nothing, an entry of another shape.
 ;; The samples are forms, not files: the reader is the same procedure
 ;; either way, and a sample on disk would be one more thing to clean up.
-(display "== F64: the verbs each program answers itself ==\n")
+(display "== OWNVERBS: the verbs each program answers itself ==\n")
 
-(want "F64 each program's own verbs are read from its dispatch table, core.sc then theourgiad.sc"
+(want "OWNVERBS-1 each program's own verbs are read from its dispatch table, core.sc then theourgiad.sc"
       (list (own-verbs-of "../core.sc") (own-verbs-of "../theourgiad.sc"))
       '((eval scope collect) (serve)))
 
-(want "F64 a program with no own-verbs define is a raise naming the file, not an empty census"
+(want "OWNVERBS-2 a program with no own-verbs define is a raise naming the file, not an empty census"
       (guard (e (#t (list 'RAISED (condition-message e) (condition-irritants e))))
         (own-verbs-in '((import (rnrs)) (define (main argv) argv)) "sample-without"))
       '(RAISED "no (define own-verbs ...) at the top level" ("sample-without")))
 
-(want "F64 a table that names no verb is a raise, not an empty census"
+(want "OWNVERBS-3 a table that names no verb is a raise, not an empty census"
       (own-verbs-in '((define own-verbs (list))) "sample-empty")
       '(RAISED "the own-verbs table names no verb"))
 
-(want "F64 an entry that is not (cons '<verb> <procedure>) is a raise, not a skipped verb"
+(want "OWNVERBS-4 an entry that is not (cons '<verb> <procedure>) is a raise, not a skipped verb"
       (own-verbs-in '((define own-verbs (list (cons 'eval f) (list 'serve g)))) "sample-shape")
       '(RAISED "an entry is not (cons '<verb> <procedure>)"))
 
-(want "F64 a quote with more than one datum in an entry is a raise, not the first datum"
+(want "OWNVERBS-5 a quote with more than one datum in an entry is a raise, not the first datum"
       (own-verbs-in '((define own-verbs (list (cons (quote eval ignored) f)))) "sample-quote")
       '(RAISED "an entry is not (cons '<verb> <procedure>)"))
 
-(want "F64 a define with more than one value form is a raise, not its first value"
+(want "OWNVERBS-6 a define with more than one value form is a raise, not its first value"
       (own-verbs-in '((define own-verbs (list (cons 'eval f)) extra)) "sample-define")
       '(RAISED "own-verbs is not a (list ...) form"))
 
-(want "F64 CONTROL: a well-formed sample table reads as its verbs, in order"
+(want "OWNVERBS-7 CONTROL: a well-formed sample table reads as its verbs, in order"
       (own-verbs-in '((define own-verbs (list (cons 'b f) (cons 'a g)))) "sample-good")
       '(b a))
 
@@ -1303,7 +1304,7 @@
 ;;
 ;; So this row closes one way out and not the other. Deriving the CLI's
 ;; verbs from `core.sc` the way `catalogue-places` derives from `rpc.sc` is
-;; F64. Written here because a row asserting a total reads like "every verb
+;; the OWNVERBS reading. Written here because a row asserting a total reads like "every verb
 ;; has been accounted for", and this one accounts for every verb THIS GATE
 ;; KNOWS ABOUT.
 (want "GATE-C every verb lands in exactly one of the three lists"
@@ -1385,7 +1386,7 @@
 ;;     `child` and the dispatcher never answers it.
 ;;   serve    theourgiad.sc:55  `serve-usage`
 ;;     The daemon program's own verb; it never reaches the dispatcher's
-;;     catalogue. Since F46 `serve` is the daemon program's, `theourgiad.sc`.
+;;     catalogue. Since the program split `serve` is the daemon program's, `theourgiad.sc`.
 ;;     `serve` was in this list for a round with the wrong reason: a second
 ;;     spelling in `core.sc` gave a partial form in which `--detach` was not
 ;;     bracketed, so it read as required rather than optional -- a false
@@ -1602,7 +1603,8 @@
 ;; or a usage site written with `apply`, `cons`, a macro, a quasiquotation or
 ;; a quoted table is not judged at all and does not appear here. That is the
 ;; remaining exit, it is named in the scope note at the end of this section,
-;; and the answer to it is F65 rather than another shape.
+;; and the answer to it is one named binding per form rather than another
+;; shape.
 (want "GATE-C no candidate was judged and then dropped without an outcome"
       (filter (lambda (e) (equal? (caddr e) '(candidate-produced-no-outcome)))
               unreadable-sites)
@@ -1646,7 +1648,7 @@
 ;; of every reach problem in this section: the population is derived from
 ;; something hand-written rather than from the repository. It is the same
 ;; hole as the CLI's own verb list, and it has the same answer -- derive the
-;; population from what the repository holds -- which is F64. Measured by the
+;; population from what the repository holds -- which is the OWNVERBS reading. Measured by the
 ;; main session: `git ls-files '*.sc'` is 191, of which 43 at the top level
 ;; and 1 under `mcp/` are the shipped sources and 147 are fixtures.
 ;; NEVER: NARROWING A CANDIDATE SET IS ITSELF A WAY OF GOING QUIET. The scan
@@ -1686,11 +1688,12 @@
 ;; NEVER: EVERY ROUND OF THIS SECTION ENDED BY TEACHING THE SCANNER ONE MORE
 ;; SHAPE, and the syntax is open while the list of shapes is not. What follows
 ;; is the reach as it actually stands, so that the next reader starts from it
-;; instead of rediscovering it. The answer to the first three is F65 -- one
+;; instead of rediscovering it. The answer to the first three is one
 ;; named binding per form and every other site referring to it by name, which
 ;; turns those into "is this position a symbol" -- and not another shape added
-;; here. The fourth is about which files are scanned at all, which F65 does
-;; not touch; it is F64. NEVER: THIS SAID F65 WAS THE ANSWER TO ALL OF IT,
+;; here. The fourth is about which files are scanned at all, which that does
+;; not touch; it is the OWNVERBS reading. NEVER: THIS SAID ONE NAMED BINDING
+;; PER FORM WAS THE ANSWER TO ALL OF IT,
 ;; two lines above the sentence that assigns the fourth one elsewhere.
 ;;
 ;;   THE SHAPE FILTERS RUN BEFORE THE ACCOUNTING. A catalogue row that does
@@ -1725,9 +1728,11 @@
 ;;
 ;;   THE POPULATION COMES FROM TWO NON-RECURSIVE GLOBS AND A VERB LIST. A
 ;;   source in another subdirectory is outside the scan and outside the row
-;;   that names the scanned files. That is F64, not F65.
+;;   that names the scanned files. That is the OWNVERBS reading, not named
+;;   bindings.
 ;;
-;; refusal.sc since F100b M3a (L); incomplete.sc since F77c (L). NOTE: a named list like this is what F64
+;; refusal.sc since the shell's refusals (L); incomplete.sc since incomplete
+;; reductions (L). NOTE: a named list like this is what the OWNVERBS reading
 ;; replaced elsewhere; that this one should come from the tree is queued.
 ;; eval-runner.sc and eval-runner-exec.sc: the runner path of eval --lang (L).
 ;; completion.sc: the judgement of a plan's completion, entered by the store when one is reached (L).

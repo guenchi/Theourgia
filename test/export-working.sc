@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; Exporting a writer's working view (F17): `export-md --working` and
+;; Exporting a writer's working view: `export-md --working` and
 ;; `export-code --working`.
 ;;
 ;; KEY: EVERY ROW RUNS THE REAL COMMAND LINE AS A PROCESS, as
@@ -55,7 +55,7 @@
 
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S ROOT (F71); run alone, /tmp.
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S ROOT; run alone, /tmp.
 (define scratch-base
   (let ((v (getenv "THEOURGIA_TEST_ROOT")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
@@ -170,7 +170,7 @@
 (define code-src (fresh-dir "code-src"))
 ;; NOTE: ONE FORM PER FILE. Text-mode import-code keeps a file's text as
 ;; the blocks its splitter makes, and measured on the first run it kept two
-;; forms separated by a blank line as ONE block (F17-00 read the same id
+;; forms separated by a blank line as ONE block (WORKING-01 read the same id
 ;; twice); two files give two blocks whatever the splitter does.
 (put! (string-append code-src "/m.sc") "(define (f) 'onecommitted)\n")
 (put! (string-append code-src "/n.sc") "(define (g) 'twocommitted)\n")
@@ -196,7 +196,7 @@
 ;; on one of these blocks, or is refused one on the datum block; if two
 ;; markers landed in one block, or grep named none, the rows would be about
 ;; something else and could still read green.
-(want "F17-00 PREMISE: the five blocks the rows write drafts on, or try to, are five different blocks"
+(want "WORKING-01 PREMISE: the five blocks the rows write drafts on, or try to, are five different blocks"
       (let ((ids (list alpha-id beta-id one-id two-id h-id)))
         (if (and (for-all string? ids)
                  (= 5 (length (fold-left (lambda (acc x) (if (member x acc) acc (cons x acc))) '() ids))))
@@ -211,7 +211,7 @@
 (define w1-beta (cli "write" "--writer" "w1" beta-id "betadraftone here.\n"))
 (define w1-one (cli "write" "--writer" "w1" one-id "(define (f) 'onedraftone)\n"))
 
-(want "F17-01 PREMISE: w1's two drafts were written"
+(want "WORKING-02 PREMISE: w1's two drafts were written"
       (list (if (contains? w1-beta "(ok (saved") 'saved (list 'said w1-beta))
             (if (contains? w1-one "(ok (saved") 'saved (list 'said w1-one)))
       '(saved saved))
@@ -312,14 +312,15 @@
 (cli "write" "--writer" "w2" two-id "(define (g) 'twopublished)\n")
 (define published (cli "commit" "--writer" "w2" alpha-id two-id))
 
-(want "F17-02 PREMISE: w2's commit was applied to the Markdown block"
+(want "WORKING-03 PREMISE: w2's commit was applied to the Markdown block"
       (if (and (contains? published "(ok")
                (contains? (cli "read" alpha-id) "alphapublished"))
           'published
           (list 'said published))
       'published)
 
-;; NOTE: A MEASUREMENT OF THE COMMIT PATH, NOT OF F17 (F119). The commit's
+;; NOTE: A MEASUREMENT OF THE COMMIT PATH, NOT OF THE WORKING VIEW (the text-mode plan
+;; mismatch). The commit's
 ;; plan declares the draft's text as a string (working.sc entry-intent),
 ;; while its record carries the bytes store.sc's resolve makes of it for a
 ;; text-mode block; the reducer compares the two verbatim, marks the
@@ -329,7 +330,7 @@
 ;; W11-cut-plus-working below, for that reason and not for the view.
 (define code-now (fresh-dir "code-now"))
 (define code-now-answer (cli "export-code" code-now))
-(want "F17-02 CONTROL: plain export-code after w2's commit of a code block writes the committed file"
+(want "WORKING-04 CONTROL: plain export-code after w2's commit of a code block writes the committed file"
       (list (if (contains? code-now-answer "(ok") 'ok (list 'said code-now-answer))
             (contains? (all-text code-now) "twopublished"))
       '(ok #t))
@@ -364,7 +365,7 @@
         (list (contains? t "alphapublished") (contains? t "alphacommitted") (contains? t "betadraftthree")))
       '(#f #t #t))
 
-;; NOTE: WHILE F119 STANDS this row cannot tell pinned from current: the
+;; NOTE: WHILE THE TEXT-MODE PLAN MISMATCH STANDS this row cannot tell pinned from current: the
 ;; committed code change never lands, so it is absent either way (M1 left it
 ;; green). The md TWIN above is the one that measures the pin today.
 (want "W11-cut-plus-working TWIN (pinned): a commit made after the drafts is not in export-code --working"
@@ -388,22 +389,22 @@
 ;; code is its body, so `write` refuses one by name (store.sc,
 ;; draft-on-datum-refusal), and the working view of a datum block is its
 ;; committed body. Before that refusal a draft could be written on one, and
-;; its view read it as the body (design 7.5.21): F17-07 keeps that reading
-;; for a draft written then.
+;; its view read it as the body (design 7.5.21): WORKING-08 keeps that
+;; reading for a draft written then.
 (define datum-write (cli "write" "--writer" "w5" h-id "(define (h) 'datumdraft)"))
 (define datum-work (fresh-dir "datum-work"))
 (define datum-plain (fresh-dir "datum-plain"))
 (define datum-work-answer (cli "export-code" datum-work "--datum" "--working" "--writer" "w5"))
 (cli "export-code" datum-plain "--datum")
 
-(want "F17-06 write on a datum block is refused by name, and export-code --datum --working writes its committed body"
+(want "WORKING-05 write on a datum block is refused by name, and export-code --datum --working writes its committed body"
       (let ((t (all-text datum-work)) (a (answer-of datum-write)))
         (list (and (list? a) (>= (length a) 3) (list-head a 3))
               (contains? t "datumdraft") (contains? t "datumcommitted")
               (clause-of datum-work-answer 'working)))
       '((error bad-request draft-on-datum-unsupported) #f #t (working #t)))
 
-(want "F17-06 TWIN: plain export-code --datum writes the committed body"
+(want "WORKING-06 TWIN: plain export-code --datum writes the committed body"
       (let ((t (all-text datum-plain)))
         (list (contains? t "datumdraft") (contains? t "datumcommitted")))
       '(#f #t))
@@ -417,7 +418,7 @@
 (include "forge-draft.ss")
 (forge-fresh-draft! store "w6" h-id "(define (h) 'broken")
 (define datum-broken (fresh-dir "datum-broken"))
-(want "F17-07 an unreadable datum draft is refused as working-draft-unreadable, naming the block"
+(want "WORKING-07 an unreadable datum draft is refused as working-draft-unreadable, naming the block"
       (let* ((answer (cli "export-code" datum-broken "--datum" "--working" "--writer" "w6"))
              (a (answer-of answer)))
         (list (and (pair? a) (list (car a) (and (pair? (cdr a)) (cadr a))))
@@ -428,7 +429,7 @@
 ;; TWIN: such a draft that reads as one form is written as the block's body.
 (forge-fresh-draft! store "w8" h-id "(define (h) 'legacydraft)")
 (define datum-legacy (fresh-dir "datum-legacy"))
-(want "F17-07 TWIN a datum draft written then, that reads, is written as the body under --working"
+(want "WORKING-08 TWIN a datum draft written then, that reads, is written as the body under --working"
       (let ((answer (cli "export-code" datum-legacy "--datum" "--working" "--writer" "w8")))
         (list (clause-of answer 'working)
               (contains? (all-text datum-legacy) "legacydraft")
@@ -459,7 +460,7 @@
 ;;
 ;; NEVER: A DIRECTORY THAT IS NOT ONE IS ANSWERED AS THE PLAIN EXPORT ANSWERS IT,
 ;; before any view is taken.
-(want "F17-03 export-md --working to a path that is not a directory answers as the plain export does"
+(want "WORKING-09 export-md --working to a path that is not a directory answers as the plain export does"
       (let ((missing (string-append here "/no-such-dir")))
         (list (clause-of (cli "export-md" missing "--working" "--writer" "w1") 'reason)
               (clause-of (cli "export-md" missing) 'reason)))
@@ -468,7 +469,7 @@
 ;; NEVER: --writer IS READ ONLY WITH --working. A plain export accepts it and
 ;; ignores it, as `read` without --working does.
 (define md-plain-w1 (fresh-dir "md-plain-w1"))
-(want "F17-04 plain export-md with --writer writes the committed state"
+(want "WORKING-10 plain export-md with --writer writes the committed state"
       (begin (cli "export-md" md-plain-w1 "--writer" "w1")
              (equal? (tree-of md-plain-w1) (tree-of md-now)))
       #t)
@@ -503,7 +504,7 @@
 (cli "export-md" md-now)
 (cli "export-code" code-now)
 
-(want "F266-1 an export at a tag equals the export taken when the tag was the head, after a later commit changed a section and a code block; each answer is ok and says the cut read --cut serves for the tag"
+(want "ATCUT-1 an export at a tag equals the export taken when the tag was the head, after a later commit changed a section and a code block; each answer is ok and says the cut read --cut serves for the tag"
       (list (if (contains? tagged "(ok") 'tagged (list 'said tagged))
             (if (contains? later-commit "(ok") 'committed (list 'said later-commit))
             (map ok-answer? (list md-then-answer code-then-answer md-at-answer code-at-answer))
@@ -515,19 +516,19 @@
             (equal? (clause-of md-at-answer 'cut) tag-read-cut)
             (equal? (clause-of code-at-answer 'cut) tag-read-cut))
       '(tagged committed (#t #t #t #t) #t #t #t #t #t #t))
-(want "F266-1 CONTROL: the head exports carry the later commit and the tag's do not"
+(want "ATCUT-2 CONTROL: the head exports carry the later commit and the tag's do not"
       (list (contains? (all-text md-now) "alphalater") (contains? (all-text md-at) "alphalater")
             (contains? (all-text code-now) "onelater") (contains? (all-text code-at) "onelater"))
       '(#t #f #t #f))
 (define (head3 text) (let ((a (answer-of text))) (and (pair? a) (list-head a (min 3 (length a))))))
-(want "F266-2 --cut with --working, and --cut with --writer, each alone, are refused incompatible-cut-options, by export-md and by export-code"
+(want "ATCUT-3 --cut with --working, and --cut with --writer, each alone, are refused incompatible-cut-options, by export-md and by export-code"
       (list (head3 (cli "export-md" (fresh-dir "md-x1") "--cut" cut-tag "--working"))
             (head3 (cli "export-md" (fresh-dir "md-x2") "--cut" cut-tag "--writer" "w1"))
             (head3 (cli "export-code" (fresh-dir "code-x1") "--cut" cut-tag "--working"))
             (head3 (cli "export-code" (fresh-dir "code-x2") "--cut" cut-tag "--writer" "w1")))
       '((error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)
         (error bad-request incompatible-cut-options) (error bad-request incompatible-cut-options)))
-(want "F266-3 an unknown tag is refused unknown-tag, by export-md and by export-code, and nothing is written"
+(want "ATCUT-4 an unknown tag is refused unknown-tag, by export-md and by export-code, and nothing is written"
       (let ((md-x (fresh-dir "md-y")) (code-x (fresh-dir "code-y")))
         (list (let ((a (answer-of (cli "export-md" md-x "--cut" "no-such-tag")))) (and (pair? a) (list-head a (min 2 (length a)))))
               (let ((a (answer-of (cli "export-code" code-x "--cut" "no-such-tag")))) (and (pair? a) (list-head a (min 2 (length a)))))
@@ -536,7 +537,7 @@
 
 ;; ---- the README -----------------------------------------------------------------
 (define readme (file-text "../README.md"))
-(want "F17-05 the README's usage forms for export-md and export-code carry --working, --writer and --cut"
+(want "WORKING-11 the README's usage forms for export-md and export-code carry --working, --writer and --cut"
       (list (contains? readme "(export-md <dir> (\"--with-ids\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))")
             (contains? readme "(export-code <dir> (\"--raw\") (\"--datum\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))"))
       '(#t #t))

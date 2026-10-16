@@ -514,7 +514,7 @@
 (define nested-store (fresh-store!))
 (define nested-id (new-id (cadr (run nested-store "insert" "--title" "a nested carrier"))))
 (define nested-neighbour (new-id (cadr (run nested-store "insert" "--title" "quandel neighbour"))))
-;; THE CONSTRUCTION, BY THE FORGED WRITER'S NAME, so F87-1 can build it
+;; THE CONSTRUCTION, BY THE FORGED WRITER'S NAME, so NESTED-1 can build it
 ;; again with the name on the other side of the store's own.
 (define (forge-nested! store id forged-writer)
   (forge-record! store
@@ -533,7 +533,7 @@
 ;; A candidate is `(<value> <writer> <seq>)`, so a candidate whose VALUE is
 ;; itself a conflict is one whose car is `(conflict ...)`.
 ;;
-;; NEVER: THE NESTED CANDIDATE IS LOOKED FOR WHEREVER IT SITS (F87). The
+;; NEVER: THE NESTED CANDIDATE IS LOOKED FOR WHEREVER IT SITS. The
 ;; candidates come in event order, which takes the writer name, and the
 ;; store's own writer is 8 random base36 characters: the forged "zznested"
 ;; sorted before it about once in 3706 runs, the nested candidate came
@@ -569,7 +569,7 @@
       (nested-verdict nested-store nested-id)
       (list 0 #t))
 
-;; F87-1: THE SAME CONSTRUCTION WITH THE FORGED WRITER FIRST. A writer id
+;; NESTED-1: THE SAME CONSTRUCTION WITH THE FORGED WRITER FIRST. A writer id
 ;; is 8 characters of [0-9a-z], so "00000000" sorts at or before every one
 ;; the store can generate for itself: the nested candidate comes second,
 ;; the order that once failed FT-33. The row asserts that order too, so it
@@ -584,7 +584,7 @@
 (let* ((store (fresh-store!))
        (id (new-id (cadr (run store "insert" "--title" "a nested carrier, forged first"))))
        (own (directory-list (string-append store "/writers"))))
-  (want "F87-1 with the forged writer's candidate first, the nested candidate is still found"
+  (want "NESTED-1 with the forged writer's candidate first, the nested candidate is still found"
         (if (member "00000000" own)
             'local-writer-is-00000000
             (begin

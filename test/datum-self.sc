@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE DATUM READER ACCEPTS EVERY ONE OF THEOURGIA'S OWN SOURCES (F51).
+;; THE DATUM READER ACCEPTS EVERY ONE OF THEOURGIA'S OWN SOURCES.
 ;;
 ;; Measured 2026-09-20 on 44 files: 34 imported with `import-code --datum`,
 ;; 10 refused. Six were refused as `unbalanced` at their last byte: the
@@ -24,7 +24,7 @@
 ;;
 ;; The CENSUS row imports each source on its own and names every refusal. The
 ;; ROUND TRIP rows compare the forms Chez reads from each export with the
-;; forms it reads from the source. F51-3 and F51-4 pin the two causes on files
+;; forms it reads from the source. The PREFIX and CHARNAME rows pin the two causes on files
 ;; small enough to read.
 ;;
 ;; NOTE: THE ROUND TRIP COMPARES FORMS, NOT BYTES.
@@ -136,15 +136,15 @@
                                    '()))))))
 (define sources (cdr listing))
 
-(printf "== F51: the population ==\n")
+(printf "== POPULATION: the population ==\n")
 (printf "   (listed by ~a: ~a files)\n" (car listing) (length sources))
-(want "F51-0 the population is listed from the tree and holds at least the 45 own sources, mcp/server.sc among them"
+(want "POPULATION-1 the population is listed from the tree and holds at least the 45 own sources, mcp/server.sc among them"
       (list (memq (car listing) '(git-ls-files directory-listing))
             (>= (length sources) 45)
             (and (member "mcp/server.sc" sources) #t))
       (list (memq (car listing) '(git-ls-files directory-listing)) #t #t))
 
-;; ---- F51-1: every own source imports -------------------------------------------------
+;; ---- IMPORTS: every own source imports -----------------------------------------------
 ;;
 ;; Each file on its own, in a fresh store, so one refusal cannot hide another.
 (define n 0)
@@ -172,8 +172,8 @@
   (let ((clause (lambda (k) (let ((c (and (list? a) (assq k (filter pair? a))))) (and c (cadr c))))))
     (list (clause 'reason) (clause 'character-offset))))
 
-(printf "== F51-1: every own source imports with import-code --datum ==\n")
-(want "F51-1 CENSUS every own source imports with import-code --datum (refused: file, reason, offset)"
+(printf "== IMPORTS: every own source imports with import-code --datum ==\n")
+(want "IMPORTS-1 CENSUS every own source imports with import-code --datum (refused: file, reason, offset)"
       (fold-left (lambda (acc r)
                    (if (eq? (answer-head (caddr r)) 'ok)
                        acc
@@ -305,7 +305,7 @@
         (refusal-of (rpc-dispatch (string-append d "/store") (list 'import-code bad "--datum") "test")))
       '(missing-library-wrapper #f))
 
-;; ---- F51-3: the prefix limit is on a run ---------------------------------------------
+;; ---- PREFIX: the prefix limit is on a run --------------------------------------------
 (define (read-answer text)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) e)
             (#t (list 'RAISED (if (message-condition? e) (condition-message e) e))))
@@ -317,17 +317,17 @@
                  ")"))
 (define run-of-257 (string-append "(list " (make-string 257 #\') "x)"))
 
-(printf "== F51-3: the prefix limit counts a run, not the file ==\n")
-(want "F51-3 a form with 300 separate 'x atoms reads as one datum"
+(printf "== PREFIX: the prefix limit counts a run, not the file ==\n")
+(want "PREFIX-1 a form with 300 separate 'x atoms reads as one datum"
       (read-answer three-hundred-quoted)
       1)
-(want "F51-3 a run of 257 consecutive quotes is refused as prefix-limit at the run's first quote"
+(want "PREFIX-2 a run of 257 consecutive quotes is refused as prefix-limit at the run's first quote"
       (read-answer run-of-257)
       '(error bad-source (reason prefix-limit) (character-offset 6)))
-(want "F51-3 a run of 257 unquote-splicings (,@) is refused as prefix-limit at the run's first comma"
+(want "PREFIX-3 a run of 257 unquote-splicings (,@) is refused as prefix-limit at the run's first comma"
       (read-answer (string-append "(list " (apply string-append (make-list 257 ",@")) "x)"))
       '(error bad-source (reason prefix-limit) (character-offset 6)))
-(want "F51-3 CONTROL a run of 256 is accepted"
+(want "PREFIX-4 CONTROL a run of 256 is accepted"
       (read-answer (string-append "(list " (make-string 256 #\') "x)"))
       1)
 
@@ -344,26 +344,26 @@
        (answer (read-answer twenty-thousand-discards))
        (t1 (real-time)))
   (printf "   (reading: 20,000 separate discards read in ~a ms)\n" (- t1 t0))
-  (want "F51-3 a file of 20,000 separate #;x discards before one form reads as one form"
+  (want "PREFIX-5 a file of 20,000 separate #;x discards before one form reads as one form"
         answer
         1))
 
-;; ---- F51-4: a character literal's name has no escape --------------------------------
-(printf "== F51-4: #\\\\ and its neighbours are one character each ==\n")
+;; ---- CHARNAME: a character literal's name has no escape -----------------------------
+(printf "== CHARNAME: #\\\\ and its neighbours are one character each ==\n")
 (define (forms-read text)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) e)
             (#t (list 'RAISED (if (message-condition? e) (condition-message e) e))))
     (map car (datum-source-read (string->utf8 text)))))
-(want "F51-4 (list #\\\\) reads as one datum, the backslash character"
+(want "CHARNAME-1 (list #\\\\) reads as one datum, the backslash character"
       (forms-read "(list #\\\\)")
       (list (list 'list #\\)))
-(want "F51-4 TWIN (list #\\\\ #\\a) reads as the backslash and #\\a, two data (green on the base too: the swallowed space did not move the depth)"
+(want "CHARNAME-2 TWIN (list #\\\\ #\\a) reads as the backslash and #\\a, two data (green on the base too: the swallowed space did not move the depth)"
       (forms-read "(list #\\\\ #\\a)")
       (list (list 'list #\\ #\a)))
-(want "F51-4 PIN (list #\\;) reads as one datum"
+(want "CHARNAME-3 PIN (list #\\;) reads as one datum"
       (forms-read "(list #\\;)")
       (list (list 'list #\;)))
-(want "F51-4 PIN (list #\\\") reads as one datum"
+(want "CHARNAME-4 PIN (list #\\\") reads as one datum"
       (forms-read "(list #\\\")")
       (list (list 'list #\")))
 

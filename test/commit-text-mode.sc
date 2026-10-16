@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; Committing a draft on a text-mode code block (F119).
+;; Committing a draft on a text-mode code block.
 ;;
 ;; NEVER: A COMMIT THAT ANSWERS OK HAS LANDED. The commit's plan declared the
 ;; draft as a string (working.sc entry-intent) while its record carried the
@@ -23,9 +23,9 @@
 ;; ok. The rows read the committed state three ways: `read`, the plain
 ;; export, and the reduction's own notes and pending records.
 ;;
-;; KEY: F119-00 TO F119-05 WRITE THROUGH THE REAL COMMAND LINE, AS PROCESSES,
+;; KEY: TEXTCOMMIT-1 TO TEXTCOMMIT-6 WRITE THROUGH THE REAL COMMAND LINE, AS PROCESSES,
 ;; and read the notes in this process afterwards, from a fresh load of the
-;; store. F119-06 and F119-07 call with-store-write in this process: they
+;; store. TEXTCOMMIT-7 and TEXTCOMMIT-8 call with-store-write in this process: they
 ;; need a planned request carrying an intent no command line can spell.
 
 (import (chezscheme) (theourgia store) (theourgia reduce)
@@ -138,7 +138,7 @@
 (define md-id (block-holding "betacommitted"))
 (set! current-store store)
 
-(want "F119-00 PREMISE: a text-mode code block and a Markdown section to commit drafts on"
+(want "TEXTCOMMIT-1 PREMISE: a text-mode code block and a Markdown section to commit drafts on"
       (list (and (string? code-id) (contains? (cli "read" code-id) "(mode . text)"))
             (string? md-id))
       '(#t #t))
@@ -147,20 +147,20 @@
 (define code-write (cli "write" "--writer" "w2" code-id "(define (g) 'twopublished)\n"))
 (define code-commit (cli "commit" "--writer" "w2" code-id))
 
-(want "F119-01 PREMISE: the draft was written and the commit answered ok"
+(want "TEXTCOMMIT-2 PREMISE: the draft was written and the commit answered ok"
       (list (contains? code-write "(ok (saved") (contains? code-commit "(ok (items (ok"))
       '(#t #t))
 
-(want "F119-02 after the commit, read gives the committed draft's text"
+(want "TEXTCOMMIT-3 after the commit, read gives the committed draft's text"
       (read-src code-id)
       "(define (g) 'twopublished)\n")
 
-(want "F119-03 the reducer holds nothing back: no plan-mismatch noted, nothing pending"
+(want "TEXTCOMMIT-4 the reducer holds nothing back: no plan-mismatch noted, nothing pending"
       (held-back)
       '(() 0))
 
 (define code-out (fresh-dir "code-out"))
-(want "F119-04 the plain export writes the committed text"
+(want "TEXTCOMMIT-5 the plain export writes the committed text"
       (begin (cli "export-code" code-out)
              (let ((t (file-text (string-append code-out "/n.sc"))))
                (list (contains? t "twopublished") (contains? t "twocommitted"))))
@@ -170,14 +170,14 @@
 (set! current-store store2)
 (cli "write" "--writer" "w3" md-id "betapublished here.\n")
 (define md-commit (cli "commit" "--writer" "w3" md-id))
-(want "F119-05 TWIN: the same commit on a Markdown section lands, and nothing is held back"
+(want "TEXTCOMMIT-6 TWIN: the same commit on a Markdown section lands, and nothing is held back"
       (list (contains? md-commit "(ok (items (ok")
             (read-src md-id)
             (held-back))
       '(#t "betapublished here.\n" (() 0)))
 
 
-;; ---- a malformed intent is still refused (F119 r1 review) ------------------
+;; ---- a malformed intent is still refused (found in review) -----------------
 ;;
 ;; NEVER: MAKING INTENTS CANONICAL DOES NOT REPAIR THEM. An `expect` wrapper
 ;; with an improper tail, `(expect H (set ID title "x") . junk)`, sent as a
@@ -199,12 +199,12 @@
       (with-store-write store2 (lambda (state view) (list bad-intent)) "test"
                         (make-write-request "test" 'set (list md-id "title" "retitled") "MALFORMED1" after)
                         #f #t))))
-(want "F119-06 a planned expect with an improper tail is refused as malformed, and the title does not change"
+(want "TEXTCOMMIT-7 a planned expect with an improper tail is refused as malformed, and the title does not change"
       (list (contains? (format "~s" malformed-answer) "malformed-intent")
             (equal? (title-of store2 md-id) "retitled"))
       '(#t #f))
 
-;; NEVER: AN EMPTY INTENT INSIDE A WRAPPER IS REFUSED, NOT RAISED (F119 r2
+;; NEVER: AN EMPTY INTENT INSIDE A WRAPPER IS REFUSED, NOT RAISED (found in
 ;; review). `(expect #f (expect "h" ()))` in a planned request is refused
 ;; as malformed on f5ebd58; r2's canonical step reached the inner `()` and
 ;; took its car, so the write raised before any answer.
@@ -215,7 +215,7 @@
       (with-store-write store2 (lambda (state view) (list '(expect #f (expect "h" ())))) "test"
                         (make-write-request "test" 'set (list md-id "title" "x") "EMPTY1" after)
                         #f #t))))
-(want "F119-07 a planned wrapper around an empty intent is refused as malformed, not raised"
+(want "TEXTCOMMIT-8 a planned wrapper around an empty intent is refused as malformed, not raised"
       (list (contains? (format "~s" empty-answer) "malformed-intent")
             (and (pair? empty-answer) (eq? (car empty-answer) 'RAISED)))
       '(#t #f))

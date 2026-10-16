@@ -683,7 +683,7 @@
         (list (code-of r) (> (string-length (out-of r)) 0)))
       (list 0 #t))
 
-(printf "== F42 kind: one table, and every writing route asks it ==\n")
+(printf "== KINDS: one table, and every writing route asks it ==\n")
 ;; NEVER: THE HAZARD IS A SECOND ALLOWLIST, NOT A COMPARISON. Dispatching on a
 ;; known kind is ordinary and the tree does it in a dozen places. What must not
 ;; exist is a second hardcoded set that can accept or reject the same value and
@@ -707,7 +707,7 @@
 ;; NEVER: A SYMBOL, NOT THE STRING THE COMMAND LINE HANDED OVER. Everything
 ;; that compares a kind compares a symbol, so a stored string matched nothing
 ;; and the block simply never behaved like what it said it was -- silently.
-(want "F42 set stores a known kind as a symbol"
+(want "KINDS-1 set stores a known kind as a symbol"
       (let ((r (run dk (string-append "set \"" bk "\" kind decision"))))
         (list (code-of r) (car (datum-of r)) (kind-of-block bk)
               (symbol? (kind-of-block bk))))
@@ -719,7 +719,7 @@
 ;; check the head symbols and that a `known` clause EXISTED -- so a refusal
 ;; naming somebody else's kind, or an empty legal set, passed it. The clause
 ;; a caller acts on is the one that says which value was refused.
-(want "F42 set refuses a kind the table does not have, quotes it, and says what would be taken"
+(want "KINDS-2 set refuses a kind the table does not have, quotes it, and says what would be taken"
       (let ((d (datum-of cli-refusal)))
         (list (> (code-of cli-refusal) 0)
               (car d) (cadr d) (caddr d)
@@ -748,12 +748,12 @@
 ;; last of these three writes is a legal one, and a row that looks at the
 ;; block only afterwards cannot tell "the two bad writes were refused" from
 ;; "they were applied and then overwritten". The kind is read between them.
-(want "F42 batch refuses a string-form kind and an unknown one, and neither reaches the block"
+(want "KINDS-3 batch refuses a string-form kind and an unknown one, and neither reaches the block"
       (list (car (car (cadr (datum-of batch-string))))  kind-after-string
             (car (car (cadr (datum-of batch-unknown)))) kind-after-unknown)
       (list 'error 'decision 'error 'decision))
 
-(want "F42 and a known kind through the same route is taken"
+(want "KINDS-4 and a known kind through the same route is taken"
       (list (car (car (cadr (datum-of batch-known)))) (kind-of-block bk))
       (list 'ok 'doc))
 
@@ -761,7 +761,7 @@
 ;; the head of an answer is green for `(error something-else ...)` too, and
 ;; "the batch route refuses" is not the claim being made -- the claim is that
 ;; it refuses FOR THIS REASON and hands back the value it would not take.
-(want "F42 each batch refusal names the condition and quotes the value it would not take"
+(want "KINDS-5 each batch refusal names the condition and quotes the value it would not take"
       (let ((why (lambda (answer) (caddr (car (cadr (datum-of answer)))))))
         (list (cadr (car (cadr (datum-of batch-unknown))))
               (car (why batch-unknown)) (cadr (why batch-unknown))
@@ -779,7 +779,7 @@
 ;; equality row still passes. Each side is compared with `known-kinds` as the
 ;; library exports it, so the row fails if either wire answer drifts from the
 ;; one supplier, and fails if they drift together.
-(want "F42 the legal set a refusal reports is the table itself, on both routes"
+(want "KINDS-6 the legal set a refusal reports is the table itself, on both routes"
       (let* ((cli-known (cadr (assq 'known (cdddr (datum-of cli-refusal)))))
              (unknown-known (cadr (assq 'known (cdr (caddr (car (cadr (datum-of batch-unknown))))))))
              (string-known (cadr (assq 'known (cdr (caddr (car (cadr (datum-of batch-string)))))))))
@@ -1127,7 +1127,7 @@
 ;; worse than either, because whoever comes to close them finds one name and
 ;; two things behind it. Both are recorded; this note is about the first.
 
-(printf "== F32: a replay carries a receipt, not a count ==\n")
+(printf "== DONE: a replay carries a receipt, not a count ==\n")
 ;; NEVER: A REPLAYED REQUEST ANSWERS ONE RECEIPT, AND COUNTING IT LIED. The
 ;; first version put `done` on every batch answer, so a request that had
 ;; written THREE sub-operations answered `(done 1)` when it was replayed --
@@ -1155,13 +1155,13 @@
 (define replay32 (run d32 (string-append "batch --req RB1 --cursor " cur32) three-intents))
 (define records-after-replay (length (reduce-trace (open-and-reduce d32))))
 
-(want "F32 a tracked batch of three counts three the first time"
+(want "DONE-01 a tracked batch of three counts three the first time"
       (list (code-of first32)
             (length (cadr (datum-of first32)))
             (assq 'done (cddr (datum-of first32))))
       (list 0 3 '(done 3)))
 
-(want "F32 replayed, it answers one receipt and NO count"
+(want "DONE-02 replayed, it answers one receipt and NO count"
       (let ((d (datum-of replay32)))
         (list (code-of replay32)
               (length (cadr d))
@@ -1171,7 +1171,7 @@
 
 ;; NEVER: AND THE REPLAY WROTE NOTHING MORE AND LOST NOTHING. Without this the
 ;; rows above are also passed by a replay that quietly re-applied the work.
-(want "F32 TWIN: the replay wrote nothing more, so the receipt is telling the truth"
+(want "DONE-03 TWIN: the replay wrote nothing more, so the receipt is telling the truth"
       (list (> records-after-first 3) (- records-after-replay records-after-first))
       (list #t 0))
 
@@ -1183,7 +1183,7 @@
 ;; lose their count. These call it directly, because the CLI can only produce
 ;; the shapes the product already builds and cannot ask about the ones it must
 ;; refuse to treat as receipts.
-(want "F32 a one-item list that is not the receipt shape still carries a count"
+(want "DONE-04 a one-item list that is not the receipt shape still carries a count"
       (list
         ;; no event clause at all
         (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t))))))
@@ -1201,7 +1201,7 @@
 ;; sequence -- were added together and nothing separated them: removing any one
 ;; of them left every row green. One counterexample per check is what makes
 ;; each of them load-bearing.
-(want "F32 the event clause's parts are each required"
+(want "DONE-05 the event clause's parts are each required"
       (list
         ;; a tail after the payload
         (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
@@ -1214,7 +1214,7 @@
                                                     (list 'event (cons "w" "1"))))))))
       (list '(done 1) '(done 1) '(done 1)))
 
-(want "F32 and the receipt shape itself carries none"
+(want "DONE-06 and the receipt shape itself carries none"
       (cddr (batch-answer (list (list 'ok (list 'replay #t) (list 'event (cons "w" 1))))))
       '())
 
@@ -1227,7 +1227,7 @@
 ;; list came from.
 (define tag-batch (run d32 "batch" "'((tag \"v1\"))'"))
 
-(want "F32 a one-item batch whose answer looks like the plan receipt still counts one"
+(want "DONE-07 a one-item batch whose answer looks like the plan receipt still counts one"
       ;; NEVER: AND THE LABEL HAS TO BE WHAT IS CHECKED. This said
       ;; `has-an-empty-state-clause` while only asking whether a `state` clause
       ;; was PRESENT -- measured against `(batch ((ok (state NOT-EMPTY))) (done 1))`
@@ -1245,7 +1245,7 @@
               (assq 'done (cddr d))))
       (list 0 1 'has-an-empty-state-clause '(done 1)))
 
-(want "F32 an empty tracked batch names its plan and counts nothing"
+(want "DONE-08 an empty tracked batch names its plan and counts nothing"
       ;; NEVER: THE RECEIPT STAYS; ONLY THE COUNT WAS WRONG. Removing it
       ;; reddened four rows elsewhere at once -- `empty-plan`'s QE-01 and three
       ;; in `q7` -- because a client places its cursor from this answer's
@@ -1285,7 +1285,7 @@
 ;; where that is now written down.
 (define empty-replay32 (run d32 (string-append "batch --req RB2 --cursor " empty-cur32) "''"))
 
-(want "F32 replaying an empty tracked batch gives the receipt, not the empty count"
+(want "DONE-09 replaying an empty tracked batch gives the receipt, not the empty count"
       (let ((d (datum-of empty-replay32)))
         (list (code-of empty-replay32)
               (length (cadr d))
@@ -1293,7 +1293,7 @@
               (let ((r (assq 'replay (cdr (car (cadr d)))))) (and r (cadr r)))))
       (list 0 1 'no-count #t))
 
-(want "F32 a batch that ran all its items says so"
+(want "DONE-10 a batch that ran all its items says so"
       (let ((d (datum-of good-batch)))
         (list (length (cadr d)) (assq 'done (cddr d))))
       (list 3 '(done 3)))
@@ -1302,7 +1302,7 @@
 ;; the second failed, so two answers came back -- one `ok` and one `error` --
 ;; and exactly ONE sub-operation reached the log. A caller resuming from the
 ;; number of ANSWERS would replay the item that already succeeded.
-(want "F32 a batch that stopped early counts what was written, not what was attempted"
+(want "DONE-11 a batch that stopped early counts what was written, not what was attempted"
       (let ((d (datum-of mixed-batch)))
         (list (map car (cadr d))
               (length (cadr d))
