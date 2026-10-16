@@ -218,11 +218,11 @@
                                  (loop (cdr xs) (cdr ys) (cons (caar xs) out)))
                                 (else (loop (cdr xs) (cdr ys) out)))))
              (listed (if (list? expected-differences) (map car expected-differences) '())))
-        (want "F10-9 the expectation file is read, and every entry gives its reason"
+        (want "GUARD-1 the expectation file is read, and every entry gives its reason"
               (and (list? expected-differences)
                    (for-all (lambda (e) (and (pair? e) (symbol? (car e)) (pair? (cdr e)) (string? (cadr e)))) expected-differences))
               #t)
-        (want "F10-9 every answer of the script that differs from the base's is listed, and every listed one differs"
+        (want "GUARD-2 every answer of the script that differs from the base's is listed, and every listed one differs"
               (list (filter (lambda (l) (not (memq l listed))) differing)
                     (filter (lambda (l) (not (memq l differing))) listed))
               '(() ()))
@@ -242,7 +242,7 @@
                           (sleep-ms 300)
                           (normalize-for d (without-store-checks
                                              (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))))
-        (want "F10-9 the trace of a read and a commit is byte for byte the base's"
+        (want "GUARD-3 the trace of a read and a commit is byte for byte the base's"
               (let ((tb (trace-of b)) (tn (trace-of n))) (if (equal? tb tn) 'equal (list tb tn)))
               'equal))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
@@ -279,7 +279,7 @@
                 (p10 base-ms) (p10 new-ms) (inexact e) (inexact m) (inexact bound) base-ms new-ms)
         (when (> e 1/2)
           (printf "NOT A READING: the base's p10 moved by ~s between its halves (more than 0.5); the machine was not quiet~%" (inexact e)))
-        (want "F10-9 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e)), on a quiet run (e <= 0.5)"
+        (want "GUARD-4 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e)), on a quiet run (e <= 0.5)"
               (if (> e 1/2) 'not-a-reading (<= (p10 new-ms) bound))
               #t))
       (stop! b) (stop! n)
