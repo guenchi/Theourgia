@@ -26,7 +26,8 @@
 ;; with the same mode at both ends (file-mode otherwise), A an added file at
 ;; 100644 (file-mode otherwise), D a removed one, R the removal of the old
 ;; path and the addition of the new (ids do not follow a rename), T and any
-;; other letter paths-unsupported. Nothing left is nothing-to-import.
+;; other letter paths-unsupported; an added path the store cannot hold is
+;; unsafe-path. Nothing left is nothing-to-import.
 ;;
 ;; THE PRECONDITION is read at the store's applied cut, THE READ CUT, by
 ;; literal blobs, and accepts one of three states:
@@ -73,8 +74,9 @@
 ;; range path at the read cut and for the import block, so a concurrent
 ;; change to any of them refuses it whole (premise-changed). A batch is not
 ;; atomic: an item the store refuses stops the rest, with the earlier items
-;; on disk, and is answered (error partial (store-answer ...)); running the
-;; same command again converges.
+;; on disk, and is answered (error partial (item <k>) (kind ...) (path ...)
+;; (store-answer ...) (done <k>)); running the same command again converges.
+;; The tag-only run of done-without-tag carries the same premises.
 ;;
 ;; POST-VERIFY: the export at the new tag is compared with <to-rev>'s tree
 ;; in the domain; a difference is (error import-diverged (differing ...)),
@@ -99,7 +101,7 @@
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce store-tags)
         (only (theourgia reduce) reduce-applied-cut block-hash block-id state-read)
-        (only (theourgia code-project) code-files code-field code-children projected-files projected-file lang-fields)
+        (only (theourgia code-project) code-files code-field code-children projected-files projected-file lang-fields code-safe-path?)
         (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia languages) language-for-path)
         (only (theourgia markers) import-text? byte-slice bytes-append)
@@ -252,6 +254,9 @@
         (let ((m (mode-of to-tree p)))
           (unless (and (equal? m "100644") (regular? (hashtable-ref to-tree p #f)))
             (refuse 'file-mode (list 'path p) '(from none) (list 'to m)))
+          ;; a path the store cannot hold (a backslash, a NUL) is refused
+          ;; here, before anything is written, not by the export at the end
+          (unless (code-safe-path? p) (refuse 'unsafe-path (list 'path p)))
           (text! to-tree p)
           (set! out (cons (list p 'added) out)))))
     (define (modified! p)
@@ -367,11 +372,13 @@
          (owner (make-vector m #f))
          (taken (make-vector n #f)))
     ;; (i) the LCS, walked from the front: equal pieces are paired at once,
-    ;; which keeps an optimal subsequence and pairs earliest with earliest
+    ;; which keeps an optimal subsequence and pairs earliest with earliest;
+    ;; on a tie the NEW piece is passed over, so an earlier old piece stays
+    ;; in the subsequence ([a,b,a] -> [b,a,a] keeps both a's in order)
     (let walk ((i 0) (j 0))
       (when (and (< i n) (< j m))
         (cond ((same? i j) (vector-set! owner j i) (vector-set! taken i #t) (walk (+ i 1) (+ j 1)))
-              ((>= (vector-ref (vector-ref L (+ i 1)) j) (vector-ref (vector-ref L i) (+ j 1))) (walk (+ i 1) j))
+              ((> (vector-ref (vector-ref L (+ i 1)) j) (vector-ref (vector-ref L i) (+ j 1))) (walk (+ i 1) j))
               (else (walk i (+ j 1))))))
     ;; (ii) relocations: each remaining new piece takes the earliest
     ;; remaining old piece with its bytes
@@ -437,8 +444,9 @@
 ;; kind and subject only for the answer. (from k) names item k's block.
 (define items '())
 (define item-count 0)
+(define planning #f)
 (define (emit! intent kind subject)
-  (set! items (cons (list intent kind subject) items))
+  (set! items (cons (list intent kind subject planning) items))
   (set! item-count (+ item-count 1))
   (- item-count 1))
 
@@ -456,6 +464,7 @@
 
 ;; One range path: its items emitted. -> the number of kept blocks.
 (define (plan-path! state path target)
+  (set! planning path)
   (let* ((holders (filter (lambda (id) (and (eq? 'text (code-field state id 'mode)) (equal? (code-field state id 'path) path)))
                           (code-files state)))
          ;; projected-file refuses a path two live files hold (duplicate-path)
@@ -528,6 +537,21 @@
           ((and (pair? a) (eq? (car a) 'error)) (raise a))
           (else (refuse 'partial (list 'store-answer a))))))
 (define (all-ok? a) (for-all (lambda (x) (and (pair? x) (eq? (car x) 'ok))) (cadr a)))
+;; the version a write's answer reports for BLOCK in its (state ((<id> . <v>) ...))
+(define (reported-version answer block)
+  (let ((st (and (pair? answer) (assq 'state (cdr answer)))))
+    (and st (pair? (cdr st)) (list? (cadr st))
+         (let ((x (assoc block (cadr st)))) (and x (cdr x))))))
+;; A STORE REFUSAL MID-BATCH: the earlier items are on disk. The refusal
+;; names the item that was refused, its kind and the path it was planned
+;; for, and the store's answer to it (too-deep, for one).
+(define (partial-refusal a sent)
+  (let loop ((as (cadr a)) (k 0))
+    (cond ((null? as) (refuse 'partial (list 'store-answer a)))
+          ((and (pair? (car as)) (eq? (car (car as)) 'ok)) (loop (cdr as) (+ k 1)))
+          (else (let ((it (list-ref sent k)))
+                  (refuse 'partial (list 'item k) (list 'kind (cadr it)) (list 'path (cadddr it))
+                          (list 'store-answer (car as)) (list 'done k)))))))
 
 (define (stop-setting)
   (let ((v (getenv "THEOURGIA_IMPORT_STOP")))
@@ -567,7 +591,7 @@
                   (list 'blocks (list 'kept kept) (list 'set (length (of 'set))) (list 'inserted (length (of 'inserted)))
                         (list 'deleted (length (of 'deleted))) (list 'moved (length (of 'moved))))
                   (list 'items (+ (length content) (if (eq? how 'done-without-tag) 1 2))))
-            (let* ((block (or block
+            (let* ((first (and (not block)
                               ;; THE FIRST REQUEST, fresh only: the import block, pending
                               (let ((a (send-batch store (list (list 'insert 'root #f
                                                                      (list '(kind . decision) '(slot . "import")
@@ -577,11 +601,20 @@
                                                                                                 (string-append from ".." to))))))
                                                    '())))
                                 (unless (all-ok? a) (refuse 'partial (list 'store-answer a)))
-                                (made-id (car (cadr a))))))
-                   (version (block-hash (if (eq? how 'fresh) (open-and-reduce store) state) block))
-                   (premises (if (eq? how 'done-without-tag) '() (premises-of state range block version)))
-                   (tail (append (if (eq? how 'done-without-tag) '() (list (list (list 'set block 'status "done") 'done block)))
-                                 (list (list (list 'tag name) 'tag #f))))
+                                (car (cadr a)))))
+                   (block (or block (made-id first)))
+                   ;; THE IMPORT BLOCK'S VERSION: on a fresh run the one its
+                   ;; insertion answered (the state report), so an edit made
+                   ;; after the insertion is not adopted into the premise; read
+                   ;; afterwards only when the store could not report it. On a
+                   ;; rerun, at the read cut.
+                   (version (or (and first (reported-version first block))
+                                (block-hash (if first (open-and-reduce store) state) block)))
+                   ;; the tag-only run is premised too: a change under it
+                   ;; refuses it before the tag, rather than diverging after
+                   (premises (premises-of state range block version))
+                   (tail (append (if (eq? how 'done-without-tag) '() (list (list (list 'set block 'status "done") 'done block #f)))
+                                 (list (list (list 'tag name) 'tag #f #f))))
                    (all (append content tail))
                    (sent (if stop (list-head all (min stop (length all))) all)))
               (hold-point! 'import-before-batch)
@@ -590,7 +623,7 @@
                   (write (list 'stopped (list 'items (length sent)) (list 'answer a)))
                   (newline)
                   (exit 3))
-                (unless (all-ok? a) (refuse 'partial (list 'store-answer a)))
+                (unless (all-ok? a) (partial-refusal a sent))
                 (let* ((tag-cut (let ((t (find (lambda (t) (equal? (cadr t) name)) (store-tags store))))
                                   (and t (eq? (car t) 'settled) (caddr t))))
                        (ids (lambda (kind) (map (lambda (it ans) (or (caddr it) (made-id ans)))

@@ -27,7 +27,7 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce store-tags)
-        (only (theourgia reduce) state-read block-hash)
+        (only (theourgia reduce) state-read block-hash reduce-applied-cut)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia languages) language-for-path)
@@ -76,6 +76,12 @@
 (define (clause-of a head) (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
 (define (value-of a head) (let ((c (clause-of a head))) (and c (pair? (cdr c)) (cadr c))))
 (define (checked what a) (unless (eq? 'ok (head-of a)) (assertion-violation 'import-git what a)) a)
+;; a batch answers (batch (<item answer> ...) (done <n>)), not (ok ...)
+(define (batch-checked what a)
+  (unless (and (pair? a) (eq? (car a) 'batch) (pair? (cdr a)) (list? (cadr a))
+               (for-all (lambda (x) (and (pair? x) (eq? (car x) 'ok))) (cadr a)))
+    (assertion-violation 'import-git what a))
+  a)
 (define (file-datum path) (guard (e (#t 'UNREADABLE)) (call-with-input-file path read)))
 
 (define (path-parent p)
@@ -211,6 +217,9 @@
     (sh "( " (command env st wt from to tag extra out) " )")
     (list (file-datum out) (file-datum (string-append out ".rc")))))
 (define (answer r) (car r))
+;; the refusal's kind and clauses, or (NOT-A-REFUSAL <what was printed>)
+(define (refusal r) (let ((a (answer r))) (if (and (pair? a) (eq? (car a) 'error)) (cdr a) (list 'NOT-A-REFUSAL a))))
+(define (applied-cut st) (reduce-applied-cut (open-and-reduce st)))
 ;; A STOPPED RUN does not raise when it did not stop: the row that follows
 ;; reads the prefix it expected, and is red there, so the rows after it run.
 (define (stopped! st wt from to tag k)
@@ -222,7 +231,10 @@
     (sh "( " (command (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "import-before-batch:" release)))
                       st wt from to tag "" out) " ) &")
     (let* ((held (wait-for (string-append release ".held") 60000))
-           (v (and held (during))))
+           ;; THE RELEASE IS WRITTEN WHATEVER DURING DOES: a raise is kept as
+           ;; the value, which the row reads red, and the child goes on
+           (v (and held (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+                          (during)))))
       (call-with-output-file release (lambda (p) (display "go" p)))
       (wait-for (string-append out ".rc") 60000)
       (list v (file-datum out) (file-datum (string-append out ".rc"))))))
@@ -233,14 +245,17 @@
 (define c1-0 (commit! wt1 "base" (cons "a.sc" (defs 'a 'b 'c)) (cons "b.sc" (defs 'p 'q))))
 (define c1-1 (commit! wt1 "edit b, append r" (cons "a.sc" (defs 'a B* 'c)) (cons "b.sc" (defs 'p 'q 'r))))
 (define st1 (store-from! wt1 c1-0 "s1" #t))
+(define b1 (cadr (kids st1 "a.sc")))
 (define r1 (import! st1 wt1 c1-0 c1-1 "t1"))
 (define block1 (let ((b (import-blocks st1))) (and (= 1 (length b)) (car (car b)))))
-(want "IG-1 the range lands: export at the tag = git archive <to>; the import block's fields; the answer's counts"
+(want "IG-1 the range lands: export at the tag = git archive <to>; the import block's fields; the answer's tag, files and blocks whole"
       (list (head-of (answer r1)) (export-is? st1 wt1 c1-1 (tag-cut st1 "t1"))
             (and block1 (map (lambda (f) (field-of st1 block1 f)) '(kind slot from to tag status src)))
-            (value-of (answer r1) 'files) (value-of (answer r1) 'rerun))
+            (equal? (clause-of (answer r1) 'tag) (list 'tag "t1" (list 'cut (tag-cut st1 "t1"))))
+            (clause-of (answer r1) 'files) (value-of (answer r1) 'rerun) (clause-of (answer r1) 'blocks))
       (list 'ok #t (list "decision" "import" c1-0 c1-1 "t1" "done" "edit b, append r\n")
-            '(modified 2) #f))
+            #t '(files (modified 2) (added 0) (removed 0)) #f
+            (list 'blocks '(kept 4) (list 'set (list b1)) (list 'inserted (list (caddr (kids st1 "b.sc")))) '(deleted ()) '(moved ()))))
 (want "IG-1 the tag binds the cut of `set status done`, and is the last record: pending one record before the cut, done at it"
       (let* ((cut (tag-cut st1 "t1")) (end (position st1))
              (w (car end)) (seq (and cut (cdr (assoc w cut))))
@@ -256,15 +271,20 @@
 (define c2-0 (commit! wt2 "base"
                       (cons "m1.sc" (defs 'a 'b 'c)) (cons "m2.sc" (defs 'a 'b 'c)) (cons "m3.sc" (defs 'a 'b))
                       (cons "m4.sc" (defs 'a 'b 'c)) (cons "m5.sc" (defs 'a 'b)) (cons "m6.sc" (defs 'a 'b 'c))
-                      (cons "m7.sc" (defs 'a 'b)) (cons "m8.sc" (defs 'x 'x))))
+                      (cons "m7.sc" (defs 'a 'b)) (cons "m8.sc" (defs 'x 'x)) (cons "m9.sc" (defs 'a 'b 'c))
+                      (cons "m10.sc" (defs 'a 'b 'a))))
+;; m9.sc's target does not balance, so the splitter answers one piece
+(define m9-text "(define a 1\n(define b 1)\n")
 (define c2-1 (commit! wt2 "the eight shapes"
                       (cons "m1.sc" (defs 'a 'x 'b 'c)) (cons "m2.sc" (defs 'a B* 'c)) (cons "m3.sc" (defs 'a 'b 'c))
                       (cons "m4.sc" (defs 'a 'c)) (cons "m5.sc" (defs 'b 'a)) (cons "m6.sc" (defs 'x 'b 'c 'a))
-                      (cons "m7.sc" (defs 'x 'a 'y 'b)) (cons "m8.sc" (defs 'x))))
+                      (cons "m7.sc" (defs 'x 'a 'y 'b)) (cons "m8.sc" (defs 'x)) (cons "m9.sc" m9-text)
+                      (cons "m10.sc" (defs 'b 'a 'a))))
 (define st2 (store-from! wt2 c2-0 "s2" #t))
 (define o1 (named st2 "m1.sc" 'a 'b 'c)) (define o2 (named st2 "m2.sc" 'a 'b 'c)) (define o3 (named st2 "m3.sc" 'a 'b))
 (define o4 (named st2 "m4.sc" 'a 'b 'c)) (define o5 (named st2 "m5.sc" 'a 'b)) (define o6 (named st2 "m6.sc" 'a 'b 'c))
 (define o7 (named st2 "m7.sc" 'a 'b)) (define o8 (named st2 "m8.sc" 'x1 'x2))
+(define o9 (named st2 "m9.sc" 'a 'b 'c)) (define o10 (named st2 "m10.sc" 'a1 'b 'a2))
 (define r2 (import! st2 wt2 c2-0 c2-1 "t2"))
 (define (listed r name) (let* ((b (clause-of (answer r) 'blocks)) (c (and b (assq name (cdr b))))) (if c (cadr c) '())))
 (define moved2 (listed r2 'moved))
@@ -281,18 +301,20 @@
 (want "IG-2 a deleted definition is a delete, and no block is left holding nothing"
       (list (row2 "m4.sc" o4 (d 'a) (d 'c)) (deleted? st2 (cdr (assq 'b o4))))
       (list (list '(a c) #t) #t))
-(want "IG-2 a swapped pair [a,b] -> [b,a] keeps both ids, by two moves"
-      (list (row2 "m5.sc" o5 (d 'b) (d 'a)) (filter (lambda (id) (member id (map cdr o5))) moved2))
-      (list (list '(b a) #t) (list (cdr (assq 'b o5)) (cdr (assq 'a o5)))))
+(define (ids-of old . names) (map (lambda (n) (cdr (assq n old))) names))
+(want "IG-2 a swapped pair [a,b] -> [b,a] keeps both ids, by two moves; the answer's moves are every file's, in item order"
+      (list (row2 "m5.sc" o5 (d 'b) (d 'a))
+            (equal? moved2 (append (ids-of o10 'b 'a1 'a2) (ids-of o5 'b 'a) (ids-of o6 'b 'c 'a) (ids-of o7 'a 'b))))
+      (list (list '(b a) #t) #t))
 (want "IG-2 a relocation with an insert [a,b,c] -> [x,b,c,a]: a keeps its id (reserved before the pairing)"
       (row2 "m6.sc" o6 (d 'x) (d 'b) (d 'c) (d 'a))
       (list '(new b c a) #t))
 (want "IG-2 a leading and a middle insert [a,b] -> [x,a,y,b]: a and b keep their ids, the order right"
       (row2 "m7.sc" o7 (d 'x) (d 'a) (d 'y) (d 'b))
       (list '(new a new b) #t))
-(want "IG-2 two equal pieces [x,x] -> [x]: the earliest keeps its id; the export at the tag is <to>"
-      (list (row2 "m8.sc" o8 (d 'x)) (export-is? st2 wt2 c2-1 (tag-cut st2 "t2")))
-      (list (list '(x1) #t) #t))
+(want "IG-2 two equal pieces [x,x] -> [x]: the earliest keeps its id; on a tie [a,b,a] -> [b,a,a] the a's keep their order; the export at the tag is <to>"
+      (list (row2 "m8.sc" o8 (d 'x)) (row2 "m10.sc" o10 (d 'b) (d 'a) (d 'a)) (export-is? st2 wt2 c2-1 (tag-cut st2 "t2")))
+      (list (list '(x1) #t) (list '(b a1 a2) #t) #t))
 
 ;; ---- IG-3: added, removed, renamed --------------------------------------------------
 (printf "== IG-3: added, removed, renamed ==\n")
@@ -306,16 +328,18 @@
 (define r3 (import! st3 wt3 c3-0 c3-1 "t3"))
 (want "IG-3 an added file: a file block, then its children in order, all inserted in that order; the export is <to>"
       (in-order (head-of (answer r3)) (texts st3 "n.sc")
-                (let ((ins (listed r3 'inserted))) (and (>= (length ins) 3) (equal? (list-head ins 3) (cons (file-at st3 "n.sc") (kids st3 "n.sc")))))
-                (export-is? st3 wt3 c3-1 (tag-cut st3 "t3")) (value-of (answer r3) 'files))
-      (list 'ok (list (d 'p) (d 'q)) #t #t '(modified 0)))
+                (equal? (listed r3 'inserted) (append (cons (file-at st3 "n.sc") (kids st3 "n.sc")) (cons (file-at st3 "o2.sc") (kids st3 "o2.sc"))))
+                (export-is? st3 wt3 c3-1 (tag-cut st3 "t3")) (clause-of (answer r3) 'files))
+      (list 'ok (list (d 'p) (d 'q)) #t #t '(files (modified 0) (added 2) (removed 2))))
 (want "IG-3 a removed file: its children, then its file block, deleted in that order; the path is gone"
-      (list (equal? (listed r3 'deleted) (append o-kids (list o-file) r-kids (list r-file))) (file-at st3 "r.sc"))
-      (list #t #f))
+      (list (equal? (listed r3 'deleted) (append o-kids (list o-file) r-kids (list r-file))) (file-at st3 "r.sc")
+            (map (lambda (id) (deleted? st3 id)) (append r-kids (list r-file))))
+      (list #t #f '(#t #t #t)))
 (want "IG-3 a rename is a removal and an addition: the new path's blocks are new, the old path is gone"
       (let ((new (kids st3 "o2.sc")))
-        (list (texts st3 "o2.sc") (null? (filter (lambda (id) (member id o-kids)) new)) (file-at st3 "o.sc")))
-      (list (list (d 'u) (d 'v)) #t #f))
+        (list (texts st3 "o2.sc") (null? (filter (lambda (id) (member id o-kids)) new)) (file-at st3 "o.sc")
+              (and (file-at st3 "o2.sc") (not (equal? (file-at st3 "o2.sc") o-file))) (deleted? st3 o-file)))
+      (list (list (d 'u) (d 'v)) #t #f #t #t))
 
 ;; ---- IG-4: the base ----------------------------------------------------------------
 (printf "== IG-4: the base ==\n")
@@ -326,10 +350,11 @@
 (define c4-3 (commit! wt4 "dot only" (cons ".hidden" "x\n")))
 (define st4 (store-from! wt4 c4-0 "s4" #t))
 (define p4 (position st4))
+(define cut4 (applied-cut st4))
 (define r4a (import! st4 wt4 c4-1 c4-2 "t4a"))
-(want "IG-4 the store one commit behind <from>: base-mismatch naming the path, nothing written, no tag"
-      (in-order (head-of (answer r4a)) (value-of (answer r4a) 'differing) (equal? (position st4) p4) (tag-cut st4 "t4a"))
-      (list '(error base-mismatch) "a.sc" #t #f))
+(want "IG-4 the store one commit behind <from>: base-mismatch with the store's cut, the rev and the paths, nothing written, no tag"
+      (in-order (refusal r4a) (equal? (position st4) p4) (tag-cut st4 "t4a"))
+      (list (list 'base-mismatch (list 'store-cut cut4) (list 'rev c4-1) '(differing "a.sc")) #t #f))
 (define r4b (import! st4 wt4 c4-0 c4-1 "t4"))
 (want "IG-4 the same range twice: the second run is base-mismatch"
       (in-order (head-of (answer r4b)) (head-of (answer (import! st4 wt4 c4-0 c4-1 "t4"))))
@@ -338,21 +363,25 @@
       (in-order (head-of (answer (import! st4 wt4 c4-1 c4-2 "t4c"))) (export-is? st4 wt4 c4-2 (tag-cut st4 "t4c")))
       (list 'ok #t))
 (want "IG-4 a dot-only range and an empty range: nothing-to-import"
-      (in-order (head-of (answer (import! st4 wt4 c4-2 c4-3 "t4d"))) (head-of (answer (import! st4 wt4 c4-2 c4-2 "t4e"))))
-      (list '(error nothing-to-import) '(error nothing-to-import)))
+      (in-order (refusal (import! st4 wt4 c4-2 c4-3 "t4d")) (refusal (import! st4 wt4 c4-2 c4-2 "t4e")))
+      (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-3)) (list 'nothing-to-import (list 'from c4-2) (list 'to c4-2))))
+(want "IG-4 a rev the repository does not have: repo-unreadable, nothing written"
+      (let ((p (position st4)))
+        (in-order (refusal (import! st4 wt4 "no-such-rev" c4-2 "t4f")) (equal? (position st4) p)))
+      (list (list 'repo-unreadable (list 'repo wt4) '(rev "no-such-rev")) #t))
 
 ;; ---- IG-5: modes, letters, text, the tag --------------------------------------------
 (printf "== IG-5: modes, letters, text, the tag ==\n")
 (define wt5 (repo! "r5"))
 (define c5-0 (commit! wt5 "base" (cons "a.sc" (defs 'a 'b)) (cons "x.sh" "echo one\n") '(chmod "x.sh" "755")))
 (define c5-mode (begin (at! wt5 c5-0) (commit! wt5 "mode" '(chmod "a.sc" "755"))))
-(define c5-exec (begin (at! wt5 c5-0) (commit! wt5 "exec content" (cons "x.sh" "echo two\n"))))
+(define c5-exec (begin (at! wt5 c5-0) (commit! wt5 "exec content" (cons "x.sh" "echo two\n") '(chmod "x.sh" "755"))))
 (define c5-type (begin (at! wt5 c5-0) (commit! wt5 "type" '(link "a.sc" "x.sh"))))
 (define c5-nul (begin (at! wt5 c5-0) (commit! wt5 "nul" (cons "a.sc" (bytevector 40 100 101 102 0 41 10)))))
 (define c5-utf (begin (at! wt5 c5-0) (commit! wt5 "latin-1" (cons "a.sc" (bytevector 40 100 101 102 255 41 10)))))
 (define c5-add (begin (at! wt5 c5-0) (commit! wt5 "add exec" (cons "y.sh" "echo y\n") '(chmod "y.sh" "755"))))
+(define c5-unsafe (begin (at! wt5 c5-0) (commit! wt5 "add a backslash" (cons "back\\slash.sc" (defs 'z)))))
 (define st5 (store-from! wt5 c5-0 "s5" #t))
-(define (refusal r) (let ((a (answer r))) (if (and (pair? a) (eq? (car a) 'error)) (cdr a) a)))
 (want "IG-5 a mode change 100644 -> 100755: file-mode"
       (refusal (import! st5 wt5 c5-0 c5-mode "t5"))
       '(file-mode (path "a.sc") (from "100644") (to "100755")))
@@ -368,6 +397,10 @@
 (want "IG-5 an added file at 100755: file-mode"
       (refusal (import! st5 wt5 c5-0 c5-add "t5"))
       '(file-mode (path "y.sh") (from none) (to "100755")))
+(want "IG-5 an added path the store cannot hold (a backslash): unsafe-path, nothing written"
+      (let ((p (position st5)))
+        (in-order (refusal (import! st5 wt5 c5-0 c5-unsafe "t5")) (equal? (position st5) p)))
+      (list '(unsafe-path (path "back\\slash.sc")) #t))
 (checked "tag" (ask st5 'tag "t5x"))
 (define p5 (position st5))
 (want "IG-5 a tag name already bound: tag-exists, before any write"
@@ -394,10 +427,18 @@
 (want "IG-6 a concurrent set on a block the import keeps: premise-changed likewise"
       (premise-row (held! st6 wt6 c6-0 c6-1 "t6" (set-title! st6 (cdr (assq 'a o6a)))) st6)
       (list '(error premise-changed) #t #f 1))
+(define st6d (store-from! wt6 c6-0 "s6d" #t))
+(want "IG-6 a concurrent set on a touched file's own file block: premise-changed likewise"
+      (premise-row (held! st6d wt6 c6-0 c6-1 "t6" (set-title! st6d (file-at st6d "a.sc"))) st6d)
+      (list '(error premise-changed) #t #f 1))
+;; ITS OWN STORE: the pending block comes from a run stopped after it, not
+;; from another row's refused run
+(define st6c (store-from! wt6 c6-0 "s6c" #t))
+(stopped! st6c wt6 c6-0 c6-1 "t6" 0)
+(define pending6c (map car (import-blocks st6c)))
 (want "IG-6 on a rerun, a concurrent set on the pending import block: premise-changed likewise"
-      (let ((pending (map car (import-blocks st6))))
-        (list (length pending)
-              (premise-row (held! st6 wt6 c6-0 c6-1 "t6" (set-title! st6 (car pending))) st6)))
+      (list (length pending6c)
+            (premise-row (held! st6c wt6 c6-0 c6-1 "t6" (set-title! st6c (and (pair? pending6c) (car pending6c)))) st6c))
       (list 1 (list '(error premise-changed) #t #f 1)))
 
 ;; ---- IG-7: the convergent rerun ---------------------------------------------------------
@@ -412,88 +453,108 @@
 (define c7-0 (commit! wt7 "base" (cons "d.sc" (defs 's 't 'u)) (cons "m.sc" (defs 'a 'b 'c)) (cons "o.sc" (defs 'o))))
 (define c7-1 (commit! wt7 "the range" (cons "d.sc" #f) (cons "m.sc" (defs 'x 'a B* 'c 'y)) (cons "n.sc" (defs 'p 'q 'r))))
 (define c7-2 (commit! wt7 "another range" (cons "n.sc" (defs 'p))))
-(define (store7! name) (store-from! wt7 c7-0 name #t))
-(define (rerun-row st old r)
-  (list (head-of (answer r)) (value-of (answer r) 'rerun) (export-is? st wt7 c7-1 (tag-cut st "t7"))
-        (shape old (kids st "m.sc")) (import-blocks st) (tag-count st "t7")))
+;; A VARIANT: a store from c7-0, m.sc's blocks named, a run stopped after K
+;; items. -> (store names stop-reading pending-id position-after-the-stop),
+;; the stop reading being (<head> <items sent> <exit status>)
+(define (variant! name k)
+  (let* ((st (store-from! wt7 c7-0 name #t)) (old (named st "m.sc" 'a 'b 'c))
+         (r (stopped! st wt7 c7-0 c7-1 "t7" k))
+         (d (car r)))
+    (list st old
+          (list (and (pair? d) (car d)) (and (pair? d) (value-of d 'items)) (cadr r))
+          (let ((b (import-blocks st))) (and (pair? b) (car (car b))))
+          (position st))))
+(define (v-st v) (car v)) (define (v-old v) (cadr v)) (define (v-stop v) (caddr v)) (define (v-pending v) (cadddr v))
+(define (v-position v) (list-ref v 4))
+;; CONVERGED: the rerun answered ok as a rerun, the export at the tag is
+;; <to>, m.sc's kept ids are the first run's, the one import block is the
+;; pending one and is done, and the tag is bound once
+(define (converged v r)
+  (let ((st (v-st v)))
+    (list (head-of (answer r)) (value-of (answer r) 'rerun) (export-is? st wt7 c7-1 (tag-cut st "t7"))
+          (shape (v-old v) (kids st "m.sc")) (equal? (import-blocks st) (list (cons (v-pending v) "done"))) (tag-count st "t7"))))
+(define converged-ok '(ok #t #t (new a b c new) #t 1))
+(define (records-since v) (- (cdr (position (v-st v))) (cdr (v-position v))))
 (define (done-blocks st) (map (lambda (b) (cdr b)) (import-blocks st)))
 
-(define st7a (store7! "s7a"))
-(define o7a (named st7a "m.sc" 'a 'b 'c))
-(stopped! st7a wt7 c7-0 c7-1 "t7" 7)
-(define half7a (texts st7a "m.sc"))
-(define r7a (import! st7a wt7 c7-0 c7-1 "t7"))
+(define v7a (variant! "s7a" 7))
+(define half7a (texts (v-st v7a) "m.sc"))
+(define r7a (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped inside a file's items: the rerun converges, every LCS and relocation id kept, the same block done, one tag; a third run is base-mismatch"
-      (in-order half7a (rerun-row st7a o7a r7a) (head-of (answer (import! st7a wt7 c7-0 c7-1 "t7"))))
-      (list (list B* (d 'c) (d 'x) (d 'a))
-            (list 'ok #t #t '(new a b c new) (list (cons (car (car (import-blocks st7a))) "done")) 1)
-            '(error base-mismatch)))
+      (in-order (v-stop v7a) half7a (converged v7a r7a) (head-of (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))))
+      (list '(stopped 7 3) (list B* (d 'c) (d 'x) (d 'a)) converged-ok '(error base-mismatch)))
 
-(define st7b (store7! "s7b"))
-(define o7b (named st7b "m.sc" 'a 'b 'c))
-(stopped! st7b wt7 c7-0 c7-1 "t7" 0)
-(define mid7b (list (export-is? st7b wt7 c7-0) (done-blocks st7b)))
+(define v7b (variant! "s7b" 0))
+(define mid7b (list (export-is? (v-st v7b) wt7 c7-0) (done-blocks (v-st v7b))))
 (want "IG-7 stopped after the import block alone: the export is still <from>, and the rerun is accepted as pending and converges"
-      (in-order mid7b (rerun-row st7b o7b (import! st7b wt7 c7-0 c7-1 "t7")))
-      (list (list #t '("pending"))
-            (list 'ok #t #t '(new a b c new) (list (cons (car (car (import-blocks st7b))) "done")) 1)))
+      (in-order (v-stop v7b) mid7b (converged v7b (import! (v-st v7b) wt7 c7-0 c7-1 "t7")))
+      (list '(stopped 0 3) (list #t '("pending")) converged-ok))
 
-(define st7c (store7! "s7c"))
-(stopped! st7c wt7 c7-0 c7-1 "t7" 11)
-(define mid7c (list (length (holders st7c "n.sc")) (kids st7c "n.sc")))
-(define r7c (import! st7c wt7 c7-0 c7-1 "t7"))
-(want "IG-7 stopped after an added file's file block, before its children: one holder, its children added"
-      (in-order mid7c (head-of (answer r7c)) (length (holders st7c "n.sc")) (texts st7c "n.sc") (export-is? st7c wt7 c7-1 (tag-cut st7c "t7")))
-      (list (list 1 '()) 'ok 1 (list (d 'p) (d 'q) (d 'r)) #t))
+(define v7c (variant! "s7c" 11))
+(define holder7c (holders (v-st v7c) "n.sc"))
+(define mid7c (list (length holder7c) (kids (v-st v7c) "n.sc")))
+(define r7c (import! (v-st v7c) wt7 c7-0 c7-1 "t7"))
+(want "IG-7 stopped after an added file's file block, before its children: the same one holder, its children added"
+      (in-order (v-stop v7c) mid7c (converged v7c r7c) (equal? (holders (v-st v7c) "n.sc") holder7c) (texts (v-st v7c) "n.sc"))
+      (list '(stopped 11 3) (list 1 '()) converged-ok #t (list (d 'p) (d 'q) (d 'r))))
 
-(define st7d (store7! "s7d"))
-(define d-file (file-at st7d "d.sc"))
-(stopped! st7d wt7 c7-0 c7-1 "t7" 2)
-(define mid7d (texts st7d "d.sc"))
-(define r7d (import! st7d wt7 c7-0 c7-1 "t7"))
+(define v7d (variant! "s7d" 2))
+(define d-file (file-at (v-st v7d) "d.sc"))
+(define mid7d (texts (v-st v7d) "d.sc"))
+(define r7d (import! (v-st v7d) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped after some of a removed file's children: the rest and the file block deleted"
-      (in-order mid7d (head-of (answer r7d)) (file-at st7d "d.sc") (deleted? st7d d-file) (export-is? st7d wt7 c7-1 (tag-cut st7d "t7")))
-      (list (list (d 'u)) 'ok #f #t #t))
+      (in-order (v-stop v7d) mid7d (converged v7d r7d) (file-at (v-st v7d) "d.sc") (and d-file (deleted? (v-st v7d) d-file)))
+      (list '(stopped 2 3) (list (d 'u)) converged-ok #f #t))
 
-(define st7e (store7! "s7e"))
-(stopped! st7e wt7 c7-0 c7-1 "t7" 14)
-(define mid7e (list (export-is? st7e wt7 c7-1) (done-blocks st7e)))
-(define r7e (import! st7e wt7 c7-0 c7-1 "t7"))
-(want "IG-7 stopped after every content item, before done: the rerun finds no work, sets done and tags"
-      (in-order mid7e (head-of (answer r7e))
-                (map (lambda (k) (listed r7e k)) '(set inserted deleted moved))
-                (done-blocks st7e) (tag-count st7e "t7"))
-      (list (list #t '("pending")) 'ok '(() () () ()) '("done") 1))
+(define v7e (variant! "s7e" 14))
+(define mid7e (list (export-is? (v-st v7e) wt7 c7-1) (done-blocks (v-st v7e))))
+(define r7e (import! (v-st v7e) wt7 c7-0 c7-1 "t7"))
+(want "IG-7 stopped after every content item, before done: the rerun finds no work and writes two records, done and the tag"
+      (in-order (v-stop v7e) mid7e (converged v7e r7e)
+                (map (lambda (k) (listed r7e k)) '(set inserted deleted moved)) (records-since v7e))
+      (list '(stopped 14 3) (list #t '("pending")) converged-ok '(() () () ()) 2))
 
-(define st7f (store7! "s7f"))
-(stopped! st7f wt7 c7-0 c7-1 "t7" 15)
-(define mid7f (list (done-blocks st7f) (tag-count st7f "t7")))
-(define r7f (import! st7f wt7 c7-0 c7-1 "t7"))
-(want "IG-7 stopped after done, before the tag: done without tag, the rerun only tags, once"
-      (in-order mid7f (head-of (answer r7f)) (value-of (answer r7f) 'rerun)
+(define v7f (variant! "s7f" 15))
+(define mid7f (list (done-blocks (v-st v7f)) (tag-count (v-st v7f) "t7")))
+(define r7f (import! (v-st v7f) wt7 c7-0 c7-1 "t7"))
+(want "IG-7 stopped after done, before the tag: done without tag, the rerun only tags: one record"
+      (in-order (v-stop v7f) mid7f (head-of (answer r7f)) (value-of (answer r7f) 'rerun)
                 (map (lambda (k) (listed r7f k)) '(set inserted deleted moved))
-                (tag-count st7f "t7") (export-is? st7f wt7 c7-1 (tag-cut st7f "t7")))
-      (list (list '("done") 0) 'ok #t '(() () () ()) 1 #t))
+                (tag-count (v-st v7f) "t7") (records-since v7f) (export-is? (v-st v7f) wt7 c7-1 (tag-cut (v-st v7f) "t7")))
+      (list '(stopped 15 3) (list '("done") 0) 'ok #t '(() () () ()) 1 1 #t))
 
-(define st7g (store7! "s7g"))
-(stopped! st7g wt7 c7-0 c7-1 "t7" 0)
-(define p7g (position st7g))
-(want "IG-7 a pending import block of another range: pending-import, nothing written"
-      (in-order (head-of (answer (import! st7g wt7 c7-0 c7-2 "t7g"))) (equal? (position st7g) p7g))
-      (list '(error pending-import) #t))
+(define v7g (variant! "s7g" 0))
+(want "IG-7 a pending import block of another range: pending-import naming it, nothing written"
+      (in-order (refusal (import! (v-st v7g) wt7 c7-0 c7-2 "t7g")) (records-since v7g))
+      (list (list 'pending-import (list 'from c7-0) (list 'to c7-1) (list 'block (v-pending v7g))) 0))
 
-(define st7h (store7! "s7h"))
-(stopped! st7h wt7 c7-0 c7-1 "t7" 3)
-(define pending7h (let ((b (import-blocks st7h))) (and (pair? b) (car (car b)))))
+(define v7h (variant! "s7h" 3))
 (define (version st id) (and id (block-hash (open-and-reduce st) id)))
-(define version7h (version st7h pending7h))
-(checked "outside drift" (ask st7h 'set (car (kids st7h "o.sc")) "src" "(define o 2)\n"))
-(define p7h (position st7h))
-(define r7h (import! st7h wt7 c7-0 c7-1 "t7"))
-(want "IG-7 a pending prefix and a commit outside the range: base-mismatch naming that path, nothing written, the pending block untouched"
-      (in-order (head-of (answer r7h)) (value-of (answer r7h) 'differing) (equal? (position st7h) p7h)
-                (and version7h (equal? (version st7h pending7h) version7h)) (done-blocks st7h))
-      (list '(error base-mismatch) "o.sc" #t #t '("pending")))
+(define version7h (version (v-st v7h) (v-pending v7h)))
+(define mid7h (list (and (file-at (v-st v7h) "d.sc") #t) (kids (v-st v7h) "d.sc")))
+(checked "outside drift" (ask (v-st v7h) 'set (car (kids (v-st v7h) "o.sc")) "src" "(define o 2)\n"))
+(define p7h (position (v-st v7h)))
+(define cut7h (applied-cut (v-st v7h)))
+(define r7h (import! (v-st v7h) wt7 c7-0 c7-1 "t7"))
+(want "IG-7 a pending prefix and a commit outside the range: base-mismatch naming only that path, nothing written, the pending block untouched"
+      (in-order (v-stop v7h) mid7h (refusal r7h) (equal? (position (v-st v7h)) p7h)
+                (and version7h (equal? (version (v-st v7h) (v-pending v7h)) version7h)) (done-blocks (v-st v7h)))
+      (list '(stopped 3 3) '(#t ()) (list 'base-mismatch (list 'store-cut cut7h) (list 'rev c7-0) '(differing "o.sc")) #t #t '("pending")))
+
+;; THE PREMISES OF A RERUN: a block the prefix inserted (x, at item 4) is
+;; premised; and the tag-only run of done-without-tag is premised
+(define (held-refused st during)
+  (let ((h (held! st wt7 c7-0 c7-1 "t7" during)))
+    (list (head-of (cadr h)) (and (car h) (equal? (position st) (car h))) (tag-cut st "t7") (caddr h))))
+(define v7i (variant! "s7i" 9))
+(define x7i (let ((st (v-st v7i))) (find (lambda (id) (equal? (src-text (code-field (open-and-reduce st) id 'src)) (d 'x))) (kids st "m.sc"))))
+(want "IG-7 on a rerun, a concurrent set on a block the interrupted run inserted: premise-changed, nothing written after it, no tag"
+      (in-order (v-stop v7i) (and x7i #t) (held-refused (v-st v7i) (set-title! (v-st v7i) x7i)))
+      (list '(stopped 9 3) #t (list '(error premise-changed) #t #f 1)))
+(define v7j (variant! "s7j" 15))
+(want "IG-7 done without tag: a concurrent set on a range block during the tag-only run is premise-changed, no tag"
+      (in-order (v-stop v7j) (held-refused (v-st v7j) (set-title! (v-st v7j) (car (kids (v-st v7j) "m.sc")))))
+      (list '(stopped 15 3) (list '(error premise-changed) #t #f 1)))
 
 ;; ---- IG-8: the split equals a fresh import's ----------------------------------------
 (printf "== IG-8: the split equals a fresh import's ==\n")
@@ -509,9 +570,10 @@
       (in-order seed8 (head-of (answer r8)) (export-is? st8 wt8 c8-1 (tag-cut st8 "t8"))
                 (equal? (texts st8 "f.sc") (pieces "f.sc" (defs 'a B* 'c 'd))))
       (list '(1 1) 'ok #t #t))
-(want "IG-8 a file the splitter cannot prove imports to one block holding it whole"
-      (list (pieces "w.sc" w-text2) (texts st8 "w.sc"))
-      (list (list w-text2) (list w-text2)))
+(want "IG-8 a file the splitter cannot prove imports to one block holding it whole; from three blocks, the first keeps its id and the others are deleted"
+      (list (pieces "w.sc" w-text2) (texts st8 "w.sc")
+            (pieces "m9.sc" m9-text) (row2 "m9.sc" o9 m9-text) (map (lambda (n) (deleted? st2 (cdr (assq n o9)))) '(b c)))
+      (list (list w-text2) (list w-text2) (list m9-text) (list '(a) #t) '(#t #t)))
 
 ;; ---- IG-9: a coder's draft under the import ------------------------------------------
 (printf "== IG-9: a coder's draft under the import ==\n")
@@ -543,24 +605,30 @@
 (define st10 (store-from! wt10 c10-0 "s10" #t))
 (define h10 (held! st10 wt10 c10-0 c10-1 "t10"
                    (lambda ()
-                     (checked "sibling" (ask st10 'batch (format "((insert ~s #f ((kind . code) (mode . text) (src . ~s))))"
-                                                                 (file-at st10 "a.sc") (string->utf8 "(define z 1)\n")))))))
+                     (batch-checked "sibling" (ask st10 'batch (format "((insert ~s #f ((kind . code) (mode . text) (src . ~s))))"
+                                                                 (file-at st10 "a.sc") (string->utf8 "(define z 1)\n"))))
+                     #t)))
 (want "IG-10 an unpremised sibling written during the hold: the batch runs, the tag binds it, import-diverged naming the path, the block done"
-      (list (head-of (cadr h10)) (value-of (cadr h10) 'differing) (and (tag-cut st10 "t10") #t) (done-blocks st10) (caddr h10))
-      (list '(error import-diverged) "a.sc" #t '("done") 1))
+      (list (car h10) (cadr h10) (and (tag-cut st10 "t10") #t) (done-blocks st10) (caddr h10))
+      (list #t (list 'error 'import-diverged '(differing "a.sc") (list 'tag "t10" (list 'cut (tag-cut st10 "t10")))) #t '("done") 1))
 
 ;; ---- IG-11: the dry run ---------------------------------------------------------------
 (printf "== IG-11: the dry run ==\n")
 (define wt11 (repo! "r11"))
-(define c11-0 (commit! wt11 "base" (cons "a.sc" (defs 'a 'b 'c))))
-(define c11-1 (commit! wt11 "edit, append" (cons "a.sc" (defs 'a B* 'c 'd))))
+;; [a,b,c,d] -> [c,a,B,e]: c relocated and a kept by the LCS (2 kept), b set
+;; to B, e inserted, d deleted; placement moves c (appended), a after c and
+;; b after a (3 moves): 6 items, then done and the tag
+(define c11-0 (commit! wt11 "base" (cons "a.sc" (defs 'a 'b 'c 'd))))
+(define c11-1 (commit! wt11 "reorder, edit, append, delete" (cons "a.sc" (defs 'c 'a B* 'e))))
 (define st11 (store-from! wt11 c11-0 "s11" #t))
 (define p11 (position st11))
+(define cut11 (applied-cut st11))
 (define r11 (import! st11 wt11 c11-0 c11-1 "t11" "" " --dry-run"))
-(want "IG-11 --dry-run: the plan and its counts, nothing written"
-      (in-order (head-of (answer r11)) (value-of (answer r11) 'state) (clause-of (answer r11) 'blocks) (value-of (answer r11) 'items)
-                (equal? (position st11) p11) (import-blocks st11) (cadr r11))
-      (list 'ok 'fresh '(blocks (kept 2) (set 1) (inserted 1) (deleted 0) (moved 0)) 4 #t '() 0))
+(want "IG-11 --dry-run: the state, the read cut, the files and every count of the plan, nothing written"
+      (in-order (answer r11) (equal? (position st11) p11) (import-blocks st11) (cadr r11))
+      (list (list 'ok '(dry-run #t) '(state fresh) (list 'read-cut cut11) '(files (modified 1) (added 0) (removed 0))
+                  '(blocks (kept 2) (set 1) (inserted 1) (deleted 1) (moved 3)) '(items 8))
+            #t '() 0))
 
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nimport-git complete\n" rows bad)

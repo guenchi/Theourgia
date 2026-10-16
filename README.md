@@ -3097,7 +3097,8 @@ bytes are text, not dot-named; a dot-named path is skipped. The range is
 (`file-mode`), an added file must be 100644 (`file-mode`), a rename is the
 removal of the old path and the addition of the new (ids do not follow it),
 any other letter is `paths-unsupported`, a changed file that is not text is
-`not-text`, and a range with nothing left is `nothing-to-import`.
+`not-text`, an added path the store cannot hold (a backslash in it) is
+`unsafe-path`, and a range with nothing left is `nothing-to-import`.
 
 Before writing, the store's export at its applied cut is compared with the
 git trees by literal bytes, and one of three states is accepted: no import
@@ -3105,7 +3106,7 @@ block for the range and the export equal to `<from-rev>` (a fresh run); an
 import block for the range with status pending and every path outside the
 range equal to `<from-rev>` (a run after an interrupted one); a done import
 block for the range whose tag is not bound and the export equal to
-`<to-rev>` (only the tag is written). A pending import block of another
+`<to-rev>` (only the tag is written, premised like any run). A pending import block of another
 range is `pending-import`; anything else is `base-mismatch` naming the
 paths that differ. A bound `<name>` is `tag-exists`.
 
@@ -3125,7 +3126,8 @@ on the import block and the tag, carrying premises for every live block of
 every range path and for the import block, so a concurrent change to any of
 them refuses it whole (`premise-changed`). A batch is not atomic: an item
 the store refuses stops the rest with the earlier items on disk, answered
-`(error partial (store-answer ...))`, and so does a run that dies midway;
+`(error partial (item <n>) (kind <kind>) (path <p>) (store-answer ...) (done <n>))`,
+naming the refused item, and so does a run that dies midway;
 running the same command again finishes the work. Afterwards the export at
 the tag is compared with `<to-rev>` and a difference is `(error
 import-diverged (differing <path> ...) ...)`, with the tag made. It answers
