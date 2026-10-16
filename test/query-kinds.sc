@@ -231,8 +231,9 @@
 ;; ---- VERB: the two verbs' wiring ------------------------------------------------------------------
 (printf "== VERB: the query and rule verbs ==\n")
 (want "VERB-1 the query verb answers a kind refusal, and an arity error is still reported first"
-      (in-order (run 'query "(kind ?b \"code\")") (head-of (run 'query "(kind ?b \"code\" ?x)")))
-      '((error bad-request wrong-kind (relation kind) (position 2) (column SYM) (got "code")) (error bad-request)))
+      (in-order (run 'query "(kind ?b \"code\")") (run 'query "(kind ?b \"code\" ?x)"))
+      '((error bad-request wrong-kind (relation kind) (position 2) (column SYM) (got "code"))
+        (error bad-request wrong-arity (relation kind) (arity 2) (given 3))))
 (want "VERB-2 the rule verb refuses a C2 goal, and declares a kept one"
       (in-order (run 'rule "joins" "--on" "section" "--must-not" "(and (kind ?b ?k) (title ?x ?k))")
                 (head-of (run 'rule "keeps" "--on" "section" "--must-not" "(and (title ?w ?t) (/= ?t code))")))
