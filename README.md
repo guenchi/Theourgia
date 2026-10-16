@@ -2924,7 +2924,8 @@ runs before any write, and a refusal writes nothing:
   `pristine-damaged`. `bad-sidecar` names its reason: one datum and nothing
   after it (`trailing-data`), every entry's shape, each cut a nonempty list
   of `(<writer> . <count>)`, the spans tiling each pristine copy exactly
-  (`spans`), and, read from the store, an undrafted touched block's recorded
+  (`spans`), every path and block named once (`duplicate-file`,
+  `duplicate-block`), and, read from the store, an undrafted touched block's recorded
   hash at the recorded cut (`committed-not-at-cut`) and a drafted one's
   recorded version from its exported bytes, based-on and cut
   (`draft-inconsistent`);

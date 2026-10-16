@@ -397,8 +397,8 @@
                       (drafts-of s1 "we24") (list-ref (projection-of s1 "we24" (B 0)) 2))
             (list '(error stale) 'ok 'ok 'ok 1 (list (cons (B 0) "P0\nP1\nw9\n")) (list-ref now 2))))))
 
-;; ---- ET-25..ET-29: a sidecar edited by hand -------------------------------------------------
-(printf "== ET-25..ET-29: a sidecar edited by hand ==\n")
+;; ---- ET-25..ET-30: a sidecar edited by hand -------------------------------------------------
+(printf "== ET-25..ET-30: a sidecar edited by hand ==\n")
 ;; the sidecar datum rewritten by F, or text appended to it
 (define (sidecar-path dir) (string-append dir ".edit/SIDECAR.sexp"))
 (define (rewrite-sidecar! dir f) (write-file! (sidecar-path dir) (format "~s\n" (f (sidecar-of dir)))))
@@ -417,7 +417,8 @@
 (let ((dir (edit-dir s1 "e25")))
   (export! s1 dir "we25")
   (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
-  (write-file! (sidecar-path dir) (string-append (file-text (sidecar-path dir)) "(another datum)\n"))
+  (when (file-exists? (sidecar-path dir))
+    (write-file! (sidecar-path dir) (string-append (file-text (sidecar-path dir)) "(another datum)\n")))
   (want "ET-25 a second datum after the sidecar's refuses bad-sidecar, trailing-data"
         (refused-why s1 dir "we25") '((error bad-sidecar) (reason trailing-data) ())))
 (let ((dir (edit-dir s1 "e26")))
@@ -448,6 +449,26 @@
   (want "ET-29 a drafted block whose recorded cut no longer gives its recorded version refuses bad-sidecar, draft-inconsistent; the draft stays"
         (refused-why s1 d2 "we29")
         (list '(error bad-sidecar) '(reason draft-inconsistent) (list (cons (A 0) "a0\nA1\na2\na3\n")))))
+
+;; a.sc's second block entry given the first block's id, spans and bytes unchanged
+(define (with-second-id-as-first d)
+  (map (lambda (c)
+         (if (and (pair? c) (eq? (car c) 'file) (equal? (cadr c) "a.sc"))
+             (let* ((blocks (filter (lambda (x) (and (pair? x) (eq? (car x) 'block))) c))
+                    (first-id (and (pair? blocks) (cadr (car blocks)))))
+               (let loop ((xs c) (k 0) (out '()))
+                 (cond ((null? xs) (reverse out))
+                       ((and (pair? (car xs)) (eq? (car (car xs)) 'block))
+                        (loop (cdr xs) (+ k 1) (cons (if (= k 1) (cons 'block (cons first-id (cddr (car xs)))) (car xs)) out)))
+                       (else (loop (cdr xs) k (cons (car xs) out))))))
+             c))
+       d))
+(let ((dir (edit-dir s1 "e30")))
+  (export! s1 dir "we30")
+  (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
+  (rewrite-sidecar! dir with-second-id-as-first)
+  (want "ET-30 two block entries with one id refuse bad-sidecar, duplicate-block, before any slice or write"
+        (refused-why s1 dir "we30") '((error bad-sidecar) (reason duplicate-block) ())))
 
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nedit-tools complete\n" rows bad)

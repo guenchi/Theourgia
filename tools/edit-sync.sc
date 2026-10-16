@@ -64,7 +64,7 @@
 ;; (written (block "<id>" (version "<v>")) ...) (skipped "<id>" ...)).
 (import (chezscheme)
         (only (theourgia store) open-and-reduce store-state-at-cut)
-        (only (theourgia reduce) reduction? block-hash draft-version)
+        (only (theourgia reduce) reduction? reduce-applied-cut block-hash draft-version)
         (only (theourgia working) working-read working-write!)
         (only (theourgia landing-files) locate-pieces)
         (only (theourgia log) store-id-of)
@@ -118,6 +118,9 @@
 (define (cut? c)
   (and (list? c) (pair? c)
        (for-all (lambda (p) (and (pair? p) (string? (car p)) (> (string-length (car p)) 0) (count? (cdr p)))) c)))
+(define (distinct? names)
+  (let ((seen (make-hashtable string-hash string=?)))
+    (for-all (lambda (n) (and (not (hashtable-ref seen n #f)) (begin (hashtable-set! seen n #t) #t))) names)))
 (define (tiles? spans len)
   (let loop ((ss spans) (at 0))
     (if (null? ss) (= at len) (and (= (car (car ss)) at) (loop (cdr ss) (cdr (car ss)))))))
@@ -133,7 +136,7 @@
         (bad 'not-an-edit-sidecar))
       (let ((store-id (value (cdr d) 'store)) (writer (value (cdr d) 'writer)) (cut (clause (cdr d) 'cut)))
         (unless (and (string? store-id) (string? writer) cut (list? cut) (= 2 (length cut)) (cut? (cadr cut))) (bad 'header))
-        (values store-id writer (cadr cut)
+        (let ((files
                 (map (lambda (f)
                        (unless (and (list? f) (>= (length f) 5) (string? (cadr f))) (bad 'file))
                        (let* ((rel (cadr f)) (fields (cddr f))
@@ -165,7 +168,12 @@
                            (unless (tiles? (map (lambda (b) (cons (cadr b) (caddr b))) blocks) (bytevector-length bytes))
                              (bad 'spans))
                            (list rel mode bytes blocks))))
-                     (filter (lambda (c) (and (pair? c) (eq? (car c) 'file))) (cdr d))))))))
+                     (filter (lambda (c) (and (pair? c) (eq? (car c) 'file))) (cdr d)))))
+          ;; every path and every block named once: a second entry for the same
+          ;; one would be read as two places for one text
+          (unless (distinct? (map car files)) (bad 'duplicate-file))
+          (unless (distinct? (apply append (map (lambda (f) (map car (cadddr f))) files))) (bad 'duplicate-block))
+          (values store-id writer (cadr cut) files))))))
 
 ;; ---- the directory ---------------------------------------------------------------
 
@@ -351,7 +359,10 @@
                         (let* ((id (car t)) (new (cadr t)) (committed (caddr t)) (draft (cadddr t))
                                (now (block-hash state id))
                                (based-on (if draft (cadr draft) committed))
-                               (at (if draft (caddr draft) cut))
+                               ;; an undrafted block's write records the cut the store
+                               ;; answers for the recorded one, in its own order, so
+                               ;; the version is predicted on that cut too
+                               (at (if draft (caddr draft) (reduce-applied-cut at-cut)))
                                (version (draft-version new based-on at)))
                           (unless (equal? now committed) (refuse 'stale (list 'block id) '(reason committed-moved)))
                           (unless (equal? based-on now) (refuse 'stale (list 'block id) '(reason draft-on-another-version)))
