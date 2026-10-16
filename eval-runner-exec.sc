@@ -99,10 +99,12 @@
 
 (define-values (pgid cpu-ceiling cpu-status) (isolate-evaluation! cpu-seconds))
 
-(define protocol (standard-output-port))
-(put-bytevector protocol
+;; NOTE: NOT `protocol`, which (chezscheme) exports (define-record-type's
+;; clause): a script may redefine an imported name, a compiled program may not.
+(define protocol-port (standard-output-port))
+(put-bytevector protocol-port
                 (string->utf8 (string-append "(ready " (number->string pgid) ")\n")))
-(flush-output-port protocol)
+(flush-output-port protocol-port)
 
 ;; NEVER: NOTHING BELOW THIS LINE RUNS UNTIL THE SUPERVISOR SAYS SO.
 (define go (read (current-input-port)))

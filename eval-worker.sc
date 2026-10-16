@@ -93,10 +93,12 @@
 ;; ---- the protocol stream ----------------------------------------------------
 ;;
 ;; NEVER: HELD IN A NAME THE SANDBOX NEVER SEES.
-(define protocol (standard-output-port))
+;; NOTE: NOT `protocol`, which (chezscheme) exports (define-record-type's
+;; clause): a script may redefine an imported name, a compiled program may not.
+(define protocol-port (standard-output-port))
 
 (define (say-datum! value)
-  (put-bytevector protocol
+  (put-bytevector protocol-port
                   (string->utf8
                     (call-with-string-output-port
                       (lambda (port)
@@ -105,7 +107,7 @@
                                        (print-gensym #f))
                           (write value port)
                           (newline port))))))
-  (flush-output-port protocol))
+  (flush-output-port protocol-port))
 
 ;; ---- the user's two streams, framed -----------------------------------------
 ;;
