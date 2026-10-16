@@ -81,8 +81,11 @@
 (define (string-index s sub)
   (let ((n (string-length s)) (m (string-length sub)))
     (let loop ((i 0)) (cond ((> (+ i m) n) #f) ((string=? (substring s i (+ i m)) sub) i) (else (loop (+ i 1)))))))
-;; the one occurrence of FROM in the file replaced by TO
+;; the one occurrence of FROM in the file replaced by TO; a file that is
+;; not there (the export failed) is left absent, for the row to read red
 (define (edit! path from to)
+  (when (file-exists? path) (edit-present! path from to)))
+(define (edit-present! path from to)
   (let* ((s (file-text path)) (i (string-index s from)))
     (unless (and i (not (string-index (substring s (+ i 1) (string-length s)) from)))
       (assertion-violation 'edit-tools "not exactly one occurrence" path from))
