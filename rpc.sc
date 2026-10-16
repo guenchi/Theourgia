@@ -1432,7 +1432,15 @@
                            (view (null? (unreadable-behind view)))
                            (else #f)))
            (table (if (and view complete (reduction? view)) (state-declared-rules view) '())))
-      (and (pair? table) (cons 'declared-rules table))))
+      ;; A RULE WHOSE GOALS DO NOT CHECK AGAINST THE KINDS is listed with
+      ;; (kind-mismatch <the refusal it would meet if declared now>), as
+      ;; information for its owner: a write never refuses for it.
+      (and (pair? table)
+           (let ((mismatch (eval 'rule-kind-mismatch (environment '(theourgia query)))))
+             (cons 'declared-rules
+                   (map (lambda (r) (let ((m (mismatch (cadr r))))
+                                      (if m (append r (list (list 'kind-mismatch m))) r)))
+                        table))))))
 
   (define (describe-template state)
     (let* ((view (cond ((sealed-state? state) (sealed-state-state state))

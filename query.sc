@@ -52,6 +52,7 @@
 ;;; sha256 of the rows joined by newlines. The cut is not in the digest.
 (library (theourgia query)
   (export query-verb fact-relations rule-library rule-relations check-rules
+          rule-kinds declared-rule-kinds rule-kind-mismatch library-relation-kinds query-kind-refusal
           rule-only-facts relation-external? rule-value-check builtin-rules
           make-query-session session-query session-answer session-expansions session-spent session-passes query-relations-items
           session-budget-set! refusal? refusal-answer session-rows
@@ -89,7 +90,7 @@
 
   ;; ---- the tables ---------------------------------------------------------------------
 
-  ;; (<relation> <arity> "<one line>" stored|external). The provider of each
+  ;; (<relation> <arity> "<one line>" stored|external <kinds>). The provider of each
   ;; is in fact-tuples. THE FOURTH COLUMN SAYS WHETHER A FACT IS A FUNCTION OF
   ;; THE RECORDS ALONE (stored) or reads something outside the log (external):
   ;; `score` the keyword hook and the editor-supplied signature tables,
@@ -98,33 +99,44 @@
   ;; defs index through the text view, which asks the language catalogue. A
   ;; rule may name only stored facts and rules over them, so its answer is a
   ;; function of the records and the rules (rule-value-check).
+  ;;
+  ;; <kinds> IS EACH COLUMN'S KIND, exactly as wide as the provider emits
+  ;; (see "the kinds" below): ID, STR, SYM, INT, ANY, PARENT (an ID or the
+  ;; string "root"), NAME-OR-NONE (a string or the symbol none), or
+  ;; (SYM <symbol> ...), one of those symbols. The kinds are read by the
+  ;; static check alone; no provider and no evaluation consults them.
   (define fact-relations
-    '((kind 2 "every live block, and its settled kind, else none, conflict or unreadable" stored)
-      (class 2 "every live block, and its effective class" stored)
-      (validity 2 "every live block, and its validity: valid, needs-review, refuted or superseded" stored)
-      (version 2 "every live block that can be hashed, and its version" stored)
-      (title 2 "a block whose title is a settled string, and that title" stored)
-      (field 3 "every settled field of a live block: its name, and its value as stored" stored)
-      (edge 3 "every surviving edge between two live blocks: from, relation, to" stored)
-      (edge-kind 3 "an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to" stored)
-      (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included" stored)
-      (under 2 "a live block and its settled parent, \"root\" at the top" stored)
-      (ref 2 "a text reference [[id]] in a live block's text to a live block" stored)
-      (library 2 "a library block and its name" stored)
-      (in-library 2 "every code block, and the name of the library containing it, or none; nothing under a library whose name is contested" stored)
-      (imports 2 "a library, by name, and a library name it imports" stored)
-      (def 3 "a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested" external)
-      (uses-name 2 "a code block and a name it uses (name use, syntactic)" external)
-      (lang 2 "a code block's language" stored)
-      (validity-reason 3 "each reason of a block that is not valid, and the block that causes it" stored)
-      (decision-state 2 "a live decision, and its state: closed, open, review, verified or implemented" stored)
-      (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end" stored)
-      (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved" stored)
-      (verified-by 2 "a live block, and a live block with a current verifies edge to it" stored)
-      (verified-moved 2 "a live block, and a live block with a verifies edge to it that it has moved past" stored)
-      (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required" external)))
+    '((kind 2 "every live block, and its settled kind, else none, conflict or unreadable" stored (ID SYM))
+      (class 2 "every live block, and its effective class" stored (ID SYM))
+      (validity 2 "every live block, and its validity: valid, needs-review, refuted or superseded" stored (ID (SYM valid needs-review refuted superseded)))
+      (version 2 "every live block that can be hashed, and its version" stored (ID STR))
+      (title 2 "a block whose title is a settled string, and that title" stored (ID STR))
+      (field 3 "every settled field of a live block: its name, and its value as stored" stored (ID STR ANY))
+      (edge 3 "every surviving edge between two live blocks: from, relation, to" stored (ID SYM ID))
+      (edge-kind 3 "an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to" stored (ID SYM ID))
+      (relation 2 "every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included" stored (SYM SYM))
+      (under 2 "a live block and its settled parent, \"root\" at the top" stored (ID PARENT))
+      (ref 2 "a text reference [[id]] in a live block's text to a live block" stored (ID ID))
+      (library 2 "a library block and its name" stored (ID STR))
+      (in-library 2 "every code block, and the name of the library containing it, or none; nothing under a library whose name is contested" stored (ID NAME-OR-NONE))
+      (imports 2 "a library, by name, and a library name it imports" stored (STR STR))
+      (def 3 "a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested" external (ID NAME-OR-NONE STR))
+      (uses-name 2 "a code block and a name it uses (name use, syntactic)" external (ID STR))
+      (lang 2 "a code block's language" stored (ID ANY))
+      (validity-reason 3 "each reason of a block that is not valid, and the block that causes it" stored (ID SYM ID))
+      (decision-state 2 "a live decision, and its state: closed, open, review, verified or implemented" stored (ID (SYM closed open review verified implemented)))
+      (moved 4 "an edge of an effect-bearing relation one of whose ends moved, and that end" stored (ID SYM ID (SYM source target)))
+      (moved-kind 4 "a moved edge with its relation's kind in place of its name, and the end that moved" stored (ID SYM ID (SYM source target)))
+      (verified-by 2 "a live block, and a live block with a current verifies edge to it" stored (ID ID))
+      (verified-moved 2 "a live block, and a live block with a verifies edge to it that it has moved past" stored (ID ID))
+      (score 3 "exactly the hits search <text> returns with no cap, each with its score; text required" external (ID STR INT))))
 
-  (define tests '((= 2) (/= 2) (string< 2) (member 2)))
+  ;; (<test> <arity> <rule>): what the kind check asks of its operands --
+  ;; meet (=: not disjoint, and both refined to the meet), free (/=: nothing,
+  ;; an inequality across kinds is simply true), string (string<: each not
+  ;; disjoint from STR), one-of (member: one element of the list not disjoint
+  ;; from the operand).
+  (define tests '((= 2 meet) (/= 2 free) (string< 2 string) (member 2 one-of)))
 
   ;; THE RULE LIBRARY, one table of data. Each rule is (<head> <goal> ...).
   ;; A RULE ABOUT AN EFFECT ASKS THE KIND (edge-kind, moved-kind), so an edge
@@ -209,7 +221,8 @@
   ;; its targets (the `+` facts) and the write's own evidence. No query,
   ;; context or premise session has them; a rule naming one is a WRITE rule.
   (define rule-only-facts
-    '((kind+ 2) (field+ 3) (edge+ 3) (edge-kind+ 3) (cited 2) (unread 1) (receipt-carried 0)))
+    '((kind+ 2 (ID SYM)) (field+ 3 (ID STR ANY)) (edge+ 3 (ID SYM ID)) (edge-kind+ 3 (ID SYM ID))
+      (cited 2 (ID ID)) (unread 1 (ID)) (receipt-carried 0 ())))
   ;; As heads with no body, so query-goals knows their arities when it checks
   ;; a rule's goals; never added to a session.
   (define rule-only-heads
@@ -242,7 +255,14 @@
   ;; (error bad-request ...). Each goal is checked as a query's goals are,
   ;; with the rule-only facts known, and a relation that reads outside the
   ;; log is refused.
-  (define (rule-value-check value)
+  ;;
+  ;; THE KINDS ARE CHECKED UNLESS THE CALLER SAYS #f: the `rule` verb and a
+  ;; batch's rule intent declare a rule and check them (?w an ID); a write's
+  ;; revalidation of a stored rule (rules.sc, rule-plan) passes #f, so a rule
+  ;; stored before the kinds keeps the behaviour it had and never turns a
+  ;; write into rule-unevaluable for a kind.
+  (define (rule-value-check value . options)
+    (define kinds? (or (null? options) (car options)))
     (define (clause k) (assq k value))
     ;; The relations a goal names, through every nested and: the goals
     ;; query-goals answers for it, which it has already accepted.
@@ -253,7 +273,9 @@
             (query-goals g (append rule-library rule-only-heads) '(?w))
             #f)
           (let ((x (find relation-external? (goal-relations g))))
-            (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))))
+            (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))
+          (and kinds?
+               (goals-kind-refusal (query-goals g (append rule-library rule-only-heads) '(?w)) written-block-seed))))
     ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every pair it reads
     ;; as a marker in a member it declares (request.sc, bind-new: a pair
     ;; headed "#%new" with a pair after it), so a rule value holding one would
@@ -327,6 +349,238 @@
           (let ((h (car (car rs))))
             (loop (cdr rs) (if (assq (car h) out) out (cons (list (car h) (length (cdr h))) out)))))))
 
+  ;; ---- the kinds ------------------------------------------------------------------------
+  ;;
+  ;; A STATIC CHECK, BESIDE ARITY AND BINDING: each fact column has a kind
+  ;; (fact-relations, rule-only-facts), each test a rule (tests), and the
+  ;; recursive library relations and `hard` a declaration (below); the other
+  ;; library relations' kinds are inferred from their clauses. A query, a
+  ;; rule value and a library clause are read left to right, each variable's
+  ;; kind being the MEET of the columns it has stood in so far.
+  ;;
+  ;; KEY: THE ONE RULE IS DISJOINTNESS, NEVER INCLUSION. A goal is refused only
+  ;; when two kinds that must share a value have no value in common (their
+  ;; meet is BOTTOM): such a goal answers no row at every cut of every store.
+  ;; A wide column followed by a narrow one is a filter, not an error, and no
+  ;; goal that answers a row today is refused (Postel).
+  ;;
+  ;; A KIND, AS THE CHECK HOLDS IT, is a union of atoms: any, str, id, root
+  ;; (the string "root"), sym, int and (syms <symbol> ...); the empty union is
+  ;; BOTTOM. ID <= STR, the string "root" <= STR, every (syms ...) <= SYM,
+  ;; everything <= ANY. A constant has its own kind: a string STR, a symbol
+  ;; s the singleton (SYM s), an exact integer INT.
+  ;;
+  ;; NEVER: CONSULTED AT RUN TIME. The evaluator does not read a kind, so a
+  ;; query or rule that passes this check answers exactly as before.
+
+  ;; THE DECLARED LIBRARY RELATIONS: the recursive ones, which no order of
+  ;; inference reaches, and `hard`, whose role column is the set of roles its
+  ;; clauses name. Each clause of one must have head kinds CONTAINED in the
+  ;; declaration (head-kind otherwise); every other relation's kinds are the
+  ;; join, across its clauses, of each clause's head kinds.
+  (define declared-rule-kinds
+    '((depends* ID ID) (supersedes* ID ID) (under* ID PARENT) (within ID PARENT)
+      (hard PARENT ID (SYM unit member unsettled supersedes cause implementer stale) PARENT)))
+
+  (define (kind-union k)
+    (case k
+      ((ID) '(id)) ((STR) '(str)) ((SYM) '(sym)) ((INT) '(int)) ((ANY) '(any))
+      ((PARENT) '(id root)) ((NAME-OR-NONE) '(str (syms none)))
+      (else (if (and (pair? k) (eq? (car k) 'SYM) (for-all symbol? (cdr k)))
+                (list (cons 'syms (cdr k)))
+                (assertion-violation 'query "not a kind" k)))))
+  (define (constant-kind c)
+    (cond ((string? c) '(str)) ((symbol? c) (list (list 'syms c))) (else '(int))))
+
+  ;; two atoms' meet, an atom, or #f for none
+  (define (atom-meet a b)
+    (cond ((eq? a 'any) b)
+          ((eq? b 'any) a)
+          ((and (symbol? a) (eq? a b)) a)
+          ((eq? a 'str) (and (memq b '(id root)) b))
+          ((eq? b 'str) (and (memq a '(id root)) a))
+          ((eq? a 'sym) (and (pair? b) b))
+          ((eq? b 'sym) (and (pair? a) a))
+          ((and (pair? a) (pair? b))
+           (let ((both (filter (lambda (x) (memq x (cdr b))) (cdr a)))) (and (pair? both) (cons 'syms both))))
+          (else #f)))
+  (define (atom<=? a b)
+    (or (eq? b 'any) (equal? a b)
+        (and (memq a '(id root)) (eq? b 'str))
+        (and (pair? a) (eq? b 'sym))
+        (and (pair? a) (pair? b) (for-all (lambda (x) (memq x (cdr b))) (cdr a)))))
+  ;; a union with no atom another one contains, its symbol sets merged
+  (define (kind-normal u)
+    (let* ((syms (apply append (map cdr (filter pair? u))))
+           (atoms (append (filter symbol? u)
+                          (if (null? syms) '()
+                              (list (cons 'syms (fold-left (lambda (acc x) (if (memq x acc) acc (append acc (list x)))) '() syms)))))))
+      (let loop ((as atoms) (out '()))
+        (cond ((null? as) (reverse out))
+              ((or (exists (lambda (b) (and (not (equal? b (car as))) (atom<=? (car as) b))) atoms)
+                   (member (car as) out))
+               (loop (cdr as) out))
+              (else (loop (cdr as) (cons (car as) out)))))))
+  (define (kind-meet u v)
+    (kind-normal (filter values (apply append (map (lambda (a) (map (lambda (b) (atom-meet a b)) v)) u)))))
+  (define (kind-join u v) (kind-normal (append u v)))
+  (define (kind<=? u v) (for-all (lambda (a) (exists (lambda (b) (atom<=? a b)) v)) u))
+  ;; a kind as an answer names it: one of the named kinds when it is one, else
+  ;; its atoms, BOTTOM for none
+  (define (kind-name u)
+    (let ((named (find (lambda (k) (let ((ku (kind-normal (kind-union k)))) (and (kind<=? ku u) (kind<=? u ku))))
+                       '(ID STR SYM INT ANY PARENT NAME-OR-NONE))))
+      (cond (named named)
+            ((null? u) 'BOTTOM)
+            ((and (= 1 (length u)) (pair? (car u))) (cons 'SYM (cdr (car u))))
+            (else (map (lambda (a) (cond ((pair? a) (cons 'SYM (cdr a))) ((eq? a 'root) "root") (else (string->symbol (string-upcase (symbol->string a))))))
+                       u)))))
+
+  ;; the column kinds of a relation, given the library relations' table
+  (define (relation-column-kinds rel rule-kinds-table)
+    (cond ((assq rel fact-relations) => (lambda (f) (map kind-union (list-ref f 4))))
+          ((assq rel rule-only-facts) => (lambda (f) (map kind-union (caddr f))))
+          (else (hashtable-ref rule-kinds-table rel #f))))
+
+  ;; ONE GOAL LIST, LEFT TO RIGHT. ENV holds each variable seen: (<variable>
+  ;; <kind> ((<relation> <position>) . <column kind>) ...). -> ENV after the
+  ;; goals, or a refusal: wrong-kind (C1, a constant; C3, a test's operand),
+  ;; join-across-kinds (C2, a variable's meet is BOTTOM).
+  (define (term-kind a env)
+    (cond ((variable? a) (let ((e (assq a env))) (if e (cadr e) '(any))))
+          ((wildcard? a) '(any))
+          (else (constant-kind a))))
+  (define (refined env a u)
+    (let ((e (and (variable? a) (assq a env))))
+      (if e (cons (list a u (caddr e)) (remq e env)) env)))
+  (define (test-kinds g rule env)
+    (case rule
+      ((free) env)
+      ((meet)
+       (let* ((a (cadr g)) (b (caddr g)) (ka (term-kind a env)) (kb (term-kind b env)) (m (kind-meet ka kb)))
+         (when (null? m)
+           (refuse 'error 'bad-request 'wrong-kind (list 'test (car g)) '(operand 2)
+                   (list 'kinds (list (kind-name ka) (kind-name kb)))))
+         (refined (refined env a m) b m)))
+      ((string)
+       (let loop ((as (cdr g)) (n 1))
+         (unless (null? as)
+           (let ((k (term-kind (car as) env)))
+             (when (null? (kind-meet k '(str)))
+               (refuse 'error 'bad-request 'wrong-kind (list 'test (car g)) (list 'operand n) (list 'kind (kind-name k)) '(needs STR)))
+             (loop (cdr as) (+ n 1)))))
+       env)
+      ((one-of)
+       (let ((k (term-kind (cadr g) env)))
+         (unless (exists (lambda (x) (pair? (kind-meet k (constant-kind x)))) (caddr g))
+           (refuse 'error 'bad-request 'wrong-kind (list 'test (car g)) '(operand 1) (list 'kind (kind-name k))
+                   (list 'got (caddr g))))
+         env))
+      (else env)))
+  (define (relation-kinds g cols env)
+    (if (not cols)
+        env
+        (let loop ((as (cdr g)) (cs cols) (n 1) (env env))
+          (if (or (null? as) (null? cs))
+              env
+              (let ((a (car as)) (c (car cs)))
+                (cond
+                  ((wildcard? a) (loop (cdr as) (cdr cs) (+ n 1) env))
+                  ((variable? a)
+                   (let ((e (assq a env)) (here (cons (list (car g) n) c)))
+                     (if e
+                         (let ((m (kind-meet (cadr e) c)) (seen (append (caddr e) (list here))))
+                           (when (null? m)
+                             (refuse 'error 'bad-request 'join-across-kinds (list 'variable a)
+                                     (list 'positions (map car seen))
+                                     (list 'kinds (map (lambda (p) (kind-name (cdr p))) seen))))
+                           (loop (cdr as) (cdr cs) (+ n 1) (cons (list a m seen) (remq e env))))
+                         (loop (cdr as) (cdr cs) (+ n 1) (cons (list a c (list here)) env)))))
+                  (else
+                   (when (null? (kind-meet (constant-kind a) c))
+                     (refuse 'error 'bad-request 'wrong-kind (list 'relation (car g)) (list 'position n)
+                             (list 'column (kind-name c)) (list 'got a)))
+                   (loop (cdr as) (cdr cs) (+ n 1) env))))))))
+  (define (goal-kinds goals env kinds-of)
+    (let loop ((gs goals) (env env))
+      (if (null? gs)
+          env
+          (let* ((g (car gs)) (t (assq (car g) tests)))
+            (loop (cdr gs) (if t (test-kinds g (caddr t) env) (relation-kinds g (kinds-of (car g)) env)))))))
+
+  ;; THE LIBRARY RELATIONS' KINDS, from RULES and DECLARED: -> a table of
+  ;; relation -> column kinds, or a refusal (a clause's body as a query's;
+  ;; kind-order when no relation left to infer has its body's kinds known --
+  ;; a recursive relation must be declared; head-kind when a declared
+  ;; relation's clause is not contained in its declaration). The inferred
+  ;; ones first, each as soon as the relations its clauses name are known;
+  ;; the declared ones' clauses last.
+  (define (rule-kinds rules declared)
+    (let* ((table (make-eq-hashtable))
+           (rels (map car (rule-relations rules)))
+           (clauses-of (lambda (r) (filter (lambda (c) (eq? (car (car c)) r)) rules)))
+           (kinds-of (lambda (r) (relation-column-kinds r table)))
+           (head-kinds (lambda (c) (let ((env (goal-kinds (cdr c) '() kinds-of)))
+                                     (map (lambda (a) (term-kind a env)) (cdr (car c))))))
+           (known? (lambda (r) (or (assq r tests) (relation-column-kinds r table)))))
+      (for-each (lambda (d) (hashtable-set! table (car d) (map kind-union (cdr d)))) declared)
+      (let loop ((todo (filter (lambda (r) (not (assq r declared))) rels)))
+        (unless (null? todo)
+          (let ((r (find (lambda (r) (for-all (lambda (c) (for-all (lambda (g) (known? (car g))) (cdr c))) (clauses-of r)))
+                         todo)))
+            (unless r (refuse 'error 'kind-order (list 'relations todo)))
+            (let ((heads (map head-kinds (clauses-of r))))
+              (hashtable-set! table r (fold-left (lambda (acc h) (map kind-join acc h)) (car heads) (cdr heads))))
+            (loop (remq r todo)))))
+      (for-each
+        (lambda (d)
+          (for-each
+            (lambda (c)
+              (let loop ((hs (head-kinds c)) (ds (cdr d)) (n 1))
+                (unless (or (null? hs) (null? ds))
+                  (unless (kind<=? (car hs) (kind-normal (kind-union (car ds))))
+                    (refuse 'error 'head-kind (list 'relation (car d)) (list 'position n)
+                            (list 'declared (car ds)) (list 'clause (kind-name (car hs)))))
+                  (loop (cdr hs) (cdr ds) (+ n 1)))))
+            (clauses-of (car d))))
+        (filter (lambda (d) (memq (car d) rels)) declared))
+      table))
+
+  ;; THE CHECK OF ONE GOAL LIST against the library's kinds: #f, or the
+  ;; refusal's answer. SEED is the environment before the first goal.
+  (define (goals-kind-refusal goals seed)
+    (guard (e ((refusal? e) (refusal-answer e)))
+      (goal-kinds goals seed (lambda (r) (relation-column-kinds r library-kinds)))
+      #f))
+  ;; A CLIENT QUERY'S KIND CHECK: #f when the goal passes, or when
+  ;; query-goals refuses it (the session answers that refusal as before);
+  ;; else the kind refusal's answer.
+  (define (query-kind-refusal goal)
+    (guard (e ((refusal? e) #f))
+      (goals-kind-refusal (query-goals goal rule-library) '())))
+  ;; A RULE VALUE'S GOALS ARE ASKED WITH ?w BOUND TO THE WRITTEN BLOCK, so ?w
+  ;; starts as an ID.
+  (define written-block-seed (list (list '?w '(id) (list (cons '(written) '(id))))))
+
+  ;; a library relation's column kinds, by name, or #f
+  (define (library-relation-kinds rel)
+    (let ((k (hashtable-ref library-kinds rel #f))) (and k (map kind-name k))))
+
+  ;; A STORED RULE'S KIND MISMATCH, for a listing: #f, or the refusal its
+  ;; first goal with one would meet if declared now. A stored rule is never
+  ;; refused for it on a write (rules.sc asks rule-value-check without the
+  ;; kinds), so this is information for its owner, never a verdict; a value
+  ;; that is not a goal rule, or does not read, has none.
+  (define (rule-kind-mismatch value)
+    (guard (e (#t #f))
+      (and (list? value)
+           (exists (lambda (k)
+                     (let ((c (assq k value)))
+                       (and c (pair? (cdr c))
+                            (goals-kind-refusal (query-goals (cadr c) (append rule-library rule-only-heads) '(?w))
+                                                written-block-seed))))
+                   '(where must must-not)))))
+
   ;; ---- registration (checked when the library loads) -----------------------------------
 
   ;; FACTS, when given, are a session's per-write facts.
@@ -394,6 +648,11 @@
     #t)
 
   (define library-checked (check-rules rule-library))
+  ;; NEVER: A LIBRARY CLAUSE THAT DOES NOT CHECK IS A BUILD ERROR, as an arity is.
+  (define library-kinds
+    (guard (e ((refusal? e) (assertion-violation 'query "a rule of the library does not check against the kinds"
+                                                 (refusal-answer e))))
+      (rule-kinds rule-library declared-rule-kinds)))
 
   ;; ---- the session ----------------------------------------------------------------------
 
@@ -936,9 +1195,19 @@
   (define (query-relations-text)
     (define (line name arity text)
       (string-append "- `" (symbol->string name) "/" (number->string arity) "` -- " text "\n"))
+    ;; a fact's line carries its column kinds: (ID, SYM), a symbol set as
+    ;; (SYM <symbol> ...)
+    (define (kind-text k)
+      (if (symbol? k)
+          (symbol->string k)
+          (string-append "(" (fold-left (lambda (acc x) (string-append acc (if (string=? acc "") "" " ") (symbol->string x))) "" k) ")")))
+    (define (fact-line f)
+      (string-append "- `" (symbol->string (car f)) "/" (number->string (cadr f)) "` ("
+                     (fold-left (lambda (acc k) (string-append acc (if (string=? acc "") "" ", ") (kind-text k))) "" (list-ref f 4))
+                     ") -- " (caddr f) "\n"))
     (string-append
       "Fact relations:\n\n"
-      (apply string-append (map (lambda (f) (line (car f) (cadr f) (caddr f))) fact-relations))
+      (apply string-append (map fact-line fact-relations))
       "\nTests, on bound values only: "
       (let loop ((ts tests) (acc ""))
         (if (null? ts) acc
@@ -972,8 +1241,12 @@
             (let ((goal (guard (e (#t 'unreadable)) (string->sexpr-extended (car args)))))
               (if (eq? goal 'unreadable)
                   (list 'error 'bad-request 'not-a-goal (list 'goal (car args)))
-                  (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
-                         (a (session-answer S goal)))
+                  ;; THE KINDS ARE CHECKED AFTER ARITY AND BINDING, BEFORE ANY
+                  ;; EVALUATION: a goal query-goals refuses is answered by the
+                  ;; session as before; one it accepts is read against the kinds.
+                  (let* ((kinds (query-kind-refusal goal))
+                         (S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
+                         (a (or kinds (session-answer S goal))))
                     (if (not (eq? (car a) 'ok))
                         a
                         (append ((dispatch-helper 'items) (map (lambda (r) (cons 'row r)) (cadr a)))

@@ -1058,7 +1058,54 @@ names), `wrong-arity`, `not-a-term` (a term its position does not take),
 `test-variable-unbound` (a test's variable, `_` included, that no earlier
 goal binds), `unbound-argument` (the text of `score`), `query-budget` (more
 than a million tuples of new work in one query, never a partial answer),
-`unrenderable` (a value past the codec's nesting).
+`unrenderable` (a value past the codec's nesting), and the two refusals
+of the column kinds below, `wrong-kind` and `join-across-kinds`.
+
+**Column kinds.** Every column of a fact relation has a KIND, listed with
+the relation below: `ID` (a block identifier, a string, which may name a
+block that is gone), `STR` (a string), `SYM` (a symbol), `(SYM <symbol>
+...)` (one of those symbols), `INT` (an exact integer), `ANY` (any value),
+`PARENT` (an `ID` or the string "root") and `NAME-OR-NONE` (a string or
+the symbol `none`). `ID` is a `STR`, `(SYM ...)` a `SYM`, and everything an
+`ANY`. A constant has its own kind: a string `STR`, an exact integer
+`INT`, a symbol `s` the set `(SYM s)`. Each kind is as wide as what its
+provider emits, so `kind` and `class` are any symbol and `lang` is `ANY`.
+
+A query is read left to right before it is evaluated, after the checks
+above, each variable's kind being the meet of the columns it has stood in
+so far; and it is refused only when two kinds that must share a value have
+none in common, so that the goal could answer no row at any cut of any
+store:
+
+- a constant in a column whose kind it cannot be: `(error bad-request
+  wrong-kind (relation <r>) (position <n>) (column <kind>) (got
+  <constant>))` -- `(kind ?b "code")`, `(under ?b root)`, `(version ?b
+  12)`;
+- a variable in two columns with no value in common: `(error bad-request
+  join-across-kinds (variable <v>) (positions ((<r> <n>) ...)) (kinds
+  (<kind> ...)))` -- `(and (kind ?b ?k) (title ?x ?k))`;
+- a test whose operand cannot be what it needs: `wrong-kind` naming the
+  test and the operand. `=` refuses two operands with no value in common
+  and narrows both to their meet; `string<` refuses an operand that cannot
+  be a string; `member` refuses when no element of its list could be the
+  operand; `/=` constrains nothing (`(and (title ?b ?t) (/= ?t code))`
+  keeps every title).
+
+A wide column followed by a narrow one is a filter, not an error:
+`(and (field ?b "slot" ?v) (string< ?v "z"))` reads `?v` as `ANY`, then
+`STR`. The kinds are never consulted while a query runs, so a query that
+passes answers exactly as before.
+
+The library's rules carry kinds too: the recursive relations (`depends*`,
+`supersedes*` as `(ID, ID)`; `under*`, `within` as `(ID, PARENT)`) and
+`hard` (its role column the seven role symbols) are declared, and every
+clause of each must fit its declaration; the others are inferred from
+their clauses (`unit` is `(PARENT, ID)`, `def-for` `(ID, STR, ID)`). A rule
+value is read the same way when the `rule` verb or a batch declares it,
+`?w` being an `ID`. A rule stored before the kinds is not refused on a
+write for one: it keeps the behaviour it had, and `describe` lists it with
+`(kind-mismatch <the refusal it would meet if declared now>)` so its owner
+can retire it.
 
 A library whose name two writers contest has no name: no `library`,
 `in-library`, `def` or `imports` fact speaks one for it, so no rule that
@@ -1088,30 +1135,30 @@ cost.
 
 Fact relations:
 
-- `kind/2` -- every live block, and its settled kind, else none, conflict or unreadable
-- `class/2` -- every live block, and its effective class
-- `validity/2` -- every live block, and its validity: valid, needs-review, refuted or superseded
-- `version/2` -- every live block that can be hashed, and its version
-- `title/2` -- a block whose title is a settled string, and that title
-- `field/3` -- every settled field of a live block: its name, and its value as stored
-- `edge/3` -- every surviving edge between two live blocks: from, relation, to
-- `edge-kind/3` -- an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to
-- `relation/2` -- every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included
-- `under/2` -- a live block and its settled parent, "root" at the top
-- `ref/2` -- a text reference [[id]] in a live block's text to a live block
-- `library/2` -- a library block and its name
-- `in-library/2` -- every code block, and the name of the library containing it, or none; nothing under a library whose name is contested
-- `imports/2` -- a library, by name, and a library name it imports
-- `def/3` -- a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested
-- `uses-name/2` -- a code block and a name it uses (name use, syntactic)
-- `lang/2` -- a code block's language
-- `validity-reason/3` -- each reason of a block that is not valid, and the block that causes it
-- `decision-state/2` -- a live decision, and its state: closed, open, review, verified or implemented
-- `moved/4` -- an edge of an effect-bearing relation one of whose ends moved, and that end
-- `moved-kind/4` -- a moved edge with its relation's kind in place of its name, and the end that moved
-- `verified-by/2` -- a live block, and a live block with a current verifies edge to it
-- `verified-moved/2` -- a live block, and a live block with a verifies edge to it that it has moved past
-- `score/3` -- exactly the hits search <text> returns with no cap, each with its score; text required
+- `kind/2` (ID, SYM) -- every live block, and its settled kind, else none, conflict or unreadable
+- `class/2` (ID, SYM) -- every live block, and its effective class
+- `validity/2` (ID, (SYM valid needs-review refuted superseded)) -- every live block, and its validity: valid, needs-review, refuted or superseded
+- `version/2` (ID, STR) -- every live block that can be hashed, and its version
+- `title/2` (ID, STR) -- a block whose title is a settled string, and that title
+- `field/3` (ID, STR, ANY) -- every settled field of a live block: its name, and its value as stored
+- `edge/3` (ID, SYM, ID) -- every surviving edge between two live blocks: from, relation, to
+- `edge-kind/3` (ID, SYM, ID) -- an edge whose relation has a kind, built-in or declared, `nothing` included: from, that kind, to
+- `relation/2` (SYM, SYM) -- every relation with an effect kind: the six by their own names, and each name declared in force with its kind, nothing included
+- `under/2` (ID, PARENT) -- a live block and its settled parent, "root" at the top
+- `ref/2` (ID, ID) -- a text reference [[id]] in a live block's text to a live block
+- `library/2` (ID, STR) -- a library block and its name
+- `in-library/2` (ID, NAME-OR-NONE) -- every code block, and the name of the library containing it, or none; nothing under a library whose name is contested
+- `imports/2` (STR, STR) -- a library, by name, and a library name it imports
+- `def/3` (ID, NAME-OR-NONE, STR) -- a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested
+- `uses-name/2` (ID, STR) -- a code block and a name it uses (name use, syntactic)
+- `lang/2` (ID, ANY) -- a code block's language
+- `validity-reason/3` (ID, SYM, ID) -- each reason of a block that is not valid, and the block that causes it
+- `decision-state/2` (ID, (SYM closed open review verified implemented)) -- a live decision, and its state: closed, open, review, verified or implemented
+- `moved/4` (ID, SYM, ID, (SYM source target)) -- an edge of an effect-bearing relation one of whose ends moved, and that end
+- `moved-kind/4` (ID, SYM, ID, (SYM source target)) -- a moved edge with its relation's kind in place of its name, and the end that moved
+- `verified-by/2` (ID, ID) -- a live block, and a live block with a current verifies edge to it
+- `verified-moved/2` (ID, ID) -- a live block, and a live block with a verifies edge to it that it has moved past
+- `score/3` (ID, STR, INT) -- exactly the hits search <text> returns with no cap, each with its score; text required
 
 Tests, on bound values only: `=/2`, `/=/2`, `string</2`, `member/2`.
 
