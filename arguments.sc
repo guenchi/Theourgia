@@ -90,7 +90,7 @@
         ;; computing the path separately is the shape that already cost a
         ;; day here, when a socket path was derived twice and the two
         ;; derivations disagreed about a store that did not exist yet.
-        ;; `--attempt` is the client's token for this start (F100b item 3),
+        ;; `--attempt` is the client's token for this start,
         ;; echoed in every startup report; a value, like the log.
         ((serve) '("--log" "--attempt"))
         ;; A store can start from a template: a built-in by name, or a file.

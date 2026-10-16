@@ -334,7 +334,7 @@
                  (and (or (char<=? #\0 c #\9) (char<=? #\a c #\z))
                       (loop (+ i 1))))))))
 
-  ;; NEVER: writers/ ITSELF IS LISTED THE WAY EACH writers/<w>/ IS (F79),
+  ;; NEVER: writers/ ITSELF IS LISTED THE WAY EACH writers/<w>/ IS,
   ;; by the one listing operation: absent (ENOENT, ENOTDIR) is no writers,
   ;; and any other failure raises unreadable-entry naming writers/. A
   ;; directory-type pre-check followed by a raw listing let a writers/ that
@@ -416,8 +416,8 @@
                   (map (lambda (name) (path-snapshot (string-append path "/" name)))
                        names))))))
 
-  ;; EACH WRITER'S ENTRY IS KEYED BY ITS WRITER, `(writer . entry)` (F77c,
-  ;; design review r2): the daemon's probe hands the markers in it to the
+  ;; EACH WRITER'S ENTRY IS KEYED BY ITS WRITER, `(writer . entry)` (found
+  ;; in design review): the daemon's probe hands the markers in it to the
   ;; answer it is about to give, and a marker says which writer only if
   ;; its entry does. Two snapshots compare as before -- equal? on the
   ;; whole value -- so the key changes nothing about the probe's question.
@@ -501,7 +501,7 @@
     (set! append-guard proc)
     (when (pair? noted) (set! append-noted (car noted))))
 
-  ;; EVERY MARKER IN A SNAPSHOT, AS NOTES (F77c, design reviews r2 and r3):
+  ;; EVERY MARKER IN A SNAPSHOT, AS NOTES (found in design review):
   ;; `(writer path reason)` triples, the form load-unreadable gives, one per
   ;; marker at any depth of a writer's entry -- the whole writer, or a file
   ;; under it (its metadata, its current segment, damaged/, incoming/).
@@ -1041,19 +1041,19 @@
   ;; retries would leak one per attempt.
   (define (read-whole path) (entry-bytes path))
 
-  ;; A PRESENCE TEST THROUGH THE DOOR (F100 D1): absent is #f, a path whose
+  ;; A PRESENCE TEST THROUGH THE DOOR (ffi.sc's two-condition rule): absent is #f, a path whose
   ;; stat fails for any other reason raises unreadable-entry, never #f. The
   ;; native predicate this replaces read an unsearchable parent as absence.
   (define (entry-present? p) (not (eq? (entry-type p) 'absent)))
 
-  ;; R2g'S SKIP, KEPT AS RULED (F77b), THROUGH THE DOOR (F100a). THREE SITES,
+  ;; R2g'S SKIP, KEPT AS RULED, THROUGH THE DOOR. THREE SITES,
   ;; ONE RULE: local-writer-name here and working.sc's writer-for ask, of
   ;; every writer, whether its owner.sexp (and, for writer-for, its
   ;; retired.sexp) is there, and barrier-artefacts asks the same of every
   ;; writer's owner.sexp and retired.sexp; a file that cannot be stat'ed
   ;; reads as absent, as the native presence test read it. Converting
   ;; the test to a raise refused every write and every draft verb beside
-  ;; any unreadable mirror (measured: F100a suite-1, U2c and the
+  ;; any unreadable mirror (measured: a suite run, U2c and the
   ;; unreadable-routes CONTROL). These are the only places an
   ;; unreadable-entry becomes a value by ruling; the census pins the one
   ;; definition.
@@ -1684,7 +1684,7 @@
   (define-record-type load-session
     (fields store (mutable lock) (mutable prefixes) (mutable state)
             (mutable outcome) (mutable snapshot) (mutable barriered)
-            ;; WHY AN ABORTED LOAD ABORTED (F77c): the unreadable-entry that
+            ;; WHY AN ABORTED LOAD ABORTED: the unreadable-entry that
             ;; stopped it, the scanner's verdict on readable bytes, or #f.
             ;; The outcome stays what it was; this is kept beside it.
             (mutable abort-cause)))
@@ -1759,8 +1759,8 @@
   (define (load-listener-remove! store) (hashtable-delete! load-listeners store))
   (define (load-listener-of store) (hashtable-ref load-listeners store #f))
 
-  ;; THE REQUEST'S DECLARATION RIDES ON THE SAME OBJECT (F77c, plan
-  ;; amendment A2): the store string the dispatcher copied and owns. The
+  ;; THE REQUEST'S DECLARATION RIDES ON THE SAME OBJECT (a plan
+  ;; amendment): the store string the dispatcher copied and owns. The
   ;; dispatcher sets it for the extent of each verb from the verb's class;
   ;; open-load reads it when its caller gave no declaration of its own. It is
   ;; lexical in the way the listener is -- the object is threaded from the
@@ -1797,8 +1797,8 @@
           (hashtable-delete! built-from-incomplete value))))
   (define (unreadable-behind value)
     (hashtable-ref built-from-incomplete value '()))
-  ;; A VALUE DERIVED FROM A REDUCTION KEEPS THE REDUCTION'S NOTES (F77c,
-  ;; design review r1): a copy built from a base's rows is missing whatever
+  ;; A VALUE DERIVED FROM A REDUCTION KEEPS THE REDUCTION'S NOTES (found
+  ;; in design review): a copy built from a base's rows is missing whatever
   ;; the base was missing, and a later judgment of the copy must see it.
   (define (remember-unreadable-notes! value notes)
     (if (pair? notes)
@@ -1806,7 +1806,7 @@
         (hashtable-delete! built-from-incomplete value)))
 
   ;; A LOAD THAT WAS REFUSED TELLS ITS LISTENER SO, with the condition it
-  ;; was refused with (F77c). The request that owns the listener answers
+  ;; was refused with. The request that owns the listener answers
   ;; with that condition's own answer, whatever a catch-all between the
   ;; load and the answer made of the raise. A listener tells the two
   ;; events apart by this record: notes arrive as a list of triples.
@@ -1817,14 +1817,14 @@
 
   ;; THE SAME REPORT FOR NOTES THAT DID NOT COME FROM A LOAD: a supplied
   ;; state unsealed by a declared consumer tells its listener what the
-  ;; state is missing, exactly as a load would (F77c, design review r3).
+  ;; state is missing, exactly as a load would (found in design review).
   (define (tell-load-notes! store found)
     (let ((listener (load-listener-of store)))
       (when (and listener (pair? found))
         (listener found))))
 
   ;; THE DECLARATION IS AN OPTIONAL LAST ARGUMENT, and its absence is "not
-  ;; declared" (F77c, plan amendment A1): a caller that says nothing is
+  ;; declared" (a plan amendment): a caller that says nothing is
   ;; refused an incomplete load and is unchanged on a complete one.
   (define (log-open store . declaration)
     (trace-event! 'log-open store #f)
@@ -1833,7 +1833,7 @@
   (define (log-open-in-session store . declaration)
     (open-load store 'held-exclusive (and (pair? declaration) (car declaration))))
 
-  ;; ONE EXIT HANDLER OVER THE WHOLE LOAD (F77c; design review r5b). Every
+  ;; ONE EXIT HANDLER OVER THE WHOLE LOAD (found in design review). Every
   ;; condition that leaves open-load -- the metadata read, enumeration,
   ;; discovery, snapshot selection, the declaration check -- passes one
   ;; handler, and it is the only place that tells the listener "refused"
@@ -1877,7 +1877,7 @@
     (let ((meta-path (string-append store "/meta.sexp")))
       (unless (entry-present? meta-path)
         (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
-      ;; A meta.sexp THAT CANNOT BE READ IS NOT A MALFORMED ONE (F100b, a
+      ;; A meta.sexp THAT CANNOT BE READ IS NOT A MALFORMED ONE (a
       ;; prerequisite propagation): its unreadable-entry leaves, so the
       ;; point that answers names the file and the errno; only a datum
       ;; that does not parse is `log-error 'meta` below.
@@ -1900,7 +1900,7 @@
                                 writers)))
             ;; THE WINDOW RIGHT AFTER DISCOVERY, before snapshot selection, the
             ;; declaration check and the delivery barrier, for the rows that
-            ;; change a segment inside it (F77c D-barrier) or park two loads
+            ;; change a segment inside it (D-barrier) or park two loads
             ;; side by side (D-interleave).
             (hold-point! 'after-discovery)
             (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f)))
@@ -2052,7 +2052,7 @@
             ;; one may be looking at its own writer through a directory it
             ;; cannot read; it does not go on as if it had none.
             unreadable-refusal
-            ;; WHAT THE CALLER DECLARED (F77c): incomplete-accepted or #f.
+            ;; WHAT THE CALLER DECLARED: incomplete-accepted or #f.
             ;; A reload inside the session opens its load with the same
             ;; declaration the session was begun with.
             declaration
@@ -2312,8 +2312,8 @@
                   ;; inherits instead is the RECORD of them, so its first
                   ;; append flushes what the delivery barrier did not.
                   (deliver-into! s)
-                  ;; A SESSION DOES NOT WRITE ON A PARTIAL STATE (F77c, plan
-                  ;; amendment A3): an initial delivery that an unreadable
+                  ;; A SESSION DOES NOT WRITE ON A PARTIAL STATE (a plan
+                  ;; amendment): an initial delivery that an unreadable
                   ;; entry aborted is refused here, before any intent is
                   ;; resolved against it; the unwind below releases the lock.
                   (refuse-unreadable-abort! ls)
@@ -2712,8 +2712,8 @@
           ;; Searchable but not readable (--x), its files still read, so
           ;; they were flushed and then the directory itself was opened to
           ;; fsync it -- which needs read permission, and raised
-          ;; durable-error out of every write beside such a mirror (F77b,
-          ;; U2c mode 100). Its discovery already reports it unreadable.
+          ;; durable-error out of every write beside such a mirror (U2c,
+          ;; mode 100). Its discovery already reports it unreadable.
           (if (guard (e ((unreadable-entry? e) #f))
                 (list-entries (writer-directory store w))
                 #t)
@@ -2802,7 +2802,7 @@
             (else (segment-sha r)))))
 
   ;; Which of this writer's metadata files cannot be read, if any.
-  ;; NEVER: THE DIRECTORY IS LISTED FIRST, as R1's listing (R4; F77b). A
+  ;; NEVER: THE DIRECTORY IS LISTED FIRST, as R1's listing (R4). A
   ;; directory whose permission was lost after the session opened fails
   ;; every file below it, and each file's read names the file, not the
   ;; directory that is the cause. Listing it names the directory and its
@@ -3033,7 +3033,7 @@
   ;; when the assertion cannot be read (R2i), so verify-instance answers
   ;; (refused owner-unreadable (path p) (reason r)) itself, and each of its
   ;; callers gives that as its own answer.
-  ;; NEVER: THE REFUSAL IS A RECORD, NOT A LIST (F77b review 1). A nonce is
+  ;; NEVER: THE REFUSAL IS A RECORD, NOT A LIST (found in review). A nonce is
   ;; whatever datum owner.sexp holds, and a list headed `refused` made a
   ;; readable owner whose nonce was such a list answer as a refusal.
   (define-record-type owner-unreadable (fields path reason))
@@ -3051,7 +3051,7 @@
   ;; the answer came from a generation that had been superseded.
   ;; "Which writer is this machine's" has one supplier.
   ;; NEVER: AN OWNER THAT CANNOT BE READ IS NOT AN OWNER THAT IS NOT THERE
-  ;; (R2g, R2i; F77b). The read is the R1 operation: absence answers #f as
+  ;; (R2g, R2i). The read is the R1 operation: absence answers #f as
   ;; before, and any other failure raises unreadable-entry naming
   ;; owner.sexp, which verify-instance answers as owner-unreadable. Only a
   ;; file that was read and does not parse still answers #f, as it did.
@@ -3203,12 +3203,12 @@
   (define (read-registry)
     (upgraded-registry (registry-as-read)))
 
-  ;; THE REGISTRY AS IT IS ON DISK, NOT UPGRADED AND NEVER WRITTEN (R2h,
-  ;; F77b). A read that upgrades a legacy registry writes it,
+  ;; THE REGISTRY AS IT IS ON DISK, NOT UPGRADED AND NEVER WRITTEN
+  ;; (R2h). A read that upgrades a legacy registry writes it,
   ;; and a preflight must not write: adopt and its continuation decide on
   ;; this reading, and the upgrade happens, if at all, through
   ;; read-registry after every read has passed.
-  ;; R1's read (F77b review 1): absent is the empty registry, as before, and
+  ;; R1's read (found in review): absent is the empty registry, as before, and
   ;; a registry this process cannot read raises unreadable-entry naming it;
   ;; only one that was read and does not parse is registry-malformed.
   (define (registry-as-read)
@@ -3575,7 +3575,7 @@
           out
           (let* ((path (string-append (writer-directory store writer)
                                       "/" (segment-file-name (car ns))))
-                 ;; R1's read (F77b review 2): a sibling segment this store
+                 ;; R1's read (found in review): a sibling segment this store
                  ;; cannot read raises unreadable-entry naming it.
                  (rs (let ((b (read-entry path))) (if (eq? b 'absent) '() (segment-records b)))))
             (loop (cdr ns)
@@ -3746,10 +3746,10 @@
   ;; untested by choice; they were untestable, and that is indis-
   ;; tinguishable from tested until someone tries to write the row.
   (define (stage-candidate! store writer bytes stage)
-    ;; AN ARM POINT BEFORE PUBLISH'S FIRST STAGING WRITE (F100a, design D2):
+    ;; AN ARM POINT BEFORE PUBLISH'S FIRST STAGING WRITE (design D2):
     ;; a fixture parks the process here to change the store between the
     ;; checks that come before it and the writes that follow. It does
-    ;; nothing unless THEOURGIA_BARRIER names it; F100d is its first user.
+    ;; nothing unless THEOURGIA_BARRIER names it; no fixture uses it yet.
     (barrier! 'before-stage)
     (parameterize ((theourgia-stage stage))
     (let* ((target (string-append (writer-directory store writer) "/publish"))
@@ -3883,7 +3883,7 @@
   ;; fork exists and is not known, and nothing may be written over it.
   (define (quarantine! store writer seq theirs ours)
     (let* ((path (writer-file store writer "quarantine.sexp"))
-           ;; R1's read (F77b review 2): a quarantine.sexp that cannot be
+           ;; R1's read (found in review): a quarantine.sexp that cannot be
            ;; read raises unreadable-entry naming it; one that reads and does
            ;; not parse keeps the assertion below, as on the base.
            (bytes (read-entry path))
@@ -3924,7 +3924,7 @@
   ;; that a length check reads as healthy.
   ;; -> #t, #f, or (unreadable <path> <reason>).
   ;; NEVER: A RETAINED CANDIDATE THAT CANNOT BE READ IS NOT ONE THAT IS NOT
-  ;; THERE (U9, F77b). Read with a catch-all, it answered #f and the keep
+  ;; THERE (U9). Read with a catch-all, it answered #f and the keep
   ;; wrote a new file and renamed it over the one it could not read --
   ;; replacing evidence nobody had looked at. The read is R1's: absence is
   ;; #f, and any other failure is answered, so the keep can refuse.
@@ -3954,7 +3954,7 @@
       ;; overwriting leaves neither the old bytes nor the new ones. The
       ;; candidate is staged under a temporary name, flushed, and renamed
       ;; over -- so the name only ever appears with whole content.
-      ;; EVERY READ BEFORE ANY WRITE (F77b review 1): the marker's status is
+      ;; EVERY READ BEFORE ANY WRITE (found in review): the marker's status is
       ;; read here, not after the candidate has been replaced, so a marker
       ;; this store cannot read refuses before anything is staged.
       ;; THE MARKER'S MEANING IS ITS EXISTENCE, so it is asked with R1's
@@ -4181,12 +4181,12 @@
       ;; has nothing to promise about one, and listing the path anyway
       ;; would put a row in the table that no fault can be armed at.
       ;; AN ARTEFACT THAT CANNOT BE STAT'ED IS LEFT OUT, as the native
-      ;; presence test left it out (F100a, the R2g rule's third site): a
+      ;; presence test left it out (the R2g rule's third site): a
       ;; mirror whose directory cannot be searched put its owner.sexp and
       ;; retired.sexp in every commit's barrier, and a raise here answered
       ;; every write beside it `unknown` after it had committed (measured:
-      ;; F100a suite-1, U2c). What a barrier does with an unreadable
-      ;; artefact it must touch is F100d's (design D2).
+      ;; a suite run, U2c). What a barrier does with an unreadable
+      ;; artefact it must touch is open (design D2).
       (filter (lambda (entry) (present-or-unreadable-skip? (cdr entry))) candidates)))
 
   ;; THE ROWS THE ANSWER DEPENDS ON, named rather than assumed. Absence
@@ -4370,7 +4370,7 @@
     (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
            (target (string-append dir "/" (segment-file-name segment)))
-           ;; R1's read (F77b): a local copy this store cannot read raises
+           ;; R1's read: a local copy this store cannot read raises
            ;; unreadable-entry naming it, which every route answers by
            ;; name; it is not a missing copy, and not an internal error.
            (local-bytes (let ((b (read-entry target))) (and (not (eq? b 'absent)) b)))
@@ -5089,7 +5089,7 @@
   ;; CONTINUATION IS AUTOMATIC AND NEEDS NOBODY. Every crash state maps
   ;; to one action; the gate runs first.
   ;; NEVER: THE CONTINUATION READS THE WHOLE STORE BEFORE ITS FIRST WRITE,
-  ;; ACROSS THE WHOLE CALL (R2h, F77b). A per-generation check would cancel
+  ;; ACROSS THE WHOLE CALL (R2h). A per-generation check would cancel
   ;; an earlier generation -- a registry write -- before refusing at a later
   ;; one, and reading the registry the ordinary way upgrades a legacy one,
   ;; which writes. It asks adopt-inventory, as adopt does: a refusal from
@@ -5235,7 +5235,7 @@
         (release-store! store)
         answer)))
 
-  ;; ---- reading before writing (R2h, K13; F77b) --------------------------------
+  ;; ---- reading before writing (R2h, K13) --------------------------------------
   ;;
   ;; NEVER: EVERY READ ADOPT DEPENDS ON HAPPENS BEFORE ITS FIRST WRITE, and a
   ;; read that fails refuses by name before anything is touched. adopt-needed?
@@ -5262,7 +5262,7 @@
       (adopt-inventory store)))
 
   ;; KEY: THE WHOLE STORE IS READ, NOT A LIST OF WHAT ADOPT IS THOUGHT TO
-  ;; REACH (F77b review 1). A list of the head's files missed the registry,
+  ;; REACH (found in review). A list of the head's files missed the registry,
   ;; a predecessor's retirement, a successor's owner, and the continuation's
   ;; discovery -- each a read that an adopt path makes after a write. So:
   ;; verify-instance (its refusal is the answer), the registry with R1's
@@ -5271,7 +5271,7 @@
   ;; is only a mirror is read too: the chain, imported-history? and
   ;; resume-uncertain! read other writers' files on their way, so an adopt
   ;; that cannot read them cannot know its writes are safe.
-  ;; A discovery is asked only for READ failures (F77b review 2): an
+  ;; A discovery is asked only for READ failures (found in review): an
   ;; unreadable-entry propagates and a read-failure note refuses, but any
   ;; other condition -- a readable file that does not parse, say a mirror's
   ;; quarantine.sexp holding ((fork bad)) -- is not a read failure, and is
@@ -5337,7 +5337,7 @@
     (or (adopt-preflight store)
         (adopt-decided! store)))
 
-  ;; NEVER: NO LOCAL WRITER IS A REFUSAL, NOT A REASON TO ADOPT (F131).
+  ;; NEVER: NO LOCAL WRITER IS A REFUSAL, NOT A REASON TO ADOPT.
   ;; adopt-needed? answers (no-local-writer) when the store has no writer of
   ;; this machine's, and that answer is not #f; taken as a reason, the steps
   ;; below derived everything from a writer that is #f and answered internal.
@@ -5757,7 +5757,7 @@
                   (append-after-barrier! s frame)))))))
 
   ;; A SESSION HANDS ITS STATE OUTWARD ONLY WHEN ITS LOAD WAS DELIVERED
-  ;; (F77c; design reviews r4 and r5): not aborted, and no reset pending.
+  ;; (found in design review): not aborted, and no reset pending.
   ;; ONE predicate, asked by both points that hand a session's state out --
   ;; the publication after a write (store.sc publish-after) and the
   ;; snapshot (session-snapshot!). A partial state is never published and
@@ -6716,14 +6716,14 @@
         ((eq? o 'open) (if #f #f))
         (else (assertion-violation who "this load has already finished" o)))))
 
-  ;; A LOAD ABORTED BY AN ENTRY IT COULD NOT READ IS REFUSED BY THAT ENTRY
-  ;; (F77c), so the table names it `unreadable`. ONE RULE, two places that
+  ;; A LOAD ABORTED BY AN ENTRY IT COULD NOT READ IS REFUSED BY THAT ENTRY,
+  ;; so the table names it `unreadable`. ONE RULE, two places that
   ;; would otherwise use the load: a reader's load-commit! and a session's
-  ;; log-begin (plan amendment A3, the build half of F124). Any other
+  ;; log-begin (a plan amendment: the build half of refusing it). Any other
   ;; aborted load goes on as it always has -- a reader meets
   ;; check-terminal!'s assertion, a session continues and the publication
   ;; gate withholds it: a readable cause (damaged, short or torn bytes) is
-  ;; F125's, not this item's.
+  ;; another item's, not this one's.
   (define (refuse-unreadable-abort! ls)
     (let ((o (load-session-outcome ls)) (cause (load-session-abort-cause ls)))
       (when (and (pair? o) (eq? (car o) 'aborted) (unreadable-entry? cause))
@@ -6742,7 +6742,7 @@
 
   ;; EVERY ABORT PASSES HERE, and this is where its cause is kept and where
   ;; a load stopped by an entry it could not read tells its listener so
-  ;; (F77c) -- BEFORE the release, so a release that fails cannot skip the
+  ;; -- BEFORE the release, so a release that fails cannot skip the
   ;; notification (design review r6). The returned outcome is unchanged.
   (define (finish-abort! ls reason . cause-opt)
     (let ((cause (and (pair? cause-opt) (car cause-opt))))
@@ -6835,7 +6835,7 @@
     (guard (e (#t (finish-abort! ls 'deliver-barrier-failed e) (raise e)))
       (deliver-barrier! ls cut))
     ;; THE WINDOW BETWEEN THE BARRIER AND DELIVERY, for the rows that change
-    ;; a segment after the barrier has read it (F77c D-deliver).
+    ;; a segment after the barrier has read it (D-deliver).
     (hold-point! 'after-barrier)
     (deliver-after-barrier! ls cut on-deliver))
 
@@ -6871,7 +6871,7 @@
                 (from (let ((e (assoc writer cut))) (if e (cdr e) 0)))
                 (r (deliver-writer ls writer p from on-deliver)))
            ;; THE RETURNED VALUE IS UNCHANGED (test/log7.sc pins it); the
-           ;; cause travels to finish-abort! beside it (F77c).
+           ;; cause travels to finish-abort! beside it.
            (if (eq? r 'ok)
                (loop (cdr ws))
                (begin
@@ -6915,7 +6915,7 @@
                                       (cdr buf)
                                       (read-segment store writer seg))))
                       (cond
-                        ;; A FAILURE CARRIES ITS CAUSE to deliver-all (F77c):
+                        ;; A FAILURE CARRIES ITS CAUSE to deliver-all:
                         ;; the entry that could not be read, rebuilt as the
                         ;; condition ffi raises, or the scanner's verdict.
                         ((unreadable-segment? bytes)

@@ -35,7 +35,7 @@
 
 ;;;
 ;;; START-SCHEDULER IS THE ONE PROCEDURE DEFINED HERE, and for one reason:
-;;; the mutation record (theourgia ffi, F100 D1') is keyed by the running
+;;; the mutation record (theourgia ffi) is keyed by the running
 ;;; actor, and ffi cannot import the actor library without loading libuv
 ;;; into every program. So the key is handed to ffi from here, as a thunk
 ;;; (the value of `self` read now would be the register one line before the

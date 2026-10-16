@@ -14,7 +14,7 @@
 
 ;;; (theourgia refusal) -- a refusal datum as the MCP shell renders it.
 ;;;
-;;; F100b item 8. The shell answers a refusal in one of two shapes, and both
+;;; The shell answers a refusal in one of two shapes, and both
 ;;; carry ONE object built here from the refusal datum D:
 ;;;
 ;;;   {"kind": K, "path": P?, "reason": R?, "errno": E?, "op": O?,

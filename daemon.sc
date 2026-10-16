@@ -107,7 +107,7 @@
   ;; a closed connection. So the symptom was a client getting EOF and no
   ;; answer, nowhere near the arity mistake that caused it.
   ;;
-  ;; ONLY ABSENCE IS #f (F100b, D5): a path that is not there answers #f, as
+  ;; ONLY ABSENCE IS #f (D5): a path that is not there answers #f, as
   ;; it always did; one that cannot be read -- a parent this process may
   ;; not search -- raises its unreadable-entry, so the caller's answer
   ;; names it instead of treating it as absent. Anything else raises too.
@@ -157,7 +157,7 @@
   (define drain-poll-ms 25)
   (define drain-budget-ms 5000)
 
-  ;; ---- the store's presence (F268) ----------------------------------------
+  ;; ---- the store's presence ----------------------------------------------
   ;;
   ;; AN IDLE DAEMON LOOKS AT ITS STORE ONLY HERE. The change probe runs while
   ;; somebody subscribes and a request probes before it is answered, so a
@@ -202,7 +202,7 @@
     (spawn
       (lambda ()
         ;; NEVER: STORE-GONE HAS ITS OWN SENT FLAG, independent of `told` and of
-        ;; the SIGTERM count, so F112's rule below is untouched.
+        ;; the SIGTERM count, so the `again` rule below is untouched.
         (let poll ((told 0) (wakes 1) (absences 0) (gone-sent #f))
           (sleep-ms drain-poll-ms)
           (let-values (((absences gone-sent)
@@ -215,7 +215,7 @@
                                 (values count (or gone-sent send?)))))))
             (let ((wakes (if (< wakes store-check-polls) (+ wakes 1) 1)))
               (cond
-                ;; `again` IS SENT ONCE (F112). It used to be sent on every poll
+                ;; `again` IS SENT ONCE. It used to be sent on every poll
                 ;; once the count reached 2 -- a second path to the same exit that
                 ;; masked the ready clause's remembered `again` (MD-3, the
                 ;; startup-exit design R5). The mailbox is reliable: one send is
@@ -243,8 +243,8 @@
   ;; outside that window would get the blocking default, which is the
   ;; freeze this exists to prevent. What keeps the CLI on the default is
   ;; that nothing in the CLI ever sets this.
-  ;; The optional second argument is the start's attempt token (F100b item
-  ;; 3), echoed as the last clause of every startup report; #f when the
+  ;; The optional second argument is the start's attempt token,
+  ;; echoed as the last clause of every startup report; #f when the
   ;; daemon was started by hand without one.
   (define (serve store . opts)
     ;; NEVER: ONCE, HERE, BEFORE ANY ANSWER LEAVES. Every conn process in this
@@ -263,7 +263,7 @@
 
   ;; ---- the startup report ------------------------------------------------
   ;;
-  ;; A STARTUP REPORT IS ONE LINE WRITTEN BY ONE write(2) (F100b item 3, E4):
+  ;; A STARTUP REPORT IS ONE LINE WRITTEN BY ONE write(2):
   ;; a newline, the datum, a newline, handed to ffi's write-one!, which
   ;; never retries a short write. The leading newline ends whatever an
   ;; earlier process left unterminated in the append-mode log, so a reader
@@ -272,7 +272,7 @@
   ;; `say` print through is flushed first, so bytes it buffered cannot land
   ;; after this line.
   ;;
-  ;; THE STARTUP REPORTS ARE THESE (F100b M2 Q1), and every one is written
+  ;; THE STARTUP REPORTS ARE THESE, and every one is written
   ;; here: main's serve-busy, serve-path-occupied and table answers (point
   ;; 9); the store process's failure, combined by main (point 2); and
   ;; theourgiad's translated refusals (point 8). `(serving ...)`,
@@ -300,7 +300,7 @@
   ;; failure of the report's own write (a short write, say) is not answered
   ;; again: the report channel is what failed, so there is nowhere left to
   ;; say it, and a second report under the same attempt is what the client
-  ;; must never select (M2a review r1, F1, F3). The exit is 75 either way.
+  ;; must never select (found in review). The exit is 75 either way.
   (define (report-and-exit! attempt answer)
     (guard (e (#t (exit 75)))
       (startup-report! attempt answer))
@@ -416,12 +416,12 @@
         (else (loop (cdr rest) (cons (car rest) kept))))))
 
   (define (main store socket attempt)
-    ;; THE HOLD SEAM WAITS BY YIELDING HERE, SET ONCE (F100b M2 Q3): main is
+    ;; THE HOLD SEAM WAITS BY YIELDING HERE, SET ONCE: main is
     ;; the scheduler's first actor and no other exists yet. A hold that
     ;; blocked the OS thread would stop every actor, and a second held
     ;; actor could never be reached (A-record). Unarmed, holds never wait.
     (hold-sleeper-set! sleep-ms)
-    ;; MAIN'S STARTUP ANSWERS BY THE TABLE (F100b point 9): a filesystem
+    ;; MAIN'S STARTUP ANSWERS BY THE TABLE: a filesystem
     ;; failure before the store process exists -- the socket directory, the
     ;; lock file, the lock, the probe of what is on the socket path -- is
     ;; written as main's startup report with main's record, and main leaves
@@ -439,7 +439,7 @@
              (with-mutation-record
                (lambda ()
                  ;; THE ANSWER IS DECIDED INSIDE THE SCOPE AND REPORTED OUTSIDE IT,
-                 ;; ONCE (M2a review r1, F1-F3). Reporting from inside the guarded
+                 ;; ONCE (found in review). Reporting from inside the guarded
                  ;; body let a failure after the report -- of the report's own
                  ;; write, or of a lock release -- be classified and reported a
                  ;; second time under the same attempt, carrying the first
@@ -458,16 +458,16 @@
                    ;; is supposed to answer `serve-busy` and leave, not queue for ever
                    ;; behind the first one. Measured: with the blocking form, the second
                    ;; daemon simply hung and its row never returned.
-                   ;; #f IS CONTENTION ONLY (F100b D6): lock-try-acquire! answers #f
+                   ;; #f IS CONTENTION ONLY (D6): lock-try-acquire! answers #f
                    ;; itself when another holds the lock; a lock file that cannot be
                    ;; opened raises unreadable-entry, which goes to the table above
                    ;; instead of reading as "somebody is serving".
                    (let ((lock (lock-try-acquire! (lock-path-for socket) 'exclusive)))
-                     ;; THE TWO NAMED OUTCOMES CARRY MAIN'S RECORD (item 2; M2a review
-                     ;; r1, F2): the lock file this start created is named in them.
+                     ;; THE TWO NAMED OUTCOMES CARRY MAIN'S RECORD (found
+                     ;; in review): the lock file this start created is named in them.
                      ;; NEVER: A LOCK THAT IS HELD IS NOT RELEASED BEFORE THE EXIT. The
                      ;; exit closes its descriptor, which releases the flock; a release
-                     ;; here could raise after the answer was decided (F1).
+                     ;; here could raise after the answer was decided.
                      (cond
                        ((or (not lock) (not (lock-held? lock)))
                         (list 'refuse (combine-report `(error serve-busy (path ,socket)) (mutation-record))))
@@ -511,10 +511,10 @@
            ;; NOTE: INSTALLED BEFORE ANYTHING CAN BE ACCEPTED, so a signal
            ;; that arrives during the store's first load is not lost --
            ;; the count is read by a process, and the process is here.
-           ;; The name the socket is keyed by, resolved once (F268).
+           ;; The name the socket is keyed by, resolved once.
            (watch-for-signals! me (resolved-name store))
            (let* ((store-pid (spawn (lambda () (store-loop store me))))
-                  ;; A WITHHELD PUBLICATION ASKS FOR A FRESH FOLD (F77c): a
+                  ;; A WITHHELD PUBLICATION ASKS FOR A FRESH FOLD: a
                   ;; write whose session was not delivered publishes nothing,
                   ;; and the store process is asked to reload, which is
                   ;; judged like any other load.
@@ -550,7 +550,7 @@
 
   ;; 11 draining-since (#f until a signal), 12 the tickets being executed,
   ;; 13 the conn processes that have been told to drain, 14 main's startup
-  ;; record, 15 the start's attempt token (F100b points 2 and 9), 16 the
+  ;; record, 15 the start's attempt token, 16 the
   ;; phase, 17 the signal remembered while STARTING (the startup-exit design,
   ;; archive/theourgia-f100b-m2a-startup-exit-design.md v3), 18 the drain's
   ;; reason (drained or store-gone), set once when the drain is entered.
@@ -633,18 +633,18 @@
       ;; in that order. The first line is what a caller waits for and
       ;; believes; the second is what happened. Measured with
       ;; `--socket ""`.
-      ;; THE STORE PROCESS'S STARTUP FAILURE ENDS MAIN (F100b point 2,
-      ;; aggregation (a); the startup-exit design). Its answer already carries
+      ;; THE STORE PROCESS'S STARTUP FAILURE ENDS MAIN (aggregation
+      ;; (a); the startup-exit design). Its answer already carries
       ;; the store's own record (the table ran over it there; the record
       ;; travels with it for the trace); main adds what it had created itself
       ;; before the store existed -- the lock file, say -- and writes the one
       ;; report, then the store-actor-down line itself, then leaves with 75.
       ;; NEVER: IT DOES NOT RETURN TO THE LOOP. It did, and a drain signal
       ;; processed before the store's DOWN ended the start in `drained`, exit
-      ;; 0, after its failure had been reported (M2a review r3, F1). The
+      ;; 0, after its failure had been reported (found in review). The
       ;; store's DOWN that follows is never processed, nor its cleanup; the
       ;; exit closes the descriptors main holds. A report that cannot be
-      ;; written is not reported again (r1 F1, F3). Only STARTING receives
+      ;; written is not reported again (found in review). Only STARTING receives
       ;; this: the store sends it before `ready` or not at all. READ, NOT
       ;; MEASURED in M2a: that no loop follows it is seen in the code; the
       ;; rows that force a signal before the outcome come with M2b's
@@ -747,7 +747,7 @@
        (cond
          ;; STARTING: REMEMBERED, WITH ITS KIND, until the store's outcome (the
          ;; startup-exit design R5, R6). `again` replaces whatever is remembered;
-         ;; otherwise the first remembered kind stays (drain or store-gone, F268),
+         ;; otherwise the first remembered kind stays (drain or store-gone),
          ;; so a store-gone is not stored as drain and its reason lost.
          ((eq? (state-phase st) 'starting)
           (let ((kind (cond ((eq? which 'again) 'again)
@@ -860,7 +860,7 @@
   ;; falling back, and every exit path that forgot the unlink would be a
   ;; separate small version of that bug.
   ;; THE EXIT CODE IS DECIDED BEFORE THE TIDYING, AND THE TIDYING CANNOT
-  ;; CHANGE IT (F100b M2a review r2, F2). A failed unlink probe or lock
+  ;; CHANGE IT (found in review). A failed unlink probe or lock
   ;; release raised here, past the exit, into the scheduler's panic 70 --
   ;; for a start that had already said why it was leaving with 75. The exit
   ;; closes the lock's descriptor, which releases the flock anyway.
@@ -920,7 +920,7 @@
   ;; it before falling back -- but one that deletes whatever is at that
   ;; path deletes the socket of whoever took over in the meantime. The
   ;; dev/inode recorded at bind is what tells those two apart.
-  ;; NOTHING WAS BOUND, NOTHING IS PROBED (F100b M2a review r2, F2): a start
+  ;; NOTHING WAS BOUND, NOTHING IS PROBED (found in review): a start
   ;; that failed before the bind has no socket of its own to tidy.
   (define (unlink-own-socket! socket bound)
     (when bound
@@ -947,7 +947,7 @@
   ;; NOTE: TWO NAMES FOR ONE STORE ARE ONE STORE. A client may reach it
   ;; through a symlink; comparing the text alone would refuse a request
   ;; that is for exactly this library.
-  ;; NOTE: THE ASKED SPELLING FIRST (F100b, D18): let*, so when the asked
+  ;; NOTE: THE ASKED SPELLING FIRST (D18): let*, so when the asked
   ;; path cannot be read its unreadable-entry is the one that leaves.
   (define (same-store? asked serving)
     (or (string=? asked serving)
@@ -971,7 +971,7 @@
   ;; through to the unlink below. The question this guard exists to ask
   ;; is whether the thing on that path is the kind of object this daemon
   ;; made, and only `stat`'s type bits answer it.
-  ;; NOTHING IS SWALLOWED HERE ANY MORE (F100b, a startup propagation): a
+  ;; NOTHING IS SWALLOWED HERE ANY MORE (a startup propagation): a
   ;; path that cannot be asked about raises into main's table rather than
   ;; reading as "not occupied".
   (define (occupied-by-a-non-socket? p)
@@ -997,8 +997,8 @@
 
   (define (report x) (write x) (newline))
 
-  ;; A LINE MAIN WRITES CANNOT CHANGE AN EXIT OR END MAIN (F100b M2a review r2,
-  ;; F1; the exit-site table in M2a r3's NOTES). Every `(exiting ...)` line is
+  ;; A LINE MAIN WRITES CANNOT CHANGE AN EXIT OR END MAIN (found in
+  ;; review). Every `(exiting ...)` line is
   ;; written just before `leave`, whose code is already decided, and
   ;; `(serving ...)` and `(draining ...)` are information; a report channel
   ;; that has failed -- stdout closed, a log that cannot be written -- made
@@ -1392,7 +1392,7 @@
   ;; exists to remove. Being one commit behind is the documented
   ;; behaviour; being slow is not.
   ;;
-  ;; F77c: WHAT IT FOUND IS HANDED TO THE READ IT RUNS FOR. A changed
+  ;; WHAT IT FOUND IS HANDED TO THE READ IT RUNS FOR. A changed
   ;; snapshot's unreadable markers go, as notes, to the answer about to be
   ;; given from the old publication (ruling Q-r2-1 (b)): a declared read
   ;; says a writer has gone unreadable, an undeclared consumer refuses, and
@@ -1417,7 +1417,7 @@
                   (when store-pid (send store-pid (list 'reload)))
                   (snapshot-unreadable-notes now)))))))
 
-  ;; ONE WAY TO ANSWER FROM THE PUBLISHED STATE (F77c, design review r2):
+  ;; ONE WAY TO ANSWER FROM THE PUBLISHED STATE (found in design review):
   ;; probe, then hand the publication SEALED with what the probe found. The
   ;; connection's local reads and the writer processes both come here; the
   ;; census row pins (published-state) to this one reader.
@@ -1458,7 +1458,7 @@
   ;; always answered `(error no-store <path>)` for this, from `no-store?`
   ;; in `rpc.sc`; the two routes disagreed about the most ordinary
   ;; failure there is, and the daemon's version told nobody anything.
-  ;; THROUGH THE DOOR (F100a): absent is "no store here", as before; a
+  ;; THROUGH THE DOOR: absent is "no store here", as before; a
   ;; meta.sexp whose directory cannot be searched raises instead of
   ;; reading as a missing store.
   (define (store-here? store)
@@ -1471,13 +1471,13 @@
     (hold-point! 'store-start)
     ;; every write this process makes asks it first (see segment-replaced)
     (log-append-guard! segment-replaced note-own-repair!)
-    ;; A RAISE BEFORE ANY REPORT (F100b D15), armed by
+    ;; A RAISE BEFORE ANY REPORT (D15), armed by
     ;; `THEOURGIA_FAULT=store-raise-early@report`: a plain condition, outside
     ;; the scope below, so no startup-failed message is sent and main
     ;; answers only store-actor-down. Unarmed it is one comparison.
     (when (eq? (theourgia-fault) 'store-raise-early)
       (raise (make-message-condition "injected store raise early")))
-    ;; THE STARTUP IS ONE SCOPE (F100b point 2): whether there is a store
+    ;; THE STARTUP IS ONE SCOPE: whether there is a store
     ;; here and its first load. A failure is answered by the table over this
     ;; scope's record, or kept as the named outcome it already is, and SENT
     ;; to main before this process raises -- main combines it with its own
@@ -1486,7 +1486,7 @@
     ;;
     ;; NEVER: "THERE IS NO STORE HERE" IS ITS OWN ANSWER, AND IT IS THE COMMON
     ;; ONE, `store-not-found`, as before. AN ENTRY THAT CANNOT BE READ IS
-    ;; NAMED AT START-UP TOO (F79): now by the table, with its errno.
+    ;; NAMED AT START-UP TOO: now by the table, with its errno.
     ;; `store-load-failed` stays for a condition the table does not
     ;; classify.
     (let ((failure (with-mutation-record
@@ -1496,7 +1496,7 @@
                            (raise (list 'error 'store-not-found (list 'store store))))
                          ;; THE DAEMON DECLARES: it holds the state and answers
                          ;; nothing from it itself; every consumer of the
-                         ;; publication judges it when it unseals (F77c).
+                         ;; publication judges it when it unseals.
                          (let ((snapshot (store-state-snapshot store)))
                            (publish! store (obtain-state store #f incomplete-accepted) snapshot))
                          #f)))))
@@ -1518,7 +1518,7 @@
         ;; Somebody outside changed the store. Fold it again, under the
         ;; lock, and publish what came back.
         ;; A FOLD THAT FAILS keeps the previous publication and says so by
-        ;; name (F77c, ruling 4): the table's answer for the condition, or
+        ;; name (a ruling): the table's answer for the condition, or
         ;; its text. `reload-raise` makes it fail.
         (`(reload)
          (reload-or-say-why! store)
@@ -1599,7 +1599,7 @@
   (define (answer-for store parsed actor state writer piped cwd)
     (guard (e ((and (pair? e) (eq? 'error (car e))) e)
               ;; As rpc's guarded: an unreadable entry is named, never
-              ;; answered as internal (F77, K1).
+              ;; answered as internal (K1).
               ((unreadable-entry? e)
                (list 'error 'unreadable
                      (list 'path (unreadable-entry-path e))
@@ -2071,7 +2071,7 @@
         ;; NEVER: A REQUEST FOR ANOTHER STORE IS REFUSED, NOT EXECUTED. This
         ;; daemon serves one store; running somebody else's verb against
         ;; it would write to the wrong library, silently.
-        ;; THE STORE CHECK CAN FAIL TO READ (F100b point 2b): a spelling whose
+        ;; THE STORE CHECK CAN FAIL TO READ: a spelling whose
         ;; parent this daemon may not search is neither this store nor
         ;; another, and the transport refuses it with the table's answer
         ;; (no scope: the check changes nothing, so the record is empty).

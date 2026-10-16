@@ -22,7 +22,7 @@
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
-          ;; The interface pinned at dispatch (F77c; cells v3e look these up
+          ;; The interface pinned at dispatch (the cells look these up
           ;; in this library): re-exported from (theourgia incomplete).
           incomplete-accepted incomplete-reduction? incomplete-reduction-notes
           defs-index defs-index-build-count defs-index-skipped-count name-bearing-kinds
@@ -215,7 +215,7 @@
   ;; asking it of the restricted reduction would call every cut closed,
   ;; because the premises it omits were never read.
   ;;
-  ;; THE UNDECLARED FORM (F77c). open-and-reduce says nothing about
+  ;; THE UNDECLARED FORM. open-and-reduce says nothing about
   ;; accepting a reduction that is missing a writer, so on an incomplete
   ;; store it is refused -- unless the request it runs in declared (plan
   ;; amendment A2: the declaration rides on the store object the dispatcher
@@ -223,7 +223,7 @@
   (define (open-and-reduce store . rest)
     (apply obtain-state store #f #f rest))
 
-  ;; ---- obtaining state (F77c, F77 R2e) --------------------------------------
+  ;; ---- obtaining state (R2e) -----------------------------------------------
   ;;
   ;; A SUPPLIED STATE IS HANDED ON SEALED. The daemon's published state, and
   ;; any state a caller gives rpc dispatch, reach a handler as a sealed
@@ -237,7 +237,7 @@
   ;; it from here, so the rev it answers is the state its answer was built
   ;; from, whoever dispatched.
   (define-record-type sealed-state (fields state notes (mutable unsealed?) name))
-  ;; The interface name (F77c): a reduction's notes, '() when it is complete.
+  ;; The interface name: a reduction's notes, '() when it is complete.
   ;; Defined here and not in (theourgia log): the cells import the log library
   ;; whole and look this name up for themselves.
   (define (state-incomplete-notes value) (unreadable-behind value))
@@ -2757,7 +2757,7 @@
   ;; THE ONE PLACE A TEXT-MODE SRC BECOMES BYTES, and the intent is otherwise
   ;; returned as it is -- the same object, so nothing else about it changes.
   ;; resolve asks it of every `set`; write-plan-then! asks it before the
-  ;; plan is written, against the state the plan starts from (F119). That
+  ;; plan is written, against the state the plan starts from. That
   ;; settles a set of an existing text-mode block's src. It does not settle
   ;; two others: a plan that first gives a block its mode and then sets its
   ;; src (the declaration is read before the mode exists), and an `expect`
@@ -2768,7 +2768,7 @@
   ;; NEVER: A MALFORMED INTENT IS NOT REPAIRED HERE. An `expect` wrapper is
   ;; rebuilt only when it is a proper three-element list and its intent
   ;; changed; anything else goes on as it came, to be refused by
-  ;; run-intents! as before (F119 r1 review: `(expect H (set ...) . junk)`
+  ;; run-intents! as before (found in review: `(expect H (set ...) . junk)`
   ;; lost its tail and ran).
   (define (canonical-intent state intent)
     (cond
@@ -3350,7 +3350,7 @@
   ;; the reduction is the only place left that can say a writer is
   ;; missing; the session's load at the moment of publishing is the one
   ;; the state was delivered from.
-  ;; THE GATE (F77c, design reviews r4 and r5): a session whose load was not
+  ;; THE GATE (found in design review): a session whose load was not
   ;; delivered -- aborted, or waiting on a reset -- has a partial state, and
   ;; a partial state is never published, whatever stopped it (ruling
   ;; Q-r5-1). The previous publication stays, the withholding is traced by
@@ -3650,9 +3650,9 @@
                     ;; failing to make it good is `unknown` and not an
                     ;; internal error. The two paths answered differently
                     ;; for one fault.
-                    ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5).
+                    ;; A NAMED OUTCOME CARRIES THE RECORD.
                     ;; TRIPWIRE, NOT A MEASUREMENT: replay creates nothing
-                    ;; before its barrier (the F100b probe's PR-15 reading),
+                    ;; before its barrier (a probe's PR-15 reading),
                     ;; so the record here is empty today and the answer is
                     ;; byte-identical; the call is here for when it is not.
                     (list (guard (e (#t (with-written
@@ -4008,10 +4008,10 @@
                        (text (and block (list? body) (= 4 (length body)) (eq? 'src (caddr body))
                                   (cadddr body)))
                        ;; EITHER SPELLING OF THE TEXT IS CHECKED. A plan
-                       ;; for a text-mode block declares its bytes (F119);
+                       ;; for a text-mode block declares its bytes;
                        ;; checking strings only let such a plan complete
-                       ;; with a version that named other bytes (F119 r1
-                       ;; review).
+                       ;; with a version that named other bytes (found
+                       ;; in review).
                        (bytes (cond ((string? text) (string->utf8 text))
                                     ((bytevector? text) text)
                                     (else #f)))
@@ -4055,7 +4055,7 @@
                              (lambda (n) (actors (list-ref indices n))))
                            run after-each))))))
 
-  ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
+  ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY, for a set of
   ;; an existing text-mode block's src -- the case canonical-intent settles;
   ;; its comment names the two it does not (a mode set earlier in the same
   ;; plan, and an `expect` wrapper with a fourth element). The reducer
@@ -4161,7 +4161,7 @@
             ;; exactly the combination the answer vocabulary exists to
             ;; prevent. The translation is the one `one-intent!` uses,
             ;; because it is the same question about the same disk.
-            ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5, NO3): the
+            ;; A NAMED OUTCOME CARRIES THE RECORD (NO3): the
             ;; partial write's own entry is in it.
             (if (not (eq? (car outcome) 'committed))
                 (with-written (write-outcome->answer outcome seq) (mutation-record))
@@ -4746,7 +4746,7 @@
                           ;; replay may well read back as a committed
                           ;; record. (`written-fsync-failed` was named
                           ;; here too; no append path produces it on
-                          ;; this tree -- the F100b probe's PR-15
+                          ;; this tree -- a probe's PR-15
                           ;; reading -- so only partial-write reaches
                           ;; this branch today.) Answering
                           ;; those as a plain error claims a prefix that
@@ -4755,8 +4755,8 @@
                           ;; They get their own answer, and it says the
                           ;; outcome is not known rather than known to
                           ;; be nothing.
-                          ;; A NAMED OUTCOME CARRIES THE RECORD (F100b
-                          ;; item 5, NO3).
+                          ;; A NAMED OUTCOME CARRIES THE RECORD
+                          ;; (NO3).
                           (if (not (eq? (car outcome) 'committed))
                               (with-written (write-outcome->answer outcome seq) (mutation-record))
                               (begin
@@ -4864,7 +4864,7 @@
          ;; write renames a new inode over the name, and every process
          ;; already holding the old one would be locking a file nobody
          ;; else can see.
-         ;; overwrite-entry!, the door's truncating open (F100a): created
+         ;; overwrite-entry!, the door's truncating open: created
          ;; empty, or emptied in place with its inode kept, as before.
          (overwrite-entry! (string-append store "/lock") (make-bytevector 0))
          ;; A STORE KEPT IN GIT: what this INSTANCE owns, or can rebuild,
@@ -4990,7 +4990,7 @@
   ;; Each refuses the whole request. The partial branch is reached only by a
   ;; failure that happens DURING the loop, which needs a frozen plan whose
   ;; versions no longer match -- one apparatus, shared by all three, recorded
-  ;; as F31. THE ABSENCE IS DELIBERATE AND THIS IS WHERE IT IS WRITTEN DOWN;
+  ;; as an open item. THE ABSENCE IS DELIBERATE AND THIS IS WHERE IT IS WRITTEN DOWN;
   ;; the `batch` verb's own rows are in `cli1.sc`.
   ;; NEVER: A REPLAY RECEIPT IS NOT A LIST OF SUB-OPERATIONS AND CARRIES NO
   ;; COUNT. A request whose whole work was already applied is answered with

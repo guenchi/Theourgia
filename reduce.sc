@@ -155,7 +155,7 @@
             (mutable block-index)
             (mutable block-forward)
             (mutable pasts-index)
-            ;; the block structure, maintained (F269 C)
+            ;; the block structure, maintained
             (mutable structure)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
@@ -1989,7 +1989,7 @@
   ;; by parent, ord and id, so collecting children in row order is
   ;; collecting them in sibling order.
   ;;
-  ;; THIS IS THE ONE DEFINITION OF "UNDER" (F85 R1). It does not ask whether
+  ;; THIS IS THE ONE DEFINITION OF "UNDER". It does not ask whether
   ;; the root exists, and it does not stop at any kind of block. `read
   ;; --recursive`, `grep --under` and the markdown export's files are made
   ;; from this walk with no rule of their own applied to what comes back, so
@@ -2405,7 +2405,7 @@
     (let ((cs (blk-position b)))
       (and (= 1 (length cs)) (car (car (car cs))))))
 
-  ;; ---- the structure, maintained (F269 C) -------------------------------------
+  ;; ---- the structure, maintained ----------------------------------------------
   ;;
   ;; THE STRUCTURE IS KEPT, NOT RECOMPUTED. state-structure walked to the root
   ;; from every live block, measuring and searching the block list at every
@@ -2740,7 +2740,7 @@
           ;; says what it says, and a reader that silently moved the block
           ;; would be inventing a history nobody wrote.
           ;;
-          ;; IT IS NOTICED WHERE IT IS MADE AND WHERE IT IS SEEN (F85 R3): the
+          ;; IT IS NOTICED WHERE IT IS MADE AND WHERE IT IS SEEN: the
           ;; three write refusals in store.sc, and this report, which
           ;; `conflicts` answers as `nested-document` for each, so a malformed
           ;; store is loud. Readers do not branch on it: to `read --recursive`,

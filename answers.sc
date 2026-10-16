@@ -14,7 +14,7 @@
 
 ;;; (theourgia answers) -- how a filesystem failure becomes an answer.
 ;;;
-;;; F100 D1' (the answers), delivered by F100b. ffi.sc classifies a failure
+;;; ffi.sc classifies a failure
 ;;; at its source: a non-mutating step raises unreadable-entry, a mutating
 ;;; one raises durable-error, and every point that answers a request keeps
 ;;; a mutation record of what it changed. This library is the one table
@@ -31,7 +31,7 @@
 ;;;     -> (error unwritable (op o) (path p) (reason r) (errno n))
 ;;;   either, non-empty record
 ;;;     -> (error incomplete (failed <the clauses above>) (written <record>))
-;;;   incomplete-reduction (F77c: a reduction missing a writer, refused to
+;;;   incomplete-reduction (a reduction missing a writer, refused to
 ;;;   a caller that did not declare it accepts one)
 ;;;     -> (error incomplete-reduction (notes <clause> ...)), a NAMED
 ;;;        outcome: a non-empty record joins it through with-written, as
@@ -45,7 +45,7 @@
 ;;; ENOTDIR, EISDIR), the NUMBER for any other (EROFS reads 30), and #f
 ;;; from one site only, ffi's chez-unreadable! when Chez's condition has no
 ;;; class (its one caller is close-unwritten-port!; no row can make a Chez
-;;; port close fail). F106 unifies the forms. (written ()) never appears:
+;;; port close fail). Unifying the forms is open. (written ()) never appears:
 ;;; the first three kinds carry no written clause at all.
 ;;;
 ;;; THE AGGREGATION RULE (combine-report answer entries): a record made
@@ -121,7 +121,7 @@
   ;; An answer's `written` clause, or #f. NOT assq: a named outcome may
   ;; carry atoms after its kind -- store.sc answers `(error not-written
   ;; reserved-not-written (sequence n))` -- and assq over a list holding a
-  ;; symbol raises instead of answering (F100b M1 review r1, F1).
+  ;; symbol raises instead of answering (found in review).
   (define (written-clause answer)
     (find (lambda (c) (and (pair? c) (eq? (car c) 'written))) (cddr answer)))
 

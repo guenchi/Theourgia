@@ -59,7 +59,7 @@
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
               fs-error? fs-error-errno fd-open write-all! fd-close)
         (only (theourgia client) run-root store-key)
-        ;; F100b item 8: a refusal is answered through ONE renderer, and a
+        ;; A refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
         ;; table (point 7).
         (only (theourgia refusal) refusal-result-json refusal-error-json)
@@ -143,7 +143,7 @@
 ;;
 ;; Answers `(ok <entries>)`, `(unavailable)` for a catalogue that does not
 ;; read, `(refused <datum> <origin>)` for a refusal of `describe` (origin
-;; `transport` or #f, F100b E12), or a start-failed / not-sent /
+;; `transport` or #f), or a start-failed / not-sent /
 ;; transport-lost outcome as itself. NEVER: NOT an empty list on
 ;; failure: an empty tool list is a valid answer meaning "this server has
 ;; no tools", and a client that got one would stop asking.
@@ -153,14 +153,14 @@
         ;; NOTE: A SERVER THAT WOULD NOT START IS CARRIED THROUGH AS ITSELF.
         ;; Flattened to `unavailable` here, its reason would be lost one
         ;; layer before the place that reports it.
-        ;; A REFUSAL THE TRANSPORT MADE IS CARRIED THROUGH TOO (F100b E12),
+        ;; A REFUSAL THE TRANSPORT MADE IS CARRIED THROUGH TOO,
         ;; as `(refused <datum> transport)`.
         (cond
           ((memq (car answer) '(start-failed not-sent)) answer)
           ;; NEVER: A LOST ANSWER IS NOT AN UNREADABLE CATALOGUE. The request
           ;; went out and its answer did not come back: whether it ran is
           ;; unknown. Folded into `unavailable` it was answered as "core did
-          ;; not start" (F100b M3a r1, MC-07 TWIN), which says something the
+          ;; not start" (found in review; MC-07 TWIN), which says something the
           ;; shell does not know.
           ((eq? 'transport-lost (car answer)) answer)
           ((and (eq? 'transport-refusal (car answer)) (refusal-datum (cadr answer)))
@@ -180,7 +180,7 @@
                        (and (string? inner) (plain-datum inner)))))
           (cond
             ;; A PARSED `(error ...)` IS THE CORE'S REFUSAL OF `describe`, NOT
-            ;; AN UNREADABLE CATALOGUE (F100b E12): it is carried as
+            ;; AN UNREADABLE CATALOGUE: it is carried as
             ;; `(refused <datum> #f)` and answered with its own kind.
             ((refusal-datum? datum) (list 'refused datum #f))
             ((not (and (pair? datum) (eq? 'ok (car datum))))
@@ -481,7 +481,7 @@
 ;; never reported as not having happened.
 ;;
 ;; NEVER: A STORE THAT STARTS WITH "-" GOES AS `--store <store>`. The daemon
-;; refuses a token spelled like an option that it does not read (F94), and a
+;; refuses a token spelled like an option that it does not read, and a
 ;; store is passed verbatim, so a store named `--x` given as a positional was
 ;; refused where the client meant a store; the value after `--store` is taken
 ;; whatever its spelling. Every other store keeps the positional, so its
@@ -496,7 +496,7 @@
           (list "--socket" socket
                 "--detach" "--log" (serve-log-path store))))
 
-;; NOTE: `theourgiad.sc`, THE DAEMON THIS SHELL STARTS (F46), SITS ONE LEVEL
+;; NOTE: `theourgiad.sc`, THE DAEMON THIS SHELL STARTS, SITS ONE LEVEL
 ;; UP: this program lives in `mcp/`.
 (define (beside-this-program name)
   (let* ((argv0 (car (command-line)))
@@ -1029,7 +1029,7 @@
          ((string=? method "tools/list")
           (if (not (null? params))
               (list 'error identity -32602 "Pagination is not available")
-              ;; F100b item 8: a refusal is an ERROR -32000 "core did not
+              ;; A refusal is an ERROR -32000 "core did not
               ;; start" whose data is the refusal object; not-sent keeps its
               ;; -32603 sentence (M3 ruling Q-M3-2).
               (let ((listing (catalogue store actor socket)))
@@ -1103,7 +1103,7 @@
            ;; the guard around the request answered with a null id and a
            ;; sentence naming nothing. `tools/list` has always branched on
            ;; all three; this is the same branching.
-           ;; F100b item 8: THE CALL REACHED THE SHELL, so a store condition
+           ;; THE CALL REACHED THE SHELL, so a store condition
            ;; is a tool RESULT with isError and the refusal object, never a
            ;; protocol error. not-sent keeps its -32603 sentence (M3 rulings
            ;; Q-M3-2, Q-M3-6).
@@ -1244,7 +1244,7 @@
                    (exit 0))
                (loop (append-bytes buffered chunk)))))))))
 
-;; POINT 7 (F100b): A FILESYSTEM CONDITION RAISED INSIDE A REQUEST -- the
+;; A FILESYSTEM CONDITION RAISED INSIDE A REQUEST -- the
 ;; server's argv derived from an unreadable store, say -- is answered by the
 ;; table, in the shape of the request's method: the tools/call RESULT for
 ;; tools/call, the tools/list ERROR otherwise (E11). The record is the MCP

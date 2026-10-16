@@ -38,7 +38,7 @@
   (define (code-files state)
     (filter (lambda (id) (and (alive? state id) (eq? 'file (code-field state id 'kind))))
             (map cadr (state-datum state))))
-  ;; THROUGH THE DOOR (F100a): the file must be there, so absence raises
+  ;; THROUGH THE DOOR: the file must be there, so absence raises
   ;; like any other failure, as the native read did.
   (define (read-code-bytes path) (entry-bytes path))
   (define (relative-safe? s)
@@ -259,7 +259,7 @@
                                               (if (pair? listed) (list (list tag listed)) '())))
                                           '(skipped symbols-ignored symbols-refused))))
                       (if (= (length results) 1) (car results) (batch-answer results)))))))))))
-;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-md-view: `view` hands
+;; NOTE: THE VIEW IS A PARAMETER, as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's
   ;; working view.
   (define (export-code store dir raw?)

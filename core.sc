@@ -68,7 +68,7 @@
 ;; A user runs objects and saves about 9ms a call -- 18% of startup,
 ;; worth having, and NEVER: not the 200ms figure that a source-form reading
 ;; alone would have suggested. The structural point does not depend on
-;; either number: a `read` has no business loading the daemon. Since F46 it
+;; either number: a `read` has no business loading the daemon. Now it
 ;; cannot: `serve` is `theourgiad.sc`'s, and this program no longer reaches
 ;; `(theourgia daemon)` at all.
 ;;
@@ -361,7 +361,7 @@
          (cond
            ((and (pair? answer) (eq? 'ok (car answer)) (pair? (caddr answer)))
             (cut->text (caddr answer)))
-           ;; A REFUSAL IS THE EVAL'S ANSWER (F100b, D19): it was discarded
+           ;; A REFUSAL IS THE EVAL'S ANSWER (D19): it was discarded
            ;; here, the view below met the same refusal and discarded it
            ;; too, and the source ran against an empty view -- `(ok ...)`
            ;; for a draft lock nobody could open. The caller answers it
@@ -380,8 +380,8 @@
     (write c port)
     (get)))
 
-;; THE EVAL ROUTE'S OWN SCOPE (F77c; design review r2, finding 4; code review
-;; r1). This process obtains state twice before the worker exists -- the
+;; THE EVAL ROUTE'S OWN SCOPE (found in design review and code
+;; review). This process obtains state twice before the worker exists -- the
 ;; cut's baseline and the working view. The store string it hands those two
 ;; is a copy only this request holds, carrying eval's DECLARATION (eval
 ;; carries what its reduction is missing into its answer) and a listener for
@@ -421,7 +421,7 @@
              (answer (working-snapshot store state (eval-writer nodes))))
         (if (and (pair? answer) (eq? 'ok (car answer)))
             (list 'working (cadr answer) cut (caddr answer))
-            ;; A REFUSAL IS THE EVAL'S ANSWER (F100b, D19), answered by the
+            ;; A REFUSAL IS THE EVAL'S ANSWER (D19), answered by the
             ;; caller with `(during view)`; it was carried as an empty view
             ;; and the source ran against nothing.
             (list 'refused answer)))))
@@ -635,7 +635,7 @@
                  ((> (string-length source) 1048576)
                    (finish (with-heard-clause '(error bad-source (reason input-limit)) (heard)) wire?))
                  (else
-                   ;; THE RECORD CROSSES INTO THE SCHEDULER (F100b point 3):
+                   ;; THE RECORD CROSSES INTO THE SCHEDULER:
                    ;; what this process changed before it -- the cut's draft
                    ;; lock, say -- is handed to the boot actor as its
                    ;; scope's initial entries, the boot adds its own (the
@@ -647,8 +647,8 @@
                        (lambda ()
                          (with-mutation-record
                            (lambda ()
-                             ;; EVERY EXIT CARRIES WHAT THIS PROCESS HEARD (F77c
-                             ;; code review r2): a failure after the baseline
+                             ;; EVERY EXIT CARRIES WHAT THIS PROCESS HEARD (found
+                             ;; in code review): a failure after the baseline
                              ;; consumed a reduction missing a writer says so too.
                              (guard (e ((classify-failure e (mutation-record))
                                         => (lambda (a) (finish (with-heard-clause a (heard)) wire?))))
@@ -710,7 +710,7 @@
 
 ;; ---- the verbs this program answers itself ------------------------------
 ;;
-;; KEY: ONE TABLE, AND IT IS THE DISPATCH (F64). `main` looks the first
+;; KEY: ONE TABLE, AND IT IS THE DISPATCH. `main` looks the first
 ;; argument up here and nowhere else, and `test/own-verbs.sc` reads this
 ;; define as data for the gates that census every verb the product answers
 ;; -- so a verb added here is dispatched and counted by the same edit.
@@ -734,7 +734,7 @@
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))
-  ;; THE TRANSLATION POINT (F100b point 3): everything below -- the eval
+  ;; THE TRANSLATION POINT: everything below -- the eval
   ;; path, the socket derivation, the forward, the local dispatch -- runs in
   ;; this process's mutation-record scope, and a filesystem condition that
   ;; leaves it is answered by (theourgia answers)' table with that record,
@@ -757,8 +757,8 @@
       (exit 0)))
   ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which
   ;; no longer exists; there is no second implementation to keep in step.
-  ;; `serve` is not this program's any more: the daemon is `theourgiad.sc`
-  ;; (F46), and `serve` here is a verb like any other the dispatcher does not
+  ;; `serve` is not this program's any more: the daemon is
+  ;; `theourgiad.sc`, and `serve` here is a verb like any other the dispatcher does not
   ;; know.
   ;;
   ;; NEVER: AND `eval` NEVER GOES THROUGH A DAEMON. It is intercepted here,

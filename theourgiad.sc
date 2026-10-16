@@ -18,7 +18,7 @@
 ;; <path>]`, the argv `serve` has always taken, the leading `serve`
 ;; included, so that every launcher changes by file name only.
 ;;
-;; KEY: THREE PROGRAMS, ONE PER ROLE (F46). `theourgia.sc` is the thin client
+;; KEY: THREE PROGRAMS, ONE PER ROLE. `theourgia.sc` is the thin client
 ;; a user runs; `core.sc` answers a request in its own process or forwards
 ;; it; this one is the daemon. `ps` shows `theourgiad.sc` for every daemon.
 ;;
@@ -36,14 +36,14 @@
 ;; prints a banner, and raises on a bad value), and an import would do that
 ;; work before `main` runs. Measured on the first split, which imported it:
 ;; under IGROPYR_INJECT=bad, `serve d --socket ""` raised with exit 255
-;; where the base refused with exit 2 (F46 review 1, N1).
+;; where the base refused with exit 2 (found in review).
 (import (chezscheme) (theourgia arguments)
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path socket-dir-refusal)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
               fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno
               with-mutation-record mutation-record theourgia-stage)
-        ;; F100b point 8: the table for this program's own failures, and the
+        ;; The table for this program's own failures, and the
         ;; aggregation rule's named-outcome half for detach-failed.
         (only (theourgia answers) classify-failure with-written)
         (only (theourgia extensions) extension-verbs))
@@ -71,7 +71,7 @@
 ;; verb uses: a second one here would be a second place that knows what
 ;; `--socket` means.
 ;;
-;; `--attempt <token>` (F100b item 3) is the client's name for this start:
+;; `--attempt <token>` is the client's name for this start:
 ;; the daemon echoes it as the last clause of every startup report, so the
 ;; client can tell its own start's report from another's in the shared log.
 ;;
@@ -113,7 +113,7 @@
         (say (list 'error 'bad-request '(reason unknown-option)
                    (list 'option unknown) (list 'usage serve-usage)))
         (exit 1)))
-    ;; THIS PROGRAM'S OWN FAILURES ANSWER BY THE TABLE (F100b point 8): the
+    ;; THIS PROGRAM'S OWN FAILURES ANSWER BY THE TABLE: the
     ;; socket's derivation, the refusal checks and the detach run inside one
     ;; scope, and a filesystem condition that reaches here is the table's
     ;; answer, written as a startup report with the attempt token (stdout
@@ -126,7 +126,7 @@
           (guard (e ((classify-failure e (mutation-record))
                      => (lambda (answer)
                           ;; Reported once; a failure of the report's own write
-                          ;; is not reported again (M2a review r1, F1, F3).
+                          ;; is not reported again (found in review).
                           (guard (e2 (#t (exit 75)))
                             ((later '(theourgia daemon) 'write-report-line!)
                              1 (append answer (list (list 'attempt attempt)))))
@@ -154,7 +154,7 @@
                 (say '(error bad-socket-path (reason empty)))
                 (exit 2))
               ;; NEVER: A --socket GIVEN BY HAND IS NOT GIVEN A DIRECTORY. Before
-              ;; F15 the daemon made the whole chain and served, so a mistyped
+              ;; this rule the daemon made the whole chain and served, so a mistyped
               ;; path became a directory tree nobody asked for. It is refused
               ;; here, before --detach (a refusal after it would go to the log
               ;; instead of to the caller) and before anything is created. The
@@ -168,7 +168,7 @@
                       (exit 2)))))
               (when (argument-option nodes "--detach")
                 ;; UNDER THE `report` STAGE, SO A @report FAULT CAN FIRE IN THE LOG'S
-                ;; OPEN (F100b item 1). NO ACTOR EXISTS WHILE THIS RUNS: the
+                ;; OPEN. NO ACTOR EXISTS WHILE THIS RUNS: the
                 ;; scheduler starts in `serve` below. That is what makes a
                 ;; parameterize safe here -- under igropyr a parameterize is one
                 ;; global cell that a preemption hands to every other actor
@@ -235,7 +235,7 @@
   ;;
   ;; NEVER: Not guessed: a detach that failed for a reason nobody recorded is
   ;; a daemon that will not start and will not say why.
-  ;; NOTE: A THIRD SHAPE SINCE F100a. The log's create is a mutating
+  ;; NOTE: A THIRD SHAPE SINCE THE DOOR. The log's create is a mutating
   ;; primitive and raises durable-error as before; its open, after the
   ;; create, is not, and raises unreadable-entry, whose errno is a field of
   ;; its own (a name such as EACCES where the file layer's is a number). It
@@ -283,7 +283,7 @@
   (detach-step 'setsid log-path (lambda () (setsid!)))
   (detach-step 'log log-path (lambda () (redirect-stdio! log-path))))
 
-;; A NAMED OUTCOME, ON STDERR (F100b item 5, D1' 362-363, E2). detach-failed
+;; A NAMED OUTCOME, ON STDERR. detach-failed
 ;; keeps its name and gains the record of this program's scope through
 ;; with-written. It goes to STDERR: a daemon spawned by a client inherits the
 ;; client's stderr, and the client's stdout must carry one answer, the
@@ -310,8 +310,8 @@
              (exit 71)))
     (thunk)))
 
-;; KEY: THE VERBS THIS PROGRAM ANSWERS, AS ONE TABLE THAT IS THE DISPATCH
-;; (F64), in the shape `core.sc` keeps: `(cons '<verb> <procedure>)`, the
+;; KEY: THE VERBS THIS PROGRAM ANSWERS, AS ONE TABLE THAT IS THE DISPATCH,
+;; in the shape `core.sc` keeps: `(cons '<verb> <procedure>)`, the
 ;; procedure taking the whole argv and not returning. `test/own-verbs.sc`
 ;; reads this define as data, so the gates count what `main` dispatches.
 (define own-verbs

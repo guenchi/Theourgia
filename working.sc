@@ -37,7 +37,7 @@
           (only (theourgia datum-code) datum-source-read))
 
   ;; NEVER: A DRAFT OR A DIRECTORY THIS PROCESS CANNOT READ IS NOT ONE THAT IS
-  ;; NOT THERE (U10, F77b). Presence is R1's question: absence (ENOENT,
+  ;; NOT THERE (U10). Presence is R1's question: absence (ENOENT,
   ;; ENOTDIR) is #f, and any other failure raises unreadable-entry naming
   ;; the path, which `problem` answers as working-unavailable with the path
   ;; and the system's reason. Chez's file-exists? answered #f for a draft
@@ -85,7 +85,7 @@
   ;; THE RULE IS arguments.sc's `working-id?`, shared with the MCP shell,
   ;; which checks its writer at start without loading this library.
   (define safe-id? working-id?)
-  ;; R2g's SKIP, KEPT AS RULED (F77b), THROUGH THE DOOR (F100a): an owner.sexp
+  ;; R2g's SKIP, KEPT AS RULED, THROUGH THE DOOR: an owner.sexp
   ;; or retired.sexp that cannot be stat'ed reads as absent, by
   ;; present-or-unreadable-skip?, defined once in log.sc for both R2g sites.
   (define (writer-for store supplied)
@@ -216,7 +216,7 @@
          (safe-id? (list-ref x 2)) (safe-id? (list-ref x 3))
          (string? (list-ref x 4)) (string? (list-ref x 5))
          (list? (list-ref x 6)) (bytevector? (list-ref x 7))))
-  ;; THE DRAFT'S BYTES ARE READ WITH R1's READ, then decoded (F77b review 1):
+  ;; THE DRAFT'S BYTES ARE READ WITH R1's READ, then decoded (found in review):
   ;; a draft file this process cannot open raises unreadable-entry naming
   ;; it, where Chez's open-file-input-port raised an i/o condition that the
   ;; commit read as "no draft".
@@ -238,7 +238,7 @@
     (let* ((b (state-read state id)) (fs (and b (assq 'fields b)))
            (v (and fs (assq name (cdr fs)))))
       (and v (cdr v))))
-  ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5, NO1): whatever the
+  ;; A NAMED OUTCOME CARRIES THE RECORD (NO1): whatever the
   ;; enclosing point's scope had changed when the failure left is appended
   ;; as `(written ...)`; an empty record leaves the answer as it was.
   (define (problem thunk)
@@ -486,7 +486,7 @@
                   (let ((entry (list 'working 1 writer id version based-on cut body)))
                     (with-draft-lock store writer
                       (lambda ()
-                        ;; THE SLOT IS READ BEFORE IT IS WRITTEN (F77b review 2):
+                        ;; THE SLOT IS READ BEFORE IT IS WRITTEN (found in review):
                         ;; a draft there that cannot be read raises
                         ;; unreadable-entry, and nothing replaces it unseen. A
                         ;; readable one is replaced, as before.
@@ -533,7 +533,7 @@
               ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
               ;; says so -- `safe-id?` admits names no block can have.
               ((not (block-name? id)) '(error bad-request invalid-block-id))
-              ;; READ, NOT ONLY STATTED (F77b review 2): a draft this process
+              ;; READ, NOT ONLY STATTED (found in review): a draft this process
               ;; cannot read raises unreadable-entry, and is not deleted unseen.
               (else (let ((p (path-for store writer id)))
                       (unless (eq? (read-entry p) 'absent)
@@ -632,7 +632,7 @@
 
   ;; ---- the working view as a reduction -------------------------------------
   ;;
-  ;; NEVER: ONE VIEW, THE ONE `eval --working` RUNS ON (design 7.5.21, F17). The
+  ;; NEVER: ONE VIEW, THE ONE `eval --working` RUNS ON (design 7.5.21). The
   ;; committed side is the state at the writer's baseline -- the join of
   ;; its drafts' cuts, `working-baseline` -- and every block with a live
   ;; draft reads as that draft. A writer with no drafts has an empty
@@ -729,7 +729,7 @@
                             (cdr (car candidates))
                             (cons "" 0))))))
 
-  ;; THE OVERLAY KEEPS ITS BASE'S NOTES (F77c, design review r1): it is a
+  ;; THE OVERLAY KEEPS ITS BASE'S NOTES (found in design review): it is a
   ;; new value built from the base's rows, and whatever the base was
   ;; missing it is missing too.
   (define (overlay-drafts base replacements)
@@ -981,7 +981,7 @@
     ;; from here, a build that deletes whatever is in the slot and a
     ;; build that compares first stop being indistinguishable.
     ;;
-    ;; NEVER: A COMMIT THAT LANDED KEEPS ITS ANSWER (U10, F77b; review 2).
+    ;; NEVER: A COMMIT THAT LANDED KEEPS ITS ANSWER (U10; found in review).
     ;; When something landed -- records, or an empty plan -- a cleanup that
     ;; fails does not replace the answer: this returns #f or the first
     ;; failure as (cleanup-failed (path p) (reason r)), and the commit adds
@@ -1023,7 +1023,7 @@
                   (unlink! p)
                   ;; NEVER: ASKED AGAIN, NOT ASSUMED. unlink! was Chez's
                   ;; delete-file, which answered #f and raised nothing when
-                  ;; it could not delete (F99). Since F100a it is unlink(2)
+                  ;; it could not delete. Through the door it is unlink(2)
                   ;; and a failure raises durable-error, which retire!'s
                   ;; guard turns into cleanup-failed; this second question
                   ;; stays for a draft that is still there after an unlink
@@ -1144,7 +1144,7 @@
                                      (else '())))
                     (read-failure #f)
                     ;; A DRAFT THIS PROCESS COULD NOT READ, as opposed to one
-                    ;; that read and is damaged (U10, F77b): without --req the
+                    ;; that read and is damaged (U10): without --req the
                     ;; first is answered before `no-draft`, because the draft
                     ;; may be there. A damaged draft keeps its answers.
                     (unreadable-failure #f)
@@ -1396,7 +1396,7 @@
                              (let ((replay? (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
                                                     answers)))
                                ;; A DRAFT THAT COULD NOT BE READ COULD NOT BE RETIRED
-                               ;; (F77b review 3). Its read failure emptied `entries`,
+                               ;; (found in review). Its read failure emptied `entries`,
                                ;; so retire! has nothing to report; when the commit
                                ;; landed -- a completion bypasses the preflight -- that
                                ;; failure is the cleanup clause, with its path and reason.

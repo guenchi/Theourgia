@@ -267,7 +267,7 @@
                   (if (= (length results) 1) (car results) (batch-answer results)))))))))
   (define (import-datum store dir actor req . premises)
     (answer (lambda () (apply execute store actor (frozen-operation store req (lambda () (capture-import store dir))) premises))))
-;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-code-view.
+;; NOTE: THE VIEW IS A PARAMETER, as for export-code-view.
   (define (export-datum store dir)
     (export-datum-view store dir (lambda () (open-and-reduce store))))
 

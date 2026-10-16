@@ -116,7 +116,7 @@
   ;; only actor calls it once, prints the answer and exits; so every worker-*
   ;; message and every DOWN this process receives belongs to this evaluation.
   ;; `collect` has matched every worker-out without comparing its ref since
-  ;; before F77a, and the limit drain does the same (review r6, F1). A second
+  ;; it was written, and the limit drain does the same (found in review). A second
   ;; caller, sharing an actor with other workers or monitors, would need both
   ;; to filter by ref -- which this `receive`, matching literal symbols and
   ;; bindings only, cannot express.
@@ -443,7 +443,7 @@
   (define drain-ms 500)
 
   ;; NEVER: A DRAIN THAT RAN OUT OF TIME DOES NOT PASS FOR ONE THAT READ THE
-  ;; STREAM TO ITS END (review r6, F2). When the bound ends it before stdout's
+  ;; STREAM TO ITS END (found in review). When the bound ends it before stdout's
   ;; eof or the adapter's DOWN, a note the worker wrote may still be unread,
   ;; so the answer may not name everything its view could not see; it then
   ;; ends with (protocol-cut (after-ms <bound>)). That is a clause of its own,
@@ -464,8 +464,8 @@
             (append a (list (list 'protocol-cut (list 'after-ms drain-ms))))
             a))))
 
-  ;; NEVER: THE BOUND IS CHECKED ON EVERY TURN, NOT LEFT TO `after` (review r6,
-  ;; F3). This receive looks at its timeout only when no queued message
+  ;; NEVER: THE BOUND IS CHECKED ON EVERY TURN, NOT LEFT TO `after` (found in
+  ;; review). This receive looks at its timeout only when no queued message
   ;; matches, so a mailbox full of the worker's frames kept the drain reading
   ;; past the bound (measured: 2582 ms against 500). Checked here first, at
   ;; most one message is handled after the bound has passed.

@@ -44,7 +44,7 @@
                 spawn-detached! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 entry-type read-entry
-                ;; F100b point 6: the pid wait, the hold seam, the record.
+                ;; The pid wait, the hold seam, the record.
                 waitpid-status hold-point! theourgia-fault
                 with-mutation-record mutation-record)
           (only (theourgia platform-numbers) platform-number)
@@ -212,7 +212,7 @@
   ;; NOTE: THE QUESTION IS PUT TO THE NEAREST EXISTING DIRECTORY, because a
   ;; path that is not there yet has no filesystem to answer for it, and
   ;; the absent store is the whole case this exists for.
-  ;; THROUGH THE DOOR (F100a): absent climbs, as before; a stat that fails
+  ;; THROUGH THE DOOR: absent climbs, as before; a stat that fails
   ;; for any other reason raises instead of climbing past a directory it
   ;; could not see into.
   (define (nearest-existing path)
@@ -456,7 +456,7 @@
   ;; connect into nothing and call the daemon broken.
   (define (start-budget-ms) 10000)
 
-  ;; THE NAME OF ONE START (F100b item 3): 16 lowercase hex characters, the
+  ;; THE NAME OF ONE START: 16 lowercase hex characters, the
   ;; client's pid then a counter, each 8 digits. The daemon echoes it as the
   ;; last clause of every startup report, so the report this start's daemon
   ;; wrote is told from any other in the shared log. A new one per start:
@@ -484,11 +484,11 @@
   ;; answer today's question with last week's answer, and it would look
   ;; entirely plausible. The length is taken BEFORE the spawn and nothing
   ;; before it is ever read.
-  ;; THROUGH THE DOOR (F100a): absent is 0 as before; otherwise the size is
+  ;; THROUGH THE DOOR: absent is 0 as before; otherwise the size is
   ;; taken by OPENING the log (file-size), as the base did, so a log that is
   ;; there and cannot be read raises unreadable-entry and start-one! refuses
   ;; the start naming it (K8). A stat would succeed on a 000 log and let the
-  ;; start go ahead: measured, F100a suite-1's K8 row.
+  ;; start go ahead: measured, a suite run's K8 row.
   (define (log-length path)
     (if (eq? (entry-type path) 'absent) 0 (file-size path)))
 
@@ -522,7 +522,7 @@
   ;; the refusal, as a datum. ONE TEXT FOR BOTH PLACES THAT REFUSE: the
   ;; daemon's `serve` (theourgiad.sc, for a --socket given by hand) and the
   ;; start above. A socket is never given a directory by being served: the
-  ;; directory is the caller's to make (F15, as F82 for export-md).
+  ;; directory is the caller's to make, as export-md's target directory is.
   ;;
   ;;   absent, or a file where the directory must be
   ;;       -> (error socket-dir-missing (dir <dir>))
@@ -540,7 +540,7 @@
             #f
             (list 'error 'socket-dir-missing (list 'dir dir))))))
 
-  ;; ---- starting one, and saying why it did not start (F100b point 6) ------
+  ;; ---- starting one, and saying why it did not start ----------------------
   ;;
   ;; A START IS NAMED, WAITED FOR BY ITS PID, AND ANSWERED FROM ITS OWN REPORT.
   ;; - The token (next-attempt-token) is passed as `--attempt`; the daemon
@@ -679,15 +679,15 @@
                                    (if (carries-token? d token) d found))))
           (else (loop (+ i 1) from found))))))
 
-  ;; A LINE IS A REPORT ONLY IF IT IS ONE DATUM (M2b1 review r1, F1): text
+  ;; A LINE IS A REPORT ONLY IF IT IS ONE DATUM (found in review): text
   ;; after the datum, even an unmatched parenthesis, makes the whole line
   ;; not a report, so a second read must find the end.
-  ;; NO GUARD AROUND THE DECODE (F111; F100b M3a r1's reading): Chez's
+  ;; NO GUARD AROUND THE DECODE (measured): Chez's
   ;; utf8->string never raises on invalid bytes, it gives U+FFFD for a lone
   ;; continuation byte, an overlong form and a truncated sequence. Outside a
   ;; string, plain-datum's shape check refuses a line holding one; inside a string it is
-  ;; an ordinary character and the line reads as it did before (M3b review
-  ;; r1, F3). A guard with no case behind it is not kept.
+  ;; an ordinary character and the line reads as it did before (found in
+  ;; review). A guard with no case behind it is not kept.
   (define (line-datum bytes from to)
     (let ((text (let ((b (make-bytevector (- to from))))
                   (bytevector-copy! bytes from b 0 (- to from))
@@ -696,7 +696,7 @@
       ;; is read as every such text is: plain-datum, one datum, plain data.
       (plain-datum text)))
 
-  ;; THE SHAPE THE DAEMON WRITES, AND ONLY IT (M2b1 review r1, F2):
+  ;; THE SHAPE THE DAEMON WRITES, AND ONLY IT (found in review):
   ;; `(error <kind> <clause> ...)`, each clause a list headed by a symbol,
   ;; the LAST clause exactly `(attempt T)`. A line carrying the token in any
   ;; other shape is not this start's report: its kind would be relayed as

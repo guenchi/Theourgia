@@ -32,7 +32,7 @@
           (file-ensure! lock)
           (with-exclusive-lock lock
             (lambda (fd)
-              ;; ONE READ THROUGH THE DOOR (F100a), not a presence test and
+              ;; ONE READ THROUGH THE DOOR, not a presence test and
               ;; then a native read: absent is "not captured yet", as before,
               ;; and a packet that cannot be read raises unreadable-entry.
               (let ((bytes (read-entry path)))

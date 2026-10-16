@@ -45,7 +45,7 @@
 ;; lost worker included (K14; review r4, A1-1). A refusal of the handshake
 ;; comes before any load and so carries none.
 ;;
-;; KEY: AN ANSWER'S SHAPE IS NEVER THE SOURCE'S (F92, F93). An eval answer is
+;; KEY: AN ANSWER'S SHAPE IS NEVER THE SOURCE'S. An eval answer is
 ;; `(ok ...)` or an `(error <name> ...)` of this worker's or the
 ;; supervisor's. The worker's own refusals (bad-source, eval-context,
 ;; eval-denied, eval-value) are raised as a private record, `worker-refusal`,
@@ -179,7 +179,7 @@
     (rnrs exceptions) (rnrs conditions) (rnrs mutable-pairs)
     (rnrs mutable-strings) (rnrs unicode) (rnrs bytevectors)))
 
-;; ---- the worker's own refusals (F92, F93) -------------------------------------
+;; ---- the worker's own refusals -------------------------------------------------
 ;;
 ;; NEVER: THE WORKER'S OWN REFUSALS ARE A PRIVATE TYPE, NOT A LIST (R1). The
 ;; answer guard used to pass any raised pair headed `error` through as the
@@ -193,7 +193,7 @@
 
 ;; NEVER: WHAT THE WORKER'S OWN STEPS RAISE IS NEVER THE SOURCE'S VALUE. Only
 ;; what the source raises while it is evaluated is data; a malformed source
-;; raises nothing, it is refused. The three branches answer as before F92:
+;; raises nothing, it is refused. The three branches answer as they always did:
 ;;   - a list headed `error` is the refusal of a library the worker called
 ;;     -- `(error bad-source (reason unbalanced) ...)` from the reader -- and
 ;;     is answered as itself;
@@ -274,7 +274,7 @@
 ;; the last one is the whole of it; an evaluation stopped by a limit after
 ;; the load has already said it.
 (define heard '())
-;; A LOAD THAT WAS REFUSED is heard too (F77c), and names the answer below
+;; A LOAD THAT WAS REFUSED is heard too, and names the answer below
 ;; whatever a catch-all between it and here made of the raise.
 (define refused #f)
 (load-listener-add! store
@@ -286,17 +286,17 @@
             (set! heard merged)
             (let ((clause (incomplete-clause heard)))
               (when clause (say-datum! clause))))))))
-;; EVAL DECLARES (F77c): it carries what its reduction is missing into its
+;; EVAL DECLARES: it carries what its reduction is missing into its
 ;; answer, through the notes above. The declaration rides on the same
 ;; string the listener does, which only this process holds.
 (load-declaration-set! store incomplete-accepted)
 
 (define (answer)
-  ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED, BEFORE THE CATCH-ALL (F79),
+  ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED, BEFORE THE CATCH-ALL,
   ;; as every route of K1 names it: a writers/ directory this process
   ;; cannot list fails the load before any incomplete note can be heard,
   ;; and the catch-all would call it an exception the evaluation raised.
-  ;; THE TABLE (F100b point 5): a filesystem condition is answered by
+  ;; THE TABLE: a filesystem condition is answered by
   ;; (theourgia answers) with this worker's own record. TRIPWIRE, NOT A
   ;; MEASUREMENT, for durable-error: the worker mutates nothing, so no
   ;; durable-error and no non-empty record reach here today; the table
@@ -313,7 +313,7 @@
         (((state body env)
           ;; THE WORKER'S OWN STEPS: reading the source and the cut, loading
           ;; the store, the library the source is evaluated under. What they
-          ;; raise is the worker's refusal, never the source's value (F92).
+          ;; raise is the worker's refusal, never the source's value.
           (worker-step
             (lambda ()
               (let* ((forms (datum-source-read (string->utf8 source)))

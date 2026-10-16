@@ -70,18 +70,18 @@
     (map caddr (filter (lambda (r) (equal? (car r) parent)) rows)))
 
   ;; A DOCUMENT IS A TOP-LEVEL BLOCK OF KIND `doc`, AND EACH IS ONE FILE
-  ;; HOLDING ITS WHOLE SUBTREE (F85 R2). The write path refuses to put a
+  ;; HOLDING ITS WHOLE SUBTREE. The write path refuses to put a
   ;; document under another block. One that arrives there anyway, from
   ;; history written before that rule or from another store, is to this
   ;; projection a block like any other: it is written, under its title, into
   ;; the file of the top-level document above it when that one is written,
   ;; and goes with it into `skipped` otherwise. It is reported once, as
   ;; `nested-documents` by the structure rules and as `nested-document` by
-  ;; `conflicts`, and no reader branches on it (F85 R3).
+  ;; `conflicts`, and no reader branches on it.
   ;;
   ;; Each entry is the document's id followed by every block under it, in
-  ;; document order: the outline's own walk, the one definition of "under"
-  ;; (F85 R1).
+  ;; document order: the outline's own walk, the one definition of
+  ;; "under".
   (define (md-tree state)
     (let ((rows (state-outline state)))
       (map (lambda (id) (outline-subtree rows id))
@@ -167,7 +167,7 @@
 
   ;; THE BLOCK AND EVERYTHING UNDER IT, in document order: the outline's own
   ;; walk (`outline-subtree`) and nothing else, the one definition of
-  ;; "under" (F85 R1). `read --recursive` answers with this and `grep
+  ;; "under". `read --recursive` answers with this and `grep
   ;; --under` searches `outline-subtree` itself, so the two name the same set
   ;; of blocks by construction. The root is kept whatever its kind.
   ;;
@@ -257,7 +257,7 @@
                     full)))))
 
   ;; NEVER: A DIRECTORY THAT IS NOT THERE IS REFUSED BY NAME, before anything
-  ;; is read or written (F82, F83), in the tree's own words for a directory
+  ;; is read or written, in the tree's own words for a directory
   ;; input that is not one (code-project.sc's not-a-directory), with the
   ;; directory named. Export used to answer (ok (files 0)) with every
   ;; document's path marked unusable, because each file's key could not be
@@ -271,7 +271,7 @@
                    (list 'reason 'not-a-directory)
                    (list 'dir dir)))))
 
-;; NOTE: THE VIEW IS A PARAMETER (F17). `export-md` exports the committed
+;; NOTE: THE VIEW IS A PARAMETER. `export-md` exports the committed
   ;; state; `export-md-view` exports whatever reduction `view` hands it --
   ;; the writer's working view for `--working`. `view` is called after the
   ;; directory is checked, so a bad directory is answered before the store
@@ -303,8 +303,8 @@
         (lambda (doc)
           (hashtable-set! doc-key (car doc) (file-key dir (path-of (car doc)))))
         docs)
-      ;; NEVER: A FILE THAT CANNOT BE WRITTEN IS NAMED, NOT CALLED INTERNAL
-      ;; (F98). A target directory that stats but cannot be written into --
+      ;; NEVER: A FILE THAT CANNOT BE WRITTEN IS NAMED, NOT CALLED INTERNAL.
+      ;; A target directory that stats but cannot be written into --
       ;; mode 000 passes the directory test above, which needs search only on
       ;; its parent -- failed at the first write with a bare port error. It is
       ;; answered in R1's words, the file and the system's reason, AND with
@@ -379,7 +379,7 @@
                                             (hashtable-ref children (car r) (quote ()))))))
                   rows)
         ;; THE WALK TAKES EACH WRITTEN DOCUMENT'S WHOLE SUBTREE, because the
-        ;; file holds its whole subtree (F85 R2): a block of kind `doc` below
+        ;; file holds its whole subtree: a block of kind `doc` below
         ;; it was written into it like any other, and is marked written here
         ;; for the same reason.
         ;; NEVER: THE WALK STARTS FROM THE DOCUMENTS THAT GOT A FILE. "Not a
@@ -467,7 +467,7 @@
                ;; lines. The outermost unwritten block is named and carries
                ;; the number of this projection's blocks below it. Every one
                ;; of them went unwritten too: a file holds its document's
-               ;; whole subtree (F85 R2), so a block below an unwritten one
+               ;; whole subtree, so a block below an unwritten one
                ;; has no other way into a file. Measured before the filter
                ;; that asked "unwritten?" here was removed: every export of a
                ;; full suite run, 626 entries, counted the same with it and
@@ -512,8 +512,8 @@
           ;; SAID, NOT LEFT OUT. Only a document that got a file has its
           ;; front written, at the top of that file. A block of kind `doc`
           ;; below the root is written into its ancestor's file like any other
-          ;; block (F85 R2) -- heading, title and body -- and its front has
-          ;; nowhere to go. Measured: on the tree before F85 such a front was
+          ;; block -- heading, title and body -- and its front has
+          ;; nowhere to go. Measured: before a file held its whole subtree, such a front was
           ;; written into a file of its own; after it, the answer was `ok`
           ;; and the front was in no file.
           ;;
@@ -558,7 +558,7 @@
           (list 'reason reason)
           (list 'written (reverse written))))
 
-  ;; A WRITE THAT THE DOOR REFUSED (F100a): the file is written through
+  ;; A WRITE THAT THE DOOR REFUSED: the file is written through
   ;; overwrite-entry!, so a directory that cannot be written into raises the
   ;; door's durable-error, a value and not a condition, carrying the errno.
   ;; Before the door the native port raised an i/o-error whose irritants
@@ -568,7 +568,7 @@
     (string-append "the file could not be written, errno "
                    (number->string (fs-error-errno e))))
 
-  ;; THROUGH THE DOOR (F100a). The write replaces the file in place, as
+  ;; THROUGH THE DOOR. The write replaces the file in place, as
   ;; the truncating native port did, so its inode stays; the read raises on
   ;; absence, as the native one did.
   (define (write-file path text)
@@ -634,7 +634,7 @@
     (let ((d (md-split (string-append line "\n"))))
       (= 1 (length (doc-sections d)))))
 
-  ;; LISTED WITH list-entries (F98), R1's listing: a directory that cannot
+  ;; LISTED WITH list-entries, R1's listing: a directory that cannot
   ;; be read raises unreadable-entry naming it, which the RPC layer answers
   ;; as (error unreadable (path ...) (reason ...)). The earlier listing was
   ;; the host's, which raised a bare port error for a directory at mode 000,

@@ -49,7 +49,7 @@
         (only (theourgia arguments) parse-arguments argument-wants-stdin? help-requested?
               set-extension-options! extension-option-table)
         (only (theourgia extensions) extension-verbs)
-        ;; THE TABLE AND THE RECORD (F100b point 4). (theourgia client)
+        ;; THE TABLE AND THE RECORD. (theourgia client)
         ;; already brings ffi into this program's closure; (theourgia
         ;; answers) is one small library that does no filesystem work.
         (only (theourgia ffi) with-mutation-record mutation-record)
@@ -198,7 +198,7 @@
 ;; already found it, and `core.sc` reads it as the dispatcher's default.
 ;; `exec` keeps the environment, so there is nothing to pass on.
 ;;
-;; KEY: THE PROGRAM IS CHOSEN BY ROLE (F46). `serve` is the daemon, and the
+;; KEY: THE PROGRAM IS CHOSEN BY ROLE. `serve` is the daemon, and the
 ;; daemon is `theourgiad.sc`; every other request answered here -- `init`,
 ;; `eval`, anything under THEOURGIA_LOCAL -- is `core.sc`'s. One program for
 ;; all of them would send `init` to the daemon, which refuses every verb but
@@ -391,7 +391,7 @@
           outcome))))
 
 (define (main argv)
-  ;; THE TRANSLATION POINT (F100b point 4): the whole run -- the socket
+  ;; THE TRANSLATION POINT: the whole run -- the socket
   ;; derivation, the frame, the start of a daemon -- in this process's
   ;; mutation-record scope; a filesystem condition that leaves it is the
   ;; table's answer on stdout with exit 75 (`refuse`), where it was an
@@ -498,7 +498,7 @@
 ;; names it.
 ;;
 ;; NEVER: A STORE THAT STARTS WITH "-" GOES AS `--store <store>`. The daemon
-;; refuses a token spelled like an option that it does not read (F94), and a
+;; refuses a token spelled like an option that it does not read, and a
 ;; store is passed verbatim, so a store named `--x` given as a positional was
 ;; refused where the client meant a store; the value after `--store` is taken
 ;; whatever its spelling. Every other store keeps the positional, so its

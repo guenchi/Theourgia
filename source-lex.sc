@@ -72,7 +72,7 @@
       (let ((n (string-length s)))
         (define (at? p i) (string-prefix-at? s p i))
         ;; NEVER: THE LIMIT IS ON A RUN OF CONSECUTIVE PREFIXES, NOT ON THE FILE'S
-        ;; TOTAL (F51). What a prefix can cost -- a quotation nested inside a
+        ;; TOTAL. What a prefix can cost -- a quotation nested inside a
         ;; quotation, a discard of a discard -- grows with the run; a total
         ;; counted every quote in a thousand-line library, and log.sc was
         ;; refused at 43 percent of its length. The run is reset by any token
@@ -112,7 +112,7 @@
                   (else (loop (+ i 1))))))
         ;; The end of a character literal's name: the literal's own character
         ;; is taken whatever it is, and a name (`#\space`, `#\x41`) runs to the
-        ;; next delimiter. NEVER: NO ESCAPE RULE HERE (F51). The name was scanned
+        ;; next delimiter. NEVER: NO ESCAPE RULE HERE. The name was scanned
         ;; with atom-end, whose `\` skips the character after it, so `#\\)`
         ;; swallowed its `)` and the ledger lost count of the depth for the rest
         ;; of the file -- measured as `unbalanced` at the last byte of client,

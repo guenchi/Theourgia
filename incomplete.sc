@@ -13,7 +13,7 @@
 ;; limitations under the License.
 
 ;;; (theourgia incomplete) -- a reduction missing a writer, refused to a
-;;; caller that did not say it accepts one (F77 R2e, delivered by F77c).
+;;; caller that did not say it accepts one (R2e).
 ;;;
 ;;; A load that could not read every writer builds an INCOMPLETE reduction.
 ;;; Whoever obtains one must have DECLARED that it accepts one, and then
@@ -23,7 +23,7 @@
 ;;; THE DECLARATION IS ONE VALUE, compared with eq?. It is passed as an
 ;;; argument, lexically, from the route that answers -- never a parameter:
 ;;; under the scheduler every green thread shares a parameter, so one
-;;; request's declaration would be another's (F100b). And it is not a truth
+;;; request's declaration would be another's. And it is not a truth
 ;;; value: several of the functions it travels through take more than one
 ;;; argument of the same shape, and a #t that reached its place by a slip
 ;;; must not declare. #f, or anything else, is "not declared".

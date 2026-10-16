@@ -73,7 +73,7 @@
                   (map (lambda (p) (list (car p) (cdr p))) detail)
                   '()))))
 
-;; ---- exporting a writer's working view (F17) -------------------------------
+;; ---- exporting a writer's working view -------------------------------------
   ;;
   ;; NEVER: THE VIEW IS working.sc's `working-state`, the one reduction a
   ;; writer's drafts make over its baseline; no export rebuilds it.
@@ -112,7 +112,7 @@
 
   (define (guarded thunk)
     (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
-              ;; A FILESYSTEM FAILURE IS NOT ANSWERED HERE (F100b, D7): it
+              ;; A FILESYSTEM FAILURE IS NOT ANSWERED HERE (D7): it
               ;; goes on to the whole dispatch's table in
               ;; rpc-dispatch-parsed, which answers it with the dispatch's
               ;; mutation record -- what this verb had already changed.
@@ -413,9 +413,9 @@
   ;; opens it. Letting the load layer discover it works, but it answers
   ;; with the kind of the file that was missing rather than with the fact
   ;; the caller can act on: there is no store here.
-  ;; THROUGH THE DOOR (F100a): absent is no-store, as before; a meta.sexp
+  ;; THROUGH THE DOOR: absent is no-store, as before; a meta.sexp
   ;; whose directory cannot be searched raises instead of reading as no
-  ;; store (F100b translates what escapes).
+  ;; store (the dispatch's table translates what escapes).
   ;; A VERB TAKES `--premises` EXACTLY WHEN ITS USAGE FORM NAMES IT: the
   ;; catalogue is the one place a verb's options are written down.
   (define (takes-premises? verb)
@@ -1771,7 +1771,7 @@
                           (guarded
                             (lambda ()
                               ;; NEVER: A CANDIDATE THAT CANNOT BE READ IS NOT A
-                              ;; CANDIDATE THAT IS NOT THERE (U9, F77b). R1's read:
+                              ;; CANDIDATE THAT IS NOT THERE (U9). R1's read:
                               ;; ENOENT and ENOTDIR are no-candidate as before,
                               ;; and any other failure is candidate-unreadable
                               ;; with the path and the system's reason.
@@ -2477,7 +2477,7 @@
   ;; the log for it; passing this one there would answer a question about
   ;; the past with the present.
   ;;
-  ;; F77c: THE STATE A HANDLER IS GIVEN IS SEALED, and this unseals it --
+  ;; THE STATE A HANDLER IS GIVEN IS SEALED, and this unseals it --
   ;; or loads -- through obtain-state, which judges it against the
   ;; request's declaration. A verb that never calls this never consumes
   ;; the state and is never refused for holding it.
@@ -2555,7 +2555,8 @@
   ;; SO HERE, ONCE, NOT IN EACH VERB (K10). A writer this store could not
   ;; read is left out of every reduction, and a read that answered without
   ;; it would be answering "these records are not there" about records it
-  ;; could not see -- the quiet absence F77 exists to remove. So every
+  ;; could not see -- the quiet absence that naming unreadable
+  ;; entries exists to remove. So every
   ;; answer, ok or refusal, whose loads found an unreadable writer ends in
   ;;   (incomplete (unreadable (writer w) (path p) (reason r)) ...)
   ;; and an answer from a healthy store is exactly what it was.
@@ -2581,7 +2582,7 @@
   ;; a raised value that is neither a condition nor an (error ...) datum,
   ;; still propagate, to the caller's own backstop.
   ;;
-  ;; THE TRANSLATION POINT (F100b point 1). The outermost dispatch -- the one
+  ;; THE TRANSLATION POINT. The outermost dispatch -- the one
   ;; that owns the load listener, `own?` -- opens its own mutation-record
   ;; scope around the whole of dispatch-verb, and a filesystem condition
   ;; that leaves it is answered by (theourgia answers)' table with that
@@ -2598,7 +2599,7 @@
            (key (if own? (string-copy store) store))
            (heard '())
            (refused #f)
-           ;; TWO EVENTS REACH THE LISTENER (F77c): a load's notes, and a
+           ;; TWO EVENTS REACH THE LISTENER: a load's notes, and a
            ;; load that was refused -- the first refusal is kept.
            (hear! (lambda (event)
                     (if (load-refused? event)
@@ -2610,7 +2611,7 @@
                             ;; A REFUSED LOAD NAMES THE ANSWER, whatever a
                             ;; catch-all between it and here made of the
                             ;; raise: the refusal's own answer, with this
-                            ;; dispatch's record (F77c; design review r6).
+                            ;; dispatch's record (found in design review).
                             ;; A consumer that wants to go on without a
                             ;; writer must declare; catching the refusal and
                             ;; carrying on is not a way round it.
@@ -2636,7 +2637,7 @@
           (append answer (list clause))
           answer)))
 
-  ;; ---- the declaration (F77c) ---------------------------------------------
+  ;; ---- the declaration ----------------------------------------------------
   ;;
   ;; A VERB EITHER CARRIES WHAT ITS REDUCTION IS MISSING INTO ITS ANSWER --
   ;; rpc-dispatch-parsed appends the clause to every answer built from a
