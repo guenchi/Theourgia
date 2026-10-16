@@ -375,16 +375,17 @@
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")
-;; -> the first block of the store whose src is text, for the seed's one
+;; -> the first block of the store that holds a src, for the seed's one
 ;; write, read off one reduction of the store: a block's record is
-;; ((id . <id>) (fields (<name> . <value>) ...) ...)
+;; ((id . <id>) (fields (<name> . <value>) ...) ...), and its src is a string
+;; in a section and bytes in an imported file's block
 (define (text-block st)
   (let ((state (open-and-reduce st)))
     (find (lambda (id)
             (let* ((rec (state-read state id))
                    (fields (and (list? rec) (assq 'fields rec)))
                    (src (and fields (assq 'src (cdr fields)))))
-              (and src (string? (cdr src)))))
+              (and src (or (string? (cdr src)) (bytevector? (cdr src))))))
           (state-block-ids state))))
 ;; -> (owner? adopt write commit) on a cp -R copy of ST, in a scratch place
 (define (seed-check st)
