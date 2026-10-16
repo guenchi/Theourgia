@@ -471,11 +471,12 @@
 (define c5b-add (begin (at! wt5b c5b-0) (commit! wt5b "add a binary" (cons "new.dat" (bytevector 110 0 10)))))
 (define c5b-rmbin (begin (at! wt5b c5b-0) (commit! wt5b "remove the binary" (cons "bin.dat" #f))))
 (define c5b-rmlink (begin (at! wt5b c5b-0) (commit! wt5b "remove the link" (cons "l.sc" #f))))
+(define c5b-totext (begin (at! wt5b c5b-0) (commit! wt5b "the binary becomes text" (cons "bin.dat" "now text\n"))))
 (define st5b (store-from! wt5b c5b-0 "s5b" #t))
-(want "IG-5 an added binary and a removed binary: not-text; a removed link: file-mode; nothing written"
+(want "IG-5 an added binary, a removed binary and a binary that becomes text: not-text; a removed link: file-mode; nothing written"
       (in-order (refused-run st5b wt5b c5b-0 c5b-add "t5b") (refused-run st5b wt5b c5b-0 c5b-rmbin "t5b")
-                (refused-run st5b wt5b c5b-0 c5b-rmlink "t5b"))
-      (list (list '(not-text (path "new.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1)
+                (refused-run st5b wt5b c5b-0 c5b-totext "t5b") (refused-run st5b wt5b c5b-0 c5b-rmlink "t5b"))
+      (list (list '(not-text (path "new.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1)
             (list '(file-mode (path "l.sc") (from "120000") (to none)) #t 1)))
 
 ;; ---- IG-6: premises ------------------------------------------------------------------
@@ -630,6 +631,16 @@
       (list '(stopped 15 3 #t) (list '("done") 0)
             '(done-without-tag (blocks (kept 0) (set 0) (inserted 0) (deleted 0) (moved 0)) 1)
             converged-ok '(() () () ()) 1))
+
+;; DONE WITHOUT TAG NEEDS THE EXPORT AT <to>: a block's src edited after the
+;; stop, the rerun is base-mismatch and writes nothing
+(define v7l (variant! "s7l" 15))
+(checked "edit after the stop" (ask (v-st v7l) 'set (car (kids (v-st v7l) "m.sc")) "src" "(define x 2)\n"))
+(define p7l (position (v-st v7l)))
+(define cut7l (applied-cut (v-st v7l)))
+(want "IG-7 a done block, its tag unbound, but the export no longer <to>: base-mismatch naming the path, nothing written, no tag"
+      (in-order (v-stop v7l) (refused-run (v-st v7l) wt7 c7-0 c7-1 "t7") (equal? (position (v-st v7l)) p7l) (tag-count (v-st v7l) "t7"))
+      (list '(stopped 15 3 #t) (list (list 'base-mismatch (list 'store-cut cut7l) (list 'rev c7-0) '(differing "d.sc" "m.sc" "n.sc")) #t 1) #t 0))
 
 (define v7g (variant! "s7g" 0))
 (want "IG-7 a pending import block of another range: pending-import naming it, nothing written"
