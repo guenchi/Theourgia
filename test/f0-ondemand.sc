@@ -168,8 +168,8 @@
 ;; one this row is the wrong instrument for.
 ;;
 ;; THE RIGHT INSTRUMENT IS RELATIVE, and it is queued rather than built here:
-;; startup-ratio.sc measures two arms in ONE run -- the command line against the tree
-;; before the heavy imports -- and asserts a ratio, not milliseconds. An
+;; one that measures two arms in ONE run -- as planned, the command line against
+;; the tree before the heavy imports -- and asserts a ratio, not milliseconds. An
 ;; absolute constant on a development machine that other work perturbs will
 ;; drift for ever, and a row that flickers is not a row: when it goes red
 ;; nobody believes it.
@@ -214,8 +214,8 @@
 ;;
 ;; The 6c5c881 tree reads its recorded 491 today, so the ~30 ms between it
 ;; and 1f7f9d9 came in with the batches between the two (the program split onwards),
-;; not from this machine; startup-ratio.sc's first row takes this reading.
-;; The relative instrument, startup-ratio.sc, came after the door. Moved by the
+;; not from this machine. The relative instrument, startup-ratio.sc, came after
+;; the door. Moved by the
 ;; main session (ruling F, 2026-09-25), the only way this budget may move.
 ;;
 ;; ---- moved again, from 590 to 636, for the facts an editor supplies ---------

@@ -321,7 +321,7 @@
           (find (lambda (l) (starts-with? l "cleanup ")) ls))
         "cleanup unknown")
   ;; AND THE RESULT SAYS WHY. A note names what the census lacked.
-  (want "LS-12 the empty census's result carries a note saying ps exited 0 without W in its table"
+  (want "NOTE-1 the empty census's result carries a note saying ps exited 0 without W in its table"
         (let ((ls (lines-of (slurp (string-append d "/result2")))))
           (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
                                       (contains? l "ps exited 0 but its table did not show")))
@@ -343,7 +343,7 @@
     (want "CONTROL NOTE a census whose ps exits 3 is unknown"
           (find (lambda (l) (starts-with? l "cleanup ")) ls)
           "cleanup unknown")
-    (want "NOTE-1 its result carries a note with ps's exit code and its stderr line"
+    (want "NOTE-2 its result carries a note with ps's exit code and its stderr line"
           (filter (lambda (l) (starts-with? l "note census unknown: ")) ls)
           '("note census unknown: ps exited 3; ps stderr tail: ps: probe shim refused"))))
 (let* ((d (case!))
@@ -361,7 +361,7 @@
                     (find (lambda (l) (starts-with? l "cleanup ")) ls))
                   (< elapsed 60000))
             '("cleanup unknown" #t))
-      (want "LS-13 the hung census's result carries a note saying ps did not finish before the deadline"
+      (want "NOTE-3 the hung census's result carries a note saying ps did not finish before the deadline"
             (let ((ls (lines-of (slurp (string-append d "/result")))))
               (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
                                           (contains? l "ps did not finish before the deadline")))
@@ -391,14 +391,14 @@
   (sh "chmod +x " shim "/ps")
   (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
       d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
-  (want "NOTE-2 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
+  (want "NOTE-4 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
         (let ((ls (lines-of (slurp (string-append d "/result")))))
           (list (find (lambda (l) (starts-with? l "cleanup ")) ls)
                 (filter (lambda (l) (starts-with? l "note census")) ls)))
         '("cleanup clean" ()))
   ;; NEVER: THE FILE IS REMOVED. One is made per census, beside --result; a
   ;; launch makes several, and none may be left in the directory.
-  (want "NOTE-3 no census stderr file is left beside the result"
+  (want "NOTE-5 no census stderr file is left beside the result"
         (let ((f (string-append d "/ls.txt")))
           (sh "ls " d " > " f)
           (filter (lambda (l) (let ((k (string-length "result.census-")))

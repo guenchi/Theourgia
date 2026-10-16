@@ -1165,7 +1165,7 @@
         ;; runner while `wait` holds the run open (it wrote `started`), so the
         ;; line names wait and the signal's number. Without it SIGNALLED alone
         ;; did not say which launch was cut.
-        (want "RS-15 the signalled run names the launch the signal cut: ABORTED AT wait: signal 15"
+        (want "SIGNAL-1 the signalled run names the launch the signal cut: ABORTED AT wait: signal 15"
               (and (line-with c "ABORTED AT wait: signal 15") #t)
               #t)
         (when (and r (starts-with? (car r) (string-append (cadr c) "/run-"))) (sh "rm -rf " (car r)))
