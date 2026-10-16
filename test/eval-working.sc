@@ -41,7 +41,7 @@
 
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -355,7 +355,7 @@
 ;; ---- what is NOT covered here ------------------------------------------------
 ;;
 ;; NEVER: `W11-export-working` AND `W11-cut-plus-working` BELONG TO VERBS THIS
-;; FIXTURE DOES NOT DRIVE. They are in `test/export-working.sc` (F17), which
+;; FIXTURE DOES NOT DRIVE. They are in `test/export-working.sc`, which
 ;; drives `export-md --working` and `export-code --working`. `eval --cut`
 ;; combined with a view beyond the row above is still not covered, and the
 ;; export verbs take no `--cut`: named here so the absence is a decision on

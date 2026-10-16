@@ -60,7 +60,7 @@
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -75,7 +75,7 @@
 (define sock-here (string-append socket-base "/detach-" pid-text))
 (define store (string-append here "/store"))
 (define cli "../core.sc")
-;; The daemon program since F46: `serve` is its verb and no other program's.
+;; The daemon program: `serve` is its verb and no other program's.
 (define daemon "../theourgiad.sc")
 
 (define (env-prefix extra)
@@ -317,7 +317,7 @@
 ;; daemon program gives on its OTHER refusal: a first word that is not
 ;; `serve` answers (error bad-request (reason not-a-daemon-verb) (usage ...)).
 ;; Two paths at run time, each emitting the usage, and nothing read out of
-;; the source (F68).
+;; the source.
 ;;
 ;; NEVER: THE FIRST VERSION OF THIS ROW WAS TITLED "is serve's own form" AND
 ;; DID NOT COMPARE IT. It checked that the clause's head was `serve` and that

@@ -196,7 +196,7 @@
 (want "D1-05 the facade list is the seven this tree declares"
       facade-names '(digest wire ffi sched net proc json))
 
-;; KEY: ONE DEFINITION IN sched, BY NAME (F100a, ruling A2). Measured rather
+;; KEY: ONE DEFINITION IN sched, BY NAME (ruling A2). Measured rather
 ;; than asserted in prose: the file is read as data and every `define` in
 ;; it counted. Its own start-scheduler exists because Chez runs a
 ;; library's body only when a variable the library defines is referenced:
@@ -246,7 +246,7 @@
     conn-on-close! proc-spawn! proc-write! proc-kill! proc-close! proc-stdin-close!
     proc-read-start! proc-read-stop! sha256 bytevector->hex))
 
-;; ONE STATED EXCEPTION (F100a, ruling A2): sched's own start-scheduler,
+;; ONE STATED EXCEPTION (ruling A2): sched's own start-scheduler,
 ;; which D1-05 pins and whose body its TWIN reads. It is not a copy of
 ;; igropyr's: it forwards to it by its renamed import.
 (define (allowed-shadow? facade n)

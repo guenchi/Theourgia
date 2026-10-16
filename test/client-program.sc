@@ -44,7 +44,7 @@
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -401,7 +401,7 @@
 ;; that something had. The local path has always answered `no-store`.
 (want "P-8 a store that does not exist is named as that"
       (let ((r (client "" (string-append "outline --store " here "/no-such-store --wire"))))
-        ;; Relayed as serve-start-failed with the report's kind (F100b item 6).
+        ;; Relayed as serve-start-failed with the report's kind.
         (if (contains? (out-of r) "(kind store-not-found)") 'named
             (list 'said (out-of r))))
       'named)
@@ -1278,7 +1278,7 @@
               (closure-from 'client))
       '())
 
-;; (theourgia answers) is in it since F100b item 6: the client's own
+;; (theourgia answers) is in it: the client's own
 ;; failures are answered by the table (classify-failure).
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
@@ -1293,7 +1293,7 @@
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
 ;; `answers` is allowed for a reason also written there: the program turns
-;; a filesystem failure into the one table answer (F100b point 4).
+;; a filesystem failure into the one table answer.
 ;; `extensions` is allowed for the reason written there too: the program asks
 ;; the parser, with the registered verbs' tables, whether a call asks for help
 ;; (the registered verbs' tables), and that library is data.

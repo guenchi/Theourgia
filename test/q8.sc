@@ -6,7 +6,7 @@
   (unless value (set! failures (+ failures 1)))
   (display (if value "PASS " "FAIL ")) (display name) (newline))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -136,7 +136,7 @@
 (with-store-write d (lambda (state view) (set! observed (state-hash state)) '()) "review")
 (check 'write-load-agrees-with-read (equal? observed (state-hash reopened)))
 
-;; F3: item completion is a request decision, never mere record presence.
+;; Completion: item completion is a request decision, never mere record presence.
 (define bid "batch-one")
 (define bfp "fingerprint")
 (define (ba id sub pe cursor who fingerprint)

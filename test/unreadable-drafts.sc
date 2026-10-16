@@ -21,7 +21,7 @@
 ;; no-draft. And with draft.lock at 000, a commit whose records had landed
 ;; answered working-unavailable -- a durable commit reported as a failure.
 ;;
-;; The rules (F77 R1a, working drafts and post-commit cleanup): the read
+;; The rules (R1a, working drafts and post-commit cleanup): the read
 ;; failure is recorded and handed to preflight, so a replay is still
 ;; recognised first; an explicit-id commit with no request asks for that
 ;; failure before it answers no-draft; and the cleanup after a commit keeps
@@ -52,7 +52,7 @@
             (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
 ;; THE SCRATCH ROOT FOLLOWS THEOURGIA_TEST_ROOT, and a directory already
-;; there is refused rather than reused (F71).
+;; there is refused rather than reused.
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                    (if (and (string? v) (> (string-length v) 0)) v "/tmp"))
@@ -200,7 +200,7 @@
           '(ok #t))))
 
 ;; ---- review round 2: restore, discard, and a tracked commit that landed ----
-;; ADDED BY THE CODE SESSION (F77b review 2, the main session's request).
+;; ADDED BY THE CODE SESSION (found in review; the main session's request).
 (define (lookup-any name)
   (let loop ((libs '((theourgia store) (theourgia reduce) (theourgia log) (theourgia wire) (theourgia request))))
     (cond ((null? libs) #f)

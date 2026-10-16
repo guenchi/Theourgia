@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; ADMISSION'S JUDGEMENT, INDEXED, AGAINST THE ONE IT REPLACED (F269 A1).
+;; ADMISSION'S JUDGEMENT, INDEXED, AGAINST THE ONE IT REPLACED (A1).
 ;;
 ;; request.sc judges a request's records with its lookups indexed -- the
 ;; statuses and the bindings by event, a slot by index, a predecessor by
@@ -33,7 +33,7 @@
 ;; single slot, a plan whose declaration is not its actor's, a member with no
 ;; predecessor, an item whose "#%new" names an index not yet applied, and an
 ;; index the plan does not declare; and the edges a judgement of one
-;; arrival must follow rather than re-judging the bucket (F269 A2): a binding
+;; arrival must follow rather than re-judging the bucket (A2): a binding
 ;; withdrawn at k after a later index bound through it, a binding established
 ;; at k after its consumer was delivered (through an index and through
 ;; single), a late plan, index 0 arriving after 1 and 2, one record waking two

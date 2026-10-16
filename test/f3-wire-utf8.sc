@@ -49,7 +49,7 @@
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -170,7 +170,8 @@
 ;; NEVER: THE WHOLE RECORD, NOT THE PAYLOAD. An implementation that changed
 ;; the escaping and updated the CRC to match would still decode to the
 ;; same datum -- only the bytes catch it. NOTE: The cross-core comparison
-;; (this tree against the core before F3, same payload) is in NOTES; what
+;; (this tree against the core from before answers carried the
+;; characters themselves, same payload) is in NOTES; what
 ;; this row guards is that the stored form stays what it is.
 ;; NOTE: FOUND, NOT GUESSED. A segment lives at
 ;; `<store>/writers/<writer>/000001.sexp`, and an earlier version of this

@@ -346,8 +346,8 @@
                              (list (list 'body (car k)))))))))
              have)))))
 
-;; `conservative` SINCE F100a: a handler that chooses the branch a ruling
-;; names as the safe one (the R2g skip, F77b: log.sc's present-or-unreadable-skip?), stated per pin.
+;; `conservative` SINCE THE DOOR: a handler that chooses the branch a ruling
+;; names as the safe one (the R2g skip: log.sc's present-or-unreadable-skip?), stated per pin.
 (define categories '(propagate fact refuse unrelated conservative))
 (define (pin-shape-problems pin)
   (append
@@ -475,7 +475,7 @@
 (want "U11-iii the raw accessors appear only in the record and in their wrappers"
       (raw-diff symbols (map car pinned-wrappers) (allowed-raw-places)) '())
 
-;; ---- the door (F100 D1) ------------------------------------------------
+;; ---- the door ----------------------------------------------------------
 ;;
 ;; KEY: EVERY FILESYSTEM ACCESS GOES THROUGH ffi.sc. This walks the same
 ;; production files as the three rows above, keeps the `.sc` ones other
@@ -530,7 +530,7 @@
       (list '(("platform-numbers.sc" (linux-libc) call-with-input-file))
             '((call-with-input-file "/proc/self/maps" get-string-all))))
 
-;; ---- the close census (F100a, ruling H1) --------------------------------
+;; ---- the close census (ruling H1) ---------------------------------------
 ;;
 ;; KEY: EVERY CLOSE IN ffi.sc IS ACCOUNTED FOR. Review round 2 found a close
 ;; on the normal path swallowed in the one place round 1's fixes did not
@@ -564,7 +564,7 @@
 ;; A site with no pin, or a pin with no site, is red; the counts are equal.
 ;; The census counts occurrences, not behaviour: a close whose normal-path
 ;; check is dropped keeps its site. The close-fail rows of facade-ffi are
-;; the behaviour reading (F100a review r3, ruling I).
+;; the behaviour reading (found in review; ruling I).
 (define close-callees
   '(c-close c-closedir close-quietly current-lock-release close-port fd-close
     close-input-port close-output-port
@@ -818,7 +818,7 @@
 
 ;; A PINNED OCCURRENCE COUNTED TWICE. ensure-machine-home! asks
 ;; file-is-directory? of the machine home once; the copy asks it twice in the
-;; same definition. (It was open-load's file-exists? of meta.sexp until F100a
+;; same definition. (It was open-load's file-exists? of meta.sexp until the door
 ;; moved every presence test through the door and left log.sc none.)
 (define-values (p10 h10 s10)
   (scan-tree files (with-log-text

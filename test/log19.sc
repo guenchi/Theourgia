@@ -542,11 +542,11 @@
       (list 3 '()))
 ;; THE ORIGIN AND THE NOTE, NOT THE END. An unreadable writer has no end:
 ;; asking a discovery whose origin is `unreadable` for its end raises
-;; (F77, R2d), because an end of 0 is the reading of a writer that
+;; (R2d), because an end of 0 is the reading of a writer that
 ;; published nothing -- the very answer an unreadable directory used to
 ;; get. So this row reads what is known of it. The permission is restored
 ;; on the way out whatever happens, so the row after it starts readable.
-;; THESE LOADS DECLARE (F77c, plan amendment A1): they open a store with
+;; THESE LOADS DECLARE (a plan amendment): they open a store with
 ;; a writer they cannot read on purpose, to read what the load says of it;
 ;; undeclared, the open would now be refused before it could say anything.
 (define (open-and-report-origin)
@@ -585,7 +585,7 @@
 ;; not open cannot be flushed, cannot be compared against the versions
 ;; the session remembers, and cannot be promised durable -- so the append
 ;; is refused before anything is reserved, and the log does not grow.
-;; The session declares for the same reason (F77c, A1): the row reads how a
+;; The session declares for the same reason (the same amendment): the row reads how a
 ;; session refuses a writer it cannot read, which an undeclared session would
 ;; not reach.
 (define (append-once)
@@ -609,7 +609,7 @@
 ;; A NEW SESSION CANNOT TELL ITS OWN WRITER FROM ONE IT CANNOT READ. With
 ;; its only local writer's metadata unreadable, this store has no readable
 ;; local writer and one it cannot read, which may be its own: the session
-;; gets no view, and the reason it gives is writer-unreadable (F77, R4 as
+;; gets no view, and the reason it gives is writer-unreadable (R4 as
 ;; ruled in K9). It used to be refused only at the append, as
 ;; metadata-unreadable; the append is no longer reached.
 (want "with its own metadata unreadable the session is refused, and nothing is written"

@@ -43,7 +43,7 @@
 
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -130,7 +130,7 @@
                      (else (scan (+ j 1) depth)))))
             (else (loop (+ i 1)))))))
 
-;; NEVER: A RED ROW CARRIES THE ANSWER IT JUDGED (F76). Each row below
+;; NEVER: A RED ROW CARRIES THE ANSWER IT JUDGED. Each row below
 ;; evaluates once, binds what came back, and on red prints it whole. These
 ;; rows printed two booleans, and the three rows further down evaluated a
 ;; SECOND time to say what went wrong -- so a red showed #f, or an answer
@@ -303,7 +303,7 @@
       '(unknown-verb alike))
 
 
-;; NEVER: TWO READINGS, NOT ONE (F66). A worker that never said ready answers
+;; NEVER: TWO READINGS, NOT ONE. A worker that never said ready answers
 ;; (error eval-worker-unavailable (reason no-ready)), and that is a different
 ;; fact from an answer that came back without naming its limit. Both used to
 ;; read UNNAMED, so a red row could not say which had happened.
@@ -542,7 +542,7 @@
           (list 'said outline-lines))
       'two-nodes)
 
-;; F76: THE ANSWER THE CUT WAS READ FROM IS KEPT, so the setup row's red can
+;; THE ANSWER THE CUT WAS READ FROM IS KEPT, so the setup row's red can
 ;; print it whole rather than the #f the projection gives.
 (define old-cut-answer (evaluate "(store-cut)"))
 
@@ -573,7 +573,7 @@
         (if (contains? out "(values (42))") 'sees-the-old (list 'said out)))
       'sees-the-old)
 
-;; ---- F100b M1: eval's answers at the translation points ---------------------
+;; ---- eval's answers at the translation points --------------------------------
 ;;
 ;; Brief rows PRE-1/P5, P3-b, P3-c, P3-d (AG-b-1), AG-b-2 and eval's F row. Each
 ;; on a fresh store of its own under `here`; stdout read as ONE datum, stderr
@@ -679,7 +679,7 @@
   (and (pair? answer) (list? answer)
        (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr answer))))
 
-;; P3-e (F100b M1 review r1, F5): the boot's own translation. With
+;; P3-e (found in review): the boot's own translation. With
 ;; --latest, eval-cut reads nothing and eval-view opens the store inside
 ;; the scheduler, so a meta.sexp that cannot be read raises into the
 ;; boot's guard -- the table's unreadable, the boot's record empty.
@@ -692,7 +692,7 @@
     (want "P3-e eval --working --latest with meta.sexp at 000: the boot answers the table's unreadable, rc 1"
           r (list 1 (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))))))
 
-;; P3-f and P3-g (F100b M1 review r1, F6): working.sc `problem`'s first two
+;; P3-f and P3-g (found in review): working.sc `problem`'s first two
 ;; branches with a record that is not empty. P3-f: a writer with no
 ;; working/ and a draft.lock at 000 -- working/ is made, then the lock
 ;; cannot be opened (the unreadable-entry branch). P3-g: a draft whose
@@ -745,7 +745,7 @@
                             (list 'written (list (list 'create (string-append wd "/draft.lock"))))
                             '(during cut)))))))
 
-;; P3-h and P3-i (F100b M1 review r1, F7): eval-cut's other refusals are
+;; P3-h and P3-i (found in review): eval-cut's other refusals are
 ;; the answer too, not only working-unavailable: no --writer, and a
 ;; writer id that is not well formed.
 (let ((s (m1-store!)))
@@ -762,7 +762,7 @@
         (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" "BAD" "--store" s "(+ 1 2)"))
         '(1 (error bad-request invalid-working-writer (during cut))))
   ;; The same two refusals met by eval-view (--latest reads no cut), so a
-  ;; view that dropped them would show (F100b M1 review r2, F2).
+  ;; view that dropped them would show (found in review).
   (want "P3-h-view eval --working --latest with no --writer and THEOURGIA_WRITER cleared: writer-required is the answer, (during view), rc 1"
         (m1-run "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=" "../core.sc" (list "eval" "--working" "--latest" "--store" s "(+ 1 2)"))
         '(1 (error writer-required (during view))))
@@ -770,14 +770,14 @@
         (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" "BAD" "--store" s "(+ 1 2)"))
         '(1 (error bad-request invalid-working-writer (during view)))))
 
-;; F: a success carries neither written nor client-written (F100b M1 review
-;; r2, F3). Each on a FRESH writer (review r2, F4): its cut or view makes
+;; F: a success carries neither written nor client-written (found in
+;; review). Each on a FRESH writer (found in review): its cut or view makes
 ;; working/ and draft.lock, so the record is not empty -- the case where a
 ;; success that wrongly reported its record would show.
 (define (success-reading r)
   (list (car r) (and (pair? (cadr r)) (car (cadr r)))
         (and (or (clause-of (cadr r) 'written) (clause-of (cadr r) 'client-written)) #t)))
-;; F on the ordinary eval route, no --working (F100b M1 review r4, F1): the
+;; F on the ordinary eval route, no --working (found in review): the
 ;; route PRE-1/P5 refuses on, through core.sc and through the thin client.
 (let ((s (m1-store!)))
   (want "F eval (no --working) through core.sc local: ok, rc 0, and no record clause"

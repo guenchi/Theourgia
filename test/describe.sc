@@ -52,7 +52,7 @@
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -420,7 +420,7 @@
                           (cons (list (car (car es)) (entry-field (car es) 'route)) bad)))))
       '())
 
-;; THE STREAM ROUTE (F10-14). `subscribe` keeps its connection open, so it is
+;; THE STREAM ROUTE. `subscribe` keeps its connection open, so it is
 ;; carried out by a client that streams: the route is `stream`, which the
 ;; shell does not offer and the thin client names in a list of its own.
 (want "DS-6s subscribe is in the catalogue, routed stream"

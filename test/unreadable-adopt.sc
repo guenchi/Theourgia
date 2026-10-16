@@ -60,7 +60,7 @@
 (define unreadable-entry-path (lookup 'unreadable-entry-path))
 
 ;; THE SCRATCH ROOT FOLLOWS THEOURGIA_TEST_ROOT, and a directory already
-;; there is refused rather than reused (F71).
+;; there is refused rather than reused.
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                    (if (and (string? v) (> (string-length v) 0)) v "/tmp"))
@@ -478,7 +478,7 @@
           '(refused ()))))
 
 ;; ---- the whole-store inventory: a mirror's files are read too -------------
-;; ADDED BY THE CODE SESSION (F77b review 1, the main session's ruling): adopt
+;; ADDED BY THE CODE SESSION (found in review; the main session's ruling): adopt
 ;; reads every writer's owner, uncertainty and retirement files before its
 ;; first write, a mirror's included, and refuses naming one it cannot read.
 (printf "== the inventory: a mirror's unreadable file refuses adopt ==\n")
@@ -510,7 +510,7 @@
   '("owner.sexp" "uncertain.sexp" "retired.sexp"))
 
 ;; ---- review round 2: the continuation's inventory with no instance ---------
-;; ADDED BY THE CODE SESSION (F77b review 2, the main session's request): the
+;; ADDED BY THE CODE SESSION (found in review; the main session's request): the
 ;; inventory runs even when instance.sexp is absent, so a legacy registry is
 ;; not upgraded before the refusal.
 (printf "== review 2: the continuation reads first, with instance.sexp absent ==\n")

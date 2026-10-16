@@ -12,8 +12,8 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; What the user's source raises is data, never the answer's shape (F92,
-;; F93). An eval answer is (ok ...) or an (error <name> ...) of the worker's
+;; What the user's source raises is data, never the answer's shape.
+;; An eval answer is (ok ...) or an (error <name> ...) of the worker's
 ;; or the supervisor's; a raised value travels inside
 ;; (error eval-exception (kind raised) ...) as (value <v>) when it can be
 ;; written back, else as (reason unwritable-value) (type <t>). The worker's
@@ -118,8 +118,8 @@
         (list (rc-of r) (head2 (answer-of r)) (field (answer-of r) 'kind) (field (answer-of r) 'message)))
       '(1 (error eval-exception) raised "Evaluation raised an exception"))
 ;; A MALFORMED SOURCE RAISES NOTHING, IT IS REFUSED. The reader the worker
-;; calls raises its refusal as a list headed error; F92's first cut wrapped
-;; that as a raised value (measured on that cut, by hand, after the first F92
+;; calls raises its refusal as a list headed error; an earlier cut wrapped
+;; that as a raised value (measured on that cut, by hand, after its first
 ;; suite: `(` answered (error eval-exception (kind raised) (value (error
 ;; bad-source ...)))).
 ;; The source and the cut are both read by the worker before evaluation;
@@ -137,10 +137,10 @@
         (list (rc-of r) (and (pair? (answer-of r)) (car (answer-of r))) (field (answer-of r) 'values)))
       '(0 ok (3)))
 
-;; WHAT THE WORKER'S OWN STEPS RAISE IS NOT THE SOURCE'S VALUE (F92 review
-;; r1, S). The store's load raises `log-error`, a record, for a meta.sexp it
+;; WHAT THE WORKER'S OWN STEPS RAISE IS NOT THE SOURCE'S VALUE (found in
+;; review, S). The store's load raises `log-error`, a record, for a meta.sexp it
 ;; cannot parse; on 86db404 the worker answered that with the fixed message,
-;; and F92's r1 passed it to raised-answer, which reported a record the
+;; and a reviewed revision passed it to raised-answer, which reported a record the
 ;; source never raised: (reason unwritable-value) (type unsupported). The
 ;; meta file is put back after the row, so the rows above are unaffected.
 (let* ((meta (string-append store "/meta.sexp"))

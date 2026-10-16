@@ -25,9 +25,9 @@
         ;; child that nothing waits for -- the only way this fixture can
         ;; produce one, measured.
         (only (theourgia ffi) spawn-detached! reap-children!)
-        ;; F10-14: the catalogue itself, to say the stream verb is in it.
+        ;; The catalogue itself, to say the stream verb is in it.
         (only (theourgia rpc) rpc-dispatch)
-        ;; F100b M3a's P7 rows: the key directory the client derives.
+        ;; The P7 rows: the key directory the client derives.
         (only (theourgia client) socket-path store-key)
         ;; The shell's own option table, probed as data.
         (only (theourgia arguments) parse-arguments))
@@ -60,7 +60,7 @@
 
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -192,7 +192,7 @@
           (else (loop (json-ref* v (car ks)) (cdr ks))))))
 
 (define (code-of line) (field line "error" "code"))
-;; isError AS WRITTEN, or `absent` (F100b M3a review r1, F1): `field` answers #f
+;; isError AS WRITTEN, or `absent` (found in review): `field` answers #f
 ;; both for `"isError":false` and for no isError at all, so a row expecting
 ;; false would pass a result that dropped the member.
 (define (is-error-of line)
@@ -430,7 +430,8 @@
     ;; agree about something wrong -- they share a dispatcher. The
     ;; expectation here comes from outside both: it is what the argument
     ;; is, spelled the way the core spells it back.
-    ;; NOTE: THE SPELLING CHANGED WITH F3, AND THIS ROW IS THE RECORD OF IT.
+    ;; NOTE: THE SPELLING CHANGED WHEN ANSWERS BEGAN TO CARRY NON-ASCII
+    ;; CHARACTERS THEMSELVES, AND THIS ROW IS THE RECORD OF IT.
     ;; It used to expect `\x6C49;\x5B57;\x1F600;`, because that is how the
     ;; core spelled a non-ASCII character back. Answers now carry the
     ;; characters themselves -- so this expectation is, more directly
@@ -475,7 +476,7 @@
 
 ;; ---- MC-05s the stream verb is in the catalogue and is not a tool ------------
 ;;
-;; ONE ASSERTION, TWO HALVES (F10-14): the shell lists only verbs routed
+;; ONE ASSERTION, TWO HALVES: the shell lists only verbs routed
 ;; daemon or child, and `subscribe` is routed stream. "No subscribe tool"
 ;; alone is green on a tree without the verb at all; with the entry in the
 ;; catalogue it says the shell filters it.
@@ -544,7 +545,7 @@
     ;; NOTE: IT IS `tools/list` THAT SHOWS THIS, not a tool call: the shell
     ;; asks the server for its catalogue before it can turn a tool name
     ;; into a verb, so a server that will not start is met at that step.
-    ;; F100b M3a (L): the shape is item 8's ERROR -32000 "core did not
+    ;; The shape is the shell's ERROR -32000 "core did not
     ;; start", and the server's own reason is the refusal object's kind.
     (want "MC-07 a server that would not start is reported in its own words"
           (let* ((out (talk (list hello ready
@@ -1004,7 +1005,7 @@
   ;; NEVER: AND IT SAYS THE TOOL DID NOT RUN. "Something went wrong" leaves
   ;; the caller to decide whether to try again, which is the one thing it
   ;; must not have to guess about.
-  ;; F100b M3a (L): the shape is item 8's tools/call RESULT with isError, and
+  ;; The shape is the shell's tools/call RESULT with isError, and
   ;; "it did not run" is its refusal: a start that failed, in the datum.
   (want "MC-09 and it says the request was not carried out: a RESULT with isError whose refusal is a failed start"
         (list (field reply "result" "isError")
@@ -1019,7 +1020,7 @@
                            "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}")
                      (string-append here "/store") badsock))
          (lmessage (field (cadr lout) "error" "message")))
-    ;; F100b M3a (L): tools/list's ERROR -32000 names the same kind as the
+    ;; tools/list's ERROR -32000 names the same kind as the
     ;; tool call's refusal, so the two still say the same thing.
     (want "MC-09 TWIN: tools/list fails the same way for the same reason"
           (list (if (contains? (cadr lout) "\"id\":42") 'echoed (list 'said (cadr lout)))
@@ -1089,7 +1090,7 @@
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    ;; F100b M3a (L): the daemon's refusal is item 8's tools/call RESULT with
+    ;; The daemon's refusal is the shell's tools/call RESULT with
     ;; isError, and origin transport says who refused. It is never a result
     ;; the tool gave: isError is true and the refusal is the daemon's.
     (want "MC-10 a daemon that declined to carry the request is a RESULT with isError, its refusal the daemon's (origin transport)"
@@ -1105,11 +1106,11 @@
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    ;; isError false TOO (F100b M3a): the daemon's refusal is now a RESULT
+    ;; isError false TOO: the daemon's refusal is now a RESULT
     ;; as well, so "not a JSON-RPC error" no longer tells the two apart.
     (want "MC-10 TWIN: a core refusal is still a successful tool call (isError false)"
           (list (if (field reply "error" "message") 'AN-ERROR 'a-result)
-                ;; IN THE RESULT'S TEXT (M3a review r2, F2), not anywhere in
+                ;; IN THE RESULT'S TEXT (found in review), not anywhere in
                 ;; the frame: a reply with no content could carry the words in
                 ;; another member.
                 (let ((t (text-of reply))) (if (and (string? t) (contains? t "unknown-id")) 'carries-the-refusal (list 'said reply)))
@@ -1239,13 +1240,13 @@
             'treated-as-a-notification))
       'treated-as-a-notification)
 
-;; ---- F100b M3a: P7, the shell's refusals (item 8, point 7) -------------------
+;; ---- P7, the shell's refusals ------------------------------------------------
 ;;
 ;; Brief v7's P7 rows, WITHOUT the transport-refusal row, which is dropped as
 ;; unreachable (ruling, brief :876-881): H6 measures `origin` from a
 ;; constructed refusal. Each store lives under this run's directory, so the
 ;; teardown below takes down any daemon a row started.
-(printf "== F100b M3a: P7 ==\n")
+(printf "== P7: the shell's refusals ==\n")
 (putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
 (system (string-append "mkdir -p " sock-here "/run"))
 (define p7-n 0)
@@ -1425,14 +1426,14 @@
         (list (log-lines log) (field line "error" "code") (field line "error" "data" "kind") (field line "error" "data" "path"))
         (list 1 -32000 "describe-refused" "/x")))
 
-;; ---- F100b M3b: F for the shell (F110, point 7) -----------------------------
+;; ---- F for the shell: no record on success -----------------------------------
 ;;
 ;; On success inputs the shell's answers carry no record: no written, no
 ;; client-written, and no _meta -- in the JSON text (the keys, quoted), and in
 ;; the parsed result object, which has no _meta member and no isError set
 ;; true (ruling Q-M3b-2), so a shell that moved a refusal out of the text into
 ;; a member cannot pass.
-;; THE WHOLE PARSED RESULT IS WALKED (M3b review r2, F1): member names are
+;; THE WHOLE PARSED RESULT IS WALKED (found in review): member names are
 ;; compared AFTER the parser has decoded them, so an escaped spelling such as
 ;; "\u0077ritten" is the name it spells, at any depth. The substring
 ;; checks stay as a second, textual reading.
@@ -1453,10 +1454,10 @@
          (pair? r)
          (not (record-member-anywhere? r))
          (not (eq? #t (and (assoc "isError" r) (cdr (assoc "isError" r))))))))
-;; AND IN THE ANSWER ITSELF (M3b review r1, F1): a tool result's text is the
+;; AND IN THE ANSWER ITSELF (found in review): a tool result's text is the
 ;; core's Scheme answer, and a record there is a clause of that datum, not a
 ;; JSON key.
-;; EVERY content item's text is decoded (M3b review r2, F2), not only the
+;; EVERY content item's text is decoded (found in review), not only the
 ;; first, and none may carry a written or client-written clause.
 (define (text-carries-record? line)
   (let ((content (field line "result" "content")))

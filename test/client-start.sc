@@ -57,7 +57,7 @@
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -223,7 +223,7 @@
 (system (string-append "echo not-a-socket > " blocked))
 
 (want "CS-3 a socket path held by a file is reported in the daemon's own words"
-      ;; F100b item 6: relayed as serve-start-failed whose kind is the
+      ;; Relayed as serve-start-failed whose kind is the
       ;; report's, the report's clauses verbatim (main's record, the attempt
       ;; token this start passed -- read here as its shape), then the exit.
       (let ((a (ensure-daemon! (argv-for blocked) store blocked)))
@@ -544,7 +544,7 @@
               (closure-from 'client))
       '())
 
-;; (theourgia answers) is in it since F100b item 6: the client's own
+;; (theourgia answers) is in it: the client's own
 ;; failures are answered by the table (classify-failure).
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
@@ -559,7 +559,7 @@
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
 ;; `answers` is allowed for a reason also written there: the program turns
-;; a filesystem failure into the one table answer (F100b point 4).
+;; a filesystem failure into the one table answer.
 ;; `extensions` is allowed for the reason written there too: the program asks
 ;; the parser, with the registered verbs' tables, whether a call asks for help
 ;; (the registered verbs' tables), and that library is data.

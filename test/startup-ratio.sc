@@ -12,13 +12,13 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; F54: THE RELATIVE STARTUP INSTRUMENT (design core/briefs/f54-relative-
-;; startup-instrument.md, v14; task core/briefs/f54-task.md).
+;; THE RELATIVE STARTUP INSTRUMENT (its design, v14, and its task
+;; brief).
 ;;
-;; F0-2 compares the command line's start with an absolute budget in
+;; f0-ondemand.sc's start-up row compares the command line's start with an absolute budget in
 ;; milliseconds, and the same tree reads differently by the minute. This row
 ;; asserts a RATIO OF MINIMA instead: ten pairs, interleaved, of arm A (this
-;; tree's `core.sc no-such-verb --wire`, as F0-2) and arm B (a checked-in
+;; tree's `core.sc no-such-verb --wire`, as that row does) and arm B (a checked-in
 ;; reference program over a checked-in reference library of the same kind
 ;; of work, test/f54-reference-main.ss and test/f54-reference.sc), and
 ;; min(A) / min(B) <= K. The statistics are one pure function, f54-judge,
@@ -42,7 +42,7 @@
 ;; disk is not the recorded one, C1 answers `uncalibrated`, a FAIL: a changed
 ;; yardstick invalidates r0 (ruling Q8).
 ;;
-;; AMENDMENT A-F54-1 (main session, 2026-09-26, to design v14). The design
+;; THE LOAD AMENDMENT (main session, 2026-09-26, to design v14). The design
 ;; widened K by the residual C3 measures UNDER LOAD; with the first
 ;; calibration that K (3.660) sat above every reading of the heavy tree
 ;; (3.58-3.65), so C2 could never go red. But the design already answers
@@ -74,7 +74,7 @@
 ;; THE CELLS. C1 the row; C2 a heavy copy of the tree (core.sc's import form
 ;; gains (theourgia store) and (theourgia daemon)) reads a ratio over K; C3
 ;; the load this file makes is visible, and the ratio absorbs at least half
-;; of it (amendment A-F54-1); C4 the judge on fixed
+;; of it (the load amendment); C4 the judge on fixed
 ;; samples; C4b K recorded and its derivation; C5 the reference's imports,
 ;; size and md5; C5b both arms read source even when the inherited
 ;; environment would load a planted compiled object; C6 the order of the
@@ -208,7 +208,7 @@
                        (else 'red))))
     (list colour ratio (list min-a min-b) spreads plateaus)))
 (define (derive-k r0 e-quiet) (* r0 (+ 1 (max 3/20 (* 2 e-quiet)))))
-;; C3's two comparisons (amendment A-F54-1): the load is visible, and the
+;; C3's two comparisons (the load amendment): the load is visible, and the
 ;; ratio absorbs at least half of what the load does to arm A.
 (define (load-visible? ra) (>= ra 5/4))
 (define (load-absorbed? rr ra) (<= (abs (- rr 1)) (/ (- ra 1) 2)))
@@ -220,7 +220,7 @@
 ;; both arms: CHEZSCHEMELIBEXTS the suite's source extensions only, so a
 ;; compiled object beside a source is never loaded whatever the caller's
 ;; environment says (C5b). The order is A B on even pairs and B A on odd
-;; ones. THE TRACE IS WHAT HAPPENED, NOT WHAT WAS MEANT (F54 review r1):
+;; ones. THE TRACE IS WHAT HAPPENED, NOT WHAT WAS MEANT (found in review):
 ;; each start appends its arm's label to `started` at the moment it starts,
 ;; and the trace file (C6) is that list, so a launcher that swapped a pair's
 ;; starts writes the swapped order. Answers the two arms' samples in pair
@@ -255,7 +255,7 @@
 (define arm-b (cons test-dir (string-append test-dir "/f54-reference-main.ss")))
 (define reference-source (string-append test-dir "/f54-reference.sc"))
 (define reference-md5-now (md5-of reference-source))
-;; THE PROGRAM IS PINNED TOO (F54 review r2): C5 reads import forms, and a
+;; THE PROGRAM IS PINNED TOO (found in review): C5 reads import forms, and a
 ;; program that kept its import but loaded a tree file by path would reach a
 ;; tree library through arm B; its md5 in the record makes any change to it
 ;; `uncalibrated`, as a changed library does.
@@ -411,7 +411,7 @@
 (want "C4 the uncalibrated branch: no K or recorded B answers uncalibrated, never a colour"
       (colour-of (n-of 10 100) (n-of 10 100) (list (cons 'k #f) (cons 'b #f)))
       'uncalibrated)
-;; THE DENOMINATOR IS min(B), NOT THE RECORDED ONE (F54 review r1): B's
+;; THE DENOMINATOR IS min(B), NOT THE RECORDED ONE (found in review): B's
 ;; minimum 240 is inside the drift band around 253, and the quotient of the
 ;; minima 740/240 = 37/12 is over K; a denominator of 253 would read green.
 (want "C4 the quotient's denominator is this run's min(B) when it differs from the recorded b: 740/240, red"
@@ -462,7 +462,7 @@
 
 ;; ---- C4m: the judge against an independent model, on generated vectors -------
 ;;
-;; F54 review r1 and r2 each found judge rules that no fixed vector pinned (the
+;; Two reviews each found judge rules that no fixed vector pinned (the
 ;; denominator, the uncalibrated branch, arm B's noise edge; the precedence of
 ;; unreadable over red, the median's sort, arm B's retention). So the rules are
 ;; also checked the way scope-model.sc checks the scope rules: a SECOND judge,
@@ -527,7 +527,7 @@
 (define (model-choose xs) (list-ref xs (model-pick (length xs))))
 ;; BY INDEX: exactly the one drawn element leaves the list, so equal samples
 ;; all stay (an earlier version removed every equal value, and arms came out
-;; shorter than ten -- found by the paired-quotient mutant, F54 r3).
+;; shorter than ten -- found by the paired-quotient mutant in review).
 (define (model-shuffle xs)
   (let loop ((xs xs) (out '()))
     (if (null? xs)
@@ -557,7 +557,7 @@
 (define (upper-median-in-order xs) (list-ref xs (quotient (length xs) 2)))
 ;; THE COVERAGE READS NOTHING UNDER TEST: its median is the model's
 ;; (an insertion sort), not the judge's `upper-median`, so a judge mutation
-;; cannot blind the coverage row (F54 r3).
+;; cannot blind the coverage row (found in review).
 (define (model-upper-median xs)
   (let ((sorted (fold-left (lambda (acc x)
                              (let ins ((l acc))
@@ -580,7 +580,7 @@
             (set! model-disagreements (cons (list 'vector v 'judge got 'model expected) model-disagreements))))
         (model-note! decided)
         ;; MEMBER, NOT MEMQ: the outcomes are lists like (spread a), which eq?
-        ;; never matches (F54 review r3: the count read drift's alone).
+        ;; never matches (found in review: the count read drift's alone).
         (when (and (member decided '((spread a) (spread b) (plateau a) (plateau b) drift))
                    (cdr (assq 'k c)) (> (cadr expected) (cdr (assq 'k c))))
           (model-note! 'red-hidden-by-unreadable)
@@ -766,9 +766,9 @@
                  (else '())))
          forms)))
 ;; EVERY SOURCE EXTENSION THE LAUNCHER PERMITS, in its order, read from the
-;; same `source-exts` string (F54 review r1: a .sls library was reachable by
+;; same `source-exts` string (found in review: a .sls library was reachable by
 ;; arm B and invisible here).
-;; NEVER: PARSED BY CHEZ, NOT BY HAND (F178). This split the string on "::",
+;; NEVER: PARSED BY CHEZ, NOT BY HAND. This split the string on "::",
 ;; which is not what "::" means there -- it pairs a source extension with an
 ;; object one -- and the launcher's string was written to that same misreading.
 ;; The source extensions are the cars of what Chez makes of the string.

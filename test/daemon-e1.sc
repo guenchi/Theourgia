@@ -47,7 +47,7 @@
 
 (define pid-text (number->string (get-process-id)))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -181,7 +181,7 @@
 (define (start-tagged-daemon! suffix fault . barrier)
   (start-tagged-daemon-with! suffix fault (and (pair? barrier) (car barrier)) "" (lambda (st) st)))
 
-;; THE SAME START, WITH TWO MORE CHOICES (F268): ENV is more assignments for
+;; THE SAME START, WITH TWO MORE CHOICES: ENV is more assignments for
 ;; the daemon's environment, each followed by a space, and SPELL maps the
 ;; store directory to the name the daemon initialises and serves, making
 ;; whatever that name needs (a symlink to it, a directory below it). The
@@ -667,7 +667,7 @@
           ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ n 1)))
           (else (loop (+ i 1) n)))))
 
-;; ---- a daemon whose store directory is removed (F268) -----------------------
+;; ---- a daemon whose store directory is removed ------------------------------
 ;;
 ;; THE DECISION IS A PURE STEP, read here without a process or a clock: the
 ;; samples go in one at a time, and what comes back is whether each one sent
@@ -1174,11 +1174,11 @@
                 (list (if (= rc 75) 'exit-75 (list 'exit rc))
                       ;; The FIRST DATUM, not the first bytes: a startup report
                       ;; is framed by a leading newline and ends with its
-                      ;; attempt clause (F100b item 3).
+                      ;; attempt clause.
                       (let* ((text (file-text log2))
                              (port (open-string-input-port text))
                              (d (guard (e (#t #f)) (read port)))
-                             ;; ONE report (M2a review r1, F10): nothing after it.
+                             ;; ONE report (found in review): nothing after it.
                              (more (guard (e (#t #f)) (read port))))
                         (if (and (pair? d) (pair? (cdr d)) (eq? (cadr d) 'serve-busy) (eof-object? more))
                             'said-busy
@@ -1208,7 +1208,7 @@
                       (let* ((text (file-text log3))
                              (port (open-string-input-port text))
                              (d (guard (e (#t #f)) (read port)))
-                             ;; ONE report (M2a review r1, F10): nothing after it.
+                             ;; ONE report (found in review): nothing after it.
                              (more (guard (e (#t #f)) (read port))))
                         (if (and (pair? d) (pair? (cdr d)) (eq? (cadr d) 'serve-path-occupied) (eof-object? more))
                             'said-occupied
@@ -2499,7 +2499,7 @@
                             (list 'after-said (cadr after))))
                   '(served-before socket-was-left and-the-new-one-answers)))))
 
-      ;; ---- SG-1 an idle daemon whose store directory is removed (F268) ----
+      ;; ---- SG-1 an idle daemon whose store directory is removed -----------
       ;;
       ;; NEVER: A DAEMON NOBODY TALKS TO STILL NOTICES. Before the check, an idle
       ;; daemon never looked at the disk again and outlived its store by days.

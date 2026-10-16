@@ -197,7 +197,7 @@
 ;; the completion path.
 
 ;; `as-bytes`, when given and true, declares the frozen text as its UTF-8
-;; bytes -- the spelling a plan for a text-mode block carries since F119.
+;; bytes -- the spelling a plan for a text-mode block carries.
 (define (mismatch-store text-frozen text-named . as-bytes)
   (let* ((bytes? (and (pair? as-bytes) (car as-bytes)))
          (d (string-append root "/mm" (number->string (string-length text-named))
@@ -274,9 +274,9 @@
 (want "W6-consumes-version-mismatch TWIN: a matching pair completes"
       (and (pair? ok-answer) (eq? 'ok (car ok-answer))) #t)
 
-;; (c) THE SAME DISAGREEMENT, WITH THE TEXT DECLARED AS BYTES (F119 r1
-;; review). A plan for a text-mode block declares its src as bytes since
-;; F119; the check read only a string, so this plan completed with a
+;; (c) THE SAME DISAGREEMENT, WITH THE TEXT DECLARED AS BYTES (found in
+;; review). A plan for a text-mode block declares its src as bytes;
+;; the check read only a string, so this plan completed with a
 ;; version naming other bytes. Red on f5ebd58 too: there a plan spelled
 ;; this way was never checked either.
 (define mmb (mismatch-store "the frozen text" "a different text" #t))

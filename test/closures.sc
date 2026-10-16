@@ -183,7 +183,7 @@
       (server-parts-of 'client)
       '())
 
-;; (theourgia answers) is in it since F100b item 6: the client's own
+;; (theourgia answers) is in it: the client's own
 ;; failures are answered by the table (classify-failure).
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
@@ -226,10 +226,10 @@
       (filter (lambda (n) (memq n server-side)) (closure-of-all shell-imports))
       '())
 
-;; (theourgia answers) is in it since F100b item 6: the client's own
+;; (theourgia answers) is in it: the client's own
 ;; failures are answered by the table (classify-failure).
-;; (theourgia refusal) is in it since F100b M3a: the shell renders every
-;; refusal through one object (item 8; ruling Q-M3-1).
+;; (theourgia refusal) is in it: the shell renders every
+;; refusal through one object (ruling Q-M3-1).
 ;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
 ;; platform number the FFI uses comes from the running platform's row.
 (want "C-1 and the shell's closure is exactly what it should be"
@@ -253,7 +253,7 @@
 ;; nor the scheduler, nor the networking library, which is what this file
 ;; exists to keep true.
 ;;
-;; KEY: `answers` IS ALLOWED HERE TOO. F100b point 4: the program's main
+;; KEY: `answers` IS ALLOWED HERE TOO. The program's main
 ;; turns a filesystem failure into the one table answer that every other
 ;; point gives, rather than keeping a second copy of the table.
 ;; `(theourgia answers)` imports `(chezscheme)` and names from
