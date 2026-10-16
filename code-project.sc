@@ -16,7 +16,7 @@
   (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory duplicate-path-failure
           file-projection-key projected-files
-          projection-outputs projected-file (rename (answer code-project-answer)))
+          projection-outputs projected-file lang-fields (rename (answer code-project-answer)))
   (import (only (theourgia view) view-read)
           (rename (only (theourgia view) block-code-field) (block-code-field code-field))
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)

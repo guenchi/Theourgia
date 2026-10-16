@@ -3083,6 +3083,63 @@ there: nothing is committed and the answer is `(error start-tag-cut (tag
 not a commit, and a retry takes another name. A landing that commits adds
 `(start-tag <name> (cut <cut>))` to the commit's answer.
 
+## Importing a git range
+
+Commits made in git, outside the store, are absorbed into it by a script:
+
+    scheme --script tools/import-git.sc <store> <repo> <from-rev> <to-rev> --tag <name> [--dry-run]
+
+The files that differ between the two commits are written as committed
+blocks and the result is tagged `<name>`, the next landing's start. The
+domain is the seed importer's: regular files of mode 100644 or 100755 whose
+bytes are text, not dot-named; a dot-named path is skipped. The range is
+`git diff --name-status -M`'s: a content change must keep its mode
+(`file-mode`), an added file must be 100644 (`file-mode`), a rename is the
+removal of the old path and the addition of the new (ids do not follow it),
+any other letter is `paths-unsupported`, a changed file that is not text is
+`not-text`, and a range with nothing left is `nothing-to-import`.
+
+Before writing, the store's export at its applied cut is compared with the
+git trees by literal bytes, and one of three states is accepted: no import
+block for the range and the export equal to `<from-rev>` (a fresh run); an
+import block for the range with status pending and every path outside the
+range equal to `<from-rev>` (a run after an interrupted one); a done import
+block for the range whose tag is not bound and the export equal to
+`<to-rev>` (only the tag is written). A pending import block of another
+range is `pending-import`; anything else is `base-mismatch` naming the
+paths that differ. A bound `<name>` is `tag-exists`.
+
+Every range path is read from the store: a path `<to-rev>` lacks has its
+blocks deleted, a path no file block holds is added, and a held file's
+current blocks are matched to the pieces `split-suggest` would cut
+`<to-rev>`'s bytes into. Equal pieces keep their ids -- in order first, then
+moved -- and the rest are paired by position between them: a pair is a
+`set` of its src, and what is left over is inserted or deleted. The blocks
+are then placed in the target's order, moving a kept block when its
+predecessor is not the one before it there.
+
+It writes two requests: on a fresh run an import block (kind `decision`,
+slot `import`, fields `from`, `to`, `tag`, status `pending`, its text the
+range's commit subjects); then one batch of the changes, `set status done`
+on the import block and the tag, carrying premises for every live block of
+every range path and for the import block, so a concurrent change to any of
+them refuses it whole (`premise-changed`). A batch is not atomic: an item
+the store refuses stops the rest with the earlier items on disk, answered
+`(error partial (store-answer ...))`, and so does a run that dies midway;
+running the same command again finishes the work. Afterwards the export at
+the tag is compared with `<to-rev>` and a difference is `(error
+import-diverged (differing <path> ...) ...)`, with the tag made. It answers
+
+    (ok (tag <name> (cut <cut>)) (rerun <#t|#f>)
+        (files (modified <n>) (added <n>) (removed <n>))
+        (blocks (kept <n>) (set (<id> ...)) (inserted (<id> ...))
+                (deleted (<id> ...)) (moved (<id> ...))))
+
+and `--dry-run` reads, checks and plans the same way, prints the counts and
+writes nothing. Coders' drafts on blocks the import set, deleted or moved
+meet it as any commit's change: stale at their next sync, refused at their
+landing.
+
 ## Requests and replay
 
 The block-editing verbs — `insert`, `set`, `move`, `del`, `link`, `unlink` —
@@ -4219,12 +4276,13 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read) and `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read) and `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written), `import-before-batch` (tools/import-git.sc, after the batch's premises are computed and before the batch is sent). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
 | `THEOURGIA_SEND_BUFFER` | an exact positive integer: a daemon presses each accepted connection's send buffer to that many bytes, so a row can make a write the daemon cannot finish (`subscribe`'s blocked-write rows); refused at load if it is anything else |
 | `THEOURGIA_READ_CHUNK` | an exact positive integer: the streaming client reads at most that many bytes at a time, so a row can cut its lines where it likes; refused at load if it is anything else |
+| `THEOURGIA_IMPORT_STOP` | `tools/import-git.sc`'s interruption seam: an exact non-negative integer `<k>` makes the run send only the first `k` items of its batch -- none, after a fresh run's import block -- and exit 3 printing `(stopped (items <n>) (answer ...))`, leaving the prefix an interrupted run leaves; anything else is refused when the script starts. Read only by that script |
 | `THEOURGIA_BASE_LIBDIR` | `test/change-stream-guard.sc`'s base: a library root holding the base tree's `theourgia/` and `igropyr/`, whose daemon the guard compares with this tree's. Unset, the guard prints why and runs nothing. Read only by `test/` |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_TEST_OTHER_VOLUME` | a writable directory on another volume than `THEOURGIA_TEST_ROOT`, for `test/publish-landing.sc`'s PL-33 (a linked worktree whose repository is on another volume); unset, the fixture tries `/tmp`, `/dev/shm` and `/var/tmp`, and when none is on another volume the row prints SKIP and why. Read only by `test/` |

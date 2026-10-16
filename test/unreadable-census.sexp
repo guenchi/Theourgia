@@ -267,6 +267,11 @@
    unrelated a
    "landing-freeze's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/import-git.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "import-git's answer: a refusal raised as an error list is printed, a store refusal mid-batch as (error partial ...), and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("landing-files.sc" (volume-insensitivity) 3 guard
    (#t)
    refuse a
