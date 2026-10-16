@@ -28,7 +28,8 @@
 ;;                  (bytes "<n>.bytes") (sha256 "<hex>"))
 ;;           ...)
 ;;
-;; The pinned cut is the join of the drafts' cuts: the cut a landing of these
+;; The pinned cut is the join of the dumped drafts' cuts, as the working view's
+;; baseline is the join of the live drafts' cuts: the cut a landing of these
 ;; drafts must find the store at (tools/landing-commit.sc).
 ;;
 ;; EVERY DRAFT IS CHECKED BEFORE ANYTHING IS WRITTEN: its working-info is the
@@ -41,9 +42,8 @@
 ;; (ok (dumped <n>) (dir "<dir>")) and exits 0.
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia reduce) draft-version)
+        (only (theourgia reduce) draft-version cut-join)
         (only (theourgia log) store-id-of)
-        (only (theourgia working) working-baseline)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia ffi) mkdir-exclusive! overwrite-entry!))
 
@@ -82,9 +82,10 @@
 (define (dump store writer dir)
   (let* ((drafts (map (lambda (d) (draft-facts store writer (car d) (cadr d)))
                       (listed-drafts store writer)))
-         (baseline (working-baseline store #f writer))
-         (pinned (if (and (pair? baseline) (eq? (car baseline) 'ok)) (caddr baseline)
-                     (refuse 'baseline-refused baseline))))
+         ;; THE JOIN OF THE CUTS JUST READ, not a second read of the writer's
+         ;; baseline: a draft written and removed between the two would make
+         ;; the pinned cut one these drafts were not written at.
+         (pinned (fold-left (lambda (acc d) (cut-join acc (cadddr d))) '() drafts)))
     (when (eq? (mkdir-exclusive! dir) 'exists) (refuse 'dir-exists (list 'dir dir)))
     (let loop ((ds drafts) (n 1) (entries '()))
       (if (pair? ds)

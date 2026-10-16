@@ -47,7 +47,9 @@
         (only (theourgia landing-files) raw-projection changed-files-between)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes overwrite-entry! hold-point!))
+        (only (theourgia ffi) entry-bytes overwrite-entry! hold-point!)
+        (only (theourgia log) load-declaration-set!)
+        (only (theourgia incomplete) incomplete-refused))
 
 (define actor "landing-freeze")
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
@@ -93,37 +95,57 @@
            (pinned (clause 'pinned-cut manifest)))
       (when (null? drafts) (refuse 'nothing-to-freeze (list 'dir dir)))
       (hold-point! 'freeze-after-dump)
-      (let* ((w (working-state store #f writer))
-             (view (if (and (pair? w) (eq? (car w) 'ok)) (caddr w) (refuse 'working-view-refused w)))
-             ;; the view's own drafts, each (<id> <version> <based-on> <bytes>)
-             (in-view (list-sort (lambda (x y) (string<? (car x) (car y)))
-                                 (map (lambda (d) (cons (car d) (cadr d))) (cadddr w))))
-             (base (store-state-at-cut store #f (format "~s" pinned))))
-        (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
-        (unless (equal? in-view frozen)
-          (refuse 'drafts-changed (list 'dumped frozen) (list 'in-view in-view)))
-        ;; THE TREE IS WRITTEN FROM THIS VIEW, by the procedure export-code
-        ;; uses (export-code-view, raw), not by a second read of the working
-        ;; view: a second read could see other drafts -- one written and taken
-        ;; back between the two reads moves the view's cut, and with it the
-        ;; files there are -- and the tree would hold what was never checked.
-        (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view))))
-          (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
-        ;; ((<path> <bytes>) ...), the files export-code-view wrote
-        (let ((files (raw-projection view)))
-          (overwrite-entry! (string-append dir "/MANIFEST.sha256")
-                            (string->utf8 (apply string-append
-                                                 (map (lambda (f) (string-append (bytevector->hex (sha256 (cadr f))) "  " (car f) "\n"))
-                                                      (list-sort (lambda (x y) (string<? (car x) (car y))) files))))))
-        (let ((changed (changed-files-between store base view)))
-          (unless (and (pair? changed) (eq? (car changed) 'ok)) (refuse 'changed-files-refused changed))
-          (unless (equal? (listed store writer) frozen)
-            (refuse 'drafts-changed (list 'dumped frozen) (list 'now (listed store writer))))
-          (overwrite-entry! (string-append dir "/CHANGED.sexp")
-                            (string->utf8 (string-append (format "~s" changed) "\n")))
-          (list 'ok (list 'frozen (length drafts))
-                (list 'changed (length (let ((i (assq 'items (cdr changed)))) (if i (cdr i) '()))))
-                (list 'dir dir)))))))
+      ;; THE FREEZE'S LOADS ARE STRICT, as export-code's are: a store whose
+      ;; history is cut by damage, or missing a writer, is refused rather
+      ;; than frozen from its readable part. The declaration rides on a copy
+      ;; of the store string for the extent of the freeze, as the dispatcher
+      ;; sets one for a verb.
+      (let ((key (string-copy store)))
+        (dynamic-wind
+          (lambda () (load-declaration-set! key incomplete-refused))
+          (lambda () (freeze-view key writer dir frozen pinned (length drafts)))
+          (lambda () (load-declaration-set! key #f)))))))
+
+;; -> the freeze's answer, from one read of the working view
+(define (freeze-view store writer dir frozen pinned count)
+  (let* ((w (working-state store #f writer))
+         (view (if (and (pair? w) (eq? (car w) 'ok)) (caddr w) (refuse 'working-view-refused w)))
+         ;; the view's own drafts, each (<id> <version> <based-on> <bytes>)
+         (in-view (list-sort (lambda (x y) (string<? (car x) (car y)))
+                             (map (lambda (d) (cons (car d) (cadr d))) (cadddr w))))
+         (base (store-state-at-cut store #f (format "~s" pinned))))
+    (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
+    (unless (equal? in-view frozen)
+      (refuse 'drafts-changed (list 'dumped frozen) (list 'in-view in-view)))
+    ;; THE TREE IS WRITTEN FROM THIS VIEW, by the procedure export-code
+    ;; uses (export-code-view, raw), not by a second read of the working
+    ;; view: a second read could see other drafts -- one written and taken
+    ;; back between the two reads moves the view's cut, and with it the
+    ;; files there are -- and the tree would hold what was never checked.
+    (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view))))
+      (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
+    ;; ((<path> <bytes>) ...), the files export-code-view wrote, each read
+    ;; back: on a volume that folds case or normalisation two paths can
+    ;; land on one file, and the tree would not be the view's
+    (let ((files (raw-projection view)))
+      (for-each (lambda (f)
+                  (unless (equal? (entry-bytes (string-append dir "/tree/" (car f))) (cadr f))
+                    (refuse 'export-mismatch (list 'path (car f)))))
+                files)
+      (overwrite-entry! (string-append dir "/MANIFEST.sha256")
+                        (string->utf8 (apply string-append
+                                             (map (lambda (f) (string-append (bytevector->hex (sha256 (cadr f))) "  " (car f) "\n"))
+                                                  (list-sort (lambda (x y) (string<? (car x) (car y))) files))))))
+    (let ((changed (changed-files-between store base view)))
+      (unless (and (pair? changed) (eq? (car changed) 'ok)) (refuse 'changed-files-refused changed))
+      (let ((now (listed store writer)))
+        (unless (equal? now frozen)
+          (refuse 'drafts-changed (list 'dumped frozen) (list 'now now))))
+      (overwrite-entry! (string-append dir "/CHANGED.sexp")
+                        (string->utf8 (string-append (format "~s" changed) "\n")))
+      (list 'ok (list 'frozen count)
+            (list 'changed (length (let ((i (assq 'items (cdr changed)))) (if i (cdr i) '()))))
+            (list 'dir dir)))))
 
 (define (main args)
   (if (not (and (= 4 (length args)) (string=? (cadr args) "--writer")))

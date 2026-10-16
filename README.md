@@ -2994,9 +2994,11 @@ writer's slot, which must be empty or hold this very version, left as it is
 (`version-consumed`). It answers `(ok (restored <n>) (already <n>))`.
 
 `landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list;
-then the working view, read once, whose own drafts must be the dumped ones,
-written raw into `<dir>/tree` by `export-code`'s own procedure, so the tree is
-that view's; `MANIFEST.sha256` (each file's sha256 and path); and
+then the working view, read once and as strictly as `export-code` reads (a
+store missing a writer or cut by damage is refused), whose own drafts must
+be the dumped ones, written raw into `<dir>/tree` by `export-code`'s own
+procedure and each file read back (`export-mismatch` when a volume folds two
+paths into one); `MANIFEST.sha256` (each file's sha256 and path); and
 `CHANGED.sexp`, `changed-files` between the store at the pinned cut and that
 view. The draft list is then read again. A draft written during the freeze
 refuses it (`drafts-changed`), and the directory is left for the coder to
