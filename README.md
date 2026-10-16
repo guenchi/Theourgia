@@ -3092,13 +3092,16 @@ Commits made in git, outside the store, are absorbed into it by a script:
 The files that differ between the two commits are written as committed
 blocks and the result is tagged `<name>`, the next landing's start. The
 domain is the seed importer's: regular files of mode 100644 or 100755 whose
-bytes are text, not dot-named; a dot-named path is skipped. The range is
+bytes are text, not dot-named; a dot-named path is skipped. As in publishing,
+a file the store holds at or under a path git holds as a link or a submodule
+is not a difference: the importer follows links. The range is
 `git diff --name-status -M`'s: a content change must keep its mode
 (`file-mode`), an added file must be 100644 (`file-mode`), a rename is the
 removal of the old path and the addition of the new (ids do not follow it),
 any other letter is `paths-unsupported`, a changed file that is not text is
 `not-text`, an added path the store cannot hold (a backslash in it) is
-`unsafe-path`, and a range with nothing left is `nothing-to-import`.
+`unsafe-path`, a path git lists that is not its own UTF-8 is `path-not-utf8`,
+and a range with nothing left is `nothing-to-import`.
 
 Before writing, the store's export at its applied cut is compared with the
 git trees by literal bytes, and one of three states is accepted: no import
@@ -3126,9 +3129,11 @@ on the import block and the tag, carrying premises for every live block of
 every range path and for the import block, so a concurrent change to any of
 them refuses it whole (`premise-changed`). A batch is not atomic: an item
 the store refuses stops the rest with the earlier items on disk, answered
-`(error partial (item <n>) (kind <kind>) (path <p>) (store-answer ...) (done <n>))`,
-naming the refused item, and so does a run that dies midway;
-running the same command again finishes the work. Afterwards the export at
+`(error partial (item <n>) (kind <kind>) (path <p>) ... (store-answer ...) (done <n>))`,
+naming the refused item and where it was to go (a `too-deep` names no gap of
+its own); a failed commit barrier, after which the batch may or may not be on
+disk, is `(error outcome-unknown (store-answer ...))`. Either way, and after a
+run that dies midway, running the same command again finishes the work. Afterwards the export at
 the tag is compared with `<to-rev>` and a difference is `(error
 import-diverged (differing <path> ...) ...)`, with the tag made. It answers
 

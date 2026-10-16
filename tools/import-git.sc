@@ -27,7 +27,8 @@
 ;; 100644 (file-mode otherwise), D a removed one, R the removal of the old
 ;; path and the addition of the new (ids do not follow a rename), T and any
 ;; other letter paths-unsupported; an added path the store cannot hold is
-;; unsafe-path. Nothing left is nothing-to-import.
+;; unsafe-path, a listed path that is not its own UTF-8 path-not-utf8.
+;; Nothing left is nothing-to-import.
 ;;
 ;; THE PRECONDITION is read at the store's applied cut, THE READ CUT, by
 ;; literal blobs, and accepts one of three states:
@@ -75,7 +76,8 @@
 ;; change to any of them refuses it whole (premise-changed). A batch is not
 ;; atomic: an item the store refuses stops the rest, with the earlier items
 ;; on disk, and is answered (error partial (item <k>) (kind ...) (path ...)
-;; (store-answer ...) (done <k>)); running the same command again converges.
+;; <where it was to go> (store-answer ...) (done <k>)); a failed commit barrier
+;; is (error outcome-unknown ...); running the same command again converges.
 ;; The tag-only run of done-without-tag carries the same premises.
 ;;
 ;; POST-VERIFY: the export at the new tag is compared with <to-rev>'s tree
@@ -165,6 +167,12 @@
     (unless (= rc 0) (refuse 'repo-unreadable (list 'repo repo) (cons 'command args) (list 'status rc)))
     out))
 (define (git-text repo . args) (utf8->string (apply git-bytes repo args)))
+;; A LISTING OF PATHS, which must be its own UTF-8: utf8->string would turn a
+;; byte that is not into a replacement character, and two names into one
+(define (git-paths repo . args)
+  (let* ((b (apply git-bytes repo args)) (s (utf8->string b)))
+    (unless (bytevector=? (string->utf8 s) b) (refuse 'path-not-utf8 (cons 'command args)))
+    s))
 
 (define (commit-id repo rev)
   (let ((id (let-values (((rc out) (shell-run (string-append (git-command repo (list "rev-parse" "--verify" "--quiet" (string-append rev "^{commit}")))
@@ -181,7 +189,7 @@
                   (let* ((tab (let loop ((i 0)) (if (char=? (string-ref rec i) #\tab) i (loop (+ i 1)))))
                          (meta (split-on (substring rec 0 tab) #\space)))
                     (hashtable-set! h (substring rec (+ tab 1) (string-length rec)) meta))))
-              (split-on (git-text repo "ls-tree" "-r" "-z" "--full-tree" id) #\nul))
+              (split-on (git-paths repo "ls-tree" "-r" "-z" "--full-tree" id) #\nul))
     h))
 
 ;; THE BLOBS, read by one `git cat-file --batch` per chunk of object ids and
@@ -211,9 +219,11 @@
 (define (regular? entry) (and (member (car entry) '("100644" "100755")) (string=? (cadr entry) "blob")))
 
 ;; THE DOMAIN OF A TREE: path -> bytes for every regular, not dot-named file
-;; whose bytes are text, and the list of the other paths that are not
-;; dot-named (the importer follows a link, so the store may hold files at or
-;; under one; those are not differences).
+;; whose bytes are text, and the list of the paths, not dot-named, whose
+;; entries are not regular files (a link, a submodule): the importer follows
+;; a link, so the store may hold files at or under one, and those are not
+;; differences -- publish-landing's rule, so the importer and the publisher
+;; share one domain. A regular file that is not text is in neither.
 (define (domain-of repo tree)
   (let-values (((paths entries) (hashtable-entries tree)))
     (read-blobs! repo (filter (lambda (x) x)
@@ -223,8 +233,9 @@
       (vector-for-each
         (lambda (p e)
           (unless (dot-named? p)
-            (let ((b (and (regular? e) (blob-of e))))
-              (if (and b (import-text? b)) (hashtable-set! h p b) (set! skipped (cons p skipped))))))
+            (if (regular? e)
+                (let ((b (blob-of e))) (when (and b (import-text? b)) (hashtable-set! h p b)))
+                (set! skipped (cons p skipped)))))
         paths entries)
       (cons h skipped))))
 
@@ -235,7 +246,7 @@
 ;; demand.
 (define (range-of repo from to from-tree to-tree)
   (let ((fields (filter (lambda (s) (> (string-length s) 0))
-                        (split-on (git-text repo "diff" "--no-ext-diff" "--name-status" "-M" "-z" from to) #\nul)))
+                        (split-on (git-paths repo "diff" "--no-ext-diff" "--name-status" "-M" "-z" from to) #\nul)))
         (out '()))
     (define (mode-of tree p) (let ((e (hashtable-ref tree p #f))) (if e (car e) 'none)))
     (define (text! tree p)
@@ -537,6 +548,12 @@
           ((and (pair? a) (eq? (car a) 'error)) (raise a))
           (else (refuse 'partial (list 'store-answer a))))))
 (define (all-ok? a) (for-all (lambda (x) (and (pair? x) (eq? (car x) 'ok))) (cadr a)))
+;; THE CUT RIGHT AFTER AN INSERTION: the read cut with the insertion's writer
+;; at the insertion's event, so a later edit of the block is not in it
+(define (insertion-cut state answer)
+  (let* ((ev (car (cadr (assq 'events (cdr answer))))) (w (car ev)))
+    (list-sort (lambda (a b) (string<? (car a) (car b)))
+               (cons ev (filter (lambda (e) (not (equal? (car e) w))) (reduce-applied-cut state))))))
 ;; the version a write's answer reports for BLOCK in its (state ((<id> . <v>) ...))
 (define (reported-version answer block)
   (let ((st (and (pair? answer) (assq 'state (cdr answer)))))
@@ -549,9 +566,20 @@
   (let loop ((as (cadr a)) (k 0))
     (cond ((null? as) (refuse 'partial (list 'store-answer a)))
           ((and (pair? (car as)) (eq? (car (car as)) 'ok)) (loop (cdr as) (+ k 1)))
-          (else (let ((it (list-ref sent k)))
-                  (refuse 'partial (list 'item k) (list 'kind (cadr it)) (list 'path (cadddr it))
-                          (list 'store-answer (car as)) (list 'done k)))))))
+          ;; AN UNKNOWN OUTCOME IS NOT AN ITEM'S: a failed commit barrier
+          ;; answers the whole batch with one (error unknown ...) after its
+          ;; items ran, so it names no item; the rerun converges either way
+          ((and (pair? (car as)) (eq? (car (car as)) 'error) (pair? (cdr (car as))) (eq? (cadr (car as)) 'unknown))
+           (refuse 'outcome-unknown (list 'store-answer (car as))))
+          (else (let* ((it (list-ref sent k)) (intent (car it)))
+                  (apply refuse 'partial (list 'item k) (list 'kind (cadr it)) (list 'path (cadddr it))
+                         (append
+                           ;; where it was to go: the gap a too-deep names
+                           (case (car intent)
+                             ((insert) (list (list 'parent (cadr intent)) (list 'predecessor (caddr intent))))
+                             ((move) (list (list 'block (cadr intent)) (list 'parent (caddr intent)) (list 'predecessor (cadddr intent))))
+                             (else (list (list 'block (cadr intent)))))
+                           (list (list 'store-answer (car as)) (list 'done k)))))))))
 
 (define (stop-setting)
   (let ((v (getenv "THEOURGIA_IMPORT_STOP")))
@@ -609,7 +637,7 @@
                    ;; afterwards only when the store could not report it. On a
                    ;; rerun, at the read cut.
                    (version (or (and first (reported-version first block))
-                                (block-hash (if first (open-and-reduce store) state) block)))
+                                (block-hash (if first (open-and-reduce store (insertion-cut state first)) state) block)))
                    ;; the tag-only run is premised too: a change under it
                    ;; refuses it before the tag, rather than diverging after
                    (premises (premises-of state range block version))
