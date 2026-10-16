@@ -31,7 +31,7 @@
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia languages) language-for-path)
-        (only (theourgia markers) byte-slice)
+        (only (theourgia markers) byte-slice import-text?)
         (only (theourgia query) make-query-session session-answer))
 
 (define bad 0)
@@ -149,7 +149,7 @@
     (for-each (lambda (rel)
                 (let ((out (string-append src "/" rel)))
                   (sh "mkdir -p " (quoted (path-parent out)))
-                  (if split?
+                  (if (and split? (import-text? (call-with-port (open-file-input-port (string-append raw "/" rel)) get-bytevector-all)))
                       (checked "split" (ask st 'split-suggest (string-append raw "/" rel) "--output" out))
                       (sh "cp " (quoted (string-append raw "/" rel)) " " (quoted out)))))
               (filter (lambda (p) (> (string-length p) 0))
@@ -188,7 +188,12 @@
 ;; ((<name> . <id>) ...)
 (define (shape old new-ids)
   (map (lambda (id) (let ((x (find (lambda (o) (equal? (cdr o) id)) old))) (if x (car x) 'new))) new-ids))
-(define (named st path . names) (map cons names (kids st path)))
+;; NAMES PAIRED WITH THE CHILDREN UP TO THE SHORTER OF THE TWO: a store in
+;; another shape (no tool, a mutant) reads red in its row instead of raising
+;; here, outside every row
+(define (named st path . names)
+  (let loop ((ns names) (ks (kids st path)) (out '()))
+    (if (or (null? ns) (null? ks)) (reverse out) (loop (cdr ns) (cdr ks) (cons (cons (car ns) (car ks)) out)))))
 
 ;; THE EXPORT AT CUT (now when none) AGAINST git archive REV: #t when the two
 ;; trees hold the same files with the same bytes, dot-named ones aside
@@ -459,6 +464,20 @@
       (in-order (head-of (answer (import! st5 wt5 c5-0 c5-exec "t5"))) (export-is? st5 wt5 c5-exec (tag-cut st5 "t5")))
       (list 'ok #t))
 
+;; THE OTHER ENDS OF THE TEXT AND MODE CHECKS: an added binary, a removed
+;; binary (the store never held it) and a removed link (git mode 120000)
+(define wt5b (repo! "r5b"))
+(define c5b-0 (commit! wt5b "base" (cons "a.sc" (defs 'a)) (cons "bin.dat" (bytevector 98 0 98 10)) '(link "l.sc" "a.sc")))
+(define c5b-add (begin (at! wt5b c5b-0) (commit! wt5b "add a binary" (cons "new.dat" (bytevector 110 0 10)))))
+(define c5b-rmbin (begin (at! wt5b c5b-0) (commit! wt5b "remove the binary" (cons "bin.dat" #f))))
+(define c5b-rmlink (begin (at! wt5b c5b-0) (commit! wt5b "remove the link" (cons "l.sc" #f))))
+(define st5b (store-from! wt5b c5b-0 "s5b" #t))
+(want "IG-5 an added binary and a removed binary: not-text; a removed link: file-mode; nothing written"
+      (in-order (refused-run st5b wt5b c5b-0 c5b-add "t5b") (refused-run st5b wt5b c5b-0 c5b-rmbin "t5b")
+                (refused-run st5b wt5b c5b-0 c5b-rmlink "t5b"))
+      (list (list '(not-text (path "new.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1)
+            (list '(file-mode (path "l.sc") (from "120000") (to none)) #t 1)))
+
 ;; ---- IG-6: premises ------------------------------------------------------------------
 (printf "== IG-6: premises ==\n")
 (define wt6 (repo! "r6"))
@@ -548,7 +567,8 @@
 
 (define v7a (variant! "s7a" 7))
 (define half7a (texts (v-st v7a) "m.sc"))
-;; THE PENDING PLAN from [B,c,x,a]: LCS x,a, B and c relocated (4 kept),
+;; THE PENDING PLAN from [B,c,x,a]: LCS B,c (a tie passes over the new
+;; piece), x and a relocated (4 kept),
 ;; x appended and a, B, c moved after it (4 moves), y inserted, n.sc's file
 ;; block and three children inserted (5 inserts); d.sc is gone: 9 items, then
 ;; done and the tag
@@ -560,13 +580,15 @@
 (define r7a (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped inside a file's items: the rerun converges, every LCS and relocation id kept, the same block done, one tag; a third run is base-mismatch"
       (in-order (v-stop v7a) half7a (list dry7a dry7a-wrote) (converged v7a r7a)
-                (list (listed r7a 'set) (equal? (listed r7a 'moved) (ids-of after7a 'x 'a 'B 'c)) (length (listed r7a 'inserted)) (listed r7a 'deleted))
+                (list (listed r7a 'set) (equal? (listed r7a 'moved) (ids-of after7a 'x 'a 'B 'c))
+                      (equal? (listed r7a 'inserted) (cons (list-ref (kids (v-st v7a) "m.sc") 4) (cons (file-at (v-st v7a) "n.sc") (kids (v-st v7a) "n.sc"))))
+                      (listed r7a 'deleted))
                 (head-of (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))))
       (list '(stopped 7 3 #t) (list B* (d 'c) (d 'x) (d 'a))
             (list (list 'ok '(dry-run #t) '(state pending) (list 'read-cut cut7a) '(files (modified 1) (added 1) (removed 1))
                         '(blocks (kept 4) (set 0) (inserted 5) (deleted 0) (moved 4)) '(items 11))
                   #f)
-            converged-ok (list '() #t 5 '()) '(error base-mismatch)))
+            converged-ok (list '() #t #t '()) '(error base-mismatch)))
 
 (define v7b (variant! "s7b" 0))
 (define mid7b (list (export-is? (v-st v7b) wt7 c7-0) (done-blocks (v-st v7b))))
