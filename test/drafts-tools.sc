@@ -85,8 +85,12 @@
 (define (ask st . req) (rpc-dispatch st req "test"))
 (define (head-of a) (cond ((not (pair? a)) a) ((eq? (car a) 'error) (list 'error (cadr a))) (else (car a))))
 (define (checked what a) (unless (eq? 'ok (head-of a)) (assertion-violation 'drafts-tools what a)) a)
+;; A CLAUSE IS A LIST AFTER THE HEAD; an error's kind is a symbol, so the
+;; lookup passes over what is not a pair.
 (define (clause name datum)
-  (let ((c (and (pair? datum) (list? datum) (assq name (cdr datum))))) (and c (cdr c))))
+  (let ((c (and (pair? datum) (list? datum)
+                (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr datum)))))
+    (and c (cdr c))))
 (define (clause1 name datum) (let ((c (clause name datum))) (and c (pair? c) (car c))))
 
 ;; the three tools, as children: -> the datum each prints
@@ -371,10 +375,15 @@
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")
-;; -> the first block of the store whose read answers text, for the seed's
-;; one write
+;; -> the first block of the store whose src is text, for the seed's one
+;; write: read answers the block's record, (ok ((id . <id>) (fields ...) ...))
 (define (text-block st)
-  (find (lambda (id) (let ((a (ask st 'read id))) (and (eq? (head-of a) 'ok) (pair? (cadr a)) (eq? (car (cadr a)) 'text))))
+  (find (lambda (id)
+          (let* ((a (ask st 'read id))
+                 (rec (and (eq? (head-of a) 'ok) (pair? (cdr a)) (cadr a)))
+                 (fields (and (list? rec) (assq 'fields rec)))
+                 (src (and fields (assq 'src (cdr fields)))))
+            (and src (string? (cdr src)))))
         (state-block-ids (open-and-reduce st))))
 ;; -> (owner? adopt write commit) on a cp -R copy of ST, in a scratch place
 (define (seed-check st)
