@@ -231,6 +231,31 @@
    refuse a
    "edit-sync's sidecar: a SIDECAR.sexp that does not read as one datum is (error bad-sidecar (path ...) (reason unreadable)), before any write"
    (e (#t (refuse (quote bad-sidecar) (list (quote path) path) (quote (reason unreadable))))))
+  ("tools/drafts-dump.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "drafts-dump's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/drafts-restore.sc" (read-manifest) 1 guard
+   (#t)
+   unrelated a
+   "the dump's DRAFTS.sexp, a file the caller names, not a store entry: any failure to read it as one datum is the refusal manifest-unreadable"
+   (e (#t #f)))
+  ("tools/drafts-restore.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "drafts-restore's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/landing-commit.sc" (read-manifest) 1 guard
+   (#t)
+   unrelated a
+   "the freeze's DRAFTS.sexp, a file the caller names, not a store entry: any failure to read it as one datum is the refusal manifest-unreadable"
+   (e (#t #f)))
+  ("tools/landing-commit.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "landing-commit's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("landing-files.sc" (volume-insensitivity) 3 guard
    (#t)
    refuse a

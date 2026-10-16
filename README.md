@@ -2954,6 +2954,51 @@ committed version first (`write <id> <merged text> --writer <W> --rebase
 --based-on <version> --working-cut <cut>`), then export again and re-apply
 the edit.
 
+## Keeping drafts, and landing them at their cut
+
+Drafts do not travel with a store's git (the working areas are ignored
+there), so two scripts keep them, and a third commits them for a landing.
+
+    scheme --script tools/drafts-dump.sc <store> --writer <W> <dir>
+    scheme --script tools/drafts-restore.sc <store> <dir> --writer <W>
+    scheme --script tools/landing-commit.sc <store> <dir>
+
+`drafts-dump` makes `<dir>`, which must not exist, and writes one file of
+exact bytes per draft of W and `DRAFTS.sexp`, one datum:
+
+    (drafts (store "<store id>") (writer "<W>") (pinned-cut <cut>)
+            (draft (block "<id>") (version "<v>") (based-on "<v>") (cut <cut>)
+                   (bytes "<n>.bytes") (sha256 "<hex>"))
+            ...)
+
+The pinned cut is the join of the drafts' cuts. Each draft is read with
+`read --working-info`, checked to be the version `drafts` listed, and its
+bytes, based-on and cut to hash to that version; a draft that is not text,
+or that changed between the two reads, is refused by name
+(`draft-unreadable`, `draft-changed`, `draft-unreproducible`), as is an
+existing directory (`dir-exists`).
+
+`drafts-restore` writes each dumped draft back with its own based-on and
+cut, so it comes back as the dumped version. It works on the same store or
+a git clone of it (`other-store` otherwise; `other-writer` for another W),
+and checks every draft before writing any: the bytes against their sha256
+(`bytes-changed`); the block's committed hash against the dumped based-on
+(`baseline-moved`: the block moved since the dump, and the draft is to be
+rebased); the recorded cut, replayed here, against itself and the based-on
+(`cut-unusable`, `cut-not-reproduced`, `baseline-not-at-cut`); and the
+writer's slot, which must be empty or hold this very version, left as it is
+(`slot-occupied` otherwise). It answers `(ok (restored <n>) (already <n>))`.
+
+`landing-commit` reads a freeze's `DRAFTS.sexp` and commits its drafts only
+if the store's applied cut is still the pinned cut: a commit on another
+block since the freeze leaves every draft's baseline as it was, so the store
+would accept the drafts, and what landed would not be what was gated. Then
+nothing is committed and the answer is `(error cut-moved (pinned <cut>) (now
+<cut>))`; the drafts are rebased (`write --rebase --based-on <v>
+--working-cut <cut>`) and frozen again. At the pinned cut it commits the
+drafts by name, each with its frozen version (`--working-version
+<block>=<version>`), and prints the commit's answer.
+
 ## Requests and replay
 
 The block-editing verbs — `insert`, `set`, `move`, `del`, `link`, `unlink` —
