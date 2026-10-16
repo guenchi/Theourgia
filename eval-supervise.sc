@@ -115,8 +115,8 @@
   ;; core.sc's eval verb (its eval-and-exit!), which starts a fresh scheduler whose
   ;; only actor calls it once, prints the answer and exits; so every worker-*
   ;; message and every DOWN this process receives belongs to this evaluation.
-  ;; `collect` has matched every worker-out without comparing its ref since
-  ;; it was written, and the limit drain does the same (found in review). A second
+  ;; `collect` matches every worker-out without comparing its ref, and the
+  ;; limit drain does the same (found in review). A second
   ;; caller, sharing an actor with other workers or monitors, would need both
   ;; to filter by ref -- which this `receive`, matching literal symbols and
   ;; bindings only, cannot express.

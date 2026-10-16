@@ -193,7 +193,7 @@
 
 ;; NEVER: WHAT THE WORKER'S OWN STEPS RAISE IS NEVER THE SOURCE'S VALUE. Only
 ;; what the source raises while it is evaluated is data; a malformed source
-;; raises nothing, it is refused. The three branches answer as they always did:
+;; raises nothing, it is refused. The three branches answer this way:
 ;;   - a list headed `error` is the refusal of a library the worker called
 ;;     -- `(error bad-source (reason unbalanced) ...)` from the reader -- and
 ;;     is answered as itself;
