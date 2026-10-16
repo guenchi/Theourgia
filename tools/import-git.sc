@@ -287,6 +287,12 @@
                 ((and (string=? letter "D") (pair? (cdr fs))) (removed! (cadr fs)) (loop (cddr fs)))
                 ((and (prefix? letter "R") (pair? (cdr fs)) (pair? (cddr fs)))
                  (removed! (cadr fs)) (added! (caddr fs)) (loop (cdddr fs)))
+                ;; ANY OTHER LETTER ON DOT-NAMED PATHS IS SKIPPED like the rest of
+                ;; them: a copy names two paths, every other letter one
+                ((and (prefix? letter "C") (pair? (cdr fs)) (pair? (cddr fs)) (dot-named? (cadr fs)) (dot-named? (caddr fs)))
+                 (loop (cdddr fs)))
+                ((and (not (prefix? letter "C")) (pair? (cdr fs)) (dot-named? (cadr fs)))
+                 (loop (cddr fs)))
                 (else (refuse 'paths-unsupported (list 'letter letter)
                               (list 'path (if (pair? (cdr fs)) (cadr fs) ""))))))))
     (when (null? out) (refuse 'nothing-to-import (list 'from from) (list 'to to)))
@@ -559,6 +565,14 @@
   (let ((st (and (pair? answer) (assq 'state (cdr answer)))))
     (and st (pair? (cdr st)) (list? (cadr st))
          (let ((x (assoc block (cadr st)))) (and x (cdr x))))))
+;; THE FIRST REQUEST REFUSED: nothing of the import is on disk, unless the
+;; refusal is an unknown outcome (a failed commit barrier), after which the
+;; pending block may be there; the rerun finds it or starts fresh.
+(define (first-refusal a)
+  (let ((x (and (pair? (cadr a)) (car (cadr a)))))
+    (if (and (pair? x) (eq? (car x) 'error) (pair? (cdr x)) (eq? (cadr x) 'unknown))
+        (refuse 'outcome-unknown (list 'store-answer x))
+        (refuse 'partial (list 'store-answer a)))))
 ;; A STORE REFUSAL MID-BATCH: the earlier items are on disk. The refusal
 ;; names the item that was refused, its kind and the path it was planned
 ;; for, and the store's answer to it (too-deep, for one).
@@ -628,7 +642,7 @@
                                                                            (cons 'src (git-text repo "log" "--format=%s" "--reverse"
                                                                                                 (string-append from ".." to))))))
                                                    '())))
-                                (unless (all-ok? a) (refuse 'partial (list 'store-answer a)))
+                                (unless (all-ok? a) (first-refusal a))
                                 (car (cadr a)))))
                    (block (or block (made-id first)))
                    ;; THE IMPORT BLOCK'S VERSION: on a fresh run the one its

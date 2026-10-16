@@ -220,6 +220,7 @@
 ;; the refusal's kind and clauses, or (NOT-A-REFUSAL <what was printed>)
 (define (refusal r) (let ((a (answer r))) (if (and (pair? a) (eq? (car a) 'error)) (cdr a) (list 'NOT-A-REFUSAL a))))
 (define (applied-cut st) (reduce-applied-cut (open-and-reduce st)))
+(define (version st id) (and id (block-hash (open-and-reduce st) id)))
 ;; A REFUSED RUN: (<refusal> <log end unchanged> <exit status>)
 (define (refused-run st . args)
   (let* ((p (position st)) (r (apply import! st args)))
@@ -303,7 +304,7 @@
             (equal? (listed r2 'set) (append (ids-of o2 'b) (ids-of o9 'a)))
             (equal? (listed r2 'inserted) (list (cadr (kids st2 "m1.sc")) (caddr (kids st2 "m3.sc")) (car (kids st2 "m6.sc"))
                                                 (car (kids st2 "m7.sc")) (caddr (kids st2 "m7.sc"))))
-            (equal? (listed r2 'deleted) (append (ids-of o4 'b) (ids-of o9 'b 'c))))
+            (equal? (listed r2 'deleted) (append (ids-of o4 'b) (ids-of o8 'x2) (ids-of o9 'b 'c))))
       (list (list '(a b c) #t) #t #t #t))
 (want "IG-2 an appended definition is an insert"
       (row2 "m3.sc" o3 (d 'a) (d 'b) (d 'c))
@@ -357,6 +358,7 @@
 (define c4-1 (commit! wt4 "one" (cons "a.sc" (defs 'a 'b 'c))))
 (define c4-2 (commit! wt4 "two" (cons "a.sc" (defs 'a 'b 'c 'd))))
 (define c4-3 (commit! wt4 "dot only" (cons ".hidden" "x\n")))
+(define c4-4 (commit! wt4 "a dot path's type changes" '(link ".hidden" "a.sc")))
 (define st4 (store-from! wt4 c4-0 "s4" #t))
 (define p4 (position st4))
 (define cut4 (applied-cut st4))
@@ -366,14 +368,16 @@
       (list (list 'base-mismatch (list 'store-cut cut4) (list 'rev c4-1) '(differing "a.sc")) #t #f))
 (define r4b (import! st4 wt4 c4-0 c4-1 "t4"))
 (want "IG-4 the same range twice: the second run is base-mismatch"
-      (in-order (head-of (answer r4b)) (head-of (answer (import! st4 wt4 c4-0 c4-1 "t4"))))
-      (list 'ok '(error base-mismatch)))
+      (in-order (head-of (answer r4b)) (refused-run st4 wt4 c4-0 c4-1 "t4"))
+      (list 'ok (list (list 'base-mismatch (list 'store-cut (applied-cut st4)) (list 'rev c4-0) '(differing "a.sc")) #t 1)))
 (want "IG-4 the next range is accepted: imports chain"
       (in-order (head-of (answer (import! st4 wt4 c4-1 c4-2 "t4c"))) (export-is? st4 wt4 c4-2 (tag-cut st4 "t4c")))
       (list 'ok #t))
-(want "IG-4 a dot-only range and an empty range: nothing-to-import"
-      (in-order (refusal (import! st4 wt4 c4-2 c4-3 "t4d")) (refusal (import! st4 wt4 c4-2 c4-2 "t4e")))
-      (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-3)) (list 'nothing-to-import (list 'from c4-2) (list 'to c4-2))))
+(want "IG-4 a dot-only range, a dot path's type change and an empty range: nothing-to-import, nothing written"
+      (in-order (refused-run st4 wt4 c4-2 c4-3 "t4d") (refused-run st4 wt4 c4-3 c4-4 "t4d") (refused-run st4 wt4 c4-2 c4-2 "t4e"))
+      (list (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-3)) #t 1)
+            (list (list 'nothing-to-import (list 'from c4-3) (list 'to c4-4)) #t 1)
+            (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-2)) #t 1)))
 (want "IG-4 a rev the repository does not have: repo-unreadable, nothing written"
       (let ((p (position st4)))
         (in-order (refusal (import! st4 wt4 "no-such-rev" c4-2 "t4f")) (equal? (position st4) p)))
@@ -402,6 +406,18 @@
 (want "IG-4 a linked directory: the store holds the link's files, the precondition passes, the range imports"
       (in-order seed4l (head-of (answer r4l)) (texts st4l "m.sc") (and (file-at st4l "link/a.sc") #t))
       (list '(ok #t #t) 'ok (list (d 'a) (d 'b)) #t))
+
+;; A FILE GIT HOLDS AS A BINARY AND THE STORE AS TEXT is a difference: a
+;; regular file that is not text is outside the domain but not skipped (only
+;; links and submodules are), so the export's text file at that path differs
+(define wt4b (repo! "r4b"))
+(define c4b-0 (commit! wt4b "base" (cons "asset.dat" "text\n") (cons "m.sc" (defs 'a))))
+(define c4b-1 (commit! wt4b "binary" (cons "asset.dat" (bytevector 98 0 98 10))))
+(define c4b-2 (commit! wt4b "append" (cons "m.sc" (defs 'a 'b))))
+(define st4b (store-from! wt4b c4b-0 "s4b" #t))
+(want "IG-4 a path git holds as a binary file and the store as text: base-mismatch naming it, nothing written"
+      (refused-run st4b wt4b c4b-1 c4b-2 "t4b")
+      (list (list 'base-mismatch (list 'store-cut (applied-cut st4b)) (list 'rev c4b-1) '(differing "asset.dat")) #t 1))
 
 ;; ---- IG-5: modes, letters, text, the tag --------------------------------------------
 (printf "== IG-5: modes, letters, text, the tag ==\n")
@@ -451,23 +467,33 @@
 (define st6 (store-from! wt6 c6-0 "s6" #t))
 (define o6a (named st6 "a.sc" 'a 'b 'c))
 ;; DURING: a set of a title on BLOCK, then the log's end after it
-(define (set-title! st block) (lambda () (checked "concurrent set" (ask st 'set block "title" "concurrent")) (position st)))
-;; a premise refusal and the block its first failed premise names
-(define (premise-head a)
+;; DURING: a set of a title on BLOCK. -> (<log end after it> <block>
+;; <version before> <version after>)
+(define (set-title! st block)
+  (lambda ()
+    (let ((before (version st block)))
+      (checked "concurrent set" (ask st 'set block "title" "concurrent"))
+      (list (position st) block before (version st block)))))
+;; a premise refusal, and whether its first clause is exactly the set block
+;; with the version the run premised (the one before the set) and the one
+;; it found: (block <id> (expected <v>) (current <v>) ...)
+(define (premise-head a during)
   (let ((c (and (pair? a) (eq? (car a) 'error) (pair? (cdr a)) (pair? (cddr a)) (caddr a))))
-    (list (head-of a) (and (pair? c) (eq? (car c) 'block) (cadr c)))))
+    (list (head-of a)
+          (and (pair? during) (list? c) (>= (length c) 4)
+               (equal? (list-head c 4) (list 'block (cadr during) (list 'expected (caddr during)) (list 'current (cadddr during))))))))
 (define (premise-row h st)
-  (list (premise-head (cadr h)) (and (car h) (equal? (position st) (car h))) (tag-cut st "t6") (caddr h)))
+  (list (premise-head (cadr h) (car h)) (and (pair? (car h)) (equal? (position st) (car (car h)))) (tag-cut st "t6") (caddr h)))
 (want "IG-6 a concurrent set on a block the import sets: premise-changed, nothing written after it, no tag"
       (premise-row (held! st6 wt6 c6-0 c6-1 "t6" (set-title! st6 (cdr (assq 'b o6a)))) st6)
-      (list (list '(error premise-changed) (cdr (assq 'b o6a))) #t #f 1))
+      (list '((error premise-changed) #t) #t #f 1))
 (want "IG-6 a concurrent set on a block the import keeps: premise-changed likewise"
       (premise-row (held! st6 wt6 c6-0 c6-1 "t6" (set-title! st6 (cdr (assq 'a o6a)))) st6)
-      (list (list '(error premise-changed) (cdr (assq 'a o6a))) #t #f 1))
+      (list '((error premise-changed) #t) #t #f 1))
 (define st6d (store-from! wt6 c6-0 "s6d" #t))
 (want "IG-6 a concurrent set on a touched file's own file block: premise-changed likewise"
       (premise-row (held! st6d wt6 c6-0 c6-1 "t6" (set-title! st6d (file-at st6d "a.sc"))) st6d)
-      (list (list '(error premise-changed) (file-at st6d "a.sc")) #t #f 1))
+      (list '((error premise-changed) #t) #t #f 1))
 ;; ITS OWN STORE: the pending block comes from a run stopped after it, not
 ;; from another row's refused run
 (define st6c (store-from! wt6 c6-0 "s6c" #t))
@@ -476,7 +502,7 @@
 (want "IG-6 on a rerun, a concurrent set on the pending import block: premise-changed likewise"
       (list (length pending6c)
             (premise-row (held! st6c wt6 c6-0 c6-1 "t6" (set-title! st6c (and (pair? pending6c) (car pending6c)))) st6c))
-      (list 1 (list (list '(error premise-changed) (and (pair? pending6c) (car pending6c))) #t #f 1)))
+      (list 1 (list '((error premise-changed) #t) #t #f 1)))
 
 ;; ---- IG-7: the convergent rerun ---------------------------------------------------------
 ;;
@@ -500,7 +526,7 @@
          (sent (and (pair? d) (value-of d 'answer))))
     (list st old
           (list (and (pair? d) (car d)) (and (pair? d) (value-of d 'items)) (cadr r)
-                (and (pair? sent) (eq? (car sent) 'batch) (list? (cadr sent))
+                (and (pair? sent) (eq? (car sent) 'batch) (list? (cadr sent)) (= k (length (cadr sent)))
                      (for-all (lambda (x) (and (pair? x) (eq? (car x) 'ok))) (cadr sent))))
           (let ((b (import-blocks st))) (and (pair? b) (car (car b))))
           (position st)
@@ -522,11 +548,25 @@
 
 (define v7a (variant! "s7a" 7))
 (define half7a (texts (v-st v7a) "m.sc"))
+;; THE PENDING PLAN from [B,c,x,a]: LCS x,a, B and c relocated (4 kept),
+;; x appended and a, B, c moved after it (4 moves), y inserted, n.sc's file
+;; block and three children inserted (5 inserts); d.sc is gone: 9 items, then
+;; done and the tag
+(define before7a (position (v-st v7a)))
+(define cut7a (applied-cut (v-st v7a)))
+(define after7a (named (v-st v7a) "m.sc" 'B 'c 'x 'a))
 (define dry7a (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7" "" " --dry-run")))
+(define dry7a-wrote (not (equal? (position (v-st v7a)) before7a)))
 (define r7a (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped inside a file's items: the rerun converges, every LCS and relocation id kept, the same block done, one tag; a third run is base-mismatch"
-      (in-order (v-stop v7a) half7a (value-of dry7a 'state) (converged v7a r7a) (head-of (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))))
-      (list '(stopped 7 3 #t) (list B* (d 'c) (d 'x) (d 'a)) 'pending converged-ok '(error base-mismatch)))
+      (in-order (v-stop v7a) half7a (list dry7a dry7a-wrote) (converged v7a r7a)
+                (list (listed r7a 'set) (equal? (listed r7a 'moved) (ids-of after7a 'x 'a 'B 'c)) (length (listed r7a 'inserted)) (listed r7a 'deleted))
+                (head-of (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))))
+      (list '(stopped 7 3 #t) (list B* (d 'c) (d 'x) (d 'a))
+            (list (list 'ok '(dry-run #t) '(state pending) (list 'read-cut cut7a) '(files (modified 1) (added 1) (removed 1))
+                        '(blocks (kept 4) (set 0) (inserted 5) (deleted 0) (moved 4)) '(items 11))
+                  #f)
+            converged-ok (list '() #t 5 '()) '(error base-mismatch)))
 
 (define v7b (variant! "s7b" 0))
 (define mid7b (list (export-is? (v-st v7b) wt7 c7-0) (done-blocks (v-st v7b))))
@@ -575,7 +615,6 @@
       (list (list 'pending-import (list 'from c7-0) (list 'to c7-1) (list 'block (v-pending v7g))) 0))
 
 (define v7h (variant! "s7h" 3))
-(define (version st id) (and id (block-hash (open-and-reduce st) id)))
 (define version7h (version (v-st v7h) (v-pending v7h)))
 (define mid7h (list (and (file-at (v-st v7h) "d.sc") #t) (kids (v-st v7h) "d.sc")))
 (checked "outside drift" (ask (v-st v7h) 'set (car (kids (v-st v7h) "o.sc")) "src" "(define o 2)\n"))
@@ -587,22 +626,29 @@
                 (and version7h (equal? (version (v-st v7h) (v-pending v7h)) version7h)) (done-blocks (v-st v7h)))
       (list '(stopped 3 3 #t) '(#t ()) (list 'base-mismatch (list 'store-cut cut7h) (list 'rev c7-0) '(differing "o.sc")) #t #t '("pending")))
 
+;; A REMOVED FILE'S BLOCKS ARE PREMISED: a fresh run held, a set on d.sc's
+;; first child, which the batch deletes
+(define st7k (store-from! wt7 c7-0 "s7k" #t))
+(want "IG-7 a concurrent set on a block of a file the range removes: premise-changed, nothing written after it, no tag"
+      (let ((h (held! st7k wt7 c7-0 c7-1 "t7" (set-title! st7k (car (kids st7k "d.sc"))))))
+        (list (premise-head (cadr h) (car h)) (and (pair? (car h)) (equal? (position st7k) (car (car h)))) (tag-cut st7k "t7") (caddr h)))
+      (list '((error premise-changed) #t) #t #f 1))
 ;; THE PREMISES OF A RERUN: a block the prefix inserted (x, at item 4) is
 ;; premised; and the tag-only run of done-without-tag is premised
 (define (held-refused st during)
   (let ((h (held! st wt7 c7-0 c7-1 "t7" during)))
-    (list (premise-head (cadr h)) (and (car h) (equal? (position st) (car h))) (tag-cut st "t7") (caddr h))))
+    (list (premise-head (cadr h) (car h)) (and (pair? (car h)) (equal? (position st) (car (car h)))) (tag-cut st "t7") (caddr h))))
 (define v7i (variant! "s7i" 9))
 (define mid7i (texts (v-st v7i) "m.sc"))
 (define x7i (let ((st (v-st v7i))) (find (lambda (id) (equal? (src-text (code-field (open-and-reduce st) id 'src)) (d 'x))) (kids st "m.sc"))))
 (want "IG-7 on a rerun, a concurrent set on a block the interrupted run inserted: premise-changed, nothing written after it, no tag"
       (in-order (v-stop v7i) mid7i (held-refused (v-st v7i) (set-title! (v-st v7i) x7i)))
-      (list '(stopped 9 3 #t) (list (d 'x) (d 'a) B* (d 'c)) (list (list '(error premise-changed) x7i) #t #f 1)))
+      (list '(stopped 9 3 #t) (list (d 'x) (d 'a) B* (d 'c)) (list '((error premise-changed) #t) #t #f 1)))
 (define v7j (variant! "s7j" 15))
 (define m7j (car (kids (v-st v7j) "m.sc")))
 (want "IG-7 done without tag: a concurrent set on a range block during the tag-only run is premise-changed, no tag"
       (in-order (v-stop v7j) (held-refused (v-st v7j) (set-title! (v-st v7j) m7j)))
-      (list '(stopped 15 3 #t) (list (list '(error premise-changed) m7j) #t #f 1)))
+      (list '(stopped 15 3 #t) (list '((error premise-changed) #t) #t #f 1)))
 
 ;; ---- IG-8: the split equals a fresh import's ----------------------------------------
 (printf "== IG-8: the split equals a fresh import's ==\n")
