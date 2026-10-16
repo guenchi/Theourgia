@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE VERBS A PROGRAM ANSWERS ITSELF, READ FROM ITS DISPATCH TABLE (F64).
+;; THE VERBS A PROGRAM ANSWERS ITSELF, READ FROM ITS DISPATCH TABLE.
 ;;
 ;; `core.sc` answers `eval` in its own process and `theourgiad.sc` answers
 ;; `serve`; neither goes through the dispatcher, so neither is in

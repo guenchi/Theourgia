@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# THE ENVIRONMENT THIS FILE READS, DECLARED (F89), for docs-check.sc's
+# THE ENVIRONMENT THIS FILE READS, DECLARED, for docs-check.sc's
 # DOC-3 and its TWIN, as in run-fixtures.sh: it reads no THEOURGIA_* name,
 # and names none.
 # ENVIRONMENT READ:
@@ -130,7 +130,7 @@ for my $name (qw(INT TERM HUP)) {
 # when it is not valid, otherwise a list of [pid, command] for the live
 # (non-zombie) members of group $g.
 #
-# EVERY WAY IT TURNS UNKNOWN WRITES A NOTE (F103), with ps's exit code and
+# EVERY WAY IT TURNS UNKNOWN WRITES A NOTE, with ps's exit code and
 # the last 200 bytes of its stderr, so a result that says `cleanup unknown`
 # also says why. It used to say nothing: the census's stderr went to
 # /dev/null and every failure path returned undef in silence, so a run that

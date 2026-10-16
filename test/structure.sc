@@ -42,7 +42,7 @@
 ;; than its comment is worse than no scanner, because the place it is
 ;; wrong is the place nobody looks.
 ;;
-;; NOTE: THIS IS A PORT OF `structure.py` (F9), rule for rule, and it was
+;; NOTE: THIS IS A PORT OF `structure.py`, rule for rule, and it was
 ;; accepted by reading the same output as the Python on the whole tree and
 ;; on copies with each kind of defect. Three things are kept as the Python
 ;; had them because they are what the readings were taken with, not
@@ -140,7 +140,7 @@
                ;; NOTHING. A program written into a string literal put
                ;; `(define` at column 0 inside the literal, and this recorded
                ;; it as a top-level definition at the string's depth -- which
-               ;; refused a whole suite at preflight (F84).
+               ;; refused a whole suite at preflight.
                (let* ((first (and at-line-start (not (py-space? c))))
                       (counts (and first (not in-string) (not in-comment)))
                       (opens (if (and counts (starts-at? text i "(define"))

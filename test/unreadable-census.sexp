@@ -51,7 +51,7 @@
   ("evidence-index.sc" (files) file-is-directory? 1 convert c "evidence inventory lists writer files (R2f)")
   ("ffi.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("ffi.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("ffi.sc" (hold-point!) file-exists? 1 keep a "the hold seam's release file (injection only, F100b item 7): not writer layout; a test's own marker")
+  ("ffi.sc" (hold-point!) file-exists? 1 keep a "the hold seam's release file (injection only): not writer layout; a test's own marker")
   ("ffi.sc" (file-is-directory?) file-is-directory? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
   ("ffi.sc" (file-is-regular?) file-is-regular? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
   ("ffi.sc" (mkdir-p-body!) file-is-directory? 2 convert a "generic helper mkdir-p! (its body, mkdir-p-body!, shared with mkdir-p-unrecorded!): the predicate is now entry-type and raises on an unreadable path (converted unconditionally)")
@@ -66,7 +66,7 @@
   ("log.sc" (instance-name-present?) entry-name-type 1 keep a "not writer layout: whether the name instance.sexp is present in the store, asked of the name with an lstat; a failure other than absence raises")
   ("project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("project.sc" (md-files) file-is-directory? 1 keep a "not writer layout: import-md input dir")
-  ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
+  ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory")
   ("store.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("working.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("ffi.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -79,22 +79,22 @@
   ("log.sc" (seed-own-prefix) 1 guard
    (#t)
    conservative a
-   "the kept prefix's FAILURE RULE (F280): a raise while seeding keeps nothing, and the next append validates the writer's log in full, which states any unreadable entry itself"
+   "the kept prefix's FAILURE RULE: a raise while seeding keeps nothing, and the next append validates the writer's log in full, which states any unreadable entry itself"
    (e (#t #f)))
   ("log.sc" (kept-prefix-current?) 1 guard
    (#t)
    conservative a
-   "the kept prefix's FAILURE RULE (F280): a raise in the tail check is a mismatch, and the append validates the writer's log in full, which states any unreadable entry itself"
+   "the kept prefix's FAILURE RULE: a raise in the tail check is a mismatch, and the append validates the writer's log in full, which states any unreadable entry itself"
    (e (#t #f)))
   ("log.sc" (advanced-own-prefix) 1 guard
    (#t)
    conservative a
-   "the kept prefix's FAILURE RULE (F280): a raise in the post-write check keeps nothing, the write's own outcome stands, and the next append validates in full"
+   "the kept prefix's FAILURE RULE: a raise in the post-write check keeps nothing, the write's own outcome stands, and the next append validates in full"
    (e (#t #f)))
   ("log.sc" (catch-up-and-append!) 1 guard
    (#t)
    propagate a
-   "the kept prefix's FAILURE RULE (F280): a raise between the catch-up and the accounting clears the kept prefix and is raised on unchanged"
+   "the kept prefix's FAILURE RULE: a raise between the catch-up and the accounting clears the kept prefix and is raised on unchanged"
    (e (#t (session-own-prefix-set! s #f) (raise e))))
   ("build.ss" (declares-a-library?) 1 guard
    (#t)
@@ -119,7 +119,7 @@
   ("theourgiad.sc" (detach-step) 1 guard
    (#t)
    fact a
-   "detach-failed, a named outcome (F100b item 5): the step, the log path and the errno, with the scope's record through with-written -- the log's creation when its open failed after it (NO4b), nothing when its directory could not be searched (NO4) -- written on STDERR (E2); exit 71"
+   "detach-failed, a named outcome: the step, the log path and the errno, with the scope's record through with-written -- the log's creation when its open failed after it (NO4b), nothing when its directory could not be searched (NO4) -- written on STDERR (E2); exit 71"
    (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (guard (e2 (#t (trace-event! (quote detach-report-failed) #f #f))) (let ((err (current-error-port))) (write (with-written (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path) (list (quote errno) code)) (mutation-record)) err) (newline err) (flush-output-port err)))) (exit 71))))
   ("client.sc" (call-on-socket) 1 guard
    ((fs-error? e))
@@ -144,7 +144,7 @@
   ("client.sc" (start-one!) 1 guard
    ((classify-failure e (quote ())))
    refuse a
-   "F100b point 6 (M2 Q6): a filesystem failure of the client's own step (the log's length, the run directory, the spawn) is the table's answer over an EMPTY record, as serve-start-failed with (kind K); the client's own entries go only in client-written; anything else propagates"
+   "a filesystem failure of the client's own step (the log's length, the run directory, the spawn) is the table's answer over an EMPTY record, as serve-start-failed with (kind K); the client's own entries go only in client-written; anything else propagates"
    (e ((classify-failure e (quote ())) => (lambda (a) (own-start-failure a)))))
   ("client.sc" (connects?) 1 guard
    ((fs-error? e))
@@ -154,7 +154,7 @@
   ("client.sc" (socket-dir-refusal) 1 guard
    ((unreadable-entry? e))
    refuse a
-   "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created (F15)"
+   "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created"
    (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
   ("stream-client.sc" (stream!) 1 guard
    ((fs-error? e))
@@ -184,7 +184,7 @@
   ("project.sc" (export-md-view) 1 guard
    ((unreadable-entry? e) (fs-error? e))
    refuse a
-   "export-md: a target whose listing, directory creation or file write fails -- the unreadable-entry and the door's durable-error this guard catches -- answers (error unreadable (path ...) (reason ...) (written ...)), not internal (F98; the durable clause replaced an i/o-error clause when the writes went through the door). Filed as REFUSE, and it differs from that category's definition (refused before any mutation) in one way: files already written to the export target stay there, and (written ...) names them. export-md does not write the store"
+   "export-md: a target whose listing, directory creation or file write fails -- the unreadable-entry and the door's durable-error this guard catches -- answers (error unreadable (path ...) (reason ...) (written ...)), not internal (the durable clause replaced an i/o-error clause when the writes went through the door). Filed as REFUSE, and it differs from that category's definition (refused before any mutation) in one way: files already written to the export target stay there, and (written ...) names them. export-md does not write the store"
    (e ((unreadable-entry? e) (raise (unwritten (unreadable-entry-path e) (unreadable-entry-reason e) written))) ((fs-error? e) (raise (unwritten (fs-error-target e) (durable-failure-reason e) written)))))
   ("code-project.sc" (answer) 1 guard
    ((and (list? e) (pair? e) (eq? (car e) (quote error))))
@@ -279,17 +279,17 @@
   ("daemon.sc" (device-inode) 1 guard
    ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))))
    fact a
-   "socket device/inode: only an absent entry (ENOENT, ENOTDIR) is no inode; any other unreadable-entry, and anything else, propagates to the caller's table (F100b P2b; the other callers are M2's)"
+   "socket device/inode: only an absent entry (ENOENT, ENOTDIR) is no inode; any other unreadable-entry, and anything else, propagates to the caller's table (P2b)"
    (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #f)))
   ("daemon.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F100b point 9: main's startup (the socket directory, the lock file, the lock, the socket-path probe) answers a filesystem failure by the one table with main's record; the answer is decided here and reported ONCE outside the scope by report-and-exit!, exit 75 (P9 a-c; M2a review r1, F1); anything else propagates"
+   "main's startup (the socket directory, the lock file, the lock, the socket-path probe) answers a filesystem failure by the one table with main's record; the answer is decided here and reported ONCE outside the scope by report-and-exit!, exit 75 (P9 a-c; found in review); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (answer) (list (quote refuse) answer)))))
   ("daemon.sc" (watch-loop) 1 guard
    (#t)
    conservative a
-   "F100b point 2 (M2a review r1, F1/F3): a combined startup report that cannot be written is traced, not reported again; the terminal startup-failed clause then writes the exiting line and leaves 75 itself (the startup-exit design)"
+   "found in review: a combined startup report that cannot be written is traced, not reported again; the terminal startup-failed clause then writes the exiting line and leaves 75 itself (the startup-exit design)"
    (e (#t (trace-event! (quote startup-report-failed) #f #f))))
   ("daemon.sc" (unlink-own-socket!) 1 guard
    (#t)
@@ -304,17 +304,17 @@
   ("daemon.sc" (probe-for-outside-change!) 1 guard
    (#t)
    fact c
-   "refresh guard: a failed snapshot keeps the previous one and is traced probe-failed by name (R1a; F77c ruling 4)"
+   "refresh guard: a failed snapshot keeps the previous one and is traced probe-failed by name (R1a; a ruling)"
    (e (#t (trace-event! (quote probe-failed) (condition-text e) #f) was)))
   ("daemon.sc" (store-loop) 1 guard
    (#t)
    propagate c
-   "F100b point 2: the store process's startup scope hands every failure, with the scope's record, to the code after it, which sends (startup-failed <answer> <record>) to main and raises it again (P2-startup and its TWIN, F79-3); main writes the report. c makes the daemon declare acceptance of an incomplete reduction"
+   "the store process's startup scope hands every failure, with the scope's record, to the code after it, which sends (startup-failed <answer> <record>) to main and raises it again (P2-startup and its TWIN); main writes the report. c makes the daemon declare acceptance of an incomplete reduction"
    (e (#t (cons e (mutation-record)))))
   ("daemon.sc" (reload-or-say-why!) 1 guard
    (#t)
    fact c
-   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4); the one body of (reload) and of the store process's refresh before a cut read; subscribers are sent (error store-unreadable (reason <the same>)) with no revision"
+   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; a ruling); the one body of (reload) and of the store process's refresh before a cut read; subscribers are sent (error store-unreadable (reason <the same>)) with no revision"
    (e (#t (let ((why (or (classify-failure e (quote ())) (condition-text e)))) (trace-event! (quote reload-failed) why #f) (stream-notice! (list (quote error) (quote store-unreadable) (list (quote reason) why)))))))
   ("daemon.sc" (stream-run write-failed!) 1 guard
    (#t)
@@ -334,7 +334,7 @@
   ("daemon.sc" (answer-for) 1 guard
    ((and (pair? e) (eq? (quote error) (car e))) (unreadable-entry? e) #t)
    refuse c
-   "K1: the unreadable-entry branch answers (error unreadable (path p) (reason r)), added in F77a; the incomplete-reduction branch is F77c; neither is (error internal ...)"
+   "K1: the unreadable-entry branch answers (error unreadable (path p) (reason r)), added when unreadable entries got their own answer; it is not (error internal ...)"
    (e ((and (pair? e) (eq? (quote error) (car e))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) (#t (list (quote error) (quote internal) (list (quote reason) (condition-text e))))))
   ("daemon.sc" (listener-loop) 1 guard
    (#t)
@@ -469,12 +469,12 @@
   ("eval-worker.sc" (answer) 1 guard
    ((and refused (classify-failure refused (mutation-record))) (worker-refusal? e) (classify-failure e (mutation-record)) (condition? e) #t)
    refuse a
-   "eval: a load refused in this worker names the answer by its own condition, whatever a catch-all made of it (F77c); the worker's own refusals are a private record answered as they are (F92); a filesystem failure -- an entry the worker's load could not read, writers/ itself included (F79), or a durable-error -- answers by the one table with the worker's record (F100b point 5); a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
+   "eval: a load refused in this worker names the answer by its own condition, whatever a catch-all made of it; the worker's own refusals are a private record answered as they are; a filesystem failure -- an entry the worker's load could not read, writers/ itself included, or a durable-error -- answers by the one table with the worker's record; a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer"
    (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((worker-refusal? e) (worker-refusal-answer e)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
   ("eval-worker.sc" (worker-step) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))) (or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) #t)
    propagate a
-   "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers as before F92: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry, a durable-error (F100b) or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (F92 review r1, S)"
+   "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers this way: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry, a durable-error or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (found in review, S)"
    (e ((and (pair? e) (eq? (car e) (quote error))) (refuse! e)) ((or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) (raise e)) (#t (refuse! (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))))))
   ("derived.sc" (supply-lines) 1 guard
    (#t)
@@ -509,17 +509,17 @@
   ("ffi.sc" (file-create-exclusive!) 1 guard
    ((i/o-file-already-exists-error? e) (fs-error? e) (unreadable-entry? e) #t)
    propagate a
-   "re-raises; an existing name is #f; any other failure of the create is durable-error with the errno mapped from Chez's condition (F100a)"
+   "re-raises; an existing name is #f; any other failure of the create is durable-error with the errno mapped from Chez's condition"
    (e ((i/o-file-already-exists-error? e) #f) ((fs-error? e) (raise e)) ((unreadable-entry? e) (raise e)) (#t (raise (fs-err (quote create) path (condition-errno e))))))
   ("ffi.sc" (close-unwritten-port!) 1 guard
    ((unreadable-entry? e) #t)
    propagate a
-   "the close of a port Chez opened to create a file and never wrote: its failure is raised again as unreadable-entry naming the path (F100a review r1, D6)"
+   "the close of a port Chez opened to create a file and never wrote: its failure is raised again as unreadable-entry naming the path (found in review, D6)"
    (e ((unreadable-entry? e) (raise e)) (#t (chez-unreadable! path e))))
   ("ffi.sc" (call-with-lock) 1 guard
    (#t)
    unrelated a
-   "cleanup on an escape only: the lock's release is quiet so the condition already leaving is the one reported; on a normal exit the release is checked and raises (header obligation a; F100a review r1, D7)"
+   "cleanup on an escape only: the lock's release is quiet so the condition already leaving is the one reported; on a normal exit the release is checked and raises (header obligation a; found in review, D7)"
    (e (#t (void))))
   ("ffi.sc" (rss-linux) 1 guard
    (#t)
@@ -594,12 +594,12 @@
   ("ffi.sc" (file-ensure-body!) 1 guard
    ((fs-error? e) (unreadable-entry? e) #t)
    propagate a
-   "re-raises; unreadable-entry passes unchanged; the create's own failure is durable-error with the errno mapped from Chez's condition (F100a)"
+   "re-raises; unreadable-entry passes unchanged; the create's own failure is durable-error with the errno mapped from Chez's condition"
    (e ((fs-error? e) (raise e)) ((unreadable-entry? e) (raise e)) (#t (raise (fs-err (quote create) path (and (condition? e) (condition-errno e)))))))
   ("ffi.sc" (path-version) 1 guard
    ((unreadable-entry? e) #t)
    propagate a
-   "path-version's times: Chez's condition is raised again as unreadable-entry naming the path, errno mapped (F100a D1)"
+   "path-version's times: Chez's condition is raised again as unreadable-entry naming the path, errno mapped (the two-condition rule)"
    (e ((unreadable-entry? e) (raise e)) (#t (let ((code (and (condition? e) (condition-errno e)))) (raise (make-unreadable-entry path (if code (c-strerror code) "the entry's times cannot be read") (and code (errno-reason code))))))))
   ("ffi.sc" (real-path) 1 guard
    (#t)
@@ -624,7 +624,7 @@
   ("log.sc" (present-or-unreadable-skip?) 1 guard
    ((unreadable-entry? e))
    conservative a
-   "F77b R2g, by ruling (F100a): three sites, one rule -- log.sc's local-writer-name and barrier-artefacts and working.sc's writer-for read an owner.sexp or retired.sexp that cannot be stat'ed as absent, as the native presence test they replace did; the only places an unreadable entry still reads as absent"
+   "R2g, by ruling: three sites, one rule -- log.sc's local-writer-name and barrier-artefacts and working.sc's writer-for read an owner.sexp or retired.sexp that cannot be stat'ed as absent, as the native presence test they replace did; the only places an unreadable entry still reads as absent"
    (e ((unreadable-entry? e) #f)))
   ("log.sc" (atomic-write!) 1 guard
    (#t)
@@ -724,17 +724,17 @@
   ("log.sc" (open-load) 1 guard
    (#t)
    propagate c
-   "open-load's ONE exit handler (F77c, design reviews r5b and r6): tells the listener a refusal, releases the lock open-load owns quietly, re-raises the original condition"
+   "open-load's ONE exit handler (found in design review): tells the listener a refusal, releases the lock open-load owns quietly, re-raises the original condition"
    (e (#t (open-load-refused! store e owned) (raise e))))
   ("log.sc" (open-load-refused!) 1 guard
    (#t)
    unrelated a
-   "cleanup: the owned lock's release is quiet, so it can replace neither the escaping condition nor the notification (F77c, design review r6)"
+   "cleanup: the owned lock's release is quiet, so it can replace neither the escaping condition nor the notification (found in design review)"
    (x (#t (if #f #f))))
   ("log.sc" (open-load-body) 1 guard
    ((unreadable-entry? e) #t)
    propagate a
-   "open-load parses the store meta.sexp: an unreadable meta.sexp is raised to the answering point's table (F100b PRE-1/P5), through open-load's exit handler, which tells the listener (F77c); a parse failure is #f as before"
+   "open-load parses the store meta.sexp: an unreadable meta.sexp is raised to the answering point's table (PRE-1/P5), through open-load's exit handler, which tells the listener; a parse failure is #f as before"
    (e ((unreadable-entry? e) (raise e)) (#t #f)))
   ("log.sc" (store-key) 1 guard
    (#t)
@@ -764,37 +764,37 @@
   ("log.sc" (owner-nonce-or-refusal) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "verify-instance's owner read: an owner.sexp that cannot be read is an owner-unreadable record, which verify-instance answers as (refused owner-unreadable (path p) (reason r)) (R2i, U8d, F77b)"
+   "verify-instance's owner read: an owner.sexp that cannot be read is an owner-unreadable record, which verify-instance answers as (refused owner-unreadable (path p) (reason r)) (R2i, U8d)"
    (e ((unreadable-entry? e) (make-owner-unreadable (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (inventory-read-failure) 1 guard
    ((unreadable-entry? e) #t)
    propagate b
-   "adopt's inventory asks each discovery only for read failures: unreadable-entry propagates to the refusal; any other condition from a readable file is left to adopt's own path, as on the base (F77b review 2)"
+   "adopt's inventory asks each discovery only for read failures: unreadable-entry propagates to the refusal; any other condition from a readable file is left to adopt's own path, as on the base (found in review)"
    (e ((unreadable-entry? e) (raise e)) (#t #f)))
   ("log.sc" (adopt-preflight) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "adopt's whole-store inventory: a read that fails refuses by name (registry-unreadable or metadata-unreadable) before any write (R2h, K13, F77b review 1)"
+   "adopt's whole-store inventory: a read that fails refuses by name (registry-unreadable or metadata-unreadable) before any write (R2h, K13; found in review)"
    (e ((unreadable-entry? e) (unreadable-refusal (if (equal? (unreadable-entry-path e) (registry-path)) (quote registry-unreadable) (quote metadata-unreadable)) e))))
   ("log.sc" (unreadable-metadata) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "the append gate lists the writer's directory first, and names it when it cannot be listed (R4, U2b, F77b)"
+   "the append gate lists the writer's directory first, and names it when it cannot be listed (R4, U2b)"
    (e ((unreadable-entry? e) (list (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (metadata-flush!) 1 guard
    ((unreadable-entry? e))
    fact b
-   "the metadata barrier skips a writer whose directory cannot be listed, traced as barrier-skipped-unreadable, as the delivery barrier does (K9; U2c mode 100, F77b)"
+   "the metadata barrier skips a writer whose directory cannot be listed, traced as barrier-skipped-unreadable, as the delivery barrier does (K9; U2c mode 100)"
    (e ((unreadable-entry? e) #f)))
   ("rpc.sc" (verb-table) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "publish's candidate: absent is no-candidate, any other failure is candidate-unreadable with the path and reason (U9, F77b)"
+   "publish's candidate: absent is no-candidate, any other failure is candidate-unreadable with the path and reason (U9)"
    (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (owner-nonce) 1 guard
    (#t)
    fact b
-   "owner-nonce: a file that was read and does not parse answers #f, as it did; the read itself is R1's and outside this guard (F77b review 1)"
+   "owner-nonce: a file that was read and does not parse answers #f, as it did; the read itself is R1's and outside this guard (found in review)"
    (e (#t #f)))
   ("log.sc" (machine-id) 1 guard
    (#t)
@@ -869,12 +869,12 @@
   ("log.sc" (kept-content-ok?) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "kept-content-ok?: a retained candidate that cannot be read is answered as (unreadable path reason), and keep-incoming! refuses kept-unreadable with no rename over it (U9, F77b)"
+   "kept-content-ok?: a retained candidate that cannot be read is answered as (unreadable path reason), and keep-incoming! refuses kept-unreadable with no rename over it (U9)"
    (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (keep-incoming!) 1 guard
    ((unreadable-entry? e))
    refuse b
-   "keep-incoming! asks the .ok marker's presence (entry-type) before any staging -- existence, as the base; only a stat that fails refuses kept-unreadable, with nothing written (F77b reviews 1-3)"
+   "keep-incoming! asks the .ok marker's presence (entry-type) before any staging -- existence, as the base; only a stat that fails refuses kept-unreadable, with nothing written (found in review)"
    (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (keep-incoming!) 2 guard
    (#t)
@@ -904,7 +904,7 @@
   ("log.sc" (manifest-unreadable) 1 guard
    ((unreadable-entry? e) (log-error? e) #t)
    refuse b
-   "manifest-unreadable (publish): the unreadable-entry clause names the path and the reason (added in F77a)"
+   "manifest-unreadable (publish): the unreadable-entry clause names the path and the reason (added when unreadable entries got their own answer)"
    (e ((unreadable-entry? e) (list (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) ((log-error? e) (let ((detail (log-error-detail e))) (list (list (quote path) (cdr (assq (quote path) detail))) (list (quote reason) (let ((r (assq (quote reason) detail))) (if r (cdr r) "unreadable")))))) (#t (list (list (quote path) (manifest-path store writer)) (list (quote reason) "unreadable")))))
   ("log.sc" (active-current-segment?) 1 guard
    (#t)
@@ -999,12 +999,12 @@
   ("log.sc" (load-deliver!) 1 guard
    (#t)
    propagate b
-   "load-deliver! re-raises (delivery barrier); the condition is kept as the abort's cause, and an unreadable one is told to the listener (F77c)"
+   "load-deliver! re-raises (delivery barrier); the condition is kept as the abort's cause, and an unreadable one is told to the listener"
    (e (#t (finish-abort! ls (quote deliver-barrier-failed) e) (raise e))))
   ("log.sc" (deliver-after-barrier!) 1 guard
    (#t)
    propagate b
-   "the delivery's escaping condition is kept for finish-abort! in the unwind, then re-raised (F77c, design review r5)"
+   "the delivery's escaping condition is kept for finish-abort! in the unwind, then re-raised (found in design review)"
    (e (#t (vector-set! escaped 0 e) (raise e))))
   ("markers.sc" (safe-utf8) 1 guard
    (#t)
@@ -1054,7 +1054,7 @@
   ("mcp/server.sc" (answer-one) 4 guard
    (#t)
    unrelated a
-   "mcp: a raise inside a request; one the table classifies is answered by it in the request's shape (F100b point 7), any other keeps -32603"
+   "mcp: a raise inside a request; one the table classifies is answered by it in the request's shape, any other keeps -32603"
    (e (#t (or (classified-raise e parsed) (list (quote error) (quote null) -32603 "Core transport unavailable")))))
   ("mcp/server.sc" (run-child-in) 1 guard
    (#t)
@@ -1104,7 +1104,7 @@
   ("rpc.sc" (guarded) 1 guard
    ((and (list? e) (pair? e) (eq? (car e) (quote error))) (unreadable-entry? e) (fs-error? e) (log-error? e) #t)
    refuse c
-   "K1, a mixed handler: refuse/c names its non-filesystem branches (a thrown refusal, log-error, the internal fallback); its filesystem branches PROPAGATE -- an unreadable-entry or a durable-error is raised to rpc-dispatch-parsed's table (F100b point 1; the unreadable-entry branch was answered here from F77a); the incomplete-reduction branch is F77c"
+   "K1, a mixed handler: refuse/c names its non-filesystem branches (a thrown refusal, log-error, the internal fallback); its filesystem branches PROPAGATE -- an unreadable-entry or a durable-error is raised to rpc-dispatch-parsed's table (the unreadable-entry branch used to be answered here)"
    (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (raise e)) ((fs-error? e) (raise e)) ((log-error? e) (describe-log-error e)) (#t (list (quote error) (quote internal) (list (quote condition) (cond ((and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) (quote sexpr-error))) (vector-ref e 1)) ((message-condition? e) (condition-message e)) (else "unexpected failure")))))))
   ("rpc.sc" (read-version) 1 guard
    (#t)
@@ -1174,7 +1174,7 @@
   ("store.sc" (with-store-write) 3 guard
    (#t)
    fact b
-   "replay barrier: (error unknown (replay-barrier-failed ...)), with the record through with-written (F100b; replay creates nothing before the barrier, so NO2 reads it unchanged)"
+   "replay barrier: (error unknown (replay-barrier-failed ...)), with the record through with-written (replay creates nothing before the barrier, so NO2 reads it unchanged)"
    (e (#t (with-written (list (quote error) (quote unknown) (list (quote replay-barrier-failed) (failure-text e))) (mutation-record)))))
   ("store.sc" (with-store-write) 4 guard
    (#t)
@@ -1224,7 +1224,7 @@
   ("daemon.sc" (store-check) 1 guard
    ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #t)
    conservative a
-   "F268's once-a-second presence check: ENOENT or ENOTDIR is an absence; any other failure is a failed check, counted as present (a permission or I/O fault never ends a daemon, the ruled safe branch)"
+   "the daemon's once-a-second store presence check: ENOENT or ENOTDIR is an absence; any other failure is a failed check, counted as present (a permission or I/O fault never ends a daemon, the ruled safe branch)"
    (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) (quote absent)) (#t (quote failed))))
   ("store.sc" (store-position) 1 guard
    (#t)
@@ -1279,7 +1279,7 @@
   ("working.sc" (problem) 1 guard
    ((and (pair? e) (eq? (quote working-error) (car e))) (unreadable-entry? e) #t)
    fact b
-   "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10, F77b); each answer carries the working record through with-written (F100b NO1)"
+   "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10); each answer carries the working record through with-written (NO1)"
    (e ((and (pair? e) (eq? (quote working-error) (car e))) (with-written (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (mutation-record))) ((unreadable-entry? e) (with-written (unreadable-answer e) (mutation-record))) (#t (with-written (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))) (mutation-record)))))
   ("working.sc" (working-write!) 1 guard
    (#t)
@@ -1289,7 +1289,7 @@
   ("working.sc" (draft-body) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a
-   "working view: a datum draft the reader refuses is refused by name (F17)"
+   "working view: a datum draft the reader refuses is refused by name"
    (e ((and (pair? e) (eq? (car e) (quote error))) (refused (or (assq (quote reason) (filter pair? e)) (quote (reason reader-rejected)))))))
   ("working.sc" (working-restore!) 1 guard
    (#t)
@@ -1304,17 +1304,17 @@
   ("working.sc" (retire!) 1 guard
    (#t)
    fact b
-   "retire!: the draft lock cannot be taken -- the commit keeps its answer and carries (cleanup-failed (path draft.lock) (reason r)) (U10, F77b)"
+   "retire!: the draft lock cannot be taken -- the commit keeps its answer and carries (cleanup-failed (path draft.lock) (reason r)) (U10)"
    (failure (#t (cleanup-failed (lock-path store writer) failure))))
   ("working.sc" (retire!) 2 guard
    (#t)
    fact b
-   "retire!, a commit that landed: one draft could not be retired -- the first such failure is the commit's (cleanup-failed (path p) (reason r)) clause (U10, F77b; review 2)"
+   "retire!, a commit that landed: one draft could not be retired -- the first such failure is the commit's (cleanup-failed (path p) (reason r)) clause (U10; found in review)"
    (failure (#t (cleanup-failed (path-for store writer (list-ref (car es) 3)) failure))))
   ("working.sc" (retire!) 3 guard
    (#t)
    fact b
-   "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (F77b review 2)"
+   "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (found in review)"
    (failure (#t #f)))
   ("working.sc" (commit-premises) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
@@ -1324,7 +1324,7 @@
   ("working.sc" (working-commit!) 1 guard
    ((unreadable-entry? e) #t)
    fact b
-   "DEFERRED FACT to preflight (R1a); an unreadable-entry is also marked, so a commit without --req answers working-unavailable before no-draft (U10, F77b)"
+   "DEFERRED FACT to preflight (R1a); an unreadable-entry is also marked, so a commit without --req answers working-unavailable before no-draft (U10)"
    (e ((unreadable-entry? e) (set! read-failure (unreadable-answer e)) (set! unreadable-failure #t) (quote ())) (#t (set! read-failure (if (and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "A draft could not be read"))))) (quote ()))))
   ("working.sc" (working-commit!) 2 guard
    (#t)
@@ -1334,12 +1334,12 @@
   ("core.sc" (eval-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F77c (code review r2): the answer also carries the notes this process heard; F100b point 3, the boot: a filesystem failure inside the scheduler answers by the one table with the boot's record (the pre-scheduler record handed in as its initial entries, AG-b-1/AG-b-2); anything else propagates"
+   "found in code review: the answer also carries the notes this process heard; the boot: a filesystem failure inside the scheduler answers by the one table with the boot's record (the pre-scheduler record handed in as its initial entries, AG-b-1/AG-b-2); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (a) (finish (with-heard-clause a (heard)) wire?)))))
   ("core.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F100b point 3: a filesystem failure before the scheduler answers by the one table with main's record (P3-a); anything else propagates"
+   "a filesystem failure before the scheduler answers by the one table with main's record (P3-a); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag)))))
   ("core.sc" (eval-foreign-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
@@ -1374,7 +1374,7 @@
   ("daemon.sc" (dispatch-frame) 1 guard
    ((classify-failure e (quote ())))
    refuse a
-   "F100b point 2b: the store check's stat failing answers the table's kind with an empty record, as the transport's refusal (P2b); anything else propagates"
+   "the store check's stat failing answers the table's kind with an empty record, as the transport's refusal (P2b); anything else propagates"
    (e ((classify-failure e (quote ())) => (lambda (a) a))))
   ("premises.sc" (premises-faces) 1 guard
    ((and entered (not called)))
@@ -1389,7 +1389,7 @@
   ("rpc.sc" (rpc-dispatch-parsed) 1 guard
    ((and refused (classify-failure refused (mutation-record))) (classify-failure e (mutation-record)) (and (list? e) (pair? e) (eq? (car e) (quote error))) (serious-condition? e))
    refuse a
-   "F77c: a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a raised (error ...) datum is answered as itself and a serious condition as (error internal (reason <message>)), so both carry the incomplete clause of what the dispatch heard; a nested dispatch opens no scope; a non-serious raise (a continuable warning) and any other raised value propagate"
+   "a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a raised (error ...) datum is answered as itself and a serious condition as (error internal (reason <message>)), so both carry the incomplete clause of what the dispatch heard; a nested dispatch opens no scope; a non-serious raise (a continuable warning) and any other raised value propagate"
    (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((serious-condition? e) (list (quote error) (quote internal) (list (quote reason) (condition-text e))))))
   ("theourgia.sc" (stream-terminal) 1 guard
    (#t)
@@ -1399,12 +1399,12 @@
   ("theourgia.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F100b point 4: the thin client answers a filesystem failure by the one table and exits 75 through refuse (P4); anything else propagates"
+   "the thin client answers a filesystem failure by the one table and exits 75 through refuse (P4); anything else propagates"
    (e ((classify-failure e (mutation-record)) => refuse)))
   ("daemon.sc" (report-and-exit!) 1 guard
    (#t)
    conservative a
-   "F100b point 9 (M2a review r1, F1/F3): a failure of the startup report's own write is not reported again -- the report channel is what failed -- and the exit is 75 either way"
+   "found in review: a failure of the startup report's own write is not reported again -- the report channel is what failed -- and the exit is 75 either way"
    (e (#t (exit 75))))
   ("daemon.sc" (watch-loop) 2 guard
    (#t)
@@ -1414,42 +1414,42 @@
   ("theourgiad.sc" (serve-and-exit!) 2 guard
    (#t)
    conservative a
-   "F100b point 8 (M2a review r1, F1/F3): a failure of the report's own write is not reported again; exit 75"
+   "found in review: a failure of the report's own write is not reported again; exit 75"
    (e2 (#t (exit 75))))
   ("theourgiad.sc" (serve-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F100b point 8: this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8); anything else propagates"
+   "this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (answer) (guard (e2 (#t (exit 75))) ((later (quote (theourgia daemon)) (quote write-report-line!)) 1 (append answer (list (list (quote attempt) attempt))))) (exit 75)))))
   ("daemon.sc" (leave) 1 guard
    (#t)
    conservative a
-   "F100b M2a r2 F2: the exit code is decided before the tidying; a failed unlink probe is traced and the exit goes ahead (a tripwire: no row makes it fail)"
+   "found in review: the exit code is decided before the tidying; a failed unlink probe is traced and the exit goes ahead (a tripwire: no row makes it fail)"
    (e (#t (trace-event! (quote leave-tidy-failed) #f #f))))
   ("daemon.sc" (leave) 2 guard
    (#t)
    conservative a
-   "F100b M2a r2 F2: a failed lock release at exit is traced and the exit goes ahead; the exit closes the descriptor (a tripwire: no row makes it fail)"
+   "found in review: a failed lock release at exit is traced and the exit goes ahead; the exit closes the descriptor (a tripwire: no row makes it fail)"
    (e (#t (trace-event! (quote leave-tidy-failed) #f #f))))
   ("daemon.sc" (report-quietly) 1 guard
    (#t)
    conservative a
-   "F100b M2a r3: a line main writes (exiting, serving, draining) cannot change an exit or end main; measured for the exiting line by P2-startup closed stdout (mutant MC-1), no row for serving and draining"
+   "found in review: a line main writes (exiting, serving, draining) cannot change an exit or end main; measured for the exiting line by P2-startup closed stdout (mutant MC-1), no row for serving and draining"
    (e (#t (trace-event! (quote report-failed) #f #f))))
   ("theourgiad.sc" (detach-step) 2 guard
    (#t)
    conservative a
-   "F100b M2a r3: a stderr that cannot be written does not change detach-failed's exit 71 (NO4 closed stderr)"
+   "found in review: a stderr that cannot be written does not change detach-failed's exit 71 (NO4 closed stderr)"
    (e2 (#t (trace-event! (quote detach-report-failed) #f #f))))
   ("daemon.sc" (watch-loop) 3 guard
    (#t)
    conservative a
-   "F100b M2a r4 (the startup-exit design R3): a lock-drop whose release raises does not end main -- in STARTING the boot's own store lock comes back here; traced; a tripwire: no row makes an unlock or close fail"
+   "found in review (the startup-exit design R3): a lock-drop whose release raises does not end main -- in STARTING the boot's own store lock comes back here; traced; a tripwire: no row makes an unlock or close fail"
    (e (#t (trace-event! (quote lock-drop-failed) #f #f))))
   ("client.sc" (exited-answer) 1 guard
    ((unreadable-entry? e))
    refuse a
-   "F100b point 6, TK5: the log, read after the daemon's exit under stage client, cannot be read -- the condition is kept and answered as (kind unreadable) naming the log, with the status"
+   "TK5: the log, read after the daemon's exit under stage client, cannot be read -- the condition is kept and answered as (kind unreadable) naming the log, with the status"
    (e ((unreadable-entry? e) e)))
   ("eval-admission.sc" (eval-admit!) 1 guard
    (#t)
@@ -1589,7 +1589,7 @@
 ;;   fd-close and the forms that close what they open (call-with-input-file,
 ;;   call-with-output-file, with-input-from-file, with-output-to-file,
 ;;   call-with-port), and every unlock (c-flock ... LOCK_UN), by the close
-;;   census of unreadable-census.sc (F100a, rulings H1, I and J). category is one of four: checked, escape,
+;;   census of unreadable-census.sc (rulings H1, I and J). category is one of four: checked, escape,
 ;;   contention or out-of-scope; the line is the reader's, not pinned.
 (close
   ((above-stdio) c-close 1 escape "the dup failed: the held descriptors are released and the durable-error is raised")
@@ -1618,7 +1618,7 @@
   ((file-size) c-close 1 checked "through read-closing: checked on the normal path, quiet on an escape")
   ((lock-acquire!) close-quietly 1 escape "inside the guard that re-raises a failed flock")
   ((lock-try-acquire!) close-quietly 1 escape "inside the guard that re-raises a raising flock call")
-  ((lock-try-acquire!) c-close 1 checked "the contention answer: checked, then #f (F100a review r2, ruling H1)")
+  ((lock-try-acquire!) c-close 1 checked "the contention answer: checked, then #f (found in review; ruling H1)")
   ((lock-try-acquire!) close-quietly 2 escape "a flock failure other than contention: released, then unreadable-entry raised")
   ((lock-release!) unlock 1 checked "the unlock's failure raises unreadable-entry after the close is attempted")
   ((lock-release!) c-close 1 checked "the close's failure raises unreadable-entry; close-fail reaches it")

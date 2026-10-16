@@ -1,5 +1,5 @@
 #!/bin/sh
-# ONE COMMAND THAT COUNTS A ROW'S HISTORY (F67).
+# ONE COMMAND THAT COUNTS A ROW'S HISTORY.
 #
 # Usage, from anywhere:
 #

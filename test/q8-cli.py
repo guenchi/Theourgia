@@ -52,7 +52,7 @@ def fresh(name):
 def records(s):
     return {str(f.relative_to(s)):f.read_bytes() for f in s.glob('writers/*/[0-9]*.sexp')}
 
-# F1: the retirement transaction, not the optional cache, preserves lost success.
+# Retirement: the retirement transaction, not the optional cache, preserves lost success.
 s,w = fresh('rollback')
 a = ['insert','--title','Original','--req','lost','--cursor',w+':0']
 check('acknowledged before rollback', call(s,a)[0]==0)
@@ -75,7 +75,7 @@ cache.unlink(missing_ok=True)
 before=records(s); rc,t=call(s,a)
 check('legacy retirement cannot prove nonexecution',rc==1 and '(error unknown' in t and records(s)==before)
 
-# F4: replay barriers and partial writes never masquerade as prewrite failures.
+# Replay: replay barriers and partial writes never masquerade as prewrite failures.
 s,w = fresh('barrier')
 a=['insert','--title','One','--req','once','--cursor',w+':0']
 check('healthy cacheless request succeeds',call(s,a)[0]==0)
@@ -98,7 +98,7 @@ rc,t=call(s,['batch'],data,fault='open-fail@commit:file=000002.sexp:errno=EMFILE
 check('late rotation exception keeps executed event',rc==1 and '(ok (events ((' in t and '(error unknown' in t)
 rc,t=call(s,['outline']);check('complete prefix survives failed rotation','First' in t and 'Second' not in t)
 
-# F6: known option spellings are opaque values, at both transport and verb layers.
+# Options: known option spellings are opaque values, at both transport and verb layers.
 s,w=fresh('options')
 for i,literal in enumerate(('--actor','--store','--req','--cursor','--text'),1):
     rc,t=call(s,['insert','--title',literal,'--text',literal],actor=literal)
@@ -115,7 +115,7 @@ a=['insert','--title','--cursor','--text','-','--req','stdin-once','--cursor',w+
 rc,t=call(s,a,b'--actor');check('stdin is opaque value in tracked request',rc==0)
 before=records(s);rc,t=call(s,a,b'--actor');check('stdin tracked replay preserves fingerprint',rc==0 and '(replay #t)' in t and records(s)==before)
 rc,t=call(s,['read',w+'.7']);check('stdin body persisted','(src . "--actor")' in t)
-# F5/F7 use the same real state assertions under normal and failed reports.
+# Reports: the same real state assertions under normal and failed reports.
 for mode,fault in [('plain',None),('tracked',None),('plain','report-fail@report'),('tracked','report-fail@report'),('outline',None)]:
     case=root/('report-'+mode+'-'+str(bool(fault)));case.mkdir();(case/'store').mkdir();(case/'machine').mkdir()
     e=dict(env,THEOURGIA_HOME=str(case/'machine'))

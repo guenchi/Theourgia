@@ -1,5 +1,5 @@
 #!/bin/sh
-# THE ENVIRONMENT THIS FILE READS, DECLARED (F89). docs-check.sc's DOC-3
+# THE ENVIRONMENT THIS FILE READS, DECLARED. docs-check.sc's DOC-3
 # takes the runner's names from the READ line below and requires the README
 # to document each; its TWIN requires every THEOURGIA_* name anywhere in this
 # file, comments and strings included, to be on one of the two lines. READ
@@ -70,7 +70,7 @@ esac
 out=$1
 mkdir -p "$out"
 
-# ---- one run, two roots, both made here and removed on every exit (F71) -----
+# ---- one run, two roots, both made here and removed on every exit -----------
 #
 # KEY: EVERY SCRATCH PATH A FIXTURE USES LIVES UNDER ONE OF TWO DIRECTORIES
 # THIS RUN CREATES, AND BOTH ARE REMOVED WHEN THIS RUNNER EXITS, WHATEVER
@@ -215,7 +215,7 @@ mono() {
 # may finish up to 5 s past it. A clock that cannot be read ends the wait
 # at once, returning 2: a reading that is not a number must not become a
 # wait with no end.
-# NEVER: THE CLOCK'S FAILURE IS ITS OWN RETURN (F90). It used to return 1,
+# NEVER: THE CLOCK'S FAILURE IS ITS OWN RETURN. It used to return 1,
 # the same as a bound that ran out, so a caller could only report "did not
 # stop within N s" for a wait that never started counting.
 wait_gone() {
@@ -297,8 +297,8 @@ run_tracked() {
   if read_result "$tracked_result" "$tracked_id" "$tracked_name" && [ -n "$rr_status" ]; then
     rt_st=$rr_status
   fi
-  # THE RUN THAT STOPS LAUNCHING SAYS WHY, AT THE FIXTURE THAT STOPPED IT
-  # (F95). Its reason and that fixture's output are both known here, and
+  # THE RUN THAT STOPS LAUNCHING SAYS WHY, AT THE FIXTURE THAT STOPPED IT.
+  # Its reason and that fixture's output are both known here, and
   # the output lives in this run's scratch, which is removed at the end --
   # so a run inside another fixture's scratch (runner-self, launch-self)
   # used to leave only its exit code, 6, and nothing to read the cause from.
@@ -338,7 +338,7 @@ W_STOP_BOUND=15
 W_STOP_WAIT=$((W_STOP_BOUND + 5))
 # stop_watcher: the running launch's watcher is asked to stop and waited
 # for; one that is not seen to stop is killed and its group is not read,
-# and the roots are kept. TWO CAUSES, TWO MESSAGES (F90): a watcher that
+# and the roots are kept. TWO CAUSES, TWO MESSAGES: a watcher that
 # outlived the bound, and a monotonic clock that could not be read, so the
 # wait never counted at all.
 stop_watcher() {
@@ -365,7 +365,7 @@ stop_watcher() {
 on_signal() {
   trap '' INT TERM HUP
   echo "SIGNALLED: stopping the running launch and the probe, counting this run's processes, then removing its roots"
-  # THE LAUNCH THE SIGNAL CUT IS NAMED, AS AN ABORT IS (F104, I3). SIGNALLED
+  # THE LAUNCH THE SIGNAL CUT IS NAMED, AS AN ABORT IS (I3). SIGNALLED
   # alone left a reader of the log unable to tell which launch was cut. The
   # name is the running launch's; between launches no launch was cut, and
   # the line says so and names the last launch that ran to its end. It is not
@@ -414,7 +414,7 @@ if [ "$(uname)" = FreeBSD ]; then
   fi
 fi
 
-# ---- the leak count: this run's processes, by the mark they carry (F70) -----
+# ---- the leak count: this run's processes, by the mark they carry ----------
 #
 # It used to be `pgrep -f "scheme --script"`, which matches command lines
 # machine-wide: it counted the process asking, any shell loop whose own
@@ -847,7 +847,7 @@ fi
 # loop names it among the helpers, as it named the Python file before it.
 # It was `structure.py`, the one check in this suite that needed Python,
 # so a machine without `python3` printed NOT CHECKED here and took a
-# reading with a hole in it. It is Scheme since F9, a port read against
+# reading with a hole in it. It is a Scheme port now, read against
 # the Python on the whole tree and on copies with each kind of defect,
 # and it runs wherever the fixtures do.
 if [ -f structure.sc ] && [ "$aborted" = 1 ]; then
@@ -915,8 +915,8 @@ for f in *.sc *.py; do
   # broken fixture looks like, so the list says which it is;
   # `import-walk` is the shared walker seven fixtures `load`;
   # `own-verbs` is the reader of the programs' dispatch tables that
-  # `options-gate` and `docs-check` `load` (F64); and `f54-reference` is
-  # the reference library arm B of `startup-ratio` imports (F54): a
+  # `options-gate` and `docs-check` `load`; and `f54-reference` is
+  # the reference library arm B of `startup-ratio` imports: a
   # library, not a fixture, whose name is not (theourgia ...) because
   # the reference must import nothing of the tree, so the library test
   # below does not catch it. Its program, `f54-reference-main.ss`, is a
@@ -1012,7 +1012,7 @@ done
 total=$(ls *.sc *.py 2>/dev/null | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
-# THE SUMMARY SAYS WHAT IT COUNTS (F80). It used to print the number of
+# THE SUMMARY SAYS WHAT IT COUNTS. It used to print the number of
 # python fixtures RUN inside the parentheses after the reds, where it read
 # as the number of reds that were python: "3 are python" of three reds
 # that were all .sc.
