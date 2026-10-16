@@ -26,11 +26,18 @@
 ;;   it came from; MANIFEST.sha256 lists every file's sha256 and path;
 ;; - CHANGED.sexp is changed-files between the store at the pinned cut and the
 ;;   working view: the files the drafts change;
-;; - the draft list is read again, and must be the one dumped.
-;; A draft written during the freeze makes the last step differ, and the
-;; freeze is refused (error drafts-changed ...), with nothing written after
-;; it: the tree in <dir> is then not what the drafts are, and the directory
-;; is left for the coder to remove before freezing again.
+;; - THE VIEW THE TREE IS CHECKED AGAINST HOLDS THE DUMPED DRAFTS: the
+;;   working view is read once, the exported files are compared with its
+;;   projection, and its own drafts -- each block and version -- must be the
+;;   dumped ones. So the tree is the dumped drafts' tree, whatever was
+;;   written in between: a draft rewritten and written back to its old
+;;   version has the same bytes, and a draft still changed when the view was
+;;   read differs from the dump;
+;; - the draft list is read again at the end, and must still be the one
+;;   dumped, so a freeze does not report a draft list a writer has since left.
+;; A draft written during the freeze is refused (error drafts-changed ...),
+;; with nothing written after it; the directory is left for the coder to
+;; remove before freezing again.
 ;;
 ;; A refusal prints (error <kind> ...) and exits 1; success prints
 ;; (ok (frozen <n>) (changed <k>) (dir "<dir>")) and exits 0.
@@ -90,10 +97,15 @@
         (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
       (let* ((w (working-state store #f writer))
              (view (if (and (pair? w) (eq? (car w) 'ok)) (caddr w) (refuse 'working-view-refused w)))
+             ;; the view's own drafts, each (<id> <version> <based-on> <bytes>)
+             (in-view (list-sort (lambda (x y) (string<? (car x) (car y)))
+                                 (map (lambda (d) (cons (car d) (cadr d))) (cadddr w))))
              (base (store-state-at-cut store #f (format "~s" pinned)))
              ;; ((<path> <bytes>) ...), what export-code --raw wrote
              (files (raw-projection view)))
         (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
+        (unless (equal? in-view frozen)
+          (refuse 'drafts-changed (list 'dumped frozen) (list 'in-view in-view)))
         (for-each (lambda (f)
                     (unless (equal? (entry-bytes (string-append dir "/tree/" (car f))) (cadr f))
                       (refuse 'export-mismatch (list 'path (car f)))))

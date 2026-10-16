@@ -40,7 +40,8 @@
         (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia log) writer-directory)
-        (only (theourgia ffi) path-stat))
+        (only (theourgia ffi) path-stat)
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define bad 0)
 (define rows 0)
@@ -78,6 +79,7 @@
 (define (path-parent p)
   (let loop ((i (- (string-length p) 1))) (cond ((< i 0) ".") ((char=? (string-ref p i) #\/) (substring p 0 i)) (else (loop (- i 1))))))
 (define (file-datum path) (guard (e (#t 'UNREADABLE)) (call-with-input-file path read)))
+(define (sha256-hex bytes) (bytevector->hex (sha256 bytes)))
 (define (ask st . req) (rpc-dispatch st req "test"))
 (define (head-of a) (cond ((not (pair? a)) a) ((eq? (car a) 'error) (list 'error (cadr a))) (else (car a))))
 (define (checked what a) (unless (eq? 'ok (head-of a)) (assertion-violation 'drafts-tools what a)) a)
@@ -266,6 +268,26 @@
     (unless (= 1 (length kids)) (assertion-violation 'drafts-tools "not one block" path kids))
     (car kids)))
 (define (text-of path) (guard (e (#t 'ABSENT)) (call-with-input-file path get-string-all)))
+;; -> ((<path> <hash matches the tree's file>) ...), MANIFEST.sha256 read line
+;; by line: "<sha256>  <path>"
+(define (manifest-checks dir)
+  (let ((m (text-of (string-append dir "/MANIFEST.sha256"))))
+    (if (not (string? m))
+        'NO-MANIFEST
+        (let loop ((lines (let split ((i 0) (start 0) (out '()))
+                            (cond ((= i (string-length m)) (reverse (if (< start i) (cons (substring m start i) out) out)))
+                                  ((char=? (string-ref m i) #\newline) (split (+ i 1) (+ i 1) (cons (substring m start i) out)))
+                                  (else (split (+ i 1) start out)))))
+                   (out '()))
+          (if (null? lines)
+              (reverse out)
+              (let* ((l (car lines)) (hash (substring l 0 (min 64 (string-length l))))
+                     (path (if (> (string-length l) 66) (substring l 66 (string-length l)) ""))
+                     (bytes (guard (e (#t #f)) (call-with-port (open-file-input-port (string-append dir "/tree/" path)) get-bytevector-all))))
+                (loop (cdr lines)
+                      (cons (list path (and (bytevector? bytes)
+                                            (string=? hash (sha256-hex bytes))))
+                            out))))))))
 (define s4 (imported-store!))
 (define a4 (block-of s4 "a.txt"))
 (draft! s4 a4 "one, frozen\n")
@@ -278,9 +300,9 @@
       (list (clause1 'writer (file-datum (string-append freeze4 "/DRAFTS.sexp")))
             (text-of (string-append freeze4 "/tree/a.txt"))
             (text-of (string-append freeze4 "/tree/b.txt"))
-            (let ((m (text-of (string-append freeze4 "/MANIFEST.sha256")))) (and (string? m) (length (filter (lambda (c) (char=? c #\newline)) (string->list m)))))
+            (manifest-checks freeze4)
             (clause 'items (file-datum (string-append freeze4 "/CHANGED.sexp"))))
-      (list W "one, frozen\n" "two\n" 2 '((path "a.txt" content))))
+      (list W "one, frozen\n" "two\n" '(("a.txt" #t) ("b.txt" #t)) '((path "a.txt" content))))
 (want "LF-3 landing-commit commits from the freeze's directory"
       (in-order (head-of (tool "landing-commit" s4 freeze4))
                 (drafts-of s4))
@@ -306,10 +328,10 @@
 (define held5 (wait-for (string-append release5 ".held") 60000))
 (when held5 (draft! s5 (block-of s5 "b.txt") "two, written during the freeze\n"))
 (call-with-output-file release5 (lambda (p) (display "go" p)))
-(wait-for rc5 60000)
-(want "LF-2 a draft written while the freeze waits after its dump refuses the freeze"
-      (list held5 (head-of (file-datum out5)))
-      '(#t (error drafts-changed)))
+(define done5 (wait-for rc5 60000))
+(want "LF-2 a draft written while the freeze waits after its dump refuses the freeze, which exits 1"
+      (list held5 done5 (head-of (file-datum out5)) (and done5 (file-datum rc5)))
+      '(#t #t (error drafts-changed) 1))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")
