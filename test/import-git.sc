@@ -223,6 +223,8 @@
     (list (file-datum out) (file-datum (string-append out ".rc")))))
 (define (answer r) (car r))
 ;; the refusal's kind and clauses, or (NOT-A-REFUSAL <what was printed>)
+;; A RUN THAT SUCCEEDED: (ok 0), its answer's head and its exit status
+(define (ran r) (list (head-of (answer r)) (cadr r)))
 (define (refusal r) (let ((a (answer r))) (if (and (pair? a) (eq? (car a) 'error)) (cdr a) (list 'NOT-A-REFUSAL a))))
 (define (applied-cut st) (reduce-applied-cut (open-and-reduce st)))
 (define (version st id) (and id (block-hash (open-and-reduce st) id)))
@@ -260,12 +262,12 @@
 (define r1 (import! st1 wt1 c1-0 c1-1 "t1"))
 (define block1 (let ((b (import-blocks st1))) (and (= 1 (length b)) (car (car b)))))
 (want "IG-1 the range lands: export at the tag = git archive <to>; the import block's fields; the answer's tag, files and blocks whole"
-      (list (head-of (answer r1)) (export-is? st1 wt1 c1-1 (tag-cut st1 "t1"))
+      (list (ran r1) (export-is? st1 wt1 c1-1 (tag-cut st1 "t1"))
             (and block1 (map (lambda (f) (field-of st1 block1 f)) '(kind slot from to tag status src)))
             (equal? (clause-of (answer r1) 'tag) (list 'tag "t1" (list 'cut (tag-cut st1 "t1"))))
-            (clause-of (answer r1) 'files) (value-of (answer r1) 'rerun) (clause-of (answer r1) 'blocks))
-      (list 'ok #t (list "decision" "import" c1-0 c1-1 "t1" "done" "edit b\nappend r\n")
-            #t '(files (modified 2) (added 0) (removed 0)) #f
+            (clause-of (answer r1) 'files) (clause-of (answer r1) 'rerun) (clause-of (answer r1) 'blocks))
+      (list '(ok 0) #t (list "decision" "import" c1-0 c1-1 "t1" "done" "edit b\nappend r\n")
+            #t '(files (modified 2) (added 0) (removed 0)) '(rerun #f)
             (list 'blocks '(kept 4) (list 'set (list b1)) (list 'inserted (list (caddr (kids st1 "b.sc")))) '(deleted ()) '(moved ()))))
 (want "IG-1 the tag binds the cut of `set status done`, and is the last record: pending one record before the cut, done at it"
       (let* ((cut (tag-cut st1 "t1")) (end (position st1))
@@ -302,8 +304,8 @@
 (define (ids-of old . names) (map (lambda (n) (cdr (assq n old))) names))
 (define (row2 path old . target) (list (shape old (kids st2 path)) (equal? (texts st2 path) target)))
 (want "IG-2 a middle insert [a,b,c] -> [a,x,b,c]: b and c keep their ids, x is one insert (the run itself landed)"
-      (in-order (head-of (answer r2)) (row2 "m1.sc" o1 (d 'a) (d 'x) (d 'b) (d 'c)))
-      (list 'ok (list '(a new b c) #t)))
+      (in-order (ran r2) (row2 "m1.sc" o1 (d 'a) (d 'x) (d 'b) (d 'c)))
+      (list '(ok 0) (list '(a new b c) #t)))
 (want "IG-2 a definition edited in place keeps its id; the answer's set, inserted and deleted lists are every file's, in item order"
       (list (row2 "m2.sc" o2 (d 'a) B* (d 'c))
             (equal? (listed r2 'set) (append (ids-of o2 'b) (ids-of o9 'a)))
@@ -342,10 +344,10 @@
 (define r-file (file-at st3 "r.sc")) (define r-kids (kids st3 "r.sc"))
 (define r3 (import! st3 wt3 c3-0 c3-1 "t3"))
 (want "IG-3 an added file: a file block, then its children in order, all inserted in that order; the export is <to>"
-      (in-order (head-of (answer r3)) (texts st3 "n.sc")
+      (in-order (ran r3) (texts st3 "n.sc")
                 (equal? (listed r3 'inserted) (append (cons (file-at st3 "n.sc") (kids st3 "n.sc")) (cons (file-at st3 "o2.sc") (kids st3 "o2.sc"))))
                 (export-is? st3 wt3 c3-1 (tag-cut st3 "t3")) (clause-of (answer r3) 'files))
-      (list 'ok (list (d 'p) (d 'q)) #t #t '(files (modified 0) (added 2) (removed 2))))
+      (list '(ok 0) (list (d 'p) (d 'q)) #t #t '(files (modified 0) (added 2) (removed 2))))
 (want "IG-3 a removed file: its children, then its file block, deleted in that order; the path is gone"
       (list (equal? (listed r3 'deleted) (append o-kids (list o-file) r-kids (list r-file))) (file-at st3 "r.sc")
             (map (lambda (id) (deleted? st3 id)) (append r-kids (list r-file))))
@@ -373,11 +375,11 @@
       (list (list 'base-mismatch (list 'store-cut cut4) (list 'rev c4-1) '(differing "a.sc")) #t #f))
 (define r4b (import! st4 wt4 c4-0 c4-1 "t4"))
 (want "IG-4 the same range twice: the second run is base-mismatch"
-      (in-order (head-of (answer r4b)) (refused-run st4 wt4 c4-0 c4-1 "t4"))
-      (list 'ok (list (list 'base-mismatch (list 'store-cut (applied-cut st4)) (list 'rev c4-0) '(differing "a.sc")) #t 1)))
+      (in-order (ran r4b) (refused-run st4 wt4 c4-0 c4-1 "t4"))
+      (list '(ok 0) (list (list 'base-mismatch (list 'store-cut (applied-cut st4)) (list 'rev c4-0) '(differing "a.sc")) #t 1)))
 (want "IG-4 the next range is accepted: imports chain"
-      (in-order (head-of (answer (import! st4 wt4 c4-1 c4-2 "t4c"))) (export-is? st4 wt4 c4-2 (tag-cut st4 "t4c")))
-      (list 'ok #t))
+      (in-order (ran (import! st4 wt4 c4-1 c4-2 "t4c")) (export-is? st4 wt4 c4-2 (tag-cut st4 "t4c")))
+      (list '(ok 0) #t))
 (want "IG-4 a dot-only range, a dot path's type change and an empty range: nothing-to-import, nothing written"
       (in-order (refused-run st4 wt4 c4-2 c4-3 "t4d") (refused-run st4 wt4 c4-3 c4-4 "t4d") (refused-run st4 wt4 c4-2 c4-2 "t4e"))
       (list (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-3)) #t 1)
@@ -409,8 +411,8 @@
 (define seed4l (list seed4l-import (and (file-at st4l "link/a.sc") #t) (and (file-at st4l "lib/a.sc") #t)))
 (define r4l (import! st4l wt4l c4l-0 c4l-1 "t4l"))
 (want "IG-4 a linked directory: the store holds the link's files, the precondition passes, the range imports"
-      (in-order seed4l (head-of (answer r4l)) (texts st4l "m.sc") (and (file-at st4l "link/a.sc") #t))
-      (list '(ok #t #t) 'ok (list (d 'a) (d 'b)) #t))
+      (in-order seed4l (ran r4l) (texts st4l "m.sc") (and (file-at st4l "link/a.sc") #t))
+      (list '(ok #t #t) '(ok 0) (list (d 'a) (d 'b)) #t))
 
 ;; A FILE GIT HOLDS AS A BINARY AND THE STORE AS TEXT is a difference: a
 ;; regular file that is not text is outside the domain but not skipped (only
@@ -461,8 +463,8 @@
       (in-order (refusal (import! st5 wt5 c5-0 c5-exec "t5x")) (equal? (position st5) p5) (import-blocks st5))
       (list '(tag-exists (tag "t5x")) #t '()))
 (want "IG-5 a content change at 100755 at both ends is accepted"
-      (in-order (head-of (answer (import! st5 wt5 c5-0 c5-exec "t5"))) (export-is? st5 wt5 c5-exec (tag-cut st5 "t5")))
-      (list 'ok #t))
+      (in-order (ran (import! st5 wt5 c5-0 c5-exec "t5")) (export-is? st5 wt5 c5-exec (tag-cut st5 "t5")))
+      (list '(ok 0) #t))
 
 ;; THE OTHER ENDS OF THE TEXT AND MODE CHECKS: an added binary, a removed
 ;; binary (the store never held it) and a removed link (git mode 120000)
@@ -559,10 +561,10 @@
 ;; block is the pending one and is done, and the tag is bound once
 (define (converged v r)
   (let ((st (v-st v)))
-    (list (head-of (answer r)) (value-of (answer r) 'rerun) (export-is? st wt7 c7-1 (tag-cut st "t7"))
+    (list (ran r) (clause-of (answer r) 'rerun) (export-is? st wt7 c7-1 (tag-cut st "t7"))
           (shape (v-old v) (kids st "m.sc")) (for-all (lambda (id) (and (member id (kids st "m.sc")) #t)) (v-after v))
           (equal? (import-blocks st) (list (cons (v-pending v) "done"))) (tag-count st "t7"))))
-(define converged-ok '(ok #t #t (new a b c new) #t #t 1))
+(define converged-ok '((ok 0) (rerun #t) #t (new a b c new) #t #t 1))
 (define (records-since v) (- (cdr (position (v-st v))) (cdr (v-position v))))
 (define (done-blocks st) (map (lambda (b) (cdr b)) (import-blocks st)))
 
@@ -642,6 +644,14 @@
       (in-order (v-stop v7l) (refused-run (v-st v7l) wt7 c7-0 c7-1 "t7") (equal? (position (v-st v7l)) p7l) (tag-count (v-st v7l) "t7"))
       (list '(stopped 15 3 #t) (list (list 'base-mismatch (list 'store-cut cut7l) (list 'rev c7-0) '(differing "d.sc" "m.sc" "n.sc")) #t 1) #t 0))
 
+;; A DONE BLOCK NAMES ITS TAG: a rerun asking another tag is not done
+;; without tag, so it is base-mismatch and binds neither name
+(define v7m (variant! "s7m" 15))
+(define cut7m (applied-cut (v-st v7m)))
+(want "IG-7 a done block whose tag is another name: base-mismatch, nothing written, neither tag bound"
+      (in-order (v-stop v7m) (refused-run (v-st v7m) wt7 c7-0 c7-1 "t7x") (tag-count (v-st v7m) "t7x") (tag-count (v-st v7m) "t7"))
+      (list '(stopped 15 3 #t) (list (list 'base-mismatch (list 'store-cut cut7m) (list 'rev c7-0) '(differing "d.sc" "m.sc" "n.sc")) #t 1) 0 0))
+
 (define v7g (variant! "s7g" 0))
 (want "IG-7 a pending import block of another range: pending-import naming it, nothing written"
       (in-order (refusal (import! (v-st v7g) wt7 c7-0 c7-2 "t7g")) (records-since v7g))
@@ -694,9 +704,9 @@
 (define seed8 (list (length (kids st8 "f.sc")) (length (kids st8 "w.sc"))))
 (define r8 (import! st8 wt8 c8-0 c8-1 "t8"))
 (want "IG-8 a store seeded one block per file: the export is <to>, and each child is a piece suggest-boundaries cuts"
-      (in-order seed8 (head-of (answer r8)) (export-is? st8 wt8 c8-1 (tag-cut st8 "t8"))
+      (in-order seed8 (ran r8) (export-is? st8 wt8 c8-1 (tag-cut st8 "t8"))
                 (equal? (texts st8 "f.sc") (pieces "f.sc" (defs 'a B* 'c 'd))))
-      (list '(1 1) 'ok #t #t))
+      (list '(1 1) '(ok 0) #t #t))
 (want "IG-8 a file the splitter cannot prove imports to one block holding it whole; from three blocks, the first keeps its id and the others are deleted"
       (list (pieces "w.sc" w-text2) (texts st8 "w.sc")
             (pieces "m9.sc" m9-text) (row2 "m9.sc" o9 m9-text) (map (lambda (n) (deleted? st2 (cdr (assq n o9)))) '(b c)))
@@ -721,8 +731,8 @@
 (write-bytes! (string-append edit9 "/a.sc") (string->utf8 (defs 'a "(define b 3)\n" 'c)))
 (define r9 (import! st9 wt9 c9-0 c9-1 "t9"))
 (want "IG-9 a coder's edit of a block the import sets, made after the export: stale at edit-sync"
-      (in-order (head-of exported9) (head-of (answer r9)) (tool! "edit-sync.sc" st9 edit9 "--writer" "w1"))
-      (list 'ok 'ok (list 'error 'stale (list 'block b9) '(reason committed-moved))))
+      (in-order (head-of exported9) (ran r9) (tool! "edit-sync.sc" st9 edit9 "--writer" "w1"))
+      (list 'ok '(ok 0) (list 'error 'stale (list 'block b9) '(reason committed-moved))))
 
 ;; ---- IG-10: post-verify --------------------------------------------------------------
 (printf "== IG-10: post-verify ==\n")
