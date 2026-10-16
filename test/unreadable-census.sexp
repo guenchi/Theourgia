@@ -37,6 +37,12 @@
   ("landing-files.sc" (remove-tree!) entry-name-type 1 keep a "not writer layout: the changed-files reference's scratch directory, removed without entering a symbolic link")
   ("tools/publish-landing.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("tools/publish-landing.sc" (type-at) entry-name-type 1 keep a "not writer layout: the git worktree, the scratch directory and the two exports publish-landing reads, checks and removes, each name asked with an lstat; a failure other than absence raises")
+  ("tools/edit-export.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("tools/edit-export.sc" (export) entry-name-type 2 keep a "not writer layout: the export directory and its sidecar directory, each name asked with an lstat; anything present refuses export-exists before anything is written")
+  ("tools/edit-sync.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("tools/edit-sync.sc" (read-sidecar) entry-name-type 2 keep a "not writer layout: the sidecar file and each pristine copy beside an edited export, asked with an lstat; one that is not a regular file refuses missing-sidecar or pristine-damaged before any write")
+  ("tools/edit-sync.sc" (files-under) entry-name-type 1 keep a "not writer layout: the edited export directory, walked without following a link; an entry that is neither a regular file nor a directory refuses unexpected-entry before any write")
+  ("tools/edit-sync.sc" (sync) entry-name-type 1 keep a "not writer layout: the edited export directory itself; one that is not a directory refuses removed-file before any write")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -210,6 +216,21 @@
    unrelated a
    "publish-landing's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/edit-export.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "edit-export's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/edit-sync.sc" (main) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "edit-sync's answer: a refusal raised as an error list is printed, with the blocks already written when there are any, and the run exits 1; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/edit-sync.sc" (read-sidecar) 1 guard
+   (#t)
+   refuse a
+   "edit-sync's sidecar: a SIDECAR.sexp that does not read as one datum is (error bad-sidecar (path ...) (reason unreadable)), before any write"
+   (e (#t (refuse (quote bad-sidecar) (list (quote path) path) (quote (reason unreadable))))))
   ("landing-files.sc" (volume-insensitivity) 3 guard
    (#t)
    refuse a

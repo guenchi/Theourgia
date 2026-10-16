@@ -189,7 +189,7 @@
          (N (- a2 a1)) (M (- b2 b1)) (max (+ N M)) (off (+ max 1))
          (v (make-vector (+ (* 2 max) 3) 0))
          (eq (lambda (x y) (= (vector-ref a (+ a1 x)) (vector-ref b (+ b1 y))))))
-    (define (pairs from to) (map (lambda (i) (cons i i)) (iota (- to from) from)))
+    (define (pairs from to) (map (lambda (i) (cons (+ from i) (+ from i))) (iota (- to from))))
     (define (shifted i j) (cons (+ a1 i) (+ b1 j)))
     ;; -> one slice per step, the last step's first: the diagonals -d..d as
     ;; they were when step d began, which are what step d chose from

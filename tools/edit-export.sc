@@ -71,7 +71,7 @@
         (only (theourgia code-project) projected-files)
         (only (theourgia log) store-id-of)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes entry-name-type mkdir-p! overwrite-entry! unlink!))
+        (only (theourgia ffi) entry-bytes entry-name-type mkdir-p! overwrite-entry! rename-over! unlink!))
 
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
 
@@ -220,7 +220,7 @@
                                      (reverse entries)))
                       (tmp (string-append side "/SIDECAR.sexp.tmp")))
                   (overwrite-entry! tmp (string->utf8 (format "~s\n" datum)))
-                  (rename-file tmp (string-append side "/SIDECAR.sexp"))
+                  (rename-over! tmp (string-append side "/SIDECAR.sexp"))
                   (list 'ok (list 'files (length files)) (list 'blocks blocks) (list 'drafts (length drafts))
                         (list 'cut cut) (list 'sidecar (string-append side "/SIDECAR.sexp")))))))))))
 

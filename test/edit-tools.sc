@@ -171,8 +171,19 @@
 (define (draft-text s w id) (list-ref (projection-of s w id) 4))
 (define (sorted-pairs . ps) (list-sort (lambda (x y) (string<? (car x) (car y))) ps))
 (define (draft-file s w id) (string-append (writer-directory (st-of s) w) "/working/" id))
-(define (sidecar-of dir) (call-with-input-file (string-append dir ".edit/SIDECAR.sexp") read))
-(define (sidecar-file side path) (find (lambda (c) (and (pair? c) (eq? (car c) 'file) (equal? (cadr c) path))) (cdr side)))
+;; THE READS BELOW ANSWER RATHER THAN RAISE, so a run where a tool failed
+;; (the base has no tools, a mutant may die) reaches every row and reads
+;; red there, instead of stopping the fixture between rows
+(define (sidecar-of dir)
+  (guard (e (#t '(edit-export)))
+    (let ((d (call-with-input-file (string-append dir ".edit/SIDECAR.sexp") read))) (if (pair? d) d '(edit-export)))))
+(define (sidecar-file side path)
+  (or (find (lambda (c) (and (pair? c) (eq? (car c) 'file) (equal? (cadr c) path))) (cdr side)) (list 'file path)))
+(define (sidecar-block side path id)
+  (find (lambda (c) (and (pair? c) (eq? (car c) 'block) (equal? (cadr c) id))) (cddr (sidecar-file side path))))
+(define (pristine-name side path)
+  (let ((c (assq 'pristine (cddr (sidecar-file side path))))) (if c (cadr c) "none")))
+(define (stat-or-absent path) (guard (e (#t 'absent)) (path-stat path)))
 
 ;; ---- the store every row but the last two uses ----------------------------------------
 (printf "== the store: a.sc four blocks, b.sc two, x.sc one and executable in git ==\n")
@@ -198,11 +209,11 @@
           '(("a.sc" #t) ("b.sc" #t) ("x.sc" #t))))
   (let* ((side (sidecar-of dir)) (fa (sidecar-file side "a.sc")) (fx (sidecar-file side "x.sc")))
     (want "ET-3 the sidecar names the store's writer, the git modes from the base, and a.sc's spans as cumulative lengths"
-          (list (cadr (assq 'writer (cdr side)))
-                (cadr (assq 'mode (cddr fa))) (cadr (assq 'mode (cddr fx)))
+          (list (let ((w (assq 'writer (cdr side)))) (and w (cadr w)))
+                (assq 'mode (cddr fa)) (assq 'mode (cddr fx))
                 (map (lambda (b) (list (cadr b) (cdr (assq 'span (cddr b)))))
                      (filter (lambda (c) (and (pair? c) (eq? (car c) 'block))) (cddr fa))))
-          (list "we1" "100644" "100755"
+          (list "we1" '(mode "100644") '(mode "100755")
                 (map (lambda (k) (list (A k) (list (* 12 k) (* 12 (+ k 1))))) '(0 1 2 3))))))
 (want "ET-4 an export into a directory that exists refuses export-exists and writes no sidecar"
       (let* ((dir (edit-dir s1 "e4")))
@@ -239,12 +250,12 @@
   (export! s1 dir "we8")
   (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
   (let* ((first (sync! s1 dir "we8"))
-         (before (path-stat (draft-file s1 "we8" (A 0))))
+         (before (stat-or-absent (draft-file s1 "we8" (A 0))))
          (second (sync! s1 dir "we8"))
-         (after (path-stat (draft-file s1 "we8" (A 0)))))
+         (after (stat-or-absent (draft-file s1 "we8" (A 0)))))
     (want "ET-8 run twice: the second run succeeds, makes no write call and names the block skipped; the draft file is untouched"
           (list (head-of first) (value-of first 'writes) (head-of second) (value-of second 'writes)
-                (cdr (clause-of second 'skipped)) (equal? before after))
+                (cdr (clause-of second 'skipped)) (and (pair? before) (equal? before after)))
           (list 'ok 1 'ok 0 (list (A 0)) #t))))
 (let ((dir1 (edit-dir s1 "e9a")) (dir2 (edit-dir s1 "e9b")))
   (export! s1 dir1 "we9")
@@ -252,7 +263,7 @@
   (sync! s1 dir1 "we9")
   (let* ((a2 (export! s1 dir2 "we9"))
          (side (sidecar-of dir2))
-         (bb (find (lambda (c) (and (pair? c) (eq? (car c) 'block) (equal? (cadr c) (A 1)))) (cddr (sidecar-file side "a.sc")))))
+         (bb (sidecar-block side "a.sc" (A 1))))
     (edit! (string-append dir2 "/a.sc") "d1\n" "D1\n")
     (let ((a (sync! s1 dir2 "we9")))
       (want "ET-9 the repeated cycle: a second export records the first draft and the moved spans; an edit of a later block syncs, both drafts correct"
@@ -310,8 +321,7 @@
 (let ((dir (edit-dir s1 "e19")))
   (export! s1 dir "we19")
   (edit! (string-append dir "/b.sc") "p1\n" "P1\n")
-  (sh "rm -f " (quoted (string-append dir ".edit/pristine/"
-                                       (cadr (assq 'pristine (cddr (sidecar-file (sidecar-of dir) "b.sc")))))))
+  (sh "rm -f " (quoted (string-append dir ".edit/pristine/" (pristine-name (sidecar-of dir) "b.sc"))))
   (want "ET-19 a pristine copy that is gone refuses pristine-damaged" (refused s1 dir "we19") '((error pristine-damaged) ())))
 (let ((dir (edit-dir s1 "e20")))
   (export! s1 dir "we20")
