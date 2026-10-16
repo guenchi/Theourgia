@@ -259,7 +259,7 @@
     (let ((dp (read-datum (string-append d "/d.pid")))
           (res (result-of d)))
       (stop-pid! (string-append d "/d.pid"))
-      ;; F95: ON RED THE LAUNCH'S OWN ACCOUNT GOES WITH THE READING -- its
+      ;; ON RED THE LAUNCH'S OWN ACCOUNT GOES WITH THE READING -- its
       ;; result file and W's log, from this case's directory, which is
       ;; removed. (0 "unknown" #f #f) alone said the group was not read and
       ;; not why.
@@ -320,8 +320,8 @@
         (let ((ls (lines-of (slurp (string-append d "/result2")))))
           (find (lambda (l) (starts-with? l "cleanup ")) ls))
         "cleanup unknown")
-  ;; F103: AND THE RESULT SAYS WHY. A note names what the census lacked.
-  (want "F103 LS-12 the empty census's result carries a note saying ps exited 0 without W in its table"
+  ;; AND THE RESULT SAYS WHY. A note names what the census lacked.
+  (want "LS-12 the empty census's result carries a note saying ps exited 0 without W in its table"
         (let ((ls (lines-of (slurp (string-append d "/result2")))))
           (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
                                       (contains? l "ps exited 0 but its table did not show")))
@@ -329,8 +329,8 @@
                #t))
         #t))
 
-;; F103: A ps THAT FAILS, WITH A LINE ON STDERR. The census turns unknown, and
-;; the note carries the exit code and that line: before F103 the census's
+;; A ps THAT FAILS, WITH A LINE ON STDERR. The census turns unknown, and
+;; the note carries the exit code and that line: before the note the census's
 ;; stderr went to /dev/null and nothing said why cleanup was unknown.
 (let* ((d (case!))
        (shim (string-append d "/shim")))
@@ -340,10 +340,10 @@
   (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
       d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
   (let ((ls (lines-of (slurp (string-append d "/result")))))
-    (want "CONTROL F103 a census whose ps exits 3 is unknown"
+    (want "CONTROL NOTE a census whose ps exits 3 is unknown"
           (find (lambda (l) (starts-with? l "cleanup ")) ls)
           "cleanup unknown")
-    (want "F103 its result carries a note with ps's exit code and its stderr line"
+    (want "NOTE-1 its result carries a note with ps's exit code and its stderr line"
           (filter (lambda (l) (starts-with? l "note census unknown: ")) ls)
           '("note census unknown: ps exited 3; ps stderr tail: ps: probe shim refused"))))
 (let* ((d (case!))
@@ -361,7 +361,7 @@
                     (find (lambda (l) (starts-with? l "cleanup ")) ls))
                   (< elapsed 60000))
             '("cleanup unknown" #t))
-      (want "F103 LS-13 the hung census's result carries a note saying ps did not finish before the deadline"
+      (want "LS-13 the hung census's result carries a note saying ps did not finish before the deadline"
             (let ((ls (lines-of (slurp (string-append d "/result")))))
               (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
                                           (contains? l "ps did not finish before the deadline")))
@@ -391,14 +391,14 @@
   (sh "chmod +x " shim "/ps")
   (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
       d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
-  (want "F103 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
+  (want "NOTE-2 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
         (let ((ls (lines-of (slurp (string-append d "/result")))))
           (list (find (lambda (l) (starts-with? l "cleanup ")) ls)
                 (filter (lambda (l) (starts-with? l "note census")) ls)))
         '("cleanup clean" ()))
   ;; NEVER: THE FILE IS REMOVED. One is made per census, beside --result; a
   ;; launch makes several, and none may be left in the directory.
-  (want "F103 no census stderr file is left beside the result"
+  (want "NOTE-3 no census stderr file is left beside the result"
         (let ((f (string-append d "/ls.txt")))
           (sh "ls " d " > " f)
           (filter (lambda (l) (let ((k (string-length "result.census-")))

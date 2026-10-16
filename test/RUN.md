@@ -47,16 +47,16 @@ a reading taken in one says nothing about the other.
 `core.sc` is the case that produced the rule: it reaches
 `(theourgia eval-supervise)`, `(theourgia sched)` and `(theourgia net)`
 through `(environment ...)` when an `eval` or a forwarded call asks for
-them. `theourgiad.sc`, the daemon program since F46, reaches
+them. `theourgiad.sc`, the daemon program, reaches
 `(theourgia daemon)` the same way once its arguments are checked. From
 source that resolves to a
 `.sc`; from objects to a `.so`; inside a whole-program package it would
 not resolve at all, because nothing references those libraries
-statically. `f0-ondemand.sc` carries both readings -- F0-1 to F0-3 from
-source, F0-4 against objects built by `build.ss` with `.so` alone on the
+statically. `f0-ondemand.sc` carries both readings -- the CLOSURE, COST
+and DEMAND rows from source, the SHIPPED rows against objects built by `build.ss` with `.so` alone on the
 path.
 
-NOTE: **And a timing budget belongs to one form.** F0-2's budget is a
+NOTE: **And a timing budget belongs to one form.** COST-1's budget is a
 source-form budget. The same change measured 188 ms from source and 9 ms
 from objects; quoting the first as what a user saves would be false.
 
@@ -77,7 +77,7 @@ prints no sentinel" is also what a broken fixture looks like:
   * `reduce-hash-check.py` is a filter `reduce1.sc` pipes bytes through.
 
 The third was `structure.py`, the preflight that reads every file's paren
-depth. It is `structure.sc` since F9 and is still named among the helpers,
+depth. It is now `structure.sc` and is still named among the helpers,
 now from the `*.sc` side of the loop.
 
 The fixtures proper are `datum-processes`, `q8-cli` and
@@ -655,7 +655,7 @@ symptom it produced, because the symptom in all three cases was silence.
 **A fixture's wait is bounded on one side only.** `cli1`'s lock-contention
 section spins for a bounded number of iterations waiting for a holder to reach
 its barrier, and then writes a byte into a fifo to release it. The spin has a
-bound; the write does not. *Reproduce:* break option parsing (the `F6a` seed)
+bound; the write does not. *Reproduce:* break option parsing (a mutation seed does)
 so the holder never reaches the barrier -- the spin expires and the fifo write
 blocks forever, because nothing ever opened the other end. On healthy code the
 holder always arrives, so the unbounded half is never reached and cannot be

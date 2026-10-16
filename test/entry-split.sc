@@ -12,13 +12,13 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; Three entry programs, by role (F46): theourgia.sc the thin client,
+;; Three entry programs, by role: theourgia.sc the thin client,
 ;; theourgiad.sc the daemon, core.sc the in-process route. No verb's
 ;; answer changes: the rows below compare bytes and exit codes with what
 ;; the old single program answered on a338bcd, recorded before any change
 ;; (the oracle strings here), with THEOURGIA_HOME and THEOURGIA_RUN fixed
 ;; per row so the per-run paths in the machine-home line are the same on
-;; both sides. The old name is not spelled in this file: F46-6 greps for it.
+;; both sides. The old name is not spelled in this file: OLDNAME-1 greps for it.
 (import (chezscheme) (only (theourgia extensions) extension-verbs))
 
 (define bad 0)
@@ -97,8 +97,8 @@
 (define (err-of r) (caddr r))
 (define (machine-home-line d) (string-append "(theourgia machine-home " d "/home)\n"))
 
-;; ---- F46-8: core.sc answers as the old program did on a338bcd (oracle bytes) --
-(printf "== F46-8: core.sc, the oracle rows ==\n")
+;; ---- ORACLE: core.sc answers as the old program did on a338bcd (oracle bytes) -
+(printf "== ORACLE: core.sc, the oracle rows ==\n")
 ;; The built-in verbs as the old program listed them, then the verbs registered
 ;; from outside the core table, taken from their registry's own data.
 (define verbs-line
@@ -107,24 +107,24 @@
     (apply string-append (map (lambda (e) (string-append " " (symbol->string (car e)))) extension-verbs))
     ")"))
 (let ((d (row-dir!)))
-  (want "F46-8 core.sc with an empty argv prints the usage line on stdout, the machine-home line on stderr, exit 1"
+  (want "ORACLE-1 core.sc with an empty argv prints the usage line on stdout, the machine-home line on stderr, exit 1"
         (let ((r (run-in d "core.sc" "")))
           (list (rc-of r) (out-of r) (string=? (err-of r) (machine-home-line d))))
         (list 1 "(usage (theourgia <verb> ...))\n" #t)))
 (let ((d (row-dir!)))
-  (want "F46-8 core.sc with an unknown verb answers unknown-verb with the verb list, exit 1"
+  (want "ORACLE-2 core.sc with an unknown verb answers unknown-verb with the verb list, exit 1"
         (let ((r (run-in d "core.sc" "serv --store d")))
           (list (rc-of r) (out-of r) (string=? (err-of r) (machine-home-line d))))
         (list 1 (string-append "(error unknown-verb (spelling \"serv\") " verbs-line ")\n") #t)))
 
-;; ---- F46-3: core.sc no longer serves ---------------------------------------
-(printf "== F46-3: core.sc has no serve role ==\n")
+;; ---- NOSERVE: core.sc no longer serves --------------------------------------
+(printf "== NOSERVE: core.sc has no serve role ==\n")
 ;; On the tree before the split this row serves in the foreground until the
 ;; alarm (exit 142); after it, serve is a verb core.sc does not know.
 (let ((d (row-dir!)))
   (system (string-append "mkdir -p " d "/cwd/d"))
   (run-in d "core.sc" "init --store d")
-  (want "F46-3 core.sc serve does not start a daemon: the unknown-verb answer, exit 1, and no socket under the run root"
+  (want "NOSERVE-1 core.sc serve does not start a daemon: the unknown-verb answer, exit 1, and no socket under the run root"
         (let* ((r (run-in d "core.sc" "serve d" 8))
                (sockets (string-append d "/sockets")))
           (system (string-append "find " sock-base "/es-" pid-text "-" (number->string row-n) " -name socket 2>/dev/null | wc -l | tr -d ' ' > " sockets))
@@ -135,8 +135,8 @@
                 (let ((t (file-text sockets))) (substring t 0 (max 0 (- (string-length t) 1))))))
         (list 1 'unknown-verb "0")))
 
-;; ---- F46-2 and F46-9: theourgiad.sc ------------------------------------------
-(printf "== F46-2 / F46-9: theourgiad.sc, the daemon program ==\n")
+;; ---- DVERB and DSERVE: theourgiad.sc -----------------------------------------
+(printf "== DVERB / DSERVE: theourgiad.sc, the daemon program ==\n")
 (define (theourgiad-row label argv expect-rc expect-out . alarm)
   (let ((d (row-dir!)))
     (want label
@@ -145,23 +145,23 @@
               (let ((r (apply run-in d "theourgiad.sc" argv alarm)))
                 (list (rc-of r) (out-of r) (string=? (err-of r) (machine-home-line d)))))
           (list expect-rc expect-out #t))))
-(theourgiad-row "F46-2 theourgiad.sc with a verb that is not serve answers bad-request not-a-daemon-verb with the serve usage, exit 1"
+(theourgiad-row "DVERB-1 theourgiad.sc with a verb that is not serve answers bad-request not-a-daemon-verb with the serve usage, exit 1"
                 "init --store d" 1
                 "(error bad-request (reason not-a-daemon-verb) (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
 (let ((d (string-append here "/r" (number->string row-n))))
-  (want "F46-2 TWIN: and it created nothing under the store it was named"
+  (want "DVERB-2 TWIN: and it created nothing under the store it was named"
         (if (program-exists? "theourgiad.sc") (file-exists? (string-append d "/cwd/d")) 'no-such-program)
         #f))
-(theourgiad-row "F46-9 theourgiad.sc serve with an empty --socket answers bad-socket-path, exit 2"
+(theourgiad-row "DSERVE-1 theourgiad.sc serve with an empty --socket answers bad-socket-path, exit 2"
                 "serve d --socket \"\"" 2 "(error bad-socket-path (reason empty))\n")
-(theourgiad-row "F46-9 theourgiad.sc serve --detach without --log answers detach-needs-a-log with the usage, exit 71"
+(theourgiad-row "DSERVE-2 theourgiad.sc serve --detach without --log answers detach-needs-a-log with the usage, exit 71"
                 "serve d --detach" 71
                 "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
 (let ((d (row-dir!)))
-  (want "F46-9 theourgiad.sc serve on an absent store answers store-not-found then exiting, exit 75"
+  (want "DSERVE-3 theourgiad.sc serve on an absent store answers store-not-found then exiting, exit 75"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
-            ;; A NAMED OUTCOME CARRIES MAIN'S RECORD (F100b item 2): serving the
+            ;; A NAMED OUTCOME CARRIES MAIN'S RECORD: serving the
             ;; default socket, main made the run directory and the lock before
             ;; the store process found no store, so store-not-found gains
             ;; (written ...) naming only those, under THEOURGIA_RUN. The
@@ -170,7 +170,7 @@
                    (run (string-append sock-base "/es-" pid-text "-" (number->string row-n)))
                    (first (guard (e (#t #f)) (read (open-string-input-port (out-of r)))))
                    (written (and (list? first) (assq 'written (filter pair? first)))))
-              ;; EXACTLY main's three creations (M2a review r1, F11): the run
+              ;; EXACTLY main's three creations (found in review): the run
               ;; directory, the store's key directory under it, and the lock.
               ;; The key is read back as the one directory under the run root.
               (let* ((keys (guard (e (#t '())) (directory-list run)))
@@ -182,12 +182,12 @@
                                    (list (list 'mkdir run) (list 'mkdir kd) (list 'create (string-append kd "/.socket.lock")))))
                       (contains? (out-of r) "(exiting (reason store-actor-down))")))))
         (list 75 '(error store-not-found (store "d") (attempt #f)) #t #t)))
-;; AN OPTION serve DOES NOT KNOW IS REFUSED (F94), as every other verb
+;; AN OPTION serve DOES NOT KNOW IS REFUSED, as every other verb
 ;; refuses one; before it, `serve d --bogus` served in the foreground.
 (let ((d (row-dir!)))
   (system (string-append "mkdir -p " d "/cwd/d"))
   (run-in d "core.sc" "init --store d")
-  (want "F46-9 TWIN: serve with an option it does not know answers bad-request unknown-option naming it, with the usage, exit 1, and leaves no socket"
+  (want "DSERVE-4 TWIN: serve with an option it does not know answers bad-request unknown-option naming it, with the usage, exit 1, and leaves no socket"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
             (let* ((r (run-in d "theourgiad.sc" "serve d --bogus" 8))
@@ -203,12 +203,12 @@
         (list 1 '(error bad-request) 'unknown-option "--bogus" #t "0")))
 
 ;; A SOCKET UNDER A DIRECTORY THAT DOES NOT EXIST IS REFUSED, not created
-;; (F15, as F82: refuse, do not create). Before it, serve made the whole
+;; (as an export's target is: refuse, do not create). Before it, serve made the whole
 ;; chain and served.
 (let ((d (row-dir!)))
   (system (string-append "mkdir -p " d "/cwd/d"))
   (run-in d "core.sc" "init --store d")
-  (want "F46-9 TWIN: serve with a socket under a directory that does not exist answers socket-dir-missing naming the directory, exit 2, and creates nothing"
+  (want "DSERVE-5 TWIN: serve with a socket under a directory that does not exist answers socket-dir-missing naming the directory, exit 2, and creates nothing"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
             (let* ((absent (string-append sock-base "/es-absent-" pid-text "-" (number->string row-n)))
@@ -220,7 +220,7 @@
                     (if (file-exists? absent) 'created 'nothing-created))))
         (list 2 '(error socket-dir-missing) #t 'nothing-created)))
 
-;; A DIRECTORY THAT CANNOT BE SEARCHED IS NOT "MISSING" (F15, ruling c). The
+;; A DIRECTORY THAT CANNOT BE SEARCHED IS NOT "MISSING" (ruling c). The
 ;; socket's directory sits under one at mode 000: its type cannot be asked,
 ;; and the refusal names it as unreadable, the way R1 names a path it could
 ;; not look at -- not socket-dir-missing, which would send the caller looking
@@ -234,7 +234,7 @@
   (let* ((r (run-in d "theourgiad.sc" (string-append "serve d --socket " inner "/s.sock") 8))
          (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read))))
     (system (string-append "chmod 700 " sealed))
-    (want "F15 TWIN: serve with a socket whose directory is under one at 000 answers unreadable naming that directory, exit 2, not socket-dir-missing"
+    (want "SOCKDIR-1 TWIN: serve with a socket whose directory is under one at 000 answers unreadable naming that directory, exit 2, not socket-dir-missing"
           (if (not (program-exists? "theourgiad.sc"))
               'no-such-program
               (list (rc-of r)
@@ -249,22 +249,22 @@
 ;; print the injection banner, or raise on a bad value, before answering an
 ;; argument error the base answered first (review r1, measured on c2-r1).
 (let ((d (row-dir!)))
-  (want "F46-9 TWIN: under IGROPYR_INJECT=bad the empty-socket refusal is the base's bytes and exit 2: the daemon library is not loaded before the checks"
+  (want "DSERVE-6 TWIN: under IGROPYR_INJECT=bad the empty-socket refusal is the base's bytes and exit 2: the daemon library is not loaded before the checks"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
             (let ((r (parameterize ((run-env "IGROPYR_INJECT=bad ")) (run-in d "theourgiad.sc" "serve d --socket \"\""))))
               (list (rc-of r) (out-of r) (string=? (err-of r) (machine-home-line d)))))
         (list 2 "(error bad-socket-path (reason empty))\n" #t)))
 (let ((d (row-dir!)))
-  (want "F46-9 TWIN: under IGROPYR_INJECT=on the same refusal carries no injection banner on stderr, as the base"
+  (want "DSERVE-7 TWIN: under IGROPYR_INJECT=on the same refusal carries no injection banner on stderr, as the base"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
             (let ((r (parameterize ((run-env "IGROPYR_INJECT=on ")) (run-in d "theourgiad.sc" "serve d --socket \"\""))))
               (list (rc-of r) (out-of r) (string=? (err-of r) (machine-home-line d)))))
         (list 2 "(error bad-socket-path (reason empty))\n" #t)))
 
-;; ---- F46-1: the daemon the thin client starts is theourgiad.sc ---------------
-(printf "== F46-1: the thin client starts theourgiad.sc ==\n")
+;; ---- START: the daemon the thin client starts is theourgiad.sc ---------------
+(printf "== START: the thin client starts theourgiad.sc ==\n")
 (define (daemon-lines store)
   ;; ps into a file, then filter in here: the shell that runs ps carries no
   ;; store path, so the listing cannot match this fixture's own command.
@@ -288,19 +288,19 @@
   (let* ((forwarded (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30))
          (lines (daemon-lines store))
          (pids (map pid-of lines)))
-    (want "CONTROL F46-1 the thin client's forwarded request answered ok and one daemon is up for the store"
+    (want "CONTROL START the thin client's forwarded request answered ok and one daemon is up for the store"
           (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
           '(0 "(ok " 1))
     ;; (the request goes --wire on both sides, so the bytes compared below are
     ;; the datum, not the rendering)
-    (want "F46-1 the daemon's command line names theourgiad.sc and not core.sc"
+    (want "START-1 the daemon's command line names theourgiad.sc and not core.sc"
           (if (null? lines) 'no-daemon
               (list (and (contains? (car lines) "theourgiad.sc") #t) (and (contains? (car lines) "core.sc") #t)))
           '(#t #f))
-    ;; ---- F46-7 while the daemon is up: the local route still answers in process
+    ;; ---- LOCAL while the daemon is up: the local route still answers in process
     (let* ((local (run-in d "core.sc" (string-append "outline --store " store) 30))
            (d2 d))
-      (want "F46-7 with a socket present, THEOURGIA_LOCAL=1 core.sc answers in process and byte for byte the daemon's answer"
+      (want "LOCAL-1 with a socket present, THEOURGIA_LOCAL=1 core.sc answers in process and byte for byte the daemon's answer"
             (let ((f (string-append d "/local.out")))
               (system (string-append "cd " d "/cwd && HOME=" d "/home THEOURGIA_HOME=" d "/home THEOURGIA_RUN=" sock-base "/es-" pid-text "-" (number->string row-n)
                                      " CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 scheme --script " programs-root "/core.sc outline --store " store " --wire < /dev/null > " f " 2>/dev/null"))
@@ -312,12 +312,12 @@
     (let wait ((n 0))
       (when (and (< n 100) (not (null? (daemon-lines store))))
         (system "sleep 0.1") (wait (+ n 1))))
-    (want "F46-1 TWIN: the daemon stopped on TERM and left no process for the store"
+    (want "START-2 TWIN: the daemon stopped on TERM and left no process for the store"
           (length (daemon-lines store))
           0)))
 
-;; THE CLIENT'S OWN SPAWN IS NEVER REFUSED BY THE DAEMON'S OPTION TABLE (F94
-;; review, ruled). A store whose name starts with "--" reached the daemon as
+;; THE CLIENT'S OWN SPAWN IS NEVER REFUSED BY THE DAEMON'S OPTION TABLE (found
+;; in review, ruled). A store whose name starts with "--" reached the daemon as
 ;; a bare positional, which serve now refuses as an unknown option; the
 ;; spawn names it with --store, so the daemon gets the store the client
 ;; means. The store is relative, in the row's cwd, and carries this run's
@@ -329,7 +329,7 @@
   (let* ((forwarded (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30))
          (lines (daemon-lines store))
          (pids (map pid-of lines)))
-    (want "F46-9 TWIN: the thin client with a store spelled --dash-<pid> starts its daemon and is answered ok"
+    (want "DSERVE-8 TWIN: the thin client with a store spelled --dash-<pid> starts its daemon and is answered ok"
           (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
           '(0 "(ok " 1))
     (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p) " 2>/dev/null"))) pids)
@@ -337,21 +337,21 @@
       (when (and (< n 100) (not (null? (daemon-lines store))))
         (system "sleep 0.1") (wait (+ n 1))))))
 
-;; ---- F46-10: eval through core.sc -------------------------------------------
-(printf "== F46-10: eval through core.sc ==\n")
+;; ---- EVAL: eval through core.sc ---------------------------------------------
+(printf "== EVAL: eval through core.sc ==\n")
 (let* ((d (row-dir!))
        (store (string-append d "/cwd/s")))
   (system (string-append "mkdir -p " store))
   (run-in d "core.sc" (string-append "init --store " store))
-  (want "F46-10 core.sc eval answers ok with the values and the working-view clause"
+  (want "EVAL-1 core.sc eval answers ok with the values and the working-view clause"
         (let* ((r (run-in d "core.sc" (string-append "eval '(+ 1 2)' --store " store " --wire") 30))
                (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read))))
           (list (rc-of r) (and (pair? a) (car a)) (and (pair? a) (list? a) (assq 'values (cdr a)))
                 (and (pair? a) (list? a) (pair? (assq 'working-view (cdr a))))))
         '(0 ok (values (3)) #t)))
 
-;; ---- F46-6: no source, script or README line spells the old name -------------
-(printf "== F46-6: the old name is gone from the tree ==\n")
+;; ---- OLDNAME: no source, script or README line spells the old name -----------
+(printf "== OLDNAME: the old name is gone from the tree ==\n")
 ;; The needle is assembled so that this file does not match itself.
 (let ((needle (string-append "cli" ".sc"))
       (f (string-append here "/hits.txt")))
@@ -360,22 +360,22 @@
   ;; .pyc of paths.py, compiled before the rename, was the reading that
   ;; drew this line.
   (system (string-append "cd " programs-root " && grep -rl --exclude-dir=.git --exclude-dir=build --exclude-dir=__pycache__ --exclude='*.so' -F '" needle "' . 2>/dev/null | sort > " f))
-  (want "F46-6 no file in the tree spells the old program name"
+  (want "OLDNAME-1 no file in the tree spells the old program name"
         (let ((t (file-text f))) (if (string=? t "") 'none (list 'spelled-in t)))
         'none))
 
-;; ---- F46-5 (tripwire): build.ss copies the three programs ---------------------
-(printf "== F46-5: build.ss's programs ==\n")
+;; ---- BUILD (tripwire): build.ss copies the three programs ---------------------
+(printf "== BUILD: build.ss's programs ==\n")
 ;; TODAY A TRIPWIRE, NOT A MEASUREMENT: it reads build.ss's list, not an
-;; output directory. The copy itself is exercised by f0-ondemand's F18 row.
-(want "F46-5 build.ss's programs list names theourgia.sc, core.sc, theourgiad.sc and eval-worker.sc"
+;; output directory. The copy itself is exercised by f0-ondemand's OUTDIR rows.
+(want "BUILD-1 build.ss's programs list names theourgia.sc, core.sc, theourgiad.sc and eval-worker.sc"
       (let ((t (file-text (string-append programs-root "/build.ss"))))
         (map (lambda (n) (and (contains? t (string-append "\"" n "\"")) n))
              '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc")))
       '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc"))
 
-;; ---- F46-11 (tripwire): every daemon spawn in the fixtures names theourgiad.sc --
-(printf "== F46-11: the daemon spawns in the fixtures ==\n")
+;; ---- SPAWNS (tripwire): every daemon spawn in the fixtures names theourgiad.sc --
+(printf "== SPAWNS: the daemon spawns in the fixtures ==\n")
 ;; TODAY A TRIPWIRE, NOT A MEASUREMENT: it reads the fixtures' source, not
 ;; the processes they start. It exists because the split's first gate went
 ;; red on two fixtures that spawned `core.sc serve` through a variable
@@ -451,7 +451,7 @@
          fixture-files)))
 ;; CONTROL: the checker, handed the shape that went red, says so. The forms
 ;; are built here rather than written out, so this file holds no spawn.
-(want "CONTROL F46-11 a spawn naming core.sc through a variable is reported; one naming theourgiad.sc is not"
+(want "CONTROL SPAWNS a spawn naming core.sc through a variable is reported; one naming theourgiad.sc is not"
       (let ((flag (string-append "--" "script")) (word (string-append "ser" "ve")))
         (list (spawn-report "made" (list (list 'define 'prog "../core.sc")
                                          (list 'string-append (string-append "scheme " flag " ") 'prog
@@ -459,19 +459,19 @@
               (spawn-report "made" (list (list 'define 'prog "../theourgiad.sc")
                                          (list 'list "scheme" flag 'prog word 'store)))))
       '((("made" #f)) (("made" #t))))
-(want "F46-11 the reading finds the spawns that went red, and the ones beside them"
+(want "SPAWNS-1 the reading finds the spawns that went red, and the ones beside them"
       (map (lambda (n) (and (assoc n spawn-readings) n))
            '("client-start.sc" "detach.sc" "envelope.sc" "f0-ondemand.sc"))
       '("client-start.sc" "detach.sc" "envelope.sc" "f0-ondemand.sc"))
-(want "F46-11 TRIPWIRE: every daemon spawn read in a fixture names theourgiad.sc, and every fixture could be read"
+(want "SPAWNS-2 TRIPWIRE: every daemon spawn read in a fixture names theourgiad.sc, and every fixture could be read"
       (filter (lambda (r) (not (eq? (cadr r) #t))) spawn-readings)
       '())
-(printf "F46-11 reading: ~a spawn forms in ~a fixture files\n"
+(printf "SPAWNS reading: ~a spawn forms in ~a fixture files\n"
         (length spawn-readings)
         (length (fold-left (lambda (acc r) (if (member (car r) acc) acc (cons (car r) acc))) '() spawn-readings)))
 
-(printf "== F15: the thin client refuses before starting a daemon ==\n")
-;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (F15, the
+(printf "== SOCKDIR: the thin client refuses before starting a daemon ==\n")
+;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (the
 ;; main session's ruling b). Before it, a --socket under a directory that
 ;; does not exist started a daemon, which made the whole chain and served.
 ;; Now the client refuses in ensure-daemon!, with the text the daemon uses,
@@ -488,7 +488,7 @@
          (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read)))
          (lines (daemon-lines store)))
     (for-each (lambda (l) (system (string-append "kill -TERM " (number->string (pid-of l)) " 2>/dev/null"))) lines)
-    (want "F15 the thin client with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
+    (want "SOCKDIR-2 the thin client with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
           (list (rc-of r)
                 (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
                 (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'dir))) (cdr a))))) (and f (equal? (cadr f) (string-append absent "/deep"))))

@@ -61,7 +61,7 @@
 (define root (string-append script-dir "/.."))
 (define (source-of name) (string-append root "/" (symbol->string name) ".sc"))
 
-;; ---- F0-1: what the static closure holds --------------------------------------
+;; ---- CLOSURE: what the static closure holds ------------------------------------
 ;;
 ;; NEVER: THE SAME WALKER `daemon-link-gate.sc` USES, and transitive for the
 ;; same reason: a library two imports away is loaded just as surely as
@@ -101,7 +101,7 @@
 
 (define cli-closure (map basename (closure-of (string-append root "/core.sc"))))
 
-(want "F0-1 the command line's static closure holds none of the four heavy libraries"
+(want "CLOSURE-1 the command line's static closure holds none of the four heavy libraries"
       (filter (lambda (h) (member h cli-closure)) heavy)
       '())
 
@@ -110,17 +110,17 @@
 ;; which is also what a changed import spelling would produce.
 (define daemon-closure (map basename (closure-of (string-append root "/daemon.sc"))))
 
-(want "F0-1 every import in both closures resolved to a file"
+(want "CLOSURE-2 every import in both closures resolved to a file"
       unresolved-imports
       '())
 
-(want "F0-1 CONTROL: the same walk finds those libraries in the daemon's own closure"
+(want "CLOSURE-3 CONTROL: the same walk finds those libraries in the daemon's own closure"
       (list (and (member "sched.sc" daemon-closure) #t)
             (and (member "net.sc" daemon-closure) #t)
             (> (length cli-closure) 5))
       '(#t #t #t))
 
-;; ---- F0-2: what it costs ------------------------------------------------------
+;; ---- COST: what it costs ------------------------------------------------------
 ;;
 ;; NOTE: THE READING, THE MACHINE AND THE VERSION, because a duration is
 ;; not a fact about a program on its own.
@@ -168,7 +168,7 @@
 ;; one this row is the wrong instrument for.
 ;;
 ;; THE RIGHT INSTRUMENT IS RELATIVE, and it is queued rather than built here:
-;; F54 measures two arms in ONE run -- the command line against the tree
+;; startup-ratio.sc measures two arms in ONE run -- the command line against the tree
 ;; before the heavy imports -- and asserts a ratio, not milliseconds. An
 ;; absolute constant on a development machine that other work perturbs will
 ;; drift for ever, and a row that flickers is not a row: when it goes red
@@ -180,14 +180,14 @@
 ;; closure -- was rejected because the measurement says there is nothing there
 ;; to move.
 ;;
-;; ---- the budget was raised from 540 to 590 (F100a), and here is the reading
+;; ---- the budget was raised from 540 to 590 (the door), and here is the reading
 ;;
-;; F100a moved every filesystem access into ffi.sc (the door) and added the
+;; The door moved every filesystem access into ffi.sc and added the
 ;; mutation record there, and ffi.sc is in the command line's static
 ;; closure. Measured, two passes alternated back to back on one machine,
 ;; 2026-09-25, the same layout on both sides:
 ;;
-;;   F0-2 median          1f7f9d9 (before F100a)   the F100a tree
+;;   COST-1 median        1f7f9d9 (before the door) the door's tree
 ;;     pass 1             521 (load 2.11)          541 (load 4.46)
 ;;     pass 2             518 (load 3.97)          538 (load 3.54)
 ;;
@@ -208,14 +208,14 @@
 ;; IT IS THE BATCHES BETWEEN, NOT THE MACHINE. Measured the same evening, both
 ;; trees on igropyr 56ca0db (git archive), alternated:
 ;;
-;;   F0-2 median          6c5c881 (the 491 tree)    1f7f9d9
+;;   COST-1 median        6c5c881 (the 491 tree)    1f7f9d9
 ;;     pass 1             490 (load 2.90)           520 (load 2.54)
 ;;     pass 2             484 (load 2.07)           513 (load 3.76)
 ;;
 ;; The 6c5c881 tree reads its recorded 491 today, so the ~30 ms between it
-;; and 1f7f9d9 came in with the batches between the two (F46 onwards), not
-;; from this machine; F54's first row takes this reading.
-;; The relative instrument, F54, is the next item after F100a. Moved by the
+;; and 1f7f9d9 came in with the batches between the two (the program split onwards),
+;; not from this machine; startup-ratio.sc's first row takes this reading.
+;; The relative instrument, startup-ratio.sc, came after the door. Moved by the
 ;; main session (ruling F, 2026-09-25), the only way this budget may move.
 ;;
 ;; ---- moved again, from 590 to 636, for the facts an editor supplies ---------
@@ -269,15 +269,15 @@
 (define timings (let loop ((n 10) (out '())) (if (zero? n) out (loop (- n 1) (cons (one-call-ms) out)))))
 (define observed (median timings))
 
-(want "F0-2 starting the command line costs no more than the tree before the heavy imports"
+(want "COST-1 starting the command line costs no more than the tree before the heavy imports"
       (if (<= observed budget-ms)
           'within-budget
           (list 'median observed 'budget budget-ms 'all timings))
       'within-budget)
 
-(printf "   (F0-2 median ~a ms over 10 runs, budget ~a ms)\n" observed budget-ms)
+(printf "   (COST-1 median ~a ms over 10 runs, budget ~a ms)\n" observed budget-ms)
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -288,7 +288,7 @@
   (let ((v (getenv "THEOURGIA_TEST_SOCK")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
 
-;; ---- F0-3: and the three paths that DO need them still work -------------------
+;; ---- DEMAND: and the three paths that DO need them still work -----------------
 ;;
 ;; NEVER: AN IMPLEMENTATION THAT SIMPLY DELETED THE IMPORTS WOULD PASS BOTH
 ;; ROWS ABOVE. These are the rows it fails.
@@ -325,7 +325,7 @@
 (cli-out (string-append "init --store " store " --wire") (string-append scratch "/init.txt")
          "THEOURGIA_LOCAL=1")
 
-(want "F0-3 eval still answers, so its supervisor was loaded when it was needed"
+(want "DEMAND-1 eval still answers, so its supervisor was loaded when it was needed"
       (if (contains? (cli-out (string-append "eval '(+ 1 2)' --store " store " --wire")
                               (string-append scratch "/eval.txt") "THEOURGIA_LOCAL=1")
                      "(values (3))")
@@ -343,7 +343,7 @@
 
 (define serve-text (call-with-input-file (string-append scratch "/serve.txt") get-string-all))
 
-(want "F0-3 serve still comes up, so the daemon was loaded when it was needed"
+(want "DEMAND-2 serve still comes up, so the daemon was loaded when it was needed"
       (list (if (contains? (if (string? serve-text) serve-text "") "(serving ") 'serving 'NOT-LOADED)
             (if (file-exists? socket) 'socket-there 'NO-SOCKET))
       '(serving socket-there))
@@ -361,14 +361,14 @@
 ;; answer passes when the socket was ignored and the work was done here.
 ;; NOTE: Measured while writing this: with a socket path too long to bind,
 ;; these same calls answered normally, having quietly run locally.
-(want "F0-3 a call with a daemon present is answered BY the daemon, so net was loaded"
+(want "DEMAND-3 a call with a daemon present is answered BY the daemon, so net was loaded"
       (list (if (contains? forwarded "(ok (events") 'answered (list 'said forwarded))
             (if (contains? (if (string? serve-after) serve-after "") "daemon-dispatch")
                 'the-daemon-dispatched-it
                 'IT-RAN-LOCALLY))
       '(answered the-daemon-dispatched-it))
 
-;; ---- F0-4: and the same thing in the form it ships in --------------------------
+;; ---- SHIPPED: and the same thing in the form it ships in -----------------------
 ;;
 ;; KEY: EVERYTHING ABOVE WAS MEASURED FROM SOURCE, AND THAT IS NOT WHAT A
 ;; USER RUNS. Development runs `--script` against `.sc`; a user gets
@@ -380,8 +380,8 @@
 ;; `(theourgia net)` the same way; whether that works depends on the
 ;; library being findable -- which it is as a `.so` on the library
 ;; path. NEVER: It would NOT be inside a whole-program package that dropped
-;; it for being statically unreferenced; that form is F13 and has no
-;; reading here. These rows cover the `.so` form only, and say so.
+;; it for being statically unreferenced; that form is another item's and has
+;; no reading here. These rows cover the `.so` form only, and say so.
 ;;
 ;; **Second, the saving is much smaller there.** Same machine, same
 ;; objects, only `core.sc` differing:
@@ -393,11 +393,11 @@
 ;; pay. In the form a user runs this saves about 9 ms a call, not 200 --
 ;; still 18% of startup, still worth having, and the structural point
 ;; stands on its own: a `read` has no business loading the daemon. But a
-;; note claiming 200 ms for users would be false, and F0-2's budget is a
+;; note claiming 200 ms for users would be false, and COST-1's budget is a
 ;; SOURCE-form budget.
 ;;
 ;; NOTE: Also worth knowing: compiled objects start about twelve times
-;; faster than source either way. Most of what F0 attacks is a cost only
+;; faster than source either way. Most of what these rows attack is a cost only
 ;; developers pay.
 
 (define objects (string-append scratch "/objects"))
@@ -412,7 +412,7 @@
           " > " scratch "/build.txt 2>&1"))
     (file-text (string-append scratch "/build.txt"))))
 
-(want "F0-4 the tree compiles to objects at all"
+(want "SHIPPED-1 the tree compiles to objects at all"
       (if (contains? build-said "build complete") 'built (list 'said build-said))
       'built)
 
@@ -428,7 +428,7 @@
 (define so-store (string-append scratch "/so-store"))
 (sh (string-append "mkdir -p " so-store))
 
-(want "F0-4 a verb runs from the objects, with no source reachable"
+(want "SHIPPED-2 a verb runs from the objects, with no source reachable"
       (list (if (contains? (so-cli (string-append "init --store " so-store " --wire")
                                    (string-append scratch "/so-init.txt") "THEOURGIA_LOCAL=1")
                            "(ok (store")
@@ -442,7 +442,7 @@
 ;; through `(environment '(theourgia eval-supervise))` at run time; if
 ;; that cannot be resolved in this form the answer is an exception rather
 ;; than a value, and nothing above would have noticed.
-(want "F0-4 eval loads its supervisor on demand from the objects"
+(want "SHIPPED-3 eval loads its supervisor on demand from the objects"
       (if (contains? (so-cli (string-append "eval '(+ 1 2)' --store " so-store " --wire")
                              (string-append scratch "/so-eval.txt") "THEOURGIA_LOCAL=1")
                      "(values (3))")
@@ -456,7 +456,7 @@
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
 (sh "sleep 5")
 
-(want "F0-4 serve loads the daemon on demand from the objects"
+(want "SHIPPED-4 serve loads the daemon on demand from the objects"
       (list (if (contains? (file-text (string-append scratch "/so-serve.txt")) "(serving ") 'serving 'NOT-LOADED)
             (if (file-exists? so-socket) 'socket-there 'NO-SOCKET))
       '(serving socket-there))
@@ -468,7 +468,7 @@
 
 (sh "sleep 1")
 
-(want "F0-4 forwarding loads the transport on demand, and the daemon answers"
+(want "SHIPPED-5 forwarding loads the transport on demand, and the daemon answers"
       (list (if (contains? so-forwarded "(ok (events") 'answered (list 'said so-forwarded))
             (if (contains? (file-text (string-append scratch "/so-serve.txt")) "daemon-dispatch")
                 'the-daemon-dispatched-it 'IT-RAN-LOCALLY))
@@ -476,7 +476,7 @@
 
 (sh (string-append "kill $(cat " scratch "/so-serve.pid) 2>/dev/null; rm -f " so-socket))
 
-;; ---- F0-5: every library entered on demand loads -----------------------------
+;; ---- LOADS: every library entered on demand loads ----------------------------
 ;;
 ;; NEVER: THE PREFLIGHT DOES NOT LOAD THEM. expansion-branches.sc imports
 ;; the static libraries in a child under each value of THEOURGIA_INJECT;
@@ -489,7 +489,7 @@
 ;; shipped source hands, quoted, to `environment` or to the programs'
 ;; `later`, and the library of every extension verb's handler. The files
 ;; are listed and read by source-files and forms-of, import-walk.sc's,
-;; which this file loads at its top for F0-1's walk; they are not copied.
+;; which this file loads at its top for CLOSURE's walk; they are not copied.
 (define (quoted-theourgia-lib x)
   (and (pair? x) (eq? (car x) 'quote) (pair? (cdr x))
        (pair? (cadr x)) (eq? (car (cadr x)) 'theourgia)
@@ -558,15 +558,15 @@
                                libs)))
           (list 'did-not-finish (file-text out))))))
 
-(want "F0-5 CONTROL: the walk finds the libraries the programs and the dispatcher enter at run time"
+(want "LOADS-1 CONTROL: the walk finds the libraries the programs and the dispatcher enter at run time"
       (map (lambda (l) (and (member l on-demand) #t))
            '((theourgia daemon) (theourgia eval-supervise) (theourgia sched) (theourgia net)
              (theourgia stream-client) (theourgia derived) (theourgia premises) (theourgia query)))
       '(#t #t #t #t #t #t #t #t))
-(want "F0-5 every library entered on demand loads in a child, THEOURGIA_INJECT unset"
+(want "LOADS-2 every library entered on demand loads in a child, THEOURGIA_INJECT unset"
       (unloaded on-demand #f #f "plain")
       '())
-(want "F0-5 every library entered on demand loads in a child, THEOURGIA_INJECT=on"
+(want "LOADS-3 every library entered on demand loads in a child, THEOURGIA_INJECT=on"
       (unloaded on-demand #t #f "inject")
       '())
 ;; TWIN: the child says when a library does not load. A library of this
@@ -579,14 +579,14 @@
 (call-with-output-file (string-append twin-dir "/f0probe/broken.sc")
   (lambda (p) (write '(library (f0probe broken) (export f) (import (rnrs)) (define (f) (not-bound-anywhere))) p))
   'truncate)
-(want "F0-5 TWIN: a library naming an unbound identifier is reported, by name, as not loaded"
+(want "LOADS-4 TWIN: a library naming an unbound identifier is reported, by name, as not loaded"
       (let ((r (unloaded '((f0probe broken) (theourgia extensions)) #f twin-dir "twin")))
         (and (list? r)
              (list (map car r)
                    (and (pair? r) (contains? (caddr (car r)) "not-bound-anywhere")))))
       '(((f0probe broken)) #t))
 
-;; ---- F18: the output directory has to be usable BY ITSELF -----------------
+;; ---- OUTDIR: the output directory has to be usable BY ITSELF --------------
 ;;
 ;; KEY: EVERY ROW ABOVE RUNS THE PROGRAM FROM THE SOURCE TREE. They put only
 ;; objects on the library path, which is what proves the LIBRARIES resolve
@@ -599,12 +599,12 @@
 ;; the path: `Exception in load: failed for <out>/theourgia/theourgia.sc: no
 ;; such file or directory`, rc=255. Putting only the thin client there moved
 ;; the same failure one step along to the program it starts (then `core.sc`;
-;; since F46 also `theourgiad.sc`). The programs are found BESIDE
+;; and now also `theourgiad.sc`). The programs are found BESIDE
 ;; THE PROGRAM, by path, so no quantity of `.so` substitutes for them.
 
 (define (product-file rel) (string-append objects "/theourgia/" rel))
 
-(want "F18 the build left every program in the output directory"
+(want "OUTDIR-1 the build left every program in the output directory"
       (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'MISSING)))
            '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "mcp/server.sc"))
       '(("theourgia.sc" . there) ("core.sc" . there) ("theourgiad.sc" . there)
@@ -625,7 +625,7 @@
 
 (sh (string-append "mkdir -p " scratch "/f18home/run"))
 
-(want "F18 the thin client runs from the output directory alone and answers the verb table"
+(want "OUTDIR-2 the thin client runs from the output directory alone and answers the verb table"
       (if (contains? (product-client "describe --wire" (string-append scratch "/f18-desc.txt"))
                      "(ok (verbs (init ")
           'answered
@@ -640,33 +640,33 @@
 (define f18-without (product-client "describe --wire" (string-append scratch "/f18-without.txt")))
 (sh (string-append "mv " f18-hidden " " (product-file "core.sc")))
 
-(want "F18 TWIN: with one program taken out of the output, the same call fails"
+(want "OUTDIR-3 TWIN: with one program taken out of the output, the same call fails"
       (list (if (contains? f18-without "(ok (verbs (init ") 'STILL-ANSWERED 'refused)
             (if (contains? f18-without "core.sc") 'and-names-the-missing-file 'SAID-SOMETHING-ELSE))
       '(refused and-names-the-missing-file))
 
-(want "F18 TWIN: and putting it back restores the answer"
+(want "OUTDIR-4 TWIN: and putting it back restores the answer"
       (if (contains? (product-client "describe --wire" (string-append scratch "/f18-again.txt"))
                      "(ok (verbs (init ")
           'answered
           (list 'said (file-text (string-append scratch "/f18-again.txt"))))
       'answered)
 
-;; ---- F46: the daemon program is copied, and the thin client starts it ------
+;; ---- the daemon program is copied, and the thin client starts it -----------
 ;;
 ;; NEVER: THE OLD NAME IS GONE FROM THE OUTPUT, not merely joined by the new
 ;; ones. A build that copied `theourgiad.sc` and `core.sc` and left a stale
 ;; copy of the program they replaced beside them would pass the row above.
-;; The old name is assembled, not spelled: entry-split.sc's F46-6 greps the
-;; tree for it.
+;; The old name is assembled, not spelled: entry-split.sc's OLDNAME-1 greps
+;; the tree for it.
 (let ((old (string-append "cli" ".sc")))
-  (want "F18 the output directory holds theourgiad.sc and core.sc and not the program they replaced"
+  (want "OUTDIR-5 the output directory holds theourgiad.sc and core.sc and not the program they replaced"
         (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'absent)))
              (list "theourgiad.sc" "core.sc" old))
         (list '("theourgiad.sc" . there) '("core.sc" . there) (cons old 'absent))))
 
 ;; A REQUEST THAT FORWARDS starts the daemon program from beside the thin
-;; client, which is the measurement F46-5's build.ss tripwire stands in for.
+;; client, which is the measurement BUILD-1's build.ss tripwire stands in for.
 ;; `init` is answered locally; `outline` then finds no daemon, and the thin
 ;; client starts `<output>/theourgiad.sc serve ...` and asks again. The run
 ;; root is under the socket base, short enough for a socket path.
@@ -696,7 +696,7 @@
         (let ((x (read p)))
           (if (eof-object? x) (reverse acc) (loop p (if (integer? x) (cons x acc) acc))))))))
 
-(want "F18 a forwarding call from the output directory starts theourgiad.sc from beside the thin client, and is answered"
+(want "OUTDIR-6 a forwarding call from the output directory starts theourgiad.sc from beside the thin client, and is answered"
       (list (if (contains? f18-outline "(ok ") 'answered (list 'said f18-outline))
             (length f18-daemon-pids))
       '(answered 1))

@@ -56,7 +56,7 @@
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -113,13 +113,13 @@
 ;; ~900ms and the supervisor takes 17 samples. A row about sampling has
 ;; to outlive the sampling interval, and the interval is a property of
 ;; the supervisor, not of the clock on the wall.
-;; NEVER: TWO READINGS, NOT ONE (F66). A worker that never said ready answers
+;; NEVER: TWO READINGS, NOT ONE. A worker that never said ready answers
 ;; (error eval-worker-unavailable (reason no-ready)), and that is a different
 ;; fact from an answer that came back without naming its limit. Both used to
 ;; read UNNAMED, so a red row could not say which had happened.
 ;;
-;; NEVER: THE CLAUSE IS COMPARED AS A DATUM, NOT FOUND AS A SUBSTRING (F104,
-;; I5). The text "(limit 1)" was searched for in the whole output, so a
+;; NEVER: THE CLAUSE IS COMPARED AS A DATUM, NOT FOUND AS A SUBSTRING
+;; (I5). The text "(limit 1)" was searched for in the whole output, so a
 ;; stdout that printed it -- the output of an ok answer is text inside it --
 ;; read named-the-limit for an answer that named no limit at all. The answer is read -- the first datum of the
 ;; output headed `ok` or `error`; stderr shares the output -- and the clause
@@ -148,15 +148,15 @@
 ;; closing parenthesis, so "(limit 1)" was never found in "(limit 10)". The
 ;; row is kept so a later matcher that drops the parenthesis is red. The row
 ;; after it is the one the base fails.
-(want "F104 GUARD (green on the base): a reading for (limit 1) is not satisfied by an answer naming (limit 10)"
+(want "LIMIT-1 GUARD (green on the base): a reading for (limit 1) is not satisfied by an answer naming (limit 10)"
       (limit-reading "(error eval-limit (resource time) (limit 10))\n" '(limit 1))
       'UNNAMED)
 
-(want "F104 a reading for (limit 1) is not satisfied by an ok answer whose stdout prints (limit 1)"
+(want "LIMIT-2 a reading for (limit 1) is not satisfied by an ok answer whose stdout prints (limit 1)"
       (limit-reading "(ok (values (3)) (stdout \"(limit 1)\") (stderr \"\"))\n" '(limit 1))
       'UNNAMED)
 
-(want "F104 CONTROL TWIN: the answer that names (limit 1) reads named-the-limit, and no-ready reads no-ready"
+(want "LIMIT-3 CONTROL TWIN: the answer that names (limit 1) reads named-the-limit, and no-ready reads no-ready"
       (list (limit-reading "(error eval-limit (resource time) (limit 1))\n" '(limit 1))
             (limit-reading "(theourgia machine-home \"/x\")\n(error eval-worker-unavailable (reason no-ready))\n" '(limit 1)))
       '(named-the-limit no-ready))

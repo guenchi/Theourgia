@@ -479,7 +479,7 @@
                (leak-lines c))))
 (define (line-with c . words)
   (exists (lambda (l) (for-all (lambda (w) (contains? l w)) words)) (lines-of (run-log c))))
-;; THE INNER RUN'S OWN ACCOUNT, for a row that went red (F95). The inner run
+;; THE INNER RUN'S OWN ACCOUNT, for a row that went red. The inner run
 ;; lives in this fixture's scratch, which is removed; a red reading of its
 ;; exit code alone -- (#f 6 #f) -- said that it stopped and not why. These
 ;; are the lines that say why: the verdicts, the abort and the output it
@@ -776,10 +776,10 @@
           (list (and (line-with c "RESULT NOT READ") #t)
                 (file-exists? (string-append (car c) "/out/ok.out")))
           '(#t #f))
-    ;; F95: THE ABORT SAYS WHERE AND WHY, and quotes the fixture's output,
+    ;; THE ABORT SAYS WHERE AND WHY, and quotes the fixture's output,
     ;; in the run's own log -- the one place that survives the run's removal
     ;; of its scratch.
-    (want "F95 an aborted run names the fixture it stopped at and the reason, and quotes that fixture's last lines of output"
+    (want "ABORT-1 an aborted run names the fixture it stopped at and the reason, and quotes that fixture's last lines of output"
           (list (and (line-with c "ABORTED AT" "could not be read") #t)
                 (and (line-with c "the last 20 lines of") #t))
           '(#t #t))
@@ -1161,17 +1161,17 @@
         (want "RS-15 within twenty seconds of TERM the runner has stopped with 143 and said SIGNALLED"
               (list done (rc-of c) (and (line-with c "SIGNALLED") #t))
               '(#t 143 #t))
-        ;; F104 (I3): AND IT NAMES THE LAUNCH THE SIGNAL CUT. TERM reaches the
+        ;; I3: AND IT NAMES THE LAUNCH THE SIGNAL CUT. TERM reaches the
         ;; runner while `wait` holds the run open (it wrote `started`), so the
         ;; line names wait and the signal's number. Without it SIGNALLED alone
         ;; did not say which launch was cut.
-        (want "F104 RS-15 the signalled run names the launch the signal cut: ABORTED AT wait: signal 15"
+        (want "RS-15 the signalled run names the launch the signal cut: ABORTED AT wait: signal 15"
               (and (line-with c "ABORTED AT wait: signal 15") #t)
               #t)
         (when (and r (starts-with? (car r) (string-append (cadr c) "/run-"))) (sh "rm -rf " (car r)))
         (when (and r (starts-with? (cadr r) "/tmp/ths.") (<= (string-length (cadr r)) 20)) (sh "rm -rf " (cadr r)))))))
 
-(printf "== F90-1: a clock that cannot be read while stopping a launch is named ==\n")
+(printf "== CLOCK: a clock that cannot be read while stopping a launch is named ==\n")
 ;; A `perl` on PATH that answers the monotonic clock's reading with a word
 ;; that is not a number, once armed, and passes every other use through --
 ;; the runner's re-exec, launch.pl, the probe. It is armed by this row after
@@ -1200,11 +1200,11 @@
       (go! c)
       (stop-pid! (string-append (car c) "/wait.pid"))
       (let ((r (roots-of c)))
-        (want "CONTROL F90-1 the real perl was found, the run started, the clock was armed, and TERM was sent"
+        (want "CONTROL CLOCK the real perl was found, the run started, the clock was armed, and TERM was sent"
               (list (> (string-length real) 0) started
                     (file-exists? (string-append (car c) "/clock-armed")) (integer? runner))
               '(#t #t #t #t))
-        (want "F90-1 a clock that cannot be read while stopping the watcher is named as the clock, not as a watcher that did not stop"
+        (want "CLOCK-1 a clock that cannot be read while stopping the watcher is named as the clock, not as a watcher that did not stop"
               (list done (rc-of c)
                     (and (line-with c "GROUP NOT READ" "wait" "CLOCK NOT READ") #t)
                     (and (line-with c "did not stop within") #t))
