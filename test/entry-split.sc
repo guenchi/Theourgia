@@ -480,6 +480,53 @@
         (length spawn-readings)
         (length (fold-left (lambda (acc r) (if (member (car r) acc) acc (cons (car r) acc))) '() spawn-readings)))
 
+(printf "== PROGNAMES: no program defines a name it imports ==\n")
+;; A PROGRAM COMPILED BY build.ss MAY NOT DEFINE A NAME IT IMPORTS. Run as a
+;; script, a top-level `define` of an imported name quietly replaces it; as
+;; a compiled program it is "multiple definitions" and the build stops --
+;; eval-worker.sc and eval-runner-exec.sc each defined `protocol`, which
+;; (chezscheme) exports. Each program's imported names are read the way the
+;; expander reads them, by building the environment of each import spec;
+;; its own names are its top-level define, define-syntax and
+;; define-record-type names.
+(define six-programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "eval-runner-exec.sc" "mcp/server.sc"))
+(define (program-forms rel) (read-all (string-append programs-root "/" rel)))
+(define (imported-names forms)
+  (let ((imp (find (lambda (f) (and (pair? f) (eq? (car f) 'import))) forms))
+        (seen (make-eq-hashtable)))
+    (when imp
+      (for-each (lambda (spec)
+                  (for-each (lambda (n) (hashtable-set! seen n #t)) (environment-symbols (environment spec))))
+                (cdr imp)))
+    seen))
+(define (own-names forms)
+  (apply append
+    (map (lambda (f)
+           (cond ((not (and (pair? f) (pair? (cdr f)))) '())
+                 ((memq (car f) '(define define-syntax))
+                  (let ((h (cadr f))) (cond ((symbol? h) (list h)) ((and (pair? h) (symbol? (car h))) (list (car h))) (else '()))))
+                 ((eq? (car f) 'define-record-type)
+                  (let ((h (cadr f))) (cond ((symbol? h) (list h)) ((list? h) (filter symbol? h)) (else '()))))
+                 (else '())))
+         forms)))
+;; -> ((<file> <name> ...) ...) for every program defining an imported name
+(define (name-collisions forms-of)
+  (filter (lambda (r) (pair? (cdr r)))
+          (map (lambda (rel)
+                 (let* ((forms (forms-of rel)) (imported (imported-names forms)))
+                   (cons rel (filter (lambda (n) (hashtable-ref imported n #f)) (own-names forms)))))
+               six-programs)))
+(want "PROGNAMES-1 no program's top-level definition takes a name its imports bring"
+      (name-collisions program-forms)
+      '())
+(want "PROGNAMES-2 TWIN: `(define protocol ...)` planted in eval-worker.sc is reported; CONTROL: every program read has its own names, and Chez's protocol is among eval-worker's imports"
+      (list (name-collisions (lambda (rel) (if (string=? rel "eval-worker.sc")
+                                               (append (program-forms rel) (list '(define protocol 1)))
+                                               (program-forms rel))))
+            (map (lambda (rel) (pair? (own-names (program-forms rel)))) six-programs)
+            (hashtable-ref (imported-names (program-forms "eval-worker.sc")) 'protocol #f))
+      (list '(("eval-worker.sc" protocol)) (map (lambda (rel) #t) six-programs) #t))
+
 (printf "== SOCKDIR: the thin client refuses before starting a daemon ==\n")
 ;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (the
 ;; main session's ruling b). Before it, a --socket under a directory that
