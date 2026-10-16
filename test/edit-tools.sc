@@ -397,6 +397,58 @@
                       (drafts-of s1 "we24") (list-ref (projection-of s1 "we24" (B 0)) 2))
             (list '(error stale) 'ok 'ok 'ok 1 (list (cons (B 0) "P0\nP1\nw9\n")) (list-ref now 2))))))
 
+;; ---- ET-25..ET-29: a sidecar edited by hand -------------------------------------------------
+(printf "== ET-25..ET-29: a sidecar edited by hand ==\n")
+;; the sidecar datum rewritten by F, or text appended to it
+(define (sidecar-path dir) (string-append dir ".edit/SIDECAR.sexp"))
+(define (rewrite-sidecar! dir f) (write-file! (sidecar-path dir) (format "~s\n" (f (sidecar-of dir)))))
+(define (with-header-cut cut) (lambda (d) (map (lambda (c) (if (and (pair? c) (eq? (car c) 'cut)) (list 'cut cut) c)) d)))
+;; every draft clause's cut replaced, at any depth
+(define (with-draft-cuts cut)
+  (lambda (d)
+    (let walk ((x d))
+      (cond ((and (pair? x) (eq? (car x) 'draft))
+             (map (lambda (c) (if (and (pair? c) (eq? (car c) 'cut)) (list 'cut cut) c)) x))
+            ((list? x) (map walk x))
+            (else x)))))
+;; -> (head reason drafts-after)
+(define (refused-why s dir w)
+  (let ((a (sync! s dir w))) (in-order (head-of a) (clause-of a 'reason) (drafts-of s w))))
+(let ((dir (edit-dir s1 "e25")))
+  (export! s1 dir "we25")
+  (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
+  (write-file! (sidecar-path dir) (string-append (file-text (sidecar-path dir)) "(another datum)\n"))
+  (want "ET-25 a second datum after the sidecar's refuses bad-sidecar, trailing-data"
+        (refused-why s1 dir "we25") '((error bad-sidecar) (reason trailing-data) ())))
+(let ((dir (edit-dir s1 "e26")))
+  (export! s1 dir "we26")
+  (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
+  (edit! (sidecar-path dir) "(span 0 12)" "(span 0 13)")
+  (want "ET-26 a span past its block's end, so the spans no longer tile the pristine copy, refuses bad-sidecar, spans"
+        (refused-why s1 dir "we26") '((error bad-sidecar) (reason spans) ())))
+(let ((dir (edit-dir s1 "e27")))
+  (export! s1 dir "we27")
+  (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
+  (rewrite-sidecar! dir (with-header-cut 7))
+  (want "ET-27 a header cut that is not a list of (writer . count) refuses bad-sidecar, header"
+        (refused-why s1 dir "we27") '((error bad-sidecar) (reason header) ())))
+(let ((dir (edit-dir s1 "e28")))
+  (export! s1 dir "we28")
+  (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
+  (rewrite-sidecar! dir (with-header-cut '(("zzzzzzzz" . 1))))
+  (want "ET-28 a well-formed header cut the store cannot serve refuses bad-sidecar, committed-not-at-cut, before any write"
+        (refused-why s1 dir "we28") '((error bad-sidecar) (reason committed-not-at-cut) ())))
+(let ((d1 (edit-dir s1 "e29a")) (d2 (edit-dir s1 "e29b")))
+  (export! s1 d1 "we29")
+  (edit! (string-append d1 "/a.sc") "a1\n" "A1\n")
+  (sync! s1 d1 "we29")
+  (export! s1 d2 "we29")
+  (edit! (string-append d2 "/a.sc") "a2\n" "A2\n")
+  (rewrite-sidecar! d2 (with-draft-cuts '(("zzzzzzzz" . 1))))
+  (want "ET-29 a drafted block whose recorded cut no longer gives its recorded version refuses bad-sidecar, draft-inconsistent; the draft stays"
+        (refused-why s1 d2 "we29")
+        (list '(error bad-sidecar) '(reason draft-inconsistent) (list (cons (A 0) "a0\nA1\na2\na3\n")))))
+
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nedit-tools complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

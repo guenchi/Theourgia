@@ -63,8 +63,8 @@
 ;; adds (written ...). Success prints (ok (files-changed <n>) (writes <n>)
 ;; (written (block "<id>" (version "<v>")) ...) (skipped "<id>" ...)).
 (import (chezscheme)
-        (only (theourgia store) open-and-reduce)
-        (only (theourgia reduce) block-hash draft-version)
+        (only (theourgia store) open-and-reduce store-state-at-cut)
+        (only (theourgia reduce) reduction? block-hash draft-version)
         (only (theourgia working) working-read working-write!)
         (only (theourgia landing-files) locate-pieces)
         (only (theourgia log) store-id-of)
@@ -105,46 +105,66 @@
 ;;
 ;; -> (values store-id writer cut files), FILES as
 ;; ((<path> <mode> <pristine-bytes> ((<id> <start> <end> <committed> <draft or #f>) ...)) ...),
-;; a draft as (version based-on cut). Its shape is checked whole here, so a
-;; damaged sidecar is refused by name rather than met halfway.
+;; a draft as (version based-on cut). The sidecar is checked whole here, so a
+;; damaged one is refused by name before anything is written, never met
+;; halfway: one datum and nothing after it; every entry's shape before it is
+;; read into; each cut a nonempty list of (<writer> . <count>); and each
+;; file's spans tiling its pristine copy exactly, in order, from 0 to its
+;; length. What only the store can confirm (a recorded hash at the recorded
+;; cut, a draft's version against its bytes) is checked in `sync`, also
+;; before the first write.
+(define trailing (list 'trailing-data))
+(define (count? x) (and (integer? x) (exact? x) (>= x 0)))
+(define (cut? c)
+  (and (list? c) (pair? c)
+       (for-all (lambda (p) (and (pair? p) (string? (car p)) (> (string-length (car p)) 0) (count? (cdr p)))) c)))
+(define (tiles? spans len)
+  (let loop ((ss spans) (at 0))
+    (if (null? ss) (= at len) (and (= (car (car ss)) at) (loop (cdr ss) (cdr (car ss)))))))
 (define (read-sidecar side)
   (let ((path (string-append side "/SIDECAR.sexp")))
     (unless (eq? 'regular (entry-name-type path)) (refuse 'missing-sidecar (list 'path path)))
     (let* ((d (guard (e (#t (refuse 'bad-sidecar (list 'path path) '(reason unreadable))))
-                (read (open-string-input-port (utf8->string (entry-bytes path))))))
+                (let* ((port (open-string-input-port (utf8->string (entry-bytes path)))) (first (read port)))
+                  (if (eof-object? (read port)) first trailing))))
            (bad (lambda (why) (refuse 'bad-sidecar (list 'path path) (list 'reason why)))))
+      (when (eq? d trailing) (bad 'trailing-data))
       (unless (and (list? d) (pair? d) (eq? (car d) 'edit-export) (equal? (clause (cdr d) 'format) '(format 1)))
         (bad 'not-an-edit-sidecar))
       (let ((store-id (value (cdr d) 'store)) (writer (value (cdr d) 'writer)) (cut (clause (cdr d) 'cut)))
-        (unless (and (string? store-id) (string? writer) cut (pair? (cdr cut))) (bad 'header))
+        (unless (and (string? store-id) (string? writer) cut (list? cut) (= 2 (length cut)) (cut? (cadr cut))) (bad 'header))
         (values store-id writer (cadr cut)
                 (map (lambda (f)
                        (unless (and (list? f) (>= (length f) 5) (string? (cadr f))) (bad 'file))
                        (let* ((rel (cadr f)) (fields (cddr f))
                               (pristine (value fields 'pristine)) (sum (value fields 'sha256))
                               (mode (value fields 'mode)))
-                         (unless (and (string? pristine) (string? sum)) (bad 'file))
-                         (let ((bytes (let ((p (string-append side "/pristine/" pristine)))
-                                        (unless (eq? 'regular (entry-name-type p)) (refuse 'pristine-damaged (list 'file rel)))
-                                        (entry-bytes p))))
+                         (unless (and (string? pristine) (string? sum) (or (string? mode) (eq? mode 'none))) (bad 'file))
+                         (let* ((bytes (let ((p (string-append side "/pristine/" pristine)))
+                                         (unless (eq? 'regular (entry-name-type p)) (refuse 'pristine-damaged (list 'file rel)))
+                                         (entry-bytes p)))
+                                (blocks
+                                  (map (lambda (b)
+                                         ;; the entry's own shape first: nothing below reads into it before
+                                         (unless (and (list? b) (>= (length b) 2) (string? (cadr b))) (bad 'block))
+                                         (let ((span (clause (cddr b) 'span)) (committed (value (cddr b) 'committed))
+                                               (draft (clause (cddr b) 'draft)))
+                                           (unless (and span (list? span) (= 3 (length span)) (count? (cadr span))
+                                                        (count? (caddr span)) (<= (cadr span) (caddr span)) (hex64? committed)
+                                                        (or (not draft)
+                                                            (and (list? draft)
+                                                                 (hex64? (value (cdr draft) 'version)) (hex64? (value (cdr draft) 'based-on))
+                                                                 (let ((c (clause (cdr draft) 'cut)))
+                                                                   (and c (list? c) (= 2 (length c)) (cut? (cadr c)))))))
+                                             (bad 'block))
+                                           (list (cadr b) (cadr span) (caddr span) committed
+                                                 (and draft (list (value (cdr draft) 'version) (value (cdr draft) 'based-on)
+                                                                  (cadr (clause (cdr draft) 'cut)))))))
+                                       (filter (lambda (c) (and (pair? c) (eq? (car c) 'block))) fields))))
                            (unless (equal? (hash-of bytes) sum) (refuse 'pristine-damaged (list 'file rel)))
-                           (list rel mode bytes
-                                 (map (lambda (b)
-                                        ;; the entry's own shape first: nothing below reads into it before
-                                        (unless (and (list? b) (>= (length b) 2) (string? (cadr b))) (bad 'block))
-                                        (let ((span (clause (cddr b) 'span)) (committed (value (cddr b) 'committed))
-                                              (draft (clause (cddr b) 'draft)))
-                                          (unless (and span (list? span) (= 3 (length span)) (fixnum? (cadr span))
-                                                       (fixnum? (caddr span)) (<= 0 (cadr span) (caddr span)) (hex64? committed)
-                                                       (or (not draft)
-                                                           (and (list? draft)
-                                                                (hex64? (value (cdr draft) 'version)) (hex64? (value (cdr draft) 'based-on))
-                                                                (let ((c (clause (cdr draft) 'cut))) (and c (list? c) (= 2 (length c)))))))
-                                            (bad 'block))
-                                          (list (cadr b) (cadr span) (caddr span) committed
-                                                (and draft (list (value (cdr draft) 'version) (value (cdr draft) 'based-on)
-                                                                 (cadr (clause (cdr draft) 'cut)))))))
-                                      (filter (lambda (c) (and (pair? c) (eq? (car c) 'block))) fields))))))
+                           (unless (tiles? (map (lambda (b) (cons (cadr b) (caddr b))) blocks) (bytevector-length bytes))
+                             (bad 'spans))
+                           (list rel mode bytes blocks))))
                      (filter (lambda (c) (and (pair? c) (eq? (car c) 'file))) (cdr d))))))))
 
 ;; ---- the directory ---------------------------------------------------------------
@@ -290,7 +310,7 @@
         (for-each (lambda (f) (unless (member (car f) recorded) (refuse 'added-file (list 'file (car f))))) on-disk)
         (for-each (lambda (r) (unless (assoc r on-disk) (refuse 'removed-file (list 'file r)))) recorded)
         (let* ((changed (filter (lambda (f) (not (bytevector=? (caddr f) (cdr (assoc (car f) on-disk))))) files))
-               ;; ((<id> <new bytes> <committed> <draft or #f>) ...), every check of a file passed
+               ;; ((<id> <new bytes> <committed> <draft or #f> <old bytes>) ...), every check of a file passed
                (touched
                  (apply append
                    (map (lambda (f)
@@ -302,10 +322,29 @@
                             (map (lambda (t)
                                    (unless (utf8? (cdr t)) (refuse 'invalid-utf8 (list 'file rel) (list 'block (car t))))
                                    (let ((b (assoc (car t) (cadddr f))))
-                                     (list (car t) (cdr t) (cadddr b) (car (cddddr b)))))
+                                     (list (car t) (cdr t) (cadddr b) (car (cddddr b)) (slice (caddr f) (cadr b) (caddr b)))))
                                  (blocks-of rel (caddr f) new (cadddr f)))))
                         changed)))
                (state (open-and-reduce store))
+               ;; THE SIDECAR'S OWN FACTS, CONFIRMED BY THE STORE before any write:
+               ;; an undrafted block's recorded hash is its hash at the recorded
+               ;; cut (read through the cut path a read uses, which answers an
+               ;; unusable cut rather than raising), and a drafted block's
+               ;; recorded version is the version of its exported bytes, its
+               ;; based-on and its cut. A sidecar that fails either was not
+               ;; written by edit-export for this store, and a write planned
+               ;; from it could be refused after an earlier one landed.
+               (at-cut (and (exists (lambda (t) (not (cadddr t))) touched)
+                            (store-state-at-cut store state (format "~s" cut))))
+               (confirmed
+                 (for-each (lambda (t)
+                             (let ((id (car t)) (draft (cadddr t)))
+                               (if draft
+                                   (unless (equal? (draft-version (list-ref t 4) (cadr draft) (caddr draft)) (car draft))
+                                     (refuse 'bad-sidecar (list 'block id) '(reason draft-inconsistent)))
+                                   (unless (and (reduction? at-cut) (equal? (block-hash at-cut id) (caddr t)))
+                                     (refuse 'bad-sidecar (list 'block id) '(reason committed-not-at-cut))))))
+                           touched))
                ;; ((<id> <new bytes> <based-on> <cut-text> <version>) ...) to write, and the skipped ids
                (plan
                  (map (lambda (t)

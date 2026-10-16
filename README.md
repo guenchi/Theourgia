@@ -2921,7 +2921,13 @@ runs before any write, and a refusal writes nothing:
 
 - the sidecar: `missing-sidecar`, `bad-sidecar`, `foreign-store` (another
   store's, even with the same writer name), `foreign-writer`,
-  `pristine-damaged`;
+  `pristine-damaged`. `bad-sidecar` names its reason: one datum and nothing
+  after it (`trailing-data`), every entry's shape, each cut a nonempty list
+  of `(<writer> . <count>)`, the spans tiling each pristine copy exactly
+  (`spans`), and, read from the store, an undrafted touched block's recorded
+  hash at the recorded cut (`committed-not-at-cut`) and a drafted one's
+  recorded version from its exported bytes, based-on and cut
+  (`draft-inconsistent`);
 - the directory: `unexpected-entry` (not a file or a directory),
   `added-file`, `removed-file` (drafts cannot add or remove a block);
 - a changed file: `file-mode` (its git mode is not 100644, or it became
