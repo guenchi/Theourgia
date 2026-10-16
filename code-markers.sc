@@ -42,13 +42,25 @@
   ;; -> (values escaped inserted): the body with one "@" inserted into every
   ;; marker-like line, and the offsets IN THE ESCAPED BYTES where those "@"
   ;; bytes sit. One walk makes both, so the offsets are the ones written.
-  (define (escape-body-map entry b)
+  ;;
+  ;; A LAST LINE ENDING IN CR, WHEN A PAD LF FOLLOWS THE BODY (`padded?`):
+  ;; rows end at LF, so that line keeps its CR, and the family test, which
+  ;; wants the wrapping's suffix last, misses it; the pad LF then ends it as
+  ;; CRLF, and every line reader, the decoder included, reads it without its
+  ;; CR. So that row is judged and escaped without its CR, and the CR is
+  ;; written after it, where the pad LF meets it. Nothing else changes: with
+  ;; no pad LF the line ends the file as it is and reads as text.
+  (define (escape-body-map entry b padded?)
     (let loop ((rows (byte-lines b)) (parts '()) (inserted '()) (at 0))
       (if (null? rows)
           (values (apply bytes-append (reverse parts)) (reverse inserted))
           (let* ((r (car rows))
-                 (content (byte-slice b (car r) (cadr r)))
-                 (eol (byte-slice b (cadr r) (caddr r)))
+                 (raw (byte-slice b (car r) (cadr r)))
+                 (cr? (and padded? (null? (cdr rows)) (= (cadr r) (caddr r))
+                           (> (bytevector-length raw) 0)
+                           (= 13 (bytevector-u8-ref raw (- (bytevector-length raw) 1)))))
+                 (content (if cr? (byte-slice raw 0 (- (bytevector-length raw) 1)) raw))
+                 (eol (if cr? #vu8(13) (byte-slice b (cadr r) (caddr r))))
                  (f (family entry content))
                  (line (adjust-line entry content 1)))
             (loop (cdr rows) (cons eol (cons line parts))
@@ -141,7 +153,8 @@
                    (src-start (if first? prefix-size 0))
                    (mark (marker-line entry (string-append "@block " id " pad " (number->string pad))))
                    (framing (if (and (= pad 1) (not first?)) (bytes-append #vu8(10) mark) mark)))
-              (let-values (((escaped inserted) (escape-body-map entry body)))
+              ;; a pad LF follows this body when another block follows it
+              (let-values (((escaped inserted) (escape-body-map entry body (pair? (cdr xs)))))
                 (loop (cdr xs) #f escaped
                       (cons (list 'source escaped id src-start inserted)
                             (cons (list 'control framing id src-start '()) parts)))))))))

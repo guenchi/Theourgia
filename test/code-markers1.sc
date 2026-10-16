@@ -106,5 +106,54 @@
       (let-values (((b ps) (projection-encode-map py h '()))) (projection-range ps 0 0))
       '(none))
 
+;; A LAST LINE THAT IS A MARKER BUT FOR ITS CR, FOLLOWED BY ANOTHER BLOCK:
+;; the next block's framing writes a pad LF after it, so the file holds the
+;; marker line ended by CRLF, which every line reader, the decoder included,
+;; takes for a marker. The encoder escapes such a line. In the file's last
+;; block nothing follows it, and it is written as it is and read as text.
+(define (caught thunk)
+  (guard (e (#t (list 'RAISED (if (message-condition? e) (condition-message e) e)))) (thunk)))
+(define cr-line
+  (let ((m (marker-line md "@block writer.y pad 0")))
+    (bytes-append (string->utf8 "x\n") (byte-slice m 0 (- (bytevector-length m) 1)) #vu8(13))))
+(define cr-entries (list (list "writer.1" cr-line) (list "writer.2" (string->utf8 "two"))))
+(want "CT-21 a last line that is a marker but for its CR, before another block's pad LF, round-trips"
+      (caught (lambda () (cadr (projection-decode md (projection-encode md h cr-entries)))))
+      cr-entries)
+(define cr-last (list (list "writer.2" (string->utf8 "two")) (list "writer.1" cr-line)))
+(want "CT-21 the same line in the file's last block round-trips, and is written unescaped at the file's end"
+      (caught (lambda ()
+                (let* ((out (projection-encode md h cr-last)) (n (bytevector-length out)))
+                  (list (cadr (projection-decode md out))
+                        (equal? (byte-slice out (- n (bytevector-length cr-line)) n) cr-line)))))
+      (list cr-last #t))
+;; THE ESCAPED LINE'S MAP: the inserted "@" is the one projected byte with
+;; no source byte of its own; the CR after the line is writer.1's last byte;
+;; the pad LF after the CR is a control, so a range taking it is unmappable.
+(define-values (cr-out cr-pieces) (projection-encode-map md h cr-entries))
+;; Unescaped, the line is not found (cr-at is #f) and the row reads RAISED.
+(define cr-at (offset-of cr-out "<!-- @@block writer.y"))
+(want "CT-21 the escaped line's map: the inserted @ alone, the CR, the CR with the pad LF, and the whole body"
+      (caught
+        (lambda ()
+          (list (equal? cr-out (projection-encode md h cr-entries))
+                (bytevector-u8-ref cr-out (+ cr-at 31)) (bytevector-u8-ref cr-out (+ cr-at 32))
+                (projection-range cr-pieces (+ cr-at 5) (+ cr-at 6))
+                (projection-range cr-pieces (+ cr-at 31) (+ cr-at 32))
+                (projection-range cr-pieces (+ cr-at 31) (+ cr-at 33))
+                (projection-range cr-pieces (- cr-at 2) (+ cr-at 32)))))
+      '(#t 13 10 (mapped "writer.1" 7 7) (mapped "writer.1" 32 33) (unmappable "writer.1") (mapped "writer.1" 0 33)))
+;; Every marker form ending in CR before a pad LF: a line already escaped
+;; once, and a header line.
+(for-each
+  (lambda (form)
+    (let* ((m (marker-line md form))
+           (line (bytes-append (string->utf8 "x\n") (byte-slice m 0 (- (bytevector-length m) 1)) #vu8(13)))
+           (entries (list (list "writer.1" line) (list "writer.2" (string->utf8 "two")))))
+      (want (string-append "CT-21 a last line \"" form "\" but for its CR, before another block's pad LF, round-trips")
+            (caught (lambda () (cadr (projection-decode md (projection-encode md h entries)))))
+            entries)))
+  '("@@block writer.y pad 0" "@file literal"))
+
 (printf "~a failures\ncode-markers1 complete\n" bad)
 (exit (if (zero? bad) 0 1))
