@@ -63,8 +63,15 @@
 ;; such as a record or a hashtable), so a raise never puts a line on the
 ;; protocol that the supervisor cannot read.
 
+;; NEVER: eval-context's display, write AND newline ARE THE SANDBOX'S, not
+;; this program's. It exports them for the evaluated code, under the same
+;; names as Chez's; imported whole beside (chezscheme), the two bindings of
+;; each name are a conflict that compiling this file as a program refuses
+;; ("multiple definitions for display"), while a script quietly takes one.
+;; This program writes its protocol with Chez's own, into string ports it
+;; then flushes itself, so it leaves eval-context's three out.
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
-        (theourgia eval-context) (theourgia code-project)
+        (except (theourgia eval-context) display write newline) (theourgia code-project)
         (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause
               unreadable-entry? unreadable-entry-path unreadable-entry-reason
               load-declaration-set! load-refused? load-refused-condition)
