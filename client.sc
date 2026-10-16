@@ -26,7 +26,7 @@
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape? plain-datum
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
-          next-attempt-token select-report)
+          next-attempt-token select-report program-launch)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode) (rnrs hashtables)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
@@ -229,6 +229,29 @@
 
   (define (store-key store)
     (substring (bytevector->hex (sha256 (string->utf8 (key-name store)))) 0 16))
+
+  ;; HOW A SIBLING PROGRAM IS STARTED: SOURCE is the resolved path of its
+  ;; `.sc` (each caller finds it as before, beside the running program or
+  ;; one directory up). -> ("--program" <the same path with .so>) when that
+  ;; object is a regular file, else ("--script" SOURCE). The caller puts the
+  ;; executable in front and its own arguments after, unchanged.
+  ;;
+  ;; KEY: A BUILT TREE RUNS OBJECTS, A SOURCE TREE RUNS SOURCES. build.ss
+  ;; writes a program object beside each program's source; a development
+  ;; tree has none, so it starts sources exactly as before. Run as a
+  ;; script, a program is expanded and compiled again at every start.
+  ;;
+  ;; NEVER: THIS IS THE ONE PLACE A SIBLING'S MODE IS CHOSEN. The six
+  ;; launch sites (theourgia.sc, mcp/server.sc, eval-supervise.sc) call it
+  ;; and spell no "--script" of their own; a static row holds them to that.
+  (define (program-launch source)
+    (let ((n (string-length source)))
+      (if (and (> n 3) (string=? (substring source (- n 3) n) ".sc"))
+          (let ((object (string-append (substring source 0 (- n 3)) ".so")))
+            (if (eq? (entry-type object) 'regular)
+                (list "--program" object)
+                (list "--script" source)))
+          (list "--script" source))))
 
   (define (socket-path store)
     (string-append (run-root) "/" (store-key store) "/socket"))

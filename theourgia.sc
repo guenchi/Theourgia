@@ -40,7 +40,7 @@
         (only (theourgia client)
               socket-path serve-log-path request-frame
               call! ensure-daemon! answer-field readable-shape? exit-code?
-              verb-spelling-error plain-datum)
+              verb-spelling-error plain-datum program-launch)
         ;; NOTE: THE ARGUMENT TABLES, AND NOTHING ELSE. `(theourgia arguments)`
         ;; is a pure library with no dependencies of its own: it reaches
         ;; neither the dispatcher, nor the scheduler, nor the network. It
@@ -205,12 +205,12 @@
 ;; `serve`.
 (define (run-server-here! argv)
   (exec-server! (cons (scheme-binary)
-                      (cons "--script"
-                            (cons (beside-this-program
-                                    (if (and (pair? argv) (string=? (car argv) "serve"))
-                                        "theourgiad.sc"
-                                        "core.sc"))
-                                  argv)))))
+                      (append (program-launch
+                                (beside-this-program
+                                  (if (and (pair? argv) (string=? (car argv) "serve"))
+                                      "theourgiad.sc"
+                                      "core.sc")))
+                              argv))))
 
 (define (exec-server! args)
   (let* ((width (foreign-sizeof 'void*))
@@ -505,7 +505,7 @@
 ;; daemon's command line is the one it always was (`serve <store> ...`),
 ;; which is what anything that finds a daemon by its command line matches.
 (define (server-argv store socket)
-  (append (list (scheme-binary) "--script" (beside-this-program "theourgiad.sc") "serve")
+  (append (list (scheme-binary)) (program-launch (beside-this-program "theourgiad.sc")) (list "serve")
           (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\-))
               (list "--store" store)
               (list store))

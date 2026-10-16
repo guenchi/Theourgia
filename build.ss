@@ -233,6 +233,52 @@
       (for-each (lambda (r) (printf "  ~a\n" r)) (reverse missing))
       (exit 1))))
 
+;; THE OPERATOR TOOLS ARE COPIED TOO: every `tools/*.sc` of the source root
+;; into `<out-root>/theourgia/tools/`, so an install can run them from
+;; itself (`scheme --script <out>/theourgia/tools/<name>.sc` with the
+;; output on the library path) instead of needing a source tree beside it.
+;; They stay sources: an operator script runs rarely and its start-up is
+;; not on any request's path, so a program object would buy nothing and add
+;; one more thing to fail in a build.
+(define (copy-tools!)
+  (let ((from (string-append root "/theourgia/tools"))
+        (to (string-append out-root "/theourgia/tools")))
+    (if (not (file-directory? from))
+        (printf "copied 0 tools into ~a\n" to)
+        (let ((names (filter source-suffix? (list-sort string<? (directory-list from)))))
+          (unless (file-directory? to) (mkdir to))
+          (for-each (lambda (n) (copy-file! (string-append from "/" n) (string-append to "/" n))) names)
+          (printf "copied ~a tools into ~a\n" (length names) to)))))
+
+;; THE PROGRAMS ARE ALSO COMPILED, AS PROGRAM OBJECTS, after their sources
+;; are copied: each `<name>.sc` gets a `<name>.so` beside it, which a sibling
+;; is started with as `scheme --program` (client.sc's program-launch picks
+;; the object when it is there, else the source). Run as a script, a program
+;; is expanded and compiled again at every start -- about 14 ms of each
+;; start of core.sc, measured -- and every eval, local route and child the
+;; MCP shell spawns pays it.
+;;
+;; NOTE: AT OPTIMIZE-LEVEL 2, AROUND THESE CALLS ONLY. Nothing else changes:
+;; the library path above holds only this build's objects, so each program
+;; object binds to the compilation instances just written, and the
+;; libraries keep the level they were compiled at. The source stays beside
+;; the object, for the `--script` fallback and the tests that read it.
+;;
+;; NEVER: A PROGRAM THAT DOES NOT COMPILE IS A FAILED BUILD, named, exit 1,
+;; as a missing one is; the count line says how many compiled.
+(define (program-object rel)
+  (string-append out-root "/theourgia/" (substring rel 0 (- (string-length rel) 3)) ".so"))
+(define (compile-programs!)
+  (for-each
+    (lambda (rel)
+      (guard (e (#t (printf "COULD NOT COMPILE PROGRAM ~a: ~a\n" rel
+                            (call-with-string-output-port (lambda (p) (display-condition e p))))
+                    (exit 1)))
+        (parameterize ((optimize-level 2))
+          (compile-program (string-append out-root "/theourgia/" rel) (program-object rel)))))
+    programs)
+  (printf "compiled ~a of ~a programs into ~a/theourgia\n" (length programs) (length programs) out-root))
+
 (let pass ((todo libraries) (done 0))
   (let sweep ((fs todo) (deferred '()) (built 0) (errs '()))
     (cond
@@ -247,6 +293,8 @@
       ((null? deferred)
        (printf "compiled ~a of ~a libraries into ~a\n" (+ done built) (length libraries) out-root)
        (copy-programs!)
+       (copy-tools!)
+       (compile-programs!)
        (printf "build complete\n"))
       ((zero? built)
        ;; NEVER: NO PROGRESS MEANS IT IS NOT AN ORDERING PROBLEM. Say which

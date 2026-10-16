@@ -58,7 +58,7 @@
               mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
               fs-error? fs-error-errno fd-open write-all! fd-close)
-        (only (theourgia client) run-root store-key)
+        (only (theourgia client) run-root store-key program-launch)
         ;; A refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
         ;; table (point 7).
@@ -488,8 +488,9 @@
 ;; daemon's command line is the one it always was (`serve <store> ...`),
 ;; which is what anything that finds a daemon by its command line matches.
 (define (server-argv store socket)
-  (append (list (or (getenv "THEOURGIA_SCHEME") "scheme")
-                "--script" (beside-this-program "theourgiad.sc") "serve")
+  (append (list (or (getenv "THEOURGIA_SCHEME") "scheme"))
+          (program-launch (beside-this-program "theourgiad.sc"))
+          (list "serve")
           (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\-))
               (list "--store" store)
               (list store))
@@ -659,13 +660,15 @@
       ((and (not (parse-error? nodes)) (transport-option-refusal nodes))
        => (lambda (e) (list 'result-datum e)))
       (else
-       (let ((core (beside-this-program "core.sc")))
-         (if (not (eq? (entry-type core) 'regular))
+       ;; THE PATH CHECKED IS THE ONE THE CHILD WILL RUN: the program object
+       ;; when the tree has one, else the source.
+       (let* ((core (beside-this-program "core.sc")) (launch (program-launch core)))
+         (if (not (eq? (entry-type (cadr launch)) 'regular))
              (list 'not-sent (list 'error 'core-missing (list 'path core)))
              (let ((dir (claim-call-directory store)))
                (if (not dir)
                    (list 'not-sent '(error scratch-unavailable))
-                   (run-child-in dir core verb argv stdin (child-budget-ms nodes))))))))))
+                   (run-child-in dir launch verb argv stdin (child-budget-ms nodes))))))))))
 
 (define (parse-error? nodes) (and (pair? nodes) (eq? (car nodes) 'error)))
 
@@ -731,7 +734,7 @@
 ;; NEVER: THE CHILD'S VERB IS THE TOOL'S. It was the word `eval`, written
 ;; here, while eval was the only child verb; a second child verb then ran as
 ;; an evaluation of its own arguments.
-(define (run-child-in dir core verb argv stdin budget)
+(define (run-child-in dir launch verb argv stdin budget)
   (let ((stdin-path (and (string? stdin) (string-append dir "/stdin")))
         (answer-path (string-append dir "/answer"))
         (diag-path (string-append dir "/diag")))
@@ -750,7 +753,7 @@
             (write-all! fd (string->utf8 stdin) stdin-path))
           (fd-close fd))))
     (let-values (((pid spawn-errno)
-                  (spawn-captured! (append (list (scheme-binary) "--script" core (symbol->string verb)) argv)
+                  (spawn-captured! (append (list (scheme-binary)) launch (list (symbol->string verb)) argv)
                                    (list (cons "THEOURGIA_STORE" serving-store)
                                          (cons "THEOURGIA_ACTOR" serving-actor)
                                          (cons "THEOURGIA_SOCKET" serving-socket)

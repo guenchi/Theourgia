@@ -26,6 +26,7 @@
   ("build.ss" (libraries) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-exists? 2 keep a "build.ss: build output and source paths, not writer layout")
+  ("build.ss" (copy-tools!) file-directory? 2 keep a "build.ss: build output and source paths, not writer layout")
   ("code-project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("code-project.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("code-project.sc" (directory-files walk) file-is-directory? 1 keep a "not writer layout: import-code input tree")
@@ -106,6 +107,11 @@
    unrelated a
    "build.ss: build failure bookkeeping"
    (e (#t (sweep (cdr fs) (cons (car fs) deferred) built (cons (cons (name-of (car fs)) (if (and (condition? e) (message-condition? e)) (condition-message e) "?")) errs)))))
+  ("build.ss" (compile-programs!) 1 guard
+   (#t)
+   unrelated a
+   "build.ss: a program that does not compile is a failed build, named with its condition, exit 1"
+   (e (#t (printf "COULD NOT COMPILE PROGRAM ~a: ~a\n" rel (call-with-string-output-port (lambda (p) (display-condition e p)))) (exit 1))))
   ("core.sc" (forward-then-exit!) 1 guard
    (#t)
    unrelated a

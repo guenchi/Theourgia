@@ -404,7 +404,9 @@
         ((pair? x) (append (strings-in (car x)) (strings-in (cdr x))))
         ((vector? x) (strings-in (vector->list x)))
         (else '())))
-(define (names-daemon-text? str) (contains? str "theourgiad.sc"))
+;; A program is started by its object (`--program theourgiad.so`) when a
+;; build left one, and by its source otherwise: both name the daemon.
+(define (names-daemon-text? str) (or (contains? str "theourgiad.sc") (contains? str "theourgiad.so")))
 (define (defines-of forms)
   (let loop ((xs forms) (acc '()))
     (cond ((null? xs) acc)
@@ -415,7 +417,7 @@
 (define (spawn-form? x)
   (and (list? x)
        (let ((strs (filter string? x)))
-         (and (exists (lambda (s) (contains? s "--script")) strs)
+         (and (exists (lambda (s) (or (contains? s "--script") (contains? s "--program"))) strs)
               (exists serve-token? strs)))))
 (define (names-daemon? form defs)
   (exists (lambda (e)
@@ -457,6 +459,14 @@
                                          (list 'string-append (string-append "scheme " flag " ") 'prog
                                                (string-append " " word " ") 'store)))
               (spawn-report "made" (list (list 'define 'prog "../theourgiad.sc")
+                                         (list 'list "scheme" flag 'prog word 'store)))))
+      '((("made" #f)) (("made" #t))))
+(want "CONTROL OBJSPAWN a program-object spawn naming core.so through a variable is reported; one naming theourgiad.so is not"
+      (let ((flag (string-append "--" "program")) (word (string-append "ser" "ve")))
+        (list (spawn-report "made" (list (list 'define 'prog "../core.so")
+                                         (list 'string-append (string-append "scheme " flag " ") 'prog
+                                               (string-append " " word " ") 'store)))
+              (spawn-report "made" (list (list 'define 'prog "../theourgiad.so")
                                          (list 'list "scheme" flag 'prog word 'store)))))
       '((("made" #f)) (("made" #t))))
 (want "SPAWNS-1 the reading finds the spawns that went red, and the ones beside them"

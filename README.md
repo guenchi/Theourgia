@@ -49,7 +49,10 @@ wrong there, one of which (`O_APPEND`) wrote every log record over the
 start of its segment.
 
 **Build.** `build.ss` compiles every library -- this tree and igropyr -- into a directory of objects,
-and copies the programs beside them:
+copies the programs beside them and compiles each program into a program object beside its source
+(`<name>.so`, at optimize-level 2, bound to the library objects just built), and copies the operator
+tools (`tools/*.sc`) into `<output-root>/theourgia/tools/`. A program that does not compile fails the
+build, named:
 
     scheme --script build.ss <library-root> <output-root>
 
@@ -60,18 +63,22 @@ itself.
 
     export CHEZSCHEMELIBDIRS=<output-root>
     export CHEZSCHEMELIBEXTS=".so"
-    scheme --script <output-root>/theourgia/theourgia.sc init --store /path/to/store
+    scheme --program <output-root>/theourgia/theourgia.so init --store /path/to/store
 
-A short wrapper on the PATH that sets those two variables and execs the program is all an install
-needs: `theourgia` for `theourgia/theourgia.sc`, `theourgia-mcp` for `theourgia/mcp/server.sc`, and
-`theourgiad` for `theourgia/theourgiad.sc`.
+A short wrapper on the PATH that sets those two variables and execs the program object is all an
+install needs: `theourgia` for `theourgia/theourgia.so`, `theourgia-mcp` for
+`theourgia/mcp/server.so`, and `theourgiad` for `theourgia/theourgiad.so`. A tool runs from the same
+directory as a script: `scheme --script <output-root>/theourgia/tools/<name>.sc ...`.
 
 **The programs.** `theourgia.sc` is the command you run. It answers through a daemon, and starts
 `theourgiad.sc` beside itself when none is running; `init`, `eval` and any request under
 `THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc` starts `eval-worker.sc` for `eval` and
 `eval-runner-exec.sc` for `eval --lang`. `mcp/server.sc` is the MCP shell and starts `theourgiad.sc`
 one level up, and runs `core.sc`, also one level up, as its own child for `eval`. `theourgiad.sc` takes only `serve`. The programs find each other by path, not through
-the library path, so keep the output directory as `build.ss` lays it out.
+the library path, so keep the output directory as `build.ss` lays it out. A program starts a sibling
+as its program object (`scheme --program <name>.so`) when one is beside the sibling's source, and as
+a script (`scheme --script <name>.sc`) otherwise, so an output directory runs objects and a source
+tree, which has none, runs sources; a script is expanded and compiled again at every start.
 
 NOTE: **The shipped form is this directory of objects, not one file.** `eval`, forwarding and the
 daemon load libraries by name at run time, and a whole-program package would drop them for being

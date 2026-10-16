@@ -418,13 +418,50 @@
       (if (contains? build-said "build complete") 'built (list 'said build-said))
       'built)
 
+;; ---- the argument log: how each child was started -------------------------------
+;;
+;; EVERY LAUNCH SITE TAKES ITS EXECUTABLE FROM THEOURGIA_SCHEME (the thin
+;; client, the MCP shell, core's eval supervisor). Pointed at this wrapper,
+;; each child it starts appends its own argument line to the log and then
+;; becomes the real scheme with the same arguments, so the log holds the
+;; command line every child was started with.
+;;
+;; NOTE: A LOG, NOT ps. The eval launcher replaces itself with its
+;; interpreter after `go` (eval-runner-exec.sc), so its own command line is
+;; gone before ps could read it; the wrapper records it at the start. The
+;; log path and the real scheme are written into the wrapper, since the
+;; launcher's environment holds PATH, HOME, LANG and the library path only.
+(define real-scheme
+  (begin
+    (sh (string-append "command -v scheme > " scratch "/real-scheme.txt"))
+    (let ((t (file-text (string-append scratch "/real-scheme.txt"))))
+      (if (and (> (string-length t) 0) (char=? #\newline (string-ref t (- (string-length t) 1))))
+          (substring t 0 (- (string-length t) 1))
+          t))))
+(define argv-log (string-append scratch "/argv.log"))
+(define scheme-wrapper (string-append scratch "/scheme-logging"))
+(call-with-output-file scheme-wrapper
+  (lambda (p)
+    (put-string p (string-append "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" argv-log "'\nexec '" real-scheme "' \"$@\"\n"))))
+(sh (string-append "chmod 755 " scheme-wrapper))
+(define (logging-scheme) (string-append "THEOURGIA_SCHEME=" scheme-wrapper))
+(define (clear-argv-log!) (sh (string-append "rm -f " argv-log)))
+;; the logged lines, in order
+(define (argv-lines)
+  (let loop ((p (open-string-input-port (file-text argv-log))) (acc '()))
+    (let ((l (get-line p))) (if (eof-object? l) (reverse acc) (loop p (cons l acc))))))
+;; whether some logged line holds TEXT
+(define (launched? lines text) (and (exists (lambda (l) (contains? l text)) lines) #t))
+
 ;; NEVER: `.so` ONLY ON THE PATH, so nothing can fall back to source and make
-;; these rows describe the form they were meant to leave behind.
+;; these rows describe the form they were meant to leave behind. And the
+;; program run is the build's PROGRAM OBJECT, core.so: the entry
+;; point read here is the compiled one a user's install runs.
 (define (so-cli args out-file . env)
   (sh (string-append
         (if (pair? env) (car env) "")
         " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-        "scheme --script " root "/core.sc " args " > " out-file " 2>&1"))
+        "scheme --program " objects "/theourgia/core.so " args " > " out-file " 2>&1"))
   (file-text out-file))
 
 (define so-store (string-append scratch "/so-store"))
@@ -454,7 +491,7 @@
 (define so-socket (string-append socket-base "/f0so-" (number->string (get-process-id)) ".sock"))
 (sh (string-append "rm -f " so-socket))
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-                   "scheme --script " root "/theourgiad.sc serve " so-store " --socket " so-socket
+                   "scheme --program " objects "/theourgia/theourgiad.so serve " so-store " --socket " so-socket
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
 (sh "sleep 5")
 
@@ -616,12 +653,15 @@
 ;; tree also reachable this row would resolve the client from there and pass
 ;; whatever the output directory contained, which is the one thing it exists
 ;; to rule out.
-(define (product-client args out-file)
+;; NOTE: THE THIN CLIENT RUN IS ITS PROGRAM OBJECT, and ENV goes in
+;; front of the command (the launch rows below set THEOURGIA_SCHEME there).
+(define (product-client args out-file . env)
   (sh (string-append
-        "THEOURGIA_LOCAL=1 THEOURGIA_HOME=" scratch "/f18home"
+        (if (pair? env) (car env) "")
+        " THEOURGIA_LOCAL=1 THEOURGIA_HOME=" scratch "/f18home"
         " THEOURGIA_RUN=" scratch "/f18home/run"
         " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-        "scheme --script " (product-file "theourgia.sc") " " args
+        "scheme --program " (product-file "theourgia.so") " " args
         " > " out-file " 2>&1"))
   (file-text out-file))
 
@@ -637,12 +677,29 @@
 ;; NEVER: AND THE ROW ABOVE HAS TO BE ABOUT THE COPIED PROGRAMS. Moving one
 ;; away and putting it back is the only thing here that shows the row is
 ;; reading them rather than something else that happens to be true.
+;;
+;; A BUILT PROGRAM IS TWO FILES, its object and its source, and the twin
+;; is two: with the object gone the source is run (`--script`, which the
+;; argument log below shows) and answers; with both gone the call fails and
+;; names the source.
+(define f18-hidden-so (string-append scratch "/core.so.hidden"))
 (define f18-hidden (string-append scratch "/core.sc.hidden"))
+(sh (string-append "mv " (product-file "core.so") " " f18-hidden-so))
+(clear-argv-log!)
+(define f18-source-only
+  (product-client "describe --wire" (string-append scratch "/f18-source-only.txt") (logging-scheme)))
+(define f18-source-only-launches (argv-lines))
 (sh (string-append "mv " (product-file "core.sc") " " f18-hidden))
 (define f18-without (product-client "describe --wire" (string-append scratch "/f18-without.txt")))
 (sh (string-append "mv " f18-hidden " " (product-file "core.sc")))
+(sh (string-append "mv " f18-hidden-so " " (product-file "core.so")))
 
-(want "OUTDIR-3 TWIN: with one program taken out of the output, the same call fails"
+(want "OUTDIR-7 TWIN: with core.so taken out of the output, the thin client starts core.sc as a script, which answers"
+      (list (if (contains? f18-source-only "(ok (verbs (init ") 'answered (list 'said f18-source-only))
+            (launched? f18-source-only-launches (string-append "--script " (product-file "core.sc") " describe")))
+      '(answered #t))
+
+(want "OUTDIR-3 TWIN: with core.so and core.sc both taken out of the output, the same call fails and names core.sc"
       (list (if (contains? f18-without "(ok (verbs (init ") 'STILL-ANSWERED 'refused)
             (if (contains? f18-without "core.sc") 'and-names-the-missing-file 'SAID-SOMETHING-ELSE))
       '(refused and-names-the-missing-file))
@@ -670,20 +727,22 @@
 ;; A REQUEST THAT FORWARDS starts the daemon program from beside the thin
 ;; client, which is the measurement BUILD-1's build.ss tripwire stands in for.
 ;; `init` is answered locally; `outline` then finds no daemon, and the thin
-;; client starts `<output>/theourgiad.sc serve ...` and asks again. The run
-;; root is under the socket base, short enough for a socket path.
+;; client starts `<output>/theourgiad.so serve ...` (the program object)
+;; and asks again. The run root is under the socket base, short enough for
+;; a socket path.
 (define f18-run (string-append socket-base "/f18r-" (number->string (get-process-id))))
 (define f18-store (string-append scratch "/f18store"))
 (define (product-client-forwarding args out-file)
   (sh (string-append
-        "THEOURGIA_HOME=" scratch "/f18home THEOURGIA_RUN=" f18-run
+        (logging-scheme) " THEOURGIA_HOME=" scratch "/f18home THEOURGIA_RUN=" f18-run
         " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-        "scheme --script " (product-file "theourgia.sc") " " args
+        "scheme --program " (product-file "theourgia.so") " " args
         " < /dev/null > " out-file " 2>&1"))
   (file-text out-file))
 (sh (string-append "mkdir -p " f18-run " " f18-store))
 (product-client-forwarding (string-append "init --store " f18-store " --wire")
                            (string-append scratch "/f18-init.txt"))
+(clear-argv-log!)
 (define f18-outline
   (product-client-forwarding (string-append "outline --store " f18-store " --wire")
                              (string-append scratch "/f18-outline.txt")))
@@ -691,21 +750,190 @@
 ;; this process's pid, so no other run's daemon can match it.
 (define f18-daemon-pids
   (let* ((out (string-append scratch "/f18-ps.txt")))
-    (sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "theourgiad.sc") " serve '"
+    (sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "theourgiad.so") " serve '"
                        " | grep -v grep | awk '{print $1}' > " out))
     (let ((t (file-text out)))
       (let loop ((p (open-string-input-port t)) (acc '()))
         (let ((x (read p)))
           (if (eof-object? x) (reverse acc) (loop p (if (integer? x) (cons x acc) acc))))))))
 
-(want "OUTDIR-6 a forwarding call from the output directory starts theourgiad.sc from beside the thin client, and is answered"
+(define f18-outline-launches (argv-lines))
+(want "OUTDIR-6 a forwarding call from the output directory starts theourgiad.so from beside the thin client, and is answered"
       (list (if (contains? f18-outline "(ok ") 'answered (list 'said f18-outline))
             (length f18-daemon-pids))
       '(answered 1))
+(want "LAUNCH-1 theourgia.sc's serve start (server-argv): the daemon was started as --program theourgiad.so"
+      (launched? f18-outline-launches (string-append "--program " (product-file "theourgiad.so") " serve"))
+      #t)
 
 ;; Stopped by the pid read above, and waited for.
 (for-each (lambda (pid) (sh (string-append "kill " (number->string pid) " 2>/dev/null"))) f18-daemon-pids)
 (sh "sleep 1")
+
+;; ---- the programs as program objects ---------------------------------------------
+;;
+;; build.ss compiles each of the six programs into a program object beside
+;; its source, and every launch site starts a sibling through client.sc's
+;; program-launch: `--program <name>.so` when the object is there, else
+;; `--script <name>.sc`. These rows read the build, the objects themselves,
+;; and the command line each launch site gave its child (the argument log).
+(define six-programs '("theourgia" "core" "theourgiad" "eval-worker" "eval-runner-exec" "mcp/server"))
+(want "PROGOBJ-1 the build left a program object beside each of the six programs' sources"
+      (map (lambda (n) (list n (file-exists? (product-file (string-append n ".so")))
+                             (file-exists? (product-file (string-append n ".sc")))))
+           six-programs)
+      (map (lambda (n) (list n #t #t)) six-programs))
+
+;; the exit status of a command, written by the shell
+(define (status-of cmd)
+  (sh (string-append cmd "; echo $? > " scratch "/status.txt"))
+  (string->number (let ((t (file-text (string-append scratch "/status.txt"))))
+                    (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) t))))
+(want "PROGOBJ-2 core.so run as a program object answers an unknown verb with the unknown-verb error and status 1"
+      (let ((rc (status-of (string-append "CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' scheme --program "
+                                          (product-file "core.so") " no-such-verb --wire < /dev/null > "
+                                          scratch "/f293-verb.txt 2>&1"))))
+        (list (contains? (file-text (string-append scratch "/f293-verb.txt")) "unknown-verb") rc))
+      '(#t 1))
+
+;; NOTE: (car (command-line)) IS THE OBJECT'S PATH UNDER --program, as it is
+;; the source's under --script: every beside-this-program and every
+;; (cdr (command-line)) reader keeps its shape. A program compiled here, in
+;; this process, prints it.
+(define argv0-source (string-append scratch "/argv0.sc"))
+(define argv0-object (string-append scratch "/argv0.so"))
+(call-with-output-file argv0-source
+  (lambda (p) (put-string p "(import (chezscheme))\n(write (car (command-line)))\n")))
+;; whatever the compiler says goes to a string, not into this fixture's output
+(let ((sink (open-output-string)))
+  (parameterize ((current-output-port sink) (console-output-port sink))
+    (compile-program argv0-source argv0-object)))
+(want "PROGOBJ-3 a compiled program's (car (command-line)) is its own object path"
+      (begin (sh (string-append "scheme --program " argv0-object " > " scratch "/argv0.txt 2>&1 < /dev/null"))
+             (file-text (string-append scratch "/argv0.txt")))
+      (format "~s" argv0-object))
+
+;; A PROGRAM THAT DOES NOT COMPILE FAILS THE BUILD, by name. A small tree of
+;; six programs and no libraries, the fourth importing a library that does
+;; not exist, built into its own output: status 1, the program named.
+(define bad-tree (string-append scratch "/bad-tree"))
+(define bad-out (string-append scratch "/bad-out"))
+(sh (string-append "mkdir -p " bad-tree "/theourgia/mcp " bad-out))
+(for-each (lambda (n)
+            (call-with-output-file (string-append bad-tree "/theourgia/" n ".sc")
+              (lambda (p) (put-string p (if (string=? n "eval-worker")
+                                            "(import (chezscheme) (theourgia no-such-library))\n(display 1)\n"
+                                            "(import (chezscheme))\n(display 1)\n")))))
+          six-programs)
+(define bad-status
+  (status-of (string-append "scheme --script " root "/build.ss " bad-tree " " bad-out
+                            " < /dev/null > " scratch "/bad-build.txt 2>&1")))
+(want "PROGOBJ-4 a program that does not compile fails the build with status 1 and is named"
+      (list bad-status (contains? (file-text (string-append scratch "/bad-build.txt"))
+                                  "COULD NOT COMPILE PROGRAM eval-worker.sc")
+            (contains? (file-text (string-append scratch "/bad-build.txt")) "build complete"))
+      '(1 #t #f))
+
+;; THE TOOLS ARE IN THE BUILT ROOT: every tools/*.sc of the source root, by
+;; name, and there is at least one, so an empty listing on both sides
+;; cannot pass.
+(define (sc-names dir)
+  (if (not (file-directory? dir)) '()
+      (list-sort string<? (filter (lambda (n) (and (> (string-length n) 3)
+                                                    (string=? (substring n (- (string-length n) 3) (string-length n)) ".sc")))
+                                  (directory-list dir)))))
+(want "TOOLS-1 the built root holds every tools/*.sc of the source root"
+      (let ((src (sc-names (string-append root "/tools"))) (out (sc-names (product-file "tools"))))
+        (list (pair? src) (equal? src out)))
+      '(#t #t))
+
+;; THE RULE ITSELF, on files made here: an object beside the source is
+;; started as a program object, its absence as the script, and a path that
+;; does not end in .sc as the script it names.
+(define program-launch (eval 'program-launch (environment '(theourgia client))))
+(define rule-dir (string-append scratch "/rule"))
+(sh (string-append "mkdir -p " rule-dir " && touch " rule-dir "/p.sc " rule-dir "/p.so " rule-dir "/q.sc"))
+(want "RULE-1 program-launch: an object beside the source -> --program and the .so; none -> --script and the .sc; another suffix -> --script"
+      (list (program-launch (string-append rule-dir "/p.sc"))
+            (program-launch (string-append rule-dir "/q.sc"))
+            (program-launch (string-append rule-dir "/p.ss")))
+      (list (list "--program" (string-append rule-dir "/p.so"))
+            (list "--script" (string-append rule-dir "/q.sc"))
+            (list "--script" (string-append rule-dir "/p.ss"))))
+
+;; ---- each launch site, from the built tree ---------------------------------------
+;; theourgia.sc's exec of core.sc (run-server-here!): a local verb.
+(clear-argv-log!)
+(define launch-describe (product-client "describe --wire" (string-append scratch "/f293-describe.txt") (logging-scheme)))
+(want "LAUNCH-2 theourgia.sc's local route (run-server-here!): core was started as --program core.so, and answered"
+      (list (contains? launch-describe "(ok (verbs (init ")
+            (launched? (argv-lines) (string-append "--program " (product-file "core.so") " describe")))
+      '(#t #t))
+
+;; core.sc's eval worker and eval launcher, through eval-supervise.sc, with
+;; core started by a RELATIVE path from the output directory: the worker's
+;; path stays relative to the same directory, the launcher's is made
+;; absolute (it runs with its cwd in the projection).
+(define (relative-core args out-file)
+  (sh (string-append "cd " objects " && " (logging-scheme) " THEOURGIA_LOCAL=1 THEOURGIA_RUNNERS=on"
+                     " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so'"
+                     " scheme --program theourgia/core.so " args " < /dev/null > " out-file " 2>&1"))
+  (file-text out-file))
+(clear-argv-log!)
+(define launch-eval (relative-core (string-append "eval '(+ 1 2)' --store " so-store " --wire")
+                                   (string-append scratch "/f293-eval.txt")))
+(want "LAUNCH-3 core.sc's eval worker (eval-supervise.sc): started as --program eval-worker.so, and answered"
+      (list (contains? launch-eval "(values (3))")
+            (launched? (argv-lines) "--program theourgia/eval-worker.so"))
+      '(#t #t))
+(clear-argv-log!)
+(define launch-lang (relative-core (string-append "eval --lang shell 'echo f293' --store " so-store " --wire")
+                                   (string-append scratch "/f293-lang.txt")))
+(define launch-lang-lines (argv-lines))
+(want "LAUNCH-4 core.sc's eval launcher (eval-supervise.sc): started as --program with an absolute path to eval-runner-exec.so, and the runner ran"
+      (list (contains? launch-lang "f293")
+            (launched? launch-lang-lines "--program /")
+            (launched? launch-lang-lines "/theourgia/eval-runner-exec.so"))
+      '(#t #t #t))
+
+;; mcp/server.sc's two children: the daemon it starts for a forwarded verb
+;; (server-argv) and the core child of a child verb (run-child-in), with the
+;; shell run as its own program object.
+(define mcp-store (string-append scratch "/mcpstore"))
+(define mcp-run (string-append socket-base "/f293m-" (number->string (get-process-id))))
+(sh (string-append "mkdir -p " mcp-store " " mcp-run))
+(product-client (string-append "init --store " mcp-store " --wire") (string-append scratch "/f293-mcp-init.txt"))
+(define mcp-input (string-append scratch "/mcp-in.jsonl"))
+(call-with-output-file mcp-input
+  (lambda (p)
+    (put-string p (string-append
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
+                    "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"f293\",\"version\":\"1\"}}}\n"
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+                    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":"
+                    "{\"name\":\"theourgia_eval\",\"arguments\":{\"argv\":[\"(+ 1 2)\"]}}}\n"
+                    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":"
+                    "{\"name\":\"theourgia_outline\",\"arguments\":{\"argv\":[]}}}\n"))))
+(clear-argv-log!)
+(define mcp-said
+  (begin
+    (sh (string-append (logging-scheme) " THEOURGIA_HOME=" scratch "/f18home THEOURGIA_RUN=" mcp-run
+                       " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so'"
+                       " scheme --program " (product-file "mcp/server.so") " --store " mcp-store
+                       " < " mcp-input " > " scratch "/f293-mcp.txt 2>&1"))
+    (file-text (string-append scratch "/f293-mcp.txt"))))
+(define mcp-lines (argv-lines))
+(want "LAUNCH-5 mcp/server.sc's core child (run-child-in): started as --program core.so beside the shell's directory"
+      (list (contains? mcp-said "\"id\":3")
+            (launched? mcp-lines (string-append "--program " (product-file "mcp/../core.so") " eval")))
+      '(#t #t))
+(want "LAUNCH-6 mcp/server.sc's daemon start (server-argv): started as --program theourgiad.so"
+      (list (contains? mcp-said "\"id\":4")
+            (launched? mcp-lines (string-append "--program " (product-file "mcp/../theourgiad.so") " serve")))
+      '(#t #t))
+;; the shell's daemon, stopped by its command line, which carries this run's path
+(sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "mcp/../theourgiad.so") " serve '"
+                   " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null; sleep 1; rm -rf " mcp-run))
 
 (sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))
 

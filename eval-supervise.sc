@@ -60,7 +60,8 @@
                 worker-kill! worker-close! worker-rss worker-ref-pid)
           (only (theourgia ffi) signal-pid! process-alive-signal0? trace-event!)
           (only (theourgia platform-numbers) platform-number)
-          (only (theourgia render) render-wire))
+          (only (theourgia render) render-wire)
+          (only (theourgia client) program-launch))
 
   ;; NOTE: THE TWO CLOCKS ARE DIFFERENT AND BOTH ARE NEEDED. `ready-ms` is
   ;; how long a worker may take to exist; the caller's timeout is how long
@@ -143,10 +144,10 @@
       (let* ((cpu-seconds (+ 1 (div (+ timeout-ms 999) 1000)))
              (me self)
              (pid (spawn-worker! (spec-of spec 'scheme)
-                                 (list "scheme" "--script" (spec-of spec 'worker)
-                                       store cut under
-                                       (number->string cpu-seconds)
-                                       (number->string output-bytes))
+                                 (append (list "scheme") (program-launch (spec-of spec 'worker))
+                                       (list store cut under
+                                             (number->string cpu-seconds)
+                                             (number->string output-bytes)))
                                  '()
                                  me)))
         ;; THE EVALUATION'S DEADLINE IS TAKEN AT READY, not here: what the
@@ -176,8 +177,8 @@
            (cpu-seconds (+ 1 (div (+ timeout-ms 999) 1000)))
            (me self)
            (pid (spawn-worker! (spec-of spec 'scheme)
-                               (append (list "scheme" "--script" (spec-of spec 'launcher)
-                                             (number->string cpu-seconds))
+                               (append (list "scheme") (program-launch (spec-of spec 'launcher))
+                                       (list (number->string cpu-seconds))
                                        (apply append (map (lambda (p) (list "--env" p))
                                                           (or (spec-of spec 'runner-env) '())))
                                        (list "--")

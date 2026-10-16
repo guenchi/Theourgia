@@ -1359,6 +1359,40 @@
 (printf "   run-time pairs the static scan does not read: ~s\n"
         (filter (lambda (p) (not (member p (car items-scan)))) census-runtime-pairs))
 
+;; ---- no launch site spells its own mode --------------------------------------
+;;
+;; A SIBLING PROGRAM IS STARTED THROUGH client.sc's program-launch, which
+;; answers ("--program" <object>) when a build left one and ("--script"
+;; <source>) otherwise. A site that spelled "--script" itself would start
+;; the source even in a built tree, and every row reading a built tree's
+;; children would have to catch it site by site. So the files holding the
+;; launch sites hold no string literal containing "--script" outside the
+;; definition of program-launch; read as data, so a comment does not count.
+(define launch-site-files '("theourgia.sc" "core.sc" "eval-supervise.sc" "mcp/server.sc" "client.sc"))
+(define (script-spellings x exclude-launcher?)
+  (let walk ((x x))
+    (cond ((string? x) (if (contains-text? x "--script") 1 0))
+          ((and exclude-launcher? (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (pair? (cadr x))
+                (eq? (car (cadr x)) 'program-launch))
+           0)
+          ((pair? x) (+ (walk (car x)) (walk (cdr x))))
+          ((vector? x) (walk (vector->list x)))
+          (else 0))))
+;; -> ((<file> . <count>) ...) for every file with a spelling, FORMS-OF giving each file's forms
+(define (launch-site-reading forms-of)
+  (filter (lambda (p) (> (cdr p) 0))
+          (map (lambda (f) (cons f (script-spellings (forms-of f) #t))) launch-site-files)))
+(define (site-forms f) (read-forms (string-append root "/" f)))
+(want "LAUNCHSITE-1 no launch site spells \"--script\" itself: only client.sc's program-launch does"
+      (launch-site-reading site-forms)
+      '())
+(want "LAUNCHSITE-2 TWIN: a spelling planted in theourgia.sc is reported; CONTROL: without the exclusion the walk finds the two in program-launch"
+      (list (launch-site-reading (lambda (f) (if (string=? f "theourgia.sc")
+                                                 (cons '(list "scheme" "--script" path) (site-forms f))
+                                                 (site-forms f))))
+            (script-spellings (site-forms "client.sc") #f))
+      '((("theourgia.sc" . 1)) 2))
+
 (system (string-append "rm -rf '" census-root "'"))
 
 (printf "rows: ~a\n~a failures\nfacade-gate complete\n" rows failures)
