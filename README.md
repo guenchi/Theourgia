@@ -2993,13 +2993,14 @@ writer's slot, which must be empty or hold this very version, left as it is
 (`not-text`), and a version a commit has consumed is refused
 (`version-consumed`). It answers `(ok (restored <n>) (already <n>))`.
 
-`landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list,
-then `export-code --working --raw --writer W` into `<dir>/tree`, each file
-read back and compared with the projection it came from, `MANIFEST.sha256`
-(each file's sha256 and path), and `CHANGED.sexp`, `changed-files` between
-the store at the pinned cut and the working view. The draft list is then
-read again: a draft written during the freeze refuses it (`drafts-changed`),
-and the directory is left for the coder to remove. It answers `(ok (frozen
+`landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list;
+then the working view, read once, whose own drafts must be the dumped ones,
+written raw into `<dir>/tree` by `export-code`'s own procedure, so the tree is
+that view's; `MANIFEST.sha256` (each file's sha256 and path); and
+`CHANGED.sexp`, `changed-files` between the store at the pinned cut and that
+view. The draft list is then read again. A draft written during the freeze
+refuses it (`drafts-changed`), and the directory is left for the coder to
+remove. It answers `(ok (frozen
 <n>) (changed <k>) (dir <dir>))`.
 
 `landing-commit` reads a freeze's `DRAFTS.sexp` (a freeze's directory, or a
