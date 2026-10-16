@@ -131,7 +131,9 @@
                   (let ((groups (ambiguous-groups kind paths)))
                     (unless (null? groups)
                       (refuse 'paths-ambiguous (list 'kind kind) (list 'groups groups)))))
-                '(case normalisation)))
+                ;; each folding a volume may apply, and the two together: a
+                ;; pair can meet under both and under neither alone
+                '(case normalisation both)))
     (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view))))
       (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
     ;; ((<path> <bytes>) ...), the files export-code-view wrote, each read
