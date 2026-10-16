@@ -130,13 +130,16 @@
                            (unless (equal? (hash-of bytes) sum) (refuse 'pristine-damaged (list 'file rel)))
                            (list rel mode bytes
                                  (map (lambda (b)
+                                        ;; the entry's own shape first: nothing below reads into it before
+                                        (unless (and (list? b) (>= (length b) 2) (string? (cadr b))) (bad 'block))
                                         (let ((span (clause (cddr b) 'span)) (committed (value (cddr b) 'committed))
                                               (draft (clause (cddr b) 'draft)))
-                                          (unless (and (string? (cadr b)) span (= 3 (length span)) (fixnum? (cadr span))
+                                          (unless (and span (list? span) (= 3 (length span)) (fixnum? (cadr span))
                                                        (fixnum? (caddr span)) (<= 0 (cadr span) (caddr span)) (hex64? committed)
                                                        (or (not draft)
-                                                           (and (hex64? (value (cdr draft) 'version)) (hex64? (value (cdr draft) 'based-on))
-                                                                (clause (cdr draft) 'cut) (pair? (cdr (clause (cdr draft) 'cut))))))
+                                                           (and (list? draft)
+                                                                (hex64? (value (cdr draft) 'version)) (hex64? (value (cdr draft) 'based-on))
+                                                                (let ((c (clause (cdr draft) 'cut))) (and c (list? c) (= 2 (length c)))))))
                                             (bad 'block))
                                           (list (cadr b) (cadr span) (caddr span) committed
                                                 (and draft (list (value (cdr draft) 'version) (value (cdr draft) 'based-on)

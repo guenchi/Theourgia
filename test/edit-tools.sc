@@ -204,9 +204,12 @@
   (let ((plain (edit-dir s1 "e1-plain")))
     (checked "plain export" (ask (st-of s1) 'export-code plain "--raw" "--working" "--writer" "we1"))
     (want "ET-2 its files are export-code --working --raw's, byte for byte, and the sidecar's pristine copies the same"
-          (map (lambda (p) (list p (bytevector=? (file-bytes (string-append dir "/" p)) (file-bytes (string-append plain "/" p)))))
+          (map (lambda (p)
+                 (let ((mine (file-bytes (string-append dir "/" p))))
+                   (list p (bytevector=? mine (file-bytes (string-append plain "/" p)))
+                         (bytevector=? mine (file-bytes (string-append dir ".edit/pristine/" (pristine-name (sidecar-of dir) p)))))))
                '("a.sc" "b.sc" "x.sc"))
-          '(("a.sc" #t) ("b.sc" #t) ("x.sc" #t))))
+          '(("a.sc" #t #t) ("b.sc" #t #t) ("x.sc" #t #t))))
   (let* ((side (sidecar-of dir)) (fa (sidecar-file side "a.sc")) (fx (sidecar-file side "x.sc")))
     (want "ET-3 the sidecar names the store's writer, the git modes from the base, and a.sc's spans as cumulative lengths"
           (list (let ((w (assq 'writer (cdr side)))) (and w (cadr w)))
