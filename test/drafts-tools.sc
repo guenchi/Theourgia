@@ -27,8 +27,10 @@
 ;; LF: tools/landing-freeze.sc on a store imported from files: its directory
 ;; holds the draft list, the working view's raw export, its manifest and the
 ;; changed files; a draft written while the freeze waits at its hold stage
-;; (THEOURGIA_HOLD=freeze-after-dump) refuses it; landing-commit commits from
-;; the freeze's directory.
+;; (THEOURGIA_HOLD=freeze-after-dump) refuses it; a draft rewritten A to B
+;; before the view is read and back to A before the final list (held at both
+;; stages) is refused by the view's own drafts, the one check that sees it;
+;; landing-commit commits from the freeze's directory.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -332,6 +334,40 @@
 (want "LF-2 a draft written while the freeze waits after its dump refuses the freeze, which exits 1"
       (list held5 done5 (head-of (file-datum out5)) (and done5 (file-datum rc5)))
       '(#t #t (error drafts-changed) 1))
+;; A TO B AND BACK TO A: held after the dump, the draft is rewritten to B, so
+;; the view the tree is written from holds B; held again before the final
+;; list -- reached only if the view's drafts were not checked -- it is
+;; rewritten to A, its old version, so the final list matches the dump. Only
+;; the view's own drafts see it, and the refusal says so: in-view, not now.
+(define s6 (imported-store!))
+(define a6 (block-of s6 "a.txt"))
+(draft! s6 a6 "one, frozen\n")
+(define freeze6 (string-append root "/freeze6"))
+(define first6 (string-append root "/release6a"))
+(define second6 (string-append root "/release6b"))
+(define out6 (string-append root "/freeze6.out"))
+(define rc6 (string-append root "/freeze6.rc"))
+(sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-after-dump:" first6 ";freeze-before-list:" second6))
+    " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s6) " --writer " (quoted W)
+    " " (quoted freeze6) " > " (quoted out6) " 2> " (quoted (string-append root "/freeze6.err")) " < /dev/null; echo $? > "
+    (quoted rc6) " ) &")
+(define held6a (wait-for (string-append first6 ".held") 60000))
+(when held6a (draft! s6 a6 "one, rewritten during the freeze\n"))
+(call-with-output-file first6 (lambda (p) (display "go" p)))
+;; the second hold is reached only when the view check let B through
+(define held6b
+  (let loop ((k 0))
+    (cond ((file-exists? (string-append second6 ".held")) #t)
+          ((file-exists? rc6) #f)
+          ((> k 1200) 'NEITHER)
+          (else (sleep (make-time 'time-duration 50000000 0)) (loop (+ k 1))))))
+(when (eq? held6b #t) (draft! s6 a6 "one, frozen\n"))
+(call-with-output-file second6 (lambda (p) (display "go" p)))
+(define done6 (wait-for rc6 60000))
+(want "LF-4 a draft rewritten A to B to A across the freeze is refused by the view's drafts, before the second hold"
+      (let ((a (file-datum out6)))
+        (list held6a held6b done6 (head-of a) (and (clause 'in-view a) #t) (and done6 (file-datum rc6))))
+      '(#t #f #t (error drafts-changed) #t 1))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

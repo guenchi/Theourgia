@@ -150,6 +150,7 @@
                                                   (list-sort (lambda (x y) (string<? (car x) (car y))) files))))))
     (let ((changed (changed-files-between store base view)))
       (unless (and (pair? changed) (eq? (car changed) 'ok)) (refuse 'changed-files-refused changed))
+      (hold-point! 'freeze-before-list)
       (let ((now (listed store writer)))
         (unless (equal? now frozen)
           (refuse 'drafts-changed (list 'dumped frozen) (list 'now now))))
