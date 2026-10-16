@@ -319,6 +319,9 @@
 ;; A DRAFT WRITTEN WHILE THE FREEZE WAITS after its dump: the freeze runs in
 ;; the background, held at freeze-after-dump; the row writes a second draft
 ;; once the hold is acknowledged, releases it, and reads the answer.
+;; THE EXIT STATUS IS WRITTEN BESIDE ITS FILE AND MOVED INTO PLACE, here and
+;; in the rows below: the rows wait for the file to exist, and a file that
+;; exists before its status is written in it would read as no status.
 (define s5 (imported-store!))
 (draft! s5 (block-of s5 "a.txt") "one, frozen\n")
 (define freeze5 (string-append root "/freeze5"))
@@ -328,7 +331,7 @@
 (sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-after-dump:" release5))
     " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s5) " --writer " (quoted W)
     " " (quoted freeze5) " > " (quoted out5) " 2> " (quoted (string-append root "/freeze5.err")) " < /dev/null; echo $? > "
-    (quoted rc5) " ) &")
+    (quoted (string-append rc5 ".part")) " && mv " (quoted (string-append rc5 ".part")) " " (quoted rc5) " ) &")
 (define (wait-for path ms)
   (let loop ((k 0))
     (cond ((file-exists? path) #t)
@@ -357,7 +360,7 @@
 (sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-after-dump:" first6 ";freeze-before-list:" second6))
     " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s6) " --writer " (quoted W)
     " " (quoted freeze6) " > " (quoted out6) " 2> " (quoted (string-append root "/freeze6.err")) " < /dev/null; echo $? > "
-    (quoted rc6) " ) &")
+    (quoted (string-append rc6 ".part")) " && mv " (quoted (string-append rc6 ".part")) " " (quoted rc6) " ) &")
 (define held6a (wait-for (string-append first6 ".held") 60000))
 (when held6a (draft! s6 a6 "one, rewritten during the freeze\n"))
 (call-with-output-file first6 (lambda (p) (display "go" p)))
@@ -389,7 +392,7 @@
 (sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-before-list:" release7))
     " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s7) " --writer " (quoted W)
     " " (quoted freeze7) " > " (quoted out7) " 2> " (quoted (string-append root "/freeze7.err")) " < /dev/null; echo $? > "
-    (quoted rc7) " ) &")
+    (quoted (string-append rc7 ".part")) " && mv " (quoted (string-append rc7 ".part")) " " (quoted rc7) " ) &")
 (define held7 (wait-for (string-append release7 ".held") 60000))
 (when held7 (draft! s7 a7 "one, rewritten before the final list\n"))
 (call-with-output-file release7 (lambda (p) (display "go" p)))
