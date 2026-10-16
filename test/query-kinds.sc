@@ -138,7 +138,7 @@
       '())
 (want "KEEP-3 a title met with under's parent column answers: the top-level block titled root"
       (let ((a (run 'query "(and (title ?b ?t) (under ?x ?t))")))
-        (in-order (head-of a) (> (length (filter (lambda (x) (and (pair? x) (eq? (car x) 'row))) (cdr a))) 0)))
+        (in-order (head-of a) (let ((items (assq 'items (cdr a)))) (and items (pair? (cdr items)) #t))))
       '(ok #t))
 
 ;; ---- README: every query and rule example ---------------------------------------------------
@@ -157,9 +157,24 @@
             (loop (or to (string-length readme))
                   (let ((d (and to (guard (e (#t #f)) (read (open-string-input-port (substring readme from to)))))))
                     (if (pair? d) (cons d out) out))))))))
-(define readme-queries (quoted-after "query '"))
+;; THE LANGUAGE CHAPTER'S EXAMPLES are its indented lines that start with a
+;; goal, written bare, a "->" and the answer after it; a goal on such a
+;; line is its first datum. Any `query '...'` elsewhere in the README too.
+(define (chapter-goals)
+  (let* ((a (string-index-from readme "## The query and rule language" 0))
+         (b (and a (string-index-from readme "\n## " (+ a 1))))
+         (chapter (if a (substring readme a (or b (string-length readme))) ""))
+         (p (open-string-input-port chapter)))
+    (let loop ((out '()))
+      (let ((l (get-line p)))
+        (if (eof-object? l)
+            (reverse out)
+            (loop (if (and (> (string-length l) 5) (string=? (substring l 0 5) "    ("))
+                      (let ((d (guard (e (#t #f)) (read (open-string-input-port l))))) (if (pair? d) (cons d out) out))
+                      out)))))))
+(define readme-queries (append (chapter-goals) (quoted-after "query '")))
 (define readme-rule-goals (append (quoted-after "--must '") (quoted-after "--must-not '") (quoted-after "--where '")))
-(want "README-1 no query example of the README is refused for a kind, and the README has some (CONTROL: at least ten)"
+(want "README-1 no example of the language chapter, nor any query in the README, is refused for a kind (CONTROL: at least ten read)"
       (in-order (filter query-kind-refusal readme-queries) (>= (length readme-queries) 10))
       '(() #t))
 (want "README-2 no rule example's goal is refused for a kind (CONTROL: at least three goals read)"
