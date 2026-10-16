@@ -747,10 +747,13 @@
   (product-client-forwarding (string-append "outline --store " f18-store " --wire")
                              (string-append scratch "/f18-outline.txt")))
 ;; The daemon's pid, found by the output directory's own path, which carries
-;; this process's pid, so no other run's daemon can match it.
+;; this process's pid, so no other run's daemon can match it. Either form
+;; counts here and is stopped below (the object, or the source a broken
+;; launch would start); which form was started is the LAUNCH row's to say.
 (define f18-daemon-pids
   (let* ((out (string-append scratch "/f18-ps.txt")))
-    (sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "theourgiad.so") " serve '"
+    (sh (string-append "ps -ax -o pid= -o command= | grep -F -e '" (product-file "theourgiad.so") " serve '"
+                       " -e '" (product-file "theourgiad.sc") " serve '"
                        " | grep -v grep | awk '{print $1}' > " out))
     (let ((t (file-text out)))
       (let loop ((p (open-string-input-port t)) (acc '()))
@@ -850,13 +853,17 @@
 ;; THE RULE ITSELF, on files made here: an object beside the source is
 ;; started as a program object, its absence as the script, and a path that
 ;; does not end in .sc as the script it names.
-(define program-launch (eval 'program-launch (environment '(theourgia client))))
+;; #f on a tree whose client has no program-launch, so the row reads red
+;; there rather than stopping the fixture
+(define program-launch (guard (e (#t #f)) (eval 'program-launch (environment '(theourgia client)))))
 (define rule-dir (string-append scratch "/rule"))
 (sh (string-append "mkdir -p " rule-dir " && touch " rule-dir "/p.sc " rule-dir "/p.so " rule-dir "/q.sc"))
 (want "RULE-1 program-launch: an object beside the source -> --program and the .so; none -> --script and the .sc; another suffix -> --script"
-      (list (program-launch (string-append rule-dir "/p.sc"))
-            (program-launch (string-append rule-dir "/q.sc"))
-            (program-launch (string-append rule-dir "/p.ss")))
+      (if (procedure? program-launch)
+          (list (program-launch (string-append rule-dir "/p.sc"))
+                (program-launch (string-append rule-dir "/q.sc"))
+                (program-launch (string-append rule-dir "/p.ss")))
+          'NO-PROGRAM-LAUNCH)
       (list (list "--program" (string-append rule-dir "/p.so"))
             (list "--script" (string-append rule-dir "/q.sc"))
             (list "--script" (string-append rule-dir "/p.ss"))))
@@ -931,8 +938,10 @@
       (list (contains? mcp-said "\"id\":4")
             (launched? mcp-lines (string-append "--program " (product-file "mcp/../theourgiad.so") " serve")))
       '(#t #t))
-;; the shell's daemon, stopped by its command line, which carries this run's path
-(sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "mcp/../theourgiad.so") " serve '"
+;; the shell's daemon, stopped by its command line, which carries this run's
+;; path, in either form
+(sh (string-append "ps -ax -o pid= -o command= | grep -F -e '" (product-file "mcp/../theourgiad.so") " serve '"
+                   " -e '" (product-file "mcp/../theourgiad.sc") " serve '"
                    " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null; sleep 1; rm -rf " mcp-run))
 
 (sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))
