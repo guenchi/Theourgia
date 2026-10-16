@@ -275,6 +275,8 @@
 ;;     verified-by                      kinds, asked of relation-kind
 ;;   query.sc rule-library              the kind constants of edge-kind and
 ;;                                      moved-kind goals, and the role supersedes
+;;   query.sc declared-rule-kinds       hard's declared role set, the role
+;;                                      supersedes among its symbols
 ;;   context.sc hard-goals, preferred-steps, member-distances
 ;;                                      kind constants and kinds asked;
 ;;                                      preferred-steps' why labels
@@ -348,7 +350,7 @@
         "context.sc member-distances 2" "context.sc preferred-steps 5" "context.sc role-order 1"
         "lifecycle.sc compute-validity 11" "lifecycle.sc decision-state-of 1" "lifecycle.sc effect-table 6"
         "lifecycle.sc implementation-of 1" "lifecycle.sc verified-by 1"
-        "query.sc rule-library 11" "reduce.sc effect-relation-names 6" "request.sc supersedes-list? 1"
+        "query.sc declared-rule-kinds 1" "query.sc rule-library 11" "reduce.sc effect-relation-names 6" "request.sc supersedes-list? 1"
         "rules.sc write-facts 1" "tasks.sc task-row 4" "templates.sc templates 7"))
 
 ;; ---- RE-4: the declared table, and the relation fact ------------------------------

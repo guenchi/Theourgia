@@ -21,6 +21,7 @@
 ;; accept; and the two verbs' wiring.
 
 (import (chezscheme) (theourgia rpc)
+        (only (theourgia extensions) extension-verbs)
         (only (theourgia query) query-kind-refusal rule-value-check rule-kinds declared-rule-kinds
               rule-library rule-relations library-relation-kinds refusal? refusal-answer)
         (only (theourgia store) open-and-reduce)
@@ -63,6 +64,8 @@
 (define (kind-refusal? a) (and (pair? a) (eq? (car a) 'error) (pair? (cdr a)) (pair? (cddr a))
                                (memq (caddr a) '(wrong-kind join-across-kinds)) #t))
 
+;; the query verb is registered from outside the core table, as core.sc does
+(register-verbs! extension-verbs)
 (run 'init)
 
 ;; ---- REFUSE: disjoint kinds, each in a query and inside a rule value ---------------------

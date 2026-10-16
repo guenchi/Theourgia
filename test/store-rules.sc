@@ -203,7 +203,7 @@
 (want "R each rule-only fact alone makes a write rule, and a goal naming none a state rule"
       (map (lambda (g) (let ((a (run 'rule "cls" "--on" "doc" "--must" g)))
                          (and (pair? a) (eq? (car a) 'ok) (cadr (assq 'class (cadr (assq 'cls (state-declared-rules (state)))))))))
-           '("(kind+ ?w doc)" "(field+ ?w \"a\" \"b\")" "(edge+ ?w cites ?x)" "(edge-kind+ ?w cites doc)"
+           '("(kind+ ?w doc)" "(field+ ?w \"a\" \"b\")" "(edge+ ?w cites ?x)" "(edge-kind+ ?w cites ?x)"
              "(cited ?w ?s)" "(unread ?s)" "(receipt-carried)" "(title ?w ?t)"))
       '(write write write write write write write state))
 (tolerant (run 'rule "cls" "--retire"))
