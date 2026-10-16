@@ -424,7 +424,11 @@
   (define (kind-meet u v)
     (kind-normal (filter values (apply append (map (lambda (a) (map (lambda (b) (atom-meet a b)) v)) u)))))
   (define (kind-join u v) (kind-normal (append u v)))
-  (define (kind<=? u v) (for-all (lambda (a) (exists (lambda (b) (atom<=? a b)) v)) u))
+  ;; containment of the sets the unions stand for: both are normalized first,
+  ;; so a symbol set written as several atoms is read as one
+  (define (kind<=? u v)
+    (let ((u (kind-normal u)) (v (kind-normal v)))
+      (for-all (lambda (a) (exists (lambda (b) (atom<=? a b)) v)) u)))
   ;; a kind as an answer names it: one of the named kinds when it is one, else
   ;; its atoms, BOTTOM for none
   (define (kind-name u)
