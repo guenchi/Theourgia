@@ -53,7 +53,7 @@
      (begin (set! rows (+ rows 1))
             (with-expected label expected (x) (want-1 label (caught got) (caught x)))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S SCRATCH ROOT (F71).
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S SCRATCH ROOT.
 (define scratch-base
   (let ((v (getenv "THEOURGIA_TEST_ROOT")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
@@ -108,7 +108,7 @@
 (define E (insert! "--under" B "--title" "E" "--text" "needle in e"))
 (define F (insert! "--under" B "--title" "F" "--text" "needle in f"))
 
-(want "CONTROL F85-0 the six blocks exist, C under B and D under C"
+(want "CONTROL TREE the six blocks exist, C under B and D under C"
       (let* ((outline (state-outline (open-and-reduce store)))
              (parent-of (lambda (id)
                           (let loop ((rs outline))
@@ -129,33 +129,33 @@
            (cdr (cadr answer)))
       answer))
 
-(printf "== F85-1: read --recursive walks the whole subtree ==\n")
-(want "F85-1 read A --recursive answers A B C D E F, in outline order"
+(printf "== RECURSIVE: read --recursive walks the whole subtree ==\n")
+(want "RECURSIVE-1 read A --recursive answers A B C D E F, in outline order"
       (ids-of (ask 'read A "--recursive"))
       (list A B C D E F))
 ;; ONE DEFINITION, NOT TWO THAT AGREE: the answer is the outline's own walk.
-(want "F85-1 its set is exactly the outline walk's, root included"
+(want "RECURSIVE-2 its set is exactly the outline walk's, root included"
       (let ((got (ids-of (ask 'read A "--recursive")))
             (walk (outline-subtree (state-outline (open-and-reduce store)) A)))
         (list (list-sort string<? got) (list-sort string<? walk)))
       (let ((walk (outline-subtree (state-outline (open-and-reduce store)) A)))
         (list (list-sort string<? walk) (list-sort string<? walk))))
 
-(printf "== F85-2: grep --under searches the same blocks ==\n")
-(want "F85-2 grep --under A finds the needles in B, D, E and F"
+(printf "== UNDER: grep --under searches the same blocks ==\n")
+(want "UNDER-1 grep --under A finds the needles in B, D, E and F"
       (list-sort string<? (match-ids (ask 'grep "needle" "--under" A)))
       (list-sort string<? (list B D E F)))
 
-(printf "== F85-3: the export writes one file per top-level document ==\n")
+(printf "== ONEFILE: the export writes one file per top-level document ==\n")
 (let* ((out (string-append here "/out"))
        (answer (caught (ask 'export-md out)))
        (files (list-sort string<? (directory-list out))))
-  (want "F85-3 the export answers one file and writes exactly a.md"
+  (want "ONEFILE-1 the export answers one file and writes exactly a.md"
         (list (and (pair? answer) (car answer))
               (let ((f (and (pair? answer) (list? answer) (assq 'files (cdr answer))))) (and f (cadr f)))
               files)
         '(ok 1 ("a.md")))
-  (want "F85-3 a.md holds C's title and D's text: the block of kind doc is written into its ancestor's file"
+  (want "ONEFILE-2 a.md holds C's title and D's text: the block of kind doc is written into its ancestor's file"
         (let ((text (call-with-input-file (string-append out "/a.md")
                       (lambda (i) (let loop ((acc '()))
                                     (let ((c (read-char i)))
@@ -171,12 +171,12 @@
                      #t)))
         '(#t #t)))
 
-(printf "== F85-7: what the export could not write is said ==\n")
+(printf "== UNWRITTEN: what the export could not write is said ==\n")
 ;; C'S FRONT MATTER REACHES NO FILE: a block written into its ancestor's file
 ;; is rendered as a section, and a section has no front (design R5). On the
-;; tree before F85 it was in inner.md. The answer says so in a clause of its
+;; tree before a document held its whole subtree it was in inner.md. The answer says so in a clause of its
 ;; own. Not in `skipped`: C's body WAS written, and skipped's 1 + n counts
-;; lost blocks (md2 F42).
+;; lost blocks (md2's KINDS rows).
 (let* ((out (string-append here "/out7"))
        (answer (begin (system (string-append "mkdir -p " out)) (caught (ask 'export-md out))))
        (clause (lambda (k) (and (pair? answer) (list? answer)
@@ -186,7 +186,7 @@
                  (lambda (i) (let loop ((acc '()))
                                (let ((c (read-char i)))
                                  (if (eof-object? c) (list->string (reverse acc)) (loop (cons c acc))))))))))
-  (want "F85-7 the export says C's front was not written, in fields-not-written and not in skipped; a.md holds C's body"
+  (want "UNWRITTEN-1 the export says C's front was not written, in fields-not-written and not in skipped; a.md holds C's body"
         (list (clause 'fields-not-written)
               (clause 'skipped)
               (and (let loop ((i 0)) (and (<= (+ i 14) (string-length text))
@@ -195,7 +195,7 @@
                    #t))
         (list (list (list C 'front)) #f #t)))
 
-(printf "== F85-8: a section's front that reaches no file is named too ==\n")
+(printf "== SECTFRONT: a section's front that reaches no file is named too ==\n")
 ;; ON A STORE WITH NO BLOCK OF KIND DOC BELOW THE ROOT. A section's front, set
 ;; through the ordinary write path, reached no file on 409c5c8 either, and
 ;; nothing said so (measured by the code session, secfront.reading). R5's
@@ -220,17 +220,17 @@
                 (cond ((null? xs) #f) ((member (car xs) before2) (loop (cdr xs))) (else (car xs)))))
          (setans (ask2 'set sec "front" "---\nsecfront: SECFRONTMARK\n---\n"))
          (answer (caught (ask2 'export-md out2))))
-    (want "CONTROL F85-8 the store holds one top-level doc and one section, and the section's front was stored"
+    (want "CONTROL SECTFRONT the store holds one top-level doc and one section, and the section's front was stored"
           (list (and top sec #t) (and (pair? setans) (car setans)))
           '(#t ok))
-    (want "F85-8 the export names the section's front in fields-not-written, and says nothing in skipped"
+    (want "SECTFRONT-1 the export names the section's front in fields-not-written, and says nothing in skipped"
           (list (and (pair? answer) (list? answer)
                      (let ((c (assq 'fields-not-written (cdr answer)))) (and c (cdr c))))
                 (and (pair? answer) (list? answer) (assq 'skipped (cdr answer)) #t))
           (list (list (list sec 'front)) #f))))
 
-(printf "== F85-4: it is still reported ==\n")
-(want "GUARD F85-4 conflicts reports C as a nested document"
+(printf "== REPORTED: it is still reported ==\n")
+(want "GUARD REPORTED conflicts reports C as a nested document"
       (let ((a (ask 'conflicts)))
         (and (pair? a) (list? a)
              (let loop ((xs (if (and (pair? (cdr a)) (pair? (cadr a))) (cdr (cadr a)) '())))

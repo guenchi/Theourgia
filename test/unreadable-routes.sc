@@ -31,7 +31,7 @@
         (only (theourgia log) log-publish! segment-sha writer-directory)
         (only (theourgia trace) trace-enable!)
         (only (theourgia wire) encode-record storable-encode)
-        ;; F100b M1's rows (at the end of this file).
+        ;; The translation points' rows (at the end of this file).
         (only (theourgia ffi) EACCES EIO)
         (only (theourgia client) call! envelope-version socket-path serve-log-path)
         (only (theourgia render) render-wire)
@@ -58,7 +58,7 @@
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
 ;; THE SCRATCH ROOT FOLLOWS THEOURGIA_TEST_ROOT, and a directory already
-;; there is refused rather than reused (F71).
+;; there is refused rather than reused.
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                    (if (and (string? v) (> (string-length v) 0)) v "/tmp"))
@@ -177,25 +177,25 @@
 ;; a338bcd. The clause is the supervisor's, from the note the worker said
 ;; at its load, so it is appended to that answer too.
 ;;
-;; Since F93 a raised value is carried as data and never written as the
+;; A raised value is carried as data and never written as the
 ;; answer's shape, so this source answers (error eval-exception (kind
 ;; raised) (reason unwritable-value) (type procedure)) from the worker, and
 ;; the clause is appended to it; on 86db404 both rows read eval-worker-exit.
 (define unwritable-source "(raise (cons (string->symbol \"error\") (lambda () #f)))")
 (let* ((s (fresh-store!))
        (dir (writer-directory s M)))
-  (want "CONTROL on a healthy store a raised pair holding a procedure answers eval-exception with no clause (F93)"
+  (want "CONTROL on a healthy store a raised pair holding a procedure answers eval-exception with no clause"
         (let ((a (eval-answer s unwritable-source))) (list (head-of a) (incomplete-dirs a)))
         '((error eval-exception) no-clause))
   (chmod! "000" dir)
   (let ((a (eval-answer s unwritable-source)))
     (chmod! "700" dir)
-    (want "the same source after the worker's load met the unreadable mirror answers eval-exception and names the mirror (F93)"
+    (want "the same source after the worker's load met the unreadable mirror answers eval-exception and names the mirror"
           (list (head-of a) (incomplete-dirs a))
           (list '(error eval-exception) (list dir)))))
 
-;; ---- F79: writers/ itself unlistable, on the two routes that load at start --
-(printf "== F79: a writers/ directory that cannot be listed, at eval and at a daemon's start ==\n")
+;; ---- UNLISTED: writers/ itself unlistable, on the two routes that load at start
+(printf "== UNLISTED: a writers/ directory that cannot be listed, at eval and at a daemon's start ==\n")
 ;; Both routes load the store before anything can be heard, so the failure
 ;; reaches their catch-alls: eval-worker's answered (error eval-exception
 ;; ...), the daemon's start (error store-load-failed (reason "failed for
@@ -210,16 +210,16 @@
     (chmod! "000" (writers-of s))
     (let ((a (eval-answer s "(+ 1 2)")))
       (chmod! "700" (writers-of s))
-      (want "CONTROL F79-2 on the same store, readable, eval answers ok"
+      (want "CONTROL UNLISTED on the same store, readable, eval answers ok"
             (and (pair? healthy) (car healthy))
             'ok)
-      (want "F79-2 eval on a store whose writers/ cannot be listed answers unreadable, naming writers/"
+      (want "UNLISTED-1 eval on a store whose writers/ cannot be listed answers unreadable, naming writers/"
             (list (head-of a) (names-writers? a s))
             (list '(error unreadable) #t)))))
 (define sock-base
   (let ((v (getenv "THEOURGIA_TEST_SOCK")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
-;; THE LOCK IS PRE-CREATED (F100b brief G), so main records nothing and the
+;; THE LOCK IS PRE-CREATED (brief G), so main records nothing and the
 ;; store's failure is answered by the table alone: the exact datum, with its
 ;; errno and the attempt clause of a start made by hand.
 (let* ((s (fresh-store!))
@@ -236,7 +236,7 @@
                                  (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
     (chmod! "700" (writers-of s))
     (system (string-append "rm -f " lock))
-    (want "F79-3 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket"
+    (want "UNLISTED-2 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket"
           (list (and (pair? said) (car said))
                 (and (pair? said) (pair? (cdr said)) (cadr said))
                 rc
@@ -244,7 +244,7 @@
           (list (list 'error 'unreadable (list 'path (writers-of s)) '(reason "Permission denied") '(errno EACCES) '(attempt #f))
                 '(exiting (reason store-actor-down)) 75 #f))))
 
-;; ---- F100b M1: the answers at the synchronous points ---------------------------
+;; ---- the answers at the synchronous points ------------------------------------
 ;;
 ;; Brief v7 rows P1-a, P1-b, P1-c, P2b, P3-a, P4, NO1, NO2, NO3 and their F
 ;; rows. Every run is a program in a subprocess -- the client, core.sc, or a
@@ -313,7 +313,7 @@
   (let loop ((k 0))
     (when (and (< k 50) (pair? (daemon-pids store)))
       (system "sleep 0.1") (loop (+ k 1))))
-  ;; A DAEMON THAT OUTLIVES TERM IS NOT LEFT (F100b M1 review r3, F1): after
+  ;; A DAEMON THAT OUTLIVES TERM IS NOT LEFT (found in review): after
   ;; five seconds whatever still answers to the exact argv line is sent
   ;; KILL, and the wait is repeated.
   (for-each (lambda (pid) (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
@@ -389,7 +389,7 @@
               (escape-reading (caught (rpc-dispatch s '(escape-probe "datum") "test"))))
         (list '(error internal (reason "boom") no-clause) '(error test-raised no-reason no-clause))))
 
-(printf "== F100b M1: the translation points ==\n")
+(printf "== the translation points ==\n")
 ;; P1-a (rpc-dispatch, durable, empty record; PR-01).
 (let* ((s (m1-store!)) (w (string-append s "/writers")))
   (chmod! "500" w)
@@ -456,7 +456,7 @@
   (system (string-append "mkdir -p " k))
   (m1-run "" "../theourgia.sc" (list "read" "root" "--store" s "--socket" sock))
   (let ((control (origin-and-datum (raw-frame sock dot 'read "root")))
-        ;; device-inode's absence (F100b M1 review r1, F9): a spelling that
+        ;; device-inode's absence (found in review): a spelling that
         ;; names no entry is another store, as on the base -- ENOTDIR
         ;; (beneath a regular file) and ENOENT each asked once.
         (enotdir (string-append s "/meta.sexp/store"))
@@ -471,7 +471,7 @@
     (let ((r (origin-and-datum (raw-frame sock dot 'read "root"))))
       (chmod! "755" (parent-of s))
       (stop-daemon! "P2b" s)
-      ;; F (F110, point 2b): this row compares the WHOLE answer on the success
+      ;; F (point 2b): this row compares the WHOLE answer on the success
       ;; input, so it is also the route's F row: no record clause (ruling Q-M3b-1).
       (want "F / CONTROL P2b the dot spelling, the parent readable, is the same store: the core answers"
             control '(core (error unknown-id "root" (nearest ()))))
@@ -487,7 +487,7 @@
     (chmod! "755" (parent-of s))
     ;; NO DAEMON IS EXPECTED HERE, and none may be left if one started
     ;; anyway -- a chmod that failed or did not block would let the thin
-    ;; client start one (F100b M1 review r2, F5). Stopped without being
+    ;; client start one (found in review). Stopped without being
     ;; counted; the final row reads that none remains.
     (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null")))
               (daemon-pids s))
@@ -611,7 +611,7 @@
           (no3-reading r s wd '())
           '(1 #t #t))))
 
-;; P1-d (F100b M1 review r1 F8; r2 F1/F6): rpc.sc `guarded` re-raises an
+;; P1-d (found in two reviews): rpc.sc `guarded` re-raises an
 ;; unreadable-entry to the owning dispatch, which answers it with what the
 ;; verb had already changed. export-code is guarded (rpc.sc) and its
 ;; code-project `answer` passes on anything that is not an (error ...)
@@ -647,7 +647,7 @@
                       ans))
             '(1 #t #t)))))
 
-;; NO3-nw (F100b M1 review r1, F1): the other write-outcome->answer shape,
+;; NO3-nw (found in review): the other write-outcome->answer shape,
 ;; `(error not-written reserved-not-written (sequence n))`, whose third
 ;; element is an atom. write-eio-first fails the segment's first write
 ;; after the registry's reservation, so the record holds the reservation's
@@ -674,7 +674,7 @@
                     ans))
           '(1 #t #t))))
 
-;; F (M1's routes with their success inputs, F100b M1 review r1, F3/F4):
+;; F (the routes with their success inputs, found in review):
 ;; each answer's head is the one expected, read independently of the
 ;; answer, and none carries written or client-written. The routes: publish
 ;; through the thin client, read through core.sc and the thin client (root
@@ -717,7 +717,7 @@
       (want "F a restore of a revoked version on a success input answers ok, rc 0, and no record clause"
             (list (car r) (and (pair? (cadr r)) (car (cadr r))) (carries-a-record? (cadr r)))
             '(0 ok #f)))))
-;; F replay and F export-code (F100b M1 review r3, F2): a request resent
+;; F replay and F export-code (found in review): a request resent
 ;; after it was applied, and an export into a directory that takes it.
 (let* ((s (m1-store!)) (writer (m1-writer s))
        (args (list "insert" "--under" "root" "--title" "One" "--req" "r-1" "--cursor" (string-append writer ":0") "--store" s))
@@ -738,20 +738,20 @@
           (list (car r) (and (pair? (cadr r)) (car (cadr r))) (carries-a-record? (cadr r))
                 (file-exists? (string-append out "/z/deeper/b.sc")))
           '(0 ok #f #t))))
-;; ---- F100b M2a: the daemon's startup reports -----------------------------------
+;; ---- the daemon's startup reports ----------------------------------------------
 ;;
 ;; Brief v7 rows P2-startup and its TWIN, P8, P9 a-d, NO4, and their F row.
 ;; Each is a DIRECT serve (`theourgiad.sc serve`, no client, no token): its
 ;; stdout read as datums, its stderr kept, its exit code. A startup report
 ;; is framed by a newline, so the rows read datums, not lines (J4). A daemon
 ;; that serves is stopped by its exact argv line, as above.
-(printf "== F100b M2a: the daemon's startup reports ==\n")
+(printf "== the daemon's startup reports ==\n")
 (define (text-of-file p)
   (if (file-exists? p)
       (let ((t (call-with-input-file p get-string-all))) (if (eof-object? t) "" t))
       ""))
-;; A tail that does not read is NOT the end of the output (M2a review r2,
-;; F7): it is kept as the marker UNREADABLE-TAIL, so a report followed by a
+;; A tail that does not read is NOT the end of the output (found in
+;; review): it is kept as the marker UNREADABLE-TAIL, so a report followed by a
 ;; torn one does not compare equal to the report alone.
 (define (datums-of-text t)
   (let ((port (open-string-input-port t)))
@@ -842,7 +842,7 @@
   (chmod! "000" lock)
   (let ((r (serve-direct "" s (list "--socket" sock))))
     (chmod! "644" lock)
-    ;; THE PHYSICAL FRAMING TOO (M2a review r1, F9): stdout's bytes are
+    ;; THE PHYSICAL FRAMING TOO (found in review): stdout's bytes are
     ;; exactly newline, the datum, newline -- one report, written by
     ;; write-report-line!, not by `report`.
     (want "P9-c a lock file at 000 is unreadable, not serve-busy: stdout is exactly \\n + the one report + \\n, rc 75"
@@ -851,7 +851,7 @@
                                   (call-with-string-output-port
                                     (lambda (p) (write (list 'error 'unreadable (list 'path lock) (list 'reason denied) '(errno EACCES) '(attempt #f)) p)))
                                   "\n")))))
-;; P9-c with a token (M2a review r1, F5): a supplied --attempt is echoed as
+;; P9-c with a token (found in review): a supplied --attempt is echoed as
 ;; the report's last clause.
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p9t")) (sock (string-append d "/sock")) (lock (string-append d "/.sock.lock")))
   (system (string-append "touch " lock))
@@ -861,7 +861,7 @@
     (want "P9-c with --attempt: the one report ends with the supplied token"
           (list (car r) (cadr r))
           (list 75 (list (list 'error 'unreadable (list 'path lock) (list 'reason denied) '(errno EACCES) '(attempt "0123456789abcdef")))))))
-;; serve-path-occupied carries main's record (M2a review r1, F2): a regular
+;; serve-path-occupied carries main's record (found in review): a regular
 ;; file on the socket path, the lock NOT pre-created -- main made it.
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p9o")) (sock (string-append d "/sock")))
   (system (string-append "printf x > " sock))
@@ -872,7 +872,7 @@
                                (list 'written (list (list 'create (string-append d "/.sock.lock"))))
                                '(attempt #f)))
                 #t))))
-;; The store process's two non-table outcomes (M2a review r1, F14):
+;; The store process's two non-table outcomes (found in review):
 ;; store-load-failed (a meta.sexp that does not parse) and an (error ...)
 ;; passthrough (store-busy: the store's lock held elsewhere past the 5 s
 ;; budget). Both locks pre-created, so main records nothing.
@@ -913,7 +913,7 @@
                 (and (clause-of first 'written) #t) (and (clause-of first 'client-written) #t) (and (clause-of first 'attempt) #t))
           '(serving #f #f #f))))
 
-;; THE REPORT CHANNEL ITSELF FAILS (M2a review r2, F1, F2, F4): stdout
+;; THE REPORT CHANNEL ITSELF FAILS (found in review): stdout
 ;; closed, so the report's one write fails. Each startup that refused still
 ;; leaves with 75 -- main's own refusal (P9-c's setup), point 8 (P8's), and
 ;; the store's failure through main's combined report and the store-actor-
@@ -962,8 +962,8 @@
     (want "NO4 closed stderr: detach-failed cannot be written, and the exit is still 71"
           rc 71)))
 
-;; THE TOKEN AND THE FRAMING THROUGH THE OTHER TWO EMITTERS (M2a review r2,
-;; F5, F6): point 8 and the store's failure reported by main from its
+;; THE TOKEN AND THE FRAMING THROUGH THE OTHER TWO EMITTERS (found in
+;; review): point 8 and the store's failure reported by main from its
 ;; state. Stdout's exact bytes, the supplied token last.
 (define (framed . datums)
   (apply string-append
@@ -988,7 +988,7 @@
                                                      '(errno EACCES) '(attempt "0123456789abcdef")))
                                   "\n" (framed '(exiting (reason store-actor-down))) "\n")))))
 
-;; NO4b (M2a review r1, F4 and F12): the log's directory writable and the log
+;; NO4b (found in review): the log's directory writable and the log
 ;; absent, its open failed by open-fail@report: fd-open's file-ensure! has
 ;; created the log first, so detach-failed carries that creation -- and the
 ;; fault fires only because detach! runs under the `report` stage.
@@ -1012,21 +1012,21 @@
     (chmod! "755" logdir)
     ;; stderr's (error ...) datums: the daemon also prints its
     ;; `(theourgia machine-home ...)` notice there, which is not an answer.
-    ;; A torn tail is KEPT (M2a review r3, F3): the filter passes the
+    ;; A torn tail is KEPT (found in review): the filter passes the
     ;; UNREADABLE-TAIL marker, so a report followed by half of another fails.
     (want "NO4 a log that cannot be opened: detach-failed on stderr, no written, exit 71, nothing on stdout"
           (list (car r) (cadr r)
                 (filter (lambda (d) (or (eq? d 'UNREADABLE-TAIL) (and (pair? d) (eq? (car d) 'error)))) (datums-of-text (caddr r))))
           (list 71 '() (list (list 'error 'detach-failed '(step log) (list 'path log) '(errno EACCES)))))))
 
-;; ---- F100b M2b1: the client's start (point 6), the token and the pid ----------
+;; ---- the client's start (point 6), the token and the pid ---------------------
 ;;
 ;; Brief rows P6 (unreadable, incomplete, unwritable, exited, store-not-found),
 ;; TK1, TK2 a/b, TK5, PID1, PID2. Each start goes through the thin client
 ;; (`theourgia.sc read root`), which spawns a daemon with --detach, a log
 ;; under THEOURGIA_RUN and this start's token. The token is 16 hex and is
 ;; read here as its shape: `(attempt <16-hex>)`.
-(printf "== F100b M2b1: the client's start, the token and the pid ==\n")
+(printf "== the client's start, the token and the pid ==\n")
 (define (mask-attempt a)
   (if (list? a)
       (map (lambda (c)
@@ -1173,7 +1173,7 @@
   (system (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=client-scan:" ra
                          " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store " (quoted s)
                          " > " aout " 2> /dev/null < /dev/null &"))
-  ;; THE ORDER IS ASSERTED, NOT HOPED FOR (M2b1 review r1, F5): A's marker
+  ;; THE ORDER IS ASSERTED, NOT HOPED FOR (found in review): A's marker
   ;; was seen before B started, and A had not answered when B had.
   (let* ((held (let wait ((k 0))
                  (cond ((file-exists? (string-append ra ".held")) #t)
@@ -1196,13 +1196,13 @@
                   (and (list? a) (assq 'kind (filter pair? a))) (and (list? (cadr b)) (assq 'kind (filter pair? (cadr b)))))
             '(#t #t #t #t #t (kind unreadable) (kind unreadable))))))
 
-;; ---- F100b M2b2: the daemon's holds, AG-a, A-record, the STARTING signals ----
+;; ---- the daemon's holds, AG-a, A-record, the STARTING signals ---------------
 ;;
 ;; Brief v7 rows P6-timeout, PID3, AG-a, A-record and its TWIN, and the
 ;; STARTING+signal rows S-a, S-b, S-c (the startup-exit design v3 R5, R6;
 ;; M2b2 rulings Q-5 to Q-9). Every hold here waits inside the daemon, which
 ;; yields while it waits (main sets the sleeper), so the other actors run.
-(printf "== F100b M2b2: the daemon's holds ==\n")
+(printf "== the daemon's holds ==\n")
 (define (wait-until-file p limit-ms)
   (let loop ((k 0))
     (cond ((file-exists? p) #t)
@@ -1253,7 +1253,7 @@
                                    ((>= k 50) #f)
                                    (else (system "sleep 0.1") (loop (+ k 1))))))))
       (restore-run!)
-      ;; THE BUDGET IS MEASURED (M2b2 review r1, F2): the answer comes after
+      ;; THE BUDGET IS MEASURED (found in review): the answer comes after
       ;; the 10 s budget and not long after it.
       (want "P6-timeout a daemon held before its bind: at the 10 s budget (kind timeout) (pid p) (log <key>/serve.log), rc 75; p is the daemon, alive; released, it binds; TERM removes the socket"
             (list (car r) a (and (>= (cadddr r) 10000) (< (cadddr r) 15000)) alive is-daemon bound stopped)
@@ -1302,7 +1302,7 @@
                 (and (member '(exiting (reason store-actor-down)) log-ds) #t)
                 (and (string? token) (has-substring? (text-of-file lp) (string-append "(attempt \"" token "\")"))))
           (list 75 '(error serve-start-failed (kind exited) (exit 75) (attempt <16-hex>)) #t #t #f))
-    ;; The role and the length (M2b2 review r1, F3): the dead actor is named
+    ;; The role and the length (found in review): the dead actor is named
     ;; as the store, and the subject has the STARTING branch's two elements.
     (want "AG-a the STARTING branch was taken: exactly one daemon-down trace, its subject (store <reason>): the role store, two elements"
           (map (lambda (d) (let ((subj (caddr d))) (and (list? subj) (pair? subj) (list (car subj) (length subj))))) downs)
@@ -1405,7 +1405,7 @@
           ((>= (* k 100) limit-ms) #f)
           (else (system "sleep 0.1") (loop (+ k 1))))))
 (define (just-drain? ks) (equal? ks '(drain)))
-;; After a second TERM the signal watcher sends `again` ONCE (F112), so the
+;; After a second TERM the signal watcher sends `again` ONCE, so the
 ;; trace is exactly drain, again. It used to be sent on every poll.
 (define (drain-then-again? ks) (equal? ks '(drain again)))
 (define (term! store) (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p)))) (daemon-pids store)))
@@ -1414,7 +1414,7 @@
   (wait-until-text (cadddr h) 15000)
   (let ((t (text-of-file (cadddr h)))) (and (> (string-length t) 0) (read (open-string-input-port t)))))
 (define (heads out) (map (lambda (d) (and (pair? d) (car d))) (datums-of-text (text-of-file out))))
-;; THE SIGNAL IS NOT ACTED ON WHILE STARTING (M2b2 reviews r1 F1, r2 F1):
+;; THE SIGNAL IS NOT ACTED ON WHILE STARTING (found in two reviews):
 ;; after the trace and before the release, the daemon
 ;; - has written NOTHING on stdout (a drain entered early prints its
 ;;   draining line);
@@ -1470,7 +1470,7 @@
                       '(exiting (reason store-actor-down)))
                 #f))))
 
-;; SG-6 (F268): store-gone while STARTING, with the same held start. The store
+;; SG-6: store-gone while STARTING, with the same held start. The store
 ;; is moved aside while it is held; the signal watcher, started before the
 ;; store, samples it absent twice and sends store-gone, which main remembers.
 ;; The trace shows the slot after each signal: the first kind remembered stays,
@@ -1537,7 +1537,7 @@
         (list held gone kinds-after rc (datums-of-text (text-of-file (cadr h))))
         (list #t #t '(store-gone) 0 '((draining (in-flight 0)) (exiting (reason store-gone))))))
 
-;; F (F110, point 8): theourgiad's report channel after --detach is the log.
+;; F (point 8): theourgiad's report channel after --detach is the log.
 ;; A thin client's first start detaches a daemon whose serve.log begins with
 ;; its serving line, and on this success that line carries no written,
 ;; client-written or attempt clause (serving is not a startup report).
@@ -1557,7 +1557,7 @@
 (want "no daemon of a store this section made is left running"
       (apply + (map (lambda (s) (length (daemon-pids s))) m1-stores))
       0)
-;; THE ROW ABOVE DETECTS; THIS CLEANS (F100b M1 review r2, F5): whatever
+;; THE ROW ABOVE DETECTS; THIS CLEANS (found in review): whatever
 ;; it found is stopped here, so a red reading does not also leave a
 ;; process behind.
 (for-each (lambda (s) (unless (null? (daemon-pids s)) (stop-daemon! 'sweep s))) m1-stores)

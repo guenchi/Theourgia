@@ -127,7 +127,7 @@
          (lib (find (lambda (id) (equal? (code-field state id 'path) "plain.sc")) (map cadr (state-datum state)))))
     (want "CD-15 plain imports preserve declared order" (code-field state lib 'imports) '((rnrs) (only (chezscheme) pretty-print)))
     (want "CD-15 plain import declaration is not a code block" (length (code-children state lib)) 1)))
-;; F19: THE ANSWER NAMES A COMMENT INSIDE A FORM, AND NOTHING FOR ONE ABOVE IT.
+;; COMMENTS: THE ANSWER NAMES A COMMENT INSIDE A FORM, AND NOTHING FOR ONE ABOVE IT.
 ;; The README's import-code section and the catalogue's description say so in
 ;; one sentence; these rows hold the sentence to what the answer does. They
 ;; are a GUARD, green on the base: the answer already carried this before the
@@ -143,11 +143,11 @@
     (rpc-dispatch store '(init) "test")
     (write! (string-append input "/lib.sc") text)
     (rpc-dispatch store (list 'import-code input "--datum") "test")))
-(want "F19 GUARD (green on the base): import-code --datum of a comment inside a form answers one internal-comment warning with its line and column"
+(want "COMMENTS-1 GUARD (green on the base): import-code --datum of a comment inside a form answers one internal-comment warning with its line and column"
       (warnings-of (import-one! "f19-inner"
                                 "(library (demo inner)\n  (export f)\n  (import (rnrs))\n  (define (f x)\n    ;; inside a form\n    (+ x 1)))\n"))
       '((warning internal-comment (byte-offset 73) (line 5) (column 5))))
-(want "F19 GUARD TWIN (green on the base): a comment only above the form answers no warning"
+(want "COMMENTS-2 GUARD TWIN (green on the base): a comment only above the form answers no warning"
       (warnings-of (import-one! "f19-lead"
                                 ";; leading comment\n(library (demo lead)\n  (export g)\n  (import (rnrs))\n  (define (g x) (* x 2)))\n"))
       '())
@@ -323,7 +323,7 @@
                 (let ((it (answer-clause w 'items))) (and it (length (filter (lambda (r) (and (pair? r) (eq? (car r) 'def))) (cdr it))))))
           '(ok #t 1 #t #f 1))))
 
-;; F205: A DEFINITION MADE WITH define-values DEFINES ITS FORMALS. datum-names
+;; DEFVALUES: A DEFINITION MADE WITH define-values DEFINES ITS FORMALS. datum-names
 ;; read only define, define-syntax and define-record-type, so these names were
 ;; in the code and not in the definition index: whereis found their exports and
 ;; no definition.
@@ -335,7 +335,7 @@
                 (let* ((w (safely (lambda () (rpc-dispatch store (list 'whereis name) "test"))))
                        (it (answer-clause w 'items)))
                   (and it (length (filter (lambda (r) (and (pair? r) (eq? (car r) 'def))) (cdr it))))))))
-    (want "F205-1 whereis finds each name a define-values binds: a list's, and an improper list's rest, one definition each"
+    (want "DEFVALUES-1 whereis finds each name a define-values binds: a list's, and an improper list's rest, one definition each"
           (list (defs "a") (defs "b") (defs "r"))
           '(1 1 1))))
 

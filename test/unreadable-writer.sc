@@ -57,7 +57,7 @@
 
 ;; THE SCRATCH ROOT FOLLOWS THEOURGIA_TEST_ROOT, and a directory already
 ;; there is refused rather than reused: a pid-named directory left by an
-;; earlier run is how two fixtures went red in an unrelated gate (F71).
+;; earlier run is how two fixtures went red in an unrelated gate.
 (define root
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                    (if (and (string? v) (> (string-length v) 0)) v "/tmp"))
@@ -444,7 +444,7 @@
 (let* ((s (fresh-store!))
        (_ (publish-mirror! s))
        (dir (wdir s M))
-       ;; THE ENTRIES ARE KEYED, (writer . entry) (F77c): the entry is found
+       ;; THE ENTRIES ARE KEYED, (writer . entry): the entry is found
        ;; by its writer, not by its position beside store-writers.
        (entry-of (lambda (snap)
                    (let ((e (and (pair? snap) (assoc M (cdr snap)))))
@@ -460,7 +460,7 @@
     (want "U4a during the failure the entry is (unreadable <dir> <reason>), and two snapshots are equal"
           (if (and (pair? a) (eq? (car a) 'RAISED))
               a
-              ;; THE MARKER'S WHOLE SHAPE (F77c code review r2): exactly
+              ;; THE MARKER'S WHOLE SHAPE (found in code review): exactly
               ;; (unreadable <dir> <reason>), the reason a string.
               (let ((e (entry-of a)))
                 (list (and (pair? e) (car e))
@@ -478,7 +478,7 @@
 ;; coordinates; under R2d those raise on an unreadable writer, so the
 ;; fingerprint must say `unreadable` for it instead -- and differ from the
 ;; healthy one, so nothing built while the writer was readable is reused.
-;; THESE LOADS DECLARE (F77c, plan amendment A1): they open a store whose
+;; THESE LOADS DECLARE (a plan amendment): they open a store whose
 ;; mirror cannot be read on purpose, to read what the load says of it;
 ;; undeclared, the open would now be refused before it could say anything.
 (define (fingerprint store)
@@ -562,7 +562,7 @@
 (define child-forms
   ;; WRITTEN AS DATA, NOT AS A STRING: a program kept in a string literal put
   ;; `(define` at column 0 inside the literal, and the suite's structure
-  ;; check counts every line-start define as a top-level one (F84).
+  ;; check counts every line-start define as a top-level one.
   '((import (chezscheme) (theourgia ffi))
     (define op (cadr (command-line)))
     (define target (caddr (command-line)))
@@ -753,7 +753,7 @@
 ;; directory then raises unreadable-entry, and the client's start-one! must
 ;; answer it, as it answers every other failure to start, not let it out of
 ;; ensure-daemon! (the code session's reading: 89124d4 answered
-;; (error serve-start-failed (spawn #f)); F77a before its fix raised).
+;; (error serve-start-failed (spawn #f)); a version before its fix raised).
 (let* ((ensure-daemon! (guard (e (#t #f)) (eval 'ensure-daemon! (environment '(theourgia client)))))
        (d (string-append root "/client"))
        (fixture-run (getenv "THEOURGIA_RUN")))
@@ -801,7 +801,7 @@
           #t)
     (want "K8 client: an existing serve.log this process cannot open answers serve-start-failed naming it with a reason, spawns nothing, and does not raise"
           (if (and (pair? a) (not (eq? (car a) 'RAISED)))
-              ;; F100b item 6 (M2 Q6): the client's own failure in the table's
+              ;; The client's own failure in the table's
               ;; shape, flat -- (kind unreadable) (path p) (reason r) (errno e).
               (let* ((u (and (list? a) (member '(kind unreadable) (cdr a)) a))
                      (path (and u (find (lambda (x) (and (pair? x) (eq? (car x) 'path))) (cdr u))))
@@ -850,11 +850,11 @@
   ;; clause only to a proper list (:235); an improper pair from the evaluated
   ;; source therefore lost the clause. The source below spells the pair
   ;; without quote characters because it travels through a shell.
-  ;; Since F92 a raised value is never the answer's shape: the pair is
+  ;; A raised value is never the answer's shape: the pair is
   ;; carried as data inside eval-exception, a proper list. The CONTROL
   ;; below reads that wrap; on a839eb1 the answer was the pair itself.
   (let ((improper "(raise (cons (string->symbol \"error\") (string->symbol \"custom\")))"))
-    (want "CONTROL K14 a source that raises an improper error pair: on a healthy store the answer carries it as data inside eval-exception (F92)"
+    (want "CONTROL K14 a source that raises an improper error pair: on a healthy store the answer carries it as data inside eval-exception"
           (eval-answer s improper)
           '(error eval-exception (kind raised) (value (error . custom))))
     (chmod! "100" dir)

@@ -552,7 +552,7 @@
                   (cdr (assq 'src (cdr (assq 'fields b))))))))
       (list "S2" "two\n"))
 
-(printf "== F42: a block the projection cannot place is named, not dropped ==\n")
+(printf "== KINDS: a block the projection cannot place is named, not dropped ==\n")
 ;; A KIND THAT IS NOT A SYMBOL CANNOT BE COMPARED WITH ONE. Every place that
 ;; asks what a block is asks with `eq?`, so a kind left as the string
 ;; "decision" -- which is what the command line used to store -- matches
@@ -608,7 +608,7 @@
 (define out9b (string-append root "/c" (number->string case-n) "/out-b"))
 (system (string-append "mkdir -p " out9a " " out9b))
 
-(want "F42 CONTROL: with every kind a symbol, export says only how many files it wrote"
+(want "KINDS-01 CONTROL: with every kind a symbol, export says only how many files it wrote"
       (export-md d9 out9a)
       '(ok (files 1)))
 
@@ -619,13 +619,13 @@
 ;; when it finds nothing, which would otherwise travel into the rows below as
 ;; a block id that matches no block -- and a skip list that names nothing is
 ;; exactly what those rows would then be measuring.
-(want "F42 the store really does hold one block of each kind the rows below break"
+(want "KINDS-02 the store really does hold one block of each kind the rows below break"
       (list (string? section9) (string? doc9) (equal? section9 doc9))
       (list #t #t #f))
 
 (set-kind! d9 section9 "section")
 
-(want "F42 the string-form kind really is in the store, and really is a string"
+(want "KINDS-03 the string-form kind really is in the store, and really is a string"
       (let ((k (kind-of-block d9 section9)))
         (list k (symbol? k)))
       (list "section" #f))
@@ -645,7 +645,7 @@
 ;; skip list -- and passed, because the code agreed with it. What neither of
 ;; them had done was open the file: the section's heading and body were in it
 ;; the whole time. THE ROW NOW READS THE FILE.
-(want "F42 a section with an unreadable kind is written into its file, and is not reported"
+(want "KINDS-04 a section with an unreadable kind is written into its file, and is not reported"
       (list (export-md d9 out9b)
             (let ((text (slurp (string-append out9b "/nine.md"))))
               (list (and (holds? text "# Nine") 'the-doc-is-there)
@@ -681,7 +681,7 @@
                                 (map caddr (state-outline (open-and-reduce d10))))))
 (set-kind! d10 doc10 "doc")
 
-(want "F42 a doc that cannot be placed takes its whole subtree, and the entry carries the reach"
+(want "KINDS-05 a doc that cannot be placed takes its whole subtree, and the entry carries the reach"
       (list (export-md d10 out10)
             (length (directory-list out10))
             under10)
@@ -708,7 +708,7 @@
       "tester")))
 (set-kind! d13 doc13 "doc")
 
-(want "F42 a block inside a named block is counted in its reach, not listed on its own"
+(want "KINDS-06 a block inside a named block is counted in its reach, not listed on its own"
       (let* ((answer (export-md d13 out13))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (length sk) (car (car sk)) (equal? (car (car sk)) doc13)
@@ -734,7 +734,7 @@
 ;; with no kind" reads like the check is simply absent on this route -- and
 ;; this route is a third one, `insert`, whose payload only becomes a `put`
 ;; inside `resolve`, after the caller's intent has been left behind.
-(want "F42 the same write route refuses a kind the table does not have"
+(want "KINDS-07 the same write route refuses a kind the table does not have"
       (let ((answer (with-store-write d11
                       (lambda (s v) (list (list 'insert 'root #f
                                                 (list (cons 'kind 'nonsense)
@@ -744,12 +744,12 @@
               (car (caddr (car answer)))))
       (list 'error 'malformed-intent 'kind-not-known))
 
-(want "F42 the kindless block really was accepted by the write path"
+(want "KINDS-08 the kindless block really was accepted by the write path"
       (list (kind-of-block d11 kindless11)
             (if (state-read (open-and-reduce d11) kindless11) 'present 'MISSING))
       (list #f 'present))
 
-(want "F42 a block with no kind is named with its own reason, and its reach is zero"
+(want "KINDS-09 a block with no kind is named with its own reason, and its reach is zero"
       (export-md d11 out11)
       (list 'ok (list 'files 1)
             (list 'skipped (list kindless11 'kind-absent (list 'subtree 0)))))
@@ -771,7 +771,7 @@
 (define doc14 (block-of-kind d14 'doc))
 (set-kind! d14 doc14 #f)
 
-(want "F42 a kind that is present and #f is reported as not a symbol, not as absent"
+(want "KINDS-10 a kind that is present and #f is reported as not a symbol, not as absent"
       (list (kind-of-block d14 doc14) (export-md d14 out14))
       (list #f (list 'ok (list 'files 0)
                      (list 'skipped (list doc14 'kind-not-a-symbol (list 'subtree 1))))))
@@ -794,7 +794,7 @@
 (define section17 (block-of-kind d17 'section))
 (define del17 (car (with-store-write d17 (lambda (s v) (list (list 'del doc17))) "tester")))
 
-(want "F42 a deleted document leaves its live blocks named, not hidden behind an entry nobody will read"
+(want "KINDS-11 a deleted document leaves its live blocks named, not hidden behind an entry nobody will read"
       (let* ((answer (export-md d17 out17))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (car del17)
@@ -811,13 +811,13 @@
 ;; THE WRITE ROUTE REFUSES A DOCUMENT BELOW ANOTHER ONE (`doc-must-be-top-level`).
 ;; A nested document can still arrive from history written before that rule or
 ;; from another store; what the export does with one is pinned by
-;; one-subtree.sc (F85-3): it is written into its ancestor document's file.
+;; one-subtree.sc's ONEFILE rows: it is written into its ancestor document's file.
 (define t19 (fresh-case! (list (cons "nineteen.md" "# Outer\nouter body\n"))))
 (define d19 (cdr t19))
 (import-md d19 (car t19) "tester")
 (define outer19 (block-of-kind d19 'doc))
 
-(want "F42 the write route refuses a document below another document"
+(want "KINDS-12 the write route refuses a document below another document"
       (let ((answer (with-store-write d19
                       (lambda (s v) (list (list 'insert outer19 #f
                                                 (list (cons 'kind 'doc)
@@ -862,13 +862,13 @@
                                       (cons 'title "Second")))))
       "tester")))
 
-(want "F42 two documents claiming one path: both exist, and they do claim the same path"
+(want "KINDS-13 two documents claiming one path: both exist, and they do claim the same path"
       (list (equal? (text-field-of d20 first20 'path) (text-field-of d20 second20 'path))
             (text-field-of d20 first20 'path)
             (string<? first20 second20))
       (list #t "twenty.md" #t))
 
-(want "F42 the first by id is written, the other is named with the winner, and the file is the winner's"
+(want "KINDS-14 the first by id is written, the other is named with the winner, and the file is the winner's"
       (let* ((answer (export-md d20 out20))
              (sk (cdr (assq 'skipped (cddr answer))))
              (text (slurp (string-append out20 "/twenty.md"))))
@@ -905,7 +905,7 @@
                                                        (cons 'path path21)))))
       "tester")))
 
-(want "F42 a section carrying a document's path is in no document, not in a path conflict"
+(want "KINDS-15 a section carrying a document's path is in no document, not in a path conflict"
       (let* ((answer (export-md d21 out21))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (text-field-of d21 impostor21 'path)
@@ -943,13 +943,13 @@
          (lambda (s v) (list (list 'move first22 'root second22)))
          "tester")))
 
-(want "F42 the two orders really do disagree in this store"
+(want "KINDS-16 the two orders really do disagree in this store"
       (list (car moved22)
             (equal? (list-sort string<? (list first22 second22)) (list first22 second22))
             (equal? (map car (md-tree (open-and-reduce d22))) (list second22 first22)))
       (list 'ok #t #t))
 
-(want "F42 and the surviving document is the first by id, not the first the rows mention"
+(want "KINDS-17 and the surviving document is the first by id, not the first the rows mention"
       (let* ((answer (export-md d22 out22))
              (sk (cdr (assq 'skipped (cddr answer))))
              (text (slurp (string-append out22 "/" path22))))
@@ -963,8 +963,8 @@
 
 ;; A NESTED DOCUMENT WRITTEN THROUGH THE LOG, WITH ITS OWN SECTION, SHARING ITS
 ;; ANCESTOR'S PATH. The row below reads that the store holds it where it was
-;; written; the export writes it into the ancestor's file (one-subtree.sc,
-;; F85-3), so the path it carries names no second file.
+;; written; the export writes it into the ancestor's file (one-subtree.sc's
+;; ONEFILE rows), so the path it carries names no second file.
 (define t23 (fresh-case! (list (cons "twentythree.md" "# Outer\nouter body\n"))))
 (define d23 (cdr t23))
 (import-md d23 (car t23) "tester")
@@ -996,7 +996,7 @@
     (log-end! sess)
     id))
 
-(want "F42 the nested document and its section are really there, under the outer one"
+(want "KINDS-18 the nested document and its section are really there, under the outer one"
       (let* ((rows (state-outline (open-and-reduce d23)))
              (parent-of (lambda (id)
                           (let ((row (assoc id (map (lambda (r) (list (caddr r) (car r))) rows))))
@@ -1026,7 +1026,7 @@
       (lambda (s v) (list (list 'insert stray24 #f (list (cons 'kind 'code) (cons 'title "fn")))))
       "tester")))
 
-(want "F42 a block of another projection's kind is not counted in anybody's reach"
+(want "KINDS-19 a block of another projection's kind is not counted in anybody's reach"
       (let* ((answer (export-md d24 out24))
              (sk (cdr (assq 'skipped (cddr answer))))
              (claimed (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
@@ -1057,7 +1057,7 @@
                                                        (cons 'title "Escape")))))
       "tester")))
 
-(want "F42 a path that climbs out of the target directory is refused, named, and writes nothing"
+(want "KINDS-20 a path that climbs out of the target directory is refused, named, and writes nothing"
       (let* ((answer (export-md d25 out25))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (cadr answer)
@@ -1087,7 +1087,7 @@
                                                        (cons 'title "No path at all")))))
       "tester")))
 
-(want "F42 a document with no path is named, and the target directory is left a directory"
+(want "KINDS-21 a document with no path is named, and the target directory is left a directory"
       (let* ((answer (guard (e (#t (list 'RAISED))) (export-md d26 out26)))
              (sk (and (pair? answer) (eq? (car answer) 'ok)
                       (cdr (assq 'skipped (cddr answer))))))
@@ -1120,7 +1120,7 @@
                                                        (cons 'title "Second")))))
       "tester")))
 
-(want "F42 a path with a dot component is refused by the same rule the code projection uses"
+(want "KINDS-22 a path with a dot component is refused by the same rule the code projection uses"
       (let* ((answer (export-md d27 out27))
              (sk (cdr (assq 'skipped (cddr answer))))
              (text (slurp (string-append out27 "/twentyseven.md"))))
@@ -1149,7 +1149,7 @@
                                                        (cons 'title "Nulled")))))
       "tester")))
 
-(want "F42 a path carrying a NUL is refused"
+(want "KINDS-23 a path carrying a NUL is refused"
       (let* ((answer (export-md d28 out28))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (code-safe-path? nul28)
@@ -1189,7 +1189,7 @@
 ;; between two documents that are genuinely two files, and this suite runs on
 ;; FreeBSD as well. That is the reading this row cannot produce on the machine
 ;; it was written on, written down rather than left to look like coverage.
-(want "F42 two spellings the volume calls one file are one file, and where it does not they are two"
+(want "KINDS-24 two spellings the volume calls one file are one file, and where it does not they are two"
       (let* ((folds (eq? #f (path-case-sensitive? out29)))
              (answer (export-md d29 out29))
              (sk (if (null? (cddr answer)) '() (cdr (assq 'skipped (cddr answer))))))
@@ -1224,13 +1224,13 @@
                                                        (cons 'title "Through the link")))))
       "tester")))
 
-(want "F42 the symlink is really there and really points out of the target directory"
+(want "KINDS-25 the symlink is really there and really points out of the target directory"
       (list (if (file-is-directory? (string-append out30 "/link")) 'the-link-resolves-to-a-directory 'NO-LINK)
             (code-safe-path? "link/out.md")
             (equal? (real-path (string-append out30 "/link")) (real-path elsewhere30)))
       (list 'the-link-resolves-to-a-directory #t #t))
 
-(want "F42 a path leading through a symlink out of the target is refused, named, and writes nothing"
+(want "KINDS-26 a path leading through a symlink out of the target is refused, named, and writes nothing"
       (let* ((answer (export-md d30 out30))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (cadr answer)
@@ -1264,7 +1264,7 @@
                 (cons (list 'insert 'root #f (list (cons 'title (number->string i)))) acc)))))
   "tester")
 
-(want "F42 six hundred unwritten blocks are reported in a time that says the walk is not repeated"
+(want "KINDS-27 six hundred unwritten blocks are reported in a time that says the walk is not repeated"
       (let* ((t0 (current-time 'time-monotonic))
              (answer (export-md d18 out18))
              (t1 (current-time 'time-monotonic))
@@ -1298,7 +1298,7 @@
 (define kindless12a (kindless-at-root! d12))
 (define kindless12b (kindless-at-root! d12))
 
-(want "F42 two unwritable blocks are both named, each with its reach, in ascending id order"
+(want "KINDS-28 two unwritable blocks are both named, each with its reach, in ascending id order"
       (let* ((answer (export-md d12 out12))
              (sk (cdr (assq 'skipped (cddr answer)))))
         (list (equal? (map car sk) (list-sort string<? (map car sk)))
@@ -1334,7 +1334,7 @@
                                                        (cons 'title "a function")))))
       "tester")))
 
-(want "F42 a block of another projection's kind is not written here and is not reported"
+(want "KINDS-29 a block of another projection's kind is not written here and is not reported"
       (let* ((answer (export-md d16 out16))
              (text (slurp (string-append out16 "/sixteen.md"))))
         (list (kind-of-block d16 code16)
@@ -1357,7 +1357,7 @@
          (sk (if (null? (cddr answer)) '() (cdr (assq 'skipped (cddr answer))))))
     (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
 
-(want "F42 one plus the reach, summed over the entries, is the number of blocks not written"
+(want "KINDS-30 one plus the reach, summed over the entries, is the number of blocks not written"
       (let ((claimed (claimed-unwritten d13 out13))
             (all (length (map caddr (state-outline (open-and-reduce d13))))))
         (list claimed all (= claimed all)))
@@ -1392,7 +1392,7 @@
                             (state-outline (open-and-reduce d15)))))
       (list 'published 3))
 
-(want "F42 blocks that belong to no document are named too, and the sum still closes"
+(want "KINDS-31 blocks that belong to no document are named too, and the sum still closes"
       (let* ((answer (export-md d15 out15))
              (sk (cdr (assq 'skipped (cddr answer))))
              (claimed (claimed-unwritten d15 out15))

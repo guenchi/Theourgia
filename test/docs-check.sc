@@ -116,7 +116,7 @@
                '() (lines-of readme))))
 
 ;; NEVER: THE VERBS EACH PROGRAM ANSWERS ITSELF ARE READ FROM ITS DISPATCH
-;; TABLE (F64), by the reader `options-gate.sc` uses. This was the literal
+;; TABLE, by the reader `options-gate.sc` uses. This was the literal
 ;; `'(eval serve)`, here and again in DOC-2, so a third verb dispatched by
 ;; either program was one the README never had to document.
 (define script-dir
@@ -147,7 +147,7 @@
 ;; writing that README: a paragraph saying "`--writer` does not work on this
 ;; verb" was read as the verb advertising `--writer`.
 ;;
-;; NEVER: AND NOT THE HEADING (F52). The heading used to carry the usage form
+;; NEVER: AND NOT THE HEADING. The heading used to carry the usage form
 ;; too, so every option was written twice in the section, and this set was
 ;; the union of the two: an option dropped from the block stayed advertised
 ;; by the heading and turned nothing red. A heading is the verb's name only
@@ -220,7 +220,7 @@
 (want "DOC-2 every verb-specific option the parser accepts is in the README"
       unadvertised '())
 
-;; ---- F52: a heading is a name, and the usage form is the product's --------------
+;; ---- USAGE: a heading is a name, and the usage form is the product's ------------
 ;;
 ;; KEY: THE USAGE FORM IS WRITTEN ONCE, IN THE FIRST BLOCK OF THE VERB'S
 ;; SECTION, and what it names is compared with the form the product itself
@@ -242,7 +242,7 @@
 ;; NEVER: ANY `--`, NOT ONLY AN OPTION-SHAPED ONE. `dashed-tokens` wants a
 ;; letter after the two dashes, so a heading ending in a bare `--` passed.
 ;; The rule is that a heading is the verb's name, and a name has no `--`.
-(want "F52 no verb heading contains --: the usage form is written once, in the section's block"
+(want "USAGE-1 no verb heading contains --: the usage form is written once, in the section's block"
       (filter (lambda (l) (contains? l "--")) verb-headings)
       '())
 
@@ -324,7 +324,7 @@
                  (skip))
                 (else i)))))))
 
-(want "F104 CONTROL: comments after the usage form are not a second datum, and a datum after them is named at its own offset"
+(want "ONEDATUM-1 CONTROL: comments after the usage form are not a second datum, and a datum after them is named at its own offset"
       (list (second-datum-offset "(move <id>) ; a note\n")
             (second-datum-offset "(move <id>) #| a #| nested |# note |#")
             (second-datum-offset "(move <id>) #;(discarded form)")
@@ -390,14 +390,14 @@
 (define compared
   (filter (lambda (s) (and (cdr s) (product-usage-form (car s)))) section-usage-blocks))
 
-(want "F52 every name a section's usage-form block writes is in the product's own form for that verb"
+(want "USAGE-2 every name a section's usage-form block writes is in the product's own form for that verb"
       (fold-left (lambda (acc s)
                    (let ((extra (names-missing-from (product-usage-form (car s)) (cdr s))))
                      (if (null? extra) acc (append acc (list (cons (car s) extra))))))
                  '() compared)
       '())
 
-(want "F52 every section with a usage-form block has a product form to compare it with"
+(want "USAGE-3 every section with a usage-form block has a product form to compare it with"
       (map car (filter (lambda (s) (and (cdr s) (not (product-usage-form (car s)))))
                        section-usage-blocks))
       '())
@@ -409,16 +409,16 @@
 ;; the catalogue, before the answer shape, under a name-only heading. A
 ;; section that opens any other way is outside the comparison above, so it
 ;; is red here rather than silently skipped.
-(want "F52 every verb section's first block is its usage form, so the comparison above reads every section"
+(want "USAGE-4 every verb section's first block is its usage form, so the comparison above reads every section"
       (map car (filter (lambda (s) (not (cdr s))) section-usage-blocks))
       '())
 
-(want "F52 CONTROL: the comparison read at least twenty sections, and it reports a name the product form lacks"
+(want "USAGE-5 CONTROL: the comparison read at least twenty sections, and it reports a name the product form lacks"
       (list (>= (length compared) 20)
             (names-missing-from (product-usage-form 'insert) '(insert "--under" <id> ("--bogus"))))
       '(#t ("--bogus")))
 
-;; NEVER: THE USAGE BLOCK HOLDS EXACTLY ONE DATUM (F104, I2). The comparison
+;; NEVER: THE USAGE BLOCK HOLDS EXACTLY ONE DATUM (I2). The comparison
 ;; above reads the block's first datum and nothing after it, so a second form
 ;; written into the same block -- an extra placeholder, an option the verb
 ;; does not take -- was compared with nothing and turned no row red. A second
@@ -427,7 +427,7 @@
   (fold-left (lambda (acc s) (if (caddr s) (append acc (list (list (car s) (caddr s)))) acc))
              '() (usage-blocks-of text)))
 
-(want "F104 every verb section's usage block holds exactly one datum"
+(want "ONEDATUM-2 every verb section's usage block holds exactly one datum"
       (sections-with-a-second-datum readme)
       '())
 
@@ -440,7 +440,7 @@
          (end (and form (index-of text "\n" (+ form 1)))))
     (and end (string-append (substring text 0 end) " " extra (substring text end (string-length text))))))
 
-(want "F104 CONTROL: a README copy with a second datum in move's usage block is red, naming move and the offset"
+(want "ONEDATUM-3 CONTROL: a README copy with a second datum in move's usage block is red, naming move and the offset"
       (let ((copy (with-second-datum readme "move" "<bogus>")))
         (and copy (sections-with-a-second-datum copy)))
       (let* ((copy (with-second-datum readme "move" "<bogus>"))
@@ -462,7 +462,7 @@
                                   (substring text end (string-length text)))
                    (- end (+ form 1))))))
 
-(want "F104 CONTROL: a second datum after a blank line inside move's usage block is red, naming move and the offset"
+(want "ONEDATUM-4 CONTROL: a second datum after a blank line inside move's usage block is red, naming move and the offset"
       (let ((copy (with-line-after-blank readme "move" "<bogus>")))
         (and copy (sections-with-a-second-datum (car copy))))
       (let ((copy (with-line-after-blank readme "move" "<bogus>")))
@@ -480,13 +480,13 @@
                                   (substring text end (string-length text)))
                    (- end (+ form 1))))))
 
-(want "F104 CONTROL: a second datum after a tab-only blank line inside move's usage block is red, at its source offset"
+(want "ONEDATUM-5 CONTROL: a second datum after a tab-only blank line inside move's usage block is red, at its source offset"
       (let ((copy (with-line-after-tab readme "move" "<bogus>")))
         (and copy (sections-with-a-second-datum (car copy))))
       (let ((copy (with-line-after-tab readme "move" "<bogus>")))
         (and copy (list (list 'move (+ (cadr copy) 1 2 4))))))
 
-(want "F104 CONTROL: a comment after a blank line inside move's usage block is not a second datum"
+(want "ONEDATUM-6 CONTROL: a comment after a blank line inside move's usage block is not a second datum"
       (let ((copy (with-line-after-blank readme "move" "; a note")))
         (and copy (sections-with-a-second-datum (car copy))))
       '())
@@ -584,7 +584,7 @@
             (if (contains? write-protocol holding-phrase) 'in-the-constant 'MISSING-FROM-CONSTANT))
       '(in-the-readme in-the-constant))
 
-;; ---- F19: what import-code --datum does with comments, in both places ----------
+;; ---- COMMENTS: what import-code --datum does with comments, in both places -----
 ;;
 ;; NOTE: THE SAME SENTENCE, IN THE README'S import-code SECTION AND IN THE
 ;; VERB'S CATALOGUE DESCRIPTION, which is what `describe` publishes and the
@@ -592,7 +592,7 @@
 ;; product answers it, not as source text. Whitespace is compared squashed:
 ;; the README wraps the sentence across lines, and that is not a difference in
 ;; what is said. What the answer does
-;; is held by `datum-import.sc`'s F19 rows, not here.
+;; is held by `datum-import.sc`'s COMMENTS rows, not here.
 (define datum-comment-phrase
   "the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither")
 
@@ -613,7 +613,7 @@
   (let ((entry (assq 'import-code (verb-catalogue))))
     (and entry (caddr entry))))
 
-(want "F19 what import-code --datum does with comments is in the README's import-code section and in the verb's catalogue description"
+(want "COMMENTS-1 what import-code --datum does with comments is in the README's import-code section and in the verb's catalogue description"
       (list (if (and import-code-section (contains? (squashed import-code-section) datum-comment-phrase))
                 'in-the-readme-section 'MISSING-FROM-README-SECTION)
             (if (and import-code-description
@@ -767,7 +767,7 @@
 ;; mis-parse out of the set -- without it this gate read its own source,
 ;; which contains the literal "(getenv ", and produced a "variable" whose
 ;; name began with a close parenthesis and a newline.
-;; NOTE: DIGITS COUNT AFTER THE FIRST CHARACTER (F89). A declared name such
+;; NOTE: DIGITS COUNT AFTER THE FIRST CHARACTER. A declared name such
 ;; as THEOURGIA_X2 must be findable in the README, or documenting it could
 ;; never satisfy DOC-3.
 (define (upper-token? s)
@@ -859,7 +859,7 @@
                                (loop j (if (upper-token? t) (add-unique t out) out))))
                             (else (scan (+ j 1) (cons (string-ref text j) acc))))))))))))) 
 
-;; NEVER: THE RUNNER AND THE LAUNCHER DECLARE WHAT THEY READ (F89). They are
+;; NEVER: THE RUNNER AND THE LAUNCHER DECLARE WHAT THEY READ. They are
 ;; not Scheme, so no `getenv` finds what they read, and the runner's
 ;; `${THEOURGIA_RUNNER_NORMALISED:-}` went undocumented while this row was
 ;; green. Each carries one line `# ENVIRONMENT READ: <names>` and one line
@@ -933,16 +933,16 @@
       (env-names-missing-from readme)
       '())
 
-;; F89: THE RUNNER'S NAME IS READ, AND ITS ABSENCE FROM THE README IS RED.
-(want "F89-1 DOC-3 reads THEOURGIA_RUNNER_NORMALISED from run-fixtures.sh, as a name the tree reads"
+;; RUNNER: THE RUNNER'S NAME IS READ, AND ITS ABSENCE FROM THE README IS RED.
+(want "RUNNER-1 DOC-3 reads THEOURGIA_RUNNER_NORMALISED from run-fixtures.sh, as a name the tree reads"
       (list (and (member "THEOURGIA_RUNNER_NORMALISED" runner-and-launcher-names) #t)
             (and (member "THEOURGIA_RUNNER_NORMALISED" call-site-names) #t))
       '(#t #t))
-(want "F89-1 TWIN: the runner and the launcher each carry both declared lines"
+(want "RUNNER-2 TWIN: the runner and the launcher each carry both declared lines"
       (map (lambda (f) (list f (and (declared-read (file-text f)) #t) (and (declared-named (file-text f)) #t)))
            declaring-files)
       (map (lambda (f) (list f #t #t)) declaring-files))
-(want "F89-1 TWIN: every THEOURGIA_* token in the runner and the launcher, comments and strings included, is on a declared line"
+(want "RUNNER-3 TWIN: every THEOURGIA_* token in the runner and the launcher, comments and strings included, is on a declared line"
       (map (lambda (f) (cons f (undeclared-tokens (file-text f)))) declaring-files)
       (map (lambda (f) (list f)) declaring-files))
 ;; THE INJECTED NAME IS ONE THE RUNNER DOES NOT ALREADY HOLD: a fixed name that
@@ -954,18 +954,18 @@
   (let loop ((k 1))
     (let ((name (string-append "THEOURGIA_UNDECLARED" (number->string k))))
       (if (member name (theourgia-tokens runner-text)) (loop (+ k 1)) name))))
-(want "F89-1 TWIN NEGATIVE: a copy of the runner holding one name it did not hold, in a comment, is red naming it"
+(want "RUNNER-4 TWIN NEGATIVE: a copy of the runner holding one name it did not hold, in a comment, is red naming it"
       ;; ON A LINE OF ITS OWN: a file whose last line has no newline would
       ;; otherwise take the comment into that line (review round 4).
       (undeclared-tokens (string-append runner-text "\n# see " fresh-name " here\n"))
       (list fresh-name))
-(want "F89-1 TWIN NEGATIVE: the alphabet is ASCII: an accented capital ends a name, and a name after one is still read"
+(want "RUNNER-5 TWIN NEGATIVE: the alphabet is ASCII: an accented capital ends a name, and a name after one is still read"
       ;; A SPECIMEN OF ITS OWN, NOT THE RUNNER: the names in it are in no
       ;; file, so no declaration, renaming or other token of the runner can
       ;; answer for them (review round 4).
       (theourgia-tokens "# THEOURGIA_ASCIIA\x00C9; and \x00C9;THEOURGIA_ASCIIB9 end\n")
       '("THEOURGIA_ASCIIA" "THEOURGIA_ASCIIB9"))
-(want "F89-2 a README copy without the THEOURGIA_RUNNER_NORMALISED line is red, naming it"
+(want "RUNNER-6 a README copy without the THEOURGIA_RUNNER_NORMALISED line is red, naming it"
       (env-names-missing-from
         (let loop ((ls (lines-of readme)) (out '()))
           (cond ((null? ls) (apply string-append (reverse out)))
@@ -1144,7 +1144,7 @@
             (> (length call-site-names) 10))
       '(#t #t #t #t))
 
-;; ---- LE: the library extensions the suite runs with (F178) -------------------
+;; ---- LE: the library extensions the suite runs with --------------------------
 ;;
 ;; NEVER: A SOURCE EXTENSION WITHOUT ITS OWN OBJECT EXTENSION. In
 ;; CHEZSCHEMELIBEXTS `a::b` pairs a source extension with an object one and a
@@ -1152,7 +1152,7 @@
 ;; ((".sc" . ".sls") ("" . ".so") (".scm" . ".so")) and kept a stale object
 ;; out only by accident. What is read here is what Chez itself makes of the
 ;; string: the parameter given the string parses it as the variable is parsed
-;; at start-up (measured on the three spellings, F178).
+;; at start-up (measured on the three spellings).
 ;;
 ;; The string after PREFIX on the one line of TEXT that BEGINS with PREFIX, up
 ;; to the next double quote; or (not-one <count>) unless exactly one line does.
@@ -1169,7 +1169,7 @@
         (list 'not-one (length hits)))))
 ;; THE VALUE A SHELL FILE EXPORTS, read by sourcing it, not by reading its text:
 ;; a shell line can assign twice, append after a closing quote, or be commented
-;; out, and a scan of the text answers for none of those (F178 reviews r1, r2).
+;; out, and a scan of the text answers for none of those (found in two reviews).
 ;; A child sh starts with NAME unset, or with NAME exported as INHERITED when
 ;; that is a string, sources FILE from this directory, and a further child
 ;; prints NAME -- so only an EXPORTED value is read, as a suite run started

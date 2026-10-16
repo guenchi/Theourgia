@@ -12,10 +12,10 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; Small batch 2, the main session's rows: F73 (the outline rows are
-;; sorted, and callers rely on it), F79 (a writers/ directory that cannot be
-;; listed is answered by name), F81 (an interned actor of illegal shape is
-;; refused by the shape rule), F82 and F83 (export-md and import-md on a
+;; Small batch 2, the main session's rows: SORTED (the outline rows are
+;; sorted, and callers rely on it), UNLISTED (a writers/ directory that cannot
+;; be listed is answered by name), SHAPE (an interned actor of illegal shape is
+;; refused by the shape rule), ABSENT (export-md and import-md on a
 ;; directory that does not exist answer the tree's directory refusal).
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
@@ -74,7 +74,7 @@
 (define (file-text path)
   (if (not (file-exists? path)) ""
       (let ((t (call-with-input-file path get-string-all))) (if (string? t) t ""))))
-;; THE NEW ID IS READ FROM THE OUTLINE, as the F85 cells do: the insert
+;; THE NEW ID IS READ FROM THE OUTLINE, as one-subtree.sc's cells do: the insert
 ;; answer does not carry it.
 (define (ids-in-outline s) (map caddr (state-outline (open-and-reduce s))))
 (define (insert! s . args)
@@ -85,8 +85,8 @@
             ((member (car xs) before) (loop (cdr xs)))
             (else (car xs))))))
 
-;; ---- F73: the outline rows are sorted by (parent, ord, id) -------------------
-(printf "== F73: the outline rows are sorted, and the sort is the promise ==\n")
+;; ---- SORTED: the outline rows are sorted by (parent, ord, id) ----------------
+(printf "== SORTED: the outline rows are sorted, and the sort is the promise ==\n")
 (define (parent-key p) (if (symbol? p) (symbol->string p) p))
 (define (row<? x y)
   (if (equal? (car x) (car y))
@@ -105,49 +105,49 @@
        (e (insert! s "--under" a "--title" "E" "--after" c))
        (f (insert! s "--under" b "--title" "F"))
        (rows (state-outline (open-and-reduce s))))
-  (want "CONTROL F73-1 the store has six placed blocks under two parents and the root"
+  (want "CONTROL SORTED the store has six placed blocks under two parents and the root"
         (list (length rows) (and (string? a) (string? b) (string? c) (string? d) (string? e) (string? f)))
         '(6 #t))
-  (want "F73-1 the outline rows come sorted by (parent, ord, id): under A the order is C E D, not the insertion order C D E"
+  (want "SORTED-1 the outline rows come sorted by (parent, ord, id): under A the order is C E D, not the insertion order C D E"
         (let ((under-a (filter (lambda (r) (equal? (car r) a)) rows)))
           (list (sorted? rows) (equal? (map caddr under-a) (list c e d))))
         '(#t #t)))
 
-;; ---- F79: writers/ itself unlistable ------------------------------------------
-(printf "== F79: a writers/ directory this process cannot list ==\n")
+;; ---- UNLISTED: writers/ itself unlistable -------------------------------------
+(printf "== UNLISTED: a writers/ directory this process cannot list ==\n")
 (let* ((s (fresh-store!))
        (writers (string-append s "/writers")))
   (ask s 'insert "--under" "root" "--title" "A")
   (chmod! "000" writers)
   (let ((a (caught (ask s 'check))))
     (chmod! "700" writers)
-    (want "F79-1 check with writers/ at 000 answers unreadable by name, naming writers/, and neither internal nor a raise"
+    (want "UNLISTED-1 check with writers/ at 000 answers unreadable by name, naming writers/, and neither internal nor a raise"
           (cond ((and (pair? a) (eq? (car a) 'RAISED)) (list 'raised (cadr a)))
                 ((and (eq? (head a) 'error) (pair? (cdr a)) (eq? (cadr a) 'unreadable))
                  (list 'unreadable (and (string? (field a 'path)) (contains? (field a 'path) "/writers"))))
                 (else (list 'answered (head a) (and (pair? (cdr a)) (cadr a)))))
           '(unreadable #t))
-    (want "F79-1 TWIN: readable again, check's verdict is ok"
+    (want "UNLISTED-2 TWIN: readable again, check's verdict is ok"
           (let ((c (ask s 'check))) (list (head c) (field c 'verdict)))
           '(check ok))))
 
-;; ---- F81: an interned actor of illegal shape ----------------------------------
-(printf "== F81: the shape rule, told apart from the intern check ==\n")
+;; ---- SHAPE: an interned actor of illegal shape --------------------------------
+(printf "== SHAPE: the shape rule, told apart from the intern check ==\n")
 (define (six who identity sub fp plan after) (list who identity sub fp plan after))
 (define (encodes? actor)
   (guard (e (#t #f)) (encode-record 0 0 actor '() '(a)) #t))
-(want "CONTROL F81-1 a well-shaped actor encodes"
+(want "CONTROL SHAPE a well-shaped actor encodes"
       (encodes? (six "agent:claude" (cons "w" "req-1") 'single "fp" #f (cons "w" 3)))
       #t)
-(want "F81-1 an actor whose symbols are all interned but whose sub slot is neither single, plan nor an index is refused: the shape rule, not the intern check"
+(want "SHAPE-1 an actor whose symbols are all interned but whose sub slot is neither single, plan nor an index is refused: the shape rule, not the intern check"
       (encodes? (six "agent:claude" (cons "w" "req-1") 'nope "fp" #f (cons "w" 3)))
       #f)
-(want "F81-1 TWIN: an interned symbol where the pair of writer and request id must be is refused too"
+(want "SHAPE-2 TWIN: an interned symbol where the pair of writer and request id must be is refused too"
       (encodes? (six "agent:claude" 'w-req-1 'single "fp" #f (cons "w" 3)))
       #f)
 
-;; ---- F82 / F83: a directory that does not exist -------------------------------
-(printf "== F82 / F83: export-md and import-md on an absent directory ==\n")
+;; ---- ABSENT: a directory that does not exist ----------------------------------
+(printf "== ABSENT: export-md and import-md on an absent directory ==\n")
 (let* ((s (fresh-store!))
        (absent (string-append root "/absent-" (number->string (get-process-id))))
        (present (string-append root "/present")))
@@ -156,16 +156,16 @@
     (ask s 'set a "kind" "doc")
     (ask s 'set a "path" "a.md"))
   (system (string-append "mkdir -p " present))
-  (want "CONTROL F82-1 export-md to an existing empty directory answers ok and writes a file"
+  (want "CONTROL ABSENT export-md to an existing empty directory answers ok and writes a file"
         (let ((a (ask s 'export-md present)))
           (list (head a) (> (length (directory-list present)) 0)))
         '(ok #t))
-  (want "F82-1 export-md to a directory that does not exist answers projection-invalid not-a-directory naming it, and creates nothing"
+  (want "ABSENT-1 export-md to a directory that does not exist answers projection-invalid not-a-directory naming it, and creates nothing"
         (let ((a (ask s 'export-md absent)))
           (list (head a) (and (pair? (cdr a)) (cadr a)) (field a 'reason) (equal? (field a 'dir) absent)
                 (file-exists? absent)))
         '(error projection-invalid not-a-directory #t #f))
-  (want "F83-1 import-md from a directory that does not exist answers the same refusal, not internal"
+  (want "ABSENT-2 import-md from a directory that does not exist answers the same refusal, not internal"
         (let ((a (ask s 'import-md absent)))
           (list (head a) (and (pair? (cdr a)) (cadr a)) (field a 'reason) (equal? (field a 'dir) absent)))
         '(error projection-invalid not-a-directory #t))
@@ -174,12 +174,12 @@
   ;; row (small batch 2, code session's reading on 877f0da).
   (let ((file (string-append root "/a-file")))
     (call-with-output-file file (lambda (p) (put-string p "not a directory\n")) 'replace)
-    (want "F82-1 TWIN: export-md to a path that is a regular file answers the same refusal, and the file's bytes are untouched"
+    (want "ABSENT-3 TWIN: export-md to a path that is a regular file answers the same refusal, and the file's bytes are untouched"
           (let ((a (ask s 'export-md file)))
             (list (head a) (and (pair? (cdr a)) (cadr a)) (field a 'reason) (equal? (field a 'dir) file)
                   (file-text file)))
           '(error projection-invalid not-a-directory #t "not a directory\n"))
-    (want "F83-1 TWIN: import-md from a path that is a regular file answers the same refusal"
+    (want "ABSENT-4 TWIN: import-md from a path that is a regular file answers the same refusal"
           (let ((a (ask s 'import-md file)))
             (list (head a) (and (pair? (cdr a)) (cadr a)) (field a 'reason) (equal? (field a 'dir) file)))
           '(error projection-invalid not-a-directory #t)))
@@ -189,7 +189,7 @@
   ;; answered by every route (review r1 C-N1, ruled L). The target itself at
   ;; 000 is NOT this case: stat needs search permission on the parent, so
   ;; the test passes and the failure comes later at the write or the listing
-  ;; (raw, internal, as on the base): queued as F98.
+  ;; (raw, internal, as on the base): the TARGET rows below.
   (let* ((sealed (string-append root "/sealed"))
          (inner (string-append sealed "/inner")))
     (system (string-append "mkdir -p " inner))
@@ -197,18 +197,18 @@
     (let ((e (ask s 'export-md inner))
           (i (ask s 'import-md inner)))
       (chmod! "700" sealed)
-      (want "F82-1 TWIN: export-md to a directory under one this process cannot search answers unreadable naming the path, and writes nothing"
+      (want "ABSENT-5 TWIN: export-md to a directory under one this process cannot search answers unreadable naming the path, and writes nothing"
             (list (head e) (and (pair? (cdr e)) (cadr e))
                   (and (string? (field e 'path)) (contains? (field e 'path) inner))
                   (null? (directory-list inner)))
             '(error unreadable #t #t))
-      (want "F83-1 TWIN: import-md from a directory under one this process cannot search answers unreadable naming the path"
+      (want "ABSENT-6 TWIN: import-md from a directory under one this process cannot search answers unreadable naming the path"
             (list (head i) (and (pair? (cdr i)) (cadr i))
                   (and (string? (field i 'path)) (contains? (field i 'path) inner)))
             '(error unreadable #t)))))
 
-;; ---- F98: a target that stats but cannot be listed or written ---------------
-(printf "== F98: the target directory itself at 000 ==\n")
+;; ---- TARGET: a target that stats but cannot be listed or written ------------
+(printf "== TARGET: the target directory itself at 000 ==\n")
 ;; The directory test passes (stat needs search on the parent); the failure
 ;; comes at the write (export) or the listing (import) and must be named,
 ;; never internal.
@@ -222,16 +222,16 @@
   (let ((e (ask s 'export-md target))
         (i (ask s 'import-md target)))
     (chmod! "700" target)
-    (want "F98-1 export-md to a directory it cannot write into answers unreadable naming the file it could not write, not internal"
+    (want "TARGET-1 export-md to a directory it cannot write into answers unreadable naming the file it could not write, not internal"
           (list (head e) (and (pair? (cdr e)) (cadr e))
                 (and (string? (field e 'path)) (contains? (field e 'path) target)))
           '(error unreadable #t))
-    (want "F98-2 import-md from a directory it cannot list answers unreadable naming it, not internal"
+    (want "TARGET-2 import-md from a directory it cannot list answers unreadable naming it, not internal"
           (list (head i) (and (pair? (cdr i)) (cadr i))
                 (and (string? (field i 'path)) (contains? (field i 'path) target)))
           '(error unreadable #t))))
 
-;; AN EXPORT STOPPED PART WAY SAYS HOW FAR IT GOT (F98, the brief's "with the
+;; AN EXPORT STOPPED PART WAY SAYS HOW FAR IT GOT (the brief's "with the
 ;; files written so far named in the answer"). Two documents, one at the top
 ;; and one under a sub-directory at 000; whichever the export reaches first,
 ;; the answer's `written` must be exactly the files that are on disk
@@ -250,7 +250,7 @@
     (ask s 'set first "path" "a.md")
     (ask s 'set second "path" "sub/b.md"))
   (system (string-append "mkdir -p " sub))
-  ;; MODE 500, NOT 000 (the merge onto F100a): the export lists the target
+  ;; MODE 500, NOT 000 (the merge onto the door): the export lists the target
   ;; before it writes, and a directory at 000 cannot be listed, so the
   ;; answer named nothing written and nothing was. At 500 the listing
   ;; succeeds and the write into it is the one refused.
@@ -262,7 +262,7 @@
           (named (let ((w (and (pair? e) (list? e)
                                (find (lambda (x) (and (pair? x) (eq? (car x) 'written))) (cdr e)))))
                    (and w (cadr w)))))
-      (want "F98-3 export-md stopped at a file it cannot write names the files it had already written, and they are exactly the ones on disk"
+      (want "TARGET-3 export-md stopped at a file it cannot write names the files it had already written, and they are exactly the ones on disk"
             (list (head e) (and (pair? (cdr e)) (cadr e))
                   (and (string? (field e 'path)) (contains? (field e 'path) "sub/b.md"))
                   on-disk

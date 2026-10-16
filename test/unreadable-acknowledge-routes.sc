@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; F77c's ROUTES: how a reduction missing a writer is obtained, refused,
+;; THE ROUTES: how a reduction missing a writer is obtained, refused,
 ;; named and never published, beyond the acceptance cells in
 ;; unreadable-acknowledge.sc.
 ;;
@@ -138,7 +138,7 @@
 ;; THE MIRROR SORTS LAST. A load delivers writer by writer in name order
 ;; (store-writers sorts), so a mirror whose delivery aborts before the local
 ;; writer's leaves the session no view: D-snapshot-readable answered
-;; no-local-writer in F77c r1f and not-delivered in r1e, by whichever side of
+;; no-local-writer in one revision and not-delivered in the one before, by whichever side of
 ;; "mirrorz9" the random local writer id fell. "zzzzzzzz" is the last writer
 ;; id there is.
 (define M "zzzzzzzz")
@@ -186,8 +186,8 @@
 
 ;; =============================================================================
 (printf "== A: the census of the load primitives ==\n")
-;; EVERY CALL OF A LOAD PRIMITIVE IN THE TREE'S SOURCE, BY SCAN (F77c, plan
-;; amendment A1 and its acceptance): a call that is not listed below with its
+;; EVERY CALL OF A LOAD PRIMITIVE IN THE TREE'S SOURCE, BY SCAN (a plan
+;; amendment and its acceptance): a call that is not listed below with its
 ;; disposition is a red row, and so is a listed one that is gone. The key is
 ;; (file, the nearest enclosing `(define (<name>`, primitive) with a count --
 ;; never a line number, which drifts.
@@ -567,12 +567,12 @@
               (list plain-rc (cadr a) (cadr b)) (has-substring? plain "Beta"))
         '(#t #t #t #t (0 0 0) #t)))
 ;; N, readable damage (ruling Q-r5-1): a CRC-damaged older segment after the
-;; barrier keeps the base's answer, internal. F125 will name it.
+;; barrier keeps the base's answer, internal. Naming it is a later change.
 (let* ((c (fresh-store!)) (st (car c)) (seg (older-segment st)) (saved #f))
   (let ((r (held-run "after-barrier" local "../core.sc" (list "outline" "--store" st)
                      (lambda () (set! saved (damage! seg))))))
     (undamage! seg saved)
-    (want "N readable damage after the barrier keeps the base's answer: internal (F125 will name it)"
+    (want "N readable damage after the barrier keeps the base's answer: internal (naming it is a later change)"
           (list (car r) (cadr r) (head-of (caddr r)))
           '(#t 1 (error internal)))))
 ;; A SNAPSHOT INSTALLED IN THIS STORE, read from the trace: a create, write,
@@ -610,7 +610,7 @@
           (list (car r) (caddr r) installs (equal? names-before names-after))
           (list #t (unreadable-answer seg) 0 #t))))
 ;; D-snapshot, readable (plan amendment A3; MR-25): a damaged older segment
-;; lets the session go on (F125's), so its snapshot reaches session-snapshot!,
+;; lets the session go on (a later change's), so its snapshot reaches session-snapshot!,
 ;; whose gate refuses the installation: (error not-delivered), nothing
 ;; installed.
 (let* ((c (fresh-store!)) (st (car c)) (seg (older-segment st)) (snap (string-append st "/snap")) (saved #f))
@@ -739,7 +739,7 @@
       (list rc (first-datum-of out)))))
 ;; THE BASE ANSWER'S USAGE FORM, read out of rpc.sc as data (code review
 ;; r4): the healthy bad-limits answer is compared whole, and its usage clause
-;; is whatever `eval-usage` says -- a form F77c does not change. It is found
+;; is whatever `eval-usage` says -- a form these routes do not change. It is found
 ;; at the top level or in the body of a `(library ...)` form: rpc.sc is one
 ;; library form, and eval's usage form moved there from core.sc when the
 ;; catalogue began to publish it.
@@ -995,9 +995,9 @@
 ;; mirror's record ("t ... unplaced" in the outline): the previous
 ;; publication has it, the reloaded one does not (the mirror stops before
 ;; its unreadable older segment). The outside insert is no witness here: in
-;; the F77c r1d diagnostic it was absent after the reload, and the reason read
+;; an earlier diagnostic it was absent after the reload, and the reason read
 ;; in the code is that it depends on the mirror's records and waits once they
-;; are unavailable (F77a available-through).
+;; are unavailable (available-through).
 (let* ((c (daemon-store!)) (st (car c)) (seg (older-segment st)) (traced "THEOURGIA_INJECT=on THEOURGIA_TRACE=1"))
   (client traced "outline" "--store" st)
   (outside-commit! st)
@@ -1090,7 +1090,7 @@
 ;; hold waits while its release file does not exist).
 ;; - unreadable: the session refuses before any intent (A3): the answer names
 ;;   the segment, the log is unchanged, nothing is published.
-;; - damaged (readable, F125's): the session goes on and writes, and the
+;; - damaged (readable, a later change's): the session goes on and writes, and the
 ;;   publication is withheld by the gate (the accepted L).
 ;; Each run its own files: a release, a marker or an answer left by an
 ;; earlier run would satisfy a wait at once (measured in r1e, where the
