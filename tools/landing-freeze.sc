@@ -44,7 +44,7 @@
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) store-state-at-cut)
         (only (theourgia working) working-state)
-        (only (theourgia landing-files) raw-projection changed-files-between)
+        (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia ffi) entry-bytes overwrite-entry! hold-point!)
@@ -122,6 +122,16 @@
     ;; view: a second read could see other drafts -- one written and taken
     ;; back between the two reads moves the view's cut, and with it the
     ;; files there are -- and the tree would hold what was never checked.
+    ;; NO TWO PATHS THAT A VOLUME COULD FOLD INTO ONE, files or the directories
+    ;; above them: a tree written to such a volume would not be the view's,
+    ;; and identical bytes under both names would pass the read-back. Refused
+    ;; on any volume, as the export's result must not depend on where it lands.
+    (let ((paths (map car (raw-projection view))))
+      (for-each (lambda (kind)
+                  (let ((groups (ambiguous-groups kind paths)))
+                    (unless (null? groups)
+                      (refuse 'paths-ambiguous (list 'kind kind) (list 'groups groups)))))
+                '(case normalisation)))
     (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view))))
       (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
     ;; ((<path> <bytes>) ...), the files export-code-view wrote, each read

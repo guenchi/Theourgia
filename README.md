@@ -2997,8 +2997,9 @@ writer's slot, which must be empty or hold this very version, left as it is
 then the working view, read once and as strictly as `export-code` reads (a
 store missing a writer or cut by damage is refused), whose own drafts must
 be the dumped ones, written raw into `<dir>/tree` by `export-code`'s own
-procedure and each file read back (`export-mismatch` when a volume folds two
-paths into one); `MANIFEST.sha256` (each file's sha256 and path); and
+procedure and each file read back (`export-mismatch`), after any two paths a
+volume could fold into one, files or directories, have been refused
+(`paths-ambiguous`); `MANIFEST.sha256` (each file's sha256 and path); and
 `CHANGED.sexp`, `changed-files` between the store at the pinned cut and that
 view. The draft list is then read again. A draft written during the freeze
 refuses it (`drafts-changed`), and the directory is left for the coder to
