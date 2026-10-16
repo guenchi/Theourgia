@@ -707,7 +707,7 @@
 
 (define done-hits (census builds-done-clause?))
 
-(want "F32 exactly one place in the shipped sources builds the done clause"
+(want "DONE-1 exactly one place in the shipped sources builds the done clause"
       (list (length done-hits)
             (apply + (map (lambda (h) (length (cdr h))) done-hits))
             (map (lambda (h) (let ((p (car h)))
@@ -719,13 +719,13 @@
 ;; whether the FILE contained `(define (batch-answer`, which a comment
 ;; mentioning it would have satisfied -- this one reports the name of the
 ;; definition the hit is lexically inside, read as data.
-(want "F32 TWIN: and the definition it is inside is batch-answer"
+(want "DONE-2 TWIN: and the definition it is inside is batch-answer"
       (if (null? done-hits)
           'THE-CENSUS-SAW-NOTHING
           (cdr (car done-hits)))
       '(batch-answer))
 
-;; F42: ONE TABLE OF KINDS, AND THE CENSUS IS HOW WE KNOW.
+;; KINDS: ONE TABLE OF KINDS, AND THE CENSUS IS HOW WE KNOW.
 ;;
 ;; A kind decides what a block is, and four routes write one: the command
 ;; line, an intent in a batch, replay, and the projection that exports. The
@@ -797,7 +797,7 @@
 ;; expressed as the keys of a dispatch table.
 ;;
 ;; Ruled by the main session, 2026-09-20.
-(want "F42 two places in the shipped sources spell out a set of kinds, and these are they"
+(want "KINDS-1 two places in the shipped sources spell out a set of kinds, and these are they"
       (list (apply + (map (lambda (h) (length (cdr h))) kind-hits))
             (list-sort string<?
                        (map (lambda (h) (let ((p (car h)))
@@ -813,7 +813,7 @@
 ;; IT. Reported from the datum, so renaming a table and leaving the old name
 ;; as an alias -- which keeps the count right and every import working -- is
 ;; what this row is here to be red about.
-(want "F42 TWIN: and the definitions they are inside are known-kinds and md-kinds"
+(want "KINDS-2 TWIN: and the definitions they are inside are known-kinds and md-kinds"
       (if (null? kind-hits)
           'THE-CENSUS-SAW-NOTHING
           (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
@@ -826,7 +826,7 @@
 ;; rule that can grow quietly. The expectation here is written from outside the
 ;; tree: adding a reader is a change somebody has to come and defend, which is
 ;; what the census does for the other two.
-(want "F42 and the kinds that bear names are exactly these, read from the product"
+(want "KINDS-3 and the kinds that bear names are exactly these, read from the product"
       (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
                  name-bearing-kinds)
       '(code library))
@@ -843,13 +843,13 @@
 ;;
 ;; Both sides come from the libraries' own exports, so neither is this file's
 ;; copy of anything.
-(want "F42 every kind the markdown projection claims is a kind that exists"
+(want "KINDS-4 every kind the markdown projection claims is a kind that exists"
       (list (length (filter (lambda (k) (not (memq k known-kinds))) md-kinds))
             (filter (lambda (k) (not (memq k known-kinds))) md-kinds)
             (if (null? md-kinds) 'THE-PROJECTION-CLAIMS-NOTHING 'and-it-claims-something))
       (list 0 '() 'and-it-claims-something))
 
-;; ---- F58 the run-time census of item tags ----------------------------------
+;; ---- CENSUS: the run-time census of item tags ------------------------------
 ;;
 ;; KEY: THE STATIC ROWS ABOVE READ rpc.sc; THESE RUN IT. For every verb the
 ;; program answers to, one invocation is made and its answer is classified.
@@ -873,7 +873,7 @@
 
 ;; A FRESH ROOT, REFUSED IF IT EXISTS. The root is named by process id, and a
 ;; recycled id with a directory left behind would hand this census a store
-;; it did not build (F71).
+;; it did not build.
 (define census-root
   (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                  "/facade-gate-census-" (number->string (get-process-id))))
@@ -1025,7 +1025,7 @@
                           (census-ask st 'def "usesname" "--under" (census-get s 'lib) "(define usesname (car gnarlwick))")
                           (census-ask st 'uses "car"))))
     ;; THE DIRECTORY IS MADE FIRST: export-md into one that does not exist
-    ;; yet writes nothing and calls every document's path unusable (F82).
+    ;; yet writes nothing and calls every document's path unusable.
     (cons 'export-md (seeded (lambda (st x s)
                                (let ((d (string-append x "/md-out")))
                                  (mkdir-p! d)
@@ -1141,7 +1141,7 @@
     ;; with two sections, exported and imported back. Not the common seed:
     ;; the import's answer here is the plain one, every document of the
     ;; store in the directory it reads, so nothing is reported absent.
-    ;; The directory is made first (F82).
+    ;; The directory is made first.
     (cons 'import-md (lambda (st x)
       (census-ask st 'init)
       (let ((doc (census-new-id (census-ask st 'insert "--under" "root" "--title" "Seed doc")))
@@ -1222,21 +1222,21 @@
 ;; own case (the machine registry lives there). Read as the number of cases,
 ;; the number of distinct homes, stores and outside directories, the number
 ;; whose area existed beforehand, and the number of homes left empty.
-(want "F58 CONTROL each case ran in its own fresh home, store and outside directory"
+(want "CENSUS-01 CONTROL each case ran in its own fresh home, store and outside directory"
       (census-isolation)
       (let ((n (length (rpc-verbs)))) (list n n n n 0 0)))
 
 ;; CONTROL: the seed's steps all succeeded in every case that used it. A
 ;; failed step would change what the verbs answer, and the rows below would
 ;; then be about a store this file did not mean to build.
-(want "F58 CONTROL every seed step answered as a success, in every seeded case"
+(want "CENSUS-02 CONTROL every seed step answered as a success, in every seeded case"
       (map car census-seed-failures)
       '())
 
 ;; CONTROL: THE SEED DOES WHAT SECTION 4 OF THE DESIGN ASKS OF IT FOR diff --
 ;; one surviving block changed in every field diff compares. Read from the
 ;; diff case's own answer: the fields it reports as changed for B.
-(want "F58 CONTROL on the seed, diff reports B changed in title, src, level, parent, ord and links"
+(want "CENSUS-03 CONTROL on the seed, diff reports B changed in title, src, level, parent, ord and links"
       (let* ((r (assq 'diff census))
              (a (and r (cadddr r)))
              (items (if (and (pair? a) (pair? (cdr a)) (pair? (cadr a))) (cdr (cadr a)) '())))
@@ -1249,7 +1249,7 @@
 ;; PRODUCT ROW: the raw population has no verb twice. rpc-verbs maps the
 ;; dispatch table directly (rpc.sc:1368), so a duplicate key there turns this
 ;; red.
-(want "F58 the verb table names no verb twice"
+(want "CENSUS-04 the verb table names no verb twice"
       (let loop ((l (rpc-verbs)) (seen '()) (dup '()))
         (cond ((null? l) (reverse dup))
               ((memq (car l) seen) (loop (cdr l) seen (cons (car l) dup)))
@@ -1258,34 +1258,34 @@
 
 ;; PRODUCT ROW although it reads this file's table: an entry for a verb the
 ;; dispatcher no longer has is red with no edit here.
-(want "F58 every invocation in the table is for a verb the dispatcher has"
+(want "CENSUS-05 every invocation in the table is for a verb the dispatcher has"
       (filter (lambda (v) (not (memq v (rpc-verbs)))) (map car census-table))
       '())
 
-(want "F58 these verbs answer with tagged items"
+(want "CENSUS-06 these verbs answer with tagged items"
       (census-class 'tagged)
       '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code locate log names query refs search tag tasks uses whereis))
-(want "F58 these verbs answer with items that carry no tag"
+(want "CENSUS-07 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
-(want "F58 these verbs answer with a success that is not items"
+(want "CENSUS-08 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check collect-into context del describe discard export-code export-md import-md init insert
         link move outline position publish reach relation restore review-results rule set snapshot split-suggest supply template unlink write))
-(want "F58 these verbs are unexercised"
+(want "CENSUS-09 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt subscribe))
 
 ;; THE TAGGED MAP: verb -> (sorted heads . count of items that are not
 ;; symbol-headed pairs). A head may be `ok` (commit, import-code, def); none
 ;; is filtered out as not a real tag.
-(want "F58 each tagged verb's heads, and how many of its items carry none"
+(want "CENSUS-10 each tagged verb's heads, and how many of its items carry none"
       (census-detail 'tagged)
       '((changed-files (path) . 0) (commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
         (import-code (ok) . 0) (locate (block) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
-(want "F58 each not-items verb's answer head"
+(want "CENSUS-11 each not-items verb's answer head"
       (census-detail 'not-items)
       '((batch . batch) (check . check) (collect-into . ok) (context . ok) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
@@ -1302,11 +1302,11 @@
           "a healthy store needs no adoption (log.sc:4428)")
     (list 'subscribe '(refused error bad-request)
           "a stream needs a daemon: in process, subscribe answers (error bad-request (reason needs-daemon)) (rpc.sc's handler)")))
-(want "F58 CONTROL every accepted refusal says why it is correct"
+(want "CENSUS-12 CONTROL every accepted refusal says why it is correct"
       (filter (lambda (a) (not (and (string? (caddr a)) (> (string-length (caddr a)) 0))))
               census-allowed)
       '())
-(want "F58 the unexercised verbs and their reasons are exactly the justified ones"
+(want "CENSUS-13 the unexercised verbs and their reasons are exactly the justified ones"
       (census-detail 'unexercised)
       (list-sort (lambda (a b) (census-name<? (car a) (car b)))
                  (map (lambda (a) (cons (car a) (cadr a))) census-allowed)))
@@ -1330,12 +1330,12 @@
                       (if (null? hits) '() (list (car r)))))
                   census)))
 (printf "   census tripwire hits: ~s\n" (census-tripwire-hits))
-(want "F58 TRIPWIRE no answer is one of the known catch-alls"
+(want "CENSUS-14 TRIPWIRE no answer is one of the known catch-alls"
       (census-tripwire-hits)
       '())
 
 ;; CONTROL: one total classification per population member.
-(want "F58 CONTROL the four classes together are the population, each verb once"
+(want "CENSUS-15 CONTROL the four classes together are the population, each verb once"
       (let ((all (append (census-class 'tagged) (census-class 'untagged)
                          (census-class 'not-items) (census-class 'unexercised))))
         (list (length all) (length (census-dedup all))
@@ -1348,10 +1348,10 @@
 (define census-runtime-pairs
   (apply append (map (lambda (e) (map (lambda (h) (cons (car e) h)) (cadr e)))
                      (census-detail 'tagged))))
-(want "F58 every tag the static scan reads is one the verb produces at run time"
+(want "CENSUS-16 every tag the static scan reads is one the verb produces at run time"
       (filter (lambda (p) (not (member p census-runtime-pairs))) (car items-scan))
       '())
-(want "F58 every verb the static scan cannot follow answers with items at run time"
+(want "CENSUS-17 every verb the static scan cannot follow answers with items at run time"
       (filter (lambda (v) (not (or (memq v (census-class 'tagged)) (memq v (census-class 'untagged)))))
               (census-dedup (map car (cadr items-scan))))
       '())

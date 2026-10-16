@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE MUTATION RECORD IS KEYED BY THE ACTOR (F100 D1', amendment 8). A
+;; THE MUTATION RECORD IS KEYED BY THE ACTOR (amendment 8). A
 ;; parameter cell belongs to whichever process wrote it last and does not
 ;; survive a yield, so the record is looked up by `self`. Three rows, each
 ;; under the scheduler:
@@ -25,10 +25,10 @@
 ;;       (`with-mutation-record`'s optional second argument), and reads the
 ;;       combined record back.
 (import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers)
-        ;; F100b M2a's two helper rows (H5, H7).
+        ;; The startup report's two helper rows (H5, H7).
         (only (theourgia daemon) write-report-line!)
         (only (theourgia client) next-attempt-token select-report)
-        ;; F100b M3a's helper rows (H6).
+        ;; The shell refusal's helper rows (H6).
         (only (theourgia refusal) refusal-object refusal-result-json refusal-error-json)
         (only (theourgia json) string->json json->string json-ref*))
 
@@ -84,7 +84,7 @@
 (define (raised-as e)
   (list 'raised (if (and (condition? e) (message-condition? e)) (condition-message e) e)))
 
-;; ---- F100b H1, H2: the table and the aggregation rule (pure) -----------------
+;; ---- H1, H2: the table and the aggregation rule (pure) -----------------------
 ;;
 ;; (theourgia answers)' two helpers on fixed conditions and records, one row
 ;; per cell of the brief. The durable-error is ffi's vector
@@ -122,12 +122,12 @@
         (list (unreadable-at "/p" 'EACCES denied) "EACCES" '(path "/p") (list 'reason denied) '(errno EACCES))
         (list (durable 'mkdir "/p" EACCES) "durable mkdir" '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES))
         (list (durable 'dir-fsync "/d" EIO) "durable dir-fsync" '(op dir-fsync) '(path "/d") '(reason "Input/output error") (list 'errno EIO))))
-;; A durable-error with no errno is a short write (M2a review r1, F3):
+;; A durable-error with no errno is a short write (found in review):
 ;; the table answers it with a reason of its own instead of raising.
 (want "H1 durable write with errno #f (a short write), empty record -> unwritable, reason \"short write\", errno #f"
       (classify-failure (durable 'write "/p" #f) '())
       '(error unwritable (op write) (path "/p") (reason "short write") (errno #f)))
-(want "H1 durable create with errno #f (a Chez condition with no mapped errno), empty record -> unwritable, reason \"no errno\" (M2a review r2, F3)"
+(want "H1 durable create with errno #f (a Chez condition with no mapped errno), empty record -> unwritable, reason \"no errno\" (found in review)"
       (classify-failure (durable 'create "/p" #f) '())
       '(error unwritable (op create) (path "/p") (reason "no errno") (errno #f)))
 (want "H1 what the table does not classify answers #f (the caller keeps its own answer)"
@@ -135,8 +135,8 @@
       '(#f #f))
 (define h-entries '((create "/l")))
 ;; Each input is the table's own shape for its kind: unwritable carries
-;; its op, so a promotion that dropped a clause would show (F100b M1
-;; review r1, F2).
+;; its op, so a promotion that dropped a clause would show (found in
+;; review).
 (for-each
   (lambda (answer)
     (want (string-append "H2 " (symbol->string (cadr answer)) " with an empty record plus entries -> incomplete, every clause under failed")
@@ -154,8 +154,8 @@
         (list (equal? a b) (string=? (format "~s" a) (format "~s" b))))
       '(#t #t))
 ;; A named outcome may carry atoms after its kind: store.sc answers
-;; (error not-written reserved-not-written (sequence n)) (F100b M1 review
-;; r1, F1: a lookup by assq raised on it).
+;; (error not-written reserved-not-written (sequence n)) (found in
+;; review: a lookup by assq raised on it).
 (want "H2 a named outcome carrying an atom after its kind gains (written E) and keeps every clause"
       (list (with-written '(error not-written reserved-not-written (sequence 2)) h-entries)
             (combine-report '(error not-written reserved-not-written (sequence 2)) h-entries))
@@ -174,13 +174,13 @@
       (combine-report '(ok (values (3))) h-entries)
       '(ok (values (3))))
 
-;; ---- F100b M2a: the startup report's one write, and the attempt token ----
+;; ---- the startup report's one write, and the attempt token -------------
 ;;
 ;; H5 (brief item 3, E4): write-report-line! writes newline, the datum,
 ;; newline, as ONE write, and the caller's record holds exactly one entry
 ;; for it. The descriptor is opened outside the scope, so the scope holds
 ;; the report's write alone.
-;; STATED LIMIT (M2a review r1, F6, ruled): "one call to write-once, read at
+;; STATED LIMIT (found in review, ruled): "one call to write-once, read at
 ;; write-one!'s body, not measured". A write-one! that split a successful
 ;; write into two syscalls while keeping one note and one trace would leave
 ;; the file, the record and the fault as they are; no row here counts
@@ -205,7 +205,7 @@
   (call-with-output-file script
     (lambda (o)
       (write '(import (chezscheme) (theourgia ffi) (only (theourgia daemon) write-report-line!)) o)
-      ;; Inside a record scope (M2a review r1, F8): the short write that
+      ;; Inside a record scope (found in review): the short write that
       ;; really ran is noted once, like a whole one.
       (write `(let ((fd (fd-open ,p '(write append create))))
                 (write (with-mutation-record
@@ -222,7 +222,7 @@
     (want "H5b under short-write@report write-report-line! raises durable-error (op write, errno #f), notes the one write, and leaves no complete line: the seven offered bytes only"
           (list rc (guard (e (#t 'unread)) (call-with-input-file out read)) (bytes-of p))
           (list 0 (list '(raised write #f) (list (list 'write p))) "\n(error"))))
-;; H5d (M2a review r1, F7): the port's buffered bytes are flushed before the
+;; H5d (found in review): the port's buffered bytes are flushed before the
 ;; report, so they land before it: a child prints "pre" through the port,
 ;; writes a report to fd 1, prints "post", and its stdout reads in that
 ;; order.
@@ -240,13 +240,13 @@
        (hex16? (lambda (t) (and (string? t) (= 16 (string-length t))
                                 (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f)))
                                          (string->list t))))))
-  ;; The first eight characters are this process's pid (M2a review r1, F13).
+  ;; The first eight characters are this process's pid (found in review).
   (want "H7 next-attempt-token twice in one process: two distinct strings of 16 lowercase hex, the first eight this pid"
         (list (hex16? a) (hex16? b) (string=? a b)
               (string->number (substring a 0 8) 16) (string->number (substring b 0 8) 16))
         (list #t #t #f (get-process-id) (get-process-id))))
 
-;; ---- F100b M3a: refusal-json (item 8), H6 --------------------------------
+;; ---- refusal-json, H6 -------------------------------------------------------
 ;;
 ;; Each kind rendered as the MCP shell renders it, compared as PARSED JSON
 ;; with the members sorted by key, so the rows pin the members and their
@@ -310,13 +310,13 @@
               (expect (cons "kind" "unreadable") (cons "path" "/s/./store") (cons "reason" "Permission denied")
                       (cons "errno" "EACCES") (cons "datum" (datum-text d))))))
 ;; EVERY KIND A PRODUCER IN THIS TREE GIVES renders as itself, bare and
-;; wrapped in serve-start-failed (F100b M3a reviews r1 F2, r2 F1).
+;; wrapped in serve-start-failed (found in two reviews).
 ;; THE LIST IS DERIVED FROM THE SOURCE where a kind is spelled as a literal
 ;; in one of five spellings: `(list 'error '<k>`, `` `(error <k> ``,
 ;; `'(error <k>`, `(list (quote error) (quote <k>` and `(cons 'error (cons
 ;; '<k>`, in the tree's .sc files and mcp/server.sc. A kind a producer adds
 ;; in one of these spellings is covered without an edit here; a sixth
-;; spelling is not (M3b review r1, F2: the last two were found that way). The scan is a superset: a few of its
+;; spelling is not (found in review: the last two were found that way). The scan is a superset: a few of its
 ;; symbols are not refusals (mcp/server.sc's own `(list 'error 'null ...)`
 ;; frame, say), and they render as themselves too, which is all the row asks.
 ;; The kinds that are COMPUTED, not spelled, are listed with their producers:
@@ -403,7 +403,7 @@
                       (cons "_meta" (expect (cons "refusal" obj))))
               (expect (cons "code" -32000) (cons "message" "core did not start") (cons "data" obj)))))
 
-;; ---- F100b M2b1: select-report, waitpid-status, the hold seam ----------------
+;; ---- select-report, waitpid-status, the hold seam --------------------------
 ;;
 ;; H3 (item 3, D10, E10): select-report of bytes, a byte offset and a token.
 (define T "0123456789abcdef")
@@ -437,19 +437,19 @@
 (want "H3 a multibyte prefix: a two-byte character and a newline, then (error b ...), at BYTE offset 3 selects (error b ...)"
       (select-report (u8 "\x00e9;\n(error b (attempt \"0123456789abcdef\"))\n") 3 T)
       '(error b (attempt "0123456789abcdef")))
-;; M2b1 review r1, F4: T's report wholly BEFORE the offset is an earlier
+;; Found in review: T's report wholly BEFORE the offset is an earlier
 ;; start's, even when nothing after the offset carries T.
 (want "H3 T's report wholly before the offset, only another token's after: #f"
       (let* ((first-line "(error old (attempt \"0123456789abcdef\"))\n")
              (b (u8 (string-append first-line "(error x (attempt \"ffffffffffffffff\"))\n"))))
         (select-report b (bytevector-length (u8 first-line)) T))
       #f)
-;; M2b1 review r1, F1: a line is a report only if it is one datum.
+;; Found in review: a line is a report only if it is one datum.
 (want "H3 a line whose report datum is followed by more text is not a report: the earlier whole line is chosen"
       (list (select-report (u8 "(error good (attempt \"0123456789abcdef\"))\n(error bad (attempt \"0123456789abcdef\")) (\n") 0 T)
             (select-report (u8 "(error good (attempt \"0123456789abcdef\"))\n(error bad (attempt \"0123456789abcdef\")) (x)\n") 0 T))
       '((error good (attempt "0123456789abcdef")) (error good (attempt "0123456789abcdef"))))
-;; M2b1 review r1, F2: carrying the token is not enough; the shape is the
+;; Found in review: carrying the token is not enough; the shape is the
 ;; daemon's -- `(error <symbol> <clauses headed by symbols>)`, the attempt last.
 ;; M2b1 review r3: every condition of carries-token? and of line-datum's
 ;; readable-shape? gate has an input here that only it rejects (the table
@@ -477,7 +477,7 @@
       (let ((text "(error old (attempt \"0123456789abcdef\"))\n(error x"))
         (select-report (u8 text) (- (string-length text) 3) T))
       #f)
-;; F111 (M3b): invalid UTF-8 is neither a raise nor a report. The decode has
+;; Invalid UTF-8 is neither a raise nor a report. The decode has
 ;; no guard now (utf8->string gives U+FFFD, the M3a r1 reading), so a line
 ;; holding an invalid byte is refused by readable-shape?, and a later whole
 ;; line is still read.
@@ -538,7 +538,7 @@
     (want "H8 a held process creates <p>.held, does not proceed for 2 s, and proceeds after <p> is created"
           (list (and held #t) early (and after #t))
           '(#t #f #t))))
-;; The wait is measured from the marker (M2b1 review r1, F6): a hold that
+;; The wait is measured from the marker (found in review): a hold that
 ;; expired at once would also proceed and print the line.
 (let* ((p (under "h8x-release"))
        (child (hold-child! "h8x" (string-append "THEOURGIA_HOLD=client-scan:" p " THEOURGIA_HOLD_MS=1000") 'client-scan))
@@ -576,7 +576,7 @@
           (list rc (file-exists? done))
           '(255 #f))))
 ;; A PROGRAM THAT USES FFI AND NEVER HOLDS: the refusal is the library's,
-;; not the first hold's (M2b1 review r1, F7). hold-sleeper-set! is the
+;; not the first hold's (found in review). hold-sleeper-set! is the
 ;; daemon's entry before any actor exists; it reaches no hold point.
 (define (refused-at-load? name env)
   (let ((script (under (string-append name ".ss")))
@@ -592,7 +592,7 @@
 (want "H8 an unknown hold stage is refused when a program that never holds first uses ffi: rc 255, the body never runs"
       (refused-at-load? "h8n" (string-append "THEOURGIA_HOLD=nowhere:" (under "h8n")))
       '(255 #f))
-;; M2b1 review r1, F3: a wait that could never expire, or could not be
+;; Found in review: a wait that could never expire, or could not be
 ;; compared, is refused like a stage.
 (want "H8 THEOURGIA_HOLD_MS of +inf.0 and of 1+2i are refused at load: rc 255, the body never runs"
       (list (refused-at-load? "h8i" "THEOURGIA_HOLD_MS=+inf.0")
@@ -669,7 +669,7 @@
     (let ((main self))
 
       ;; ---- (a) two actors, disjoint records -----------------------------
-      ;; BOTH SCOPES ARE OPEN BEFORE EITHER WRITES (F100a review r1). A
+      ;; BOTH SCOPES ARE OPEN BEFORE EITHER WRITES (found in review). A
       ;; opens its scope and parks; B opens its scope and parks; then A
       ;; writes, then B writes, then each reports. With the record keyed by
       ;; the actor each holds only its own entries. With one key for both,
@@ -706,7 +706,7 @@
         (let ((a-rec (receive (after 5000 'no-a-record) (`(a-record ,r) r))))
           (send b '(report))
           (let ((b-rec (receive (after 5000 'no-b-record) (`(b-record ,r) r))))
-            (want "F100-A record (a) two actors with both scopes open, writing in turn, each record only their own file"
+            (want "SCOPE-1 record (a) two actors with both scopes open, writing in turn, each record only their own file"
                   (list a-rec b-rec (bytes-of (under "rec-a")) (bytes-of (under "rec-b")))
                   (list (list (list 'create (under "rec-a")) (list 'write (under "rec-a")))
                         (list (list 'create (under "rec-b")) (list 'write (under "rec-b")))
@@ -718,7 +718,7 @@
                                 (guard (e (#t (raised-as e)))
                                   (make-one! (under "rec-none"))
                                   (mutation-record))))))
-      (want "F100-A record (b) an actor with no scope notes nothing; mutation-record outside a scope is ()"
+      (want "SCOPE-2 record (b) an actor with no scope notes nothing; mutation-record outside a scope is ()"
             (receive (after 5000 'no-none-record) (`(none-record ,r) r))
             '())
 
@@ -726,7 +726,7 @@
       ;; The spawning scope creates one file, spawns a worker with the entries
       ;; so far, the worker's scope creates a second, and the spawner reads
       ;; the combined record back from the worker.
-      (want "F100-A record (c) a scope that spawns its work hands the entries so far and reads the combined record back"
+      (want "SCOPE-3 record (c) a scope that spawns its work hands the entries so far and reads the combined record back"
             (list
              (with-mutation-record
               (lambda ()
@@ -760,7 +760,7 @@
                 (spawn (lambda ()
                          (send main (list 'cell (guard (e (#t (raised-as e)))
                                                   (scope-cell exit enclosing tag))))))
-                (want (string-append "F100a exit matrix in an actor [" (symbol->string exit) " x "
+                (want (string-append "EXIT-1 exit matrix in an actor [" (symbol->string exit) " x "
                                      (symbol->string enclosing) "]: the scope gives back what was there before")
                       (receive (after 5000 'no-cell) (`(cell ,v) v))
                       (scope-cell-expect enclosing tag))))

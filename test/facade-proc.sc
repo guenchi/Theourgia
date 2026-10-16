@@ -54,7 +54,7 @@
           ((> k 200) (list 'still (- (read) base)))
           (else (sleep-ms 20) (loop (+ k 1))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -124,7 +124,7 @@
       (printf "P-08: the children of a worker could not be listed; waiting out the bound\n"))
     (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null"))) all)
     (for-each (lambda (pid) (system (string-append "kill -CONT " (number->string pid) " 2>/dev/null"))) pids)
-    ;; NEVER: ROUNDS THAT RUN OUT ARE SAID (F90). The loop used to end in
+    ;; NEVER: ROUNDS THAT RUN OUT ARE SAID. The loop used to end in
     ;; silence with a process still there, and only the runner's LEFT IN
     ;; GROUP, after the fixture, said anything; that stays the guard, and
     ;; this line names the pid here, at the step that failed to end it.
@@ -142,7 +142,7 @@
                 (apply string-append
                        (map (lambda (pid) (string-append " " (number->string pid))) left)))))))
 
-;; F90-2: THE LINE APPEARS WHEN A CHILD OUTLASTS THE ROUNDS. A shell that
+;; ROUNDS-1: THE LINE APPEARS WHEN A CHILD OUTLASTS THE ROUNDS. A shell that
 ;; ignores TERM and execs `sleep` keeps the disposition across the exec, so
 ;; the pid stays through every round; the row reads what end-and-wait!
 ;; printed, then ends the child with KILL itself.
@@ -172,8 +172,8 @@
     (when (integer? pid) (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
     (system (string-append "rm -f " f " " f ".ready"))
     (unless (in? said "still running after TERM")
-      (printf "   F90-2: end-and-wait! said ~s for pid ~s\n" said pid))
-    (want "F90-2 the child said it was ready, and end-and-wait! names it still running after TERM when its rounds run out"
+      (printf "   ROUNDS-1: end-and-wait! said ~s for pid ~s\n" said pid))
+    (want "ROUNDS-1 the child said it was ready, and end-and-wait! names it still running after TERM when its rounds run out"
           (list ready
                 (integer? pid)
                 (in? said "still running after TERM")

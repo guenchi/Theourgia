@@ -110,7 +110,7 @@
 (want "FF-03 TWIN: it is not the virtual size"
       (< rss 100000000000) #t)
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.
@@ -223,11 +223,11 @@
      the offset 264/pages came from a probe run there, and ffi.sc refuses to
      answer at all if the struct size is not the 1088 that probe saw."))
 
-;; F100-A rows for test/facade-ffi.sc (main session's cells, rewritten by the
-;; code session to the amendments of 2026-09-25 in briefs/f100a-task.md).
+;; The DOOR rows for test/facade-ffi.sc (main session's cells, rewritten by the
+;; code session to the amendments of 2026-09-25).
 ;; Inserted before the fixture's closing `rows:` line; it uses the fixture's
-;; `want`, `caught`, `rows`, `bad` and `scratch-base`. Names introduced by
-;; F100a: size-entry, overwrite-entry!, with-mutation-record, mutation-record,
+;; `want`, `caught`, `rows`, `bad` and `scratch-base`. Names introduced with
+;; the door: size-entry, overwrite-entry!, with-mutation-record, mutation-record,
 ;; and the exported errno constants EIO ENOENT EACCES ENOTDIR.
 ;;
 ;; THE SCRATCH DIRECTORY AND THE FAULT SUBSTRINGS ARE CHOSEN TOGETHER. A
@@ -265,34 +265,34 @@
 
 (touch! (under "secret") "x\n")
 (chmod! (under "secret") "000")
-(want "F100-A fd-open of a 000 file is unreadable-entry EACCES"
+(want "DOOR-01 fd-open of a 000 file is unreadable-entry EACCES"
       (class-of (lambda () (fd-open (under "secret") '(read)))) (list 'unreadable 'EACCES))
 (mkdir-p! (under "closed"))
 (touch! (under "closed/inner") "y\n")
 (chmod! (under "closed") "000")
-(want "F100-A fd-open under a 000 directory is unreadable-entry EACCES"
+(want "DOOR-02 fd-open under a 000 directory is unreadable-entry EACCES"
       (class-of (lambda () (fd-open (under "closed/inner") '(read)))) (list 'unreadable 'EACCES))
-(want "F100-A fd-open of an absent path is unreadable-entry ENOENT"
+(want "DOOR-03 fd-open of an absent path is unreadable-entry ENOENT"
       (class-of (lambda () (fd-open (under "nothing") '(read)))) (list 'unreadable 'ENOENT))
-(want "F100-A path-device-inode of an absent path is unreadable-entry ENOENT"
+(want "DOOR-04 path-device-inode of an absent path is unreadable-entry ENOENT"
       (class-of (lambda () (path-device-inode (under "nothing")))) (list 'unreadable 'ENOENT))
-(want "F100-A entry-type answers absent, never raises, for ENOENT"
+(want "DOOR-05 entry-type answers absent, never raises, for ENOENT"
       (entry-type (under "nothing")) 'absent)
-(want "F100-A size-entry answers absent for ENOENT and the size otherwise"
+(want "DOOR-06 size-entry answers absent for ENOENT and the size otherwise"
       (list (size-entry (under "nothing")) (size-entry (under "secret"))) (list 'absent 2))
 (touch! (under "lock") "")
 (chmod! (under "lock") "000")
-(want "F100-A lock-acquire! on a 000 lock file is unreadable-entry EACCES"
+(want "DOOR-07 lock-acquire! on a 000 lock file is unreadable-entry EACCES"
       (class-of (lambda () (lock-acquire! (under "lock") 'exclusive))) (list 'unreadable 'EACCES))
 (touch! (under "held") "")
 (define holder (lock-acquire! (under "held") 'exclusive))
-(want "F100-A lock-try-acquire! contention answers #f, no condition"
+(want "DOOR-08 lock-try-acquire! contention answers #f, no condition"
       (lock-try-acquire! (under "held") 'exclusive) #f)
 (lock-release! holder)
 
 ;; ---- mutating primitives: durable-error, record noted per the rule -------
 
-(want "F100-A fd-open with create under an absent parent: durable-error ENOENT, record empty, nothing created"
+(want "DOOR-09 fd-open with create under an absent parent: durable-error ENOENT, record empty, nothing created"
       (list (class-of (lambda () (fd-open (under "gone/child") '(write create))))
             (recorded (lambda () (fd-open (under "gone/child") '(write create))))
             (entry-type (under "gone")))
@@ -305,36 +305,36 @@
   (let ((t (entry-type path)))
     (chmod! dir "000")
     t))
-(want "F100-A fd-open with create under a 000 parent: the child's entry-type raises first, record empty, nothing created"
+(want "DOOR-10 fd-open with create under a 000 parent: the child's entry-type raises first, record empty, nothing created"
       (list (class-of (lambda () (fd-open (under "closed/new") '(write create))))
             (recorded (lambda () (fd-open (under "closed/new") '(write create))))
             (entry-type-inside (under "closed") (under "closed/new")))
       (list (list 'unreadable 'EACCES) '() 'absent))
-(want "F100-A mkdir-p! under a 000 parent: unreadable-entry EACCES from its directory check, record empty, nothing created"
+(want "DOOR-11 mkdir-p! under a 000 parent: unreadable-entry EACCES from its directory check, record empty, nothing created"
       (list (class-of (lambda () (mkdir-p! (under "closed/d"))))
             (recorded (lambda () (mkdir-p! (under "closed/d"))))
             (entry-type-inside (under "closed") (under "closed/d")))
       (list (list 'unreadable 'EACCES) '() 'absent))
 (touch! (under "movable") "m\n")
-(want "F100-A rename-over! into a 000 directory: durable-error EACCES, record empty, the source still there"
+(want "DOOR-12 rename-over! into a 000 directory: durable-error EACCES, record empty, the source still there"
       (list (class-of (lambda () (rename-over! (under "movable") (under "closed/moved"))))
             (recorded (lambda () (rename-over! (under "movable") (under "closed/moved"))))
             (bytes-of (under "movable"))
             (entry-type-inside (under "closed") (under "closed/moved")))
       (list (list 'durable EACCES) '() "m\n" 'absent))
-(want "F100-A link! into a 000 directory: durable-error EACCES, record empty, the source still there"
+(want "DOOR-13 link! into a 000 directory: durable-error EACCES, record empty, the source still there"
       (list (class-of (lambda () (link! (under "movable") (under "closed/linked"))))
             (recorded (lambda () (link! (under "movable") (under "closed/linked"))))
             (bytes-of (under "movable"))
             (entry-type-inside (under "closed") (under "closed/linked")))
       (list (list 'durable EACCES) '() "m\n" 'absent))
-(want "F100-A file-create-exclusive! on an existing name answers #f and leaves the file as it was"
+(want "DOOR-14 file-create-exclusive! on an existing name answers #f and leaves the file as it was"
       (list (file-create-exclusive! (under "movable")) (bytes-of (under "movable")))
       (list #f "m\n"))
 ;; FFI PRIMITIVES ONLY: atomic-write! is (theourgia log)'s and its
-;; temporary's entries are a log-level row, deferred to F100b (amendment 4).
+;; temporary's entries are a log-level row, deferred to the answers' rows (amendment 4).
 ;; fsync and close note nothing, so the four entries are the whole record.
-(want "F100-A a successful mkdir, create, write and rename are noted in order, and the tree is what they made"
+(want "DOOR-15 a successful mkdir, create, write and rename are noted in order, and the tree is what they made"
       (list (recorded (lambda ()
                         (mkdir-p! (under "made"))
                         (let ((fd (fd-open (under "made/f") '(write create))))
@@ -369,7 +369,7 @@
 ;; THE MARKER REACHES THE ROW (ruling K; review r5 found `recorded`
 ;; swallowing every make-one! failure but the read-back's): a make-one!
 ;; that cannot open its file, inside `recorded`, is the marker at `want`.
-(want "F100a a make-one! that fails before its read-back reaches the row through recorded"
+(want "DOOR-16 a make-one! that fails before its read-back reaches the row through recorded"
       (let ((r (caught (recorded (lambda () (make-one! (under "closed/made-one")))))))
         (and (pair? r) (eq? (car r) 'RAISED) (pair? (cadr r)) (car (cadr r))))
       'make-one!-failed)
@@ -378,7 +378,7 @@
 ;; two scopes in sequence share it, and each scope's record still holds
 ;; only what happened inside it, because a scope starts empty and restores
 ;; the one before it.
-(want "F100-A outside a scheduler, two scopes in sequence each record only their own entries, and none is left after"
+(want "DOOR-17 outside a scheduler, two scopes in sequence each record only their own entries, and none is left after"
       (list (recorded (lambda () (make-one! (under "seq-1"))))
             (recorded (lambda () (make-one! (under "seq-2"))))
             (mutation-record))
@@ -424,7 +424,7 @@
             d)))))
 
 (touch! (under "f100a-lseek-target") "abcdef\n")
-(want "F100-A fd-size with lseek-fail is unreadable-entry naming the descriptor's path, EIO"
+(want "DOOR-18 fd-size with lseek-fail is unreadable-entry naming the descriptor's path, EIO"
       (armed "lseek-fail@publish:f100a-lseek-target"
              `(let ((fd (fd-open ,(under "f100a-lseek-target") '(read))))
                 (guard (e ((unreadable-entry? e)
@@ -432,11 +432,11 @@
                   (fd-size fd) 'returned)))
       (list 'unreadable (under "f100a-lseek-target") 'EIO))
 (touch! (under "f100a-stat-target") "s\n")
-(want "F100-A path-device-inode with stat-fail is unreadable-entry EIO"
+(want "DOOR-19 path-device-inode with stat-fail is unreadable-entry EIO"
       (armed "stat-fail@publish:f100a-stat-target"
              `(class-of (lambda () (path-device-inode ,(under "f100a-stat-target")))))
       (list 'unreadable 'EIO))
-(want "F100-A mkdir-p! a/b with b refused by mkdir-fail: durable-error EIO, record ((mkdir a))"
+(want "DOOR-20 mkdir-p! a/b with b refused by mkdir-fail: durable-error EIO, record ((mkdir a))"
       (armed "mkdir-fail@publish:f100a-mkdir-leaf"
              `(list (class-and-record (lambda () (mkdir-p! ,(under "f100a-mk/f100a-mkdir-leaf"))))
                     (entry-type ,(under "f100a-mk")) (entry-type ,(under "f100a-mk/f100a-mkdir-leaf"))))
@@ -448,13 +448,13 @@
 ;; THE DESCRIPTOR IS OPENED OUTSIDE THE SCOPE (amendment 5), so the record
 ;; holds only what the write did: nothing for write-eio-first, which skips
 ;; the syscall, and the write for write-eio-after-partial.
-(want "F100-A write-all! with write-eio-first: durable-error EIO, record empty"
+(want "DOOR-21 write-all! with write-eio-first: durable-error EIO, record empty"
       (armed "write-eio-first@publish:f100a-w-first"
              `(let ((fd (fd-open ,(under "f100a-w-first") '(write create))))
                 (list (class-and-record (lambda () (write-all! fd (string->utf8 "abc"))))
                       (utf8->string (entry-bytes ,(under "f100a-w-first"))))))
       (list (list (list 'durable EIO) '()) ""))
-(want "F100-A write-all! with write-eio-after-partial: durable-error EIO, record ((write p))"
+(want "DOOR-22 write-all! with write-eio-after-partial: durable-error EIO, record ((write p))"
       (armed "write-eio-after-partial@publish:f100a-w-partial"
              `(let ((fd (fd-open ,(under "f100a-w-partial") '(write create))))
                 (list (class-and-record (lambda () (write-all! fd (string->utf8 "abcdefghijklmnop"))))
@@ -463,21 +463,21 @@
 ;; fsync changes no entry: the bytes are the ones written before it, read
 ;; in the parent after the child has gone (RR3).
 (touch! (under "f100a-fsync-target") "s\n")
-(want "F100-A fsync-fail is durable-error EIO, notes nothing, and leaves the bytes as they were"
+(want "DOOR-23 fsync-fail is durable-error EIO, notes nothing, and leaves the bytes as they were"
       (list (armed "fsync-fail@publish:file=f100a-fsync-target"
                    `(let ((fd (fd-open ,(under "f100a-fsync-target") '(write create))))
                       (class-and-record (lambda () (fsync! fd ,(under "f100a-fsync-target") 'publish)))))
             (bytes-of (under "f100a-fsync-target")))
       (list (list (list 'durable EIO) '()) "s\n"))
 (touch! (under "f100a-close-ro") "r\n")
-(want "F100-A fd-close of a read-only descriptor with close-fail is unreadable-entry EIO"
+(want "DOOR-24 fd-close of a read-only descriptor with close-fail is unreadable-entry EIO"
       (armed "close-fail@publish:f100a-close-ro"
              `(let ((fd (fd-open ,(under "f100a-close-ro") '(read))))
                 (class-of (lambda () (fd-close fd)))))
       (list 'unreadable 'EIO))
 ;; ONE SCOPE AROUND THE WHOLE LIFE OF A WRITTEN DESCRIPTOR: its create and
 ;; its write are noted, its failed close is not (close notes nothing).
-(want "F100-A fd-close of a written descriptor with close-fail is durable-error EIO, record ((create p) (write p))"
+(want "DOOR-25 fd-close of a written descriptor with close-fail is durable-error EIO, record ((create p) (write p))"
       (armed "close-fail@publish:f100a-close-rw"
              `(let ((class #f))
                 (let ((rec (with-mutation-record
@@ -491,10 +491,10 @@
             (list (list 'create (under "f100a-close-rw")) (list 'write (under "f100a-close-rw")))))
 ;; THE BYTES ARE READ HERE, OUT OF THE ARMED CHILD: close-fail holds for
 ;; the child's whole stage, so a read there would have its own close failed.
-(want "F100-A the written descriptor's bytes are on disk though its close failed"
+(want "DOOR-26 the written descriptor's bytes are on disk though its close failed"
       (bytes-of (under "f100a-close-rw")) "w\n")
 
-;; ---- the two door primitives added by the code session (F100a rulings) ---
+;; ---- PRIM: the two door primitives added by the code session (rulings) -----
 ;;
 ;; AN UNREADABLE ROW WANTS THE ERRNO'S NAME, A DURABLE ROW ITS NUMBER: the
 ;; two conditions carry it in those two forms (ffi.sc's header), and the rows
@@ -504,27 +504,27 @@
 ;; slice. Both are non-mutating, so every failure is unreadable-entry with
 ;; the errno. The range's end contract is the header's: an offset at or
 ;; past the end is empty, a range that crosses it is shorter.
-(want "F100a entry-bytes of an absent path is unreadable-entry ENOENT"
+(want "PRIM-01 entry-bytes of an absent path is unreadable-entry ENOENT"
       (class-of (lambda () (entry-bytes (under "nothing")))) (list 'unreadable 'ENOENT))
-(want "F100a entry-bytes of a 000 file is unreadable-entry EACCES"
+(want "PRIM-02 entry-bytes of a 000 file is unreadable-entry EACCES"
       (class-of (lambda () (entry-bytes (under "secret")))) (list 'unreadable 'EACCES))
-(want "F100a read-entry-range of an absent path is unreadable-entry ENOENT"
+(want "PRIM-03 read-entry-range of an absent path is unreadable-entry ENOENT"
       (class-of (lambda () (read-entry-range (under "nothing") 0 4))) (list 'unreadable 'ENOENT))
 (touch! (under "f100a-range") "0123456789")
-(want "F100a read-entry-range inside the file answers exactly the range"
+(want "PRIM-04 read-entry-range inside the file answers exactly the range"
       (utf8->string (read-entry-range (under "f100a-range") 3 4)) "3456")
-(want "F100a read-entry-range from an offset at the end is empty"
+(want "PRIM-05 read-entry-range from an offset at the end is empty"
       (read-entry-range (under "f100a-range") 10 4) (make-bytevector 0))
-(want "F100a read-entry-range from an offset past the end is empty"
+(want "PRIM-06 read-entry-range from an offset past the end is empty"
       (read-entry-range (under "f100a-range") 12 4) (make-bytevector 0))
-(want "F100a read-entry-range across the end answers the bytes up to it"
+(want "PRIM-07 read-entry-range across the end answers the bytes up to it"
       (utf8->string (read-entry-range (under "f100a-range") 8 5)) "89")
 ;; A FILE LONGER THAN ONE CHUNK, so read-entry's second read happens and
 ;; read-fail-after (which fires only once something was produced) has a
 ;; read to stand before. read-entry-range has no second read and is not
 ;; armed here (its header says why).
 (touch! (under "f100a-big-read") (make-string 70000 #\a))
-(want "F100a entry-bytes with read-fail-after is unreadable-entry with the errno given"
+(want "PRIM-08 entry-bytes with read-fail-after is unreadable-entry with the errno given"
       (armed "read-fail-after@publish:file=f100a-big-read:errno=EIO"
              `(class-of (lambda () (entry-bytes ,(under "f100a-big-read")))))
       (list 'unreadable 'EIO))
@@ -536,46 +536,46 @@
 ;; record, so removing any one primitive's `note!` turns its row red (NOTES
 ;; records the mutant runs).
 (touch! (under "f100a-link-src") "l\n")
-(want "F100a a successful link! is noted as (link from to), and the new name reads the file"
+(want "PRIM-09 a successful link! is noted as (link from to), and the new name reads the file"
       (list (recorded (lambda () (link! (under "f100a-link-src") (under "f100a-link-dst"))))
             (bytes-of (under "f100a-link-dst")))
       (list (list (list 'link (under "f100a-link-src") (under "f100a-link-dst"))) "l\n"))
 (touch! (under "f100a-gone") "u\n")
-(want "F100a a successful unlink! is noted as (unlink p), and the name is gone"
+(want "PRIM-10 a successful unlink! is noted as (unlink p), and the name is gone"
       (list (recorded (lambda () (unlink! (under "f100a-gone"))))
             (entry-type (under "f100a-gone")))
       (list (list (list 'unlink (under "f100a-gone"))) 'absent))
 (touch! (under "f100a-trunc") "abcdef\n")
-(want "F100a a successful ftruncate! is noted as (truncate p)"
+(want "PRIM-11 a successful ftruncate! is noted as (truncate p)"
       (let ((fd (fd-open (under "f100a-trunc") '(write))))
         (let ((rec (recorded (lambda () (ftruncate! fd 2)))))
           (fd-close fd)
           (list rec (bytes-of (under "f100a-trunc")))))
       (list (list (list 'truncate (under "f100a-trunc"))) "ab"))
-(want "F100a overwrite-entry! of a fresh path is noted as (create p) (truncate p) (write p), and holds the bytes"
+(want "PRIM-12 overwrite-entry! of a fresh path is noted as (create p) (truncate p) (write p), and holds the bytes"
       (list (recorded (lambda () (overwrite-entry! (under "f100a-over-new") (string->utf8 "n\n"))))
             (bytes-of (under "f100a-over-new")))
       (list (list (list 'create (under "f100a-over-new")) (list 'truncate (under "f100a-over-new"))
                   (list 'write (under "f100a-over-new")))
             "n\n"))
-(want "F100a overwrite-entry! of an existing file is noted as (truncate p) (write p), and keeps its inode"
+(want "PRIM-13 overwrite-entry! of an existing file is noted as (truncate p) (write p), and keeps its inode"
       (let-values (((d0 i0) (path-device-inode (under "f100a-over-new"))))
         (let ((rec (recorded (lambda () (overwrite-entry! (under "f100a-over-new") (string->utf8 "second\n"))))))
           (let-values (((d1 i1) (path-device-inode (under "f100a-over-new"))))
             (list rec (= i0 i1) (utf8->string (entry-bytes (under "f100a-over-new")))))))
       (list (list (list 'truncate (under "f100a-over-new")) (list 'write (under "f100a-over-new")))
             #t "second\n"))
-(want "F100a a successful file-create-exclusive! is noted as (create p), and the file is there, empty"
+(want "PRIM-14 a successful file-create-exclusive! is noted as (create p), and the file is there, empty"
       (list (recorded (lambda () (file-create-exclusive! (under "f100a-excl"))))
             (bytes-of (under "f100a-excl")))
       (list (list (list 'create (under "f100a-excl"))) ""))
 
-;; ---- F100a review r1: the rows the review found missing (code session) ---
+;; ---- REVIEW: the rows a review found missing (code session) --------------
 (define (class-and-record thunk)
   (with-mutation-record (lambda () (let ((c (class-of thunk))) (list c (mutation-record))))))
 ;; A NESTED SCOPE records its own entries and then gives the outer scope
 ;; back: the outer record goes on from where it was (R3).
-(want "F100a a nested scope records only its own entries, and the outer scope continues after it"
+(want "REVIEW-01 a nested scope records only its own entries, and the outer scope continues after it"
       (with-mutation-record
         (lambda ()
           (make-one! (under "nest-a"))
@@ -588,28 +588,28 @@
 ;; A REAL write(2) THAT FAILS WITH NO BYTE WRITTEN is noted (R4): a
 ;; read-only descriptor refuses the write in the kernel, so the syscall ran.
 (touch! (under "f100a-ro-write") "r\n")
-(want "F100a a real write syscall that fails before any byte is durable-error and noted (write p)"
+(want "REVIEW-02 a real write syscall that fails before any byte is durable-error and noted (write p)"
       (let ((fd (fd-open (under "f100a-ro-write") '(read))))
         (let ((r (class-and-record (lambda () (write-all! fd (string->utf8 "abc"))))))
           (guard (e (#t #f)) (fd-close fd))
           (list (car r) (cadr r) (bytes-of (under "f100a-ro-write")))))
       (list (list 'durable EBADF) (list (list 'write (under "f100a-ro-write"))) "r\n"))
 ;; A COLLISION INSIDE A SCOPE notes nothing (R5).
-(want "F100a file-create-exclusive! on an existing name inside a scope answers #f, notes nothing, and leaves the bytes"
+(want "REVIEW-03 file-create-exclusive! on an existing name inside a scope answers #f, notes nothing, and leaves the bytes"
       (list (with-mutation-record
               (lambda () (list (file-create-exclusive! (under "movable")) (mutation-record))))
             (bytes-of (under "movable")))
       (list (list #f '()) "m\n"))
 ;; ENOTDIR IS KEPT (D3): a path under a regular file is absent by ENOTDIR,
 ;; and the two non-R1 forms raise with it.
-(want "F100a entry-bytes and directory-entries under a regular file raise ENOTDIR"
+(want "REVIEW-04 entry-bytes and directory-entries under a regular file raise ENOTDIR"
       (list (class-of (lambda () (entry-bytes (under "movable/child"))))
             (class-of (lambda () (directory-entries (under "movable/child"))))
             (read-entry (under "movable/child")))
       (list (list 'unreadable 'ENOTDIR) (list 'unreadable 'ENOTDIR) 'absent))
 ;; EMPTY BYTES WRITE NOTHING (R7): no (write p), and a fresh path's
 ;; record is its create and its truncate.
-(want "F100a overwrite-entry! of empty bytes on a fresh path is noted as (create p) (truncate p), and is empty"
+(want "REVIEW-05 overwrite-entry! of empty bytes on a fresh path is noted as (create p) (truncate p), and is empty"
       (list (recorded (lambda () (overwrite-entry! (under "f100a-over-empty") (make-bytevector 0))))
             (bytes-of (under "f100a-over-empty")))
       (list (list (list 'create (under "f100a-over-empty")) (list 'truncate (under "f100a-over-empty"))) ""))
@@ -617,12 +617,12 @@
 ;; nothing would still be noted, so these read what is left. Shorter and
 ;; empty bytes over a longer file.
 (touch! (under "f100a-over-long") "abcdef")
-(want "F100a overwrite-entry! of shorter bytes over a longer file leaves exactly the new bytes"
+(want "REVIEW-06 overwrite-entry! of shorter bytes over a longer file leaves exactly the new bytes"
       (list (recorded (lambda () (overwrite-entry! (under "f100a-over-long") (string->utf8 "x"))))
             (bytes-of (under "f100a-over-long")))
       (list (list (list 'truncate (under "f100a-over-long")) (list 'write (under "f100a-over-long"))) "x"))
 (touch! (under "f100a-over-long2") "abcdef")
-(want "F100a overwrite-entry! of empty bytes over a longer file leaves it empty"
+(want "REVIEW-07 overwrite-entry! of empty bytes over a longer file leaves it empty"
       (list (recorded (lambda () (overwrite-entry! (under "f100a-over-long2") (make-bytevector 0))))
             (bytes-of (under "f100a-over-long2")))
       (list (list (list 'truncate (under "f100a-over-long2"))) ""))
@@ -630,7 +630,7 @@
 ;; reader that closes a descriptor raises unreadable-entry EIO instead of
 ;; answering what it read.
 (touch! (under "f100a-close-read") "0123456789")
-(want "F100a under close-fail, entry-bytes, read-entry-range and file-size raise unreadable-entry EIO"
+(want "REVIEW-08 under close-fail, entry-bytes, read-entry-range and file-size raise unreadable-entry EIO"
       (armed "close-fail@publish"
              `(list (class-of (lambda () (entry-bytes ,(under "f100a-close-read"))))
                     (class-of (lambda () (read-entry-range ,(under "f100a-close-read") 0 4)))
@@ -638,7 +638,7 @@
       (list (list 'unreadable 'EIO) (list 'unreadable 'EIO) (list 'unreadable 'EIO)))
 ;; AN EMPTY WRITE DOES NOT MARK THE DESCRIPTOR WRITTEN (D5): its close
 ;; keeps the class of an unwritten one.
-(want "F100a after an empty write-all!, a close under close-fail is unreadable-entry, not durable"
+(want "REVIEW-09 after an empty write-all!, a close under close-fail is unreadable-entry, not durable"
       (armed "close-fail@publish"
              `(let ((fd (fd-open ,(under "f100a-close-read") '(read))))
                 (write-all! fd (make-bytevector 0))
@@ -647,7 +647,7 @@
 ;; THE LOCK'S RELEASE (D7): on a normal exit its close is checked, and on
 ;; an escape the failure already leaving is the one reported.
 (touch! (under "f100a-lock") "")
-(want "F100a with-exclusive-lock under close-fail: unreadable-entry EIO on a normal exit, the body's own raise on an escape"
+(want "REVIEW-10 with-exclusive-lock under close-fail: unreadable-entry EIO on a normal exit, the body's own raise on an escape"
       (armed "close-fail@publish"
              `(list (class-of (lambda () (with-exclusive-lock ,(under "f100a-lock") (lambda (fd) 'done))))
                     (guard (e ((symbol? e) (list 'escaped e)) (#t (list 'other)))
@@ -655,7 +655,7 @@
       (list (list 'unreadable 'EIO) (list 'escaped 'boom)))
 ;; read-fail-after REACHES A RANGE THAT CROSSES THE END (D9): its second
 ;; read, the one that finds the end, stands after a read that produced.
-(want "F100a read-entry-range across the end with read-fail-after is unreadable-entry EIO"
+(want "REVIEW-11 read-entry-range across the end with read-fail-after is unreadable-entry EIO"
       (armed "read-fail-after@publish:file=f100a-range:errno=EIO"
              `(class-of (lambda () (read-entry-range ,(under "f100a-range") 8 5))))
       (list 'unreadable 'EIO))
@@ -717,7 +717,7 @@
      (list (list (list 'create (cell-path tag "before")) (list 'write (cell-path tag "before"))
                  (list 'create (cell-path tag "after")) (list 'write (cell-path tag "after")))
            '()))))
-(want "F100a the exit matrix starts clean: no scope is left installed by the rows before it"
+(want "EXIT-1 the exit matrix starts clean: no scope is left installed by the rows before it"
       (mutation-record)
       '())
 (for-each
@@ -725,7 +725,7 @@
     (for-each
       (lambda (enclosing)
         (let ((tag (string-append "cell-" (symbol->string exit) "-" (symbol->string enclosing))))
-          (want (string-append "F100a exit matrix [" (symbol->string exit) " x "
+          (want (string-append "EXIT-2 exit matrix [" (symbol->string exit) " x "
                                (symbol->string enclosing) "]: the scope gives back what was there before")
                 (scope-cell exit enclosing tag)
                 (scope-cell-expect enclosing tag))))
