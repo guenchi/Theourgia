@@ -749,11 +749,12 @@
 ;;
 ;; THE ONE PLACE A LAYOUT COPY REALLY EXISTS is the README, whose code blocks
 ;; are text and can drift from the source. That already has a name: it is
-;; F52's question, and giving it a second mechanism here is the trade this
+;; docs-check.sc's USAGE question, and giving it a second mechanism here is the trade this
 ;; batch has spent the night refusing.
 ;;
 ;; So the absence is written where the row would have been: THERE IS
-;; DELIBERATELY NO LAYOUT ROW, and the place to ask about layout is F52.
+;; DELIBERATELY NO LAYOUT ROW, and the place to ask about layout is docs-check.sc's
+;; USAGE rows.
 
 (define inline-counter 0)
 (define (fresh-inline-key)

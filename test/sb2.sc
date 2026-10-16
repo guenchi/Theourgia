@@ -233,7 +233,8 @@
 
 ;; AN EXPORT STOPPED PART WAY SAYS HOW FAR IT GOT (the brief's "with the
 ;; files written so far named in the answer"). Two documents, one at the top
-;; and one under a sub-directory at 000; whichever the export reaches first,
+;; and one under a sub-directory at mode 500 (see below); whichever the
+;; export reaches first,
 ;; the answer's `written` must be exactly the files that are on disk
 ;; afterwards, and `path` the file it could not write.
 (let* ((s (fresh-store!))
