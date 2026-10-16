@@ -147,7 +147,7 @@
 ;; **The older tree misses the same budget, and the longer one is faster.**
 ;; Segment B1 did not raise this cost.
 ;;
-;; And four readings of the SAME code say what this row actually measures:
+;; And four readings of the two trees say what this row actually measures:
 ;;
 ;;   the tree before B1, quiet machine                   497   red
 ;;   this tree, quiet machine                            491   green
@@ -203,20 +203,22 @@
 ;; compiled from source at every start, and it cannot move out of ffi.sc:
 ;; the record has to load with the primitives that note into it. So the
 ;; budget moved, by this reading, to 590: today's tree read 540, and 590 is
-;; 540 x 1.09, the headroom 540 had over the 491 quiet reading above.
+;; 540 x 1.09 (588.6, rounded), close to the headroom 540 had over the 491
+;; quiet reading above (540 / 491 = 1.10).
 ;; NOTE: TODAY'S BASE READ 518 TO 521 AGAINST THE 491 RECORDED ABOVE, AND
 ;; IT IS THE BATCHES BETWEEN, NOT THE MACHINE. Measured the same evening, both
 ;; trees on igropyr 56ca0db (git archive), alternated:
 ;;
-;;   COST-1 median        6c5c881 (the 491 tree)    1f7f9d9
+;;   COST-1 median        6c5c881 (the 497 tree)    1f7f9d9
 ;;     pass 1             490 (load 2.90)           520 (load 2.54)
 ;;     pass 2             484 (load 2.07)           513 (load 3.76)
 ;;
-;; The 6c5c881 tree reads its recorded 491 today, so the ~30 ms between it
-;; and 1f7f9d9 came in with the batches between the two (the program split onwards),
-;; not from this machine. The relative instrument, startup-ratio.sc, came after
-;; the door. Moved by the
-;; main session (ruling F, 2026-09-25), the only way this budget may move.
+;; The 6c5c881 tree reads no slower today than its recorded 497 (the later
+;; tree recorded 491), so the ~30 ms between it and 1f7f9d9 came in with the
+;; batches between the two (the program split onwards), not from this
+;; machine. The relative instrument, startup-ratio.sc, came after the door.
+;; Moved by the main session (ruling F, 2026-09-25), the only way this budget
+;; may move.
 ;;
 ;; ---- moved again, from 590 to 636, for the facts an editor supplies ---------
 ;;
