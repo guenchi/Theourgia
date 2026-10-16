@@ -769,7 +769,7 @@
 ;; writer when the search ran out, and this fixture builds the one state where
 ;; that branch is reached -- a retirement whose successor is gone. Without the
 ;; capture below, putting the old fallback back passes every MACHINE row, because
-;; all of them look at stores that have a writer this machine may write as.
+;; none of them builds a store whose writers are all retired.
 (define f45-all-retired-check #f)
 (define f45-all-retired-refusal #f)
 

@@ -319,14 +319,14 @@
           (list 'said published))
       'published)
 
-;; NOTE: A MEASUREMENT OF THE COMMIT PATH, NOT OF THE WORKING VIEW (the text-mode plan
-;; mismatch). The commit's
-;; plan declares the draft's text as a string (working.sc entry-intent),
-;; while its record carries the bytes store.sc's resolve makes of it for a
-;; text-mode block; the reducer compares the two verbatim, marks the
-;; record plan-mismatch and leaves it pending, so the committed state never
-;; gets the new text (archive/theourgia-f119-finding-2026-09-27.md). While
-;; that stands this row is red, and so is the export-code half of
+;; NOTE: A MEASUREMENT OF THE COMMIT PATH, NOT OF THE WORKING VIEW. The
+;; commit's plan used to declare the draft's text as a string (working.sc
+;; entry-intent) while its record carried the bytes store.sc's resolve made
+;; of it for a text-mode block; the reducer compared the two verbatim, marked
+;; the record plan-mismatch and left it pending, so the committed state never
+;; got the new text (archive/theourgia-f119-finding-2026-09-27.md). store.sc
+;; now turns the text into bytes before the plan is built. While that
+;; mismatch stood this row was red, and so was the export-code half of
 ;; W11-cut-plus-working below, for that reason and not for the view.
 (define code-now (fresh-dir "code-now"))
 (define code-now-answer (cli "export-code" code-now))
@@ -365,9 +365,10 @@
         (list (contains? t "alphapublished") (contains? t "alphacommitted") (contains? t "betadraftthree")))
       '(#f #t #t))
 
-;; NOTE: WHILE THE TEXT-MODE PLAN MISMATCH STANDS this row cannot tell pinned from current: the
-;; committed code change never lands, so it is absent either way (M1 left it
-;; green). The md TWIN above is the one that measures the pin today.
+;; NOTE: WHILE THE TEXT-MODE PLAN MISMATCH STOOD (see the note above) this
+;; row could not tell pinned from current: the committed code change never
+;; landed, so it was absent either way. The md TWIN above measured the pin
+;; then.
 (want "W11-cut-plus-working TWIN (pinned): a commit made after the drafts is not in export-code --working"
       (let ((t (all-text code-w3)))
         (list (contains? t "twopublished") (contains? t "twocommitted") (contains? t "onedraftthree")))

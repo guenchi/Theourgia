@@ -1296,15 +1296,16 @@
 ;;
 ;; NEVER: AND HERE IS WHAT THE TOTAL DOES NOT PROMISE. It says the three
 ;; lists PARTITION `verbs-to-cover`. It does not say `verbs-to-cover` covers
-;; the program. `rpc-verbs` is derived from the dispatcher's table, but the
-;; CLI's own two are a hand-written literal, and `core.sc` dispatches them
-;; with one `string=?` apiece and keeps no table: a third verb added there
-;; would be in no list, compared against nothing, and the total would still
-;; balance, because both sides of it are taken from the same list.
+;; the program. `rpc-verbs` is derived from the dispatcher's table, and the
+;; CLI's own verbs are read from the programs' own-verbs tables
+;; (`cli-own-verbs` above). They used to be a hand-written literal, which
+;; `core.sc` dispatched with one `string=?` apiece and no table: a third verb
+;; added there was in no list, compared against nothing, and the total still
+;; balanced, because both sides of it were taken from the same list.
 ;;
-;; So this row closes one way out and not the other. Deriving the CLI's
-;; verbs from `core.sc` the way `catalogue-places` derives from `rpc.sc` is
-;; the OWNVERBS reading. Written here because a row asserting a total reads like "every verb
+;; So this row closes one way out, and the OWNVERBS rows close the other:
+;; they derive the CLI's verbs from `core.sc` the way `catalogue-places`
+;; derives from `rpc.sc`. Written here because a row asserting a total reads like "every verb
 ;; has been accounted for", and this one accounts for every verb THIS GATE
 ;; KNOWS ABOUT.
 (want "GATE-C every verb lands in exactly one of the three lists"
