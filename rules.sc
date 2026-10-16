@@ -211,7 +211,9 @@
   (define (rule-plan name value)
     (define (clause k) (let ((c (assq k value))) (and c (cadr c))))
     (define bad
-      (let ((checked (rule-value-check value)))
+      ;; WITHOUT THE KINDS: a write revalidates a stored rule with the checks
+      ;; it was declared under, so a kind can never make it unevaluable.
+      (let ((checked (rule-value-check value #f)))
         (cond ((and (pair? checked) (eq? (car checked) 'error)) checked)
               ((not (equal? checked value)) (list 'error 'bad-request 'rule-not-in-its-form (list 'form checked)))
               (else #f))))
