@@ -2891,6 +2891,62 @@ volume: the git directory when it is on the same device, else a hidden
 `.theourgia-landing-<pid>/` at the worktree root, removed before anything is
 staged.
 
+## Editing a working view as files
+
+An agent that edits files rather than blocks works on an export of its
+writer's working view and turns the edits back into drafts with two scripts:
+
+    scheme --script tools/edit-export.sc <store> <dir> --writer <W> --git <repo> --base <rev>
+    scheme --script tools/edit-sync.sc <store> <dir> --writer <W>
+
+`edit-export` writes the files `export-code <dir> --working --raw --writer
+<W>` writes, and a sidecar BESIDE the directory, `<dir>.edit/`: a pristine
+copy of every file and `SIDECAR.sexp`, which records the store's id, the
+writer, the export's working cut, and per file its mode in the git tree
+`<rev>` of `<repo>` (the one the store was published from; the export writes
+every file 0644) and per block its byte span in the file, its committed hash
+at the cut and, where the writer already has a draft on it, that draft's
+version, based-on and cut. The files, the spans and the drafts come from one
+working state. `<dir>` and `<dir>.edit` must not exist (`export-exists`):
+the export removes nothing, so a file left from an earlier export would be
+synced as if the store held it. The sidecar is written last, so an export
+that dies leaves none.
+
+`edit-sync` diffs each file against its pristine copy by lines and maps each
+hunk's old side to the blocks by `locate`'s rule: a range answers every block
+it intersects, an insertion the block that starts where it is (the last
+block at the file's end). Each hunk must answer exactly one block, and each
+touched block's new text is its old text with its hunks applied. Every check
+runs before any write, and a refusal writes nothing:
+
+- the sidecar: `missing-sidecar`, `bad-sidecar`, `foreign-store` (another
+  store's, even with the same writer name), `foreign-writer`,
+  `pristine-damaged`;
+- the directory: `unexpected-entry` (not a file or a directory),
+  `added-file`, `removed-file` (drafts cannot add or remove a block);
+- a changed file: `file-mode` (its git mode is not 100644, or it became
+  executable on disk: publication writes 100644 only), `invalid-utf8`,
+  `no-block`, `crossing`, `not-reconstructed`;
+- a touched block: `stale` (its committed hash moved since the export, or
+  the draft it carried stands on another version), `draft-changed` (the
+  writer's slot holds a version that is neither the recorded one nor the one
+  this sync would write: another write under the same writer),
+  `non-text-block`.
+
+An undrafted block is written on its committed hash at the export's cut, a
+drafted one with its draft's own based-on and cut. A block whose slot
+already holds exactly the version the sync would write is its own earlier
+write and is skipped, so a second run over the same files succeeds and
+writes nothing:
+
+    (ok (files-changed <n>) (writes <n>) (written (block <id> (version <v>)) ...) (skipped <id> ...))
+
+A stale block is not fixed by exporting again: a fresh export still projects
+a draft at the cut it was written on. Move the writer's drafts onto the new
+committed version first (`write <id> <merged text> --writer <W> --rebase
+--based-on <version> --working-cut <cut>`), then export again and re-apply
+the edit.
+
 ## Requests and replay
 
 The block-editing verbs — `insert`, `set`, `move`, `del`, `link`, `unlink` —
