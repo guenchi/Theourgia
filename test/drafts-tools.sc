@@ -39,7 +39,7 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids)
+        (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids state-read)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia log) writer-directory)
         (only (theourgia ffi) path-stat)
@@ -376,15 +376,16 @@
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")
 ;; -> the first block of the store whose src is text, for the seed's one
-;; write: read answers the block's record, (ok ((id . <id>) (fields ...) ...))
+;; write, read off one reduction of the store: a block's record is
+;; ((id . <id>) (fields (<name> . <value>) ...) ...)
 (define (text-block st)
-  (find (lambda (id)
-          (let* ((a (ask st 'read id))
-                 (rec (and (eq? (head-of a) 'ok) (pair? (cdr a)) (cadr a)))
-                 (fields (and (list? rec) (assq 'fields rec)))
-                 (src (and fields (assq 'src (cdr fields)))))
-            (and src (string? (cdr src)))))
-        (state-block-ids (open-and-reduce st))))
+  (let ((state (open-and-reduce st)))
+    (find (lambda (id)
+            (let* ((rec (state-read state id))
+                   (fields (and (list? rec) (assq 'fields rec)))
+                   (src (and fields (assq 'src (cdr fields)))))
+              (and src (string? (cdr src)))))
+          (state-block-ids state))))
 ;; -> (owner? adopt write commit) on a cp -R copy of ST, in a scratch place
 (define (seed-check st)
   (set! n (+ n 1))
