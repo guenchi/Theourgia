@@ -30,7 +30,10 @@
 ;; (THEOURGIA_HOLD=freeze-after-dump) refuses it; a draft rewritten A to B
 ;; before the view is read and back to A before the final list (held at both
 ;; stages) is refused by the view's own drafts, the one check that sees it;
-;; landing-commit commits from the freeze's directory.
+;; a draft rewritten A to B while the freeze waits before its final list
+;; only (held at freeze-before-list, after the view check and the export) is
+;; refused by the final list, the one check that sees it, and CHANGED.sexp is
+;; not written; landing-commit commits from the freeze's directory.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -372,6 +375,32 @@
       (let ((a (file-datum out6)))
         (list held6a held6b done6 (head-of a) (and (clause 'in-view a) #t) (and done6 (file-datum rc6))))
       '(#t #f #t (error drafts-changed) #t 1))
+;; A TO B AFTER THE VIEW: held before the final list only, the draft is
+;; rewritten once the view has been checked and the tree written from it, so
+;; the view check has passed; the final list alone sees the change, and the
+;; refusal says so (now, not in-view). Nothing is written after it.
+(define s7 (imported-store!))
+(define a7 (block-of s7 "a.txt"))
+(draft! s7 a7 "one, frozen\n")
+(define freeze7 (string-append root "/freeze7"))
+(define release7 (string-append root "/release7"))
+(define out7 (string-append root "/freeze7.out"))
+(define rc7 (string-append root "/freeze7.rc"))
+(sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-before-list:" release7))
+    " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s7) " --writer " (quoted W)
+    " " (quoted freeze7) " > " (quoted out7) " 2> " (quoted (string-append root "/freeze7.err")) " < /dev/null; echo $? > "
+    (quoted rc7) " ) &")
+(define held7 (wait-for (string-append release7 ".held") 60000))
+(when held7 (draft! s7 a7 "one, rewritten before the final list\n"))
+(call-with-output-file release7 (lambda (p) (display "go" p)))
+(define done7 (wait-for rc7 60000))
+(want "LF-5 a draft rewritten A to B after the view check is refused by the final list alone, which exits 1 and writes no CHANGED.sexp"
+      (let ((a (file-datum out7)))
+        (list held7 done7 (head-of a) (and (clause 'now a) #t) (and (clause 'in-view a) #t)
+              (file-exists? (string-append freeze7 "/MANIFEST.sha256"))
+              (file-exists? (string-append freeze7 "/CHANGED.sexp"))
+              (and done7 (file-datum rc7))))
+      '(#t #t (error drafts-changed) #t #f #t #f 1))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")
