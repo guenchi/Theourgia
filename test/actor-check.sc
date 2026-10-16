@@ -32,7 +32,7 @@
 ;;
 ;; NOTE: THESE ROWS CANNOT TELL THE SHAPE RULE FROM THE INTERN CHECK. A
 ;; gensym fails both, so either rule alone keeps them refused. The row
-;; that tells them apart is test/sb2.sc F81-1: an actor whose symbols are
+;; that tells them apart is a row in test/sb2.sc: an actor whose symbols are
 ;; all interned but whose shape is illegal (a symbol where the pair of
 ;; writer and request id must be, or a sub slot that is neither an index
 ;; nor `single`/`plan`) is refused, which only the shape rule can do.

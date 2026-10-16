@@ -370,7 +370,7 @@
 ;; The new reason needs a local writer. A store with neither an instance
 ;; nor a local writer is not a checkout to adopt as an identity: adopt does
 ;; not take the identity path for it, so it mints no instance -- instance.sexp
-;; is still absent afterwards. AND IT IS REFUSED BY NAME (F131): with no local
+;; is still absent afterwards. AND IT IS REFUSED BY NAME: with no local
 ;; writer there is nothing to retire and nobody to succeed. It answered
 ;; internal, from steps that derived everything from a writer that was #f.
 (let* ((h (home! "g4c")) (s (string-append root "/g4c/store")))

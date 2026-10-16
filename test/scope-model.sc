@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE MUTATION RECORD'S SCOPES AGAINST A REFERENCE MODEL (F100a, rulings L and M).
+;; THE MUTATION RECORD'S SCOPES AGAINST A REFERENCE MODEL (rulings L and M).
 ;;
 ;; Review rounds kept finding one more shape of scope the hand-written
 ;; cells did not hold (the exit, the nesting, the actor, the record after

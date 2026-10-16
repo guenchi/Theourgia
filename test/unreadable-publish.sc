@@ -190,7 +190,7 @@
           #t)))
 
 ;; ---- a readable directory given as the candidate --------------------------
-;; ADDED BY THE CODE SESSION (F77b review 1, ruled L): the candidate is read
+;; ADDED BY THE CODE SESSION (found in review, ruled L): the candidate is read
 ;; with R1's read, and a directory reads as EISDIR -- answered by name where
 ;; the base answered (error internal ...). Nothing under writers/ is unreadable.
 (printf "== a readable directory as the candidate ==\n")
@@ -204,7 +204,7 @@
           '(#t #f #t))))
 
 ;; ---- review round 2: a sibling segment, a fork marker, the .ok marker --------
-;; ADDED BY THE CODE SESSION (F77b review 2, the main session's request).
+;; ADDED BY THE CODE SESSION (found in review; the main session's request).
 (printf "== review 2: publish reads what it depends on by name ==\n")
 (let* ((s (fresh-store!))
        (_ (log-publish! s M 1 rec1 (segment-sha rec1)))

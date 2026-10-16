@@ -87,7 +87,7 @@
 (want "WP-08 next edit remains durable after an intervening external write" (rpc-ok? (next-write two "three")) #t)
 (want "WP-08 parent proof never silently advances past the committed parent"
       (cadr (call 'commit id "--writer" "window-sequential")) 'stale-baseline)
-;; WP-09: A SRC THAT BEGINS WITH A UTF-8 BYTE-ORDER MARK (F261). A draft of
+;; WP-09: A SRC THAT BEGINS WITH A UTF-8 BYTE-ORDER MARK. A draft of
 ;; marked bytes reads back with the mark, under --working and under
 ;; --working-info; it commits, as its bytes; and the store read again from
 ;; its log (a fresh fold) and a plain read hold the same bytes, mark included.

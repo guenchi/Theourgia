@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; NO FIXTURE WRITES INTO /tmp BY NAME (F71).
+;; NO FIXTURE WRITES INTO /tmp BY NAME.
 ;;
 ;; The runner makes two directories for a run and removes both at its end:
 ;; THEOURGIA_TEST_ROOT for files and directories, THEOURGIA_TEST_SOCK for
@@ -63,7 +63,7 @@
 ;; define spliced in by begin, a let-syntax, a macro template, are not
 ;; seen, and a let-values or do initialiser, an internal define, a
 ;; variable named quote, are read too strictly -- and is to be replaced
-;; by F88, one helper file as the only place that names /tmp; the shell
+;; by one helper file as the only place that names /tmp; the shell
 ;; files are read as text, not parsed; the shell files the suite never
 ;; runs are not read, and are named; and this file is not read, because
 ;; its specimens and its patterns name /tmp on purpose.

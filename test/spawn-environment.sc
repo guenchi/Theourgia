@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; A CHILD RECEIVES ITS PARENT'S ENVIRONMENT (F191).
+;; A CHILD RECEIVES ITS PARENT'S ENVIRONMENT.
 ;;
 ;; spawn-detached! (the daemon's start) and spawn-captured! (an MCP child
 ;; verb) pass envp explicitly, and the C library's `environ` they used to read

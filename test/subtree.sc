@@ -15,7 +15,7 @@
 
 ;; What "under this block" means, asked of the two verbs that ask it.
 ;;
-;; KEY: THERE IS ONE ANSWER (F85 R1). `read --recursive` and `grep --under`
+;; KEY: THERE IS ONE ANSWER. `read --recursive` and `grep --under`
 ;; both walk the tree with one procedure, `outline-subtree`, which stops at
 ;; nothing, and neither applies a rule of its own to the result, so they
 ;; name the same blocks by construction. A nested document is a block like
@@ -66,7 +66,7 @@
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.

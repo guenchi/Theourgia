@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE STRUCTURE, MAINTAINED, AGAINST THE COMPUTATION IT REPLACED (F269 C).
+;; THE STRUCTURE, MAINTAINED, AGAINST THE COMPUTATION IT REPLACED.
 ;;
 ;; reduce.sc keeps the block structure -- each parent's children, the
 ;; conflicts, orphans, unplaced and nested-documents sets -- and updates only

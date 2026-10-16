@@ -15,13 +15,13 @@
 ;; A definition inside a string literal is text, not a definition.
 ;;
 ;; structure.sc reports a top-level definition that sits deeper than the
-;; top level: the form before it never closed. (It was structure.py until
-;; F9; these rows were written against the Python and read the same on the
+;; top level: the form before it never closed. (It was structure.py before
+;; the port; these rows were written against the Python and read the same on the
 ;; port.) It used to record an opening
 ;; `(define` at the start of a line before asking whether the scan was
 ;; inside a string, so a program written as a string -- a child script a
 ;; fixture hands to another process -- was reported as a swallowed
-;; definition, and the whole suite was refused at preflight (F84).
+;; definition, and the whole suite was refused at preflight.
 ;;
 ;; The gate is run on a directory this file builds: a copy of structure.sc
 ;; under <dir>/test, and the samples in <dir>, which is where it looks.

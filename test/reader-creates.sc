@@ -99,9 +99,9 @@
 (define d (test-dir "rdwork"))
 (system (string-append "rm -rf " d "; mkdir -p " d))
 (define lock (string-append d "/lock"))
-;; A REFUSAL IN EITHER CLASS (F100 D1): the lock's open without create is a
+;; A REFUSAL IN EITHER CLASS (ffi.sc's two-condition rule): the lock's open without create is a
 ;; non-mutating primitive, so a missing lock file now refuses with
-;; unreadable-entry ENOENT; before F100a it was the durable-error of op open.
+;; unreadable-entry ENOENT; before the door it was the durable-error of op open.
 (define (try thunk)
   (guard (e ((fs-error? e) (list 'refused (fs-error-op e) (fs-error-errno e)))
             ((unreadable-entry? e) (list 'refused 'unreadable (unreadable-entry-errno e))))

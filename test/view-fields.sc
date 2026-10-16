@@ -109,7 +109,7 @@
 ;; them are two statements and not one.
 ;;
 ;; NOTE: IT IS `define-record-type`, WHICH BINDS FOUR NAMES. `datum-names`
-;; has named `define-values`' formals too since F205; this file's point is
+;; names `define-values`' formals too; this file's point is
 ;; the split between `names` and `name`, and either form makes it.
 (with-store-write store
   (lambda (s v)

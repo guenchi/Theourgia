@@ -12,7 +12,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; One refusal, one exit code (F97): whatever the verb and the route, an
+;; One refusal, one exit code: whatever the verb and the route, an
 ;; answer headed `error` leaves core.sc with exit 1 and `ok` with exit 0.
 ;; Measured before this: `insert` refused by the instance check exited 0
 ;; while `set` with the same answer exited 1.

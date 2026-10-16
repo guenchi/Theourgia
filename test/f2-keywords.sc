@@ -43,7 +43,7 @@
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 
-;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under
 ;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
 ;; them, a path falls back to /tmp as it always did.

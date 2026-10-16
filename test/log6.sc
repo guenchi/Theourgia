@@ -424,7 +424,7 @@
 ;; to fail. One error class is one branch: a barrier that propagated
 ;; permission errors and quietly skipped everything else would pass a
 ;; single-class row while leaving the defect exactly where it was.
-;; THE OPEN'S FAILURE IS unreadable-entry SINCE F100a (D1): an open without
+;; THE OPEN'S FAILURE IS unreadable-entry SINCE THE DOOR (D1): an open without
 ;; create is a non-mutating primitive. The delivery stops as before; these
 ;; rows, the errno rows and both witnesses below read that class, and an
 ;; errno by the name ffi gives it where it knows one (the number otherwise).

@@ -769,7 +769,7 @@
       (list '(ok (supplied (facts 1) (files 1))) (list 'ok '(signature "delta()") '(stale 0) (via "1.140.0" "python"))
             (present "gamma(): number" "1.141.0")))
 
-;; F276: THE SOURCE IS ANY TOOL, a symbol, with its version: a supply from
+;; THE SOURCE IS ANY TOOL, a symbol, with its version: a supply from
 ;; another tool is taken, and the via a fact answers with names it as given.
 (want "D8 a supply whose source is (other-tool \"1\") is taken, and alpha's signature answers via (other-tool \"1\" \"javascript\")"
       (in-order (supply-now r1 "-" (list (sig r1-alpha "alpha(): other")) '("a.js") "1" "javascript" 'other-tool)
@@ -1045,7 +1045,7 @@
 (define (refs-clauses a) (filter (lambda (c) (and (pair? c) (memq (car c) '(via stale)))) (cdr a)))
 (define supplied-via '(via (vscode "1.140.0" "javascript")))
 
-;; F276: CALLS FROM ANOTHER TOOL: reach answers the via the header gave.
+;; CALLS FROM ANOTHER TOOL: reach answers the via the header gave.
 (define r12t (make-store! "r12t"))
 (define r12t-alpha (id-in r12t "function alpha"))
 (define r12t-gamma (id-in r12t "function gamma"))

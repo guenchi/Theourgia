@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; THE APPEND KEEPS ITS OWN WRITER'S PREFIX (F280, design v20). An append
+;; THE APPEND KEEPS ITS OWN WRITER'S PREFIX (design v20). An append
 ;; used to read the writer's whole log again to learn its sequence and its
 ;; target; the session now keeps what it validated at log-begin, advances it
 ;; by its own writes, and stands it in for that read only while one stat and
