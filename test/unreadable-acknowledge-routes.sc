@@ -203,7 +203,7 @@
 ;;             frame is made before the cell holds the new state and so cannot
 ;;             go through answer-published, and subscription-answer (the
 ;;             acceptance). Both take the clause with incomplete-clause over
-;;             the state's notes; change-stream.sc's F10-10 row holds the
+;;             the state's notes; change-stream.sc's LACKS-3 row holds the
 ;;             frame's, the acceptance's and read's clause equal.
 ;;   notes     rows->state building a new value: from a base it keeps the
 ;;             base's notes (overlay-drafts), or it is the replay's own seed

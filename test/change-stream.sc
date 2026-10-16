@@ -1256,11 +1256,11 @@
               (list (length (filter (lambda (f) (pair? (clause 'items f))) fs))
                     (for-all (lambda (f) (or (pair? (clause 'items f)) (equal? (clause 'items f) '()))) fs)))
             '(3 #t))
-      (want "PUBLISHER-5 read --rev --cut is refused incompatible-cut-options"
+      (want "REV-11 read --rev --cut is refused incompatible-cut-options"
             (ask d 'read id "--rev" "--cut" (format "~s" (list (cons "mirrorpq" 1))))
             '(error bad-request incompatible-cut-options))
       (let ((a (ask d 'read id "--rev")))
-        (want "PUBLISHER-6 read --rev carries the receipts, then the rev clause last"
+        (want "REV-12 read --rev carries the receipts, then the rev clause last"
               (let ((names (clause-names a)))
                 (list (car a) (and (memq 'cut names) #t) (and (memq 'versions names) #t)
                       (and (pair? names) (car (reverse names)))))
