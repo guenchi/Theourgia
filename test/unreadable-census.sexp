@@ -1482,6 +1482,26 @@
    unrelated a
    "a rule's goal checked as a query's goals are: the query's own refusal is the rule's answer, and only that refusal is caught"
    (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (goals-kind-refusal) 1 guard
+   ((refusal? e))
+   unrelated a
+   "the column kinds' static check: its refusal (wrong-kind, join-across-kinds) becomes the answer; only that refusal is caught, and no file is read"
+   (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (query-kind-refusal) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a client query's kind check: a goal that query-goals refuses is left to the session, which answers that refusal as before"
+   (e ((refusal? e) #f)))
+  ("query.sc" (rule-kind-mismatch) 1 guard
+   (#t)
+   unrelated a
+   "a stored rule's kind mismatch, for describe's listing only: a value that is not a goal rule or does not read has none; information, never a verdict"
+   (e (#t #f)))
+  ("query.sc" (library-kinds) 1 guard
+   ((refusal? e))
+   unrelated a
+   "the library rules' kinds at load: a clause that does not check is a build error, raised as an assertion as an arity is"
+   (e ((refusal? e) (assertion-violation (quote query) "a rule of the library does not check against the kinds" (refusal-answer e)))))
   ("channel.sc" (envelope-answer) 1 guard
    (#t)
    unrelated a
