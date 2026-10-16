@@ -24,6 +24,11 @@
 ;; LC: a frozen draft and a commit on an unrelated block since the freeze: the
 ;; landing is refused before anything is committed; with the cut unchanged it
 ;; commits; after a rebase and a new freeze it commits.
+;; LF: tools/landing-freeze.sc on a store imported from files: its directory
+;; holds the draft list, the working view's raw export, its manifest and the
+;; changed files; a draft written while the freeze waits at its hold stage
+;; (THEOURGIA_HOLD=freeze-after-dump) refuses it; landing-commit commits from
+;; the freeze's directory.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -32,7 +37,10 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids))
+        (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids)
+        (only (theourgia code-project) code-files code-field code-children)
+        (only (theourgia log) writer-directory)
+        (only (theourgia ffi) path-stat))
 
 (define bad 0)
 (define rows 0)
@@ -167,9 +175,16 @@
       (in-order (tool "drafts-restore" cl1 dump1 "--writer" W)
                 (list (draft-facts cl1 a1) (draft-facts cl1 b1)))
       (list '(ok (restored 2) (already 0)) (list facts-a facts-b)))
+;; WRITES NOTHING, observed, not only reported: an identical write would
+;; still replace the draft's file, so each file's identity is read before and
+;; after.
+(define (draft-file st id) (string-append (writer-directory st W) "/working/" id))
+(define (identities st ids) (map (lambda (id) (path-stat (draft-file st id))) ids))
+(define before-dd3 (identities cl1 (list a1 b1)))
 (want "DD-3 a second restore finds both slots holding the dumped drafts and writes nothing"
-      (tool "drafts-restore" cl1 dump1 "--writer" W)
-      '(ok (restored 0) (already 2)))
+      (in-order (tool "drafts-restore" cl1 dump1 "--writer" W)
+                (equal? (identities cl1 (list a1 b1)) before-dd3))
+      '((ok (restored 0) (already 2)) #t))
 (define cl2 (clone! s1))
 (checked "set" (ask cl2 'set a1 "title" "A moved"))
 (want "DD-4 a block whose committed hash moved since the dump is refused by name, and nothing is written"
@@ -178,10 +193,12 @@
       (list (list '(error baseline-moved) a1) '()))
 (define cl3 (clone! s1))
 (checked "write" (ask cl3 'write b1 "something else\n" "--writer" W))
-(want "DD-5 a slot holding another draft is refused, and nothing else is written"
+(define occupied-before (draft-facts cl3 b1))
+(want "DD-5 a slot holding another draft is refused; that draft is unchanged, and nothing else is written"
       (in-order (let ((a (tool "drafts-restore" cl3 dump1 "--writer" W))) (list (head-of a) (clause1 'block a)))
+                (equal? (draft-facts cl3 b1) occupied-before)
                 (drafts-of cl3))
-      (list (list '(error slot-occupied) b1) (list b1)))
+      (list (list '(error slot-occupied) b1) #t (list b1)))
 (define other (store!))
 (want "DD-6 a restore into another store is refused"
       (head-of (tool "drafts-restore" other dump1 "--writer" W))
@@ -228,6 +245,71 @@
                 (equal? (hash-of s2 a2) a2-before)
                 (drafts-of s2))
       '(ok #f ()))
+
+;; ---- LF: the freeze ---------------------------------------------------------------
+(printf "== LF: a freeze holds the draft list, the export, its manifest and the changes ==\n")
+;; -> a store imported from a directory holding a.txt and b.txt
+(define (imported-store!)
+  (set! n (+ n 1))
+  (let ((src (string-append root "/src" (number->string n))) (st (string-append root "/s" (number->string n))))
+    (sh "mkdir -p " (quoted src) " " (quoted st))
+    (call-with-output-file (string-append src "/a.txt") (lambda (p) (display "one\n" p)))
+    (call-with-output-file (string-append src "/b.txt") (lambda (p) (display "two\n" p)))
+    (checked "init" (ask st 'init))
+    (checked "import" (ask st 'import-code src))
+    st))
+;; -> the one block of the file at PATH
+(define (block-of st path)
+  (let* ((state (open-and-reduce st))
+         (file (find (lambda (id) (equal? (code-field state id 'path) path)) (code-files state)))
+         (kids (code-children state file)))
+    (unless (= 1 (length kids)) (assertion-violation 'drafts-tools "not one block" path kids))
+    (car kids)))
+(define (text-of path) (guard (e (#t 'ABSENT)) (call-with-input-file path get-string-all)))
+(define s4 (imported-store!))
+(define a4 (block-of s4 "a.txt"))
+(draft! s4 a4 "one, frozen\n")
+(define freeze4 (string-append root "/freeze4"))
+(define frozen4 (tool "landing-freeze" s4 "--writer" W freeze4))
+(want "LF-1 the freeze answers one draft and one changed file"
+      frozen4
+      (list 'ok '(frozen 1) '(changed 1) (list 'dir freeze4)))
+(want "LF-1 its directory holds the draft list, the exported tree with the drafted bytes, the manifest and the changed files"
+      (list (clause1 'writer (file-datum (string-append freeze4 "/DRAFTS.sexp")))
+            (text-of (string-append freeze4 "/tree/a.txt"))
+            (text-of (string-append freeze4 "/tree/b.txt"))
+            (let ((m (text-of (string-append freeze4 "/MANIFEST.sha256")))) (and (string? m) (length (filter (lambda (c) (char=? c #\newline)) (string->list m)))))
+            (clause 'items (file-datum (string-append freeze4 "/CHANGED.sexp"))))
+      (list W "one, frozen\n" "two\n" 2 '((path "a.txt" content))))
+(want "LF-3 landing-commit commits from the freeze's directory"
+      (in-order (head-of (tool "landing-commit" s4 freeze4))
+                (drafts-of s4))
+      '(ok ()))
+;; A DRAFT WRITTEN WHILE THE FREEZE WAITS after its dump: the freeze runs in
+;; the background, held at freeze-after-dump; the row writes a second draft
+;; once the hold is acknowledged, releases it, and reads the answer.
+(define s5 (imported-store!))
+(draft! s5 (block-of s5 "a.txt") "one, frozen\n")
+(define freeze5 (string-append root "/freeze5"))
+(define release5 (string-append root "/release5"))
+(define out5 (string-append root "/freeze5.out"))
+(define rc5 (string-append root "/freeze5.rc"))
+(sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-after-dump:" release5))
+    " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted s5) " --writer " (quoted W)
+    " " (quoted freeze5) " > " (quoted out5) " 2> " (quoted (string-append root "/freeze5.err")) " < /dev/null; echo $? > "
+    (quoted rc5) " ) &")
+(define (wait-for path ms)
+  (let loop ((k 0))
+    (cond ((file-exists? path) #t)
+          ((> k (div ms 50)) #f)
+          (else (sleep (make-time 'time-duration 50000000 0)) (loop (+ k 1))))))
+(define held5 (wait-for (string-append release5 ".held") 60000))
+(when held5 (draft! s5 (block-of s5 "b.txt") "two, written during the freeze\n"))
+(call-with-output-file release5 (lambda (p) (display "go" p)))
+(wait-for rc5 60000)
+(want "LF-2 a draft written while the freeze waits after its dump refuses the freeze"
+      (list held5 (head-of (file-datum out5)))
+      '(#t (error drafts-changed)))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

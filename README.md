@@ -2957,10 +2957,12 @@ the edit.
 ## Keeping drafts, and landing them at their cut
 
 Drafts do not travel with a store's git (the working areas are ignored
-there), so two scripts keep them, and a third commits them for a landing.
+there), so two scripts keep them, a third freezes them for a landing's gate,
+and a fourth commits them.
 
     scheme --script tools/drafts-dump.sc <store> --writer <W> <dir>
     scheme --script tools/drafts-restore.sc <store> <dir> --writer <W>
+    scheme --script tools/landing-freeze.sc <store> --writer <W> <dir>
     scheme --script tools/landing-commit.sc <store> <dir>
 
 `drafts-dump` makes `<dir>`, which must not exist, and writes one file of
@@ -2987,9 +2989,21 @@ and checks every draft before writing any: the bytes against their sha256
 rebased); the recorded cut, replayed here, against itself and the based-on
 (`cut-unusable`, `cut-not-reproduced`, `baseline-not-at-cut`); and the
 writer's slot, which must be empty or hold this very version, left as it is
-(`slot-occupied` otherwise). It answers `(ok (restored <n>) (already <n>))`.
+(`slot-occupied` otherwise); the bytes must be text that re-encodes exactly
+(`not-text`), and a version a commit has consumed is refused
+(`version-consumed`). It answers `(ok (restored <n>) (already <n>))`.
 
-`landing-commit` reads a freeze's `DRAFTS.sexp` and commits its drafts only
+`landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list,
+then `export-code --working --raw --writer W` into `<dir>/tree`, each file
+read back and compared with the projection it came from, `MANIFEST.sha256`
+(each file's sha256 and path), and `CHANGED.sexp`, `changed-files` between
+the store at the pinned cut and the working view. The draft list is then
+read again: a draft written during the freeze refuses it (`drafts-changed`),
+and the directory is left for the coder to remove. It answers `(ok (frozen
+<n>) (changed <k>) (dir <dir>))`.
+
+`landing-commit` reads a freeze's `DRAFTS.sexp` (a freeze's directory, or a
+dump's) and commits its drafts only
 if the store's applied cut is still the pinned cut: a commit on another
 block since the freeze leaves every draft's baseline as it was, so the store
 would accept the drafts, and what landed would not be what was gated. Then
@@ -4135,7 +4149,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), and `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the export). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |

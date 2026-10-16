@@ -35,6 +35,11 @@
 ;;   name, for the coder to rebase;
 ;; - the recorded cut can be replayed here, and at it the block's hash is the
 ;;   recorded based-on;
+;; - the bytes are text that re-encodes to exactly themselves (a leading
+;;   byte-order mark included), read as `read --working` reads a draft, so
+;;   what is written is what was dumped;
+;; - no commit has consumed the dumped version: a consumed version written
+;;   back would not be a live draft, and the restore would claim one;
 ;; - the writer's slot for the block is empty, or holds this very draft (the
 ;;   same version: same bytes, based-on and cut), which is then left as it is.
 ;;   A slot holding anything else is refused: a write into it would keep that
@@ -45,7 +50,8 @@
 ;; (ok (restored <n>) (already <n>)) and exits 0.
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia reduce) draft-version block-hash reduce-applied-cut state-read)
+        (only (theourgia reduce) draft-version block-hash reduce-applied-cut state-read state-consumed?)
+        (only (theourgia markers) src-text)
         (only (theourgia store) open-and-reduce store-state-at-cut)
         (only (theourgia log) store-id-of)
         (only (theourgia digest) sha256 bytevector->hex)
@@ -76,8 +82,8 @@
       (map (lambda (d) (cons (clause 'block d) (clause 'version d)))
            (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) items)))))
 
-;; -> 'write or 'already for one dumped draft, or a refusal.
-(define (judge store dir state held d)
+;; -> ('write . <text>) or ('already . <text>) for one dumped draft, or a refusal.
+(define (judge store dir state held writer d)
   (let* ((id (clause 'block d)) (version (clause 'version d))
          (based-on (clause 'based-on d)) (cut (clause 'cut d))
          (bytes (entry-bytes (string-append dir "/" (clause 'bytes d)))))
@@ -85,7 +91,10 @@
       (refuse 'bytes-changed (list 'block id)))
     (unless (equal? (draft-version bytes based-on cut) version)
       (refuse 'draft-unreproducible (list 'block id) (list 'version version)))
+    (unless (src-text bytes) (refuse 'not-text (list 'block id)))
     (unless (state-read state id) (refuse 'unknown-block (list 'block id)))
+    (when (state-consumed? state writer version)
+      (refuse 'version-consumed (list 'block id) (list 'version version)))
     (let ((now (block-hash state id)))
       (unless (equal? now based-on)
         (refuse 'baseline-moved (list 'block id) (list 'based-on based-on) (list 'now now))))
@@ -96,9 +105,9 @@
         (refuse 'cut-not-reproduced (list 'block id) (list 'cut cut)))
       (unless (equal? (block-hash past id) based-on)
         (refuse 'baseline-not-at-cut (list 'block id))))
-    (let ((slot (assoc id held)))
-      (cond ((not slot) 'write)
-            ((equal? (cdr slot) version) 'already)
+    (let ((slot (assoc id held)) (text (src-text bytes)))
+      (cond ((not slot) (cons 'write text))
+            ((equal? (cdr slot) version) (cons 'already text))
             (else (refuse 'slot-occupied (list 'block id) (list 'holds (cdr slot)) (list 'dumped version)))))))
 
 (define (restore store dir writer)
@@ -110,14 +119,14 @@
       (refuse 'other-writer (list 'dumped (clause 'writer m)) (list 'given writer)))
     (let* ((state (open-and-reduce store))
            (held (held-drafts store writer))
-           (verdicts (map (lambda (d) (judge store dir state held d)) drafts)))
+           (verdicts (map (lambda (d) (judge store dir state held writer d)) drafts)))
       (let loop ((ds drafts) (vs verdicts) (written 0) (already 0))
         (cond
           ((null? ds) (list 'ok (list 'restored written) (list 'already already)))
-          ((eq? (car vs) 'already) (loop (cdr ds) (cdr vs) written (+ already 1)))
+          ((eq? (car (car vs)) 'already) (loop (cdr ds) (cdr vs) written (+ already 1)))
           (else
            (let* ((d (car ds)) (id (clause 'block d))
-                  (text (utf8->string (entry-bytes (string-append dir "/" (clause 'bytes d)))))
+                  (text (cdr (car vs)))
                   ;; THE TEXT ARRIVES AS STANDARD INPUT, through the dispatcher's
                   ;; reader, not as an argument: a text beginning `--` would
                   ;; read as an option, and one that is exactly `-` as the
