@@ -24,6 +24,12 @@
 ;; LC: a frozen draft and a commit on an unrelated block since the freeze: the
 ;; landing is refused before anything is committed; with the cut unchanged it
 ;; commits; after a rebase and a new freeze it commits.
+;; With --start <tag>, landing-commit tags the store's applied cut after the
+;; cut check and before the commit: the tag binds the pinned cut; a commit
+;; since the freeze refuses with no tag made; a name already bound is
+;; refused before anything is written; a commit between the check and the tag
+;; (held at landing-before-tag) leaves the tag on the moved cut and refuses
+;; start-tag-cut with nothing committed.
 ;; LF: tools/landing-freeze.sc on a store imported from files: its directory
 ;; holds the draft list, the working view's raw export, its manifest and the
 ;; changed files; a draft written while the freeze waits at its hold stage
@@ -41,7 +47,7 @@
 
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia store) open-and-reduce)
+        (only (theourgia store) open-and-reduce store-tags)
         (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids state-read)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia log) writer-directory)
@@ -404,6 +410,80 @@
               (file-exists? (string-append freeze7 "/CHANGED.sexp"))
               (and done7 (file-datum rc7))))
       '(#t #t (error drafts-changed) #t #f #t #f 1))
+
+;; ---- LC with --start: the landing's start tag ---------------------------------------
+(printf "== LC: --start tags the pinned cut, before the commit ==\n")
+;; -> the cut a name binds, when it is settled; #f when the name is not bound
+(define (tag-cut st name)
+  (let ((t (find (lambda (t) (equal? (cadr t) name)) (store-tags st))))
+    (and t (eq? (car t) 'settled) (caddr t))))
+;; A CUT COMPARED AS A SET of (writer . seq), as the tools compare them.
+(define (cut-set c)
+  (list-sort (lambda (a b) (string<? (car a) (car b)))
+             (filter (lambda (e) (and (pair? e) (integer? (cdr e)) (> (cdr e) 0))) c)))
+;; -> (store a b dir pinned-cut): a store of two blocks, W's draft on A, the
+;; draft list dumped into DIR. BEFORE, when given, runs on the store before
+;; the draft is written, so what it writes is inside the pinned cut.
+(define (frozen-store! name before)
+  (let* ((st (store!)) (a (insert! st "A" "alpha\n")) (b (insert! st "B" "beta\n"))
+         (dir (string-append root "/" name)))
+    (when before (before st))
+    (draft! st a "alpha, landed\n")
+    (checked "freeze" (tool "drafts-dump" st "--writer" W dir))
+    (list st a b dir (clause1 'pinned-cut (file-datum (string-append dir "/DRAFTS.sexp"))))))
+;; THE TAG IS MADE BEFORE THE COMMIT: it binds the pinned cut, which the
+;; commit's event is not in.
+(define lc4 (frozen-store! "freeze-lc4" #f))
+(define lc4-answer (tool "landing-commit" (car lc4) (cadddr lc4) "--start" "start-lc4"))
+(want "LC-4 --start tags the pinned cut and then commits: the tag binds the pinned cut, the draft landed, and the answer names the tag and that cut"
+      (in-order (head-of lc4-answer)
+                (equal? (cut-set (tag-cut (car lc4) "start-lc4")) (cut-set (list-ref lc4 4)))
+                (drafts-of (car lc4))
+                (let ((c (clause 'start-tag lc4-answer)))
+                  (and (pair? c)
+                       (list (car c) (equal? (cut-set (clause1 'cut c)) (cut-set (list-ref lc4 4)))))))
+      '(ok #t () ("start-lc4" #t)))
+(define lc5 (frozen-store! "freeze-lc5" #f))
+(checked "set" (ask (car lc5) 'set (caddr lc5) "title" "B elsewhere"))
+(want "LC-5 with --start and a commit since the freeze: refused cut-moved, no tag made, nothing committed"
+      (in-order (head-of (tool "landing-commit" (car lc5) (cadddr lc5) "--start" "start-lc5"))
+                (tag-cut (car lc5) "start-lc5")
+                (drafts-of (car lc5)))
+      (list '(error cut-moved) #f (list (cadr lc5))))
+;; THE NAME IS BOUND BEFORE THE FREEZE, so the pinned cut holds the tag's own
+;; record and the cut check alone would pass: only the name's check refuses.
+(define lc6 (frozen-store! "freeze-lc6" (lambda (st) (checked "tag" (ask st 'tag "start-lc6")))))
+(define lc6-before (tag-cut (car lc6) "start-lc6"))
+(want "LC-6 a start name already bound is refused before anything is written: the tag keeps its cut, nothing is committed"
+      (in-order (head-of (tool "landing-commit" (car lc6) (cadddr lc6) "--start" "start-lc6"))
+                (and lc6-before (equal? (tag-cut (car lc6) "start-lc6") lc6-before))
+                (drafts-of (car lc6)))
+      (list '(error start-tag-exists) #t (list (cadr lc6))))
+;; A COMMIT BETWEEN THE CUT CHECK AND THE TAG: held at landing-before-tag, a
+;; set on B moves the applied cut, so the tag binds a cut that is not the
+;; pinned one; the landing is refused and the tag stays.
+(define lc7 (frozen-store! "freeze-lc7" #f))
+(define release-lc7 (string-append root "/release-lc7"))
+(define out-lc7 (string-append root "/lc7.out"))
+(define rc-lc7 (string-append root "/lc7.rc"))
+(sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "landing-before-tag:" release-lc7))
+    " scheme --script " (quoted (string-append tools-dir "/landing-commit.sc")) " " (quoted (car lc7)) " " (quoted (cadddr lc7))
+    " --start start-lc7 > " (quoted out-lc7) " 2> " (quoted (string-append root "/lc7.err")) " < /dev/null; echo $? > "
+    (quoted (string-append rc-lc7 ".part")) " && mv " (quoted (string-append rc-lc7 ".part")) " " (quoted rc-lc7) " ) &")
+(define held-lc7 (wait-for (string-append release-lc7 ".held") 60000))
+(when held-lc7 (checked "set" (ask (car lc7) 'set (caddr lc7) "title" "B during the landing")))
+(call-with-output-file release-lc7 (lambda (p) (display "go" p)))
+(define done-lc7 (wait-for rc-lc7 60000))
+(want "LC-7 a commit between the cut check and the tag: refused start-tag-cut naming both cuts, the tag on the moved cut, nothing committed, exit 1"
+      (let ((a (file-datum out-lc7)))
+        (in-order held-lc7 done-lc7 (head-of a)
+                  (and (equal? (cut-set (clause1 'pinned a)) (cut-set (list-ref lc7 4)))
+                       (equal? (cut-set (clause1 'bound a)) (cut-set (tag-cut (car lc7) "start-lc7"))))
+                  (let ((c (tag-cut (car lc7) "start-lc7")))
+                    (and c (not (equal? (cut-set c) (cut-set (list-ref lc7 4))))))
+                  (drafts-of (car lc7))
+                  (and done-lc7 (file-datum rc-lc7))))
+      (list #t #t '(error start-tag-cut) #t #t (list (cadr lc7)) 1))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

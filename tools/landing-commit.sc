@@ -16,7 +16,7 @@
 ;; Commit a frozen writer's drafts, only if the store is still at the cut they
 ;; were frozen at.
 ;;
-;;   scheme --script tools/landing-commit.sc <store> <freeze-dir>
+;;   scheme --script tools/landing-commit.sc <store> <freeze-dir> [--start <tag>]
 ;;
 ;; <freeze-dir> holds the freeze's draft list, DRAFTS.sexp as
 ;; tools/drafts-dump.sc writes it: the store, the writer, the pinned cut (the
@@ -34,6 +34,18 @@
 ;; (--working-version <block>=<version>), so a draft rewritten since the
 ;; freeze is refused by the store (working-version-changed).
 ;;
+;; THE START TAG, with --start <tag>: publish-landing publishes from a start
+;; tag whose export is the git base, so the landing names its start before it
+;; commits. A name already bound is refused before anything is written
+;; (error start-tag-exists (tag <name>)): binding it again would move an
+;; earlier landing's start. After the cut check the store is tagged. A tag
+;; binds the cut the store has applied when its record is written, and its
+;; answer carries that cut, so a commit made between the check and the tag
+;; shows there: nothing is committed, and the answer is (error start-tag-cut
+;; (tag <name>) (pinned <cut>) (bound <cut>)). The tag stays (it is a tag,
+;; not a commit), and a retry takes another name. A landing that commits
+;; adds (start-tag <name> (cut <cut>)) to the commit's answer.
+;;
 ;; ONE COMMITTER: the cut is read and the commit made in one run, and nothing
 ;; holds the store between them. The landing protocol makes this the only
 ;; path that commits to the store, run by one session at a time.
@@ -43,9 +55,9 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia reduce) reduce-applied-cut)
-        (only (theourgia store) open-and-reduce)
+        (only (theourgia store) open-and-reduce store-tags)
         (only (theourgia log) store-id-of)
-        (only (theourgia ffi) entry-bytes))
+        (only (theourgia ffi) entry-bytes hold-point!))
 
 (define actor "landing-commit")
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
@@ -64,7 +76,23 @@
     (unless (and (pair? m) (eq? (car m) 'drafts) (list? m)) (refuse 'manifest-unreadable (list 'dir dir)))
     m))
 
-(define (land store dir)
+;; -> whether NAME is bound as a tag now, settled or not
+(define (tag-bound? store name)
+  (exists (lambda (t) (equal? (cadr t) name)) (store-tags store)))
+
+;; -> the cut the new start tag binds, when it is the pinned cut; else the
+;; refusal, with the tag written
+(define (start-tag! store name pinned)
+  (hold-point! 'landing-before-tag)
+  (let ((a (rpc-dispatch store (list 'tag name) actor)))
+    (unless (and (pair? a) (eq? (car a) 'ok))
+      (refuse 'start-tag-refused (list 'tag name) (list 'answer a)))
+    (let ((bound (clause 'cut a)))
+      (unless (equal? (cut-set bound) (cut-set pinned))
+        (refuse 'start-tag-cut (list 'tag name) (list 'pinned pinned) (list 'bound bound)))
+      bound)))
+
+(define (land store dir start)
   (let* ((m (read-manifest dir))
          (writer (clause 'writer m))
          (pinned (clause 'pinned-cut m))
@@ -73,25 +101,31 @@
       (unless (equal? (clause 'store m) here)
         (refuse 'other-store (list 'frozen (clause 'store m)) (list 'here here))))
     (when (null? drafts) (refuse 'nothing-frozen (list 'dir dir)))
+    (when (and start (tag-bound? store start)) (refuse 'start-tag-exists (list 'tag start)))
     (let ((now (reduce-applied-cut (open-and-reduce store))))
       (unless (equal? (cut-set now) (cut-set pinned))
         (refuse 'cut-moved (list 'pinned pinned) (list 'now now))))
-    (rpc-dispatch store
-                  (append (list 'commit)
-                          (map (lambda (d) (clause 'block d)) drafts)
-                          (list "--writer" writer)
-                          (apply append
-                                 (map (lambda (d)
-                                        (list "--working-version"
-                                              (string-append (clause 'block d) "=" (clause 'version d))))
-                                      drafts)))
-                  actor)))
+    (let* ((bound (and start (start-tag! store start pinned)))
+           (a (rpc-dispatch store
+                            (append (list 'commit)
+                                    (map (lambda (d) (clause 'block d)) drafts)
+                                    (list "--writer" writer)
+                                    (apply append
+                                           (map (lambda (d)
+                                                  (list "--working-version"
+                                                        (string-append (clause 'block d) "=" (clause 'version d))))
+                                                drafts)))
+                            actor)))
+      (if (and bound (pair? a) (eq? (car a) 'ok))
+          (append a (list (list 'start-tag start (list 'cut bound))))
+          a))))
 
 (define (main args)
-  (if (not (= 2 (length args)))
-      (begin (write '(usage (landing-commit <store> <freeze-dir>))) (newline) (exit 2))
+  (if (not (or (= 2 (length args))
+               (and (= 4 (length args)) (string=? (caddr args) "--start"))))
+      (begin (write '(usage (landing-commit <store> <freeze-dir> ["--start" <tag>]))) (newline) (exit 2))
       (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
-                 (land (car args) (cadr args)))))
+                 (land (car args) (cadr args) (and (= 4 (length args)) (cadddr args))))))
         (write a)
         (newline)
         (exit (if (and (pair? a) (eq? (car a) 'ok)) 0 1)))))

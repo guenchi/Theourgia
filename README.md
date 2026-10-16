@@ -2970,7 +2970,7 @@ and a fourth commits them.
     scheme --script tools/drafts-dump.sc <store> --writer <W> <dir>
     scheme --script tools/drafts-restore.sc <store> <dir> --writer <W>
     scheme --script tools/landing-freeze.sc <store> --writer <W> <dir>
-    scheme --script tools/landing-commit.sc <store> <dir>
+    scheme --script tools/landing-commit.sc <store> <dir> [--start <tag>]
 
 `drafts-dump` makes `<dir>`, which must not exist, and writes one file of
 exact bytes per draft of W and `DRAFTS.sexp`, one datum:
@@ -3023,6 +3023,18 @@ nothing is committed and the answer is `(error cut-moved (pinned <cut>) (now
 --working-cut <cut>`) and frozen again. At the pinned cut it commits the
 drafts by name, each with its frozen version (`--working-version
 <block>=<version>`), and prints the commit's answer.
+
+With `--start <tag>` it also names the landing's start, the tag
+`publish-landing` publishes from (its export must be the git base). A name
+already bound is refused before anything is written (`(error
+start-tag-exists (tag <name>))`): binding it again would move an earlier
+landing's start. After the cut check the store is tagged; a tag binds the
+cut the store has applied when its record is written, and its answer
+carries that cut, so a commit made between the check and the tag shows
+there: nothing is committed and the answer is `(error start-tag-cut (tag
+<name>) (pinned <cut>) (bound <cut>))`. The tag stays, since it is a tag and
+not a commit, and a retry takes another name. A landing that commits adds
+`(start-tag <name> (cut <cut>))` to the commit's answer.
 
 ## Requests and replay
 
@@ -4160,7 +4172,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read) and `freeze-before-list` (the same, after the tree is written and before the draft list is read again). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read) and `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
