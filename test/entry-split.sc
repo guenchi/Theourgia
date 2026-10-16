@@ -487,8 +487,14 @@
 ;; eval-worker.sc and eval-runner-exec.sc each defined `protocol`, which
 ;; (chezscheme) exports. Each program's imported names are read the way the
 ;; expander reads them, by building the environment of each import spec;
-;; its own names are its top-level define, define-syntax and
-;; define-record-type names.
+;; its own names are what its top-level forms define: define, define-syntax,
+;; define-values, every name a define-record-type makes (the type, the
+;; constructor, the predicate and each field's accessor and mutator), and
+;; the same inside a top-level begin. A name a macro use introduces is not
+;; read. The second check is the other half of the same class: the import
+;; specs together, built as one environment, must not bring one name with
+;; two bindings (eval-worker.sc imported eval-context's display beside
+;; Chez's).
 (define six-programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "eval-runner-exec.sc" "mcp/server.sc"))
 (define (program-forms rel) (read-all (string-append programs-root "/" rel)))
 (define (imported-names forms)
@@ -499,16 +505,44 @@
                   (for-each (lambda (n) (hashtable-set! seen n #t)) (environment-symbols (environment spec))))
                 (cdr imp)))
     seen))
+;; the symbols of a formals list, proper or not
+(define (formal-names x)
+  (cond ((symbol? x) (list x)) ((pair? x) (append (formal-names (car x)) (formal-names (cdr x)))) (else '())))
+(define (sym . parts) (string->symbol (apply string-append (map (lambda (p) (if (symbol? p) (symbol->string p) p)) parts))))
+;; every name (define-record-type SPEC CLAUSE ...) binds
+(define (record-names spec clauses)
+  (let* ((type (if (pair? spec) (car spec) spec))
+         (ctor (if (and (pair? spec) (pair? (cdr spec))) (cadr spec) (sym "make-" type)))
+         (pred (if (and (pair? spec) (pair? (cdr spec)) (pair? (cddr spec))) (caddr spec) (sym type "?")))
+         (fields (let ((c (find (lambda (c) (and (pair? c) (eq? (car c) 'fields))) clauses))) (if c (cdr c) '()))))
+    (filter symbol?
+      (append (list type ctor pred)
+              (apply append
+                (map (lambda (f)
+                       (cond ((symbol? f) (list (sym type "-" f)))
+                             ((and (pair? f) (eq? (car f) 'immutable))
+                              (if (pair? (cddr f)) (list (caddr f)) (list (sym type "-" (cadr f)))))
+                             ((and (pair? f) (eq? (car f) 'mutable))
+                              (if (pair? (cddr f)) (cddr f) (list (sym type "-" (cadr f)) (sym type "-" (cadr f) "-set!"))))
+                             (else '())))
+                     fields))))))
 (define (own-names forms)
   (apply append
     (map (lambda (f)
            (cond ((not (and (pair? f) (pair? (cdr f)))) '())
+                 ((eq? (car f) 'begin) (own-names (cdr f)))
                  ((memq (car f) '(define define-syntax))
                   (let ((h (cadr f))) (cond ((symbol? h) (list h)) ((and (pair? h) (symbol? (car h))) (list (car h))) (else '()))))
-                 ((eq? (car f) 'define-record-type)
-                  (let ((h (cadr f))) (cond ((symbol? h) (list h)) ((list? h) (filter symbol? h)) (else '()))))
+                 ((eq? (car f) 'define-values) (formal-names (cadr f)))
+                 ((eq? (car f) 'define-record-type) (record-names (cadr f) (cddr f)))
                  (else '())))
          forms)))
+;; #f when the program's import specs make one environment, else what the
+;; expander said: a name brought twice with two bindings is refused here
+(define (import-conflict forms)
+  (let ((imp (find (lambda (f) (and (pair? f) (eq? (car f) 'import))) forms)))
+    (guard (e (#t (if (message-condition? e) (condition-message e) 'refused)))
+      (and imp (apply environment (cdr imp)) #f))))
 ;; -> ((<file> <name> ...) ...) for every program defining an imported name
 (define (name-collisions forms-of)
   (filter (lambda (r) (pair? (cdr r)))
@@ -519,13 +553,30 @@
 (want "PROGNAMES-1 no program's top-level definition takes a name its imports bring"
       (name-collisions program-forms)
       '())
-(want "PROGNAMES-2 TWIN: `(define protocol ...)` planted in eval-worker.sc is reported; CONTROL: every program read has its own names, and Chez's protocol is among eval-worker's imports"
-      (list (name-collisions (lambda (rel) (if (string=? rel "eval-worker.sc")
-                                               (append (program-forms rel) (list '(define protocol 1)))
-                                               (program-forms rel))))
+(define (planted form)
+  (name-collisions (lambda (rel) (if (string=? rel "eval-worker.sc")
+                                     (append (program-forms rel) (list form))
+                                     (program-forms rel)))))
+(want "PROGNAMES-2 TWIN: a Chez name planted in eval-worker.sc by define, define-values, a top-level begin and a record's field accessor is reported each time; CONTROL: every program read has its own names, and Chez's protocol is among eval-worker's imports"
+      (list (planted '(define protocol 1))
+            (planted '(define-values (protocol) (values 1)))
+            (planted '(begin (define protocol 1)))
+            (planted '(define-record-type thing (fields (immutable x car))))
             (map (lambda (rel) (pair? (own-names (program-forms rel)))) six-programs)
             (hashtable-ref (imported-names (program-forms "eval-worker.sc")) 'protocol #f))
-      (list '(("eval-worker.sc" protocol)) (map (lambda (rel) #t) six-programs) #t))
+      (list '(("eval-worker.sc" protocol)) '(("eval-worker.sc" protocol)) '(("eval-worker.sc" protocol))
+            '(("eval-worker.sc" car)) (map (lambda (rel) #t) six-programs) #t))
+(want "PROGNAMES-3 every program's import specs, built as one environment, bring no name with two bindings"
+      (filter cadr (map (lambda (rel) (list rel (import-conflict (program-forms rel)))) six-programs))
+      '())
+(want "PROGNAMES-4 TWIN: eval-worker.sc's imports with (theourgia eval-context) whole beside (chezscheme) are refused as one environment"
+      (let* ((forms (program-forms "eval-worker.sc"))
+             (with (map (lambda (f) (if (and (pair? f) (eq? (car f) 'import))
+                                        (append f (list '(theourgia eval-context)))
+                                        f))
+                        forms)))
+        (and (import-conflict with) #t))
+      #t)
 
 (printf "== SOCKDIR: the thin client refuses before starting a daemon ==\n")
 ;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (the
