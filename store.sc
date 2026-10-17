@@ -4977,20 +4977,26 @@
   ;; number and indexing the original request's intents with it would skip
   ;; whatever the first attempt did. What to do next is read from the answer's
   ;; own entries, never computed from n.
-  ;; NEVER: THREE OF THE FOUR ROUTES HAVE NO CELL THAT CAN GO RED. `commit`,
-  ;; `import-code` and `import-datum` call this function, and their partial
-  ;; answers carry `done` -- but nothing measures it, because reaching their
-  ;; partial branch is harder than it looks. All three validate every item
-  ;; BEFORE the per-item loop, so the cheap failures never get there:
+  ;; NEVER: THE OTHER THREE ROUTES' `done` IS MEASURED ON A RETRY, NEVER ON A
+  ;; FIRST ATTEMPT. `commit`, `import-code` and `import-datum` call this
+  ;; function at their own sites (working.sc, code-project.sc,
+  ;; datum-project.sc), and their partial answers carry `done`. On a first
+  ;; attempt their partial branch is harder to reach than it looks: all three
+  ;; validate every item BEFORE the per-item loop, so the cheap failures never
+  ;; get there:
   ;;
   ;;   two blocks, one undrafted   -> (error no-draft (blocks "...2"))
   ;;   a version for only one      -> (error bad-request req-needs-versions ...)
   ;;   both versions, one wrong    -> (error working-version-changed (blocks ...))
   ;;
   ;; Each refuses the whole request. The partial branch is reached only by a
-  ;; failure that happens DURING the loop, which needs a frozen plan whose
-  ;; versions no longer match -- one apparatus, shared by all three, recorded
-  ;; as an open item. THE ABSENCE IS DELIBERATE AND THIS IS WHERE IT IS WRITTEN DOWN;
+  ;; failure that happens DURING the loop, and the one apparatus that gives
+  ;; one is a frozen plan whose versions no longer match: a crashed request,
+  ;; retried. `completion-stale.sc` measures `done` there on all three --
+  ;; K20 (a commit, (done 1)), K12 (import-code, (done 2)) and K14's data row
+  ;; (import-code --datum, (done 1)) -- each count being what THAT completion
+  ;; applied (above). A partial answer on a first attempt of these three has
+  ;; no cell: THE ABSENCE IS DELIBERATE AND THIS IS WHERE IT IS WRITTEN DOWN;
   ;; the `batch` verb's own rows are in `cli1.sc`.
   ;; NEVER: A REPLAY RECEIPT IS NOT A LIST OF SUB-OPERATIONS AND CARRIES NO
   ;; COUNT. A request whose whole work was already applied is answered with
