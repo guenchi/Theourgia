@@ -26,10 +26,24 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia query) fact-relations rule-library rule-relations rule-only-facts check-rules
-              rule-value-check make-query-session session-answer refusal? refusal-answer
-              make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
-              session-check session-evaluate)
+              rule-value-check make-query-session session-answer refusal? refusal-answer)
         (only (theourgia store) open-and-reduce))
+
+;; THE DISPATCH'S OWN NAMES, looked up rather than imported, so the fixture
+;; loads on a tree without them and its rows that read today's behaviour
+;; (the declared acceptance changes, the session's recheck) read it there;
+;; a missing name is a stand-in that makes its rows red.
+(define (query-name name stand-in) (guard (e (#t stand-in)) (eval name (environment '(theourgia query)))))
+(define (absent . args) (raise 'not-in-this-tree))
+(define make-handler (query-name 'make-handler absent))
+(define handler-name (query-name 'handler-name absent))
+(define dispatch (query-name 'dispatch absent))
+(define extra-handlers (query-name 'extra-handlers (make-parameter '())))
+(define library-env (query-name 'library-env absent))
+(define rule-value-env (query-name 'rule-value-env absent))
+(define session-env-of (query-name 'session-env-of absent))
+(define session-check (query-name 'session-check absent))
+(define session-evaluate (query-name 'session-evaluate absent))
 
 (define bad 0)
 (define rows 0)
@@ -170,9 +184,9 @@
 (printf "== DISPATCH-5: a handler registered through the seam is answered ==\n")
 ;; probe-rel/1: one tuple, ("probe"); its goal's argument a variable
 (define probe
-  (make-handler 'PROBE (lambda (rel) (eq? rel 'probe-rel)) (lambda (rel) 1) (lambda (rel) #f) (lambda (rel) #f) #f #t
+  (guard (e (#t 'absent)) (make-handler 'PROBE (lambda (rel) (eq? rel 'probe-rel)) (lambda (rel) 1) (lambda (rel) #f) (lambda (rel) #f) #f #t
                 (lambda (S g b rest) (rest (cons (cons (cadr g) "probe") b)))
-                (lambda (g seen) #f)))
+                (lambda (g seen) #f))))
 (want "DISPATCH-5 the query verb answers probe-rel through the seam, in process"
       (rows-of (parameterize ((extra-handlers (list probe))) (run 'query "(probe-rel ?x)")))
       '(("probe")))
@@ -183,14 +197,14 @@
 ;; ---- DISPATCH-6: exactly one handler, at the dispatcher and through solve --------------
 (printf "== DISPATCH-6: an overlapping handler is ambiguous-goal ==\n")
 (define over
-  (make-handler 'OVER (lambda (rel) (eq? rel 'kind)) (lambda (rel) 2) (lambda (rel) #f) (lambda (rel) #f) #f #t
+  (guard (e (#t 'absent)) (make-handler 'OVER (lambda (rel) (eq? rel 'kind)) (lambda (rel) 2) (lambda (rel) #f) (lambda (rel) #f) #f #t
                 (lambda (S g b rest) (rest b))
-                (lambda (g seen) #f)))
+                (lambda (g seen) #f))))
 (want "DISPATCH-6 the dispatcher itself, on kind with an overlapping handler registered past the validator: ambiguous-goal"
       (refused (parameterize ((extra-handlers (list over))) (dispatch (library-env rule-library) 'kind)))
       '(error ambiguous-goal (relation kind) (handlers (FACT OVER))))
 (define S6 (session-of '()))
-(define goals6 (session-check S6 '(kind ?b ?k)))
+(define goals6 (guard (e (#t 'absent)) (session-check S6 '(kind ?b ?k))))
 (want "DISPATCH-6 through solve, the static pass already run, the seam bound before the evaluation: ambiguous-goal"
       (in-order goals6 (refused (parameterize ((extra-handlers (list over))) (call-with-values (lambda () (session-evaluate S6 goals6)) list))))
       (list '((kind ?b ?k)) '(error ambiguous-goal (relation kind) (handlers (FACT OVER)))))
