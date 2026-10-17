@@ -57,7 +57,9 @@
           make-query-session session-query session-answer session-expansions session-spent session-passes query-relations-items
           session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
-          query-budget-default)
+          query-budget-default
+          make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
+          session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
@@ -267,15 +269,15 @@
     ;; The relations a goal names, through every nested and: the goals
     ;; query-goals answers for it, which it has already accepted.
     (define (goal-relations g)
-      (map car (query-goals g (append rule-library rule-only-heads) '(?w))))
+      (map car (rule-value-goals g)))
     (define (goal-refusal g)
       (or (guard (e ((refusal? e) (refusal-answer e)))
-            (query-goals g (append rule-library rule-only-heads) '(?w))
+            (rule-value-goals g)
             #f)
           (let ((x (find relation-external? (goal-relations g))))
             (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))
           (and kinds?
-               (goals-kind-refusal (query-goals g (append rule-library rule-only-heads) '(?w)) written-block-seed))))
+               (goals-kind-refusal (rule-value-goals g) written-block-seed (rule-value-env)))))
     ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every pair it reads
     ;; as a marker in a member it declares (request.sc, bind-new: a pair
     ;; headed "#%new" with a pair after it), so a rule value holding one would
@@ -505,12 +507,16 @@
                      (refuse 'error 'bad-request 'wrong-kind (list 'relation (car g)) (list 'position n)
                              (list 'column (kind-name c)) (list 'got a)))
                    (loop (cdr as) (cdr cs) (+ n 1) env))))))))
+  ;; KINDS-OF answers a relation's column kinds, (test-rule . <rule>) for a
+  ;; test, or #f when they are not known (the goal is then not read).
   (define (goal-kinds goals env kinds-of)
     (let loop ((gs goals) (env env))
       (if (null? gs)
           env
-          (let* ((g (car gs)) (t (assq (car g) tests)))
-            (loop (cdr gs) (if t (test-kinds g (caddr t) env) (relation-kinds g (kinds-of (car g)) env)))))))
+          (let* ((g (car gs)) (k (kinds-of (car g))))
+            (loop (cdr gs) (if (and (pair? k) (eq? (car k) 'test-rule))
+                               (test-kinds g (cdr k) env)
+                               (relation-kinds g k env)))))))
 
   ;; THE LIBRARY RELATIONS' KINDS, from RULES and DECLARED: -> a table of
   ;; relation -> column kinds, or a refusal (a clause's body as a query's;
@@ -523,7 +529,7 @@
     (let* ((table (make-eq-hashtable))
            (rels (map car (rule-relations rules)))
            (clauses-of (lambda (r) (filter (lambda (c) (eq? (car (car c)) r)) rules)))
-           (kinds-of (lambda (r) (relation-column-kinds r table)))
+           (kinds-of (lambda (r) (let ((t (assq r tests))) (if t (cons 'test-rule (caddr t)) (relation-column-kinds r table)))))
            (head-kinds (lambda (c) (let ((env (goal-kinds (cdr c) '() kinds-of)))
                                      (map (lambda (a) (term-kind a env)) (cdr (car c))))))
            (known? (lambda (r) (or (assq r tests) (relation-column-kinds r table)))))
@@ -550,18 +556,20 @@
         (filter (lambda (d) (memq (car d) rels)) declared))
       table))
 
-  ;; THE CHECK OF ONE GOAL LIST against the library's kinds: #f, or the
-  ;; refusal's answer. SEED is the environment before the first goal.
-  (define (goals-kind-refusal goals seed)
+  ;; THE CHECK OF ONE GOAL LIST against the kinds its handlers in ENV give:
+  ;; #f, or the refusal's answer. SEED is the environment before the first
+  ;; goal.
+  (define (goals-kind-refusal goals seed env)
     (guard (e ((refusal? e) (refusal-answer e)))
-      (goal-kinds goals seed (lambda (r) (relation-column-kinds r library-kinds)))
+      (goal-kinds goals seed (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))
       #f))
   ;; A CLIENT QUERY'S KIND CHECK: #f when the goal passes, or when
   ;; query-goals refuses it (the session answers that refusal as before);
   ;; else the kind refusal's answer.
   (define (query-kind-refusal goal)
     (guard (e ((refusal? e) #f))
-      (goals-kind-refusal (query-goals goal rule-library) '())))
+      (let ((env (session-env rule-library '())))
+        (goals-kind-refusal (query-goals goal env (query-reporter rule-library)) '() env))))
   ;; A RULE VALUE'S GOALS ARE ASKED WITH ?w BOUND TO THE WRITTEN BLOCK, so ?w
   ;; starts as an ID.
   (define written-block-seed (list (list '?w '(id) (list (cons '(written) '(id))))))
@@ -581,19 +589,143 @@
            (exists (lambda (k)
                      (let ((c (assq k value)))
                        (and c (pair? (cdr c))
-                            (goals-kind-refusal (query-goals (cadr c) (append rule-library rule-only-heads) '(?w))
-                                                written-block-seed))))
+                            (goals-kind-refusal (rule-value-goals (cadr c)) written-block-seed (rule-value-env)))))
                    '(where must must-not)))))
 
   ;; ---- registration (checked when the library loads) -----------------------------------
 
-  ;; FACTS, when given, are a session's per-write facts.
-  (define (arity-of rel rules . facts)
-    (cond ((assq rel fact-relations) => cadr)
-          ((assq rel tests) => cadr)
-          ((and (pair? facts) (assq rel (car facts))) => cadr)
-          ((assq rel (rule-relations rules)) => cadr)
-          (else #f)))
+  ;; ---- the handlers: one per kind of goal --------------------------------------------------
+  ;;
+  ;; KEY: A GOAL IS ANSWERED BY THE ONE HANDLER THAT APPLIES TO ITS RELATION.
+  ;; Four handlers, built from the three tables (tests, fact-relations,
+  ;; rule-only-facts) and a rule list, which stay as they are and keep their
+  ;; readers: TEST, FACT, WRITE-FACT (a rule check's per-write facts) and
+  ;; RULE. A new kind of goal is a new handler with its own predicate; the
+  ;; four are not edited for it (steps 3 to 5).
+  ;;
+  ;; A handler: its name; applies? (relation -> boolean); arity-of
+  ;; (relation -> arity); kinds-of (relation -> its column kinds, (test-rule
+  ;; . <rule>) for a test, or #f when unknown); external? (relation ->
+  ;; boolean); write? (whether it reads a write's facts); binds? (whether its
+  ;; goal binds its variables for the goals after it -- a test's does not);
+  ;; solve (session goal bindings rest -> unspecified, REST being the
+  ;; continuation that solves the remaining goals with new bindings); check
+  ;; (goal seen -> #f or the violation, (test-variable-unbound <variable>),
+  ;; SEEN being the variables bound before the goal).
+  (define-record-type (handler make-handler handler?)
+    (fields name applies? arity-of kinds-of external? write? binds? solve check))
+
+  (define test-handler
+    (make-handler 'TEST
+                  (lambda (rel) (and (assq rel tests) #t))
+                  (lambda (rel) (cadr (assq rel tests)))
+                  (lambda (rel) (cons 'test-rule (caddr (assq rel tests))))
+                  (lambda (rel) #f)
+                  #f #f
+                  (lambda (S g b rest)
+                    (when (test-holds? (car g) (map (lambda (a) (value-of a b)) (cdr g))) (rest b)))
+                  (lambda (g seen)
+                    (let ((v (find (lambda (v) (not (memq v seen))) (test-variables g))))
+                      (and v (list 'test-variable-unbound v))))))
+  (define fact-handler
+    (make-handler 'FACT
+                  (lambda (rel) (and (assq rel fact-relations) #t))
+                  (lambda (rel) (cadr (assq rel fact-relations)))
+                  (lambda (rel) (map kind-union (list-ref (assq rel fact-relations) 4)))
+                  (lambda (rel) (eq? (list-ref (assq rel fact-relations) 3) 'external))
+                  #f #t
+                  (lambda (S g b rest)
+                    (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                              (fact-tuples S (car g) (call-args (cdr g) b))))
+                  (lambda (g seen) #f)))
+  ;; FACTS: ((<relation> <arity> <tuple> ...) ...), a session's per-write
+  ;; facts; for a rule value's check, rule-only-facts, whose rows are never
+  ;; read (a rule value is checked, not evaluated).
+  (define (write-fact-handler facts)
+    (make-handler 'WRITE-FACT
+                  (lambda (rel) (and (assq rel facts) #t))
+                  (lambda (rel) (cadr (assq rel facts)))
+                  (lambda (rel) (let ((f (assq rel rule-only-facts))) (and f (map kind-union (caddr f)))))
+                  (lambda (rel) #f)
+                  #t #t
+                  (lambda (S g b rest)
+                    (let ((f (assq (car g) facts)))
+                      (count! S (car g) (length (cddr f)))
+                      (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                                (cddr f))))
+                  (lambda (g seen) #f)))
+  ;; RULES: the clauses whose heads are callable (the library's, and a
+  ;; session's extra clauses). A stored rule's NAME is a constraint's
+  ;; identifier, never a relation, and is registered nowhere.
+  (define (rule-handler rules)
+    (let ((rels (rule-relations rules)))
+      (make-handler 'RULE
+                    (lambda (rel) (and (assq rel rels) #t))
+                    (lambda (rel) (cadr (assq rel rels)))
+                    (lambda (rel) (relation-column-kinds rel library-kinds))
+                    (lambda (rel) (relation-external? rel))
+                    #f #t
+                    (lambda (S g b rest)
+                      (let ((key (cons (car g) (call-args (cdr g) b))))
+                        (ensure-expanded S key)
+                        (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                                  (table-tuples S key))))
+                    (lambda (g seen) #f))))
+
+  ;; THE FIXTURES' SEAM: handlers a fixture registers, in process, for the
+  ;; extent of a parameterize. The product never binds it, and nothing in a
+  ;; request, a stored constraint or an option reaches it. Its handlers are
+  ;; read at each dispatch and are not validated (they come after the
+  ;; validator), which is what lets a fixture reach the runtime rule.
+  (define extra-handlers (make-parameter '()))
+
+  ;; AN ENVIRONMENT: the handler set of one place goals are read.
+  (define-record-type (dispatch-env make-dispatch-env dispatch-env?)
+    (fields handlers))
+  ;; LIBRARY LOAD, and a session's extra clauses: TEST, FACT, RULE over
+  ;; RULES; no WRITE-FACT, so a body naming one is an unknown relation.
+  (define (library-env rules) (make-dispatch-env (list test-handler fact-handler (rule-handler rules))))
+  ;; A RULE VALUE (the rule verb): the rule-only facts as WRITE-FACT, the
+  ;; library as RULE.
+  (define (rule-value-env)
+    (make-dispatch-env (list test-handler fact-handler (write-fact-handler rule-only-facts) (rule-handler rule-library))))
+  ;; A SESSION: its per-write facts as WRITE-FACT (none but a rule check's),
+  ;; the library and its extra clauses as RULE.
+  (define (session-env rules write-facts)
+    (make-dispatch-env (list test-handler fact-handler (write-fact-handler write-facts) (rule-handler rules))))
+
+  ;; THE ONE HANDLER FOR REL in ENV, or #f when none applies. More than one
+  ;; is ambiguous-goal: the validators below make each environment's
+  ;; handlers exclusive, so only a handler registered past them (the seam)
+  ;; can reach it.
+  ;; ON THE EVALUATOR'S PATH, so nothing is allocated unless the seam is
+  ;; bound or two handlers apply: one walk finds the handler and goes on to
+  ;; the end, since a second applicable one is the refusal.
+  (define (dispatch env rel)
+    (let* ((x (extra-handlers))
+           (hs (if (null? x) (dispatch-env-handlers env) (append (dispatch-env-handlers env) x))))
+      (let loop ((l hs) (found #f))
+        (cond ((null? l) found)
+              (((handler-applies? (car l)) rel)
+               (if found
+                   (refuse 'error 'ambiguous-goal (list 'relation rel)
+                           (list 'handlers (map handler-name (filter (lambda (h) ((handler-applies? h) rel)) hs))))
+                   (loop (cdr l) (car l))))
+              (else (loop (cdr l) found))))))
+
+  ;; EXCLUSIVITY AT SESSION CREATION, where acceptance changes: a relation
+  ;; two of the session's handlers answer -- an extra clause heading a
+  ;; per-write fact, a per-write fact named like a fact relation or a test,
+  ;; or like a library rule's head -- is refused, naming the handlers, before
+  ;; any goal is read. (A clause heading a test or a fact relation is
+  ;; check-rules' refusal, as before.)
+  (define (session-exclusive! env write-facts extra)
+    (for-each
+      (lambda (rel)
+        (let ((hs (filter (lambda (h) ((handler-applies? h) rel)) (dispatch-env-handlers env))))
+          (when (> (length hs) 1)
+            (refuse 'error 'bad-request 'ambiguous-relation (list 'relation rel) (list 'handlers (map handler-name hs))))))
+      (append (map car write-facts) (map (lambda (r) (car (car r))) extra))))
 
   (define (goal-variables g) (filter variable? (cdr g)))
   ;; WHAT A TEST NEEDS BOUND BY AN EARLIER GOAL: its variables, and `_`, which
@@ -615,8 +747,15 @@
                   (else (list (car as))))))))
 
   ;; Each violation is an assertion naming the check and printing the rule.
-  (define (check-rules rules)
+  ;; RULES are a library's own clauses; EXTRA, when given, a session's extra
+  ;; clauses, checked with them in the library-load environment. A head naming
+  ;; a per-write fact is refused for the library's own clauses only (an extra
+  ;; clause doing it is the session's ambiguous-relation).
+  (define (check-rules rules . extra)
     (define (bad what rule) (assertion-violation 'query what rule))
+    (define all (if (pair? extra) (append rules (car extra)) rules))
+    (define env (library-env all))
+    (define (handler-of rel rule) (or (dispatch env rel) (bad "unknown relation" rule)))
     (for-each
       (lambda (rule)
         (let ((head (car rule)) (body (cdr rule)))
@@ -624,31 +763,27 @@
           (when (eq? (car head) 'and) (bad "and in a rule" rule))
           (when (assq (car head) tests) (bad "a rule heads a test" rule))
           (when (assq (car head) fact-relations) (bad "a rule heads a fact relation" rule))
+          (when (and (memq rule rules) (assq (car head) rule-only-facts)) (bad "a rule heads a per-write fact" rule))
           (for-each (lambda (a) (unless (or (variable? a) (simple-constant? a)) (bad "a head argument is not a variable or a constant" rule)))
                     (cdr head))
           (for-each
             (lambda (g)
               (unless (pair? g) (bad "a goal is not a relation" rule))
               (when (eq? (car g) 'and) (bad "and in a rule" rule))
-              (let ((n (arity-of (car g) rules)))
-                (unless n (bad "unknown relation" rule))
+              (let ((n ((handler-arity-of (handler-of (car g) rule)) (car g))))
                 (unless (= n (length (cdr g))) (bad "wrong arity" rule))
                 (when (misplaced-term g) (bad "a body argument is not a term of its position" rule))))
             body)
-          (unless (= (arity-of (car head) rules) (length (cdr head))) (bad "wrong arity" rule))
-          (let ((bound (apply append (map goal-variables (filter (lambda (g) (not (assq (car g) tests))) body)))))
+          (unless (= ((handler-arity-of (handler-of (car head) rule)) (car head)) (length (cdr head))) (bad "wrong arity" rule))
+          (let ((bound (apply append (map goal-variables (filter (lambda (g) (handler-binds? (handler-of (car g) rule))) body)))))
             (for-each (lambda (v) (unless (memq v bound) (bad "a head variable in no body goal" rule)))
                       (goal-variables head)))
           (let loop ((gs body) (seen '()))
             (unless (null? gs)
-              (let ((g (car gs)))
-                (if (assq (car g) tests)
-                    (begin
-                      (for-each (lambda (v) (unless (memq v seen) (bad "a test variable not bound by an earlier goal" rule)))
-                                (test-variables g))
-                      (loop (cdr gs) seen))
-                    (loop (cdr gs) (append (goal-variables g) seen))))))))
-      rules)
+              (let* ((g (car gs)) (h (handler-of (car g) rule)))
+                (when ((handler-check h) g seen) (bad "a test variable not bound by an earlier goal" rule))
+                (loop (cdr gs) (if (handler-binds? h) (append (goal-variables g) seen) seen)))))))
+      all)
     #t)
 
   (define library-checked (check-rules rule-library))
@@ -666,7 +801,7 @@
     (fields state rules index builds memo tables complete expansion-counts
             (mutable visited) (mutable changed) (mutable tuples) (mutable budget)
             (mutable provider) (mutable attestation) (mutable consulted) keyword-hook (mutable passes)
-            write-facts))
+            write-facts env-of))
 
   (define query-budget-default 1000000)
 
@@ -685,14 +820,16 @@
                             (cadddr options)
                             '()))
            (rules (append rule-library extra))
-           (index (make-eq-hashtable)))
-      (unless (null? extra) (check-rules rules))
+           (index (make-eq-hashtable))
+           (env (session-env rules write-facts)))
+      (unless (null? extra) (check-rules rule-library extra))
+      (unless (and (null? extra) (null? write-facts)) (session-exclusive! env write-facts extra))
       (for-each (lambda (r) (hashtable-set! index (car (car r)) (append (hashtable-ref index (car (car r)) '()) (list r))))
                 rules)
       (new-session state rules index (make-eq-hashtable) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?) #f 0 budget
-                   #f #f #f keyword-hook 0 write-facts)))
+                   #f #f #f keyword-hook 0 write-facts env)))
 
   ;; How many times one call was expanded in the session: (rel arg ...),
   ;; a variable for an unbound argument.
@@ -993,26 +1130,15 @@
         (count! S (car key) 1))))
   (define (table-tuples S key) (reverse (cdr (table S key))))
 
+  ;; EACH GOAL BY ITS ONE HANDLER: the dispatcher finds it, the handler
+  ;; solves the goal and calls REST with each new binding.
   (define (solve S goals b k)
     (if (null? goals)
         (k b)
-        (let* ((g (car goals)) (rel (car g)) (args (cdr g)))
-          (cond
-            ((assq rel tests)
-             (when (test-holds? rel (map (lambda (a) (value-of a b)) args)) (solve S (cdr goals) b k)))
-            ((assq rel fact-relations)
-             (for-each (lambda (t) (let ((b2 (unify args t b))) (when b2 (solve S (cdr goals) b2 k))))
-                       (fact-tuples S rel (call-args args b))))
-            ((assq rel (session-write-facts S))
-             => (lambda (f)
-                  (count! S rel (length (cddr f)))
-                  (for-each (lambda (t) (let ((b2 (unify args t b))) (when b2 (solve S (cdr goals) b2 k))))
-                            (cddr f))))
-            (else
-             (let ((key (cons rel (call-args args b))))
-               (ensure-expanded S key)
-               (for-each (lambda (t) (let ((b2 (unify args t b))) (when b2 (solve S (cdr goals) b2 k))))
-                         (table-tuples S key))))))))
+        (let* ((g (car goals))
+               (h (or (dispatch (session-env-of S) (car g))
+                      (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g))))))
+          ((handler-solve h) S g b (lambda (b2) (solve S (cdr goals) b2 k))))))
 
   (define (ensure-expanded S key)
     (unless (or (hashtable-ref (session-complete S) key #f)
@@ -1052,13 +1178,15 @@
 
   ;; ---- one query ------------------------------------------------------------------------------
 
-  ;; The goals of a query, the variables it reports, checked as A3 says.
-  ;; BOUND, when given, names variables bound before the first goal: a rule's
-  ;; goals are asked with ?w bound to the target. FACTS, when given after it,
-  ;; are the session's per-write facts.
-  (define (query-goals goal rules . bound+facts)
-    (define bound (if (pair? bound+facts) (list (car bound+facts)) '()))
-    (define facts (if (and (pair? bound+facts) (pair? (cdr bound+facts))) (cadr bound+facts) '()))
+  ;; The goals of a query, the variables it reports, checked as A3 says, each
+  ;; through the handler ENV dispatches it to. REPORT is the route's reporter
+  ;; of an unknown relation (query-reporter). BOUND, when given, names
+  ;; variables bound before the first goal: a rule's goals are asked with ?w
+  ;; bound to the target. TWO PASSES, as before: every goal's relation, arity
+  ;; and terms, then the bindings, so an unknown relation is reported before
+  ;; a test's unbound variable.
+  (define (query-goals goal env report . bound+)
+    (define bound (if (pair? bound+) (list (car bound+)) '()))
     ;; AN AND IS A CONJUNCTION WHEREVER IT STANDS: (and a (and b c)) is the
     ;; conjunction a b c, its goals in the order written. An empty and is
     ;; no goal, nested or not, and an and found inside itself (a datum
@@ -1074,10 +1202,8 @@
     (let ((goals (conjuncts goal)))
       (for-each
         (lambda (g)
-          (let ((n (arity-of (car g) rules facts)))
-            (unless n
-              (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g))
-                      (list 'known (append (map car fact-relations) (map car (rule-relations rules)) (map car tests)))))
+          (let* ((h (or (dispatch env (car g)) (report (car g))))
+                 (n ((handler-arity-of h) (car g))))
             (unless (= n (length (cdr g)))
               (refuse 'error 'bad-request 'wrong-arity (list 'relation (car g)) (list 'arity n) (list 'given (length (cdr g))))))
           (let ((bad (misplaced-term g)))
@@ -1085,22 +1211,36 @@
         goals)
       (let loop ((gs goals) (seen (if (pair? bound) (car bound) '())))
         (unless (null? gs)
-          (let ((g (car gs)))
-            (if (assq (car g) tests)
-                (begin
-                  (for-each (lambda (v) (unless (memq v seen)
-                                          (refuse 'error 'bad-request 'test-variable-unbound (list 'variable v))))
-                            (test-variables g))
-                  (loop (cdr gs) seen))
-                (loop (cdr gs) (append (goal-variables g) seen))))))
+          (let* ((g (car gs)) (h (dispatch env (car g))) (v ((handler-check h) g seen)))
+            (when v (refuse 'error 'bad-request (car v) (list 'variable (cadr v))))
+            (loop (cdr gs) (if (handler-binds? h) (append (goal-variables g) seen) seen)))))
       goals))
+
+  ;; THE QUERY ROUTES' REPORTER: unknown-relation with the known list in its
+  ;; order -- the fact relations, the first definition of each rule of RULES,
+  ;; the tests. A session's per-write facts are not listed, as they never
+  ;; were; a rule value's rule-only facts are listed among the rules (RULES
+  ;; holds their heads).
+  (define (query-reporter rules)
+    (lambda (rel)
+      (refuse 'error 'bad-request 'unknown-relation (list 'relation rel)
+              (list 'known (append (map car fact-relations) (map car (rule-relations rules)) (map car tests))))))
+  ;; A RULE VALUE'S GOALS: the rule-value environment, ?w bound
+  (define (rule-value-goals g)
+    (query-goals g (rule-value-env) (query-reporter (append rule-library rule-only-heads)) '(?w)))
 
   (define query-counter 0)
 
+  ;; THE SESSION'S STATIC PASS: the goals, checked in the session's
+  ;; environment. Raises a refusal.
+  (define (session-check S goal)
+    (query-goals goal (session-env-of S) (query-reporter (session-rules S))))
   ;; -> (values <rows> <vars>), the rows as lists of values. Raises a refusal.
   (define (session-query S goal)
-    (let* ((goals (query-goals goal (session-rules S) '() (session-write-facts S)))
-           (vars (let loop ((gs goals) (out '()))
+    (session-evaluate S (session-check S goal)))
+  ;; THE EVALUATION OF GOALS the static pass has accepted.
+  (define (session-evaluate S goals)
+    (let* ((vars (let loop ((gs goals) (out '()))
                    (if (null? gs) (reverse out)
                        (loop (cdr gs) (fold-left (lambda (acc v) (if (memq v acc) acc (cons v acc))) out (goal-variables (car gs)))))))
            ;; KEY: THE QUERY'S OWN RELATION IS A STRING, which no goal and no
@@ -1178,14 +1318,16 @@
   ;; (unrenderable) -- for a caller that counts or lists rows itself.
   (define (session-rows S goal)
     (let-values (((rows vars) (session-query S goal)))
-      (let-values (((sorted digest) (canonical rows vars (query-goals goal (session-rules S) '() (session-write-facts S)))))
+      (let-values (((sorted digest) (canonical rows vars (session-check S goal))))
         sorted)))
 
   ;; -> (ok <rows sorted> <vars> <digest>), or the refusal's answer.
   (define (session-answer S goal)
     (guard (e ((refusal? e) (refusal-answer e)))
       (let-values (((rows vars) (session-query S goal)))
-        (let-values (((sorted digest) (canonical rows vars (query-goals goal (session-rules S)))))
+        ;; THE RECHECK IN THE SESSION'S ENVIRONMENT, per-write facts included
+        ;; (it once lacked them, and refused a query it had just evaluated)
+        (let-values (((sorted digest) (canonical rows vars (session-check S goal))))
           (list 'ok sorted vars digest)))))
 
   ;; --relations: the two tables, one item a relation.
