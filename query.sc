@@ -664,7 +664,10 @@
                     (lambda (rel) (and (assq rel rels) #t))
                     (lambda (rel) (cadr (assq rel rels)))
                     (lambda (rel) (relation-column-kinds rel library-kinds))
-                    (lambda (rel) (relation-external? rel))
+                    ;; the facts' column only, as the design gives it; whether a
+                    ;; rule reads outside the log stays rule-value-check's own
+                    ;; recursive question (relation-external?)
+                    (lambda (rel) #f)
                     #f #t
                     (lambda (S g b rest)
                       (let ((key (cons (car g) (call-args (cdr g) b))))
