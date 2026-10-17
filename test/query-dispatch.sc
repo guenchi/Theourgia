@@ -133,6 +133,11 @@
 (want "DISPATCH-2b a library clause heading a per-write fact is refused when the library is checked"
       (asserted (check-rules (append rule-library (list '((unread ?x) (kind ?x section))))))
       (list "a rule heads a per-write fact" (list '((unread ?x) (kind ?x section)))))
+(want "DISPATCH-2 an extra clause heading a test, or a fact relation, keeps its own assertion: the heads are checked before any body"
+      (in-order (asserted (session-of (list '((member ?x ?y) (kind ?x ?y)))))
+                (asserted (session-of (list '((kind ?x ?y) (field ?x ?y _))))))
+      (list (list "a rule heads a test" (list '((member ?x ?y) (kind ?x ?y))))
+            (list "a rule heads a fact relation" (list '((kind ?x ?y) (field ?x ?y _))))))
 (want "DISPATCH-2b CONTROL: an extra clause heading a rule-only fact's name, no such per-write fact given, is accepted"
       (let ((r (refused (session-of (list '((unread ?x) (kind ?x _))) 1000000 #f '()))))
         (if (and (pair? r) (eq? (car r) 'error)) r 'accepted))
@@ -153,8 +158,9 @@
 (want "DISPATCH-7 CONTROL: constraints named kind and member are stored, and kind and member still answer as relation and test"
       (in-order (head-of (run 'rule "kind" "--on" "section" "--must-not" "(kind ?w code)"))
                 (head-of (run 'rule "member" "--on" "section" "--must-not" "(member ?w (\"zzz\"))"))
-                (pair? (rows-of (run 'query "(kind ?b ?k)")))
-                (pair? (rows-of (run 'query "(and (kind ?b ?k) (member ?k (section)))"))))
+                (let ((a (run 'query "(kind ?b ?k)"))) (and (pair? a) (eq? (car a) 'ok) (pair? (rows-of a))))
+                (let ((a (run 'query "(and (kind ?b ?k) (member ?k (section)))")))
+                  (and (pair? a) (eq? (car a) 'ok) (pair? (rows-of a)) (for-all (lambda (r) (equal? (cadr r) 'section)) (rows-of a)))))
       '(ok ok #t #t))
 
 ;; ---- DISPATCH-4: an unknown relation, in each route's form ----------------------------

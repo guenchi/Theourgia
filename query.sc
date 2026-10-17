@@ -61,6 +61,7 @@
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
+          (only (chezscheme) make-parameter)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
@@ -754,18 +755,29 @@
   (define (check-rules rules . extra)
     (define (bad what rule) (assertion-violation 'query what rule))
     (define all (if (pair? extra) (append rules (car extra)) rules))
-    (define env (library-env all))
-    (define (handler-of rel rule) (or (dispatch env rel) (bad "unknown relation" rule)))
+    ;; THE HEADS FIRST, every clause's: the environment is built from the
+    ;; heads, so a head naming a test or a fact relation is refused by its own
+    ;; assertion before any body is dispatched (a body naming that relation
+    ;; would otherwise meet two handlers first)
     (for-each
       (lambda (rule)
-        (let ((head (car rule)) (body (cdr rule)))
+        (let ((head (car rule)))
           (unless (and (pair? head) (symbol? (car head))) (bad "a rule head is not a relation" rule))
           (when (eq? (car head) 'and) (bad "and in a rule" rule))
           (when (assq (car head) tests) (bad "a rule heads a test" rule))
           (when (assq (car head) fact-relations) (bad "a rule heads a fact relation" rule))
           (when (and (memq rule rules) (assq (car head) rule-only-facts)) (bad "a rule heads a per-write fact" rule))
           (for-each (lambda (a) (unless (or (variable? a) (simple-constant? a)) (bad "a head argument is not a variable or a constant" rule)))
-                    (cdr head))
+                    (cdr head))))
+      all)
+    (check-bodies all (library-env all) bad)
+    #t)
+  ;; THE BODIES of check-rules' clauses, in ENV, BAD its assertion
+  (define (check-bodies all env bad)
+    (define (handler-of rel rule) (or (dispatch env rel) (bad "unknown relation" rule)))
+    (for-each
+      (lambda (rule)
+        (let ((head (car rule)) (body (cdr rule)))
           (for-each
             (lambda (g)
               (unless (pair? g) (bad "a goal is not a relation" rule))
@@ -783,8 +795,7 @@
               (let* ((g (car gs)) (h (handler-of (car g) rule)))
                 (when ((handler-check h) g seen) (bad "a test variable not bound by an earlier goal" rule))
                 (loop (cdr gs) (if (handler-binds? h) (append (goal-variables g) seen) seen)))))))
-      all)
-    #t)
+      all))
 
   (define library-checked (check-rules rule-library))
   ;; NEVER: A LIBRARY CLAUSE THAT DOES NOT CHECK IS A BUILD ERROR, as an arity is.
