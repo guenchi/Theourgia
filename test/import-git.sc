@@ -358,6 +358,26 @@
               (and (file-at st3 "o2.sc") (not (equal? (file-at st3 "o2.sc") o-file))) (deleted? st3 o-file)))
       (list (list (d 'u) (d 'v)) #t #f #t #t))
 
+;; THE LANGUAGE OF WHAT IS INSERTED: an added file's file block and each of
+;; its children, and a child newly inserted into an existing file, carry the
+;; language a fresh import gives them; an added file of no known language
+;; carries none.
+(define wt3l (repo! "r3l"))
+(define c3l-0 (commit! wt3l "base" (cons "k.sc" (defs 'k))))
+(define c3l-1 (commit! wt3l "add" (cons "k.sc" (defs 'k 'm)) (cons "n.sc" (defs 'p 'q)) (cons "notes.xyz" "plain words\n")))
+(define st3l (store-from! wt3l c3l-0 "s3l" #t))
+(define k3l-old (kids st3l "k.sc"))
+(define r3l (import! st3l wt3l c3l-0 c3l-1 "t3l"))
+(define (lang-of st id) (field-of st id 'lang))
+(want "IG-3 inserted blocks carry their language: an added file's file block and children, a new child in an existing file; an added file of no known language carries none, on its file block or any child"
+      (in-order (ran r3l)
+                (lang-of st3l (file-at st3l "n.sc"))
+                (map (lambda (id) (lang-of st3l id)) (kids st3l "n.sc"))
+                (map (lambda (id) (lang-of st3l id)) (filter (lambda (id) (not (member id k3l-old))) (kids st3l "k.sc")))
+                (and (file-at st3l "notes.xyz") (lang-of st3l (file-at st3l "notes.xyz")))
+                (let ((ks (kids st3l "notes.xyz"))) (and (pair? ks) (for-all (lambda (id) (not (lang-of st3l id))) ks))))
+      (list '(ok 0) "scheme" '("scheme" "scheme") '("scheme") #f #t))
+
 ;; ---- IG-4: the base ----------------------------------------------------------------
 (printf "== IG-4: the base ==\n")
 (define wt4 (repo! "r4"))
@@ -385,10 +405,9 @@
       (list (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-3)) #t 1)
             (list (list 'nothing-to-import (list 'from c4-3) (list 'to c4-4)) #t 1)
             (list (list 'nothing-to-import (list 'from c4-2) (list 'to c4-2)) #t 1)))
-(want "IG-4 a rev the repository does not have: repo-unreadable, nothing written"
-      (let ((p (position st4)))
-        (in-order (refusal (import! st4 wt4 "no-such-rev" c4-2 "t4f")) (equal? (position st4) p)))
-      (list (list 'repo-unreadable (list 'repo wt4) '(rev "no-such-rev")) #t))
+(want "IG-4 a rev the repository does not have: repo-unreadable, nothing written, exit 1"
+      (refused-run st4 wt4 "no-such-rev" c4-2 "t4f")
+      (list (list 'repo-unreadable (list 'repo wt4) '(rev "no-such-rev")) #t 1))
 
 ;; A LINKED DIRECTORY: git holds `link` as a symbolic link to `lib`; the
 ;; store is seeded by import-code of the extracted tree itself, which
@@ -453,15 +472,14 @@
 (want "IG-5 an added file at 100755: file-mode"
       (refused-run st5 wt5 c5-0 c5-add "t5")
       (list '(file-mode (path "y.sh") (from none) (to "100755")) #t 1))
-(want "IG-5 an added path the store cannot hold (a backslash): unsafe-path, nothing written"
-      (let ((p (position st5)))
-        (in-order (refusal (import! st5 wt5 c5-0 c5-unsafe "t5")) (equal? (position st5) p)))
-      (list '(unsafe-path (path "back\\slash.sc")) #t))
+(want "IG-5 an added path the store cannot hold (a backslash): unsafe-path, nothing written, exit 1"
+      (refused-run st5 wt5 c5-0 c5-unsafe "t5")
+      (list '(unsafe-path (path "back\\slash.sc")) #t 1))
 (checked "tag" (ask st5 'tag "t5x"))
 (define p5 (position st5))
-(want "IG-5 a tag name already bound: tag-exists, before any write"
-      (in-order (refusal (import! st5 wt5 c5-0 c5-exec "t5x")) (equal? (position st5) p5) (import-blocks st5))
-      (list '(tag-exists (tag "t5x")) #t '()))
+(want "IG-5 a tag name already bound: tag-exists, before any write, exit 1"
+      (in-order (refused-run st5 wt5 c5-0 c5-exec "t5x") (equal? (position st5) p5) (import-blocks st5))
+      (list '((tag-exists (tag "t5x")) #t 1) #t '()))
 (want "IG-5 a content change at 100755 at both ends is accepted"
       (in-order (ran (import! st5 wt5 c5-0 c5-exec "t5")) (export-is? st5 wt5 c5-exec (tag-cut st5 "t5")))
       (list '(ok 0) #t))
@@ -578,20 +596,21 @@
 (define before7a (position (v-st v7a)))
 (define cut7a (applied-cut (v-st v7a)))
 (define after7a (named (v-st v7a) "m.sc" 'B 'c 'x 'a))
-(define dry7a (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7" "" " --dry-run")))
+(define dry7a-run (import! (v-st v7a) wt7 c7-0 c7-1 "t7" "" " --dry-run"))
+(define dry7a (answer dry7a-run))
 (define dry7a-wrote (not (equal? (position (v-st v7a)) before7a)))
 (define r7a (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped inside a file's items: the rerun converges, every LCS and relocation id kept, the same block done, one tag; a third run is base-mismatch"
-      (in-order (v-stop v7a) half7a (list dry7a dry7a-wrote) (converged v7a r7a)
-                (list (listed r7a 'set) (equal? (listed r7a 'moved) (ids-of after7a 'x 'a 'B 'c))
+      (in-order (v-stop v7a) half7a (list dry7a dry7a-wrote (cadr dry7a-run)) (converged v7a r7a)
+                (list (listed r7a 'kept) (listed r7a 'set) (equal? (listed r7a 'moved) (ids-of after7a 'x 'a 'B 'c))
                       (equal? (listed r7a 'inserted) (cons (list-ref (kids (v-st v7a) "m.sc") 4) (cons (file-at (v-st v7a) "n.sc") (kids (v-st v7a) "n.sc"))))
                       (listed r7a 'deleted))
                 (head-of (answer (import! (v-st v7a) wt7 c7-0 c7-1 "t7"))))
       (list '(stopped 7 3 #t) (list B* (d 'c) (d 'x) (d 'a))
             (list (list 'ok '(dry-run #t) '(state pending) (list 'read-cut cut7a) '(files (modified 1) (added 1) (removed 1))
                         '(blocks (kept 4) (set 0) (inserted 5) (deleted 0) (moved 4)) '(items 11))
-                  #f)
-            converged-ok (list '() #t #t '()) '(error base-mismatch)))
+                  #f 0)
+            converged-ok (list 4 '() #t #t '()) '(error base-mismatch)))
 
 (define v7b (variant! "s7b" 0))
 (define mid7b (list (export-is? (v-st v7b) wt7 c7-0) (done-blocks (v-st v7b))))
@@ -620,19 +639,20 @@
 (define r7e (import! (v-st v7e) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped after every content item, before done: the rerun finds no work and writes two records, done and the tag"
       (in-order (v-stop v7e) mid7e (converged v7e r7e)
-                (map (lambda (k) (listed r7e k)) '(set inserted deleted moved)) (records-since v7e))
-      (list '(stopped 14 3 #t) (list #t '("pending")) converged-ok '(() () () ()) 2))
+                (map (lambda (k) (listed r7e k)) '(kept set inserted deleted moved)) (records-since v7e))
+      (list '(stopped 14 3 #t) (list #t '("pending")) converged-ok '(8 () () () ()) 2))
 
 (define v7f (variant! "s7f" 15))
 (define mid7f (list (done-blocks (v-st v7f)) (tag-count (v-st v7f) "t7")))
-(define dry7f (answer (import! (v-st v7f) wt7 c7-0 c7-1 "t7" "" " --dry-run")))
+(define dry7f-run (import! (v-st v7f) wt7 c7-0 c7-1 "t7" "" " --dry-run"))
+(define dry7f (answer dry7f-run))
 (define r7f (import! (v-st v7f) wt7 c7-0 c7-1 "t7"))
 (want "IG-7 stopped after done, before the tag: done without tag (its dry run plans the tag alone), the rerun only tags: one record"
-      (in-order (v-stop v7f) mid7f (list (value-of dry7f 'state) (clause-of dry7f 'blocks) (value-of dry7f 'items))
-                (converged v7f r7f) (map (lambda (k) (listed r7f k)) '(set inserted deleted moved)) (records-since v7f))
+      (in-order (v-stop v7f) mid7f (list (value-of dry7f 'state) (clause-of dry7f 'blocks) (value-of dry7f 'items) (cadr dry7f-run))
+                (converged v7f r7f) (map (lambda (k) (listed r7f k)) '(kept set inserted deleted moved)) (records-since v7f))
       (list '(stopped 15 3 #t) (list '("done") 0)
-            '(done-without-tag (blocks (kept 0) (set 0) (inserted 0) (deleted 0) (moved 0)) 1)
-            converged-ok '(() () () ()) 1))
+            '(done-without-tag (blocks (kept 0) (set 0) (inserted 0) (deleted 0) (moved 0)) 1 0)
+            converged-ok '(0 () () () ()) 1))
 
 ;; DONE WITHOUT TAG NEEDS THE EXPORT AT <to>: a block's src edited after the
 ;; stop, the rerun is base-mismatch and writes nothing
@@ -653,9 +673,31 @@
       (list '(stopped 15 3 #t) (list (list 'base-mismatch (list 'store-cut cut7m) (list 'rev c7-0) '(differing "d.sc" "m.sc" "n.sc")) #t 1) 0 0))
 
 (define v7g (variant! "s7g" 0))
-(want "IG-7 a pending import block of another range: pending-import naming it, nothing written"
-      (in-order (refusal (import! (v-st v7g) wt7 c7-0 c7-2 "t7g")) (records-since v7g))
-      (list (list 'pending-import (list 'from c7-0) (list 'to c7-1) (list 'block (v-pending v7g))) 0))
+(want "IG-7 a pending import block of another range: pending-import naming it, nothing written, exit 1"
+      (in-order (refused-run (v-st v7g) wt7 c7-0 c7-2 "t7g") (records-since v7g))
+      (list (list (list 'pending-import (list 'from c7-0) (list 'to c7-1) (list 'block (v-pending v7g))) #t 1) 0))
+
+;; A DONE BLOCK FOR THE RANGE STAYS WHEN THE EXPORT IS BACK AT <from>: the
+;; range landed (tag t7x-fwd), then the reverse range (tag t7x-rev) brought
+;; the export back to <from>. The range again under a third name is not
+;; pending, not done without tag (the name differs), and nothing differs from
+;; <from>: only the done block of the range refuses it. Without that the
+;; range would land twice. The two tags are read after it, so the refusal is
+;; this one and not a tag name in use.
+(define wt7x (repo! "r7x"))
+(define c7x-0 (commit! wt7x "base" (cons "a.sc" (defs 'a 'b))))
+(define c7x-1 (commit! wt7x "grow" (cons "a.sc" (defs 'a 'b 'c))))
+(define st7x (store-from! wt7x c7x-0 "s7x" #t))
+(define fwd7x (ran (import! st7x wt7x c7x-0 c7x-1 "t7x-fwd")))
+(define rev7x (ran (import! st7x wt7x c7x-1 c7x-0 "t7x-rev")))
+(define cut7x (applied-cut st7x))
+(want "IG-7 the range again after its reverse: the export is <from>, a done block of the range refuses it, base-mismatch with nothing differing, nothing written, exit 1, the reverse's tag bound and the new one not"
+      (in-order fwd7x rev7x (export-is? st7x wt7x c7x-0)
+                (refused-run st7x wt7x c7x-0 c7x-1 "t7x-again")
+                (tag-count st7x "t7x-rev") (tag-count st7x "t7x-again"))
+      (list '(ok 0) '(ok 0) #t
+            (list (list 'base-mismatch (list 'store-cut cut7x) (list 'rev c7x-0) '(differing)) #t 1)
+            1 0))
 
 (define v7h (variant! "s7h" 3))
 (define version7h (version (v-st v7h) (v-pending v7h)))
