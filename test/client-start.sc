@@ -451,6 +451,10 @@
                          (substring noisy-log 0 (let loop ((i (- (string-length noisy-log) 1)))
                                                   (if (char=? (string-ref noisy-log i) #\/) i (loop (- i 1)))))))
   ;; Two characters, four bytes: exactly the gap between the two counts.
+  ;; THE STORE IS THERE, so the start reaches the daemon's occupancy check:
+  ;; a start for a store that is not there is refused before it (CS-9).
+  (system (string-append "mkdir -p " noisy-store))
+  (rpc-dispatch noisy-store '(init) "test")
   (call-with-output-file noisy-log
     (lambda (port) (display "(note 存)\n" port)))
   (system (string-append "printf x > " occupied))
@@ -473,6 +477,10 @@
 (let* ((locked-run (string-append sock-here "/locked"))
        (locked-store (string-append here "/locked-store")))
   (system (string-append "mkdir -p " locked-run "; chmod 500 " locked-run))
+  ;; THE STORE IS THERE, so what is refused is the run root (CS-9 refuses an
+  ;; absent store before it).
+  (system (string-append "mkdir -p " locked-store))
+  (rpc-dispatch locked-store '(init) "test")
   (let ((answer (guard (e (#t (list 'RAISED-OUT)))
                   (parameterize ()
                     (let ((old (getenv "THEOURGIA_RUN")))
@@ -482,13 +490,119 @@
                                  locked-store (string-append locked-run "/s.sock"))))
                         (putenv "THEOURGIA_RUN" (or old ""))
                         r))))))
-    (want "CS-8 a run root that cannot be written is a start that failed, not a raise"
+    (want "CS-8 a run root that cannot be written is a start that failed, not a raise: unwritable, naming a path under the run root"
           (cond ((equal? answer '(RAISED-OUT)) 'RAISED-OUT)
-                ((and (pair? answer) (eq? 'error (car answer))) 'answered-an-error)
+                ((and (pair? answer) (eq? 'error (car answer)) (pair? (cdr answer)))
+                 (list (cadr answer)
+                       (let ((k (assq 'kind (cddr answer)))) (and k (cadr k)))
+                       (let ((p (assq 'path (cddr answer))))
+                         (and p (string? (cadr p))
+                              (let ((under (string-append locked-run "/")))
+                                (and (> (string-length (cadr p)) (string-length under))
+                                     (string=? (substring (cadr p) 0 (string-length under)) under)))))))
                 (else (list 'said answer)))
-          'answered-an-error))
+          '(serve-start-failed unwritable #t)))
   (system (string-append "chmod 700 " locked-run)))
 
+
+;; ---- CS-9 a start for a store that is not there creates nothing -------------
+;;
+;; KEY: ABSENCE IS JUDGED BEFORE ANYTHING IS MADE. A start for a path that
+;; holds no store used to make <run>/<key>, spawn the daemon and leave the
+;; directory, serve.log and .socket.lock behind; the daemon's refusal came
+;; back through the log. The client now asks store-here? after its socket
+;; checks and before the run directory, and refuses with nothing created.
+;; Its three earlier branches still come first, each held by a row below.
+(define (with-run-root dir thunk)
+  (let ((old (getenv "THEOURGIA_RUN")))
+    (dynamic-wind (lambda () (putenv "THEOURGIA_RUN" dir)) thunk (lambda () (putenv "THEOURGIA_RUN" old)))))
+(define (entries-of dir)
+  (if (file-directory? dir) (list-sort string<? (directory-list dir)) 'NO-DIRECTORY))
+(define (absent-argv st)
+  (list "scheme" "--script" daemon "serve" st "--detach" "--log" (serve-log-path st)))
+(define (dir-of path)
+  (let loop ((i (- (string-length path) 1)))
+    (if (char=? (string-ref path i) #\/) (substring path 0 i) (loop (- i 1)))))
+(define absent9 (string-append here "/absent9"))
+(let ((run9 (string-append sock-here "/run9")))
+  (system (string-append "mkdir -p " run9))
+  (want "CS-9 a start for a store that is not there is refused store-not-found, and the run root holds nothing new"
+        (with-run-root run9
+          (lambda ()
+            ;; IN ORDER: the start, then the listing (a list's arguments have no
+            ;; order of their own).
+            (let* ((a (ensure-daemon! (absent-argv absent9) absent9 (socket-path absent9)))
+                   (es (entries-of run9)))
+              (list a es))))
+        (list (list 'error 'serve-start-failed '(kind store-not-found) (list 'store absent9)) '())))
+;; TWIN: a store that is there still gets its run directory.
+(kill-daemon!)
+(let ((run9b (string-append sock-here "/run9b")))
+  (system (string-append "mkdir -p " run9b))
+  (want "CS-9 TWIN: a store that is there gets its run directory, with the lock, the log and the socket"
+        (with-run-root run9b
+          (lambda ()
+            (let ((a (ensure-daemon! (list "scheme" "--script" daemon "serve" store "--detach" "--log" (serve-log-path store))
+                                     store (socket-path store))))
+              (list a (map (lambda (k) (entries-of (string-append run9b "/" k)))
+                           (let ((es (entries-of run9b))) (if (list? es) es '())))))))
+        '(ready ((".socket.lock" "serve.log" "socket"))))
+  (kill-daemon!))
+;; THE CLIENT'S EARLIER BRANCHES COME FIRST, for an absent store too: a
+;; reachable socket answers ready, an overlong path and a missing explicit
+;; directory answer their own refusals.
+(let ((reachable (string-append sock-here "/pa.sock")))
+  (ensure-daemon! (argv-for reachable) store reachable)
+  (want "CS-9 order: a store that is not there, given a socket a daemon answers on, is ready"
+        (ensure-daemon! (absent-argv absent9) absent9 reachable)
+        'ready)
+  (kill-daemon!))
+(want "CS-9 order: a store that is not there, given a socket path too long, is refused for the path"
+      (let ((a (ensure-daemon! (absent-argv absent9) absent9
+                               (string-append sock-here "/" (make-string 120 #\d)))))
+        (and (pair? a) (list (car a) (cadr a))))
+      '(error socket-path-too-long))
+(want "CS-9 order: a store that is not there, given a socket in a directory that is not there, is refused for the directory"
+      (let ((a (ensure-daemon! (absent-argv absent9) absent9 (string-append here "/no-such-dir/x.sock"))))
+        (and (pair? a) (list (car a) (cadr a))))
+      '(error socket-dir-missing))
+;; RESIDUE IS KEPT: what an earlier start left under <run>/<key> -- a lock,
+;; a log, anything else -- is neither removed nor changed by a start the
+;; client refuses.
+(define (identity path)
+  (list (call-with-values (lambda () (path-device-inode path)) list)
+        (call-with-port (open-file-input-port path) get-bytevector-all)))
+(let* ((run9r (string-append sock-here "/run9r")) (absent9r (string-append here "/absent9r")))
+  (system (string-append "mkdir -p " run9r))
+  (want "CS-9 a refused start keeps what an earlier one left: the lock, the old log and a sentinel keep their identity and bytes"
+        (with-run-root run9r
+          (lambda ()
+            (let* ((key-dir (dir-of (socket-path absent9r)))
+                   (names '(".socket.lock" "sentinel" "serve.log")))
+              (system (string-append "mkdir -p " key-dir "; : > " key-dir "/.socket.lock; printf 'old log\\n' > "
+                                     key-dir "/serve.log; printf sentinel > " key-dir "/sentinel"))
+              (let* ((before (map (lambda (n) (identity (string-append key-dir "/" n))) names))
+                     (a (ensure-daemon! (absent-argv absent9r) absent9r (socket-path absent9r)))
+                     (after (map (lambda (n) (identity (string-append key-dir "/" n))) names)))
+                (list (and (pair? a) (list (car a) (cadr a) (assq 'kind (cddr a))))
+                      (equal? before after)
+                      (entries-of key-dir))))))
+        (list '(error serve-start-failed (kind store-not-found)) #t '(".socket.lock" "sentinel" "serve.log"))))
+
+;; ---- CS-10 a child that exited with no report ----------------------------------
+;;
+;; KEY: THE RACE'S ANSWER. A store removed between the client's check and
+;; the daemon's makes the daemon refuse before it has a log, so the client
+;; finds no report; it asks store-here? once more. Read by its unit: no
+;; hold precedes the daemon's preflight, so the race cannot be staged.
+(define absent10 (string-append here "/absent10"))
+(want "CS-10 a child that exits with no report answers store-not-found while the store is absent, and exited while it is there"
+      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+        (let ((f (eval 'exited-without-report (environment '(theourgia client)))))
+          (list (f absent10 '(exit 75) "t1")
+                (f store '(exit 75) "t1"))))
+      (list (list 'error 'serve-start-failed '(kind store-not-found) (list 'store absent10) '(attempt "t1") '(exit 75))
+            '(error serve-start-failed (kind exited) (exit 75) (attempt "t1"))))
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;

@@ -39,7 +39,7 @@
 ;; where the base refused with exit 2 (found in review).
 (import (chezscheme) (theourgia arguments)
         (only (theourgia render) answer-printing!)
-        (only (theourgia client) socket-path socket-dir-refusal)
+        (only (theourgia client) socket-path socket-dir-refusal store-absent?)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
               fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno
               with-mutation-record mutation-record theourgia-stage)
@@ -127,9 +127,15 @@
                      => (lambda (answer)
                           ;; Reported once; a failure of the report's own write
                           ;; is not reported again (found in review).
+                          ;; UNDER --detach ON FD 2, as detach-failed and the
+                          ;; absent-store refusal below are: before the detach a
+                          ;; client-spawned daemon shares the client's stdout,
+                          ;; which carries one answer, the client's; after it fd 1
+                          ;; and fd 2 are both the log. Without --detach, fd 1.
                           (guard (e2 (#t (exit 75)))
                             ((later '(theourgia daemon) 'write-report-line!)
-                             1 (append answer (list (list 'attempt attempt)))))
+                             (if (argument-option nodes "--detach") 2 1)
+                             (append answer (list (list 'attempt attempt)))))
                           (exit 75))))
             (let* ((positional (argument-positionals nodes))
                    (store (or (argument-option nodes "--store")
@@ -166,6 +172,26 @@
                     (when refusal
                       (say refusal)
                       (exit 2)))))
+              ;; NEVER: A STORE THAT IS NOT THERE IS REFUSED BEFORE ANYTHING IS MADE:
+              ;; before --detach opens the log and before the lock, so a serve for a
+              ;; path holding no store leaves no directory, log or lock. The datum is
+              ;; the store process's own (daemon.sc, store-loop), with the attempt,
+              ;; and the exit is 75 as before. UNDER --detach IT GOES TO STDERR, as
+              ;; detach-failed does: a daemon a client spawned writes to the
+              ;; client's stdout, which must carry one answer, the client's. In the
+              ;; foreground it goes to stdout, to whoever ran it. A meta.sexp that
+              ;; cannot be asked about is not absence (store-absent?): serve goes
+              ;; on, and the store process reports it as before. A --detach
+              ;; without a --log is a usage error, judged first, by detach!'s
+              ;; own refusal, which answers before it does anything.
+              (when (and (argument-option nodes "--detach") (not (argument-option nodes "--log")))
+                (detach! #f))
+              (when (store-absent? store)
+                (let ((port (if (argument-option nodes "--detach") (current-error-port) (current-output-port))))
+                  (write (list 'error 'store-not-found (list 'store store) (list 'attempt attempt)) port)
+                  (newline port)
+                  (flush-output-port port))
+                (exit 75))
               (when (argument-option nodes "--detach")
                 ;; UNDER THE `report` STAGE, SO A @report FAULT CAN FIRE IN THE LOG'S
                 ;; OPEN. NO ACTOR EXISTS WHILE THIS RUNS: the

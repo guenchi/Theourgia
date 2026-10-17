@@ -18,7 +18,7 @@ cli2 12 24 a1793e5477f6468a56d3e008dea2b18e
 cli3 310 419 00faea25c3c0518a90b48dc8e612a6f6
 client-program 66 69 a6e4efa10d252d99dda46ef7174250e8
 client-socket 39 42 2555d797b098e75ea2675da57504a312
-client-start 28 38 6f6256765de6c5720d7439f38e0b2206
+client-start 35 47 e21268144035f8da41f870fdef63bcbc
 closures 33 41 461b25c48c6ca14746bcc71a50d74be3
 commit-consumes 25 28 532f3447c3e92facc178d611f123f25a
 commit-premises 89 93 cd1257809b65a06fe4052cc477c416cf
@@ -37,7 +37,7 @@ crash 15 19 7dc2d98b549e4f3cbbef2f17820a2c6a
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 72 75 5f63dc4a3ef75b4dcb7d86919cd2aca5
 daemon-link-gate 36 39 cea34b20543f41532539d2f004f9967b
-daemon-socket 9 12 67eabd08d5e935b192c78c0e73d3260b
+daemon-socket 13 16 3de6da6574596a7bbe56f00bc1bd72d3
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
 datum-import - 78 b234254d162172812d79e7f8d2194d6f
@@ -53,7 +53,7 @@ docs-check 43 46 d5b915b2fd65a493faf8d95a7dd99506
 drafts-tools 24 34 c76050dad69fb71fb7f1ccfb69e8d0f6
 edit-tools 30 41 7635c9b55763c4e28bb7af41ca2bfe49
 empty-plan - 16 e067ce38b231d75f46ae93c79ba84b4a
-entry-split 30 45 3e7d172ed6295e5025a56d9009ccd1e4
+entry-split 30 45 c67210a3749b9e086a5dc0906d3f1f2b
 envelope 76 79 efcaf48be7488e179702916f0e296ac5
 eval-lang 150 161 ec92809b082481a29700d07e5b4cf0c0
 eval-local 63 66 f328cf8ac5e93412dd5d984c2765c56a
@@ -182,8 +182,8 @@ unreadable-adopt 34 47 6e1360b0c68e5776dea2e985fabc85c2
 unreadable-census 42 47 411dcc1bebf3249f2d2e615c9b74dc73
 unreadable-drafts 16 24 a035f1bf4c6358cd9afc9b0207e9d6a2
 unreadable-publish 12 20 d17d2070325ad05331f3fd35a9ea3f8d
-unreadable-routes 85 97 87dd8e531b4823b1b9fdada9ac3d8693
-unreadable-writer 77 105 eb432f79304e0606814c851b566bf8c0
+unreadable-routes 85 97 5dd9bcb4a3840c1e783a60c846a50ea9
+unreadable-writer 77 105 7b40683adf47492630187a3930fdb3ad
 unscoped-lock 2 11 5c96faabab689055f42c580b43b657a2
 validity 35 38 9eeea59e2540cc721dd6399273b683db
 verb-libraries-lazy 25 31 f2a2cf91cb121fbb7b94db916316954e

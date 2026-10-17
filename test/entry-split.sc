@@ -158,30 +158,19 @@
                 "serve d --detach" 71
                 "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
 (let ((d (row-dir!)))
-  (want "DSERVE-3 theourgiad.sc serve on an absent store answers store-not-found then exiting, exit 75"
+  (want "DSERVE-3 theourgiad.sc serve on an absent store answers store-not-found, exit 75, and makes nothing: no run directory, no lock, no exiting line"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
-            ;; A NAMED OUTCOME CARRIES MAIN'S RECORD: serving the
-            ;; default socket, main made the run directory and the lock before
-            ;; the store process found no store, so store-not-found gains
-            ;; (written ...) naming only those, under THEOURGIA_RUN. The
-            ;; report ends with the attempt clause (#f: started by hand).
+            ;; NOTHING IS MADE: serve asks whether the store is there before the
+            ;; run directory and the lock, so the refusal carries no (written
+            ;; ...) clause and no (exiting ...) line follows it. The report ends
+            ;; with the attempt clause (#f: started by hand).
+            ;; THE WHOLE STDOUT IS THE ONE REFUSAL, and the run root is not
+            ;; there at all (not merely empty).
             (let* ((r (run-in d "theourgiad.sc" "serve d" 8))
-                   (run (string-append sock-base "/es-" pid-text "-" (number->string row-n)))
-                   (first (guard (e (#t #f)) (read (open-string-input-port (out-of r)))))
-                   (written (and (list? first) (assq 'written (filter pair? first)))))
-              ;; EXACTLY main's three creations (found in review): the run
-              ;; directory, the store's key directory under it, and the lock.
-              ;; The key is read back as the one directory under the run root.
-              (let* ((keys (guard (e (#t '())) (directory-list run)))
-                     (kd (and (= 1 (length keys)) (string-append run "/" (car keys)))))
-                (list (rc-of r)
-                      (and (list? first) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'written)))) first))
-                      (and written kd
-                           (equal? (cadr written)
-                                   (list (list 'mkdir run) (list 'mkdir kd) (list 'create (string-append kd "/.socket.lock")))))
-                      (contains? (out-of r) "(exiting (reason store-actor-down))")))))
-        (list 75 '(error store-not-found (store "d") (attempt #f)) #t #t)))
+                   (run (string-append sock-base "/es-" pid-text "-" (number->string row-n))))
+              (list (rc-of r) (out-of r) (file-exists? run))))
+        (list 75 "(error store-not-found (store \"d\") (attempt #f))\n" #f)))
 ;; AN OPTION serve DOES NOT KNOW IS REFUSED, as every other verb
 ;; refuses one; before it, `serve d --bogus` served in the foreground.
 (let ((d (row-dir!)))

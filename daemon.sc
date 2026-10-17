@@ -61,7 +61,7 @@
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error)
-          (only (theourgia client) socket-path envelope-version resolved-name)
+          (only (theourgia client) socket-path envelope-version resolved-name store-here?)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
@@ -246,6 +246,10 @@
   ;; The optional second argument is the start's attempt token,
   ;; echoed as the last clause of every startup report; #f when the
   ;; daemon was started by hand without one.
+  ;; A STORE THAT IS NOT THERE IS REFUSED BY THE PROGRAMS, NOT HERE: the
+  ;; client and theourgiad ask store-here? before anything under the run root
+  ;; is made, and this procedure, reached only through theourgiad, makes the
+  ;; socket's directory and lock before its store process asks again.
   (define (serve store . opts)
     ;; NEVER: ONCE, HERE, BEFORE ANY ANSWER LEAVES. Every conn process in this
     ;; VM prints through `render-wire`, and the settings it needs are per
@@ -1460,9 +1464,8 @@
   ;; failure there is, and the daemon's version told nobody anything.
   ;; THROUGH THE DOOR: absent is "no store here", as before; a
   ;; meta.sexp whose directory cannot be searched raises instead of
-  ;; reading as a missing store.
-  (define (store-here? store)
-    (not (eq? (entry-type (string-append store "/meta.sexp")) 'absent)))
+  ;; reading as a missing store. store-here? is (theourgia client)'s, the
+  ;; one predicate the client and theourgiad ask before a start as well.
 
   (define (store-loop store main-pid)
     ;; INJECTION ONLY (item 7): the store held at its entry, before

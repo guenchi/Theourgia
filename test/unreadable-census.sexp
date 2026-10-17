@@ -162,6 +162,11 @@
    refuse a
    "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created"
    (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
+  ("client.sc" (store-absent?) 1 guard
+   ((unreadable-entry? e))
+   conservative a
+   "store-absent?: a meta.sexp that cannot be asked about is not observed absence. Before a start (client and theourgiad) the start goes on, and the daemon's store process asks store-here? again and states the unreadable entry itself; after a child exited with no report (exited-without-report) the answer is (kind exited), as before this check existed"
+   (e ((unreadable-entry? e) #f)))
   ("stream-client.sc" (stream!) 1 guard
    ((fs-error? e))
    unrelated a
@@ -1430,8 +1435,8 @@
   ("theourgiad.sc" (serve-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8); anything else propagates"
-   (e ((classify-failure e (mutation-record)) => (lambda (answer) (guard (e2 (#t (exit 75))) ((later (quote (theourgia daemon)) (quote write-report-line!)) 1 (append answer (list (list (quote attempt) attempt))))) (exit 75)))))
+   "this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8), on fd 2 under --detach (a client-spawned daemon shares the client's stdout); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (answer) (guard (e2 (#t (exit 75))) ((later (quote (theourgia daemon)) (quote write-report-line!)) (if (argument-option nodes "--detach") 2 1) (append answer (list (list (quote attempt) attempt))))) (exit 75)))))
   ("daemon.sc" (leave) 1 guard
    (#t)
    conservative a

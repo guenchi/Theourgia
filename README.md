@@ -4169,6 +4169,29 @@ detach-failed (step setsid|log) (path <log>) (errno <e>))` on stderr and
 exits 71. The clients that start a daemon pass `--detach --log
 <run-root>/<key>/serve.log`.
 
+**A store that is not there.** A start for a path holding no store (no
+`meta.sexp`) creates nothing: no `<run-root>/<key>` directory, no log and no
+lock. The client asks, after its socket checks (a daemon already answering
+on the socket is used whatever the path holds) and before it makes the run
+directory, and answers `(error serve-start-failed (kind store-not-found)
+(store <path>))`. `serve` itself asks before `--detach` and before the lock,
+answers `(error store-not-found (store <path>) (attempt <T>))` and exits 75;
+under `--detach` that answer goes to stderr, as `detach-failed` does, since
+a daemon a client started writes to the client's own stdout, which carries
+the client's answer; without `--detach`, to stdout. When a store goes away
+between the client's check and the daemon's, the daemon leaves with no report
+in the log, and the client, asking once more, answers `(kind
+store-not-found)` while the store is absent and `(kind exited)` otherwise.
+A `meta.sexp` that cannot be asked about (a directory on the way that
+cannot be searched) is not absence: the start goes on, and the store
+process reports the unreadable entry as it always has. `--detach` without
+`--log` is a usage error and is answered before the store is asked.
+Nothing a start made is removed when it fails: the run directory, the log
+once `--detach` ran, and the lock file once the lock was taken stay where
+they are. The lock file is never removed (the lock on it, not the file, is
+what says a daemon holds the store; it ends with the process), and only a
+daemon's own socket is unlinked when it leaves.
+
 **Starting when one is already there.** The lock attempt never waits: a
 second daemon answers `(error serve-busy (path <socket>))` and exits 75.
 If the socket path is occupied by something that is not a socket it

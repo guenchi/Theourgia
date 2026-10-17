@@ -758,6 +758,9 @@
        (d (string-append root "/client"))
        (fixture-run (getenv "THEOURGIA_RUN")))
   (system (string-append "mkdir -p " d "/run " d "/store"))
+  ;; THE STORE IS THERE, so the start reaches the run root: a start for a
+  ;; store that is not there is refused before anything is made.
+  (ask (string-append d "/store") 'init)
   (putenv "THEOURGIA_RUN" (string-append d "/run/inner"))
   (chmod! "000" (string-append d "/run"))
   (let ((a (caught (and ensure-daemon!
@@ -784,6 +787,8 @@
        (store (string-append d "/store"))
        (fixture-run (getenv "THEOURGIA_RUN")))
   (system (string-append "mkdir -p " store))
+  ;; THE STORE IS THERE, so the start reaches the log (as above).
+  (ask store 'init)
   (putenv "THEOURGIA_RUN" (string-append d "/run"))
   (let* ((lp (and serve-log-path (serve-log-path store)))
          (made (and lp (= 0 (system (string-append "mkdir -p \"$(dirname " lp ")\" && : > " lp " && chmod 000 " lp)))))

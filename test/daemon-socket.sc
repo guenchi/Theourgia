@@ -27,7 +27,8 @@
 ;; instead of the daemon silently deleting something it does not own.
 
 (import (chezscheme)
-        (only (theourgia ffi) file-is-socket? file-is-regular? file-is-directory?))
+        (only (theourgia ffi) file-is-socket? file-is-regular? file-is-directory? path-device-inode)
+        (only (theourgia client) socket-path serve-log-path))
 
 (define bad 0)
 (define rows 0)
@@ -211,6 +212,90 @@
       'said-it)
 
 (system (string-append "rm -f " plain))
+
+;; ---- DS-4 a serve for a store that is not there creates nothing ----------------
+;;
+;; KEY: THE DAEMON'S OWN CHECK COMES BEFORE --detach, which opens the log,
+;; and before the lock: a serve for a path holding no store answers
+;; (error store-not-found (store <path>) (attempt <T>)), exit 75, with no
+;; directory, log or lock made. UNDER --detach THE ANSWER GOES TO STDERR,
+;; as detach-failed's does: a daemon a client spawned writes to the
+;; client's own stdout, which carries one answer, the client's. In the
+;; foreground it goes to stdout, read by whoever ran it.
+(define (datums-of text)
+  (let ((in (open-string-input-port text)))
+    (let loop ((out '()))
+      (let ((d (guard (e (#t (eof-object))) (read in))))
+        (if (eof-object? d) (reverse out) (loop (cons d out)))))))
+(define (error-datum text)
+  (find (lambda (d) (and (pair? d) (eq? (car d) 'error))) (datums-of text)))
+(define (entries-of dir)
+  (if (file-directory? dir) (list-sort string<? (directory-list dir)) 'NO-DIRECTORY))
+(define (dir-of path)
+  (let loop ((i (- (string-length path) 1)))
+    (if (char=? (string-ref path i) #\/) (substring path 0 i) (loop (- i 1)))))
+;; -> (status stdout stderr) of one serve, run to its end
+(define (serve-for tag run args)
+  (let ((out (string-append here "/" tag ".out")) (err (string-append here "/" tag ".err"))
+        (rcf (string-append here "/" tag ".rc")))
+    (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_RUN=" run
+                           " scheme --script ../theourgiad.sc serve " args " > " out " 2> " err " < /dev/null; echo $? > " rcf " )"))
+    (list (let ((d (datums-of (file-text rcf)))) (and (pair? d) (car d))) (file-text out) (file-text err))))
+;; the run directory and log a client would name for STORE under RUN
+(define (key-paths store run)
+  (let ((old (getenv "THEOURGIA_RUN")))
+    (putenv "THEOURGIA_RUN" run)
+    (let ((p (cons (dir-of (socket-path store)) (serve-log-path store))))
+      (putenv "THEOURGIA_RUN" (or old ""))
+      p)))
+(define absent4 (string-append here "/absent4"))
+(define run4 (string-append sock-here "/run4"))
+(system (string-append "mkdir -p " run4))
+(want "DS-4 --detach for a store that is not there: exit 75, stdout empty, the refusal on stderr, and no directory, log or lock"
+      (let ((r (serve-for "ds4" run4 (string-append absent4 " --detach --log " (cdr (key-paths absent4 run4)) " --attempt t4"))))
+        (list (car r) (cadr r) (error-datum (caddr r)) (entries-of run4)))
+      (list 75 "" (list 'error 'store-not-found (list 'store absent4) '(attempt "t4")) '()))
+(want "DS-4 in the foreground: exit 75, the refusal on stdout and none on stderr, nothing made"
+      (let ((r (serve-for "ds4f" run4 (string-append absent4 " --attempt t4f"))))
+        (list (car r) (error-datum (cadr r)) (error-datum (caddr r)) (entries-of run4)))
+      (list 75 (list 'error 'store-not-found (list 'store absent4) '(attempt "t4f")) #f '()))
+;; RESIDUE IS KEPT through this route too: a serve refused for an absent
+;; store neither removes nor changes what an earlier start left.
+(define (identity path)
+  (list (call-with-values (lambda () (path-device-inode path)) list)
+        (call-with-port (open-file-input-port path) get-bytevector-all)))
+(let* ((absent4r (string-append here "/absent4r"))
+       (paths (key-paths absent4r run4)) (key-dir (car paths))
+       (names '(".socket.lock" "sentinel" "serve.log")))
+  (system (string-append "mkdir -p " key-dir "; : > " key-dir "/.socket.lock; printf 'old log\\n' > "
+                         key-dir "/serve.log; printf sentinel > " key-dir "/sentinel"))
+  (let ((before (map (lambda (n) (identity (string-append key-dir "/" n))) names)))
+    (want "DS-4 a refused --detach serve keeps what an earlier start left: the lock, the old log and a sentinel keep their identity and bytes"
+          (let ((r (serve-for "ds4r" run4 (string-append absent4r " --detach --log " (cdr paths) " --attempt t4r"))))
+            (list (car r) (and (error-datum (caddr r)) (cadr (error-datum (caddr r))))
+                  (equal? before (map (lambda (n) (identity (string-append key-dir "/" n))) names))
+                  (entries-of key-dir)))
+          (list 75 'store-not-found #t names))))
+;; ---- DS-5 a start that cannot ask about its store, under --detach ---------------
+;;
+;; KEY: THE TABLE'S REPORT BEFORE THE DETACH GOES WHERE THE REFUSAL DOES. A
+;; store whose parent cannot be searched makes store-here? raise; the
+;; failure is the table's (error unreadable ...), and under --detach it is
+;; written to stderr, not to the stdout a client-spawned daemon shares with
+;; its client. Nothing is made. The log named is a path under the run root,
+;; not one derived from the store: deriving it resolves the store's path,
+;; which is exactly what cannot be done here (the daemon meets the same
+;; raise computing its socket, into the same table handler).
+(let* ((locked (string-append here "/locked5")) (st (string-append locked "/store"))
+       (run5 (string-append sock-here "/run5")))
+  (system (string-append "mkdir -p " st " " run5 "; chmod 000 " locked))
+  (want "DS-5 --detach with a store whose parent cannot be searched: exit 75, stdout empty, the unreadable report on stderr, nothing made"
+        (let ((r (serve-for "ds5" run5 (string-append st " --detach --log " run5 "/k5/serve.log --attempt t5"))))
+          (let ((d (error-datum (caddr r))))
+            (list (car r) (cadr r) (and d (cadr d)) (and d (list-ref d (- (length d) 1))) (entries-of run5))))
+        (list 75 "" 'unreadable '(attempt "t5") '()))
+  (system (string-append "chmod 700 " locked)))
+
 (system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\ndaemon-socket complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

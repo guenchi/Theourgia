@@ -1106,14 +1106,16 @@
                 (filter (lambda (d) (or (eq? d 'UNREADABLE-TAIL) (and (pair? d) (eq? (car d) 'error)))) (datums-of-text (caddr r))))
           (list 75 '(error serve-start-failed (kind exited) (exit 71) (attempt <16-hex>))
                 (list (list 'error 'detach-failed '(step log) (list 'path (string-append kd "/serve.log")) '(errno EACCES)))))))
-;; P6-store-not-found (D4): the store removed before the client runs.
+;; P6-store-not-found (D4): the store removed before the client runs. The
+;; client asks before it spawns anything, so the answer is its own: no
+;; attempt token and no child's exit status.
 (let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)))
   (system (string-append "mkdir -p " kd " && touch " kd "/.socket.lock && rm -rf " s))
   (let ((r (client-read "" s)))
     (restore-run!)
-    (want "P6-store-not-found the report's kind is store-not-found, its store clause, the token and (exit 75), within 4 s"
+    (want "P6-store-not-found the client refuses before spawning: store-not-found with its store clause, no token or exit status, within 4 s"
           (list (car r) (mask-attempt (cadr r)) (< (cadddr r) 4000))
-          (list 75 (list 'error 'serve-start-failed '(kind store-not-found) (list 'store s) '(attempt <16-hex>) '(exit 75)) #t))))
+          (list 75 (list 'error 'serve-start-failed '(kind store-not-found) (list 'store s)) #t))))
 ;; PID2: an extra child of the client that has exited, unreaped, before the
 ;; daemon spawns; a wait that collects any child would answer (exit 0).
 (let* ((st (p6-store! #t)) (s (car st)))

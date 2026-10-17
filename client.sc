@@ -26,7 +26,7 @@
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape? plain-datum
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
-          next-attempt-token select-report program-launch)
+          next-attempt-token select-report program-launch store-here? store-absent? exited-without-report)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode) (rnrs hashtables)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
@@ -563,6 +563,34 @@
             #f
             (list 'error 'socket-dir-missing (list 'dir dir))))))
 
+  ;; THE ONE ANSWER TO "IS THERE A STORE HERE", asked by this client before it
+  ;; starts a daemon, by theourgiad before it detaches, and by the daemon's
+  ;; store process before it loads. It lives here because the client may
+  ;; not load the daemon's library, and the daemon already imports this one.
+  ;; THROUGH THE DOOR: absent is "no store here"; a meta.sexp whose directory
+  ;; cannot be searched raises instead of reading as a missing store.
+  (define (store-here? store)
+    (not (eq? (entry-type (string-append store "/meta.sexp")) 'absent)))
+
+  ;; -> #t only when the store is OBSERVED absent, what a start asks before it
+  ;; makes anything. A meta.sexp that cannot be asked about is not absence:
+  ;; the start goes on, and the daemon's store process asks store-here?
+  ;; again and reports the unreadable entry itself, as it always has.
+  (define (store-absent? store)
+    (guard (e ((unreadable-entry? e) #f))
+      (not (store-here? store))))
+
+  ;; A CHILD THAT EXITED WITH NO REPORT CARRYING ITS TOKEN. When the store is
+  ;; absent now, the daemon's own check refused it before it had a log (the
+  ;; store went between this client's check and the daemon's), and the
+  ;; answer is the one that refusal would have given, relayed as a report
+  ;; is; otherwise (kind exited) as before. Exported for its unit row, as
+  ;; select-report is.
+  (define (exited-without-report store status token)
+    (if (store-absent? store)
+        (list 'error 'serve-start-failed '(kind store-not-found) (list 'store store) (list 'attempt token) status)
+        (list 'error 'serve-start-failed '(kind exited) status (list 'attempt token))))
+
   ;; ---- starting one, and saying why it did not start ----------------------
   ;;
   ;; A START IS NAMED, WAITED FOR BY ITS PID, AND ANSWERED FROM ITS OWN REPORT.
@@ -595,7 +623,7 @@
                 (let ((answer
                        (guard (e ((classify-failure e '())
                                   => (lambda (a) (own-start-failure a))))
-                         (start-watched! argv socket log-path token))))
+                         (start-watched! argv store socket log-path token))))
                   (cons answer (mutation-record)))))))
       (with-client-written (car outcome) (cdr outcome))))
 
@@ -609,7 +637,19 @@
         (append answer (list (list 'client-written entries)))
         answer))
 
-  (define (start-watched! argv socket log-path token)
+  ;; NEVER: A STORE THAT IS NOT THERE IS REFUSED BEFORE ANYTHING IS MADE. It
+  ;; used to make <run>/<key>, spawn a daemon and leave the directory, the
+  ;; log and the lock behind for the daemon to refuse it; now nothing is
+  ;; created and the answer is the one that refusal gave, without a child's
+  ;; status or attempt. Asked here, after ensure-daemon!'s socket branches
+  ;; (a reachable daemon still answers ready), by store-absent?: a meta.sexp
+  ;; that cannot be asked about is not absence, and the start goes on.
+  (define (start-watched! argv store socket log-path token)
+    (if (store-absent? store)
+        (list 'error 'serve-start-failed '(kind store-not-found) (list 'store store))
+        (start-spawned! argv store socket log-path token)))
+
+  (define (start-spawned! argv store socket log-path token)
     ;; THE LOG'S LENGTH IS TAKEN BEFORE THE SPAWN, and nothing before it is
     ;; read (see log-length). NOT under stage `client`: D8 puts the reads
     ;; AFTER the exit there (exited-answer), and a client-stage fault aimed
@@ -629,7 +669,7 @@
             (cond
               ((connects? socket) 'ready)
               ((waitpid-status pid)
-               => (lambda (status) (exited-answer status log-path before token)))
+               => (lambda (status) (exited-answer status log-path before token store)))
               ((>= (wall-clock-ms) deadline)
                ;; THE DAEMON IS LEFT ALONE: it may be about to bind (E8).
                (list 'error 'serve-start-failed '(kind timeout) (list 'pid pid) (list 'log log-path)))
@@ -640,7 +680,7 @@
   ;; THE LOG IS READ ONLY HERE, AFTER THE EXIT WAS OBSERVED (item 4), under
   ;; stage `client` (D8), behind the client-scan hold (item 7). A reader
   ;; failure is the table's unreadable naming the log, with the status.
-  (define (exited-answer status log-path before token)
+  (define (exited-answer status log-path before token store)
     (hold-point! 'client-scan)
     (let ((bytes (guard (e ((unreadable-entry? e) e))
                    (parameterize ((theourgia-stage 'client))
@@ -652,7 +692,7 @@
                 (append (list 'error 'serve-start-failed (list 'kind (cadr report)))
                         (cddr report)
                         (list status))
-                (list 'error 'serve-start-failed '(kind exited) status (list 'attempt token)))))))
+                (exited-without-report store status token))))))
 
   ;; INJECTION ONLY (`client-extra-child@client`, G6): a child of this
   ;; process that has exited and not been reaped, observed as a zombie
