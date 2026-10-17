@@ -469,7 +469,8 @@
             (and (member "../client.sc" scanned-files) (member "../rpc.sc" scanned-files)
                  (member "../mcp/server.sc" scanned-files) #t)
             (member "../platform-numbers.sc" scanned-files))
-      (list 82 #t #f))
+      ;; 83 since tools/import-git.sc
+      (list 83 #t #f))
 (define sites (apply append (map walk-sites scanned-files)))
 (define (site-file s) (car s))
 (define (site-name s) (cadr s))

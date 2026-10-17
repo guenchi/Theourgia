@@ -3129,7 +3129,7 @@ on the import block and the tag, carrying premises for every live block of
 every range path and for the import block, so a concurrent change to any of
 them refuses it whole (`premise-changed`). A batch is not atomic: an item
 the store refuses stops the rest with the earlier items on disk, answered
-`(error partial (item <n>) (kind <kind>) (path <p>) ... (store-answer ...) (done <n>))`,
+`(error partial (item <n>) (kind <kind>) (path <p>) ... (store-answer ...) (applied <n>))`,
 naming the refused item and where it was to go (a `too-deep` names no gap of
 its own); a failed commit barrier, after which the batch may or may not be on
 disk, is `(error outcome-unknown (store-answer ...))`. Either way, and after a

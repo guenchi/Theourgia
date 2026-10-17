@@ -76,7 +76,7 @@
 ;; change to any of them refuses it whole (premise-changed). A batch is not
 ;; atomic: an item the store refuses stops the rest, with the earlier items
 ;; on disk, and is answered (error partial (item <k>) (kind ...) (path ...)
-;; <where it was to go> (store-answer ...) (done <k>)); a failed commit barrier
+;; <where it was to go> (store-answer ...) (applied <k>)); a failed commit barrier
 ;; is (error outcome-unknown ...); running the same command again converges.
 ;; The tag-only run of done-without-tag carries the same premises.
 ;;
@@ -593,7 +593,7 @@
                              ((insert) (list (list 'parent (cadr intent)) (list 'predecessor (caddr intent))))
                              ((move) (list (list 'block (cadr intent)) (list 'parent (caddr intent)) (list 'predecessor (cadddr intent))))
                              (else (list (list 'block (cadr intent)))))
-                           (list (list 'store-answer (car as)) (list 'done k)))))))))
+                           (list (list 'store-answer (car as)) (list 'applied k)))))))))
 
 (define (stop-setting)
   (let ((v (getenv "THEOURGIA_IMPORT_STOP")))
@@ -660,7 +660,9 @@
                    (all (append content tail))
                    (sent (if stop (list-head all (min stop (length all))) all)))
               (hold-point! 'import-before-batch)
-              (let ((a (if (null? sent) '(batch () (done 0)) (send-batch store (map car sent) premises))))
+              ;; nothing sent: an empty item list, and no done clause, which only
+              ;; the store builds (batch-answer)
+              (let ((a (if (null? sent) (list 'batch '()) (send-batch store (map car sent) premises))))
                 (when stop
                   (write (list 'stopped (list 'items (length sent)) (list 'answer a)))
                   (newline)
