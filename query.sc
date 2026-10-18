@@ -252,18 +252,19 @@
                   '())))
     ;; ONE VISIT PER RELATION: a relation already visited answered #f or
     ;; is on the walk's way, and the walk stops at the first #t, so a graph
-    ;; is walked in its size, not in the number of its paths
-    (let ((seen (make-eq-hashtable)))
+    ;; is walked in its size, not in the number of its paths; a relation's
+    ;; clauses are found by their head, not by reading every clause
+    (let ((seen (make-eq-hashtable)) (by-head (make-eq-hashtable)))
+      (for-each (lambda (rule) (hashtable-update! by-head (car (car rule)) (lambda (l) (cons rule l)) '()))
+                (reverse clauses))
       (let walk ((rel rel))
         (cond
           ((assq rel fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
           ((hashtable-ref seen rel #f) #f)
           (else
            (hashtable-set! seen rel #t)
-           (exists (lambda (rule)
-                     (and (eq? (car (car rule)) rel)
-                          (exists (lambda (g) (walk (car g))) (cdr rule))))
-                   clauses))))))
+           (exists (lambda (rule) (exists (lambda (g) (walk (car g))) (cdr rule)))
+                   (hashtable-ref by-head rel '())))))))
 
   ;; THE BUILT-IN RULES a store may enable by name.
   (define builtin-rules '(citation-coverage))
@@ -374,23 +375,23 @@
   ;; value of another shape is answered as it is, for its check to refuse.
   (define (rule-value-form value)
     ;; EACH PAIR ONCE: a goal may be a datum with labels, cyclic or shared,
-    ;; which its check refuses; the names are read without going round it
+    ;; which its check refuses; whether it names a per-write fact is asked
+    ;; without going round it and without gathering the names
     (define seen (make-eq-hashtable))
-    (define (names g)
-      (cond ((and (pair? g) (hashtable-ref seen g #f)) '())
+    (define (names-write-fact? g)
+      (cond ((and (pair? g) (hashtable-ref seen g #f)) #f)
             ((and (pair? g) (eq? (car g) 'and) (list? g))
              (hashtable-set! seen g #t)
-             (apply append (map names (cdr g))))
-            ((and (pair? g) (symbol? (car g))) (list (car g)))
-            (else '())))
+             (exists names-write-fact? (cdr g)))
+            ((and (pair? g) (symbol? (car g))) (and (assq (car g) rule-only-facts) #t))
+            (else #f)))
     (let ((polarity (and (list? value) (for-all pair? value)
                          (find (lambda (c) (memq (car c) '(must must-not))) value))))
       (if (or (not polarity) (assq 'builtin value) (not (assq 'on value))
               (exists (lambda (k) (let ((c (assq k value))) (and c (not (and (list? c) (= 2 (length c)))))))
                       '(where must must-not)))
           value
-          (let ((write? (exists (lambda (k) (let ((c (assq k value)))
-                                              (and c (exists (lambda (r) (assq r rule-only-facts)) (names (cadr c))))))
+          (let ((write? (exists (lambda (k) (let ((c (assq k value))) (and c (names-write-fact? (cadr c)))))
                                 '(where must must-not))))
             (append (list (list 'class (if write? 'write 'state)) (assq 'on value))
                     (if (assq 'where value) (list (assq 'where value)) '())
