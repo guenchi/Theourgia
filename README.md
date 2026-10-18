@@ -793,11 +793,12 @@ It answers:
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
       | (nested-document <id>) | (relation-contested <name> (candidates (<value> <w> <seq>) ...))
       | (rule-contested <name> (candidates (<value> <w> <seq>) ...))
+      | (derive-contested <name> (candidates (<value> <w> <seq>) ...))
       | (duplicate-path <path> (ids (<id> ...)))
       | (unknown-verb (event <w> <seq>) (verb <v>)) | (malformed-record (event <w> <seq>) (reason ...))
       | (cut <writer> <path> <kind> <after>)
 
-A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`. A relation name whose declarations disagree is listed as `relation-contested` with every surviving declaration (see [`relation`](#relation)), and a rule as `rule-contested` (see [`rule`](#rule)).
+A record this build does not understand, or cannot apply, is listed with its event; a writer whose history was cut by damage is listed once as `cut`. A relation name whose declarations disagree is listed as `relation-contested` with every surviving declaration (see [`relation`](#relation)), and a rule as `rule-contested` (see [`rule`](#rule)), and a stored relation as `derive-contested` (see [`derive`](#derive)).
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
 parent was deleted or never arrived, and records still waiting for premises. A record
@@ -1120,9 +1121,16 @@ block (28570 tuples) takes 394 ms, against 376 ms before every read asked
 the reducer whether a field is contested. `depends*` was measured empty on
 both: neither store holds a link.
 
-`query --relations` lists the two tables below as items, and then the
+`query --relations` lists the two tables below as items, then the
 store's declared relations, one `(declared <name> <kind> (from <selector>)
-(to <selector>))` each, or `(declared <name> (contested))`. This section is
+(to <selector>))` each, or `(declared <name> (contested))`, and then the
+store's stored relations (see [`derive`](#derive)), one `(derived <name>
+(arity <n>) (kinds (<kind> ...)) <availability>)` each for one in force,
+`(derived <name> (retired) <availability>)`, or `(derived <name> (contested)
+(candidates (<head> <w> <seq>) ...) <availability>)`; the availability is
+`available` or `(unavailable (state ...) [(through ...)])`, and a record whose
+name the language reserves (only one that reached the store without the verb
+carries one) is `(derived <name> (unavailable (shadowed <owner>)))`. This section is
 generated from the two tables, and docs-check compares the two.
 
 A rule about an effect asks the edge's KIND: `edge-kind` and `moved-kind`
@@ -2038,6 +2046,56 @@ citation-coverage`.
 
 A store with no rule and no typed relation makes no copy and judges nothing:
 every write is as it was.
+
+### `derive`
+
+    (derive <name> (<value>) ("--retire") ("--premises" <datum>))
+
+Declares a stored relation: a relation of this store that queries, rules and
+other stored relations name as they name the library's. `<value>` is one datum,
+
+    ((head (<name> <kind> ...))
+     (clause (<name> <term> ...) <goal> ...)
+     ...)
+
+-- the head gives the arity and every column's kind (the kinds of the query
+language: `ID`, `STR`, `SYM`, `INT`, `ANY`, `PARENT`, `NAME-OR-NONE`, `(SYM
+<symbol> ...)`), each clause a pattern of the relation and its body, goals of
+the query language: fact relations, tests, the library's relations, other
+stored relations, the relation itself (recursion is allowed, as in the
+library). `--retire` ends it. Declaring the same value again answers `(ok
+(unchanged))` and writes nothing; a later value replaces it for every cut
+after the write, and two writers' different values are contested, as a rule's
+are.
+
+The name must be free: a test, a fact relation, a per-write fact, a library
+relation, a declared edge relation or a rule of the store is refused `(error
+bad-request name-taken (name <name>) (where test|fact|write-fact|library|edge-relation|rule))`,
+and `rule` and `relation` refuse a stored relation's name (`(where
+derive)`). The value is checked where it is written, as the library is checked
+when it loads, with the kinds: arity, terms, every head variable bound by the
+body, each goal's kinds, and the clauses' heads within the declared kinds. A
+clause that reaches a relation outside the log (`def`, `uses-name`, `score`),
+directly or through another stored relation, is refused
+`rule-relation-not-allowed`.
+
+A stored relation is DATA CHECKED WHERE IT IS USED. A goal naming one is
+answered at the cut its session reads -- a query's, the state after a write for
+a state rule, the state before it for a write rule -- and is refused, never
+answered empty, when the relation is not available there:
+
+    (error bad-request relation-unavailable (relation <name>)
+           (state contested | retired | (check <its own refusal>)) [(through <name> ...)])
+
+`check` is the relation's own clauses failing at that cut (a relation they name
+changed under them); `through` names the chain when the one that is not
+available is reached through others. A rule naming such a relation is
+`rule-unevaluable` at the next write it judges, with that refusal as its
+reason, and `check`'s audit lists it. Nothing is recorded about a relation's
+dependents: a repair is any declaration that makes the check pass again. The
+answer to `derive` carries `(affects (rule <name> ...) (derive <name> ...))`
+when the write changes what settled rules and stored relations can answer at
+the next write.
 
 ### `def`
 

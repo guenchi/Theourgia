@@ -1853,6 +1853,8 @@
            ;; (rule <name> <value>) -> the same, verbatim: the store writes
            ;; a rule only in its one form (store.sc).
            ((rule) (equal? intent payload))
+           ;; (derive <name> <value>) -> the same, verbatim
+           ((derive) (equal? intent payload))
            ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
            ((move)
             (and (parts 3) (>= (length payload) 3) (eq? (car payload) (quote move))

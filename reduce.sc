@@ -47,6 +47,7 @@
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           declaration-kinds relation-kind state-declared-relations state-relation-contested
           state-declaration rule-value-reason state-rule state-declared-rules state-rule-contested
+          derive-value-reason state-derived state-derived-names state-derived-contested
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
@@ -135,6 +136,7 @@
   ;; noted    -- integrity observations this layer made while applying
   ;; declared-relations -- alist of a declared relation name to its candidates
   ;; declared-rules -- alist of a rule name to its candidates, the same way
+  ;; declared-derived -- alist of a derived relation's name to its candidates
   (define-record-type reduction
     (fields (mutable blocks-rev)
             (mutable links)
@@ -148,6 +150,7 @@
             (mutable consumption)
             (mutable declared-relations)
             (mutable declared-rules)
+            (mutable declared-derived)
             ;; A REHEARSAL'S COPY (reduce-clone), and only that: a trace line
             ;; emitted while reducing it is marked (rehearsal), and the
             ;; store's fault seam is not consulted for it.
@@ -650,7 +653,7 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() #f
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() '() #f
                     (make-block-index) '() (make-pasts-index)
                     (make-empty-structure)))
 
@@ -679,6 +682,7 @@
                       (admission-copy (reduction-admission-index r))
                       (consumption-copy (reduction-consumption r))
                       (reduction-declared-relations r) (reduction-declared-rules r)
+                      (reduction-declared-derived r)
                       #t
                       index #f (hashtable-copy (reduction-pasts-index r) #t)
                       (structure-copy (reduction-structure r)))))
@@ -832,6 +836,7 @@
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r '())
       (reduction-declared-rules-set! r '())
+      (reduction-declared-derived-set! r '())
       (pasts-reset! r)
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
@@ -1331,6 +1336,12 @@
                     ((and (pair? args) (pair? (cdr args)) (find bad? (datum-symbols (cadr args))))
                      => (lambda (x) (say 'rule-value x)))
                     (else #f)))
+             ;; payload-reason ran first, so the value is a finite plain tree here
+             ((derive)
+              (cond ((and (pair? args) (bad? (car args))) (say 'derive (car args)))
+                    ((and (pair? args) (pair? (cdr args)) (find bad? (datum-symbols (cadr args))))
+                     => (lambda (x) (say 'derive-value x)))
+                    (else #f)))
              ((set)
               (and (pair? (cdr args)) (bad? (cadr args))
                    (say 'field-name (cadr args))))
@@ -1529,6 +1540,10 @@
            ((rule) (or (args-reason args 2)
                        (and (not (symbol? (car args))) 'rule-name-not-a-symbol)
                        (rule-value-reason (cadr args))))
+           ;; A DERIVED RELATION: a name and its whole value (derive-value-reason).
+           ((derive) (or (args-reason args 2)
+                         (and (not (symbol? (car args))) 'derive-name-not-a-symbol)
+                         (derive-value-reason (car args) (cadr args))))
            ;; A PLAN IS CHECKED HERE TOO, and until now it was not: the
            ;; arm below answered #f for it, so a plan carrying a
            ;; malformed `consumes` was applied in silence and the index
@@ -1602,6 +1617,7 @@
          ((tag) (do-tag! r event-id past (cdr payload)))
          ((relation) (do-relation! r event-id past (cdr payload)))
          ((rule) (do-rule! r event-id past (cdr payload)))
+         ((derive) (do-derive! r event-id past (cdr payload)))
          ;; bookkeeping: understood, and deliberately without effect
          ((plan batch resolve) (if #f #f))
          (else (note-verb! r event-id (car payload)))))))
@@ -1697,6 +1713,8 @@
     (put-declaration! reduction-declared-relations reduction-declared-relations-set! r event-id past args))
   (define (do-rule! r event-id past args)
     (put-declaration! reduction-declared-rules reduction-declared-rules-set! r event-id past args))
+  (define (do-derive! r event-id past args)
+    (put-declaration! reduction-declared-derived reduction-declared-derived-set! r event-id past args))
 
   ;; ---- ordering (design 9.5) ------------------------------------------------
 
@@ -2322,6 +2340,78 @@
                           (list 'rule-contested name (cons 'candidates (cdr d))))))
                  (rule-names r))))
 
+;; ---- derived relations: the same candidate rule ----------------------------
+  ;;
+  ;; A DERIVED RELATION'S VALUE, as a record carries it: `retired`, or
+  ;; ((head (<name> <kind> ...)) (clause (<name> <term> ...) <goal> ...) ...),
+  ;; one head and at least one clause, every clause headed by the relation's
+  ;; own name with the head's arity, every goal a list headed by a symbol.
+  ;; This is the SHAPE a replay accepts, on every route; what a goal names,
+  ;; whether it types and whether the name is free are the `derive` verb's
+  ;; to judge (query.sc, derive-value-check), at the state it writes in.
+  ;; FIRST, A FINITE PLAIN TREE: no pair or vector reached twice, before
+  ;; anything walks or copies the value (copy-datum recurses without such a
+  ;; guard, and a cycle would not end); then no plan marker, a pair headed
+  ;; "#%new" with a pair after it, which a plan rewrites inside its members.
+  (define (plain-tree? x)
+    (let ((seen (make-eq-hashtable)))
+      (let walk ((x x))
+        (cond ((or (pair? x) (vector? x))
+               (and (not (hashtable-ref seen x #f))
+                    (begin (hashtable-set! seen x #t)
+                           (if (pair? x)
+                               (and (walk (car x)) (walk (cdr x)))
+                               (for-all walk (vector->list x))))))
+              (else #t)))))
+  (define (holds-plan-marker? x)
+    (and (pair? x)
+         (or (and (equal? (car x) "#%new") (pair? (cdr x)))
+             (holds-plan-marker? (car x))
+             (holds-plan-marker? (cdr x)))))
+  ;; A HEAD'S COLUMN KIND AS WRITTEN, one of the query language's: ID STR
+  ;; SYM INT ANY PARENT NAME-OR-NONE, or (SYM <symbol> ...), a symbol set
+  ;; (query.sc, kind-union, reads exactly these)
+  (define (kind-spelling? k)
+    (or (and (memq k '(ID STR SYM INT ANY PARENT NAME-OR-NONE)) #t)
+        (and (list? k) (pair? k) (eq? (car k) 'SYM) (for-all symbol? (cdr k)))))
+  (define (derive-value-reason name v)
+    (define (clause-ok? c n)
+      (and (list? c) (>= (length c) 2) (eq? (car c) 'clause)
+           (list? (cadr c)) (pair? (cadr c)) (eq? (car (cadr c)) name) (= n (length (cdr (cadr c))))
+           (for-all (lambda (g) (and (list? g) (pair? g) (symbol? (car g)))) (cddr c))))
+    (cond
+      ((eq? v 'retired) #f)
+      ((not (plain-tree? v)) 'derive-not-a-tree)
+      ((holds-plan-marker? v) 'derive-holds-marker)
+      ((not (and (list? v) (pair? v) (list? (car v)) (= 2 (length (car v))) (eq? (car (car v)) 'head)))
+       'derive-malformed)
+      (else
+       (let ((h (cadr (car v))) (clauses (cdr v)))
+         (cond
+           ((not (and (list? h) (pair? h) (eq? (car h) name) (for-all kind-spelling? (cdr h)))) 'derive-malformed)
+           ((null? clauses) 'derive-malformed)
+           ((not (for-all (lambda (c) (clause-ok? c (length (cdr h)))) clauses)) 'derive-malformed)
+           (else #f))))))
+
+  (define (derived-candidates r name)
+    (let ((e (assq name (reduction-declared-derived r)))) (if e (cdr e) '())))
+  ;; every declared name, in force, contested or retired, sorted
+  (define (state-derived-names r)
+    (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+               (map car (reduction-declared-derived r))))
+  ;; -> #f for a name never declared; else (in-force <value>), (retired), or
+  ;; (contested (<value> <writer> <seq>) ...), by the one agreement rule
+  (define (state-derived r name) (candidates-state (derived-candidates r name)))
+  ;; -> ((derive-contested <name> (candidates (<value> <writer> <seq>) ...)) ...),
+  ;; by name, for `conflicts`.
+  (define (state-derived-contested r)
+    (filter values
+            (map (lambda (name)
+                   (let ((d (state-derived r name)))
+                     (and (eq? (car d) 'contested)
+                          (list 'derive-contested name (cons 'candidates (cdr d))))))
+                 (state-derived-names r))))
+
   ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
   ;; records were DELIVERED (as state-put-events: not application order, and
   ;; the route's), for every APPLIED link or unlink record whose relation is
@@ -2384,7 +2474,9 @@
     (let ((ds (append (map (lambda (name) (list 'relation name (candidates->datum (relation-candidates r name))))
                            (declared-names r))
                       (map (lambda (name) (list 'rule name (candidates->datum (rule-candidates r name))))
-                           (rule-names r)))))
+                           (rule-names r))
+                      (map (lambda (name) (list 'derive name (candidates->datum (derived-candidates r name))))
+                           (state-derived-names r)))))
       (bytevector->hex
         (sha256 (string->utf8 (sexpr->string-extended
                                 (storable-encode (if (null? ds) (state-datum r) (append (state-datum r) ds)))))))))
@@ -3181,7 +3273,10 @@
       ;; no declaration, whose rows are as they were.
       (map (lambda (e) (list 'relation (car e) (cdr e))) (reduction-declared-relations r))
       ;; A RULE'S CANDIDATES the same way, one row a name.
-      (map (lambda (e) (list 'rule (car e) (cdr e))) (reduction-declared-rules r))))
+      (map (lambda (e) (list 'rule (car e) (cdr e))) (reduction-declared-rules r))
+      ;; A DERIVED RELATION'S CANDIDATES the same way; none in a store with
+      ;; no derive record, whose rows are as they were.
+      (map (lambda (e) (list 'derive (car e) (cdr e))) (reduction-declared-derived r))))
 
   (define (rows->state rows)
     (let ((r (reduce-empty))
@@ -3226,6 +3321,9 @@
             ((rule)
              (reduction-declared-rules-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-declared-rules r))))
+            ((derive)
+             (reduction-declared-derived-set!
+               r (cons (cons (cadr row) (caddr row)) (reduction-declared-derived r))))
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
