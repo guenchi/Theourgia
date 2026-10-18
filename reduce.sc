@@ -47,7 +47,7 @@
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           declaration-kinds relation-kind state-declared-relations state-relation-contested
           state-declaration rule-value-reason state-rule state-declared-rules state-rule-contested
-          derive-value-reason state-derived state-derived-names state-derived-contested
+          derive-value-reason state-derived state-derived-names state-derived-all state-derived-contested
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
@@ -2402,6 +2402,11 @@
   ;; -> #f for a name never declared; else (in-force <value>), (retired), or
   ;; (contested (<value> <writer> <seq>) ...), by the one agreement rule
   (define (state-derived r name) (candidates-state (derived-candidates r name)))
+  ;; EVERY DECLARED NAME WITH ITS STATE, sorted by name: -> ((<name> .
+  ;; <state-derived>) ...), read in one pass over the table
+  (define (state-derived-all r)
+    (list-sort (lambda (x y) (string<? (symbol->string (car x)) (symbol->string (car y))))
+               (map (lambda (e) (cons (car e) (candidates-state (cdr e)))) (reduction-declared-derived r))))
   ;; -> ((derive-contested <name> (candidates (<value> <writer> <seq>) ...)) ...),
   ;; by name, for `conflicts`.
   (define (state-derived-contested r)

@@ -2089,13 +2089,16 @@ answered empty, when the relation is not available there:
 
 `check` is the relation's own clauses failing at that cut (a relation they name
 changed under them); `through` names the chain when the one that is not
-available is reached through others. A rule naming such a relation is
+available is reached through others: the shortest chain to a relation whose
+own state or check fails, ties going to the earlier name in each relation's
+clauses, and `state` is that relation's. A rule naming such a relation is
 `rule-unevaluable` at the next write it judges, with that refusal as its
 reason, and `check`'s audit lists it. Nothing is recorded about a relation's
 dependents: a repair is any declaration that makes the check pass again. The
 answer to `derive` carries `(affects (rule <name> ...) (derive <name> ...))`
-when the write changes what settled rules and stored relations can answer at
-the next write.
+when the write changes whether settled rules and stored relations can answer
+at the next write (a relation that stays unavailable by another chain is not
+listed).
 
 ### `def`
 

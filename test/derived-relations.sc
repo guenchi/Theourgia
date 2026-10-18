@@ -27,8 +27,8 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia query) make-query-session session-answer refusal? refusal-answer check-rules rule-library
-              relation-external? rule-value-check)
-        (only (theourgia store) open-and-reduce with-store-write make-write-request)
+              relation-external? rule-value-check derive-affects)
+        (only (theourgia store) open-and-reduce with-store-write make-write-request store-publish-hook!)
         (only (theourgia reduce) reduce-applied-cut block-id state-hash reduce-clone state->rows rows->state
               reduce-empty reduce-apply! reduce-gates state-rule)
         (only (theourgia wire) encode-record storable-encode)
@@ -807,6 +807,228 @@
 (want "RULES-19 a rule goal written with a cyclic datum label: refused rule-malformed, and the verb answers"
       (on TS 'rule "qc" "--on" "doc" "--must-not" "#0=(and #0#)")
       '(error bad-request rule-malformed))
+
+;; ---- F307: the availability walk, linear -------------------------------------------------
+(printf "== F307: one walk over the reach, shortest chains ==\n")
+;; THE COUNTING SEAM, looked up (the base has none): bound in process, it
+;; counts the own checks and the sink reads of the availability walk
+(define stored-walk-counter
+  (guard (e (#t #f)) (eval 'stored-walk-counter (environment '(theourgia query)))))
+;; -> (<count of WHAT> <thunk's value>)
+(define (counting what thunk)
+  (if (not stored-walk-counter)
+      (list 'no-seam (thunk))
+      (let ((n 0))
+        (let ((v (parameterize ((stored-walk-counter (lambda (w rel) (when (eq? w what) (set! n (+ n 1)))))) (thunk))))
+          (list n v)))))
+;; an entry's availability, as the fourth table lists it
+(define (availability-of st name) (let ((e (derived-entry st name))) (and e (list-ref e (- (length e) 1)))))
+
+;; A AND B: N RELATIONS IN ONE FORGED SEGMENT, listed by query --relations in
+;; a child under the alarm. Built by replay, which admits by shape alone: the
+;; verb would check each declaration's reach and be quadratic to build.
+;; N = 3200 IS THE INSTRUMENT, measured on the walk before this one (master
+;; 9de1426): the crafted order listed in 8.7 s at 800, 132 s at 2400, and did
+;; not finish in 590 s at 3200; a chain of 3200 listed in 0.56 s.
+(define forge-child (string-append root "/forge-list.ss"))
+(call-with-output-file forge-child
+  (lambda (p)
+    (for-each (lambda (d) (write d p) (newline p))
+      '((import (chezscheme) (theourgia rpc) (only (theourgia extensions) extension-verbs)
+                (only (theourgia reduce) reduce-applied-cut) (only (theourgia store) open-and-reduce)
+                (only (theourgia wire) encode-record storable-encode) (only (theourgia log) log-publish! segment-sha))
+        (register-verbs! extension-verbs)
+        (define args (command-line-arguments))
+        (define st (car args))
+        (define shape (string->symbol (cadr args)))
+        (define n (string->number (caddr args)))
+        (define (r i) (string->symbol (string-append "r" (number->string i))))
+        (define (callees i)
+          (case shape
+            ((crafted) (cond ((= i 0) (list (r 1) (r n))) ((< i n) (list (r (+ i 1)) (r n) (r (- i 1)))) (else (list (r (- n 1))))))
+            (else (if (< i n) (list (r (+ i 1))) '()))))
+        (define (value i)
+          (list (list 'head (list (r i) 'ID))
+                (cons 'clause (cons (list (r i) '?x) (if (null? (callees i)) (list '(kind ?x section)) (map (lambda (c) (list c '?x)) (callees i)))))))
+        (rpc-dispatch st '(init) "author")
+        (rpc-dispatch st '(batch "((insert root #f ((kind . section) (title . \"S\"))))") "author")
+        (define cut (reduce-applied-cut (open-and-reduce st)))
+        (define w (car (car cut)))
+        (define (join bvs)
+          (let ((out (make-bytevector (apply + (map bytevector-length bvs)))))
+            (let loop ((bvs bvs) (k 0))
+              (if (null? bvs) out
+                  (begin (bytevector-copy! (car bvs) 0 out k (bytevector-length (car bvs)))
+                         (loop (cdr bvs) (+ k (bytevector-length (car bvs)))))))))
+        (define bytes
+          (join (let loop ((i n) (acc '()))
+                  (if (< i 0) acc
+                      (loop (- i 1) (cons (encode-record (+ i 1) 1789000000001 "peer" (list (cons w (cdr (assoc w cut))))
+                                                         (storable-encode (list 'derive (r i) (value i))))
+                                          acc))))))
+        (log-publish! st "peerzzzz" 1 bytes (segment-sha bytes))
+        ;; THE LISTING ALONE IS TIMED: the state is replayed first and
+        ;; supplied, so the replay's own cost is not the listing's
+        (let* ((replayed (open-and-reduce st))
+               (t0 (real-time))
+               (a (rpc-dispatch st '(query "--relations") "author" replayed))
+               (ms (- (real-time) t0))
+               (derived (if (and (pair? a) (eq? (car a) 'ok)) (filter (lambda (e) (and (pair? e) (eq? (car e) 'derived))) (cdr (cadr a))) '())))
+          (call-with-output-file (cadddr args)
+            (lambda (p) (write (list (length derived) (length (filter (lambda (e) (eq? (list-ref e (- (length e) 1)) 'available)) derived)) ms) p))
+            'replace))))))
+(define (forged-listing seconds shape n)
+  (let* ((st (string-append root "/forged-" (symbol->string shape) "-" (number->string n))) (out (string-append st ".out")))
+    (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" forge-child "' '"
+                           st "' " (symbol->string shape) " " (number->string n) " '" out "' < /dev/null > /dev/null 2>&1"))
+    (if (file-exists? out) (call-with-input-file out read) 'timed-out)))
+(define (counts r) (if (pair? r) (list-head r 2) r))
+(want "F307-A the crafted order (r<i> names r<i+1>, r3200, r<i-1>), 3200 deep, forged: every relation listed available, inside a minute"
+      (counts (forged-listing 60 'crafted 3200))
+      '(3201 3201))
+(want "F307-B a chain of the same 3200, forged: every relation listed available, inside a minute"
+      (counts (forged-listing 60 'chain 3200))
+      '(3201 3201))
+;; I: THE TABLE LOOKED UP BY NAME, not by a scan of the table: at 25600 the
+;; listing alone (the replayed state supplied) took 0.23 s with the index and
+;; 67 s with a scan per lookup (both measured on the crafted order); the
+;; replay itself, the reduction's, is outside this bound
+(want "F307-I the crafted order 25600 deep, forged: every relation listed available, the listing alone under ten seconds"
+      (let ((r (forged-listing 180 'crafted 25600)))
+        (if (pair? r) (list (car r) (cadr r) (< (caddr r) 10000)) r))
+      '(25601 25601 #t))
+
+;; C: THE SHORTEST CHAIN, ties by each caller's callee order, and the sink's
+;; own state. One store, five graphs.
+(define CS (store! "shortest"))
+(make CS 'section "S")
+(define (body name . callees)
+  (list (list 'head (list name 'ID)) (cons 'clause (cons (list name '?x) (map (lambda (c) (list c '?x)) callees)))))
+;; A SINK CONTESTED: the local value, and later a peer's whose premise is the
+;; cut before it; the peer's record comes after the callers are declared, as
+;; a caller of a relation already unavailable is refused at its verb
+(define (declare-contestable! st name)
+  (let ((past (cut-of st)))
+    (derive! st name (over-kind name 'section))
+    past))
+(define (contest! st name peer past) (forge! st peer (list 'derive name (over-kind name 'doc)) past))
+;; C1: p1 names a1 then z1; a1 names b1, b1 names z1; z1 retired
+(for-each (lambda (n v) (derive! CS n v))
+          '(z1 b1 a1 p1) (list (over-kind 'z1 'section) (body 'b1 'z1) (body 'a1 'b1) (body 'p1 'a1 'z1)))
+;; C2: p2 names a2 then b2, q2 names b2 then a2; a2 and b2 each name z2; z2 retired
+(for-each (lambda (n v) (derive! CS n v))
+          '(z2 a2 b2 p2 q2) (list (over-kind 'z2 'section) (body 'a2 'z2) (body 'b2 'z2) (body 'p2 'a2 'b2) (body 'q2 'b2 'a2)))
+;; C3: x3 names zr3 (retired), y3 names zc3 (contested); w3 names m3 then y3,
+;; m3 names x3: zr3 is three away from w3, zc3 two
+(define zc3-past (declare-contestable! CS 'zc3))
+(for-each (lambda (n v) (derive! CS n v))
+          '(zr3 x3 y3 m3 w3) (list (over-kind 'zr3 'section) (body 'x3 'zr3) (body 'y3 'zc3) (body 'm3 'x3) (body 'w3 'm3 'y3)))
+;; C4: u4 names v4, nothing failing below
+(for-each (lambda (n v) (derive! CS n v)) '(v4 u4) (list (over-kind 'v4 'section) (body 'u4 'v4)))
+;; C5: p5 names a5 then b5, q5 names b5 then a5; a5 retired, b5 contested
+(define b5-past (declare-contestable! CS 'b5))
+(for-each (lambda (n v) (derive! CS n v)) '(a5 p5 q5) (list (over-kind 'a5 'section) (body 'p5 'a5 'b5) (body 'q5 'b5 'a5)))
+(for-each (lambda (n) (retire! CS n)) '(z1 z2 zr3 a5))
+(contest! CS 'zc3 "peerc3zc" zc3-past)
+(contest! CS 'b5 "peerc5bb" b5-past)
+(want "F307-C1 a longer first route and a direct later one to one sink: the direct one is the chain"
+      (availability-of CS 'p1)
+      '(unavailable (state retired) (through z1)))
+(want "F307-C2 two callers naming two routes of one length in opposite orders: each goes by its own first"
+      (list (availability-of CS 'p2) (availability-of CS 'q2))
+      '((unavailable (state retired) (through a2 z2)) (unavailable (state retired) (through b2 z2))))
+(want "F307-C3 two sinks, retired and contested: each predecessor reports its own, and a relation reaching both reports the nearer"
+      (list (availability-of CS 'x3) (availability-of CS 'y3) (availability-of CS 'w3))
+      '((unavailable (state retired) (through zr3)) (unavailable (state contested) (through zc3))
+        (unavailable (state contested) (through y3 zc3))))
+(want "F307-C4 a component beside them with nothing failing: available"
+      (list (availability-of CS 'u4) (availability-of CS 'v4))
+      '(available available))
+(want "F307-C5 two sinks at one distance, retired and contested, named in opposite orders: each caller reports its own first"
+      (list (availability-of CS 'p5) (availability-of CS 'q5))
+      '((unavailable (state retired) (through a5)) (unavailable (state contested) (through b5))))
+
+;; D: EACH OWN CHECK ONCE A STATE: t names s names r; two queries of one
+;; session, then a second session on the same state, check each relation once
+(define DS (store! "once"))
+(define dsS (make DS 'section "S"))
+(for-each (lambda (n v) (derive! DS n v)) '(r s t) (list (over-kind 'r 'section) (body 's 'r) (body 't 's)))
+(want "F307-D two queries of one session and a second session on the same state: three own checks, one a relation"
+      (let ((st (state DS)))
+        (counting 'own (lambda ()
+                         (let ((S1 (make-query-session st)))
+                           (map (lambda (a) (list-head a 2))
+                                (in-order (session-answer S1 '(t ?x)) (session-answer S1 '(s ?x))
+                                          (session-answer (make-query-session st) '(t ?x))))))))
+      (list 3 (list (list 'ok (list (list dsS))) (list 'ok (list (list dsS))) (list 'ok (list (list dsS))))))
+
+;; E: AFFECTS BY THE AVAILABILITY BIT: s names m then r2, m names r1, t names
+;; r1; r1 retired. Retiring r2 shortens s's chain and leaves s unavailable:
+;; no effect. Restoring r1 makes m and t available: both listed; s stays
+;; unavailable through r2: not listed
+(define ES (store! "affects-bit"))
+(make ES 'section "S")
+(for-each (lambda (n v) (derive! ES n v))
+          '(r1 r2 m s t) (list (over-kind 'r1 'section) (over-kind 'r2 'section) (body 'm 'r1) (body 's 'm 'r2) (body 't 'r1)))
+(retire! ES 'r1)
+(define es-r2 (retire! ES 'r2))
+(define es-r1 (derive! ES 'r1 (over-kind 'r1 'section)))
+(want "F307-E a chain that changes while staying unavailable is no effect; becoming available is"
+      (list (availability-of ES 's) (clause-of es-r2 'affects) (clause-of es-r1 'affects))
+      '((unavailable (state retired) (through r2)) #f (affects (derive m t))))
+
+;; F: SINK READS ONCE A RELATION: c0 names c1, ..., c19 names c20, c20
+;; retired; the listing reads twenty sinks, not the 210 a walk of each chain
+;; would
+(define FS (store! "sinks"))
+(make FS 'section "S")
+(define (cn i) (string->symbol (string-append "c" (number->string i))))
+(let loop ((i 20))
+  (when (>= i 0)
+    (derive! FS (cn i) (if (= i 20) (over-kind 'c20 'section) (body (cn i) (cn (+ i 1)))))
+    (loop (- i 1))))
+(retire! FS 'c20)
+(want "F307-F a chain of twenty ending in a retired relation: the listing reads twenty sinks, and c0's chain is the whole chain"
+      (let ((r (counting 'sink (lambda () (availability-of FS 'c0)))))
+        (list (car r) (length (cdr (assq 'through (cdr (cadr r)))))))
+      '(20 20))
+
+;; G: ONE TABLE A STATE: five rules each name r; affects asks each rule and
+;; every relation of PRE and of POST, and checks each relation once a state
+(define GS (store! "one-table"))
+(make GS 'doc "b")
+(for-each (lambda (n v) (derive! GS n v)) '(r s t) (list (over-kind 'r 'code) (body 's 'r) (body 't 's)))
+(for-each (lambda (k) (rule! GS (string-append "g" (number->string k)) "--on" "doc" "--must-not" "(r ?w)")) '(1 2 3 4 5))
+(want "F307-G affects over five rules naming r: three relations, one own check each a state, six in all"
+      (let ((pre (state GS)) (post (state GS)))
+        (car (counting 'own (lambda () (derive-affects pre post 'none)))))
+      6)
+
+;; H: THE TABLE IS THE STATE'S AT ITS APPLIED CUT: a write rule naming r makes
+;; the request's rehearsal read r's availability on the reduction it then
+;; writes to and publishes. A daemon serves its next reads from that
+;; published reduction; here the publish hook (the daemon's, daemon.sc)
+;; keeps it and the listing is given it as the supplied state. The listing
+;; and the next write read r retired.
+(define HS (store! "cut-keyed"))
+(define hsB (make HS 'doc "b"))
+(derive! HS 'r (over-kind 'r 'code))
+(rule! HS "q" "--on" "doc" "--where" "(kind+ ?w doc)" "--must-not" "(r ?w)")
+(define hs-published #f)
+(store-publish-hook! (lambda (st) (set! hs-published st)))
+(define hs-batch (batch HS '(derive r retired) (list 'set hsB 'title "x")))
+(store-publish-hook! (lambda (st) (if #f #f)))
+(define (published-availability st name)
+  (let ((a (rpc-dispatch st '(query "--relations") "author" hs-published)))
+    (and (pair? a) (eq? (car a) 'ok)
+         (let ((e (find (lambda (i) (and (pair? i) (eq? (car i) 'derived) (eq? (cadr i) name))) (cdr (cadr a)))))
+           (and e (list-ref e (- (length e) 1)))))))
+(want "F307-H a request whose rehearsal read r and whose write retired it: the published state's listing reads r unavailable, retired, and the next write is unevaluable"
+      (list (and (pair? hs-batch) (map car (cadr hs-batch)))
+            (and hs-published #t)
+            (published-availability HS 'r)
+            (head3 (title! HS hsB "y")))
+      '((ok ok) #t (unavailable (state retired)) (error refused rule-unevaluable)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)

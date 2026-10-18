@@ -58,16 +58,16 @@
           session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
           query-budget-default
-          derive-value-check derive-affects rule-names-stored? rule-value-form
+          derive-value-check derive-affects rule-names-stored? rule-value-form stored-walk-counter
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
-          (only (chezscheme) make-parameter)
+          (only (chezscheme) make-parameter make-weak-eq-hashtable)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
                 state-declared-relations kind-known? known-kinds
-                state-derived state-derived-names state-declaration state-rule reduction?
+                state-derived state-derived-names state-derived-all state-declaration state-rule reduction?
                 derive-value-reason state-declared-rules)
           (only (theourgia store) library-locator defs-index search-state field-strings)
           (only (theourgia md) md-refs)
@@ -778,105 +778,183 @@
   ;; . <state-derived>) ...); OVERRIDE, when given, is (<name> <value>), a
   ;; value the `derive` verb is about to write, read in force in its place.
   (define (stored-table state override)
-    (let ((names (filter (lambda (n) (not (goal-name-owner n)))
-                         (if (and state (reduction? state)) (state-derived-names state) '()))))
-      (let ((table (map (lambda (n) (cons n (state-derived state n))) names)))
-        (if override
-            (cons (cons (car override) (if (eq? (cadr override) 'retired) '(retired) (list 'in-force (cadr override))))
-                  (filter (lambda (e) (not (eq? (car e) (car override)))) table))
-            table))))
-  (define (stored-in-force table rel)
-    (let ((e (assq rel table))) (and e (eq? (car (cdr e)) 'in-force) (cadr (cdr e)))))
+    (let ((table (filter (lambda (e) (not (goal-name-owner (car e))))
+                         (if (and state (reduction? state)) (state-derived-all state) '()))))
+      (if override
+          (cons (cons (car override) (if (eq? (cadr override) 'retired) '(retired) (list 'in-force (cadr override))))
+                (filter (lambda (e) (not (eq? (car e) (car override)))) table))
+          table)))
+
+;; THE COUNTING SEAM: #f, or a procedure the own check calls with (own
+  ;; <relation>) and a sink read with (sink <relation>). A fixture binds it in
+  ;; process to count the walk's work; nothing else reads it.
+  (define stored-walk-counter (make-parameter #f))
+  (define (walk-count! what rel) (let ((c (stored-walk-counter))) (when c (c what rel))))
+
+  ;; THE AVAILABILITY OF A STATE'S STORED RELATIONS, one entry a state at its
+  ;; applied cut: the declared table indexed by name; each relation's OWN
+  ;; answer, checked once; the CLOSURE of the names asked so far (closed
+  ;; under callees); and for each unavailable member its distance to the
+  ;; nearest own-failing relation, its next hop and its sink.
+  ;; A relation is UNAVAILABLE iff its own check fails (contested, retired,
+  ;; or its clauses fail the static check against the heads they name), or
+  ;; it reaches, through own-passing relations, one that fails. The answer
+  ;; is the sink's own (state ...) and, for a relation that is not itself
+  ;; the sink, (through <hop> ... <sink>): the SHORTEST chain to an
+  ;; own-failing relation, ties by callee order.
+  (define-record-type (stored-entry make-stored-entry stored-entry?)
+    (fields cut order index own closure (mutable members) distance hop sink (mutable check-env)))
+  ;; A NEW ENTRY carries its own checks' environment, whose STORED handler
+  ;; reads the same entry's heads
+  (define (new-stored-entry state override)
+    (let ((table (stored-table state override)) (index (make-eq-hashtable)))
+      (for-each (lambda (e) (hashtable-set! index (car e) (cdr e))) table)
+      (let ((e (make-stored-entry (and state (reduction? state) (reduce-applied-cut state)) (map car table) index
+                                  (make-eq-hashtable) (make-eq-hashtable) '()
+                                  (make-eq-hashtable) (make-eq-hashtable) (make-eq-hashtable) #f)))
+        (stored-entry-check-env-set! e (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library)
+                                                                (stored-handler-of e))))
+        e)))
+  ;; THE TABLE BELONGS TO THE STATE AT ITS APPLIED CUT: every environment
+  ;; built on a state shares one entry while the state has not moved, and a
+  ;; state whose applied cut differs (the same reduction rehearsed, then
+  ;; written to and published) gets a fresh one. A hypothetical head (the
+  ;; derive verb's OVERRIDE) has an entry of its own, shared with nothing.
+  (define stored-entries (make-weak-eq-hashtable))
+  (define (stored-entry-for state override)
+    (if (or override (not (and state (reduction? state))))
+        (new-stored-entry state override)
+        (let ((e (hashtable-ref stored-entries state #f)))
+          (if (and e (equal? (stored-entry-cut e) (reduce-applied-cut state)))
+              e
+              (let ((fresh (new-stored-entry state #f)))
+                (hashtable-set! stored-entries state fresh)
+                fresh)))))
+  (define (entry-in-force e rel)
+    (let ((d (hashtable-ref (stored-entry-index e) rel #f))) (and d (eq? (car d) 'in-force) (cadr d))))
+  ;; the stored relations an in-force relation's clauses name, in clause
+  ;; order and goal order
+  (define (entry-callees e rel)
+    (let ((v (entry-in-force e rel)))
+      (if v
+          (filter (lambda (n) (hashtable-contains? (stored-entry-index e) n))
+                  (apply append (map (lambda (c) (map car (cddr c))) (cdr v))))
+          '())))
+  ;; a relation's own answer, checked once an entry
+  (define (entry-own e rel)
+    (let ((known (hashtable-ref (stored-entry-own e) rel 'none)))
+      (if (not (eq? known 'none))
+          known
+          (let ((answer (begin
+                          (walk-count! 'own rel)
+                          (let ((d (hashtable-ref (stored-entry-index e) rel #f)))
+                            (case (car d)
+                              ((contested) '((state contested)))
+                              ((retired) '((state retired)))
+                              (else (let ((r (stored-clauses-refusal rel (cadr d) (stored-entry-check-env e))))
+                                      (and r (list (list 'state (list 'check r)))))))))))
+            (hashtable-set! (stored-entry-own e) rel answer)
+            answer))))
+  ;; THE CLOSURE EXTENDED by NAMES' reach, and, when it grew, the search run
+  ;; again over the whole closure: answers inside a closure never depend on
+  ;; anything outside it, so a recomputation changes no earlier answer.
+  ;; (i) the reach, read by head; an own-failing relation is a sink and its
+  ;; callees are not followed; (ii) one multi-source reverse breadth-first
+  ;; search from the own-failing members gives each member its distance;
+  ;; (iii) each unavailable member's next hop is its first callee, in callee
+  ;; order, at distance one less, and its sink the hop's sink, read once
+  ;; each in order of increasing distance.
+  (define (entry-prime! e names)
+    (let ((closure (stored-entry-closure e)) (grew #f))
+      (let reach ((todo (filter (lambda (n) (hashtable-contains? (stored-entry-index e) n)) names)))
+        (unless (null? todo)
+          (let ((rel (car todo)))
+            (if (hashtable-contains? closure rel)
+                (reach (cdr todo))
+                (begin
+                  (hashtable-set! closure rel #t)
+                  (stored-entry-members-set! e (cons rel (stored-entry-members e)))
+                  (set! grew #t)
+                  (reach (if (entry-own e rel) (cdr todo) (append (entry-callees e rel) (cdr todo)))))))))
+      (when grew
+        (let ((members (reverse (stored-entry-members e)))
+              (distance (stored-entry-distance e)) (hop (stored-entry-hop e)) (sink (stored-entry-sink e))
+              (callers (make-eq-hashtable)))
+          (hashtable-clear! distance) (hashtable-clear! hop) (hashtable-clear! sink)
+          (for-each (lambda (v)
+                      (unless (entry-own e v)
+                        (for-each (lambda (c) (hashtable-update! callers c (lambda (l) (cons v l)) '()))
+                                  (entry-callees e v))))
+                    members)
+          (let ((sources (filter (lambda (v) (entry-own e v)) members)))
+            (for-each (lambda (v) (hashtable-set! distance v 0)) sources)
+            ;; LEVEL BY LEVEL, so the members are read in the order the search
+            ;; reached them, by distance
+            (let search ((level sources) (reached '()))
+              (if (null? level)
+                  (for-each
+                    (lambda (v)
+                      (let ((d (hashtable-ref distance v #f)))
+                        (if (= d 0)
+                            (hashtable-set! sink v v)
+                            (let ((h (find (lambda (c) (eqv? (hashtable-ref distance c #f) (- d 1))) (entry-callees e v))))
+                              (hashtable-set! hop v h)
+                              (walk-count! 'sink v)
+                              (hashtable-set! sink v (hashtable-ref sink h #f))))))
+                    (reverse reached))
+                  (let next-level ((vs level) (next '()) (reached reached))
+                    (if (null? vs)
+                        (search (reverse next) reached)
+                        (let* ((v (car vs)) (d (+ 1 (hashtable-ref distance v 0)))
+                               (found (filter (lambda (u) (not (hashtable-contains? distance u)))
+                                              (reverse (hashtable-ref callers v '())))))
+                          (for-each (lambda (u) (hashtable-set! distance u d)) found)
+                          (next-level (cdr vs) (append (reverse found) next) (cons v reached))))))))))))
+  ;; ONE RELATION'S AVAILABILITY in an entry: -> #f, or ((state
+  ;; contested|retired|(check <refusal>)) [(through <hop> ... <sink>)]); the
+  ;; chain is followed only here, for the relation asked
+  (define (entry-available e rel)
+    (entry-prime! e (list rel))
+    (let ((d (hashtable-ref (stored-entry-distance e) rel #f)))
+      (cond ((not d) #f)
+            ((= d 0) (entry-own e rel))
+            (else
+             (append (entry-own e (hashtable-ref (stored-entry-sink e) rel #f))
+                     (list (cons 'through (let chain ((v (hashtable-ref (stored-entry-hop e) rel #f)))
+                                            (if (= (hashtable-ref (stored-entry-distance e) v 0) 0)
+                                                (list v)
+                                                (cons v (chain (hashtable-ref (stored-entry-hop e) v #f))))))))))))
 
   ;; THE STORED HANDLER of a state. applies? answers for every name declared
   ;; there and not masked -- in force, contested or retired, so a retired
   ;; name is never an unknown relation; arity-of and kinds-of read the
   ;; in-force head (asked only after available answered #f); solve is the
   ;; library rules' over the clauses, which the session indexes under the
-  ;; name; available is the relation's availability, computed once per
-  ;; handler (one handler a session, a session one state).
+  ;; name; available is the relation's availability, read from the state's
+  ;; entry (stored-entry-for).
   ;; AVAILABILITY: in force, and its clauses check in the STORED-CHECK
   ;; environment of the same state WITH the kinds, every stored relation they
   ;; name read by its head; then the REACH: every stored relation its clauses
   ;; name, through any depth, available by the same reading of its own.
-  ;; -> #f, or ((state contested|retired|(check <refusal>)) [(through <r> ...)]).
-  (define (stored-handler state override)
-    (define table (stored-table state override))
-    (define memo (make-eq-hashtable))
-    ;; A PARTIAL ANSWER, kept with the relation it leaned on lowest: it holds
-    ;; while that relation is still on the walk's stack at the same depth
-    (define partial (make-eq-hashtable))
-    (define check-env #f)
-    (define (own rel)
-      (let ((d (cdr (assq rel table))))
-        (case (car d)
-          ((contested) '((state contested)))
-          ((retired) '((state retired)))
-          (else (let ((r (stored-clauses-refusal rel (cadr d) check-env)))
-                  (and r (list (list 'state (list 'check r)))))))))
-    (define (callees rel)
-      (let ((v (stored-in-force table rel)))
-        (if v
-            (filter (lambda (n) (assq n table)) (apply append (map (lambda (c) (map car (cddr c))) (cdr v))))
-            '())))
-    ;; ONE WALK PER RELATION: a relation's answer is kept once known, so a
-    ;; graph is walked in its size, not in the number of its paths. A
-    ;; relation on the walk's own stack reads available, and the answer of
-    ;; one that leaned on such a relation is partial until that relation's
-    ;; own walk ends: each answer carries the lowest stack depth it leaned
-    ;; on, and a relation whose walk leaned on nothing below its own depth
-    ;; (itself included, a recursive relation) is whole and kept. An
-    ;; unavailable answer is always kept (its path exists whatever the order).
-    ;; -> (<answer> . <lowest depth leaned on, or #f>)
-    ;; A partial answer read again on the same walk stands while the relation
-    ;; it leaned on lowest is on the stack at that depth: the walk stops at the
-    ;; first unavailable answer, so every relation it leaned on that has left
-    ;; the stack read available, as it assumed.
-    (define (lower a b) (cond ((not a) b) ((not b) a) (else (min a b))))
-    (define (at-depth stack d) (and (< d (length stack)) (list-ref stack (- (length stack) 1 d))))
-    (define (reach-of rel stack)
-      (let ((m (hashtable-ref memo rel 'none)) (p (hashtable-ref partial rel #f)))
-        (cond ((not (eq? m 'none)) (cons m #f))
-              ((memq rel stack) => (lambda (tail) (cons #f (- (length tail) 1))))
-              ((and p (eq? (at-depth stack (car p)) (cdr p))) (cons #f (car p)))
-              (else
-               (let ((u (own rel)) (depth (length stack)))
-                 (if u
-                     (begin (hashtable-set! memo rel u) (cons u #f))
-                     (let loop ((cs (callees rel)) (low #f))
-                       (if (null? cs)
-                           (if (and low (< low depth))
-                               (begin (hashtable-set! partial rel (cons low (at-depth stack low))) (cons #f low))
-                               (begin (hashtable-set! memo rel #f) (cons #f #f)))
-                           (let ((v (reach-of (car cs) (cons rel stack))))
-                             (if (car v)
-                                 (let* ((states (filter (lambda (e) (not (eq? (car e) 'through))) (car v)))
-                                        (through (cond ((assq 'through (car v)) => cdr) (else '())))
-                                        (u (append states (list (cons 'through (cons (car cs) through))))))
-                                   (hashtable-set! memo rel u)
-                                   (cons u #f))
-                                 (loop (cdr cs) (lower low (cdr v)))))))))))))
-    (define (reach rel) (car (reach-of rel '())))
-    (define self
-      (make-handler* 'STORED
-                     (lambda (rel) (and (assq rel table) #t))
-                     ;; #f for one with no head in force: its own check reads the
-                     ;; heads only, and the reach reports such a callee
-                     (lambda (rel) (let ((v (stored-in-force table rel))) (and v (length (cdr (stored-head v))))))
-                     (lambda (rel) (let ((v (stored-in-force table rel)))
-                                     (and v (for-all spelled-kind? (cdr (stored-head v)))
-                                          (map kind-union (cdr (stored-head v))))))
-                     (lambda (rel) #f)
-                     #f #t
-                     (lambda (S g b rest)
-                       (let ((key (cons (car g) (call-args (cdr g) b))))
-                         (ensure-expanded S key)
-                         (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
-                                   (table-tuples S key))))
-                     (lambda (g seen) #f)
-                     (lambda (rel) (reach rel))))
-    (set! check-env (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library) self)))
-    self)
+  (define (stored-handler state override) (stored-handler-of (stored-entry-for state override)))
+  (define (stored-handler-of e)
+    (make-handler* 'STORED
+                   (lambda (rel) (hashtable-contains? (stored-entry-index e) rel))
+                   ;; #f for one with no head in force: its own check reads the
+                   ;; heads only, and the reach reports such a callee
+                   (lambda (rel) (let ((v (entry-in-force e rel))) (and v (length (cdr (stored-head v))))))
+                   (lambda (rel) (let ((v (entry-in-force e rel)))
+                                   (and v (for-all spelled-kind? (cdr (stored-head v)))
+                                        (map kind-union (cdr (stored-head v))))))
+                   (lambda (rel) #f)
+                   #f #t
+                   (lambda (S g b rest)
+                     (let ((key (cons (car g) (call-args (cdr g) b))))
+                       (ensure-expanded S key)
+                       (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                                 (table-tuples S key))))
+                   (lambda (g seen) #f)
+                   (lambda (rel) (entry-available e rel))))
   ;; the STORED-CHECK environment the handler checks its clauses in: TEST,
   ;; FACT, RULE over the library, STORED; no WRITE-FACT, so a stored
   ;; relation's availability is the same whatever facts a session carries
@@ -1576,19 +1654,25 @@
   ;; POST, the state after the write. -> (affects [(rule <name> ...)]
   ;; [(derive <name> ...)]), or #f when there is none. Informational: the
   ;; next write a broken rule judges is the one refused.
+  ;; A STATE'S ENTRY with NAMES in its closure, one computation for them all
+  (define (stored-entry-primed state names)
+    (let ((e (stored-entry-for state #f))) (entry-prime! e names) e))
+  ;; WHAT A WRITE CHANGES: the settled rules and the in-force stored relations
+  ;; (NAME aside) whose AVAILABILITY differs between PRE and POST, available
+  ;; to unavailable or back; one that stays unavailable with another chain or
+  ;; sink is no effect. Each state's table is computed once, for every name.
   (define (derive-affects pre post name)
-    (define (rule-status value state)
+    (define (rule-unevaluable? value state)
       (let ((v (rule-value-check value (rule-names-stored? value state) state)))
-        (and (pair? v) (eq? (car v) 'error) v)))
-    ;; ONE HANDLER A STATE, so one walk serves every name asked of it
-    (define pre-handler (stored-handler pre #f))
-    (define post-handler (stored-handler post #f))
-    (define (derive-status n state) ((handler-available (if (eq? state pre) pre-handler post-handler)) n))
-    (let* ((rules (filter (lambda (r) (not (equal? (rule-status (cadr r) pre) (rule-status (cadr r) post))))
+        (and (pair? v) (eq? (car v) 'error))))
+    (let* ((pre-entry (stored-entry-for pre #f))
+           (names (filter (lambda (n) (and (not (eq? n name)) (entry-in-force pre-entry n))) (stored-entry-order pre-entry)))
+           (pre-entry (stored-entry-primed pre names))
+           (post-entry (stored-entry-primed post names))
+           (rules (filter (lambda (r) (not (eq? (rule-unevaluable? (cadr r) pre) (rule-unevaluable? (cadr r) post))))
                           (state-declared-rules pre)))
-           (derived (filter (lambda (n) (and (not (eq? n name)) (stored-in-force (stored-table pre #f) n)
-                                             (not (equal? (derive-status n pre) (derive-status n post)))))
-                            (map car (stored-table pre #f)))))
+           (derived (filter (lambda (n) (not (eq? (not (entry-available pre-entry n)) (not (entry-available post-entry n)))))
+                            names)))
       (and (or (pair? rules) (pair? derived))
            (append (list 'affects)
                    (if (pair? rules) (list (cons 'rule (map car rules))) '())
@@ -1604,8 +1688,10 @@
   ;; (state ...) [(through ...)]).
   (define (stored-relations-items state)
     (let ((h (stored-handler state #f)))
-      (map (lambda (n)
-             (let ((owner (goal-name-owner n)) (d (state-derived state n)))
+      ;; every name asked at once: one computation
+      (stored-entry-primed state (if (and state (reduction? state)) (state-derived-names state) '()))
+      (map (lambda (n+d)
+             (let ((n (car n+d)) (owner (goal-name-owner (car n+d))) (d (cdr n+d)))
                (if owner
                    (list 'derived n (list 'unavailable (list 'shadowed owner)))
                    (let ((avail (let ((u ((handler-available h) n))) (if u (cons 'unavailable u) 'available))))
@@ -1618,7 +1704,7 @@
                               avail))
                        (else (let ((hd (stored-head (cadr d))))
                                (list 'derived n (list 'arity (length (cdr hd))) (list 'kinds (cdr hd)) avail))))))))
-           (if (and state (reduction? state)) (state-derived-names state) '()))))
+           (if (and state (reduction? state)) (state-derived-all state) '()))))
 
   (define query-counter 0)
 
