@@ -385,9 +385,17 @@
 (define (in-a-child seconds st specs goal)
   (let ((in (string-append st ".chain-in")) (out (string-append st ".chain-out")))
     (call-with-output-file in (lambda (p) (write (list specs goal) p)) 'replace)
-    (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" chain-child "' '"
-                           st "' '" in "' '" out "' < /dev/null > /dev/null 2>&1"))
-    (if (file-exists? out) (call-with-input-file out read) 'timed-out)))
+    (child-reading
+      (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" chain-child "' '"
+                             st "' '" in "' '" out "' < /dev/null > /dev/null 2> '" st ".err'"))
+      out)))
+;; A CHILD'S READING: what it wrote; timed-out when the alarm stopped it (the
+;; shell's 128 + SIGALRM); otherwise (child-failed <status>), its standard
+;; error kept beside its store
+(define (child-reading rc out)
+  (cond ((file-exists? out) (call-with-input-file out read))
+        ((= rc 142) 'timed-out)
+        (else (list 'child-failed rc))))
 (define (chain-reading r) (if (pair? r) (list (for-all (lambda (h) (eq? h 'ok)) (car r)) (rows-of (cadr r))) r))
 ;; ONE WALK PER RELATION: f<i> names f<i-1> and f<i-2>, thirty deep; a walk
 ;; that went down every path would visit f0 more than half a million times
@@ -879,9 +887,10 @@
             'replace))))))
 (define (forged-listing seconds shape n)
   (let* ((st (string-append root "/forged-" (symbol->string shape) "-" (number->string n))) (out (string-append st ".out")))
-    (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" forge-child "' '"
-                           st "' " (symbol->string shape) " " (number->string n) " '" out "' < /dev/null > /dev/null 2>&1"))
-    (if (file-exists? out) (call-with-input-file out read) 'timed-out)))
+    (child-reading
+      (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" forge-child "' '"
+                             st "' " (symbol->string shape) " " (number->string n) " '" out "' < /dev/null > /dev/null 2> '" st ".err'"))
+      out)))
 (define (counts r) (if (pair? r) (list-head r 2) r))
 (want "F307-A the crafted order (r<i> names r<i+1>, r3200, r<i-1>), 3200 deep, forged: every relation listed available, inside a minute"
       (counts (forged-listing 60 'crafted 3200))
@@ -989,20 +998,24 @@
     (loop (- i 1))))
 (retire! FS 'c20)
 (want "F307-F a chain of twenty ending in a retired relation: the listing reads twenty sinks, and c0's chain is the whole chain"
-      (let ((r (counting 'sink (lambda () (availability-of FS 'c0)))))
-        (list (car r) (length (cdr (assq 'through (cdr (cadr r)))))))
-      '(20 20))
+      (counting 'sink (lambda () (availability-of FS 'c0)))
+      (list 20 (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (cn (+ i 1))) (iota 20))))))
 
 ;; G: ONE TABLE A STATE: five rules each name r; affects asks each rule and
 ;; every relation of PRE and of POST, and checks each relation once a state
 (define GS (store! "one-table"))
 (make GS 'doc "b")
 (for-each (lambda (n v) (derive! GS n v)) '(r s t) (list (over-kind 'r 'code) (body 's 'r) (body 't 's)))
-(for-each (lambda (k) (rule! GS (string-append "g" (number->string k)) "--on" "doc" "--must-not" "(r ?w)")) '(1 2 3 4 5))
-(want "F307-G affects over five rules naming r: three relations, one own check each a state, six in all"
-      (let ((pre (state GS)) (post (state GS)))
-        (car (counting 'own (lambda () (derive-affects pre post 'none)))))
-      6)
+(define gs-rules
+  (let loop ((k 1) (out '()))
+    (if (> k 5) (reverse out)
+        (loop (+ k 1) (cons (head-of (rule! GS (string-append "g" (number->string k)) "--on" "doc" "--must-not" "(r ?w)")) out)))))
+(define gs-pre (state GS))
+(retire! GS 'r)
+(define gs-post (state GS))
+(want "F307-G affects over five rules naming r, r retired: every rule and relation listed, one own check each a state, six in all"
+      (list gs-rules (counting 'own (lambda () (derive-affects gs-pre gs-post 'r))))
+      '((ok ok ok ok ok) (6 (affects (rule g1 g2 g3 g4 g5) (derive s t)))))
 
 ;; H: THE TABLE IS THE STATE'S AT ITS APPLIED CUT: a write rule naming r makes
 ;; the request's rehearsal read r's availability on the reduction it then

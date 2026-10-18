@@ -906,10 +906,13 @@
                     (if (null? vs)
                         (search (reverse next) reached)
                         (let* ((v (car vs)) (d (+ 1 (hashtable-ref distance v 0)))
-                               (found (filter (lambda (u) (not (hashtable-contains? distance u)))
-                                              (reverse (hashtable-ref callers v '())))))
-                          (for-each (lambda (u) (hashtable-set! distance u d)) found)
-                          (next-level (cdr vs) (append (reverse found) next) (cons v reached))))))))))))
+                               ;; MARKED AS FOUND, so a caller naming v twice enters once
+                               (found (fold-left (lambda (acc u)
+                                                   (if (hashtable-contains? distance u)
+                                                       acc
+                                                       (begin (hashtable-set! distance u d) (cons u acc))))
+                                                 '() (reverse (hashtable-ref callers v '())))))
+                          (next-level (cdr vs) (append found next) (cons v reached))))))))))))
   ;; ONE RELATION'S AVAILABILITY in an entry: -> #f, or ((state
   ;; contested|retired|(check <refusal>)) [(through <hop> ... <sink>)]); the
   ;; chain is followed only here, for the relation asked
@@ -1641,22 +1644,26 @@
       (cond ((and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map heads (cdr g))))
             ((pair? g) (list (car g)))
             (else '())))
-    (let ((table (stored-table state #f)))
-      (and (pair? table) (list? value)
+    (let ((index (stored-entry-index (stored-entry-for state #f))))
+      (and (> (hashtable-size index) 0) (list? value)
            (exists (lambda (k)
                      (let ((c (assq k value)))
                        (and c (list? c) (pair? (cdr c))
-                            (exists (lambda (r) (and (assq r table) #t)) (heads (cadr c))))))
+                            (exists (lambda (r) (hashtable-contains? index r)) (heads (cadr c))))))
                    '(where must must-not)))))
 
+;; A STATE'S ENTRY with NAMES in its closure, one computation for them all
+  (define (stored-entry-primed state names)
+    (let ((e (stored-entry-for state #f))) (entry-prime! e names) e))
+  ;; whether REL is unavailable in an entry: a distance, and no chain built
+  (define (entry-unavailable? e rel)
+    (entry-prime! e (list rel))
+    (hashtable-contains? (stored-entry-distance e) rel))
   ;; WHAT A DECLARATION AFFECTS: the rules in force and the stored relations
   ;; in force at PRE whose evaluability or availability is not the same at
   ;; POST, the state after the write. -> (affects [(rule <name> ...)]
   ;; [(derive <name> ...)]), or #f when there is none. Informational: the
   ;; next write a broken rule judges is the one refused.
-  ;; A STATE'S ENTRY with NAMES in its closure, one computation for them all
-  (define (stored-entry-primed state names)
-    (let ((e (stored-entry-for state #f))) (entry-prime! e names) e))
   ;; WHAT A WRITE CHANGES: the settled rules and the in-force stored relations
   ;; (NAME aside) whose AVAILABILITY differs between PRE and POST, available
   ;; to unavailable or back; one that stays unavailable with another chain or
@@ -1665,13 +1672,16 @@
     (define (rule-unevaluable? value state)
       (let ((v (rule-value-check value (rule-names-stored? value state) state)))
         (and (pair? v) (eq? (car v) 'error))))
+    ;; EVERY DECLARED NAME of each state primed at once, the rules' names
+    ;; among them: one computation a state, whatever the rules ask after
     (let* ((pre-entry (stored-entry-for pre #f))
+           (post-entry (stored-entry-for post #f))
            (names (filter (lambda (n) (and (not (eq? n name)) (entry-in-force pre-entry n))) (stored-entry-order pre-entry)))
-           (pre-entry (stored-entry-primed pre names))
-           (post-entry (stored-entry-primed post names))
+           (pre-entry (stored-entry-primed pre (stored-entry-order pre-entry)))
+           (post-entry (stored-entry-primed post (stored-entry-order post-entry)))
            (rules (filter (lambda (r) (not (eq? (rule-unevaluable? (cadr r) pre) (rule-unevaluable? (cadr r) post))))
                           (state-declared-rules pre)))
-           (derived (filter (lambda (n) (not (eq? (not (entry-available pre-entry n)) (not (entry-available post-entry n)))))
+           (derived (filter (lambda (n) (not (eq? (entry-unavailable? pre-entry n) (entry-unavailable? post-entry n))))
                             names)))
       (and (or (pair? rules) (pair? derived))
            (append (list 'affects)
