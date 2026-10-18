@@ -1023,12 +1023,17 @@
             (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
       (define (write-rule value)
         ;; A goal may name a stored relation, so the check reads a state. A
-        ;; REFUSAL HERE IS NOT THE ANSWER: the value as the caller wrote it
-        ;; goes to the write session, which checks it again at the state it
-        ;; writes in, under the lock and after a resent request is known for
-        ;; what it is (a replay is answered as one, whatever the state now)
+        ;; REFUSAL HERE IS NOT THE ANSWER: the value, in its one form read
+        ;; from its shape (rule-value-form), goes to the write session, which
+        ;; checks it again at the state it writes in, under the lock and after
+        ;; a resent request is known for what it is (a replay is answered as
+        ;; one, whatever the state now)
         (let ((v ((eval 'rule-value-check (environment '(theourgia query))) value #t (reduction-for store state))))
-          (one-write store actor (list 'rule (string->symbol (car args)) (if (and (pair? v) (eq? (car v) 'error)) value v))
+          (one-write store actor
+                     (list 'rule (string->symbol (car args))
+                           (if (and (pair? v) (eq? (car v) 'error))
+                               ((eval 'rule-value-form (environment '(theourgia query))) value)
+                               v))
                      req options)))
       (cond
         ((not (= 1 (length args))) (usage rule-usage))

@@ -27,10 +27,10 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia query) make-query-session session-answer refusal? refusal-answer check-rules rule-library
-              relation-external?)
-        (only (theourgia store) open-and-reduce)
+              relation-external? rule-value-check)
+        (only (theourgia store) open-and-reduce with-store-write make-write-request)
         (only (theourgia reduce) reduce-applied-cut block-id state-hash reduce-clone state->rows rows->state
-              reduce-empty reduce-apply! reduce-gates)
+              reduce-empty reduce-apply! reduce-gates state-rule)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) log-publish! segment-sha))
 
@@ -277,13 +277,18 @@
       '(derive-contested r 2))
 (want "HISTORY-8 the fourth table: in force with arity, kinds and availability; retired; contested with its candidates' heads"
       (list (derived-entry H 'r) (derived-entry hR 'r)
-            (let ((e (derived-entry (car contest) 'r)))
+            (let ((e (derived-entry (car contest) 'r)) (d (state-derived (state (car contest)) 'r)))
               (and e (list (car e) (cadr e) (caddr e) (car (cadddr e))
-                           (sorted (map (lambda (c) (list (car c) (cadr c))) (cdr (cadddr e)))) (list-ref e 4)))))
+                           (sorted (map (lambda (c) (list (car c) (cadr c))) (cdr (cadddr e))))
+                           ;; EVERY CANDIDATE'S WRITER AND SEQUENCE as the reduction holds them
+                           (equal? (sorted (cdr (cadddr e)))
+                                   (sorted (map (lambda (c) (list (cadr (car (car c))) (cadr c) (caddr c))) (cdr d))))
+                           (for-all (lambda (c) (and (integer? (caddr c)) (> (caddr c) 0))) (cdr (cadddr e)))
+                           (list-ref e 4)))))
       (list '(derived r (arity 1) (kinds (ID)) available)
             '(derived r (retired) (unavailable (state retired)))
             (list 'derived 'r '(contested) 'candidates (sorted (list (list '(r ID) (local-writer (car contest))) (list '(r ID) "peerzzzz")))
-                  '(unavailable (state contested)))))
+                  #t #t '(unavailable (state contested)))))
 
 ;; ---- the table in the reduction: snapshot, clone, hash -------------------------------
 (printf "== the derived table in the reduction ==\n")
@@ -357,29 +362,76 @@
       (q A6 '(s ?x))
       '(error bad-request relation-unavailable (relation s)
               (state (check (error bad-request wrong-arity (relation r) (arity 2) (given 1))))))
+;; WITHIN A TIME, INTERRUPTIBLY: the declarations and the query run in a
+;; child process under an alarm, so a walk that would not end reads timed-out
+;; in its row and the rows after it still run. SPECS are (<name> <value>),
+;; declared in order; -> (<each declaration's answer head> <the query's
+;; answer>), or timed-out.
+(define chain-child (string-append root "/chain.ss"))
+(call-with-output-file chain-child
+  (lambda (p)
+    (for-each (lambda (d) (write d p) (newline p))
+      '((import (chezscheme) (theourgia rpc) (only (theourgia extensions) extension-verbs))
+        (register-verbs! extension-verbs)
+        (define args (command-line-arguments))
+        (define st (car args))
+        (define in (call-with-input-file (cadr args) read))
+        (let loop ((specs (car in)) (out '()))
+          (if (null? specs)
+              (let ((a (rpc-dispatch st (list 'query (format "~s" (cadr in))) "author")))
+                (call-with-output-file (caddr args) (lambda (p) (write (list (reverse out) a) p)) 'replace))
+              (let ((a (rpc-dispatch st (list 'derive (symbol->string (car (car specs))) (format "~s" (cadr (car specs)))) "author")))
+                (loop (cdr specs) (cons (if (pair? a) (car a) a) out)))))))))
+(define (in-a-child seconds st specs goal)
+  (let ((in (string-append st ".chain-in")) (out (string-append st ".chain-out")))
+    (call-with-output-file in (lambda (p) (write (list specs goal) p)) 'replace)
+    (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" chain-child "' '"
+                           st "' '" in "' '" out "' < /dev/null > /dev/null 2>&1"))
+    (if (file-exists? out) (call-with-input-file out read) 'timed-out)))
+(define (chain-reading r) (if (pair? r) (list (for-all (lambda (h) (eq? h 'ok)) (car r)) (rows-of (cadr r))) r))
 ;; ONE WALK PER RELATION: f<i> names f<i-1> and f<i-2>, thirty deep; a walk
 ;; that went down every path would visit f0 more than half a million times
 (define A8 (store! "chain"))
 (define a8S (make A8 'section "S"))
 (define (chain-name i) (string->symbol (string-append "f" (number->string i))))
-(define a8-start (real-time))
-;; IN ORDER, each naming ones already declared: map fixes no order of calls
-(define a8-setup
+;; IN ORDER, each naming ones already declared
+(define chain-specs
   (let loop ((i 0) (out '()))
     (if (= i 30)
         (reverse out)
         (loop (+ i 1)
-              (cons (head-of (derive! A8 (chain-name i)
-                           (if (< i 2)
-                               (over-kind (chain-name i) 'section)
-                               (list (list 'head (list (chain-name i) 'ID))
-                                     (list 'clause (list (chain-name i) '?x) (list (chain-name (- i 1)) '?x) (list (chain-name (- i 2)) '?x))))))
+              (cons (list (chain-name i)
+                          (if (< i 2)
+                              (over-kind (chain-name i) 'section)
+                              (list (list 'head (list (chain-name i) 'ID))
+                                    (list 'clause (list (chain-name i) '?x) (list (chain-name (- i 1)) '?x) (list (chain-name (- i 2)) '?x)))))
                     out)))))
-(define a8-rows (query-rows A8 (list (chain-name 29) '?x)))
-(define a8-seconds (quotient (- (real-time) a8-start) 1000))
 (want "AVAIL-7 thirty relations each naming the two before: all declared, the last answers, inside a minute"
-      (list (for-all (lambda (a) (eq? a 'ok)) a8-setup) a8-rows (< a8-seconds 60))
-      (list #t (list (list a8S)) #t))
+      (chain-reading (in-a-child 60 A8 chain-specs (list (chain-name 29) '?x)))
+      (list #t (list (list a8S))))
+;; A RECURSIVE BASE UNDER DOUBLED CALLS: g0 names itself, g<i> names g<i-1>
+;; twice, twenty-five deep. The availability walk keeps a recursive
+;; relation's answer once its own walk ends, and the walk for a relation
+;; outside the log visits each relation once: either walking every path would
+;; visit g0 tens of millions of times
+(define A10 (store! "doubled"))
+(define a10S (make A10 'section "S"))
+(define (doubled-name i) (string->symbol (string-append "g" (number->string i))))
+(define doubled-specs
+  (let loop ((i 0) (out '()))
+    (if (= i 25)
+        (reverse out)
+        (loop (+ i 1)
+              (cons (list (doubled-name i)
+                          (if (= i 0)
+                              '((head (g0 ID)) (clause (g0 ?x) (kind ?x section)) (clause (g0 ?x) (g0 ?x)))
+                              (list (list 'head (list (doubled-name i) 'ID))
+                                    (list 'clause (list (doubled-name i) '?x)
+                                          (list (doubled-name (- i 1)) '?x) (list (doubled-name (- i 1)) '?x)))))
+                    out)))))
+(want "AVAIL-9 a recursive base under doubled calls, twenty-five deep: all declared, the last answers, inside a minute"
+      (chain-reading (in-a-child 60 A10 doubled-specs (list (doubled-name 24) '?x)))
+      (list #t (list (list a10S))))
 ;; A CYCLE WITH AN UNAVAILABLE WAY OUT: ca names cb and cz, cb names ca, cz
 ;; retired. The listing asks ca first (its names sorted); cb, met on ca's walk
 ;; while ca was on the stack, read available there, and that partial answer
@@ -677,6 +729,47 @@
       (in-order (head-of rp-first) (clause-of rp-retire 'affects) (clause-of (apply on RP 'rule rp-args) 'replay)
                 (on RP 'rule "q6" "--on" "doc" "--must-not" "(rr ?w)"))
       '(ok (affects (rule q5)) (replay #t) (error bad-request relation-unavailable (relation rr) (state retired))))
+
+;; A PLAN HOLDING A DERIVE MEMBER: a commit-shaped request of two members, a
+;; derive and an insert, written as one plan; the same request again is its
+;; replay, which reads each member's record as the intent it declared
+(define PL (store! "plan"))
+;; a block first, so the store has a writer and the cursor a position
+(make PL 'section "s")
+(define (pl-request)
+  (let ((w (car (car (reduce-applied-cut (open-and-reduce PL))))))
+    (make-write-request "author" 'commit '() "PLANDRV01" (cons w (cdr (assoc w pl-cut))))))
+(define pl-cut (reduce-applied-cut (open-and-reduce PL)))
+(define pl-intents
+  (list '(derive pd ((head (pd ID)) (clause (pd ?x) (kind ?x section)))) '(insert root #f ((kind . section) (title . "P")))))
+(define (holds-replay? a) (and (pair? a) (or (equal? a '(replay #t)) (holds-replay? (car a)) (holds-replay? (cdr a)))))
+(define pl-first (guard (e (#t (list 'RAISED (if (message-condition? e) (condition-message e) e))))
+                   (with-store-write PL (lambda (state view) pl-intents) "author" (pl-request) #f #t)))
+(want "SHAPE-6 a plan holding a derive member: written, the relation in force, and the same request again is its replay"
+      (in-order (holds-replay? pl-first)
+                (car (state-derived (state PL) 'pd))
+                (holds-replay? (guard (e (#t (list 'RAISED (if (message-condition? e) (condition-message e) e))))
+                                 (with-store-write PL (lambda (state view) pl-intents) "author" (pl-request) #f #t))))
+      '(#f in-force #t))
+
+
+;; A RULE VALUE'S ONE FORM, READ FROM ITS SHAPE: what the rule verb hands the
+;; write session when its own read refused the value. For values the check
+;; accepts, the same form the check gives; a shape the check refuses, as it
+;; is. Looked up: the base has no such procedure.
+(define rule-value-form
+  (guard (e (#t (lambda (v) 'not-in-this-tree))) (eval 'rule-value-form (environment '(theourgia query)))))
+(define form-values
+  '(((on doc) (must-not (kind ?w section)))
+    ((on doc section) (where (title ?w ?t)) (must (and (kind ?w doc) (title ?w ?t))))
+    ((on section) (must-not (and (kind+ ?w section) (title ?w "x"))))
+    ((on doc) (where (field+ ?w "title" ?v)) (must (title ?w ?v)))))
+(want "RULES-17 a rule value's form from its shape is the check's form for every accepted value, write facts making the class write; another shape as it is"
+      (list (map (lambda (v) (equal? (rule-value-form v) (rule-value-check v #f))) form-values)
+            (map (lambda (v) (car (rule-value-form v))) form-values)
+            (rule-value-form '((builtin citation-coverage)))
+            (rule-value-form '((on doc))))
+      '((#t #t #t #t) ((class state) (class state) (class write) (class write)) ((builtin citation-coverage)) ((on doc))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)

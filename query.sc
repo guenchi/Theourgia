@@ -58,7 +58,7 @@
           session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
           query-budget-default
-          derive-value-check derive-affects rule-names-stored?
+          derive-value-check derive-affects rule-names-stored? rule-value-form
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
@@ -250,15 +250,20 @@
                     (apply append (map (lambda (e) (if (eq? (car (cdr e)) 'in-force) (stored-rules (cadr (cdr e))) '()))
                                        table)))
                   '())))
-    (let walk ((rel rel) (seen '()))
-      (cond
-        ((assq rel fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
-        ((memq rel seen) #f)
-        (else
-         (exists (lambda (rule)
-                   (and (eq? (car (car rule)) rel)
-                        (exists (lambda (g) (walk (car g) (cons rel seen))) (cdr rule))))
-                 clauses)))))
+    ;; ONE VISIT PER RELATION: a relation already visited answered #f or
+    ;; is on the walk's way, and the walk stops at the first #t, so a graph
+    ;; is walked in its size, not in the number of its paths
+    (let ((seen (make-eq-hashtable)))
+      (let walk ((rel rel))
+        (cond
+          ((assq rel fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
+          ((hashtable-ref seen rel #f) #f)
+          (else
+           (hashtable-set! seen rel #t)
+           (exists (lambda (rule)
+                     (and (eq? (car (car rule)) rel)
+                          (exists (lambda (g) (walk (car g))) (cdr rule))))
+                   clauses))))))
 
   ;; THE BUILT-IN RULES a store may enable by name.
   (define builtin-rules '(citation-coverage))
@@ -359,6 +364,31 @@
                (append (list (list 'class (if write? 'write 'state)) (clause 'on))
                        (if (clause 'where) (list (clause 'where)) '())
                        (list polarity))))))))
+
+;; A RULE VALUE IN ITS ONE FORM, read from its shape alone: the class
+  ;; computed from the relations its goals name (through every nested and),
+  ;; as rule-value-check computes it for a value it accepts. For a value
+  ;; whose check refused it at one state and is checked again at another (the
+  ;; rule verb hands it to the write session): there it is either refused, by
+  ;; its own check, or accepted, and then it must already be in its form. A
+  ;; value of another shape is answered as it is, for its check to refuse.
+  (define (rule-value-form value)
+    (define (names g)
+      (cond ((and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map names (cdr g))))
+            ((and (pair? g) (symbol? (car g))) (list (car g)))
+            (else '())))
+    (let ((polarity (and (list? value) (for-all pair? value)
+                         (find (lambda (c) (memq (car c) '(must must-not))) value))))
+      (if (or (not polarity) (assq 'builtin value) (not (assq 'on value))
+              (exists (lambda (k) (let ((c (assq k value))) (and c (not (and (list? c) (= 2 (length c)))))))
+                      '(where must must-not)))
+          value
+          (let ((write? (exists (lambda (k) (let ((c (assq k value)))
+                                              (and c (exists (lambda (r) (assq r rule-only-facts)) (names (cadr c))))))
+                                '(where must must-not))))
+            (append (list (list 'class (if write? 'write 'state)) (assq 'on value))
+                    (if (assq 'where value) (list (assq 'where value)) '())
+                    (list polarity))))))
 
   ;; (<relation> <arity>) of every rule head, in the order first defined.
   (define (rule-relations rules)
@@ -781,21 +811,27 @@
             '())))
     ;; ONE WALK PER RELATION: a relation's answer is kept once known, so a
     ;; graph is walked in its size, not in the number of its paths. A
-    ;; relation on the walk's own stack reads available; an answer that
-    ;; leaned on one is not kept (on a cycle it is only partial), an
-    ;; unavailable one always is (its path exists whatever the order).
-    ;; -> (<answer> . <leaned on the stack?>)
+    ;; relation on the walk's own stack reads available, and the answer of
+    ;; one that leaned on such a relation is partial until that relation's
+    ;; own walk ends: each answer carries the lowest stack depth it leaned
+    ;; on, and a relation whose walk leaned on nothing below its own depth
+    ;; (itself included, a recursive relation) is whole and kept. An
+    ;; unavailable answer is always kept (its path exists whatever the order).
+    ;; -> (<answer> . <lowest depth leaned on, or #f>)
+    (define (lower a b) (cond ((not a) b) ((not b) a) (else (min a b))))
     (define (reach-of rel stack)
       (let ((m (hashtable-ref memo rel 'none)))
         (cond ((not (eq? m 'none)) (cons m #f))
-              ((memq rel stack) (cons #f #t))
+              ((memq rel stack) => (lambda (tail) (cons #f (- (length tail) 1))))
               (else
-               (let ((u (own rel)))
+               (let ((u (own rel)) (depth (length stack)))
                  (if u
                      (begin (hashtable-set! memo rel u) (cons u #f))
-                     (let loop ((cs (callees rel)) (leaned #f))
+                     (let loop ((cs (callees rel)) (low #f))
                        (if (null? cs)
-                           (begin (unless leaned (hashtable-set! memo rel #f)) (cons #f leaned))
+                           (if (and low (< low depth))
+                               (cons #f low)
+                               (begin (hashtable-set! memo rel #f) (cons #f #f)))
                            (let ((v (reach-of (car cs) (cons rel stack))))
                              (if (car v)
                                  (let* ((states (filter (lambda (e) (not (eq? (car e) 'through))) (car v)))
@@ -803,7 +839,7 @@
                                         (u (append states (list (cons 'through (cons (car cs) through))))))
                                    (hashtable-set! memo rel u)
                                    (cons u #f))
-                                 (loop (cdr cs) (or leaned (cdr v)))))))))))))
+                                 (loop (cdr cs) (lower low (cdr v)))))))))))))
     (define (reach rel) (car (reach-of rel '())))
     (define self
       (make-handler* 'STORED
