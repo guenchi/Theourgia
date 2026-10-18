@@ -630,6 +630,14 @@
   ;; min's and max's not disjoint from both INT and STR (wrong-kind, with
   ;; (form ...)). count's and sum's results are INT; min's and max's the
   ;; column's kind met with INT or STR.
+;; A GOAL NO CUT SATISFIES, read again with its constants as `_`: its
+  ;; variables still take its columns' kinds (a sum over a title is over STR
+  ;; however empty its goal), unless they cannot, when the kinds stay as they were
+  (define (lenient-kinds goal-kinds-of g env)
+    (if (or (form-goal? g) (not (list? g)) (assq (car g) tests))
+        env
+        (guard (e ((refusal? e) env))
+          (goal-kinds-of (list (cons (car g) (map (lambda (a) (if (variable? a) a '_)) (cdr g)))) env))))
   (define (form-result-kind g env goal-kinds-of)
     (define (static-emptiness? a)
       (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
@@ -640,7 +648,8 @@
     (let ((inner (let loop ((cs (goal-conjuncts (form-sub g))) (env env))
                    (if (null? cs)
                        env
-                       (loop (cdr cs) (guard (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) env))
+                       (loop (cdr cs) (guard (e ((and (refusal? e) (static-emptiness? (refusal-answer e)))
+                                                 (lenient-kinds goal-kinds-of (car cs) env)))
                                         (goal-kinds-of (list (car cs)) env)))))))
       (case (car g)
         ((not) env)
@@ -1748,14 +1757,19 @@
   ;; pass adds nothing; then every key it touched is complete, and a later
   ;; call of the same group reads the complete table. A refusal inside
   ;; unwinds the query as any does, and marks nothing complete.
+  ;; ONE NAME AN OCCURRENCE AND ITS HEAD: the same goal met where other
+  ;; variables are bound outside it (one datum shared by two queries) has
+  ;; another head, so another table
   (define form-names (make-weak-eq-hashtable))
   (define form-counter 0)
-  (define (form-name g)
-    (or (hashtable-ref form-names g #f)
-        (begin (set! form-counter (+ form-counter 1))
-               (let ((n (string-append "form " (number->string form-counter))))
-                 (hashtable-set! form-names g n)
-                 n))))
+  (define (form-name g vars)
+    (let* ((known (hashtable-ref form-names g '())) (e (assoc vars known)))
+      (if e
+          (cdr e)
+          (begin (set! form-counter (+ form-counter 1))
+                 (let ((n (string-append "form " (number->string form-counter))))
+                   (hashtable-set! form-names g (cons (cons vars n) known))
+                   n)))))
   (define (complete-key! S key)
     (unless (hashtable-ref (session-complete S) key #f)
       (let ((outer-visited (session-visited S)) (outer-changed (session-changed S)))
@@ -1787,18 +1801,23 @@
     (let* ((env (session-env-of S))
            (kinds-of (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))
            (seed (filter values (map (lambda (v) (let ((e (assq v b))) (and e (list v (value-kind (cdr e)) '())))) vars))))
-      (guard (e ((refusal? e)
-                 (let ((a (refusal-answer e)))
-                   (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
-                        (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))
-                        #t))))
-        (goal-kinds (goal-conjuncts (form-sub g)) seed kinds-of)
-        #f)))
+      (define (static? a)
+        (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
+             (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))))
+      ;; GOAL BY GOAL: one no cut satisfies is the emptiness; one refused for
+      ;; another reason (a nested form's own rule, met with the values' kinds)
+      ;; is passed over, and the rest still read
+      (let loop ((cs (goal-conjuncts (form-sub g))) (env seed))
+        (and (pair? cs)
+             (let ((next (guard (e ((refusal? e) (if (static? (refusal-answer e)) 'empty env)))
+                           (goal-kinds (list (car cs)) env kinds-of))))
+               (or (eq? next 'empty) (loop (cdr cs) next)))))))
   (define (form-solve S g b rest)
-    (let* ((sub (form-sub g)) (name (form-name g))
+    (let* ((sub (form-sub g))
            (exported (apply append (map (lambda (c) ((handler-exports (dispatch (session-env-of S) (car c))) c))
                                         (goal-conjuncts sub))))
-           (vars (filter (lambda (v) (or (assq v b) (memq v exported))) (goal-all-variables sub))))
+           (vars (filter (lambda (v) (or (assq v b) (memq v exported))) (goal-all-variables sub)))
+           (name (form-name g (map (lambda (v) (cons v (and (assq v b) #t))) vars))))
       (unless (hashtable-contains? (session-index S) name)
         (hashtable-set! (session-index S) name (list (cons (cons name vars) (goal-conjuncts sub)))))
       (let* ((key (cons name (map (lambda (v) (let ((e (assq v b))) (if e (cdr e) unbound))) vars)))

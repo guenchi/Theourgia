@@ -24,7 +24,8 @@
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
-        (only (theourgia query) make-query-session session-answer session-spent session-expansions check-rules rule-library)
+        (only (theourgia query) make-query-session session-answer session-spent session-expansions session-budget-set!
+              check-rules rule-library)
         (only (theourgia store) open-and-reduce)
         (only (theourgia reduce) reduce-applied-cut block-id state-rule)
         (only (theourgia wire) encode-record storable-encode)
@@ -145,9 +146,10 @@
 (want "NOT-4 a local named again by a later goal: local-variable-reused"
       (q N '(and (kind ?b code) (not (edge ?b cites ?o)) (title ?o ?t)))
       '(error bad-request local-variable-reused (variable ?o) (form not)))
+(define code-blocks (list c1 c2 c3 c4 c5))
 (want "NOT-5 a not of a test with both operands bound: the ordered pairs of distinct code blocks"
-      (length (query-rows N '(and (kind ?x code) (kind ?y code) (not (= ?x ?y)))))
-      20)
+      (sorted-rows N '(and (kind ?x code) (kind ?y code) (not (= ?x ?y))))
+      (sorted (apply append (map (lambda (x) (map (lambda (y) (list x y)) (remove x code-blocks))) code-blocks))))
 (want "NOT-6 a not of an and: the code blocks that cite no code block"
       (sorted-rows N '(and (kind ?b code) (not (and (edge ?b cites ?o) (kind ?o code)))))
       (sorted (list (list c4) (list c5))))
@@ -159,12 +161,15 @@
       (reported N '(and (kind ?b code) (not (edge ?b cites ?o))))
       '(?b))
 (want "NOT-9 a disjoint constant inside a not is static emptiness, not a refusal: every block of every kind answered"
-      (length (query-rows N '(and (kind ?b ?k) (not (= ?k "doc")))))
-      7)
+      (sorted-rows N '(and (kind ?b ?k) (not (= ?k "doc"))))
+      (sorted (append (map (lambda (c) (list c 'code)) code-blocks) (list (list d1 'doc) (list d2 'doc)))))
 (want "NOT-10 a disjoint join inside a not: accepted, the docs answered; and a kind after the not is what it was before"
       (in-order (sorted-rows N '(and (kind ?b doc) (not (and (kind ?b ?k) (title ?b ?k)))))
                 (sorted-rows N '(and (kind ?b ?k) (not (= ?k "doc")) (= ?k doc))))
       (list (sorted (list (list d1) (list d2))) (sorted (list (list d1 'doc) (list d2 'doc)))))
+(want "NOT-14 a refinement inside a not stays inside: ?v compared with an integer inside, joined with a title after, accepted"
+      (q N '(and (field ?b "title" ?v) (not (= ?v 1)) (title ?x ?v)))
+      (q N '(and (field ?b "title" ?v) (title ?x ?v))))
 (want "NOT-11 an unknown relation inside a not: unknown-relation, as outside"
       (head4 (q N '(and (kind ?b code) (not (nosuch ?b)))))
       '(error bad-request unknown-relation (relation nosuch)))
@@ -301,6 +306,23 @@
 (want "AGG-33 a statically empty goal evaluates nothing: a count over an external relation beside a disjoint test is 0"
       (query-rows A '(count ?n (and (score ?b ?q ?s) (= 1 "x"))))
       '((0)))
+(want "AGG-34 two forms over one group with different bodies: each doc's cited blocks and its citers, apart"
+      (sorted-rows A '(and (kind ?d doc) (count ?n (edge ?d cites ?x)) (count ?m (edge ?y cites ?d))))
+      (sorted (list (list e1 0 2) (list e2 0 1) (list e3 0 0))))
+(derive! A 'qn '((head (qn INT)) (clause (qn ?n) (count ?n (kind ?b doc)))))
+(want "AGG-35 min's result is its column's kind met with INT or STR: over an INT relation it fits an INT head; over field's ANY it does not"
+      (in-order (head-of (derive! A 'mm '((head (mm INT)) (clause (mm ?m) (min ?m ?x (qn ?x))))))
+                (derive! A 'mf '((head (mf INT)) (clause (mf ?m) (min ?m ?x (field ?b "n" ?x))))))
+      '(ok (error bad-request head-kind (relation mf) (position 1) (declared INT) (clause (INT STR)))))
+(want "AGG-36 sum, min and max over a statically empty goal: 0, no row, no row, nothing evaluated"
+      (in-order (query-rows A '(sum ?s ?v (and (field ?b "n" ?v) (= 1 "x"))))
+                (query-rows A '(min ?m ?v (and (field ?b "n" ?v) (= 1 "x"))))
+                (query-rows A '(max ?m ?v (and (field ?b "n" ?v) (= 1 "x")))))
+      '(((0)) () ()))
+(field! A e3 'f #f)
+(want "AGG-37 a value the form cannot take that is #f: aggregate-value naming it"
+      (q A '(sum ?s ?v (field ?b "f" ?v)))
+      '(error bad-request aggregate-value (form sum) (variable ?v) (value #f)))
 (want "AGG-29 min over a SYM column: wrong-kind; count's result is INT, so joining it with a title is join-across-kinds"
       (in-order (q A '(min ?m ?k (kind ?b ?k)))
                 (head4 (q A '(and (count ?n (kind ?b doc)) (title ?x ?n)))))
@@ -328,18 +350,12 @@
 (define s-past (cut-of S))
 (define s-p (derive! S 'p (body 'p '(kind ?x doc) '(not (q ?x)))))
 (forge! S "peerstrq" (list 'derive 'q (body 'q '(kind ?x doc) '(not (p ?x)))) s-past)
-(want "STRAT-1 two writers' negations merged: p and q unstratified, each cycle from itself, a query of either refused"
-      (list (head-of s-p) (availability-of S 'p) (availability-of S 'q) (q S '(p ?x)))
-      '(ok (unavailable (state (unstratified (cycle p q)))) (unavailable (state (unstratified (cycle q p))))
-        (error bad-request relation-unavailable (relation p) (state (unstratified (cycle p q))))))
+(want "STRAT-1 two writers' negations merged: p and q unstratified, each cycle from itself (the queries are read at the end)"
+      (list (head-of s-p) (availability-of S 'p) (availability-of S 'q))
+      '(ok (unavailable (state (unstratified (cycle p q)))) (unavailable (state (unstratified (cycle q p))))))
 (want "STRAT-2 a relation reaching an unstratified one: unavailable through it"
       (availability-of S 't)
       '(unavailable (state (unstratified (cycle p q))) (through p)))
-(want "STRAT-3 a rule naming an unstratified relation: the next write it judges is rule-unevaluable, with that state"
-      (let ((a (title! S s1 "s1b")))
-        (list (head3 a) (clause-of a 'reason)))
-      '((error refused rule-unevaluable)
-        (reason (error bad-request relation-unavailable (relation p) (state (unstratified (cycle p q)))))))
 (want "STRAT-4 conflicts does not list an unstratified relation (no contest)"
       (let ((a (on S 'conflicts)))
         (and (pair? a) (eq? (car a) 'ok) (filter (lambda (x) (and (pair? x) (eq? (car x) 'derive-contested))) (cdr (cadr a)))))
@@ -428,6 +444,11 @@
 (define cd (make C 'doc "d"))
 (for-each (lambda (e) (link! C (car e) (cdr e))) (list (cons ca cb) (cons cb cc) (cons cc cd)))
 (derive! C 'reach '((head (reach ID ID)) (clause (reach ?a ?b) (reach ?a ?m) (edge ?m cites ?b)) (clause (reach ?a ?b) (edge ?a cites ?b))))
+(derive! C 'rq (list '(head (rq ID)) (list 'clause '(rq ?x) (list 'reach ca '?x))))
+(derive! C 'pp '((head (pp ID)) (clause (pp ?x) (kind ?x doc) (not (rq ?x)))))
+(want "STRAT-14 a stratified chain: pp the docs not in rq, rq what a reaches through the recursive reach: available, a alone"
+      (list (availability-of C 'pp) (query-rows C '(pp ?x)))
+      (list 'available (list (list ca))))
 (want "COMP-1 a not over a left-recursive relation: a reaches d, so no row"
       (query-rows C (list 'and '(kind ?x doc) (list '= '?x ca) (list 'not (list 'reach '?x cd))))
       '())
@@ -439,16 +460,22 @@
              (a (session-answer S (list 'and '(kind ?x doc) (list '= '?x ca) (list 'count '?n (list 'reach '?x '?y)))))
              (once (session-expansions S 'reach ca '?y))
              (b (session-answer S (list 'and '(kind ?z doc) (list '= '?z ca) (list 'count '?k (list 'reach '?z '?w))))))
-        (list (and (pair? a) (list-head a 2)) once (session-expansions S 'reach ca '?y)))
-      (list (list 'ok (list (list ca 3))) 4 4))
-(want "COMP-4 a negated relation whose completion exceeds the budget: query-budget naming it"
-;; WHAT THE FACTS COST ALONE: the kind and edge builds, a query with no row
+        (list (and (pair? a) (list-head a 2)) once (and (pair? b) (list-head b 2)) (session-expansions S 'reach ca '?y)))
+      (list (list 'ok (list (list ca 3))) 4 (list 'ok (list (list ca 3))) 4))
+;; THE BUDGET IS WHAT THE FACTS COST ALONE (the kind and edge builds, a query
+;; with no row) and one tuple more, so the negated relation's completion
+;; crosses it; raised, the same session answers the same goal whole
+(want "COMP-4 a negated relation whose completion exceeds the budget: query-budget naming it; the same session, its budget raised, answers it whole"
       (let* ((facts (let ((S0 (make-query-session (state C))))
                       (session-answer S0 '(and (kind ?x doc) (edge ?a cites ?b) (= ?a "no such block")))
                       (session-spent S0)))
-             (S (make-query-session (state C) '() (+ facts 1))))
-        (head3 (session-answer S (list 'and '(kind ?x doc) (list '= '?x ca) (list 'not (list 'reach '?x cd))))))
-      '(error query-budget (relation reach)))
+             (S (make-query-session (state C) '() (+ facts 1)))
+             (goal (list 'and '(kind ?x doc) (list '= '?x ca) (list 'not (list 'reach '?x cd))))
+             (refused (head3 (session-answer S goal))))
+        (session-budget-set! S 1000000)
+        (list refused (let ((a (session-answer S goal))) (and (pair? a) (list-head a 2)))
+              (let ((a (session-answer S (list 'count '?n (list 'reach ca '?y))))) (and (pair? a) (list-head a 2)))))
+      '((error query-budget (relation reach)) (ok ()) (ok ((3)))))
 
 ;; ---- RULE VALUES ---------------------------------------------------------------------------
 (printf "== RV: forms in rule values ==\n")
@@ -470,6 +497,14 @@
                 (head-of (title! R rd "d4")))
       '(ok class write ok))
 (rule! R "unreadw" "--retire")
+(want "RV-5 a per-write fact inside a not is the write's: a doc write meets kind+ there (must-not (not ...) holds); must (not ...) is refused"
+      (in-order (head-of (rule! R "kindin" "--on" "doc" "--must-not" "(not (kind+ ?w doc))"))
+                (head-of (title! R rp "p3"))
+                (head-of (rule! R "kindin" "--retire"))
+                (head-of (rule! R "kindout" "--on" "doc" "--must" "(not (kind+ ?w doc))"))
+                (head3 (title! R rp "p4"))
+                (head-of (rule! R "kindout" "--retire")))
+      '(ok ok ok ok (error refused rule-violation) ok))
 (want "RV-3 an external relation inside an aggregate, in a rule and in a stored relation: rule-relation-not-allowed"
       (in-order (rule! R "scored" "--on" "doc" "--must" "(count ?n (score ?w \"x\" ?s))")
                 (derive! R 'ps '((head (ps INT)) (clause (ps ?n) (count ?n (and (kind ?b doc) (score ?b "x" ?s)))))))
@@ -489,6 +524,11 @@
         (check-rules (append rule-library (list '((usesnot ?x) (kind ?x doc) (not (kind ?x code))))))
         'loaded)
       "unknown relation")
+(want "LIB-4 a library clause headed by a form's name does not load"
+      (guard (e ((and (condition? e) (message-condition? e)) (condition-message e)))
+        (check-rules (append rule-library (list '((count ?x) (kind ?x doc)))))
+        'loaded)
+      "a rule heads a form")
 (define L (store! "names"))
 (make L 'doc "l")
 (want "LIB-2 the five form heads refused as a stored relation's name: name-taken, where form"
@@ -498,6 +538,34 @@
 (want "LIB-3 a record that bypassed the verb under a form's name is masked: listed shadowed, the form still answers"
       (list (availability-of L 'count) (query-rows L '(count ?n (kind ?b doc))))
       '((unavailable (shadowed FORM)) ((1))))
+
+;; ---- EVALUATION OF AN UNSTRATIFIED PAIR, last ----------------------------------------------
+;; A query, a write and the audit that would evaluate p and q, each refused
+;; before any evaluation; without the stratification they loop, so they come
+;; after every other row
+(printf "== STRAT-E: an unstratified pair refused before evaluation ==\n")
+(define SE (store! "strata-eval"))
+(define se1 (make SE 'doc "se1"))
+(derive! SE 'p (over-kind 'p 'doc))
+(derive! SE 'q (over-kind 'q 'doc))
+(rule! SE "needp" "--on" "doc" "--must" "(p ?w)")
+(define se-past (cut-of SE))
+(derive! SE 'p (body 'p '(kind ?x doc) '(not (q ?x))))
+(forge! SE "peerseqq" (list 'derive 'q (body 'q '(kind ?x doc) '(not (p ?x)))) se-past)
+(want "STRAT-E1 a query of either relation of the pair: relation-unavailable, unstratified"
+      (in-order (q SE '(p ?x)) (q SE '(q ?x)))
+      '((error bad-request relation-unavailable (relation p) (state (unstratified (cycle p q))))
+        (error bad-request relation-unavailable (relation q) (state (unstratified (cycle q p))))))
+(want "STRAT-E2 a rule naming p: the next write it judges is rule-unevaluable, with that state"
+      (let ((a (title! SE se1 "se1b")))
+        (list (head3 a) (clause-of a 'reason)))
+      '((error refused rule-unevaluable)
+        (reason (error bad-request relation-unavailable (relation p) (state (unstratified (cycle p q)))))))
+(want "STRAT-E3 check's audit lists the rule as rule-unevaluable, naming p's state"
+      ;; check answers (check ... (rules <finding> ...) ...)
+      (let ((rules (clause-of (on SE 'check) 'rules)))
+        (and rules (find (lambda (x) (and (pair? x) (eq? (car x) 'rule-unevaluable))) (cdr rules))))
+      '(rule-unevaluable (rule needp) (reason (error bad-request relation-unavailable (relation p) (state (unstratified (cycle p q)))))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nquery-strata complete\n" rows bad)

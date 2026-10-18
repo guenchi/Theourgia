@@ -1495,17 +1495,19 @@
   ("query.sc" (form-result-kind) 1 guard
    ((and (refusal? e) (static-emptiness? (refusal-answer e))))
    unrelated a
-   "a goal inside a form kind-checked: a kind no cut satisfies makes that goal empty, the kinds left as they were; every other refusal goes on"
-   (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) env)))
+   "a goal inside a form kind-checked: a kind no cut satisfies makes that goal empty, its columns read again leniently; every other refusal goes on"
+   (e ((and (refusal? e) (static-emptiness? (refusal-answer e)))
+       (lenient-kinds goal-kinds-of (car cs) env))))
   ("query.sc" (form-empty?) 1 guard
    ((refusal? e))
    unrelated a
-   "a form's goal read with the group's values as kinds: a kind refusal no form owns is its emptiness, any other refusal is not, and no file is read"
-   (e ((refusal? e)
-       (let ((a (refusal-answer e)))
-         (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
-              (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))
-              #t)))))
+   "a form's goal read goal by goal with the group's values as kinds: a kind refusal no form owns is its emptiness, any other refusal passes that goal over, and no file is read"
+   (e ((refusal? e) (if (static? (refusal-answer e)) 'empty env))))
+  ("query.sc" (lenient-kinds) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a goal no cut satisfies read again with its constants as `_`: a refusal there leaves the kinds as they were, and no file is read"
+   (e ((refusal? e) env)))
   ("rpc.sc" (parse-derive value-of) 1 guard
    (#t)
    unrelated a
