@@ -303,6 +303,31 @@
 ;; records claiming one request's identity (relation-effects' RE-9 does the
 ;; same with edge relations); the second gates both, and the state is folded
 ;; again from the applied records
+;; A CLONE'S OWN DECLARATION STAYS IN THE CLONE: a rehearsal applies a write
+;; to its copy, and the original's tables must not see it
+(want "STATE-2b a declaration applied to a clone is in the clone's table, not the original's"
+      (let* ((s (state H)) (c (reduce-clone s)))
+        (reduce-apply! c "clone000" 1 '() (list 'derive 'only-in-clone (over-kind 'only-in-clone 'section)))
+        (list (and (state-derived c 'only-in-clone) #t) (state-derived s 'only-in-clone)))
+      '(#t #f))
+;; THE ORDER OF A TABLE'S ROWS: the last touched name first, as a snapshot
+;; writes them; a state restored from the rows holds them reversed, as it
+;; always has. Each of the three tables.
+(define O (store! "order"))
+(make O 'section "S")
+(for-each (lambda (n) (derive! O n (over-kind n 'section))) '(d1 d2 d3))
+;; a new value, so a record is written (the verb writes none for the value
+;; already in force)
+(derive! O 'd1 (over-kind 'd1 'doc))
+(for-each (lambda (n) (on O 'relation n "--as" "depends-on")) '("e1" "e2" "e3"))
+(on O 'relation "e1" "--as" "nothing")
+(for-each (lambda (n) (on O 'rule n "--on" "section" "--must" "(title ?w ?t)")) '("u1" "u2" "u3"))
+(on O 'rule "u1" "--on" "section" "--must" "(kind ?w section)")
+(define (row-names kind rows) (map cadr (filter (lambda (row) (eq? (car row) kind)) rows)))
+(want "ORDER-1 each table's rows: the last touched first; restored from rows, reversed"
+      (let* ((rows (state->rows (state O))) (again (state->rows (rows->state rows))))
+        (map (lambda (k) (list (row-names k rows) (row-names k again))) '(derive relation rule)))
+      '(((d1 d3 d2) (d2 d3 d1)) ((e1 e3 e2) (e2 e3 e1)) ((u1 u3 u2) (u2 u3 u1))))
 (define (claim-actor) (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0)))
 (define rebuilt
   (guard (e (#t 'RAISED))
@@ -877,13 +902,15 @@
         (log-publish! st "peerzzzz" 1 bytes (segment-sha bytes))
         ;; THE LISTING ALONE IS TIMED: the state is replayed first and
         ;; supplied, so the replay's own cost is not the listing's
-        (let* ((replayed (open-and-reduce st))
+        (let* ((r0 (real-time))
+               (replayed (open-and-reduce st))
+               (replay-ms (- (real-time) r0))
                (t0 (real-time))
                (a (rpc-dispatch st '(query "--relations") "author" replayed))
                (ms (- (real-time) t0))
                (derived (if (and (pair? a) (eq? (car a) 'ok)) (filter (lambda (e) (and (pair? e) (eq? (car e) 'derived))) (cdr (cadr a))) '())))
           (call-with-output-file (cadddr args)
-            (lambda (p) (write (list (length derived) (length (filter (lambda (e) (eq? (list-ref e (- (length e) 1)) 'available)) derived)) ms) p))
+            (lambda (p) (write (list (length derived) (length (filter (lambda (e) (eq? (list-ref e (- (length e) 1)) 'available)) derived)) ms replay-ms) p))
             'replace))))))
 (define (forged-listing seconds shape n)
   (let* ((st (string-append root "/forged-" (symbol->string shape) "-" (number->string n))) (out (string-append st ".out")))
@@ -906,6 +933,20 @@
       (let ((r (forged-listing 180 'crafted 25600)))
         (if (pair? r) (list (car r) (cadr r) (< (caddr r) 10000)) r))
       '(25601 25601 #t))
+
+;; REPLAY: THE TABLES ARE INDEXED BY NAME, so replaying n declarations of
+;; one kind is linear. The child times the replay alone (open-and-reduce,
+;; the fourth number it writes) at 12800 and 25600 derive records of a
+;; chain: the ratio is near 2 with the index; with a scan per record (an
+;; alist's assq and remp) it was near 4 (1.1 s and 4.0 s measured).
+(want "REPLAY-1 a replay of 25600 forged derive records against 12800: the replay's time grows less than 2.5 times"
+      (let ((a (forged-listing 300 'chain 12800)) (b (forged-listing 300 'chain 25600)))
+        (printf "NOTE REPLAY-1 replay ms at 12800 and 25600: ~s ~s\n"
+                (and (pair? a) (= 4 (length a)) (cadddr a)) (and (pair? b) (= 4 (length b)) (cadddr b)))
+        (if (and (pair? a) (pair? b) (= 4 (length a)) (= 4 (length b)))
+            (list (car a) (car b) (< (/ (cadddr b) (max 1 (cadddr a))) 5/2))
+            (list 'READINGS a b)))
+      '(12801 25601 #t))
 
 ;; C: THE SHORTEST CHAIN, ties by each caller's callee order, and the sink's
 ;; own state. One store, five graphs.

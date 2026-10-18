@@ -134,9 +134,11 @@
   ;; pending  -- records whose premises have not all arrived
   ;; trace    -- event-ids in the order they were applied
   ;; noted    -- integrity observations this layer made while applying
-  ;; declared-relations -- alist of a declared relation name to its candidates
-  ;; declared-rules -- alist of a rule name to its candidates, the same way
-  ;; declared-derived -- alist of a derived relation's name to its candidates
+  ;; declared-relations -- a declaration table (decls): a declared relation
+  ;;             name to its candidates
+  ;; declared-rules -- a declaration table: a rule name to its candidates
+  ;; declared-derived -- a declaration table: a derived relation's name to its
+  ;;             candidates
   (define-record-type reduction
     (fields (mutable blocks-rev)
             (mutable links)
@@ -653,7 +655,7 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) '() '() '() #f
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
                     (make-empty-structure)))
 
@@ -681,8 +683,8 @@
                       (reduction-noted r) (reduction-history r) (reduction-gates r)
                       (admission-copy (reduction-admission-index r))
                       (consumption-copy (reduction-consumption r))
-                      (reduction-declared-relations r) (reduction-declared-rules r)
-                      (reduction-declared-derived r)
+                      (decls-copy (reduction-declared-relations r)) (decls-copy (reduction-declared-rules r))
+                      (decls-copy (reduction-declared-derived r))
                       #t
                       index #f (hashtable-copy (reduction-pasts-index r) #t)
                       (structure-copy (reduction-structure r)))))
@@ -834,9 +836,9 @@
       (reduction-structure-set! r (make-empty-structure))
       (reduction-links-set! r '())
       (reduction-tags-set! r '())
-      (reduction-declared-relations-set! r '())
-      (reduction-declared-rules-set! r '())
-      (reduction-declared-derived-set! r '())
+      (reduction-declared-relations-set! r (make-decls-table))
+      (reduction-declared-rules-set! r (make-decls-table))
+      (reduction-declared-derived-set! r (make-decls-table))
       (pasts-reset! r)
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
@@ -941,6 +943,36 @@
 
   (define (put-candidate past candidates value event-id)
     (cons (cons value event-id) (supersede past candidates)))
+
+  ;; ---- the declaration tables ------------------------------------------------
+  ;;
+  ;; A DECLARATION TABLE: a name (a symbol) to its candidates, looked up by
+  ;; name, and the order a snapshot writes, the last touched name first. A put
+  ;; stamps its entry with the next touch, and the order is the entries by
+  ;; touch, descending: the order the alist these tables were had, its touched
+  ;; name consed to the front (state->rows writes it; rows->state puts the
+  ;; rows in their order, so a restored table is reversed, as consing made
+  ;; it). A replay of n records of one kind is then linear, where the alist's
+  ;; assq and remp per record made it quadratic.
+  ;; NEVER: SHARED BY A CLONE. A rehearsal applies writes to its copy in place,
+  ;; so reduce-clone copies each table (decls-copy).
+  (define-record-type decls (fields index (mutable touch)))
+  (define (make-decls-table) (make-decls (make-eq-hashtable) 0))
+  (define (decls-candidates t name)
+    (let ((e (hashtable-ref (decls-index t) name #f))) (if e (cdr e) '())))
+  (define (decls-put! t name candidates)
+    (hashtable-set! (decls-index t) name (cons (decls-touch t) candidates))
+    (decls-touch-set! t (+ (decls-touch t) 1)))
+  ;; every name, in no order: each reader sorts
+  (define (decls-names t) (vector->list (hashtable-keys (decls-index t))))
+  ;; -> ((<name> . <candidates>) ...), the last touched first
+  (define (decls-alist t)
+    (let-values (((names entries) (hashtable-entries (decls-index t))))
+      (map cdr
+           (list-sort (lambda (a b) (> (car a) (car b)))
+                      (map (lambda (n e) (cons (car e) (cons n (cdr e))))
+                           (vector->list names) (vector->list entries))))))
+  (define (decls-copy t) (make-decls (hashtable-copy (decls-index t) #t) (decls-touch t)))
 
   (define (find-block r id)
     (hashtable-ref (reduction-block-index r) id #f))
@@ -1703,18 +1735,15 @@
 ;; A DECLARATION IS A CANDIDATE OF ITS NAME, as a write is of a field: the
   ;; ones this record has seen are superseded, a concurrent one survives.
   ;; Relations and rules are two tables through this one procedure.
-  (define (put-declaration! table table-set! r event-id past args)
-    (let* ((name (car args))
-           (have (let ((e (assq name (table r)))) (if e (cdr e) '()))))
-      (table-set!
-        r (cons (cons name (put-candidate past have (copy-datum (cadr args)) event-id))
-                (remp (lambda (e) (eq? (car e) name)) (table r))))))
+  (define (put-declaration! table r event-id past args)
+    (let ((t (table r)) (name (car args)))
+      (decls-put! t name (put-candidate past (decls-candidates t name) (copy-datum (cadr args)) event-id))))
   (define (do-relation! r event-id past args)
-    (put-declaration! reduction-declared-relations reduction-declared-relations-set! r event-id past args))
+    (put-declaration! reduction-declared-relations r event-id past args))
   (define (do-rule! r event-id past args)
-    (put-declaration! reduction-declared-rules reduction-declared-rules-set! r event-id past args))
+    (put-declaration! reduction-declared-rules r event-id past args))
   (define (do-derive! r event-id past args)
-    (put-declaration! reduction-declared-derived reduction-declared-derived-set! r event-id past args))
+    (put-declaration! reduction-declared-derived r event-id past args))
 
   ;; ---- ordering (design 9.5) ------------------------------------------------
 
@@ -2217,7 +2246,7 @@
           (else (or (selector-reason (cadr value)) (selector-reason (caddr value))))))
 
   (define (relation-candidates r name)
-    (let ((e (assq name (reduction-declared-relations r)))) (if e (cdr e) '())))
+    (decls-candidates (reduction-declared-relations r) name))
 
   ;; THE ONE AGREEMENT RULE (r5-4), for declarations and nothing else -- a
   ;; field keeps its own rule: -> the value every surviving candidate holds,
@@ -2243,7 +2272,7 @@
 
   (define (declared-names r)
     (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
-               (map car (reduction-declared-relations r))))
+               (decls-names (reduction-declared-relations r))))
 
   ;; -> the declared table, by name: (<name> <kind> (from <selector>) (to
   ;; <selector>)) for a name in force, (<name> (contested)) for one contested.
@@ -2299,11 +2328,11 @@
       (else #f)))
 
   (define (rule-candidates r name)
-    (let ((e (assq name (reduction-declared-rules r)))) (if e (cdr e) '())))
+    (decls-candidates (reduction-declared-rules r) name))
 
   (define (rule-names r)
     (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
-               (map car (reduction-declared-rules r))))
+               (decls-names (reduction-declared-rules r))))
 
   ;; -> what a name's surviving candidates say, by the one agreement rule:
   ;; #f for none, (in-force <value>), (retired), or (contested (<value>
@@ -2394,11 +2423,11 @@
            (else #f))))))
 
   (define (derived-candidates r name)
-    (let ((e (assq name (reduction-declared-derived r)))) (if e (cdr e) '())))
+    (decls-candidates (reduction-declared-derived r) name))
   ;; every declared name, in force, contested or retired, sorted
   (define (state-derived-names r)
     (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
-               (map car (reduction-declared-derived r))))
+               (decls-names (reduction-declared-derived r))))
   ;; -> #f for a name never declared; else (in-force <value>), (retired), or
   ;; (contested (<value> <writer> <seq>) ...), by the one agreement rule
   (define (state-derived r name) (candidates-state (derived-candidates r name)))
@@ -2406,7 +2435,7 @@
   ;; <state-derived>) ...), read in one pass over the table
   (define (state-derived-all r)
     (list-sort (lambda (x y) (string<? (symbol->string (car x)) (symbol->string (car y))))
-               (map (lambda (e) (cons (car e) (candidates-state (cdr e)))) (reduction-declared-derived r))))
+               (map (lambda (e) (cons (car e) (candidates-state (cdr e)))) (decls-alist (reduction-declared-derived r)))))
   ;; -> ((derive-contested <name> (candidates (<value> <writer> <seq>) ...)) ...),
   ;; by name, for `conflicts`.
   (define (state-derived-contested r)
@@ -3276,12 +3305,12 @@
       (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))
       ;; A DECLARATION'S CANDIDATES, one row a name; none in a store with
       ;; no declaration, whose rows are as they were.
-      (map (lambda (e) (list 'relation (car e) (cdr e))) (reduction-declared-relations r))
+      (map (lambda (e) (list 'relation (car e) (cdr e))) (decls-alist (reduction-declared-relations r)))
       ;; A RULE'S CANDIDATES the same way, one row a name.
-      (map (lambda (e) (list 'rule (car e) (cdr e))) (reduction-declared-rules r))
+      (map (lambda (e) (list 'rule (car e) (cdr e))) (decls-alist (reduction-declared-rules r)))
       ;; A DERIVED RELATION'S CANDIDATES the same way; none in a store with
       ;; no derive record, whose rows are as they were.
-      (map (lambda (e) (list 'derive (car e) (cdr e))) (reduction-declared-derived r))))
+      (map (lambda (e) (list 'derive (car e) (cdr e))) (decls-alist (reduction-declared-derived r)))))
 
   (define (rows->state rows)
     (let ((r (reduce-empty))
@@ -3321,14 +3350,11 @@
              (reduction-tags-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-tags r))))
             ((relation)
-             (reduction-declared-relations-set!
-               r (cons (cons (cadr row) (caddr row)) (reduction-declared-relations r))))
+             (decls-put! (reduction-declared-relations r) (cadr row) (caddr row)))
             ((rule)
-             (reduction-declared-rules-set!
-               r (cons (cons (cadr row) (caddr row)) (reduction-declared-rules r))))
+             (decls-put! (reduction-declared-rules r) (cadr row) (caddr row)))
             ((derive)
-             (reduction-declared-derived-set!
-               r (cons (cons (cadr row) (caddr row)) (reduction-declared-derived r))))
+             (decls-put! (reduction-declared-derived r) (cadr row) (caddr row)))
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
