@@ -606,7 +606,9 @@
 (want "SHAPE-3 the plain string \"#%new\" is data: accepted, and answered"
       (in-order (head-of (derive! SH 'sn '((head (sn STR)) (clause (sn "#%new"))))) (query-rows SH '(sn ?x)))
       '(ok (("#%new"))))
-(define (cursor-text st) (let ((p (on st 'position))) (format "~s" (cadr (assq 'position (cdr p))))))
+;; A CURSOR IS WRITTEN writer:sequence, from the store's own position
+(define (cursor-text st)
+  (let ((p (cadr (assq 'position (cdr (on st 'position)))))) (string-append (car p) ":" (number->string (cdr p)))))
 (define sh-req (format "~s" (list '(derive tracked ((head (tracked ID)) (clause (tracked ?x) (kind ?x section))))
                                   '(insert root #f ((kind . section) (title . "t"))))))
 (define sh-cursor (cursor-text SH))
