@@ -28,8 +28,10 @@
 ;; EVERYTHING IS CHECKED BEFORE THE WORKTREE CHANGES: each tag settled; one
 ;; landing block, valid; the worktree has no leftover scratch directory, is
 ;; clean (untracked files included) and its HEAD is the base; the base equals
-;; the start cut's raw export path by path (the literal blobs: dot-named paths,
-;; symbolic links and submodules skipped and listed); changed-files between
+;; the start cut's raw export path by path (the literal blobs, over the
+;; importer's domain, landing-files.sc's base-entry-judgement: dot-named paths,
+;; symbolic links and submodules skipped and listed, a file that is not text
+;; neither compared nor exempt, and listed); changed-files between
 ;; the cuts is not empty; every touched path is a plain file at the base;
 ;; every destination is outside the git directory, under real directories and
 ;; free, but for what the planned removals clear; and no two spellings the
@@ -58,7 +60,8 @@
         (only (theourgia reduce) reduction? state-read)
         (only (theourgia query) make-query-session session-answer)
         (only (theourgia lifecycle) lifecycle decision-state-of)
-        (only (theourgia landing-files) raw-projection volume-insensitivity landing-collision spelling-key)
+        (only (theourgia landing-files) raw-projection volume-insensitivity landing-collision spelling-key
+              base-entry-judgement)
         (only (theourgia ffi) entry-bytes entry-name-type directory-entries mkdir-p! mkdir-exclusive!
               rmdir! unlink! overwrite-entry! path-stat process-id))
 
@@ -332,20 +335,31 @@
               (let* ((tree (base-tree wt base))
                      (start-dir (string-append scratch "/start"))
                      (freeze-dir (string-append scratch "/freeze"))
-                     (skipped '()))
+                     (skipped '())
+                     (unread '()))
                 ;; THE BASE: the start cut's raw export against the literal blobs
                 (answer-ok (ask store 'export-code start-dir "--raw" "--cut" (cut-text start-cut)))
                 (let ((exported (files-under start-dir)) (compared (make-hashtable string-hash string=?)) (differ '()))
                   (let-values (((paths entries) (hashtable-entries tree)))
+                    ;; EACH ENTRY JUDGED AS THE IMPORTER JUDGES IT: in is compared;
+                    ;; a dot path and a link, submodule or other mode are skipped,
+                    ;; and the export at or under them is no difference; a file
+                    ;; that is not text is neither (the store never holds it), so
+                    ;; a store file at its path still differs, and it is listed.
                     (vector-for-each
                       (lambda (p e)
-                        (cond ((dot-named? p) (set! skipped (cons (list p 'dot-named) skipped)))
-                              ((member (car e) '("100644" "100755"))
-                               (hashtable-set! compared p #t)
-                               (let ((x (assoc p exported)))
-                                 (unless (and x (bytevector=? (cadr x) (git-bytes wt "cat-file" "blob" (cadr e))))
-                                   (set! differ (cons p differ)))))
-                              (else (set! skipped (cons (list p (string->symbol (car e))) skipped)))))
+                        (let* ((mode (car e))
+                               (bytes (and (member mode '("100644" "100755")) (not (dot-named? p))
+                                           (git-bytes wt "cat-file" "blob" (cadr e)))))
+                          (case (base-entry-judgement p mode bytes)
+                            ((in)
+                             (hashtable-set! compared p #t)
+                             (let ((x (assoc p exported)))
+                               (unless (and x (bytevector=? (cadr x) bytes))
+                                 (set! differ (cons p differ)))))
+                            ((dot-named) (set! skipped (cons (list p 'dot-named) skipped)))
+                            ((not-text) (set! unread (cons (list p 'not-text) unread)))
+                            (else (set! skipped (cons (list p (string->symbol mode)) skipped))))))
                       paths entries))
                   ;; NEVER: AN EXPORTED FILE AT OR UNDER A SKIPPED ENTRY IS NOT A
                   ;; DIFFERENCE. The import follows a symbolic link, so the store
@@ -358,7 +372,7 @@
                                             (set! differ (cons (car x) differ))))
                               exported))
                   (when (pair? differ) (refuse 'base-mismatch (cons 'paths (list-sort string<? differ)))))
-                (set! skipped (list-sort (lambda (x y) (string<? (car x) (car y))) skipped))
+                (set! skipped (list-sort (lambda (x y) (string<? (car x) (car y))) (append unread skipped)))
                 ;; WHAT CHANGED
                 (let* ((items (cdr (cadr (answer-ok (ask store 'changed-files (cut-text start-cut) (cut-text freeze-cut))))))
                        (of (lambda (r) (map cadr (filter (lambda (i) (eq? (caddr i) r)) items))))

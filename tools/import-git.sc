@@ -107,6 +107,7 @@
         (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia languages) language-for-path)
         (only (theourgia markers) import-text? byte-slice bytes-append)
+        (only (theourgia landing-files) base-entry-judgement)
         (only (theourgia query) make-query-session session-answer)
         (only (theourgia ffi) hold-point!))
 
@@ -218,12 +219,13 @@
 
 (define (regular? entry) (and (member (car entry) '("100644" "100755")) (string=? (cadr entry) "blob")))
 
-;; THE DOMAIN OF A TREE: path -> bytes for every regular, not dot-named file
-;; whose bytes are text, and the list of the paths, not dot-named, whose
-;; entries are not regular files (a link, a submodule): the importer follows
-;; a link, so the store may hold files at or under one, and those are not
-;; differences -- publish-landing's rule, so the importer and the publisher
-;; share one domain. A regular file that is not text is in neither.
+;; THE DOMAIN OF A TREE: path -> bytes for every entry landing-files.sc's
+;; base-entry-judgement answers in for (a regular, not dot-named file whose
+;; bytes are text), and the list of the paths it answers link, submodule or
+;; mode for: the importer follows a link, so the store may hold files at or
+;; under one, and those are not differences. publish-landing asks the same
+;; judgement, so the importer and the publisher share one domain. A file that
+;; is not text is in neither.
 (define (domain-of repo tree)
   (let-values (((paths entries) (hashtable-entries tree)))
     (read-blobs! repo (filter (lambda (x) x)
@@ -232,10 +234,11 @@
     (let ((h (make-hashtable string-hash string=?)) (skipped '()))
       (vector-for-each
         (lambda (p e)
-          (unless (dot-named? p)
-            (if (regular? e)
-                (let ((b (blob-of e))) (when (and b (import-text? b)) (hashtable-set! h p b)))
-                (set! skipped (cons p skipped)))))
+          (let ((b (and (regular? e) (not (dot-named? p)) (blob-of e))))
+            (case (base-entry-judgement p (car e) b)
+              ((in) (hashtable-set! h p b))
+              ((link submodule mode) (set! skipped (cons p skipped)))
+              (else #f))))
         paths entries)
       (cons h skipped))))
 

@@ -357,6 +357,31 @@
     (want "PL-22 a base with a tracked .github file verifies, listed as skipped dot-named"
           (list (head-of a) (clause-of a 'skipped))
           '(ok (skipped (".github/workflow.yml" dot-named))))))
+;; THE BASE IS COMPARED OVER THE IMPORTER'S DOMAIN (landing-files.sc,
+;; base-entry-judgement): a file that is not text is not compared, since the
+;; store never holds it, and is listed; a 100755 text file is compared; the
+;; files under a symbolically linked directory are exempt, as the importer
+;; follows the link.
+(let ((r (simple! (lambda (wt) (sh "printf '\\000\\001\\377' > " (quoted (string-append wt "/bin.dat")))))))
+  (landing! r "binary") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-34 a base with a binary file verifies; the file is not compared and is listed as skipped not-text"
+          (list (head-of a) (clause-of a 'skipped))
+          '(ok (skipped ("bin.dat" not-text))))))
+(let ((r (simple! (lambda (wt) (write-file! (string-append wt "/run.sh") "#!/bin/sh\necho hi\n")
+                                (sh "chmod 755 " (quoted (string-append wt "/run.sh")))))))
+  (landing! r "script") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-35 a base with an untouched 100755 text script verifies and compares it: nothing is skipped"
+          (list (head-of a) (clause-of a 'skipped) (mode-at r "run.sh"))
+          '(ok (skipped) "100755"))))
+(let ((r (simple! (lambda (wt) (write-file! (string-append wt "/lib/x.txt") "under\n")
+                                (sh "ln -s lib " (quoted (string-append wt "/libl")))))))
+  (landing! r "linked dir") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-36 a base with a symbolically linked directory verifies: the files under it are exempt, the link listed as skipped"
+          (list (head-of a) (clause-of a 'skipped))
+          '(ok (skipped ("libl" |120000|))))))
 
 ;; ---- PL-15, PL-18, PL-19: what git does to bytes and modes -----------------------
 (printf "== PL-15, PL-18, PL-19: bytes and modes ==\n")

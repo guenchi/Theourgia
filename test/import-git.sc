@@ -791,6 +791,34 @@
       (list (car h10) (cadr h10) (and (tag-cut st10 "t10") #t) (done-blocks st10) (caddr h10))
       (list #t (list 'error 'import-diverged '(differing "a.sc") (list 'tag "t10" (list 'cut (tag-cut st10 "t10")))) #t '("done") 1))
 
+;; ---- IG-12: what a base is compared over ------------------------------------------
+;;
+;; ONE JUDGEMENT OF A BASE ENTRY, landing-files.sc's, which publish-landing
+;; asks too, so the importer and the publisher compare a store's export over
+;; the same paths. Read through eval, so a tree without it reads RAISED here.
+(printf "== IG-12: the base entry's judgement, shared with publish-landing ==\n")
+(want "IG-12 the judgement of a base entry: in for a text file at 100644 or 100755; not-text, link, submodule, mode and dot-named otherwise"
+      (let ((judge (eval 'base-entry-judgement (environment '(theourgia landing-files)))))
+        (map (lambda (c) (apply judge c))
+             (list (list "a.sc" "100644" (string->utf8 "(define a 1)\n"))
+                   (list "run.sh" "100755" (string->utf8 "#!/bin/sh\n"))
+                   (list "bin.dat" "100644" (bytevector 0 1 2 255))
+                   (list "link" "120000" #f)
+                   (list "sub" "160000" #f)
+                   (list "odd" "100664" #f)
+                   (list "dir/.hidden" "100644" (string->utf8 "x\n")))))
+      '(in in not-text link submodule mode dot-named))
+;; A BINARY FILE UNCHANGED IN THE BASE: the store does not hold it (the
+;; importer imports text), and it is in neither the domain nor the exempt
+;; paths, so its absence from the export is no difference: the range imports.
+(define wt12 (repo! "r12"))
+(define c12-0 (commit! wt12 "base" (cons "a.sc" (defs 'a)) (cons "bin.dat" (bytevector 0 1 2 255))))
+(define c12-1 (commit! wt12 "change" (cons "a.sc" (defs 'a 'b))))
+(define st12 (store-from! wt12 c12-0 "s12" #t))
+(want "IG-12 a binary file unchanged in the base: the store does not hold it, and the range imports"
+      (in-order (file-at st12 "bin.dat") (ran (import! st12 wt12 c12-0 c12-1 "t12")) (texts st12 "a.sc"))
+      (list #f '(ok 0) (list (d 'a) (d 'b))))
+
 ;; ---- IG-11: the dry run ---------------------------------------------------------------
 (printf "== IG-11: the dry run ==\n")
 (define wt11 (repo! "r11"))

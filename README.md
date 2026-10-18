@@ -2906,9 +2906,13 @@ Everything is checked before the worktree changes, each as a refusal:
   untracked files included (`dirty`); its HEAD the base (`wrong-head`);
 - the base equals the start cut's raw export path by path, compared with
   the LITERAL blobs (`git ls-tree` and `git cat-file`, not `git archive`,
-  whose attributes can rewrite a file): only plain files are compared, and
-  dot-named paths, symbolic links and submodules -- and what the import read
-  through them -- are listed in the answer as `(skipped <path> <why>)`
+  whose attributes can rewrite a file), over the importer's own domain (one
+  judgement, `base-entry-judgement` in `landing-files.sc`, which `import-git`
+  asks too): plain text files are compared; dot-named paths, symbolic links
+  and submodules -- and what the import read through them -- are skipped; a
+  file that is not text is not compared and not exempt, since the store never
+  holds one (a store file at its path still differs); the skipped and the
+  not-text paths are listed in the answer as `(skipped (<path> <why>) ...)`
   (`base-mismatch` with the paths that differ);
 - `changed-files` between the cuts is not empty (`nothing-to-publish`: no
   empty commit is made);

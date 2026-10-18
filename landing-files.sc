@@ -23,18 +23,48 @@
 ;; not load this library. It never imports rpc, the daemon or the client.
 (library (theourgia landing-files)
   (export locate-file locate-pieces changed-files-between raw-projection path-collision spelling-key
-          ambiguous-groups volume-insensitivity landing-collision)
+          ambiguous-groups volume-insensitivity landing-collision base-entry-judgement)
   (import (rnrs)
           (only (theourgia code-project) code-field code-files projection-outputs projected-file export-code-view)
           (rename (only (theourgia code-project) code-project-answer) (code-project-answer answer))
           (only (theourgia reduce) reduce-applied-cut state-path-claimants)
           (only (theourgia ffi) directory-entries entry-bytes entry-name-type machine-home mkdir-exclusive!
                 mkdir-p! process-id rmdir! unlink!)
-          (only (theourgia markers) bytes-append)
+          (only (theourgia markers) bytes-append import-text?)
           (theourgia degeneracy))
 
   ;; ---- the raw projection: each file's bytes, its children's srcs run together --
   (define (raw-projection state) (projection-outputs #f state #t))
+
+  ;; ---- what a base is compared over -------------------------------------------
+  ;;
+  ;; ONE JUDGEMENT OF A BASE TREE'S ENTRY, asked by the publisher
+  ;; (tools/publish-landing.sc) and the importer (tools/import-git.sc), so the
+  ;; two compare a store's export over the same paths. -> in, or why the entry
+  ;; is outside: dot-named (a path component starts with "."), link (mode
+  ;; 120000), submodule (160000), mode (any mode but 100644 and 100755), or
+  ;; not-text (a regular file whose bytes the importer does not import,
+  ;; import-text?). BYTES is read only for a regular entry that is not
+  ;; dot-named; a caller passes #f otherwise.
+  ;; NOTE: WHAT EACH VERDICT MEANS FOR A COMPARISON IS ONE RULE IN BOTH CALLERS:
+  ;; in is compared; link, submodule and mode are skipped, and the export at
+  ;; or under them is not a difference (the importer follows a link); not-text
+  ;; is neither compared nor exempt, since the store never holds it.
+  (define (base-entry-judgement path mode bytes)
+    (cond ((exists (lambda (c) (and (> (string-length c) 0) (char=? (string-ref c 0) #\.)))
+                   (path-components path))
+           'dot-named)
+          ((equal? mode "120000") 'link)
+          ((equal? mode "160000") 'submodule)
+          ((not (member mode '("100644" "100755"))) 'mode)
+          ((not (and (bytevector? bytes) (import-text? bytes))) 'not-text)
+          (else 'in)))
+  ;; -> the components of a relative path, split at "/"
+  (define (path-components path)
+    (let loop ((i 0) (from 0) (out '()))
+      (cond ((= i (string-length path)) (reverse (cons (substring path from i) out)))
+            ((char=? (string-ref path i) #\/) (loop (+ i 1) (+ i 1) (cons (substring path from i) out)))
+            (else (loop (+ i 1) from out)))))
 
   ;; ---- a file's byte or line range, or a diff hunk, to the blocks holding it --
   ;;
