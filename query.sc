@@ -263,8 +263,61 @@
           ((hashtable-ref seen rel #f) #f)
           (else
            (hashtable-set! seen rel #t)
-           (exists (lambda (rule) (exists (lambda (g) (walk (car g))) (cdr rule)))
+           (exists (lambda (rule) (exists walk (apply append (map goal-atom-names (cdr rule)))))
                    (hashtable-ref by-head rel '())))))))
+
+;; ---- the goal forms: not, count, sum, min, max ------------------------------------------
+  ;;
+  ;; A FORM is a goal whose last argument is a goal: (not <goal>), (count ?n
+  ;; <goal>), (sum ?s ?x <goal>), (min ?m ?x <goal>), (max ?m ?x <goal>).
+  ;; Its goal is a nested scope (query-goals-with), evaluated to completion
+  ;; before it is read (form-solve). The five names are no relation's.
+  (define form-heads '(not count sum min max))
+  (define (form-goal? g) (and (pair? g) (memq (car g) form-heads) #t))
+  (define (form-arity head) (case head ((not) 1) ((count) 2) (else 3)))
+  ;; a form's goal, its result variable and its aggregated column
+  (define (form-sub g) (list-ref g (form-arity (car g))))
+  (define (form-result g) (cadr g))
+  (define (form-column g) (caddr g))
+  ;; the goals of a conjunction as written, nested ands read through; for a
+  ;; goal already checked
+  (define (goal-conjuncts g)
+    (if (and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map goal-conjuncts (cdr g))) (list g)))
+  ;; EVERY ATOMIC GOAL of a goal, through `and` and the forms: ((<goal> <sign>
+  ;; <depth>) ...), the sign negative under a not or inside an aggregate's
+  ;; goal at any depth, the depth the number of forms around it. One walker
+  ;; for every reader that classifies, scans or graphs a goal's relations;
+  ;; each pair is read once, so a datum label's cycle or shared structure
+  ;; ends (its check refuses it), and what is not a goal is passed over.
+  (define (goal-atoms goal)
+    (let ((seen (make-eq-hashtable)) (out '()))
+      (let walk ((g goal) (sign 'positive) (depth 0))
+        (when (and (pair? g) (list? g) (symbol? (car g)) (not (hashtable-ref seen g #f)))
+          (hashtable-set! seen g #t)
+          (cond ((eq? (car g) 'and) (for-each (lambda (c) (walk c sign depth)) (cdr g)))
+                ((and (form-goal? g) (= (length (cdr g)) (form-arity (car g))))
+                 (walk (form-sub g) 'negative (+ depth 1)))
+                (else (set! out (cons (list g sign depth) out))))))
+      (reverse out)))
+  ;; the relations a goal names, through and and the forms, in order
+  (define (goal-atom-names goal) (map (lambda (a) (car (car a))) (goal-atoms goal)))
+  ;; EVERY VARIABLE of a goal at any depth, in the order met, each once: an
+  ;; atom's argument positions (member's list is a constant), a form's result
+  ;; and column and its goal's
+  (define (goal-all-variables goal)
+    (let ((seen (make-eq-hashtable)) (out '()))
+      (define (note! v) (when (and (variable? v) (not (memq v out))) (set! out (cons v out))))
+      (let walk ((g goal))
+        (when (and (pair? g) (list? g) (symbol? (car g)) (not (hashtable-ref seen g #f)))
+          (hashtable-set! seen g #t)
+          (cond ((eq? (car g) 'and) (for-each walk (cdr g)))
+                ((and (form-goal? g) (= (length (cdr g)) (form-arity (car g))))
+                 (let take ((as (cdr g)) (k (- (form-arity (car g)) 1)))
+                   (when (> k 0) (note! (car as)) (take (cdr as) (- k 1))))
+                 (walk (form-sub g)))
+                ((eq? (car g) 'member) (when (pair? (cdr g)) (note! (cadr g))))
+                (else (for-each note! (cdr g))))))
+      (reverse out)))
 
   ;; THE BUILT-IN RULES a store may enable by name.
   (define builtin-rules '(citation-coverage))
@@ -289,10 +342,11 @@
     (define kinds? (or (null? options) (car options)))
     (define state (and (pair? options) (pair? (cdr options)) (cadr options)))
     (define (clause k) (assq k value))
-    ;; The relations a goal names, through every nested and: the goals
-    ;; query-goals answers for it, which it has already accepted.
+    ;; The relations a goal names, through every nested and and every form
+    ;; (goal-atoms), for a goal query-goals has accepted.
     (define (goal-relations g)
-      (map car (rule-value-goals g state)))
+      (rule-value-goals g state)
+      (goal-atom-names g))
     (define (goal-refusal g)
       (or (guard (e ((refusal? e) (refusal-answer e)))
             (rule-value-goals g state)
@@ -375,16 +429,9 @@
   ;; value of another shape is answered as it is, for its check to refuse.
   (define (rule-value-form value)
     ;; EACH PAIR ONCE: a goal may be a datum with labels, cyclic or shared,
-    ;; which its check refuses; whether it names a per-write fact is asked
-    ;; without going round it and without gathering the names
-    (define seen (make-eq-hashtable))
-    (define (names-write-fact? g)
-      (cond ((and (pair? g) (hashtable-ref seen g #f)) #f)
-            ((and (pair? g) (eq? (car g) 'and) (list? g))
-             (hashtable-set! seen g #t)
-             (exists names-write-fact? (cdr g)))
-            ((and (pair? g) (symbol? (car g))) (and (assq (car g) rule-only-facts) #t))
-            (else #f)))
+    ;; which its check refuses; goal-atoms reads each pair once, in one pass,
+    ;; through the forms too, and passes over what is no goal
+    (define (names-write-fact? g) (exists (lambda (r) (and (assq r rule-only-facts) #t)) (goal-atom-names g)))
     (let ((polarity (and (list? value) (for-all pair? value)
                          (find (lambda (c) (memq (car c) '(must must-not))) value))))
       (if (or (not polarity) (assq 'builtin value) (not (assq 'on value))
@@ -562,15 +609,43 @@
                              (list 'column (kind-name c)) (list 'got a)))
                    (loop (cdr as) (cdr cs) (+ n 1) env))))))))
   ;; KINDS-OF answers a relation's column kinds, (test-rule . <rule>) for a
-  ;; test, or #f when they are not known (the goal is then not read).
+  ;; test, (form . <result-kind>) for a form, or #f when they are not known
+  ;; (the goal is then not read).
   (define (goal-kinds goals env kinds-of)
     (let loop ((gs goals) (env env))
       (if (null? gs)
           env
           (let* ((g (car gs)) (k (kinds-of (car g))))
-            (loop (cdr gs) (if (and (pair? k) (eq? (car k) 'test-rule))
-                               (test-kinds g (cdr k) env)
-                               (relation-kinds g k env)))))))
+            (loop (cdr gs) (cond ((and (pair? k) (eq? (car k) 'test-rule)) (test-kinds g (cdr k) env))
+                                 ((and (pair? k) (eq? (car k) 'form))
+                                  ((cdr k) g env (lambda (goals env) (goal-kinds goals env kinds-of))))
+                                 (else (relation-kinds g k env))))))))
+
+  ;; A FORM'S KINDS. Its goal is read with the outer kinds flowing in and
+  ;; refines nothing outside: after a not every variable has the kind it had
+  ;; before. A constant or a join inside it that no cut can satisfy does not
+  ;; refuse it: the goal is STATICALLY EMPTY (not holds, count 0, sum 0, min
+  ;; and max no row), which evaluation finds by itself. The form's own rules
+  ;; refuse, wherever the form stands: sum's column not disjoint from INT,
+  ;; min's and max's not disjoint from both INT and STR (wrong-kind, with
+  ;; (form ...)). count's and sum's results are INT; min's and max's the
+  ;; column's kind met with INT or STR.
+  (define (form-result-kind g env goal-kinds-of)
+    (define (static-emptiness? a)
+      (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
+           (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))))
+    (let ((inner (guard (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) #f))
+                   (goal-kinds-of (goal-conjuncts (form-sub g)) env))))
+      (case (car g)
+        ((not) env)
+        ((count) (cons (list (form-result g) '(int) '()) env))
+        (else
+         (let* ((x (form-column g)) (kx (if inner (term-kind x inner) '(any))))
+           (when (if (eq? (car g) 'sum)
+                     (null? (kind-meet kx '(int)))
+                     (and (null? (kind-meet kx '(int))) (null? (kind-meet kx '(str)))))
+             (refuse 'error 'bad-request 'wrong-kind (list 'form (car g)) (list 'variable x) (list 'kind (kind-name kx))))
+           (cons (list (form-result g) (if (eq? (car g) 'sum) '(int) (kind-meet kx '(int str))) '()) env))))))
 
   ;; THE LIBRARY RELATIONS' KINDS, from RULES and DECLARED: -> a table of
   ;; relation -> column kinds, or a refusal (a clause's body as a query's;
@@ -676,11 +751,22 @@
   ;; this state is a refusal of the goal naming it, in the static pass. The
   ;; four built-in kinds are always available; a stored relation is when
   ;; its candidates are in force and its clauses check at the state.
+  ;; TERMS (goal -> #f, or the first argument its position does not allow,
+  ;; as a one-element list), EXPORTS (goal -> the variables bound after it)
+  ;; and RESULT-KIND (goal, the kinds so far, the kind pass for a goal list
+  ;; -> the kinds after it) are what a structured goal answers differently:
+  ;; a form's arguments are not all terms, and it binds less than it names.
+  ;; Every handler of a relation answers them by today's rules.
   (define-record-type (handler make-handler* handler?)
-    (fields name applies? arity-of kinds-of external? write? binds? solve check available))
-  ;; a handler that is always available (every built-in one, and a fixture's)
+    (fields name applies? arity-of kinds-of external? write? binds? solve check available terms exports result-kind))
+  ;; a handler that is always available (every built-in one, and a fixture's),
+  ;; answering the three structured questions by the rules for a relation
   (define (make-handler name applies? arity-of kinds-of external? write? binds? solve check)
-    (make-handler* name applies? arity-of kinds-of external? write? binds? solve check (lambda (rel) #f)))
+    (make-handler* name applies? arity-of kinds-of external? write? binds? solve check (lambda (rel) #f)
+                   relation-terms (if binds? relation-exports (lambda (g) '())) relation-result-kind))
+  (define (relation-terms g) (misplaced-term g))
+  (define (relation-exports g) (goal-variables g))
+  (define (relation-result-kind g env goal-kinds-of) (goal-kinds-of (list g) env))
 
   (define test-handler
     (make-handler 'TEST
@@ -749,6 +835,55 @@
   ;; validator), which is what lets a fixture reach the runtime rule.
   (define extra-handlers (make-parameter '()))
 
+  ;; ---- the forms' handlers: NOT and AGG -----------------------------------------------------
+  ;;
+  ;; NOT answers (not <goal>), AGG (count ?n <goal>), (sum ?s ?x <goal>),
+  ;; (min ?m ?x <goal>) and (max ?m ?x <goal>). They are in the session, the
+  ;; rule-value and the stored-check environments, never in the library's:
+  ;; the library stays positive. Their goal is checked by the same two passes
+  ;; in a nested scope (query-goals-with), kind-checked with the outer kinds
+  ;; flowing in (form-result-kind), and evaluated to completion before it is
+  ;; read (form-solve). Neither reads outside the log nor a write's facts of
+  ;; its own; what its goal names is read through goal-atoms.
+  ;; A FORM'S ARGUMENTS: a variable where the result or the column stands
+  ;; (`_` is no variable), a goal where the goal stands
+  (define (form-terms g)
+    (let ((goal? (lambda (x) (and (pair? x) (list? x) (symbol? (car x)))))
+          (args (cdr g)))
+      (let loop ((as args) (n 1))
+        (cond ((null? as) #f)
+              ((= n (form-arity (car g))) (if (goal? (car as)) (loop (cdr as) (+ n 1)) (list (car as))))
+              ((variable? (car as)) (loop (cdr as) (+ n 1)))
+              (else (list (car as)))))))
+  (define not-handler
+    (make-handler* 'NOT
+                   (lambda (rel) (eq? rel 'not))
+                   (lambda (rel) 1)
+                   (lambda (rel) (cons 'form form-result-kind))
+                   (lambda (rel) #f)
+                   #f #f
+                   (lambda (S g b rest) (form-solve S g b rest))
+                   (lambda (g seen) #f)
+                   (lambda (rel) #f)
+                   form-terms
+                   ;; nothing: no variable of its goal is visible after it
+                   (lambda (g) '())
+                   (lambda (g env goal-kinds-of) (form-result-kind g env goal-kinds-of))))
+  (define agg-handler
+    (make-handler* 'AGG
+                   (lambda (rel) (and (memq rel '(count sum min max)) #t))
+                   (lambda (rel) (form-arity rel))
+                   (lambda (rel) (cons 'form form-result-kind))
+                   (lambda (rel) #f)
+                   #f #t
+                   (lambda (S g b rest) (form-solve S g b rest))
+                   (lambda (g seen) #f)
+                   (lambda (rel) #f)
+                   form-terms
+                   ;; the result only
+                   (lambda (g) (list (form-result g)))
+                   (lambda (g env goal-kinds-of) (form-result-kind g env goal-kinds-of))))
+
   ;; ---- stored relations: the fifth handler ------------------------------------------------
   ;;
   ;; A STORED RELATION is a `derive` record's value, read at a state
@@ -756,16 +891,17 @@
   ;; <term> ...) <goal> ...) ...). Its clauses are data checked at the state
   ;; they are used at; nothing is recorded about them.
   ;;
-  ;; THE GOAL NAMES THE NAMESPACE RESERVES: a test, a fact relation, a
-  ;; rule-only (per-write) fact, a library head. The verb refuses a stored
+  ;; THE GOAL NAMES THE NAMESPACE RESERVES: a form's head, a test, a fact
+  ;; relation, a rule-only (per-write) fact, a library head. The verb refuses a stored
   ;; relation so named (with the declared edge relations and the stored
   ;; rules, which are reserved for the operator's sake and are no goal
   ;; names); a record that bypassed the verb under such a name is MASKED by
   ;; the STORED handler -- the handler that owns the name serves it, or it is
   ;; unknown where that handler does not apply -- whichever handlers an
-  ;; environment holds. -> the owner, TEST FACT WRITE-FACT RULE, or #f.
+  ;; environment holds. -> the owner, FORM TEST FACT WRITE-FACT RULE, or #f.
   (define (goal-name-owner rel)
-    (cond ((assq rel tests) 'TEST)
+    (cond ((memq rel form-heads) 'FORM)
+          ((assq rel tests) 'TEST)
           ((assq rel fact-relations) 'FACT)
           ((assq rel rule-only-facts) 'WRITE-FACT)
           ((assq rel (rule-relations rule-library)) 'RULE)
@@ -813,7 +949,7 @@
                                   (make-eq-hashtable) (make-eq-hashtable) '()
                                   (make-eq-hashtable) (make-eq-hashtable) (make-eq-hashtable) #f)))
         (stored-entry-check-env-set! e (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library)
-                                                                (stored-handler-of e))))
+                                                                not-handler agg-handler (stored-handler-of e))))
         e)))
   ;; THE TABLE BELONGS TO THE STATE AT ITS APPLIED CUT: every environment
   ;; built on a state shares one entry while the state has not moved, and a
@@ -834,12 +970,70 @@
     (let ((d (hashtable-ref (stored-entry-index e) rel #f))) (and d (eq? (car d) 'in-force) (cadr d))))
   ;; the stored relations an in-force relation's clauses name, in clause
   ;; order and goal order
-  (define (entry-callees e rel)
+  (define (entry-callees e rel) (map car (entry-signed-callees e rel)))
+  ;; the same, each with whether the occurrence is NEGATIVE: under a not or
+  ;; inside an aggregate's goal, at any depth (goal-atoms)
+  (define (entry-signed-callees e rel)
     (let ((v (entry-in-force e rel)))
       (if v
-          (filter (lambda (n) (hashtable-contains? (stored-entry-index e) n))
-                  (apply append (map (lambda (c) (map car (cddr c))) (cdr v))))
+          (filter (lambda (p) (hashtable-contains? (stored-entry-index e) (car p)))
+                  (apply append (map (lambda (c) (map (lambda (a) (cons (car (car a)) (eq? (cadr a) 'negative)))
+                                                      (apply append (map goal-atoms (cddr c)))))
+                                     (cdr v))))
           '())))
+  ;; STRATIFICATION, over the closure's own-passing members and their signed
+  ;; edges: one pass of Tarjan's components. A member of a component holding
+  ;; a negative edge (a cycle through a not or an aggregate, of any length,
+  ;; itself included) is UNSTRATIFIED: its own answer becomes (state
+  ;; (unstratified (cycle <r1> ... <rk>))), a sink of the search like any
+  ;; own failure; the cycle is the shortest one from that member back to
+  ;; itself inside the component, read in callee order.
+  (define (entry-stratify! e members)
+    (let ((index (make-eq-hashtable)) (low (make-eq-hashtable)) (on (make-eq-hashtable)) (stack '()) (n 0))
+      (define (passing? v) (and (hashtable-contains? (stored-entry-closure e) v) (not (entry-own e v))))
+      (define (lower! v x) (when (< x (hashtable-ref low v 0)) (hashtable-set! low v x)))
+      (define (strong v)
+        (hashtable-set! index v n) (hashtable-set! low v n) (set! n (+ n 1))
+        (set! stack (cons v stack)) (hashtable-set! on v #t)
+        (for-each (lambda (p)
+                    (let ((w (car p)))
+                      (when (passing? w)
+                        (cond ((not (hashtable-contains? index w)) (strong w) (lower! v (hashtable-ref low w 0)))
+                              ((hashtable-ref on w #f) (lower! v (hashtable-ref index w 0)))))))
+                  (entry-signed-callees e v))
+        (when (= (hashtable-ref low v 0) (hashtable-ref index v 0))
+          (let ((comp (make-eq-hashtable)))
+            (let pop ((members '()))
+              (let ((w (car stack)))
+                (set! stack (cdr stack)) (hashtable-set! on w #f) (hashtable-set! comp w #t)
+                (if (eq? w v)
+                    (let ((members (cons w members)))
+                      (when (exists (lambda (u) (exists (lambda (p) (and (cdr p) (hashtable-contains? comp (car p))))
+                                                        (entry-signed-callees e u)))
+                                    members)
+                        (for-each (lambda (m)
+                                    (hashtable-set! (stored-entry-own e) m
+                                                    (list (list 'state (list 'unstratified (cons 'cycle (component-cycle e m comp)))))))
+                                  members)))
+                    (pop (cons w members))))))))
+      (for-each (lambda (v) (when (and (passing? v) (not (hashtable-contains? index v))) (strong v))) members)))
+  ;; the shortest path from M back to M inside the component COMP, read by a
+  ;; breadth-first search in callee order: -> (M <r2> ... <rk>)
+  (define (component-cycle e m comp)
+    (let ((parent (make-eq-hashtable)))
+      (let search ((level (list m)))
+        (let next ((vs level) (found '()))
+          (if (null? vs)
+              (if (null? found) (list m) (search (reverse found)))
+              (let ((v (car vs)))
+                (let try ((ps (entry-signed-callees e v)) (found found))
+                  (cond ((null? ps) (next (cdr vs) found))
+                        ((not (hashtable-contains? comp (car (car ps)))) (try (cdr ps) found))
+                        ((eq? (car (car ps)) m)
+                         (let path ((u v) (out '()))
+                           (if (eq? u m) (cons m out) (path (hashtable-ref parent u #f) (cons u out)))))
+                        ((or (eq? (car (car ps)) m) (hashtable-contains? parent (car (car ps)))) (try (cdr ps) found))
+                        (else (hashtable-set! parent (car (car ps)) v) (try (cdr ps) (cons (car (car ps)) found)))))))))))
   ;; a relation's own answer, checked once an entry
   (define (entry-own e rel)
     (let ((known (hashtable-ref (stored-entry-own e) rel 'none)))
@@ -877,6 +1071,7 @@
                   (set! grew #t)
                   (reach (if (entry-own e rel) (cdr todo) (append (entry-callees e rel) (cdr todo)))))))))
       (when grew
+        (entry-stratify! e (reverse (stored-entry-members e)))
         (let ((members (reverse (stored-entry-members e)))
               (distance (stored-entry-distance e)) (hop (stored-entry-hop e)) (sink (stored-entry-sink e))
               (callers (make-eq-hashtable)))
@@ -957,12 +1152,13 @@
                        (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
                                  (table-tuples S key))))
                    (lambda (g seen) #f)
-                   (lambda (rel) (entry-available e rel))))
+                   (lambda (rel) (entry-available e rel))
+                   relation-terms relation-exports relation-result-kind))
   ;; the STORED-CHECK environment the handler checks its clauses in: TEST,
   ;; FACT, RULE over the library, STORED; no WRITE-FACT, so a stored
   ;; relation's availability is the same whatever facts a session carries
   (define (stored-check-env state . override)
-    (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library)
+    (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library) not-handler agg-handler
                              (stored-handler state (and (pair? override) (car override))))))
 
   ;; ONE STORED RELATION'S CLAUSES, checked in ENV (its STORED-CHECK
@@ -992,8 +1188,7 @@
                                          (refuse 'error 'bad-request 'and-in-a-clause (list 'relation rel))))
                            body)
                  (let* ((goals (if (null? body) '() (query-goals-with (cons 'and body) env (query-reporter rule-library) #f '())))
-                        (bound (apply append (map goal-variables
-                                                  (filter (lambda (g) (handler-binds? (dispatch env (car g)))) goals)))))
+                        (bound (apply append (map (lambda (g) ((handler-exports (dispatch env (car g))) g)) goals))))
                    (for-each (lambda (x) (unless (memq x bound)
                                            (refuse 'error 'bad-request 'head-variable-unbound (list 'relation rel) (list 'variable x))))
                              (goal-variables head))
@@ -1018,19 +1213,22 @@
   (define-record-type (dispatch-env make-dispatch-env dispatch-env?)
     (fields handlers))
   ;; LIBRARY LOAD, and a session's extra clauses: TEST, FACT, RULE over
-  ;; RULES; no WRITE-FACT and no STORED, so a body naming either is an
-  ;; unknown relation.
+  ;; RULES; no WRITE-FACT, no STORED and no form, so a body naming one is an
+  ;; unknown relation (the library stays positive).
   (define (library-env rules) (make-dispatch-env (list test-handler fact-handler (rule-handler rules))))
   ;; A RULE VALUE (the rule verb): the rule-only facts as WRITE-FACT, the
-  ;; library as RULE, and the stored relations of STATE when one is given.
+  ;; library as RULE, the forms, and the stored relations of STATE when one
+  ;; is given.
   (define (rule-value-env . state)
-    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler rule-only-facts) (rule-handler rule-library))
+    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler rule-only-facts) (rule-handler rule-library)
+                                     not-handler agg-handler)
                                (if (and (pair? state) (car state)) (list (stored-handler (car state) #f)) '()))))
   ;; A SESSION: its per-write facts as WRITE-FACT (none but a rule check's),
-  ;; the library and its extra clauses as RULE, the stored relations of its
-  ;; state as STORED.
+  ;; the library and its extra clauses as RULE, the forms, the stored
+  ;; relations of its state as STORED.
   (define (session-env rules write-facts . state)
-    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler write-facts) (rule-handler rules))
+    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler write-facts) (rule-handler rules)
+                                     not-handler agg-handler)
                                (if (and (pair? state) (car state)) (list (stored-handler (car state) #f)) '()))))
 
   ;; THE ONE HANDLER FOR REL in ENV, or #f when none applies. More than one
@@ -1102,6 +1300,7 @@
         (let ((head (car rule)))
           (unless (and (pair? head) (symbol? (car head))) (bad "a rule head is not a relation" rule))
           (when (eq? (car head) 'and) (bad "and in a rule" rule))
+          (when (memq (car head) form-heads) (bad "a rule heads a form" rule))
           (when (assq (car head) tests) (bad "a rule heads a test" rule))
           (when (assq (car head) fact-relations) (bad "a rule heads a fact relation" rule))
           (when (and (memq rule rules) (assq (car head) rule-only-facts)) (bad "a rule heads a per-write fact" rule))
@@ -1531,6 +1730,80 @@
                          (table-add! S key tuple))))))))
       (hashtable-ref (session-index S) (car key) '())))
 
+;; ---- a form, evaluated -------------------------------------------------------------------
+  ;;
+  ;; A FORM'S GOAL IS A RELATION OF ITS OWN, named by the occurrence ("form
+  ;; n", a string no goal can spell), whose head is every variable of the
+  ;; goal: the ones bound outside are the GROUP, seeded as the call's
+  ;; arguments (opaque values, never written back into the goal), the others
+  ;; its LOCALS. Its table is completed before it is read: a NESTED pass loop
+  ;; as session-evaluate's, over the call's key and all it reaches, until a
+  ;; pass adds nothing; then every key it touched is complete, and a later
+  ;; call of the same group reads the complete table. A refusal inside
+  ;; unwinds the query as any does, and marks nothing complete.
+  (define form-names (make-weak-eq-hashtable))
+  (define form-counter 0)
+  (define (form-name g)
+    (or (hashtable-ref form-names g #f)
+        (begin (set! form-counter (+ form-counter 1))
+               (let ((n (string-append "form " (number->string form-counter))))
+                 (hashtable-set! form-names g n)
+                 n))))
+  (define (complete-key! S key)
+    (unless (hashtable-ref (session-complete S) key #f)
+      (let ((outer-visited (session-visited S)) (outer-changed (session-changed S)))
+        (let loop ((added #f))
+          (session-changed-set! S #f)
+          (session-visited-set! S (make-hashtable equal-hash equal?))
+          (expand S key)
+          (if (session-changed S)
+              (loop #t)
+              (begin
+                (vector-for-each (lambda (k) (hashtable-set! (session-complete S) k #t))
+                                 (hashtable-keys (session-visited S)))
+                (session-visited-set! S outer-visited)
+                ;; ITS ADDITIONS ARE THE OUTER PASS'S CHANGE: one more outer
+                ;; pass, which finds these tables complete
+                (session-changed-set! S (or outer-changed added))))))))
+  ;; THE ANSWER OF A FORM over its completed rows: not holds iff there is
+  ;; none; count is their number (the table holds each row once: distinct
+  ;; rows over the locals, the group fixed); sum adds the column's exact
+  ;; integers (0 over none); min and max take the least or greatest of
+  ;; integers or of strings, by bytes (no row over none). A value the form
+  ;; cannot take refuses the query (aggregate-value).
+  (define (form-solve S g b rest)
+    (let* ((sub (form-sub g)) (name (form-name g)) (vars (goal-all-variables sub)))
+      (unless (hashtable-contains? (session-index S) name)
+        (hashtable-set! (session-index S) name (list (cons (cons name vars) (goal-conjuncts sub)))))
+      (let* ((key (cons name (map (lambda (v) (let ((e (assq v b))) (if e (cdr e) unbound))) vars))))
+        (complete-key! S key)
+        (let ((rows (table-tuples S key)) (head (car g)))
+          (define (bind v value) (let ((b2 (unify (list v) (list value) b))) (when b2 (rest b2))))
+          (define (column-values)
+            (let ((i (let loop ((vs vars) (i 0)) (if (eq? (car vs) (form-column g)) i (loop (cdr vs) (+ i 1))))))
+              (map (lambda (t) (list-ref t i)) rows)))
+          (define (value-refusal v)
+            (refuse 'error 'bad-request 'aggregate-value (list 'form head) (list 'variable (form-column g)) (list 'value v)))
+          (case head
+            ((not) (when (null? rows) (rest b)))
+            ((count) (bind (form-result g) (length rows)))
+            ((sum)
+             (let ((vs (column-values)))
+               (let ((bad (find (lambda (v) (not (and (integer? v) (exact? v)))) vs)))
+                 (when bad (value-refusal bad)))
+               (bind (form-result g) (apply + vs))))
+            (else
+             (let ((vs (column-values)))
+               (unless (null? vs)
+                 (let* ((ints? (and (integer? (car vs)) (exact? (car vs))))
+                        (bad (find (lambda (v) (not (if ints? (and (integer? v) (exact? v)) (string? v)))) vs)))
+                   (when (or bad (not (or ints? (string? (car vs))))) (value-refusal (or bad (car vs))))
+                   (let ((better? (if ints?
+                                      (if (eq? head 'min) < >)
+                                      (lambda (a b) (let ((x (string->utf8 a)) (y (string->utf8 b)))
+                                                      (if (eq? head 'min) (bytes<? x y) (bytes<? y x)))))))
+                     (bind (form-result g) (fold-left (lambda (m v) (if (better? v m) v m)) (car vs) (cdr vs)))))))))))))
+
   ;; ---- one query ------------------------------------------------------------------------------
 
   ;; The goals of a query, the variables it reports, checked as A3 says, each
@@ -1555,14 +1828,19 @@
     ;; no goal, nested or not, and an and found inside itself (a datum
     ;; label's cycle) is refused rather than walked for ever; one and shared
     ;; by two places, which is no cycle, is read in each.
-    (define (conjuncts goal)
-      (let walk ((g goal) (seen '()))
+    ;; SEEN0 holds the ands and forms around GOAL, so a datum label's cycle
+    ;; through a form is refused as one through an and is
+    (define (conjuncts goal seen0)
+      (let walk ((g goal) (seen seen0))
         (unless (and (pair? g) (list? g) (symbol? (car g)))
           (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
         (cond ((not (eq? (car g) 'and)) (list g))
               ((or (null? (cdr g)) (memq g seen)) (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
               (else (apply append (map (lambda (c) (walk c (cons g seen))) (cdr g)))))))
-    (let ((goals (conjuncts goal)))
+    ;; PASS ONE, every goal at every depth: its relation, availability, arity
+    ;; and terms; a form's goal is read in its turn, so every malformed goal
+    ;; anywhere is reported before any binding is
+    (define (pass-one goals seen)
       (for-each
         (lambda (g)
           (let* ((h (or (dispatch env (car g)) (report (car g))))
@@ -1574,15 +1852,56 @@
             ;; with AVAIL? #f: its clauses' check reads heads, and the reach
             ;; is what reports it
             (unless (or (not n) (= n (length (cdr g))))
-              (refuse 'error 'bad-request 'wrong-arity (list 'relation (car g)) (list 'arity n) (list 'given (length (cdr g))))))
-          (let ((bad (misplaced-term g)))
-            (when bad (refuse 'error 'bad-request 'not-a-term (list 'term (car bad))))))
-        goals)
-      (let loop ((gs goals) (seen bound))
-        (unless (null? gs)
-          (let* ((g (car gs)) (h (dispatch env (car g))) (v ((handler-check h) g seen)))
-            (when v (refuse 'error 'bad-request (car v) (list 'variable (cadr v))))
-            (loop (cdr gs) (if (handler-binds? h) (append (goal-variables g) seen) seen)))))
+              (refuse 'error 'bad-request 'wrong-arity (list 'relation (car g)) (list 'arity n) (list 'given (length (cdr g)))))
+            (let ((bad ((handler-terms h) g)))
+              (when bad (refuse 'error 'bad-request 'not-a-term (list 'term (car bad)))))
+            (when (form-goal? g)
+              (when (memq g seen) (refuse 'error 'bad-request 'not-a-goal (list 'goal g)))
+              (pass-one (conjuncts (form-sub g) (cons g seen)) (cons g seen)))))
+        goals))
+    ;; PASS TWO, the bindings, scope by scope: a goal's check against the
+    ;; variables bound before it, and what it exports. A form's goal is a
+    ;; NESTED SCOPE: it starts with the outer bindings; a variable unbound
+    ;; outside and bound inside is LOCAL to the form, and nothing local is
+    ;; visible after it (a not exports nothing, an aggregate its result). A
+    ;; local may not be named by a later goal of the same conjunction
+    ;; (local-variable-reused), since a positive goal there would bind it
+    ;; afresh. An aggregate's result must be unbound before it and absent
+    ;; from its goal; its column (sum, min, max) unbound before it and bound
+    ;; by its immediate goal. -> the variables bound after GOALS, and the
+    ;; locals consumed, ((<variable> . <form>) ...).
+    (define (pass-two goals seen consumed)
+      (let loop ((gs goals) (seen seen) (consumed consumed))
+        (if (null? gs)
+            (values seen consumed)
+            (let* ((g (car gs)) (h (dispatch env (car g)))
+                   (reused (find (lambda (v) (and (assq v consumed) (not (memq v seen)))) (goal-all-variables g))))
+              (when reused
+                (refuse 'error 'bad-request 'local-variable-reused (list 'variable reused) (list 'form (cdr (assq reused consumed)))))
+              (if (form-goal? g)
+                  (let ((head (car g)) (sub (form-sub g)))
+                    (unless (eq? head 'not)
+                      (let ((r (form-result g)))
+                        (when (memq r seen) (refuse 'error 'bad-request 'aggregate-result-bound (list 'variable r) (list 'form head)))
+                        (when (memq r (goal-all-variables sub))
+                          (refuse 'error 'bad-request 'aggregate-result-in-goal (list 'variable r) (list 'form head))))
+                      (unless (eq? head 'count)
+                        (let ((x (form-column g)))
+                          (when (memq x seen) (refuse 'error 'bad-request 'aggregate-column-bound (list 'variable x) (list 'form head))))))
+                    (let-values (((inside inner-consumed) (pass-two (conjuncts sub '()) seen consumed)))
+                      (let ((locals (filter (lambda (v) (not (memq v seen))) inside)))
+                        (when (memq head '(sum min max))
+                          (let ((x (form-column g)))
+                            (unless (memq x locals)
+                              (refuse 'error 'bad-request 'aggregate-column-unbound (list 'variable x) (list 'form head)))))
+                        (loop (cdr gs) (append ((handler-exports h) g) seen)
+                              (append (map (lambda (v) (cons v head)) locals) inner-consumed)))))
+                  (let ((v ((handler-check h) g seen)))
+                    (when v (refuse 'error 'bad-request (car v) (list 'variable (cadr v))))
+                    (loop (cdr gs) (append ((handler-exports h) g) seen) consumed)))))))
+    (let ((goals (conjuncts goal '())))
+      (pass-one goals '())
+      (pass-two goals bound '())
       goals))
 
   ;; THE QUERY ROUTES' REPORTER: unknown-relation with the known list in its
@@ -1611,7 +1930,8 @@
   ;; with the kinds, the declared head the containment obligation, and every
   ;; stored relation it reaches available. -> the value, or a refusal.
   (define (derive-value-check state name value)
-    (let ((where (cond ((assq name tests) 'test)
+    (let ((where (cond ((memq name form-heads) 'form)
+                       ((assq name tests) 'test)
                        ((assq name fact-relations) 'fact)
                        ((assq name rule-only-facts) 'write-fact)
                        ((assq name (rule-relations rule-library)) 'library)
@@ -1625,25 +1945,28 @@
         ((eq? name 'and) (list 'error 'bad-request 'name-taken (list 'name name) '(where conjunction)))
         ((eq? value 'retired) value)
         ((derive-value-reason name value) => (lambda (r) (list 'error 'bad-request 'derive-malformed (list 'reason r))))
-        ((exists (lambda (c) (find (lambda (g) (relation-external? (car g) state (list name value))) (cddr c))) (cdr value))
-         => (lambda (g) (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation (car g)))))
+        ;; THROUGH THE FORMS TOO: every relation a clause names (goal-atoms)
+        ((exists (lambda (c) (find (lambda (r) (relation-external? r state (list name value)))
+                                   (apply append (map goal-atom-names (cddr c)))))
+                 (cdr value))
+         => (lambda (r) (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation r))))
         (else
          (let ((u ((handler-available (stored-handler state (list name value))) name)))
            (cond ((not u) value)
                  ;; its own clauses' refusal, as it is
                  ((and (null? (cdr u)) (pair? (cadr (car u))) (eq? (car (cadr (car u))) 'check))
                   (cadr (cadr (car u))))
+                 ;; ITSELF ON A CYCLE THROUGH A NOT OR AN AGGREGATE at this state
+                 ((and (null? (cdr u)) (pair? (cadr (car u))) (eq? (car (cadr (car u))) 'unstratified))
+                  (list 'error 'bad-request 'unstratified (list 'relation name) (cadr (cadr (car u)))))
                  (else (apply list 'error 'bad-request 'relation-unavailable (list 'relation name) u))))))))
 
   ;; THE RELATIONS A RULE'S GOALS NAME BY POSITION, through every nested and
-  ;; -- never a symbol in a constant -- that are stored relations of STATE
+  ;; and every form -- never a symbol in a constant -- that are stored relations of STATE
   ;; (masked names aside): whether the rule must be re-checked with the kinds
   ;; when it is evaluated there (rules.sc, rule-plan).
   (define (rule-names-stored? value state)
-    (define (heads g)
-      (cond ((and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map heads (cdr g))))
-            ((pair? g) (list (car g)))
-            (else '())))
+    (define (heads g) (goal-atom-names g))
     (let ((index (stored-entry-index (stored-entry-for state #f))))
       (and (> (hashtable-size index) 0) (list? value)
            (exists (lambda (k)
@@ -1727,9 +2050,13 @@
     (session-evaluate S (session-check S goal)))
   ;; THE EVALUATION OF GOALS the static pass has accepted.
   (define (session-evaluate S goals)
+    ;; THE REPORTED VARIABLES are what each goal exports: a form's locals are
+    ;; not among them
     (let* ((vars (let loop ((gs goals) (out '()))
                    (if (null? gs) (reverse out)
-                       (loop (cdr gs) (fold-left (lambda (acc v) (if (memq v acc) acc (cons v acc))) out (goal-variables (car gs)))))))
+                       (loop (cdr gs) (fold-left (lambda (acc v) (if (memq v acc) acc (cons v acc))) out
+                                                 (let ((h (dispatch (session-env-of S) (car (car gs)))))
+                                                   (if h ((handler-exports h) (car gs)) (goal-variables (car gs)))))))))
            ;; KEY: THE QUERY'S OWN RELATION IS A STRING, which no goal and no
            ;; rule head can spell (both must be symbols): a session rule of any
            ;; name is never displaced by it. Each query of a session has its own.
@@ -1846,6 +2173,11 @@
         (if (null? ts) acc
             (loop (cdr ts) (string-append acc (if (string=? acc "") "" ", ")
                                           "`" (symbol->string (car (car ts))) "/" (number->string (cadr (car ts))) "`"))))
+      ".\n\nForms, each over a goal of the language: "
+      (let loop ((fs form-heads) (acc ""))
+        (if (null? fs) acc
+            (loop (cdr fs) (string-append acc (if (string=? acc "") "" ", ")
+                                          "`" (symbol->string (car fs)) "/" (number->string (form-arity (car fs))) "`"))))
       ".\n\nRules of the library:\n\n"
       (apply string-append (map (lambda (r) (line (car r) (cadr r) (cadr (assq (car r) rule-lines))))
                                 (rule-relations rule-library)))))

@@ -1121,6 +1121,34 @@ block (28570 tuples) takes 394 ms, against 376 ms before every read asked
 the reducer whether a field is contested. `depends*` was measured empty on
 both: neither store holds a link.
 
+The forms `(not <goal>)`, `(count ?n <goal>)`, `(sum ?s ?x <goal>)`, `(min
+?m ?x <goal>)` and `(max ?m ?x <goal>)` take any goal, an `and` or another
+form included, in a query, a rule value or a stored relation's clause, never
+in the library's. A form's goal is a scope of its own: a variable bound
+before it is the group, one first bound inside it is local, and nothing
+local is visible after it (`not` binds nothing, an aggregate only its
+result); a later goal naming a local is refused `local-variable-reused`.
+`not` holds when its goal has no row; `count` is the number of distinct rows
+over the goal's local variables, so `(count ?n (kind _ doc))` is 0 or 1 and
+`(count ?n (kind ?b doc))` counts the docs; `sum` adds the column's exact
+integers (0 over none); `min` and `max` take the least or greatest of
+integers or of strings (by bytes) and answer no row over none. The result
+must be unbound before the form and absent from its goal
+(`aggregate-result-bound`, `aggregate-result-in-goal`); the column must be
+unbound before it and bound by its goal (`aggregate-column-bound`,
+`aggregate-column-unbound`). `count`'s and `sum`'s results are `INT`; `sum`
+over a column whose kind is disjoint from `INT`, or `min` and `max` over one
+disjoint from both `INT` and `STR`, is `wrong-kind`; inside a form, a
+constant or a join no cut can satisfy makes its goal empty rather than
+refused; a value the kind admitted but the form cannot take (a string in a
+sum, integers mixed with strings in a min) refuses the query when it is
+met, `aggregate-value`. A form's goal is evaluated to completion before it
+is read. A stored relation may not depend on itself through a negation or
+an aggregate: one whose clauses reach back to it, through other stored
+relations, under a `not` or inside an aggregate is `(unavailable (state
+(unstratified (cycle <r1> ... <rk>))))`, the cycle from it in callee order,
+and `derive` refuses a declaration that would make one, `unstratified`.
+
 `query --relations` lists the two tables below as items, then the
 store's declared relations, one `(declared <name> <kind> (from <selector>)
 (to <selector>))` each, or `(declared <name> (contested))`, and then the
@@ -1169,6 +1197,8 @@ Fact relations:
 - `score/3` (ID, STR, INT) -- exactly the hits search <text> returns with no cap, each with its score; text required
 
 Tests, on bound values only: `=/2`, `/=/2`, `string</2`, `member/2`.
+
+Forms, each over a goal of the language: `not/1`, `count/2`, `sum/3`, `min/3`, `max/3`.
 
 Rules of the library:
 
@@ -2071,7 +2101,8 @@ are.
 The name must be free: a test, a fact relation, a per-write fact, a library
 relation, a declared edge relation or a rule of the store is refused `(error
 bad-request name-taken (name <name>) (where test|fact|write-fact|library|edge-relation|rule))`,
-`and`, the conjunction, is refused `(where conjunction)`, and `rule` and `relation` refuse a stored relation's name (`(where
+`and`, the conjunction, is refused `(where conjunction)`, the five form heads
+`(where form)`, and `rule` and `relation` refuse a stored relation's name (`(where
 derive)`). The value is checked where it is written, as the library is checked
 when it loads, with the kinds: arity, terms, every head variable bound by the
 body, each goal's kinds, and the clauses' heads within the declared kinds. A
