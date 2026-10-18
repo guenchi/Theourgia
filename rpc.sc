@@ -865,9 +865,14 @@
   ;; premises the request carries (store.sc, premises-preflight); CHECK is the
   ;; verb's own preflight, asked after them.
   (define (one-write store actor intent req options . check)
+    (apply one-write-seen store actor intent req options (lambda (state) #f) check))
+  ;; ONE WRITE, SEEN: SEEN is handed the write session's own reduction, under
+  ;; its lock, before the intent is applied to it; the same object holds the
+  ;; session's state after the write once the write returns
+  (define (one-write-seen store actor intent req options seen . check)
     (let-values (((preflight finish run) (premises-preflight store (argument-option options "--premises")
                                                              (and (pair? check) (car check)))))
-      (run (lambda () (finish (car (with-store-write store (lambda (state view) (list intent)) actor req preflight)))))))
+      (run (lambda () (finish (car (with-store-write store (lambda (state view) (seen state) (list intent)) actor req preflight)))))))
 
   (define (parse-insert store actor args req options)
     (let ((under (argument-option options "--under"))
@@ -1017,11 +1022,14 @@
           (let* ((in (open-string-input-port text)) (d (get-datum in)))
             (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
       (define (write-rule value)
-        ;; AT THE STATE IT WRITES IN: a goal may name a stored relation there
+        ;; A goal may name a stored relation, so the check reads a state. A
+        ;; REFUSAL HERE IS NOT THE ANSWER: the value as the caller wrote it
+        ;; goes to the write session, which checks it again at the state it
+        ;; writes in, under the lock and after a resent request is known for
+        ;; what it is (a replay is answered as one, whatever the state now)
         (let ((v ((eval 'rule-value-check (environment '(theourgia query))) value #t (reduction-for store state))))
-          (if (and (pair? v) (eq? (car v) 'error))
-              v
-              (one-write store actor (list 'rule (string->symbol (car args)) v) req options))))
+          (one-write store actor (list 'rule (string->symbol (car args)) (if (and (pair? v) (eq? (car v) 'error)) value v))
+                     req options)))
       (cond
         ((not (= 1 (length args))) (usage rule-usage))
         (retire
@@ -1057,12 +1065,15 @@
         (guard (e (#t unreadable))
           (let* ((in (open-string-input-port text)) (d (get-datum in)))
             (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
+      ;; THE TWO STATES affects compares are the write session's: its state
+      ;; before the record, copied under the lock, and the same reduction
+      ;; after it; another writer's record never falls between them
       (define (write-derive name value)
-        (let* ((n (string->symbol name))
-               (pre (reduction-for store state))
-               (a (one-write store actor (list 'derive n value) req options)))
-          (if (and (pair? a) (eq? (car a) 'ok))
-              (let ((affects ((eval 'derive-affects (environment '(theourgia query))) pre (reduction-for store #f) n)))
+        (let* ((n (string->symbol name)) (pre #f) (post #f)
+               (a (one-write-seen store actor (list 'derive n value) req options
+                                  (lambda (st) (set! pre (reduce-clone st)) (set! post st)))))
+          (if (and (pair? a) (eq? (car a) 'ok) pre)
+              (let ((affects ((eval 'derive-affects (environment '(theourgia query))) pre post n)))
                 (if affects (append a (list affects)) a))
               a)))
       (cond

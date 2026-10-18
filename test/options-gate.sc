@@ -1311,7 +1311,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 56 56))
+      (list 57 57))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1411,7 +1411,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(collect collect-into commit commitments context eval import-code insert locate names outline query read relation review-results rule scope serve subscribe supply tasks template uses))
+      '(collect collect-into commit commitments context derive eval import-code insert locate names outline query read relation review-results rule scope serve subscribe supply tasks template uses))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found

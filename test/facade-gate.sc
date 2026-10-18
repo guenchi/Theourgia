@@ -995,6 +995,7 @@
     (cons 'unlink (seeded (lambda (st x s) (census-ask st 'unlink (census-get s 'B) "explains" (census-get s 'E)))))
     (cons 'relation (seeded (lambda (st x s) (census-ask st 'relation "explains" "--as" "depends-on"))))
     (cons 'rule (seeded (lambda (st x s) (census-ask st 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)"))))
+    (cons 'derive (seeded (lambda (st x s) (census-ask st 'derive "sections" "((head (sections ID)) (clause (sections ?x) (kind ?x section)))"))))
     (cons 'write (seeded (lambda (st x s)
                            (census-ask st 'write (census-get s 'E) "a draft of echo"
                                        "--writer" (census-get s 'writer)))))
@@ -1270,7 +1271,7 @@
       '(read))
 (want "CENSUS-08 these verbs answer with a success that is not items"
       (census-class 'not-items)
-      '(batch check collect-into context del describe discard export-code export-md import-md init insert
+      '(batch check collect-into context del derive describe discard export-code export-md import-md init insert
         link move outline position publish reach relation restore review-results rule set snapshot split-suggest supply template unlink write))
 (want "CENSUS-09 these verbs are unexercised"
       (census-class 'unexercised)
@@ -1287,7 +1288,7 @@
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "CENSUS-11 each not-items verb's answer head"
       (census-detail 'not-items)
-      '((batch . batch) (check . check) (collect-into . ok) (context . ok) (del . ok) (describe . ok) (discard . ok)
+      '((batch . batch) (check . check) (collect-into . ok) (context . ok) (del . ok) (derive . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
         (link . ok) (move . ok) (outline . ok) (position . ok) (publish . ok) (reach . ok) (relation . ok) (restore . ok) (review-results . ok) (rule . ok) (set . ok)
         (snapshot . ok) (split-suggest . ok) (supply . ok) (template . ok) (unlink . ok) (write . ok)))

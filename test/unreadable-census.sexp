@@ -1492,6 +1492,21 @@
    unrelated a
    "a rule's goal checked as a query's goals are: the query's own refusal is the rule's answer, and only that refusal is caught"
    (e ((refusal? e) (refusal-answer e))))
+  ("rpc.sc" (parse-derive value-of) 1 guard
+   (#t)
+   unrelated a
+   "a stored relation's value text, read as one datum from memory: text that does not read is refused value-unreadable"
+   (e (#t unreadable)))
+  ("query.sc" (spelled-kind?) 1 guard
+   (#t)
+   unrelated a
+   "a stored relation's head kind, asked whether the kind vocabulary spells it: one it does not is no kind, and nothing is read"
+   (e (#t #f)))
+  ("query.sc" (stored-clauses-refusal) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a stored relation's clauses checked as a library clause is: the query's own refusal is the relation's unavailability, and only that refusal is caught"
+   (e ((refusal? e) (refusal-answer e))))
   ("query.sc" (goals-kind-refusal) 1 guard
    ((refusal? e))
    unrelated a

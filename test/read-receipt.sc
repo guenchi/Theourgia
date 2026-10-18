@@ -148,7 +148,7 @@
 (define none
   '((init "creates a store") (eval "evaluates source; its working-view names the cut it used")
     (insert "a write") (set "a write") (move "a write") (del "a write") (link "a write")
-    (unlink "a write") (relation "a write") (rule "a write") (batch "a write") (commit "a write") (def "a write") (tag "a write or a tag listing")
+    (unlink "a write") (relation "a write") (rule "a write") (derive "a write") (batch "a write") (commit "a write") (def "a write") (tag "a write or a tag listing")
     (import-code "a write") (import-md "a write") (adopt "a store operation") (snapshot "a store operation")
     (publish "a store operation") (supply "writes a derived table") (template "applies or exports a template")
     (write "a draft") (restore "a draft") (discard "a draft") (drafts "a draft listing")
@@ -433,6 +433,7 @@
         (list 'unlink (lambda () (run 'unlink probe "cites" Y)))
         (list 'relation (lambda () (run 'relation "annotates" "--as" "nothing")))
         (list 'rule (lambda () (run 'rule "sections-titled" "--on" "section" "--must" "(title ?w ?t)")))
+        (list 'derive (lambda () (run 'derive "sections" "((head (sections ID)) (clause (sections ?x) (kind ?x section)))")))
         (list 'batch (lambda () (run 'batch (format "((set ~s title \"Probe block, batch\"))" probe))))
         (list 'def (lambda () (run 'def "probe-fn" "--under" LIB "(define (probe-fn) 1)")))
         (list 'tag (lambda () (run 'tag "probe-tag")))

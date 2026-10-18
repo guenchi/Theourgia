@@ -2071,7 +2071,7 @@ are.
 The name must be free: a test, a fact relation, a per-write fact, a library
 relation, a declared edge relation or a rule of the store is refused `(error
 bad-request name-taken (name <name>) (where test|fact|write-fact|library|edge-relation|rule))`,
-and `rule` and `relation` refuse a stored relation's name (`(where
+`and`, the conjunction, is refused `(where conjunction)`, and `rule` and `relation` refuse a stored relation's name (`(where
 derive)`). The value is checked where it is written, as the library is checked
 when it loads, with the kinds: arity, terms, every head variable bound by the
 body, each goal's kinds, and the clauses' heads within the declared kinds. A

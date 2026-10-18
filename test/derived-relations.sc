@@ -186,6 +186,11 @@
                 (by-batch D "((derive sh ((head (sh ID)) #0=(clause (sh ?x) (kind ?x section)) #0#)))"))
       '((error bad-request derive-malformed (reason derive-not-a-tree))
         (error bad-request derive-malformed (reason derive-not-a-tree))))
+(want "DERIVE-19 and is the conjunction, never a stored relation's name: refused, by the verb and in a batch"
+      (in-order (on D 'derive "and" "((head (and STR)) (clause (and \"x\")))")
+                (by-batch D "((derive and ((head (and STR)) (clause (and \"x\")))))"))
+      '((error bad-request name-taken (name and) (where conjunction))
+        (error bad-request name-taken (name and) (where conjunction))))
 (want "DERIVE-18 a value holding a plan marker is refused, by the verb and in a batch"
       (in-order (on D 'derive "mk" "((head (mk ID)) (clause (mk ?x) (title ?x (\"#%new\" 1))))")
                 (by-batch D "((derive mk ((head (mk ID)) (clause (mk ?x) (title ?x (\"#%new\" 1))))))"))
@@ -352,6 +357,46 @@
       (q A6 '(s ?x))
       '(error bad-request relation-unavailable (relation s)
               (state (check (error bad-request wrong-arity (relation r) (arity 2) (given 1))))))
+;; ONE WALK PER RELATION: f<i> names f<i-1> and f<i-2>, thirty deep; a walk
+;; that went down every path would visit f0 more than half a million times
+(define A8 (store! "chain"))
+(define a8S (make A8 'section "S"))
+(define (chain-name i) (string->symbol (string-append "f" (number->string i))))
+(define a8-start (real-time))
+;; IN ORDER, each naming ones already declared: map fixes no order of calls
+(define a8-setup
+  (let loop ((i 0) (out '()))
+    (if (= i 30)
+        (reverse out)
+        (loop (+ i 1)
+              (cons (head-of (derive! A8 (chain-name i)
+                           (if (< i 2)
+                               (over-kind (chain-name i) 'section)
+                               (list (list 'head (list (chain-name i) 'ID))
+                                     (list 'clause (list (chain-name i) '?x) (list (chain-name (- i 1)) '?x) (list (chain-name (- i 2)) '?x))))))
+                    out)))))
+(define a8-rows (query-rows A8 (list (chain-name 29) '?x)))
+(define a8-seconds (quotient (- (real-time) a8-start) 1000))
+(want "AVAIL-7 thirty relations each naming the two before: all declared, the last answers, inside a minute"
+      (list (for-all (lambda (a) (eq? a 'ok)) a8-setup) a8-rows (< a8-seconds 60))
+      (list #t (list (list a8S)) #t))
+;; A CYCLE WITH AN UNAVAILABLE WAY OUT: ca names cb and cz, cb names ca, cz
+;; retired. The listing asks ca first (its names sorted); cb, met on ca's walk
+;; while ca was on the stack, read available there, and that partial answer
+;; is not the one cb is listed with
+(define A9 (store! "cycle"))
+(make A9 'section "S")
+(derive! A9 'cz (over-kind 'cz 'section))
+(derive! A9 'ca (over-kind 'ca 'section))
+(derive! A9 'cb '((head (cb ID)) (clause (cb ?x) (ca ?x))))
+(define a9-setup
+  (in-order (head-of (derive! A9 'ca '((head (ca ID)) (clause (ca ?x) (cb ?x)) (clause (ca ?x) (cz ?x)))))
+            (retire! A9 'cz)))
+(want "AVAIL-8 a cycle whose way out is retired: both listed unavailable through it, and the retirement says it affects both"
+      (list (car a9-setup) (clause-of (cadr a9-setup) 'affects) (derived-entry A9 'ca) (derived-entry A9 'cb))
+      '(ok (affects (derive ca cb))
+        (derived ca (arity 1) (kinds (ID)) (unavailable (state retired) (through cz)))
+        (derived cb (arity 1) (kinds (ID)) (unavailable (state retired) (through ca cz)))))
 (define A7 (store! "through"))
 (make A7 'section "S")
 (derive! A7 'r (over-kind 'r 'section))
@@ -555,13 +600,13 @@
   (let ((vars (map (lambda (i) (string->symbol (string-append "?v" (number->string i)))) (iota arity))))
     (list (list 'head (cons name (map (lambda (v) 'ID) vars)))
           (cons 'clause (cons (cons name vars) (map (lambda (v) (list 'kind v 'section)) vars))))))
-(derive! RB 'c3a (cube 'c3a 3))
-(derive! RB 'c3b (cube 'c3b 3))
-(derive! RB 'c4 (cube 'c4 4))
-(rule! RB "a3" "--on" "doc" "--must-not" "(and (c3a ?a ?b ?c) (= ?a \"nope\"))")
-(want "BUDGET-1 one rule whose stored call fits the budget alone: the write is judged"
-      (head-of (title! RB rbD "1"))
-      'ok)
+(define rb-setup
+  (in-order (head-of (derive! RB 'c3a (cube 'c3a 3))) (head-of (derive! RB 'c3b (cube 'c3b 3)))
+            (head-of (derive! RB 'c4 (cube 'c4 4)))
+            (head-of (rule! RB "a3" "--on" "doc" "--must-not" "(and (c3a ?a ?b ?c) (= ?a \"nope\"))"))))
+(want "BUDGET-1 the three relations and the rule are declared, and one rule whose stored call fits the budget alone judges the write"
+      (in-order rb-setup (head-of (title! RB rbD "1")))
+      '((ok ok ok ok) ok))
 ;; TWO RULES, ONE BUDGET: each call fits alone, the write's two rules do not
 (rule! RB "b3" "--on" "doc" "--must-not" "(and (c3b ?a ?b ?c) (= ?a \"nope\"))")
 (want "BUDGET-2 two rules whose calls fit alone but not together: refused at the later one, query-budget"
@@ -618,6 +663,20 @@
                 (clause-of (first-item (on SH 'batch sh-req "--req" "TR1" "--cursor" sh-cursor)) 'replay)
                 (car (state-derived (state SH) 'tracked)))
       '(batch (replay #t) in-force))
+
+;; A RESENT RULE REQUEST IS ITS REPLAY: the rule names rr, rr is retired, and
+;; the same request with the same cursor answers the replay; a new request of
+;; the same rule is refused at the state it would write in
+(define RP (store! "replay"))
+(make RP 'section "s")
+(derive! RP 'rr (over-kind 'rr 'section))
+(define rp-args (list "q5" "--on" "doc" "--must-not" "(rr ?w)" "--req" "TR5" "--cursor" (cursor-text RP)))
+(define rp-first (apply on RP 'rule rp-args))
+(define rp-retire (retire! RP 'rr))
+(want "SHAPE-5 a tracked rule naming a stored relation, resent after the relation is retired: the replay; a new request: relation-unavailable"
+      (in-order (head-of rp-first) (clause-of rp-retire 'affects) (clause-of (apply on RP 'rule rp-args) 'replay)
+                (on RP 'rule "q6" "--on" "doc" "--must-not" "(rr ?w)"))
+      '(ok (affects (rule q5)) (replay #t) (error bad-request relation-unavailable (relation rr) (state retired))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)

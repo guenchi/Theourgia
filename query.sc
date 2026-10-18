@@ -779,15 +779,32 @@
         (if v
             (filter (lambda (n) (assq n table)) (apply append (map (lambda (c) (map car (cddr c))) (cdr v))))
             '())))
-    (define (reach rel)
-      (let walk ((rels (list rel)) (path '()) (seen '()))
-        (cond ((null? rels) #f)
-              ((memq (car rels) seen) (walk (cdr rels) path seen))
+    ;; ONE WALK PER RELATION: a relation's answer is kept once known, so a
+    ;; graph is walked in its size, not in the number of its paths. A
+    ;; relation on the walk's own stack reads available; an answer that
+    ;; leaned on one is not kept (on a cycle it is only partial), an
+    ;; unavailable one always is (its path exists whatever the order).
+    ;; -> (<answer> . <leaned on the stack?>)
+    (define (reach-of rel stack)
+      (let ((m (hashtable-ref memo rel 'none)))
+        (cond ((not (eq? m 'none)) (cons m #f))
+              ((memq rel stack) (cons #f #t))
               (else
-               (let* ((r (car rels)) (here (if (eq? r rel) '() (append path (list r)))) (u (own r)))
-                 (cond (u (if (null? here) u (append u (list (cons 'through here)))))
-                       ((walk (callees r) here (cons r seen)))
-                       (else (walk (cdr rels) path (cons r seen)))))))))
+               (let ((u (own rel)))
+                 (if u
+                     (begin (hashtable-set! memo rel u) (cons u #f))
+                     (let loop ((cs (callees rel)) (leaned #f))
+                       (if (null? cs)
+                           (begin (unless leaned (hashtable-set! memo rel #f)) (cons #f leaned))
+                           (let ((v (reach-of (car cs) (cons rel stack))))
+                             (if (car v)
+                                 (let* ((states (filter (lambda (e) (not (eq? (car e) 'through))) (car v)))
+                                        (through (cond ((assq 'through (car v)) => cdr) (else '())))
+                                        (u (append states (list (cons 'through (cons (car cs) through))))))
+                                   (hashtable-set! memo rel u)
+                                   (cons u #f))
+                                 (loop (cdr cs) (or leaned (cdr v)))))))))))))
+    (define (reach rel) (car (reach-of rel '())))
     (define self
       (make-handler* 'STORED
                      (lambda (rel) (and (assq rel table) #t))
@@ -805,11 +822,7 @@
                          (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
                                    (table-tuples S key))))
                      (lambda (g seen) #f)
-                     (lambda (rel)
-                       (let ((m (hashtable-ref memo rel 'none)))
-                         (if (eq? m 'none)
-                             (let ((u (reach rel))) (hashtable-set! memo rel u) u)
-                             m)))))
+                     (lambda (rel) (reach rel))))
     (set! check-env (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library) self)))
     self)
   ;; the STORED-CHECK environment the handler checks its clauses in: TEST,
@@ -1474,6 +1487,9 @@
                        (else #f))))
       (cond
         (where (list 'error 'bad-request 'name-taken (list 'name name) (list 'where where)))
+        ;; AND IS THE QUERY LANGUAGE'S CONJUNCTION, never a relation's name,
+        ;; as a library head may not be
+        ((eq? name 'and) (list 'error 'bad-request 'name-taken (list 'name name) '(where conjunction)))
         ((eq? value 'retired) value)
         ((derive-value-reason name value) => (lambda (r) (list 'error 'bad-request 'derive-malformed (list 'reason r))))
         ((exists (lambda (c) (find (lambda (g) (relation-external? (car g) state (list name value))) (cddr c))) (cdr value))
@@ -1512,7 +1528,10 @@
     (define (rule-status value state)
       (let ((v (rule-value-check value (rule-names-stored? value state) state)))
         (and (pair? v) (eq? (car v) 'error) v)))
-    (define (derive-status n state) ((handler-available (stored-handler state #f)) n))
+    ;; ONE HANDLER A STATE, so one walk serves every name asked of it
+    (define pre-handler (stored-handler pre #f))
+    (define post-handler (stored-handler post #f))
+    (define (derive-status n state) ((handler-available (if (eq? state pre) pre-handler post-handler)) n))
     (let* ((rules (filter (lambda (r) (not (equal? (rule-status (cadr r) pre) (rule-status (cadr r) post))))
                           (state-declared-rules pre)))
            (derived (filter (lambda (n) (and (not (eq? n name)) (stored-in-force (stored-table pre #f) n)
