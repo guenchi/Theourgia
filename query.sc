@@ -373,8 +373,14 @@
   ;; its own check, or accepted, and then it must already be in its form. A
   ;; value of another shape is answered as it is, for its check to refuse.
   (define (rule-value-form value)
+    ;; EACH PAIR ONCE: a goal may be a datum with labels, cyclic or shared,
+    ;; which its check refuses; the names are read without going round it
+    (define seen (make-eq-hashtable))
     (define (names g)
-      (cond ((and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map names (cdr g))))
+      (cond ((and (pair? g) (hashtable-ref seen g #f)) '())
+            ((and (pair? g) (eq? (car g) 'and) (list? g))
+             (hashtable-set! seen g #t)
+             (apply append (map names (cdr g))))
             ((and (pair? g) (symbol? (car g))) (list (car g)))
             (else '())))
     (let ((polarity (and (list? value) (for-all pair? value)
@@ -796,6 +802,9 @@
   (define (stored-handler state override)
     (define table (stored-table state override))
     (define memo (make-eq-hashtable))
+    ;; A PARTIAL ANSWER, kept with the relation it leaned on lowest: it holds
+    ;; while that relation is still on the walk's stack at the same depth
+    (define partial (make-eq-hashtable))
     (define check-env #f)
     (define (own rel)
       (let ((d (cdr (assq rel table))))
@@ -818,11 +827,17 @@
     ;; (itself included, a recursive relation) is whole and kept. An
     ;; unavailable answer is always kept (its path exists whatever the order).
     ;; -> (<answer> . <lowest depth leaned on, or #f>)
+    ;; A partial answer read again on the same walk stands while the relation
+    ;; it leaned on lowest is on the stack at that depth: the walk stops at the
+    ;; first unavailable answer, so every relation it leaned on that has left
+    ;; the stack read available, as it assumed.
     (define (lower a b) (cond ((not a) b) ((not b) a) (else (min a b))))
+    (define (at-depth stack d) (and (< d (length stack)) (list-ref stack (- (length stack) 1 d))))
     (define (reach-of rel stack)
-      (let ((m (hashtable-ref memo rel 'none)))
+      (let ((m (hashtable-ref memo rel 'none)) (p (hashtable-ref partial rel #f)))
         (cond ((not (eq? m 'none)) (cons m #f))
               ((memq rel stack) => (lambda (tail) (cons #f (- (length tail) 1))))
+              ((and p (eq? (at-depth stack (car p)) (cdr p))) (cons #f (car p)))
               (else
                (let ((u (own rel)) (depth (length stack)))
                  (if u
@@ -830,7 +845,7 @@
                      (let loop ((cs (callees rel)) (low #f))
                        (if (null? cs)
                            (if (and low (< low depth))
-                               (cons #f low)
+                               (begin (hashtable-set! partial rel (cons low (at-depth stack low))) (cons #f low))
                                (begin (hashtable-set! memo rel #f) (cons #f #f)))
                            (let ((v (reach-of (car cs) (cons rel stack))))
                              (if (car v)

@@ -410,16 +410,16 @@
       (chain-reading (in-a-child 60 A8 chain-specs (list (chain-name 29) '?x)))
       (list #t (list (list a8S))))
 ;; A RECURSIVE BASE UNDER DOUBLED CALLS: g0 names itself, g<i> names g<i-1>
-;; twice, twenty-five deep. The availability walk keeps a recursive
+;; twice, thirty deep. The availability walk keeps a recursive
 ;; relation's answer once its own walk ends, and the walk for a relation
 ;; outside the log visits each relation once: either walking every path would
-;; visit g0 tens of millions of times
+;; visit g0 hundreds of millions of times
 (define A10 (store! "doubled"))
 (define a10S (make A10 'section "S"))
 (define (doubled-name i) (string->symbol (string-append "g" (number->string i))))
 (define doubled-specs
   (let loop ((i 0) (out '()))
-    (if (= i 25)
+    (if (= i 30)
         (reverse out)
         (loop (+ i 1)
               (cons (list (doubled-name i)
@@ -429,9 +429,29 @@
                                     (list 'clause (list (doubled-name i) '?x)
                                           (list (doubled-name (- i 1)) '?x) (list (doubled-name (- i 1)) '?x)))))
                     out)))))
-(want "AVAIL-9 a recursive base under doubled calls, twenty-five deep: all declared, the last answers, inside a minute"
-      (chain-reading (in-a-child 60 A10 doubled-specs (list (doubled-name 24) '?x)))
+(want "AVAIL-9 a recursive base under doubled calls, thirty deep: all declared, the last answers, inside a minute"
+      (chain-reading (in-a-child 60 A10 doubled-specs (list (doubled-name 29) '?x)))
       (list #t (list (list a10S))))
+;; ONE CYCLE THROUGH THE WHOLE CHAIN: h<i> names h<i-1> twice, and h0 is then
+;; redeclared to name h25 as well. Every relation on the cycle leans on h0
+;; while h0's walk is on; its partial answer, read again on that walk, stands
+(define A11 (store! "cycle-doubled"))
+(define a11S (make A11 'section "S"))
+(define (cyc-name i) (string->symbol (string-append "h" (number->string i))))
+(define cycle-specs
+  (let loop ((i 0) (out '()))
+    (if (= i 26)
+        (reverse (cons (list 'h0 '((head (h0 ID)) (clause (h0 ?x) (kind ?x section)) (clause (h0 ?x) (h25 ?x)))) out))
+        (loop (+ i 1)
+              (cons (list (cyc-name i)
+                          (if (= i 0)
+                              (over-kind 'h0 'section)
+                              (list (list 'head (list (cyc-name i) 'ID))
+                                    (list 'clause (list (cyc-name i) '?x) (list (cyc-name (- i 1)) '?x) (list (cyc-name (- i 1)) '?x)))))
+                    out)))))
+(want "AVAIL-10 a cycle through a doubled chain, h0 naming h25: all declared, the last answers, inside a minute"
+      (chain-reading (in-a-child 60 A11 cycle-specs (list (cyc-name 25) '?x)))
+      (list #t (list (list a11S))))
 ;; A CYCLE WITH AN UNAVAILABLE WAY OUT: ca names cb and cz, cb names ca, cz
 ;; retired. The listing asks ca first (its names sorted); cb, met on ca's walk
 ;; while ca was on the stack, read available there, and that partial answer
@@ -770,6 +790,23 @@
             (rule-value-form '((builtin citation-coverage)))
             (rule-value-form '((on doc))))
       '((#t #t #t #t) ((class state) (class state) (class write) (class write)) ((builtin citation-coverage)) ((on doc))))
+
+;; THE RULE VERB GIVEN AN OLDER STATE: its own read refuses q (r retired
+;; there), the write session reads the log, where r is in force again, and
+;; accepts q, in its one form, the class from kind+
+(define TS (store! "stale"))
+(make TS 'doc "b")
+(derive! TS 'r (over-kind 'r 'code))
+(retire! TS 'r)
+(define ts-old (state TS))
+(derive! TS 'r (over-kind 'r 'code))
+(want "RULES-18 the rule verb on a state older than the log: refused at its read, accepted by the write session in its one form"
+      (in-order (head-of (rpc-dispatch TS '(rule "q" "--on" "doc" "--where" "(kind+ ?w doc)" "--must-not" "(r ?w)") "author" ts-old))
+                (state-rule (state TS) 'q))
+      '(ok (in-force ((class write) (on doc) (where (kind+ ?w doc)) (must-not (r ?w))))))
+(want "RULES-19 a rule goal written with a cyclic datum label: refused rule-malformed, and the verb answers"
+      (on TS 'rule "qc" "--on" "doc" "--must-not" "#0=(and #0#)")
+      '(error bad-request rule-malformed))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)
