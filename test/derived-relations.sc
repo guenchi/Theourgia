@@ -816,8 +816,8 @@
       (on TS 'rule "qc" "--on" "doc" "--must-not" "#0=(and #0#)")
       '(error bad-request rule-malformed))
 
-;; ---- F307: the availability walk, linear -------------------------------------------------
-(printf "== F307: one walk over the reach, shortest chains ==\n")
+;; ---- the availability walk, linear -------------------------------------------------------
+(printf "== the availability walk, linear: one walk over the reach, shortest chains ==\n")
 ;; THE COUNTING SEAM, looked up (the base has none): bound in process, it
 ;; counts the own checks and the sink reads of the availability walk
 (define stored-walk-counter
@@ -892,17 +892,17 @@
                              st "' " (symbol->string shape) " " (number->string n) " '" out "' < /dev/null > /dev/null 2> '" st ".err'"))
       out)))
 (define (counts r) (if (pair? r) (list-head r 2) r))
-(want "F307-A the crafted order (r<i> names r<i+1>, r3200, r<i-1>), 3200 deep, forged: every relation listed available, inside a minute"
+(want "WALK-A the crafted order (r<i> names r<i+1>, r3200, r<i-1>), 3200 deep, forged: every relation listed available, inside a minute"
       (counts (forged-listing 60 'crafted 3200))
       '(3201 3201))
-(want "F307-B a chain of the same 3200, forged: every relation listed available, inside a minute"
+(want "WALK-B a chain of the same 3200, forged: every relation listed available, inside a minute"
       (counts (forged-listing 60 'chain 3200))
       '(3201 3201))
 ;; I: THE TABLE LOOKED UP BY NAME, not by a scan of the table: at 25600 the
 ;; listing alone (the replayed state supplied) took 0.23 s with the index and
 ;; 67 s with a scan per lookup (both measured on the crafted order); the
 ;; replay itself, the reduction's, is outside this bound
-(want "F307-I the crafted order 25600 deep, forged: every relation listed available, the listing alone under ten seconds"
+(want "WALK-I the crafted order 25600 deep, forged: every relation listed available, the listing alone under ten seconds"
       (let ((r (forged-listing 180 'crafted 25600)))
         (if (pair? r) (list (car r) (cadr r) (< (caddr r) 10000)) r))
       '(25601 25601 #t))
@@ -940,20 +940,20 @@
 (for-each (lambda (n) (retire! CS n)) '(z1 z2 zr3 a5))
 (contest! CS 'zc3 "peerc3zc" zc3-past)
 (contest! CS 'b5 "peerc5bb" b5-past)
-(want "F307-C1 a longer first route and a direct later one to one sink: the direct one is the chain"
+(want "WALK-C1 a longer first route and a direct later one to one sink: the direct one is the chain"
       (availability-of CS 'p1)
       '(unavailable (state retired) (through z1)))
-(want "F307-C2 two callers naming two routes of one length in opposite orders: each goes by its own first"
+(want "WALK-C2 two callers naming two routes of one length in opposite orders: each goes by its own first"
       (list (availability-of CS 'p2) (availability-of CS 'q2))
       '((unavailable (state retired) (through a2 z2)) (unavailable (state retired) (through b2 z2))))
-(want "F307-C3 two sinks, retired and contested: each predecessor reports its own, and a relation reaching both reports the nearer"
+(want "WALK-C3 two sinks, retired and contested: each predecessor reports its own, and a relation reaching both reports the nearer"
       (list (availability-of CS 'x3) (availability-of CS 'y3) (availability-of CS 'w3))
       '((unavailable (state retired) (through zr3)) (unavailable (state contested) (through zc3))
         (unavailable (state contested) (through y3 zc3))))
-(want "F307-C4 a component beside them with nothing failing: available"
+(want "WALK-C4 a component beside them with nothing failing: available"
       (list (availability-of CS 'u4) (availability-of CS 'v4))
       '(available available))
-(want "F307-C5 two sinks at one distance, retired and contested, named in opposite orders: each caller reports its own first"
+(want "WALK-C5 two sinks at one distance, retired and contested, named in opposite orders: each caller reports its own first"
       (list (availability-of CS 'p5) (availability-of CS 'q5))
       '((unavailable (state retired) (through a5)) (unavailable (state contested) (through b5))))
 
@@ -962,7 +962,7 @@
 (define DS (store! "once"))
 (define dsS (make DS 'section "S"))
 (for-each (lambda (n v) (derive! DS n v)) '(r s t) (list (over-kind 'r 'section) (body 's 'r) (body 't 's)))
-(want "F307-D two queries of one session and a second session on the same state: three own checks, one a relation"
+(want "WALK-D two queries of one session and a second session on the same state: three own checks, one a relation"
       (let ((st (state DS)))
         (counting 'own (lambda ()
                          (let ((S1 (make-query-session st)))
@@ -982,7 +982,7 @@
 (retire! ES 'r1)
 (define es-r2 (retire! ES 'r2))
 (define es-r1 (derive! ES 'r1 (over-kind 'r1 'section)))
-(want "F307-E a chain that changes while staying unavailable is no effect; becoming available is"
+(want "WALK-E a chain that changes while staying unavailable is no effect; becoming available is"
       (list (availability-of ES 's) (clause-of es-r2 'affects) (clause-of es-r1 'affects))
       '((unavailable (state retired) (through r2)) #f (affects (derive m t))))
 
@@ -997,7 +997,7 @@
     (derive! FS (cn i) (if (= i 20) (over-kind 'c20 'section) (body (cn i) (cn (+ i 1)))))
     (loop (- i 1))))
 (retire! FS 'c20)
-(want "F307-F a chain of twenty ending in a retired relation: the listing reads twenty sinks, and c0's chain is the whole chain"
+(want "WALK-F a chain of twenty ending in a retired relation: the listing reads twenty sinks, and c0's chain is the whole chain"
       (counting 'sink (lambda () (availability-of FS 'c0)))
       (list 20 (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (cn (+ i 1))) (iota 20))))))
 
@@ -1013,7 +1013,7 @@
 (define gs-pre (state GS))
 (retire! GS 'r)
 (define gs-post (state GS))
-(want "F307-G affects over five rules naming r, r retired: every rule and relation listed, one own check each a state, six in all"
+(want "WALK-G affects over five rules naming r, r retired: every rule and relation listed, one own check each a state, six in all"
       (list gs-rules (counting 'own (lambda () (derive-affects gs-pre gs-post 'r))))
       '((ok ok ok ok ok) (6 (affects (rule g1 g2 g3 g4 g5) (derive s t)))))
 
@@ -1036,7 +1036,7 @@
     (and (pair? a) (eq? (car a) 'ok)
          (let ((e (find (lambda (i) (and (pair? i) (eq? (car i) 'derived) (eq? (cadr i) name))) (cdr (cadr a)))))
            (and e (list-ref e (- (length e) 1)))))))
-(want "F307-H a request whose rehearsal read r and whose write retired it: the published state's listing reads r unavailable, retired, and the next write is unevaluable"
+(want "WALK-H a request whose rehearsal read r and whose write retired it: the published state's listing reads r unavailable, retired, and the next write is unevaluable"
       (list (and (pair? hs-batch) (map car (cadr hs-batch)))
             (and hs-published #t)
             (published-availability HS 'r)
