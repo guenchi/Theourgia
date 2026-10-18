@@ -2061,7 +2061,7 @@ other stored relations name as they name the library's. `<value>` is one datum,
 -- the head gives the arity and every column's kind (the kinds of the query
 language: `ID`, `STR`, `SYM`, `INT`, `ANY`, `PARENT`, `NAME-OR-NONE`, `(SYM
 <symbol> ...)`), each clause a pattern of the relation and its body, goals of
-the query language: fact relations, tests, the library's relations, other
+the query language written one after another (no `and`, as in the library): fact relations, tests, the library's relations, other
 stored relations, the relation itself (recursion is allowed, as in the
 library). `--retire` ends it. Declaring the same value again answers `(ok
 (unchanged))` and writes nothing; a later value replaces it for every cut

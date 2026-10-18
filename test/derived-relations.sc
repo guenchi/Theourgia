@@ -30,10 +30,14 @@
               relation-external?)
         (only (theourgia store) open-and-reduce)
         (only (theourgia reduce) reduce-applied-cut block-id state-hash reduce-clone state->rows rows->state
-              state-derived)
+              reduce-empty reduce-apply! reduce-gates)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) log-publish! segment-sha))
 
+;; LOOKED UP, NOT IMPORTED, so the fixture loads on a tree without it (the base)
+;; and its rows read red there one by one
+(define state-derived
+  (guard (e (#t (lambda (r name) 'not-in-this-tree))) (eval 'state-derived (environment '(theourgia reduce)))))
 (define bad 0)
 (define rows 0)
 (define-syntax in-order
@@ -95,8 +99,10 @@
   (let ((a (on st 'query "--relations")))
     (and (pair? a) (eq? (car a) 'ok)
          (find (lambda (i) (and (pair? i) (eq? (car i) 'derived) (eq? (cadr i) name))) (cdr (cadr a))))))
-;; the store's own log writer, read before any other writer's segment exists
-(define (local-writer st) (car (car (cut-of st))))
+;; THE STORE'S OWN LOG WRITER, as position names it: the cut lists every
+;; writer, a forged peer's among them, in an order that is not the local one's
+(define (local-writer st)
+  (let ((p (clause-of (on st 'position) 'position))) (and p (car (cadr p)))))
 ;; A RECORD FROM ANOTHER WRITER, PEER (eight characters), whose premise is
 ;; PAST, the local writer's cut it saw (now when not given): the record a
 ;; writer that bypassed the verb, or a concurrent writer, leaves.
@@ -267,19 +273,40 @@
 (want "HISTORY-8 the fourth table: in force with arity, kinds and availability; retired; contested with its candidates' heads"
       (list (derived-entry H 'r) (derived-entry hR 'r)
             (let ((e (derived-entry (car contest) 'r)))
-              (and e (list (car e) (cadr e) (caddr e) (map car (cdr (cadddr e))) (list-ref e 4)))))
+              (and e (list (car e) (cadr e) (caddr e) (car (cadddr e))
+                           (sorted (map (lambda (c) (list (car c) (cadr c))) (cdr (cadddr e)))) (list-ref e 4)))))
       (list '(derived r (arity 1) (kinds (ID)) available)
             '(derived r (retired) (unavailable (state retired)))
-            '(derived r (contested) ((r ID) (r ID)) (unavailable (state contested)))))
+            (list 'derived 'r '(contested) 'candidates (sorted (list (list '(r ID) (local-writer (car contest))) (list '(r ID) "peerzzzz")))
+                  '(unavailable (state contested)))))
 
 ;; ---- the table in the reduction: snapshot, clone, hash -------------------------------
 (printf "== the derived table in the reduction ==\n")
-(want "STATE-1 a snapshot's rows carry the table: the round trip keeps every candidate"
-      (let ((s (state H))) (equal? (state-derived (rows->state (state->rows s)) 'r) (state-derived s 'r)))
-      #t)
-(want "STATE-2 a clone holds the table"
-      (let ((s (state H))) (equal? (state-derived (reduce-clone s) 'r) (state-derived s 'r)))
-      #t)
+(define (same-after f st) (let ((s (state st))) (and (state-derived s 'r) (equal? (state-derived (f s) 'r) (state-derived s 'r)))))
+(want "STATE-1 a snapshot's rows carry the table: in force, contested (every candidate, writer and sequence) and retired"
+      (map (lambda (st) (same-after (lambda (s) (rows->state (state->rows s))) st)) (list H (car contest) hR))
+      '(#t #t #t))
+(want "STATE-2 a clone holds the table: in force, contested and retired"
+      (map (lambda (st) (same-after reduce-clone st)) (list H (car contest) hR))
+      '(#t #t #t))
+;; A REBUILD IS FORCED BY A RECORD THAT REVERSES AN APPLIED MEMBERSHIP: two
+;; records claiming one request's identity (relation-effects' RE-9 does the
+;; same with edge relations); the second gates both, and the state is folded
+;; again from the applied records
+(define (claim-actor) (list "test" (cons "other000" "s") 'single "fp" #f (cons "other000" 0)))
+(define rebuilt
+  (guard (e (#t 'RAISED))
+    (let ((r (reduce-empty)))
+      (reduce-apply! r "decl0000" 1 '() (list 'derive 'keep (over-kind 'keep 'section)))
+      (reduce-apply! r "aaa00000" 1 '() (list 'derive 'gone (over-kind 'gone 'section)) (claim-actor))
+      (reduce-apply! r "bbb00000" 1 '() (list 'derive 'gone (over-kind 'gone 'section)) (claim-actor))
+      r)))
+(want "STATE-4 a rebuild after a retraction: both claims gated, and the derived table is what the applied records say"
+      (and (not (eq? rebuilt 'RAISED))
+           (list (map (lambda (w) (let ((p (assoc (cons w 1) (reduce-gates rebuilt)))) (and p (cdr p)))) '("aaa00000" "bbb00000"))
+                 (state-derived rebuilt 'gone)
+                 (car (state-derived rebuilt 'keep))))
+      '((plan-conflict plan-conflict) #f in-force))
 (define hH (store! "hash"))
 (make hH 'section "S")
 (define hash-0 (state-hash (state hH)))
@@ -296,11 +323,13 @@
 (derive! A 's '((head (s STR)) (clause (s ?x) (r ?x))))
 (define a-rows-before (query-rows A '(s ?x)))
 (define a-widened (derive! A 'r '((head (r ANY)) (clause (r ?v) (field ?b "title" ?v)))))
-(want "AVAIL-1 r widened to ANY under s/STR: s's own head containment fails at the next cut"
-      (in-order a-rows-before (head-of a-widened) (q A '(s ?x)))
+(want "AVAIL-1 r widened to ANY under s/STR: s's own head containment fails at the next cut, in a query and in the listing"
+      (in-order a-rows-before (head-of a-widened) (q A '(s ?x)) (derived-entry A 's))
       '((("T1")) ok
         (error bad-request relation-unavailable (relation s)
-               (state (check (error bad-request head-kind (relation s) (position 1) (declared STR) (clause ANY)))))))
+               (state (check (error bad-request head-kind (relation s) (position 1) (declared STR) (clause ANY)))))
+        (derived s (arity 1) (kinds (STR))
+                 (unavailable (state (check (error bad-request head-kind (relation s) (position 1) (declared STR) (clause ANY))))))))
 (want "AVAIL-2 the widening's answer says what it affects: s"
       (clause-of a-widened 'affects)
       '(affects (derive s)))
@@ -311,10 +340,9 @@
 (define a5D (make A5 'doc "y"))
 (derive! A5 'r '((head (r ANY)) (clause (r ?v) (field ?b "title" ?v))))
 (rule! A5 "callsx" "--on" "doc" "--must-not" "(r \"x\")")
-(derive! A5 'r '((head (r STR)) (clause (r ?t) (title ?b ?t))))
-(want "AVAIL-4 NARROWING r/ANY to r/STR under a rule calling (r \"x\"): the rule still types and judges by the new clauses"
-      (head-of (title! A5 a5D "z"))
-      'ok)
+(want "AVAIL-4 NARROWING r/ANY to r/STR under a rule calling (r \"x\"): accepted, and the rule judges by the new clauses (which answer \"x\")"
+      (in-order (head-of (derive! A5 'r '((head (r STR)) (clause (r "x"))))) (head3 (title! A5 a5D "z")))
+      '(ok (error refused rule-violation)))
 (define A6 (store! "arity"))
 (make A6 'section "S")
 (derive! A6 'r (over-kind 'r 'section))
@@ -330,28 +358,31 @@
 (derive! A7 's '((head (s ID)) (clause (s ?x) (r ?x))))
 (derive! A7 't '((head (t ID)) (clause (t ?x) (s ?x))))
 (retire! A7 'r)
-(want "AVAIL-6 THROUGH: t names s names r, r retired: a query naming t is refused retired, through s r"
-      (q A7 '(t ?x))
-      '(error bad-request relation-unavailable (relation t) (state retired) (through s r)))
+(want "AVAIL-6 THROUGH: t names s names r, r retired: a query naming t is refused retired, through s r; the listing says the same"
+      (in-order (q A7 '(t ?x)) (derived-entry A7 't))
+      '((error bad-request relation-unavailable (relation t) (state retired) (through s r))
+        (derived t (arity 1) (kinds (ID)) (unavailable (state retired) (through s r)))))
 
 ;; ---- SHADOWED: records that bypassed the verb under reserved names -------------------
 (printf "== SHADOWED: a bypassed record under a reserved goal name is masked ==\n")
 (define W (store! "shadowed"))
 (define wA (make W 'section "A"))
 (define wB (make W 'section "B" wA))
+(on W 'link wA "depends-on" wB)
 (define w-depends-before (query-rows W '(depends* ?a ?b)))
 (forge! W "shadowaa" '(derive depends* ((head (depends* ID ID)) (clause (depends* ?a ?b) (kind ?a section) (kind ?b section)))))
 (forge! W "shadowbb" '(derive kind+ ((head (kind+ ID SYM)) (clause (kind+ ?x ?k) (kind ?x ?k)))))
-(want "SHADOW-1 a bypassed record named like a library head: the library's rows answer"
-      (equal? (query-rows W '(depends* ?a ?b)) w-depends-before)
-      #t)
+(want "SHADOW-1 a bypassed record named like a library head: the library's rows answer, the same as before"
+      (in-order w-depends-before (equal? (query-rows W '(depends* ?a ?b)) w-depends-before))
+      (list (list (list wA wB)) #t))
 (want "SHADOW-2 query --relations lists both as unavailable, shadowed by their owners"
       (list (derived-entry W 'depends*) (derived-entry W 'kind+))
       '((derived depends* (unavailable (shadowed RULE))) (derived kind+ (unavailable (shadowed WRITE-FACT)))))
-(want "SHADOW-3 a write session is built without a raise, and a rule naming field+ and field keeps judging"
-      (in-order (head-of (rule! W "fieldpair" "--on" "section" "--must-not" "(and (field+ ?w \"title\" ?v) (field ?w \"zz\" ?v))"))
-                (head-of (title! W wA "A2")))
-      '(ok ok))
+(want "SHADOW-3 a write session is built without a raise, and a rule naming field+ and field judges: a retitle is its witness"
+      (in-order (head-of (rule! W "fieldpair" "--on" "section" "--must-not" "(and (field+ ?w \"title\" ?v) (field ?w \"title\" ?old))"))
+                (head3 (title! W wA "A2"))
+                (head-of (rule! W "fieldpair" "--retire")))
+      '(ok (error refused rule-violation) ok))
 (want "SHADOW-4 a query naming kind+ with no per-write facts: unknown relation, as without the record"
       (let ((a (q W '(kind+ ?x ?k)))) (and (pair? a) (list-head a 4)))
       '(error bad-request unknown-relation (relation kind+)))
@@ -365,13 +396,14 @@
 (forge! W "shadowee" '(derive member ((head (member ID ID)) (clause (member ?x ?y) (kind ?x section) (kind ?y section)))))
 (forge! W "shadowff" '(derive kind ((head (kind ID SYM)) (clause (kind ?x ?k) (title ?x ?t) (kind ?x ?k)))))
 (want "SHADOW-6 ones named like a test and a fact relation are shadowed, and the fact relation still answers"
-      (list (derived-entry W 'member) (derived-entry W 'kind) (pair? (query-rows W '(kind ?b ?k))))
+      (list (derived-entry W 'member) (derived-entry W 'kind)
+            (let ((a (q W '(kind ?b ?k)))) (and (pair? a) (eq? (car a) 'ok) (pair? (rows-of a)))))
       '((derived member (unavailable (shadowed TEST))) (derived kind (unavailable (shadowed FACT))) #t))
 (define WK (store! "bodywrite"))
 (define wkS (make WK 'section "S"))
 (forge! WK "bodyaaaa" '(derive bk ((head (bk ID)) (clause (bk ?x) (kind+ ?x doc)))))
-(forge! WK "bodybbbb" '(rule usesbk ((class state) (on section) (must-not (bk ?w)))))
-(want "SHADOW-7 a body naming kind+: unavailable with the unknown-relation check in a query and inside a write, the same answer"
+(forge! WK "bodybbbb" '(rule usesbk ((class write) (on section) (where (kind+ ?w section)) (must-not (bk ?w)))))
+(want "SHADOW-7 a body naming kind+: unavailable with the unknown-relation check in a query and inside a write session, the same answer"
       (let* ((qa (q WK '(bk ?x))) (wa (title! WK wkS "S2")) (reason (clause-of wa 'reason)))
         (list (and (pair? qa) (list-head qa 4))
               (let ((c (and (pair? qa) (list-ref qa 4)))) (and c (list (car c) (car (cadr c)) (list-head (cadr (cadr c)) 4))))
@@ -430,10 +462,9 @@
 (define r6B (make R6 'doc "b"))
 (derive! R6 'r '((head (r STR)) (clause (r ?t) (title ?b ?t))))
 (rule! R6 "rq" "--on" "doc" "--must-not" "(and (r ?t) (= ?t \"never\"))")
-(derive! R6 'r '((head (r ANY)) (clause (r ?v) (field ?b "title" ?v))))
-(want "RULES-6 r widened under rq with a test that still types: rq keeps judging"
-      (head-of (title! R6 r6B "1"))
-      'ok)
+(want "RULES-6 r widened under rq with a test that still types: accepted, and rq judges by the new clauses (which answer \"never\")"
+      (in-order (head-of (derive! R6 'r '((head (r ANY)) (clause (r "never"))))) (head3 (title! R6 r6B "1")))
+      '(ok (error refused rule-violation)))
 (define R7 (store! "rules-arity"))
 (define r7B (make R7 'doc "b"))
 (derive! R7 'r (over-kind 'r 'code))
@@ -472,8 +503,9 @@
       (head3 (batch R11 '(rule rq retired) '(derive r retired) (list 'set r11B 'title "x")))
       '(error refused rule-unevaluable))
 (want "RULES-12 split into two batches: both accepted"
-      (in-order (car (batch R11 '(rule rq retired))) (car (batch R11 '(derive r retired) (list 'set r11B 'title "x"))))
-      '(batch batch))
+      (in-order (let ((a (batch R11 '(rule rq retired)))) (and (pair? a) (map car (cadr a))))
+                (let ((a (batch R11 '(derive r retired) (list 'set r11B 'title "x")))) (and (pair? a) (map car (cadr a)))))
+      '((ok) (ok ok)))
 ;; UNDER MERGE: the local writer declares rq naming r while a peer retires r
 (define RM (store! "merge"))
 (define rmB (make RM 'doc "b"))
@@ -526,18 +558,19 @@
 (derive! RB 'c3a (cube 'c3a 3))
 (derive! RB 'c3b (cube 'c3b 3))
 (derive! RB 'c4 (cube 'c4 4))
-(rule! RB "one" "--on" "doc" "--must-not" "(and (c3a ?a ?b ?c) (= ?a \"nope\"))")
-(want "BUDGET-1 one stored call that fits the budget alone: the write is judged"
+(rule! RB "a3" "--on" "doc" "--must-not" "(and (c3a ?a ?b ?c) (= ?a \"nope\"))")
+(want "BUDGET-1 one rule whose stored call fits the budget alone: the write is judged"
       (head-of (title! RB rbD "1"))
       'ok)
-(rule! RB "one" "--retire")
-(rule! RB "two" "--on" "doc" "--must-not" "(and (c3a ?a ?b ?c) (c3b ?d ?e ?f) (= ?a \"nope\"))")
-(want "BUDGET-2 two calls that fit alone but not together: refused at the later one, query-budget"
+;; TWO RULES, ONE BUDGET: each call fits alone, the write's two rules do not
+(rule! RB "b3" "--on" "doc" "--must-not" "(and (c3b ?a ?b ?c) (= ?a \"nope\"))")
+(want "BUDGET-2 two rules whose calls fit alone but not together: refused at the later one, query-budget"
       (let ((a (title! RB rbD "2")))
         (and (pair? a) (eq? (car a) 'error)
              (let ((r (cadr (clause-of a 'reason)))) (list (head3 a) (car r) (cadr r) (caddr r)))))
       '((error refused rule-unevaluable) error query-budget (relation c3b)))
-(rule! RB "two" "--retire")
+(rule! RB "a3" "--retire")
+(rule! RB "b3" "--retire")
 (rule! RB "four" "--on" "doc" "--must-not" "(c4 ?a ?b ?c ?d)")
 (want "BUDGET-3 a stored relation that blows the budget: rule-unevaluable, query-budget"
       (let ((a (title! RB rbD "3")))
@@ -580,7 +613,7 @@
 (define sh-first (on SH 'batch sh-req "--req" "TR1" "--cursor" sh-cursor))
 (want "SHAPE-4 a tracked plan holding a derive intent round-trips: written, then the same request answers replay"
       (in-order (and (pair? sh-first) (car sh-first))
-                (clause-of (on SH 'batch sh-req "--req" "TR1" "--cursor" sh-cursor) 'replay)
+                (clause-of (first-item (on SH 'batch sh-req "--req" "TR1" "--cursor" sh-cursor)) 'replay)
                 (car (state-derived (state SH) 'tracked)))
       '(batch (replay #t) in-force))
 
