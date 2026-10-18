@@ -6,5 +6,6 @@
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
 ;;
-;; Empty: the three verbs changed-files, position and locate are in the base now.
-()
+;; The verb derive: the catalogue and the unknown-verb refusal list it.
+((describe "the catalogue lists the new verb derive")
+ (no-such-verb "the unknown-verb refusal lists the verbs, derive among them"))
