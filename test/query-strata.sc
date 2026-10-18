@@ -102,9 +102,15 @@
 (define (local-writer st)
   (let ((p (clause-of (on st 'position) 'position))) (and p (car (cadr p)))))
 ;; A RECORD FROM ANOTHER WRITER, PEER (eight characters), whose premise is PAST
+;; on the local writer
 (define (forge! st peer payload past)
   (let* ((w (local-writer st))
          (bytes (encode-record 1 1789000000001 "peer" (list (cons w (cdr (assoc w past)))) (storable-encode payload))))
+    (log-publish! st peer 1 bytes (segment-sha bytes))))
+;; one whose premise is the whole cut, every writer's: it supersedes what any
+;; writer declared before it
+(define (forge-seeing! st peer payload)
+  (let ((bytes (encode-record 1 1789000000001 "peer" (filter (lambda (e) (> (cdr e) 0)) (cut-of st)) (storable-encode payload))))
     (log-publish! st peer 1 bytes (segment-sha bytes))))
 (define (over-kind name kind) (list (list 'head (list name 'ID)) (list 'clause (list name '?x) (list 'kind '?x kind))))
 ;; the fourth table's availability of NAME
@@ -287,6 +293,14 @@
 (want "AGG-28 a sum over STR inside a not: wrong-kind, the form's own rule"
       (q A '(not (sum ?s ?x (title ?b ?x))))
       '(error bad-request wrong-kind (form sum) (variable ?x) (kind STR)))
+(want "AGG-32 a disjoint goal inside a form does not stop the kind check: a sum over STR after it, and a column known before it"
+      (in-order (q A '(not (and (= 1 "x") (sum ?s ?t (title ?b ?t)))))
+                (q A '(sum ?s ?t (and (title ?b ?t) (= 1 "x")))))
+      '((error bad-request wrong-kind (form sum) (variable ?t) (kind STR))
+        (error bad-request wrong-kind (form sum) (variable ?t) (kind STR))))
+(want "AGG-33 a statically empty goal evaluates nothing: a count over an external relation beside a disjoint test is 0"
+      (query-rows A '(count ?n (and (score ?b ?q ?s) (= 1 "x"))))
+      '((0)))
 (want "AGG-29 min over a SYM column: wrong-kind; count's result is INT, so joining it with a title is join-across-kinds"
       (in-order (q A '(min ?m ?k (kind ?b ?k)))
                 (head4 (q A '(and (count ?n (kind ?b doc)) (title ?x ?n)))))
@@ -332,7 +346,7 @@
       '())
 ;; A POSITIVE CALL DOES NOT REPAIR: q replayed as the docs IN p leaves p
 ;; -not-> q -> p, still a negative component
-(forge! S "peerstr2" (list 'derive 'q (body 'q '(kind ?x doc) '(p ?x))) (cut-of S))
+(forge-seeing! S "peerstr2" (list 'derive 'q (body 'q '(kind ?x doc) '(p ?x))))
 (want "STRAT-5 q redeclared with a positive call of p: q's clause is the positive one, and both stay unstratified"
       (list (state-derived (state S) 'q) (availability-of S 'p) (availability-of S 'q))
       (list (list 'in-force (body 'q '(kind ?x doc) '(p ?x)))
@@ -345,6 +359,13 @@
 (want "STRAT-7 q redeclared naming nothing of p: p available, its rows the docs not in q"
       (list (availability-of S 'p) (query-rows S '(p ?x)))
       (list 'available (list (list s1))))
+;; A CALLEE RETIRED UNDER A FORM: reported through it, not as the form's kinds
+(derive! S 'qi '((head (qi INT)) (clause (qi ?n) (count ?n (kind ?b doc)))))
+(derive! S 'pm '((head (pm INT)) (clause (pm ?m) (min ?m ?x (qi ?x)))))
+(retire! S 'qi)
+(want "STRAT-13 a callee under a min retired: the caller unavailable through it, retired"
+      (availability-of S 'pm)
+      '(unavailable (state retired) (through qi)))
 ;; AT THE VERB
 (define V (store! "strata-verb"))
 (make V 'doc "v1")
@@ -421,19 +442,26 @@
         (list (and (pair? a) (list-head a 2)) once (session-expansions S 'reach ca '?y)))
       (list (list 'ok (list (list ca 3))) 4 4))
 (want "COMP-4 a negated relation whose completion exceeds the budget: query-budget naming it"
-      (let ((S (make-query-session (state C) '() 5)))
+;; WHAT THE FACTS COST ALONE: the kind and edge builds, a query with no row
+      (let* ((facts (let ((S0 (make-query-session (state C))))
+                      (session-answer S0 '(and (kind ?x doc) (edge ?a cites ?b) (= ?a "no such block")))
+                      (session-spent S0)))
+             (S (make-query-session (state C) '() (+ facts 1))))
         (head3 (session-answer S (list 'and '(kind ?x doc) (list '= '?x ca) (list 'not (list 'reach '?x cd))))))
       '(error query-budget (relation reach)))
 
 ;; ---- RULE VALUES ---------------------------------------------------------------------------
 (printf "== RV: forms in rule values ==\n")
+;; A WRITE RULE READS THE STATE BEFORE THE WRITE: the doc given its phase
+;; before the rule is the one a write may touch
 (define R (store! "rules"))
 (define rd (make R 'doc "d"))
+(define rp (make R 'doc "p"))
+(field! R rp 'phase "draft")
 (rule! R "phased" "--on" "doc" "--must-not" "(and (kind+ ?w doc) (not (field ?w \"phase\" _)))")
-(want "RV-1 a must-not with a not: a doc written without a phase is refused; with one, judged and accepted"
-      (in-order (head3 (title! R rd "d2"))
-                (head-of (batch R (list 'set rd 'phase "draft") (list 'set rd 'title "d3"))))
-      '((error refused rule-violation) batch))
+(want "RV-1 a must-not with a not: a doc without a phase written is refused; one with a phase, judged and accepted"
+      (in-order (head3 (title! R rd "d2")) (head-of (title! R rp "p2")))
+      '((error refused rule-violation) ok))
 (rule! R "phased" "--retire")
 (want "RV-2 a must with a not of a per-write fact is a WRITE rule, and judges a write"
       (in-order (head-of (rule! R "unreadw" "--on" "doc" "--must" "(not (unread ?w))"))
@@ -447,11 +475,11 @@
                 (derive! R 'ps '((head (ps INT)) (clause (ps ?n) (count ?n (and (kind ?b doc) (score ?b "x" ?s)))))))
       '((error bad-request rule-relation-not-allowed (relation score))
         (error bad-request rule-relation-not-allowed (relation score))))
-(want "RV-4 a where with a count, judged: a write leaving one doc is accepted, the insert of a second refused"
-      (in-order (head-of (rule! R "fewdocs" "--on" "doc" "--where" "(and (count ?n (kind ?b doc)) (= ?n 2))" "--must" "(kind ?w code)"))
+(want "RV-4 a where with a count, judged: a write leaving two docs is accepted, the insert of a third refused"
+      (in-order (head-of (rule! R "fewdocs" "--on" "doc" "--where" "(and (count ?n (kind ?b doc)) (= ?n 3))" "--must" "(kind ?w code)"))
                 (head-of (title! R rd "d5"))
                 (let ((a (batch R (list 'insert 'root #f '((kind . doc) (title . "e"))))))
-                  (and (pair? a) (eq? (car a) 'batch) (head3 (car (cadr a))))))
+                  (head3 (if (and (pair? a) (eq? (car a) 'batch) (pair? (cadr a))) (car (cadr a)) a))))
       '(ok ok (error refused rule-violation)))
 
 ;; ---- LIBRARY and NAMES -----------------------------------------------------------------------

@@ -1492,6 +1492,20 @@
    unrelated a
    "a rule's goal checked as a query's goals are: the query's own refusal is the rule's answer, and only that refusal is caught"
    (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (form-result-kind) 1 guard
+   ((and (refusal? e) (static-emptiness? (refusal-answer e))))
+   unrelated a
+   "a goal inside a form kind-checked: a kind no cut satisfies makes that goal empty, the kinds left as they were; every other refusal goes on"
+   (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) env)))
+  ("query.sc" (form-empty?) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a form's goal read with the group's values as kinds: a kind refusal no form owns is its emptiness, any other refusal is not, and no file is read"
+   (e ((refusal? e)
+       (let ((a (refusal-answer e)))
+         (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
+              (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))
+              #t)))))
   ("rpc.sc" (parse-derive value-of) 1 guard
    (#t)
    unrelated a

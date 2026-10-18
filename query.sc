@@ -634,13 +634,19 @@
     (define (static-emptiness? a)
       (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
            (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))))
-    (let ((inner (guard (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) #f))
-                   (goal-kinds-of (goal-conjuncts (form-sub g)) env))))
+    ;; GOAL BY GOAL: one that no cut can satisfy leaves the kinds as they were
+    ;; and the check goes on, so a later goal's own refusal (a nested form's
+    ;; wrong-kind) is still met and a column's kind is still known
+    (let ((inner (let loop ((cs (goal-conjuncts (form-sub g))) (env env))
+                   (if (null? cs)
+                       env
+                       (loop (cdr cs) (guard (e ((and (refusal? e) (static-emptiness? (refusal-answer e))) env))
+                                        (goal-kinds-of (list (car cs)) env)))))))
       (case (car g)
         ((not) env)
         ((count) (cons (list (form-result g) '(int) '()) env))
         (else
-         (let* ((x (form-column g)) (kx (if inner (term-kind x inner) '(any))))
+         (let* ((x (form-column g)) (kx (term-kind x inner)))
            (when (if (eq? (car g) 'sum)
                      (null? (kind-meet kx '(int)))
                      (and (null? (kind-meet kx '(int))) (null? (kind-meet kx '(str)))))
@@ -1197,8 +1203,8 @@
                          ;; head's containment is not read for this clause (an
                          ;; untyped variable would read as ANY), the reach is
                          ;; what reports the callee
-                         (unknown (exists (lambda (g) (let ((h (dispatch env (car g)))) (and h (not ((handler-kinds-of h) (car g))))))
-                                          goals)))
+                         (unknown (exists (lambda (a) (let ((h (dispatch env (car (car a))))) (and h (not ((handler-kinds-of h) (car (car a)))))))
+                                          (apply append (map goal-atoms goals)))))
                      (let loop ((as (if unknown '() (cdr head))) (ds declared) (n 1))
                        (unless (null? as)
                          (let ((k (term-kind (car as) kenv)))
@@ -1733,10 +1739,11 @@
 ;; ---- a form, evaluated -------------------------------------------------------------------
   ;;
   ;; A FORM'S GOAL IS A RELATION OF ITS OWN, named by the occurrence ("form
-  ;; n", a string no goal can spell), whose head is every variable of the
-  ;; goal: the ones bound outside are the GROUP, seeded as the call's
-  ;; arguments (opaque values, never written back into the goal), the others
-  ;; its LOCALS. Its table is completed before it is read: a NESTED pass loop
+  ;; n", a string no goal can spell), whose head is the GROUP, the goal's
+  ;; variables bound outside it (at any depth), seeded as the call's
+  ;; arguments (opaque values, never written back into the goal), and its
+  ;; LOCALS, what the goal's own conjuncts export. A nested form's locals
+  ;; are its own and no column of this one. Its table is completed before it is read: a NESTED pass loop
   ;; as session-evaluate's, over the call's key and all it reaches, until a
   ;; pass adds nothing; then every key it touched is complete, and a later
   ;; call of the same group reads the complete table. A refusal inside
@@ -1771,13 +1778,33 @@
   ;; integers (0 over none); min and max take the least or greatest of
   ;; integers or of strings, by bytes (no row over none). A value the form
   ;; cannot take refuses the query (aggregate-value).
+;; A STATICALLY EMPTY GOAL, read with the group's values as their kinds: a
+  ;; constant or a join inside it no cut can satisfy. Its form evaluates
+  ;; nothing (not holds, count and sum 0, min and max no row).
+  (define (value-kind v)
+    (cond ((string? v) '(str)) ((symbol? v) (list (list 'syms v))) ((and (integer? v) (exact? v)) '(int)) (else '(any))))
+  (define (form-empty? S g b vars)
+    (let* ((env (session-env-of S))
+           (kinds-of (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))
+           (seed (filter values (map (lambda (v) (let ((e (assq v b))) (and e (list v (value-kind (cdr e)) '())))) vars))))
+      (guard (e ((refusal? e)
+                 (let ((a (refusal-answer e)))
+                   (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
+                        (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))
+                        #t))))
+        (goal-kinds (goal-conjuncts (form-sub g)) seed kinds-of)
+        #f)))
   (define (form-solve S g b rest)
-    (let* ((sub (form-sub g)) (name (form-name g)) (vars (goal-all-variables sub)))
+    (let* ((sub (form-sub g)) (name (form-name g))
+           (exported (apply append (map (lambda (c) ((handler-exports (dispatch (session-env-of S) (car c))) c))
+                                        (goal-conjuncts sub))))
+           (vars (filter (lambda (v) (or (assq v b) (memq v exported))) (goal-all-variables sub))))
       (unless (hashtable-contains? (session-index S) name)
         (hashtable-set! (session-index S) name (list (cons (cons name vars) (goal-conjuncts sub)))))
-      (let* ((key (cons name (map (lambda (v) (let ((e (assq v b))) (if e (cdr e) unbound))) vars))))
-        (complete-key! S key)
-        (let ((rows (table-tuples S key)) (head (car g)))
+      (let* ((key (cons name (map (lambda (v) (let ((e (assq v b))) (if e (cdr e) unbound))) vars)))
+             (empty (form-empty? S g b vars)))
+        (unless empty (complete-key! S key))
+        (let ((rows (if empty '() (table-tuples S key))) (head (car g)))
           (define (bind v value) (let ((b2 (unify (list v) (list value) b))) (when b2 (rest b2))))
           (define (column-values)
             (let ((i (let loop ((vs vars) (i 0)) (if (eq? (car vs) (form-column g)) i (loop (cdr vs) (+ i 1))))))
@@ -1789,15 +1816,15 @@
             ((count) (bind (form-result g) (length rows)))
             ((sum)
              (let ((vs (column-values)))
-               (let ((bad (find (lambda (v) (not (and (integer? v) (exact? v)))) vs)))
-                 (when bad (value-refusal bad)))
+               (let ((bad (memp (lambda (v) (not (and (integer? v) (exact? v)))) vs)))
+                 (when bad (value-refusal (car bad))))
                (bind (form-result g) (apply + vs))))
             (else
              (let ((vs (column-values)))
                (unless (null? vs)
                  (let* ((ints? (and (integer? (car vs)) (exact? (car vs))))
-                        (bad (find (lambda (v) (not (if ints? (and (integer? v) (exact? v)) (string? v)))) vs)))
-                   (when (or bad (not (or ints? (string? (car vs))))) (value-refusal (or bad (car vs))))
+                        (bad (memp (lambda (v) (not (if ints? (and (integer? v) (exact? v)) (string? v)))) vs)))
+                   (when (or bad (not (or ints? (string? (car vs))))) (value-refusal (if bad (car bad) (car vs))))
                    (let ((better? (if ints?
                                       (if (eq? head 'min) < >)
                                       (lambda (a b) (let ((x (string->utf8 a)) (y (string->utf8 b)))
