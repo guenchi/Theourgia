@@ -159,7 +159,7 @@
       ;; THE PREMISES A COMMITTED WRITE IS ACCEPTED ON: every verb that writes
       ;; a record takes them; a registered one declares them in its entry.
       (case verb
-        ((insert set move del link unlink relation rule tag batch commit import-code import-md def) '("--premises"))
+        ((insert set move del link unlink relation rule derive tag batch commit import-code import-md def) '("--premises"))
         (else '()))
       (extension-options-of verb car)))
 
@@ -246,7 +246,7 @@
       ((export-code) '("--raw" "--datum" "--working"))
       ((export-md) '("--with-ids" "--working"))
       ((supply) '("--clear"))
-      ((relation rule) '("--retire"))
+      ((relation rule derive) '("--retire"))
       (else '()))
       (extension-options-of verb cadr))))
 

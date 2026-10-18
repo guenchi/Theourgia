@@ -2169,6 +2169,9 @@
         ;; A RULE TWO WRITERS DECLARED DIFFERENTLY: not evaluated until one
         ;; declares it again.
         (state-rule-contested state)
+        ;; A STORED RELATION TWO WRITERS DECLARED DIFFERENTLY: a goal naming
+        ;; it is refused relation-unavailable until one declares it again.
+        (state-derived-contested state)
         ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
         ;; alive text files, that an export would write to the same file.
         (state-duplicated-paths state)
@@ -2891,6 +2894,10 @@
            (cond
              ((memq name effect-relation-names)
               (list 'error 'relation-is-built-in (list 'relation name)))
+             ;; A STORED RELATION'S NAME is not an edge relation's: the derive
+             ;; verb refuses the reverse
+             ((and (symbol? name) (state-derived state name))
+              (list 'error 'bad-request 'name-taken (list 'name name) '(where derive)))
              ((memq name reserved-relation-names)
               (list 'error 'reserved-relation (list 'relation name)))
              ((and (pair? value) (not (memq (car value) declaration-kinds)))
@@ -2906,14 +2913,26 @@
         ;; intent it declared (request.sc, intent-produced?), and a value in
         ;; another order is refused with the form it would have.
         ((rule)
-         (let ((v (and (= (length i) 3) ((eval 'rule-value-check (environment '(theourgia query))) (caddr i)))))
+         (let ((v (and (= (length i) 3) ((eval 'rule-value-check (environment '(theourgia query))) (caddr i) #t state))))
            (cond
+             ;; A STORED RELATION'S NAME is not a rule's
+             ((and (= (length i) 3) (symbol? (cadr i)) (state-derived state (cadr i)))
+              (list 'error 'bad-request 'name-taken (list 'name (cadr i)) '(where derive)))
              ((not v)
               (list 'error 'malformed-intent (list 'too-many-arguments (list 'verb 'rule) (list 'given (- (length i) 1)) '(needs 2))))
              ((and (pair? v) (eq? (car v) 'error)) v)
              ((not (equal? v (caddr i)))
               (list 'error 'bad-request 'rule-not-in-its-form (list 'form v)))
              (else (list 'rule (cadr i) v)))))
+        ;; A STORED RELATION NAMES NO BLOCK. Its value is checked by the query
+        ;; library (derive-value-check) at STATE, this batch's evolving
+        ;; prefix: the namespace, the shape, no external relation reached,
+        ;; and its clauses typing there with the stored relations it names.
+        ((derive)
+         (if (not (and (= (length i) 3) (symbol? (cadr i))))
+             (list 'error 'malformed-intent (list 'arguments (list 'verb 'derive) (list 'given (- (length i) 1)) '(needs 2)))
+             (let ((v ((eval 'derive-value-check (environment '(theourgia query))) state (cadr i) (caddr i))))
+               (if (and (pair? v) (eq? (car v) 'error)) v (list 'derive (cadr i) v)))))
         ;; SPELLED, FOR THE SAME REASON AS THE OTHER ONE. An intent's verb
         ;; is whatever the caller wrote, so the refusal that names it must
         ;; not be the thing that carries it back.
@@ -4720,11 +4739,12 @@
                       ;; each writes the record its receipt counts on. The
                       ;; record of the same value is harmless: agreement is
                       ;; by value.
-                      ((and (memq (car payload) '(relation rule)) (not (request-actor? actor))
+                      ((and (memq (car payload) '(relation rule derive)) (not (request-actor? actor))
                             (equal? (caddr payload)
-                                    (let ((d (if (eq? (car payload) 'rule)
-                                                 (state-rule state (cadr payload))
-                                                 (state-declaration state (cadr payload)))))
+                                    (let ((d (case (car payload)
+                                               ((rule) (state-rule state (cadr payload)))
+                                               ((derive) (state-derived state (cadr payload)))
+                                               (else (state-declaration state (cadr payload))))))
                                       (if (and d (eq? (car d) 'in-force)) (cadr d)
                                           (and (or (not d) (eq? (car d) 'retired)) 'retired)))))
                        '(ok (unchanged)))

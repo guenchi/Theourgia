@@ -58,6 +58,7 @@
           session-budget-set! refusal? refusal-answer session-rows
           query-relations-text
           query-budget-default
+          derive-value-check derive-affects rule-names-stored?
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
@@ -65,7 +66,9 @@
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
-                state-declared-relations kind-known? known-kinds)
+                state-declared-relations kind-known? known-kinds
+                state-derived state-derived-names state-declaration state-rule reduction?
+                derive-value-reason state-declared-rules)
           (only (theourgia store) library-locator defs-index search-state field-strings)
           (only (theourgia md) md-refs)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
@@ -236,8 +239,17 @@
 
   ;; A relation is EXTERNAL when it is a fact marked so, or a rule of the
   ;; library one of whose bodies names an external relation, through any
-  ;; depth of rules.
-  (define (relation-external? rel)
+  ;; depth of rules -- and, given a STATE, a stored relation of that state
+  ;; one of whose clauses does (OVERRIDE, when given, a value about to be
+  ;; written, read in force in its place: the verb's check).
+  (define (relation-external? rel . state+override)
+    (define clauses
+      (append rule-library
+              (if (and (pair? state+override) (car state+override))
+                  (let ((table (stored-table (car state+override) (and (pair? (cdr state+override)) (cadr state+override)))))
+                    (apply append (map (lambda (e) (if (eq? (car (cdr e)) 'in-force) (stored-rules (cadr (cdr e))) '()))
+                                       table)))
+                  '())))
     (let walk ((rel rel) (seen '()))
       (cond
         ((assq rel fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
@@ -246,7 +258,7 @@
          (exists (lambda (rule)
                    (and (eq? (car (car rule)) rel)
                         (exists (lambda (g) (walk (car g) (cons rel seen))) (cdr rule))))
-                 rule-library)))))
+                 clauses)))))
 
   ;; THE BUILT-IN RULES a store may enable by name.
   (define builtin-rules '(citation-coverage))
@@ -264,21 +276,25 @@
   ;; revalidation of a stored rule (rules.sc, rule-plan) passes #f, so a rule
   ;; stored before the kinds keeps the behaviour it had and never turns a
   ;; write into rule-unevaluable for a kind.
+  ;; STATE, the optional argument after KINDS?, is the state the rule is
+  ;; checked at: its stored relations are known there (STORED), and a goal
+  ;; naming one that is not available is refused relation-unavailable.
   (define (rule-value-check value . options)
     (define kinds? (or (null? options) (car options)))
+    (define state (and (pair? options) (pair? (cdr options)) (cadr options)))
     (define (clause k) (assq k value))
     ;; The relations a goal names, through every nested and: the goals
     ;; query-goals answers for it, which it has already accepted.
     (define (goal-relations g)
-      (map car (rule-value-goals g)))
+      (map car (rule-value-goals g state)))
     (define (goal-refusal g)
       (or (guard (e ((refusal? e) (refusal-answer e)))
-            (rule-value-goals g)
+            (rule-value-goals g state)
             #f)
-          (let ((x (find relation-external? (goal-relations g))))
+          (let ((x (find (lambda (r) (relation-external? r state)) (goal-relations g))))
             (and x (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation x))))
           (and kinds?
-               (goals-kind-refusal (rule-value-goals g) written-block-seed (rule-value-env)))))
+               (goals-kind-refusal (rule-value-goals g state) written-block-seed (rule-value-env state)))))
     ;; A PLAN'S MARKER IS NOT DATA OF A RULE: a plan binds every pair it reads
     ;; as a marker in a member it declares (request.sc, bind-new: a pair
     ;; headed "#%new" with a pair after it), so a rule value holding one would
@@ -567,9 +583,13 @@
   ;; A CLIENT QUERY'S KIND CHECK: #f when the goal passes, or when
   ;; query-goals refuses it (the session answers that refusal as before);
   ;; else the kind refusal's answer.
-  (define (query-kind-refusal goal)
+  ;; ENV, when given, is the client session's environment, so a call to a
+  ;; stored relation is read against its declared kinds; only the client
+  ;; route (the query verb) asks this, and session-rows, the path a rule's
+  ;; evaluation takes, runs no kind pass.
+  (define (query-kind-refusal goal . env)
     (guard (e ((refusal? e) #f))
-      (let ((env (session-env rule-library '())))
+      (let ((env (if (pair? env) (car env) (session-env rule-library '()))))
         (goals-kind-refusal (query-goals goal env (query-reporter rule-library)) '() env))))
   ;; A RULE VALUE'S GOALS ARE ASKED WITH ?w BOUND TO THE WRITTEN BLOCK, so ?w
   ;; starts as an ID.
@@ -613,8 +633,17 @@
   ;; continuation that solves the remaining goals with new bindings); check
   ;; (goal seen -> #f or the violation, (test-variable-unbound <variable>),
   ;; SEEN being the variables bound before the goal).
-  (define-record-type (handler make-handler handler?)
-    (fields name applies? arity-of kinds-of external? write? binds? solve check))
+  ;; AVAILABLE (relation -> #f, or the clauses of its refusal: (state ...)
+  ;; and, reached through other relations, (through ...)) is asked right
+  ;; after the dispatch, before the arity: a relation that cannot answer at
+  ;; this state is a refusal of the goal naming it, in the static pass. The
+  ;; four built-in kinds are always available; a stored relation is when
+  ;; its candidates are in force and its clauses check at the state.
+  (define-record-type (handler make-handler* handler?)
+    (fields name applies? arity-of kinds-of external? write? binds? solve check available))
+  ;; a handler that is always available (every built-in one, and a fixture's)
+  (define (make-handler name applies? arity-of kinds-of external? write? binds? solve check)
+    (make-handler* name applies? arity-of kinds-of external? write? binds? solve check (lambda (rel) #f)))
 
   (define test-handler
     (make-handler 'TEST
@@ -683,20 +712,168 @@
   ;; validator), which is what lets a fixture reach the runtime rule.
   (define extra-handlers (make-parameter '()))
 
+  ;; ---- stored relations: the fifth handler ------------------------------------------------
+  ;;
+  ;; A STORED RELATION is a `derive` record's value, read at a state
+  ;; (reduce.sc, state-derived): ((head (<name> <kind> ...)) (clause (<name>
+  ;; <term> ...) <goal> ...) ...). Its clauses are data checked at the state
+  ;; they are used at; nothing is recorded about them.
+  ;;
+  ;; THE GOAL NAMES THE NAMESPACE RESERVES: a test, a fact relation, a
+  ;; rule-only (per-write) fact, a library head. The verb refuses a stored
+  ;; relation so named (with the declared edge relations and the stored
+  ;; rules, which are reserved for the operator's sake and are no goal
+  ;; names); a record that bypassed the verb under such a name is MASKED by
+  ;; the STORED handler -- the handler that owns the name serves it, or it is
+  ;; unknown where that handler does not apply -- whichever handlers an
+  ;; environment holds. -> the owner, TEST FACT WRITE-FACT RULE, or #f.
+  (define (goal-name-owner rel)
+    (cond ((assq rel tests) 'TEST)
+          ((assq rel fact-relations) 'FACT)
+          ((assq rel rule-only-facts) 'WRITE-FACT)
+          ((assq rel (rule-relations rule-library)) 'RULE)
+          (else #f)))
+  (define (stored-head v) (cadr (car v)))
+  ;; a value's clauses as rules: (<head pattern> <goal> ...)
+  (define (stored-rules v) (map (lambda (c) (cons (cadr c) (cddr c))) (cdr v)))
+  (define (spelled-kind? k) (guard (e (#t #f)) (kind-union k) #t))
+  ;; THE STORED RELATIONS OF A STATE, the masked ones left out: -> ((<name>
+  ;; . <state-derived>) ...); OVERRIDE, when given, is (<name> <value>), a
+  ;; value the `derive` verb is about to write, read in force in its place.
+  (define (stored-table state override)
+    (let ((names (filter (lambda (n) (not (goal-name-owner n)))
+                         (if (and state (reduction? state)) (state-derived-names state) '()))))
+      (let ((table (map (lambda (n) (cons n (state-derived state n))) names)))
+        (if override
+            (cons (cons (car override) (if (eq? (cadr override) 'retired) '(retired) (list 'in-force (cadr override))))
+                  (filter (lambda (e) (not (eq? (car e) (car override)))) table))
+            table))))
+  (define (stored-in-force table rel)
+    (let ((e (assq rel table))) (and e (eq? (car (cdr e)) 'in-force) (cadr (cdr e)))))
+
+  ;; THE STORED HANDLER of a state. applies? answers for every name declared
+  ;; there and not masked -- in force, contested or retired, so a retired
+  ;; name is never an unknown relation; arity-of and kinds-of read the
+  ;; in-force head (asked only after available answered #f); solve is the
+  ;; library rules' over the clauses, which the session indexes under the
+  ;; name; available is the relation's availability, computed once per
+  ;; handler (one handler a session, a session one state).
+  ;; AVAILABILITY: in force, and its clauses check in the STORED-CHECK
+  ;; environment of the same state WITH the kinds, every stored relation they
+  ;; name read by its head; then the REACH: every stored relation its clauses
+  ;; name, through any depth, available by the same reading of its own.
+  ;; -> #f, or ((state contested|retired|(check <refusal>)) [(through <r> ...)]).
+  (define (stored-handler state override)
+    (define table (stored-table state override))
+    (define memo (make-eq-hashtable))
+    (define check-env #f)
+    (define (own rel)
+      (let ((d (cdr (assq rel table))))
+        (case (car d)
+          ((contested) '((state contested)))
+          ((retired) '((state retired)))
+          (else (let ((r (stored-clauses-refusal rel (cadr d) check-env)))
+                  (and r (list (list 'state (list 'check r)))))))))
+    (define (callees rel)
+      (let ((v (stored-in-force table rel)))
+        (if v
+            (filter (lambda (n) (assq n table)) (apply append (map (lambda (c) (map car (cddr c))) (cdr v))))
+            '())))
+    (define (reach rel)
+      (let walk ((rels (list rel)) (path '()) (seen '()))
+        (cond ((null? rels) #f)
+              ((memq (car rels) seen) (walk (cdr rels) path seen))
+              (else
+               (let* ((r (car rels)) (here (if (eq? r rel) '() (append path (list r)))) (u (own r)))
+                 (cond (u (if (null? here) u (append u (list (cons 'through here)))))
+                       ((walk (callees r) here (cons r seen)))
+                       (else (walk (cdr rels) path (cons r seen)))))))))
+    (define self
+      (make-handler* 'STORED
+                     (lambda (rel) (and (assq rel table) #t))
+                     ;; #f for one with no head in force: its own check reads the
+                     ;; heads only, and the reach reports such a callee
+                     (lambda (rel) (let ((v (stored-in-force table rel))) (and v (length (cdr (stored-head v))))))
+                     (lambda (rel) (let ((v (stored-in-force table rel)))
+                                     (and v (for-all spelled-kind? (cdr (stored-head v)))
+                                          (map kind-union (cdr (stored-head v))))))
+                     (lambda (rel) #f)
+                     #f #t
+                     (lambda (S g b rest)
+                       (let ((key (cons (car g) (call-args (cdr g) b))))
+                         (ensure-expanded S key)
+                         (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                                   (table-tuples S key))))
+                     (lambda (g seen) #f)
+                     (lambda (rel)
+                       (let ((m (hashtable-ref memo rel 'none)))
+                         (if (eq? m 'none)
+                             (let ((u (reach rel))) (hashtable-set! memo rel u) u)
+                             m)))))
+    (set! check-env (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library) self)))
+    self)
+  ;; the STORED-CHECK environment the handler checks its clauses in: TEST,
+  ;; FACT, RULE over the library, STORED; no WRITE-FACT, so a stored
+  ;; relation's availability is the same whatever facts a session carries
+  (define (stored-check-env state . override)
+    (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library)
+                             (stored-handler state (and (pair? override) (car override))))))
+
+  ;; ONE STORED RELATION'S CLAUSES, checked in ENV (its STORED-CHECK
+  ;; environment) as a library clause is at load, refusals as a query's:
+  ;; every head term a variable or a constant, the body's relations, arity,
+  ;; terms and the test-variable rule (query-goals, the stored relations read
+  ;; by their heads, not their availability), every head variable bound by a
+  ;; goal that binds, the kinds of the body and the head contained in the
+  ;; declared head kinds. -> #f, or the refusal's answer.
+  (define (stored-clauses-refusal rel v env)
+    (guard (e ((refusal? e) (refusal-answer e)))
+      (let ((declared (cdr (stored-head v))))
+        (cond
+          ((find (lambda (k) (not (spelled-kind? k))) declared)
+           => (lambda (k) (refuse 'error 'bad-request 'kind-not-known (list 'relation rel) (list 'kind k))))
+          (else
+           (for-each
+             (lambda (c)
+               (let ((head (cadr c)) (body (cddr c)))
+                 (for-each (lambda (a) (unless (or (variable? a) (simple-constant? a))
+                                         (refuse 'error 'bad-request 'not-a-term (list 'term a))))
+                           (cdr head))
+                 (let* ((goals (if (null? body) '() (query-goals-with (cons 'and body) env (query-reporter rule-library) #f '())))
+                        (bound (apply append (map goal-variables
+                                                  (filter (lambda (g) (handler-binds? (dispatch env (car g)))) goals)))))
+                   (for-each (lambda (x) (unless (memq x bound)
+                                           (refuse 'error 'bad-request 'head-variable-unbound (list 'relation rel) (list 'variable x))))
+                             (goal-variables head))
+                   (let ((kenv (goal-kinds goals '() (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))))
+                     (let loop ((as (cdr head)) (ds declared) (n 1))
+                       (unless (null? as)
+                         (let ((k (term-kind (car as) kenv)))
+                           (unless (kind<=? k (kind-normal (kind-union (car ds))))
+                             (refuse 'error 'bad-request 'head-kind (list 'relation rel) (list 'position n)
+                                     (list 'declared (car ds)) (list 'clause (kind-name k)))))
+                         (loop (cdr as) (cdr ds) (+ n 1))))))))
+             (cdr v))
+           #f)))))
+
   ;; AN ENVIRONMENT: the handler set of one place goals are read.
   (define-record-type (dispatch-env make-dispatch-env dispatch-env?)
     (fields handlers))
   ;; LIBRARY LOAD, and a session's extra clauses: TEST, FACT, RULE over
-  ;; RULES; no WRITE-FACT, so a body naming one is an unknown relation.
+  ;; RULES; no WRITE-FACT and no STORED, so a body naming either is an
+  ;; unknown relation.
   (define (library-env rules) (make-dispatch-env (list test-handler fact-handler (rule-handler rules))))
   ;; A RULE VALUE (the rule verb): the rule-only facts as WRITE-FACT, the
-  ;; library as RULE.
-  (define (rule-value-env)
-    (make-dispatch-env (list test-handler fact-handler (write-fact-handler rule-only-facts) (rule-handler rule-library))))
+  ;; library as RULE, and the stored relations of STATE when one is given.
+  (define (rule-value-env . state)
+    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler rule-only-facts) (rule-handler rule-library))
+                               (if (and (pair? state) (car state)) (list (stored-handler (car state) #f)) '()))))
   ;; A SESSION: its per-write facts as WRITE-FACT (none but a rule check's),
-  ;; the library and its extra clauses as RULE.
-  (define (session-env rules write-facts)
-    (make-dispatch-env (list test-handler fact-handler (write-fact-handler write-facts) (rule-handler rules))))
+  ;; the library and its extra clauses as RULE, the stored relations of its
+  ;; state as STORED.
+  (define (session-env rules write-facts . state)
+    (make-dispatch-env (append (list test-handler fact-handler (write-fact-handler write-facts) (rule-handler rules))
+                               (if (and (pair? state) (car state)) (list (stored-handler (car state) #f)) '()))))
 
   ;; THE ONE HANDLER FOR REL in ENV, or #f when none applies. More than one
   ;; is ambiguous-goal: the validators below make each environment's
@@ -835,11 +1012,17 @@
                             '()))
            (rules (append rule-library extra))
            (index (make-eq-hashtable))
-           (env (session-env rules write-facts)))
+           (env (session-env rules write-facts state)))
       (unless (null? extra) (check-rules rule-library extra))
       (unless (and (null? extra) (null? write-facts)) (session-exclusive! env write-facts extra))
+      ;; THE STORED RELATIONS' CLAUSES ARE INDEXED WITH THE RULES, under their
+      ;; names, so the fixpoint that answers a library head answers them; a
+      ;; masked name is not among them, nor one not in force (a goal naming
+      ;; that is refused before evaluation)
       (for-each (lambda (r) (hashtable-set! index (car (car r)) (append (hashtable-ref index (car (car r)) '()) (list r))))
-                rules)
+                (append rules
+                        (apply append (map (lambda (e) (if (eq? (car (cdr e)) 'in-force) (stored-rules (cadr (cdr e))) '()))
+                                           (stored-table state #f)))))
       (new-session state rules index (make-eq-hashtable) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?) #f 0 budget
@@ -1198,9 +1381,17 @@
   ;; variables bound before the first goal: a rule's goals are asked with ?w
   ;; bound to the target. TWO PASSES, as before: every goal's relation, arity
   ;; and terms, then the bindings, so an unknown relation is reported before
-  ;; a test's unbound variable.
+  ;; a test's unbound variable. A relation the dispatch finds but that is
+  ;; not AVAILABLE (a stored relation contested, retired or failing its own
+  ;; check, or reaching one) is refused relation-unavailable in the first
+  ;; pass, right after the dispatch.
   (define (query-goals goal env report . bound+)
-    (define bound (if (pair? bound+) (list (car bound+)) '()))
+    (query-goals-with goal env report #t (if (pair? bound+) (car bound+) '())))
+  ;; AVAIL? #f reads stored relations by their heads only: a stored
+  ;; relation's own clauses are checked so (stored-clauses-refusal), a cycle
+  ;; of relations member by member. BOUND is the variables bound before the
+  ;; first goal.
+  (define (query-goals-with goal env report avail? bound)
     ;; AN AND IS A CONJUNCTION WHEREVER IT STANDS: (and a (and b c)) is the
     ;; conjunction a b c, its goals in the order written. An empty and is
     ;; no goal, nested or not, and an and found inside itself (a datum
@@ -1217,13 +1408,19 @@
       (for-each
         (lambda (g)
           (let* ((h (or (dispatch env (car g)) (report (car g))))
-                 (n ((handler-arity-of h) (car g))))
-            (unless (= n (length (cdr g)))
+                 (u (and avail? ((handler-available h) (car g))))
+                 (n (begin
+                      (when u (apply refuse 'error 'bad-request 'relation-unavailable (list 'relation (car g)) u))
+                      ((handler-arity-of h) (car g)))))
+            ;; NO ARITY is only a stored callee with no head in force, met
+            ;; with AVAIL? #f: its clauses' check reads heads, and the reach
+            ;; is what reports it
+            (unless (or (not n) (= n (length (cdr g))))
               (refuse 'error 'bad-request 'wrong-arity (list 'relation (car g)) (list 'arity n) (list 'given (length (cdr g))))))
           (let ((bad (misplaced-term g)))
             (when bad (refuse 'error 'bad-request 'not-a-term (list 'term (car bad))))))
         goals)
-      (let loop ((gs goals) (seen (if (pair? bound) (car bound) '())))
+      (let loop ((gs goals) (seen bound))
         (unless (null? gs)
           (let* ((g (car gs)) (h (dispatch env (car g))) (v ((handler-check h) g seen)))
             (when v (refuse 'error 'bad-request (car v) (list 'variable (cadr v))))
@@ -1239,9 +1436,106 @@
     (lambda (rel)
       (refuse 'error 'bad-request 'unknown-relation (list 'relation rel)
               (list 'known (append (map car fact-relations) (map car (rule-relations rules)) (map car tests))))))
-  ;; A RULE VALUE'S GOALS: the rule-value environment, ?w bound
-  (define (rule-value-goals g)
-    (query-goals g (rule-value-env) (query-reporter (append rule-library rule-only-heads)) '(?w)))
+  ;; A RULE VALUE'S GOALS: the rule-value environment (with the stored
+  ;; relations of STATE when one is given), ?w bound
+  (define (rule-value-goals g . state)
+    (query-goals g (rule-value-env (and (pair? state) (car state)))
+                 (query-reporter (append rule-library rule-only-heads)) '(?w)))
+
+;; ---- the derive verb's checks, and what a declaration affects ---------------------------
+
+  ;; A STORED RELATION AS THE `derive` VERB WRITES IT, at STATE (the batch's
+  ;; evolving prefix): the name free of every handler's goal names and of the
+  ;; declared edge relations and stored rules (name-taken, with where); the
+  ;; value's shape (reduce.sc, derive-value-reason); no clause reaching an
+  ;; external relation, through stored relations too; and the relation
+  ;; available at STATE with this value in force -- its own clauses checked
+  ;; with the kinds, the declared head the containment obligation, and every
+  ;; stored relation it reaches available. -> the value, or a refusal.
+  (define (derive-value-check state name value)
+    (let ((where (cond ((assq name tests) 'test)
+                       ((assq name fact-relations) 'fact)
+                       ((assq name rule-only-facts) 'write-fact)
+                       ((assq name (rule-relations rule-library)) 'library)
+                       ((and state (reduction? state) (state-declaration state name)) 'edge-relation)
+                       ((and state (reduction? state) (state-rule state name)) 'rule)
+                       (else #f))))
+      (cond
+        (where (list 'error 'bad-request 'name-taken (list 'name name) (list 'where where)))
+        ((eq? value 'retired) value)
+        ((derive-value-reason name value) => (lambda (r) (list 'error 'bad-request 'derive-malformed (list 'reason r))))
+        ((exists (lambda (c) (find (lambda (g) (relation-external? (car g) state (list name value))) (cddr c))) (cdr value))
+         => (lambda (g) (list 'error 'bad-request 'rule-relation-not-allowed (list 'relation (car g)))))
+        (else
+         (let ((u ((handler-available (stored-handler state (list name value))) name)))
+           (cond ((not u) value)
+                 ;; its own clauses' refusal, as it is
+                 ((and (null? (cdr u)) (pair? (cadr (car u))) (eq? (car (cadr (car u))) 'check))
+                  (cadr (cadr (car u))))
+                 (else (apply list 'error 'bad-request 'relation-unavailable (list 'relation name) u))))))))
+
+  ;; THE RELATIONS A RULE'S GOALS NAME BY POSITION, through every nested and
+  ;; -- never a symbol in a constant -- that are stored relations of STATE
+  ;; (masked names aside): whether the rule must be re-checked with the kinds
+  ;; when it is evaluated there (rules.sc, rule-plan).
+  (define (rule-names-stored? value state)
+    (define (heads g)
+      (cond ((and (pair? g) (eq? (car g) 'and) (list? g)) (apply append (map heads (cdr g))))
+            ((pair? g) (list (car g)))
+            (else '())))
+    (let ((table (stored-table state #f)))
+      (and (pair? table) (list? value)
+           (exists (lambda (k)
+                     (let ((c (assq k value)))
+                       (and c (list? c) (pair? (cdr c))
+                            (exists (lambda (r) (and (assq r table) #t)) (heads (cadr c))))))
+                   '(where must must-not)))))
+
+  ;; WHAT A DECLARATION AFFECTS: the rules in force and the stored relations
+  ;; in force at PRE whose evaluability or availability is not the same at
+  ;; POST, the state after the write. -> (affects [(rule <name> ...)]
+  ;; [(derive <name> ...)]), or #f when there is none. Informational: the
+  ;; next write a broken rule judges is the one refused.
+  (define (derive-affects pre post name)
+    (define (rule-status value state)
+      (let ((v (rule-value-check value (rule-names-stored? value state) state)))
+        (and (pair? v) (eq? (car v) 'error) v)))
+    (define (derive-status n state) ((handler-available (stored-handler state #f)) n))
+    (let* ((rules (filter (lambda (r) (not (equal? (rule-status (cadr r) pre) (rule-status (cadr r) post))))
+                          (state-declared-rules pre)))
+           (derived (filter (lambda (n) (and (not (eq? n name)) (stored-in-force (stored-table pre #f) n)
+                                             (not (equal? (derive-status n pre) (derive-status n post)))))
+                            (map car (stored-table pre #f)))))
+      (and (or (pair? rules) (pair? derived))
+           (append (list 'affects)
+                   (if (pair? rules) (list (cons 'rule (map car rules))) '())
+                   (if (pair? derived) (list (cons 'derive derived)) '())))))
+
+  ;; THE FOURTH TABLE, query --relations: every derive record's name at
+  ;; STATE. In force: (derived <name> (arity <n>) (kinds (<kind> ...))
+  ;; <availability>); retired: (derived <name> (retired) <availability>);
+  ;; contested: (derived <name> (contested) (candidates (<head> <writer>
+  ;; <seq>) ...) <availability>); a name the namespace reserves, which only
+  ;; a record that bypassed the verb carries: (derived <name> (unavailable
+  ;; (shadowed <owner>))). The availability is `available` or (unavailable
+  ;; (state ...) [(through ...)]).
+  (define (stored-relations-items state)
+    (let ((h (stored-handler state #f)))
+      (map (lambda (n)
+             (let ((owner (goal-name-owner n)) (d (state-derived state n)))
+               (if owner
+                   (list 'derived n (list 'unavailable (list 'shadowed owner)))
+                   (let ((avail (let ((u ((handler-available h) n))) (if u (cons 'unavailable u) 'available))))
+                     (case (car d)
+                       ((retired) (list 'derived n '(retired) avail))
+                       ((contested)
+                        (list 'derived n '(contested)
+                              (cons 'candidates (map (lambda (c) (cons (if (pair? (car c)) (stored-head (car c)) (car c)) (cdr c)))
+                                                     (cdr d)))
+                              avail))
+                       (else (let ((hd (stored-head (cadr d))))
+                               (list 'derived n (list 'arity (length (cdr hd))) (list 'kinds (cdr hd)) avail))))))))
+           (if (and state (reduction? state)) (state-derived-names state) '()))))
 
   (define query-counter 0)
 
@@ -1389,9 +1683,10 @@
            ((dispatch-helper 'guarded)
             (lambda ()
               ((dispatch-helper 'items)
-               (append (query-relations-items)
-                       (map (lambda (d) (cons 'declared d))
-                            (state-declared-relations ((dispatch-helper 'reduction-for) store state)))))))
+               (let ((view ((dispatch-helper 'reduction-for) store state)))
+                 (append (query-relations-items)
+                         (map (lambda (d) (cons 'declared d)) (state-declared-relations view))
+                         (stored-relations-items view))))))
            ((dispatch-helper 'usage) query-usage)))
       ((not (= 1 (length args))) ((dispatch-helper 'usage) query-usage))
       (else
@@ -1404,8 +1699,10 @@
                   ;; THE KINDS ARE CHECKED AFTER ARITY AND BINDING, BEFORE ANY
                   ;; EVALUATION: a goal query-goals refuses is answered by the
                   ;; session as before; one it accepts is read against the kinds.
-                  (let* ((kinds (query-kind-refusal goal))
-                         (S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
+                  ;; THE SESSION FIRST, its environment the kinds': a call to a
+                  ;; stored relation is read against the relation's head
+                  (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
+                         (kinds (query-kind-refusal goal (session-env-of S)))
                          (a (or kinds (session-answer S goal))))
                     (if (not (eq? (car a) 'ok))
                         a

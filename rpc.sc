@@ -740,6 +740,8 @@
   (define rule-usage
     '(rule <name> ["--on" <kind>] ["--where" <goal>] ["--must" <goal>] ["--must-not" <goal>]
            ["--builtin" <name>] ["--retire"] ["--premises" <datum>]))
+  (define derive-usage
+    '(derive <name> [<value>] ["--retire"] ["--premises" <datum>]))
 
   (define insert-usage
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
@@ -1000,7 +1002,7 @@
   ;; unknown relation, a wrong arity or an unknown kind is refused here and
   ;; nothing is written. In this build a rule is stored and listed, and no
   ;; write is judged by it.
-  (define (parse-rule store actor args req options)
+  (define (parse-rule store actor args req options state)
     (let ((on (argument-option-list options "--on"))
           (where (argument-option options "--where"))
           (must (argument-option options "--must"))
@@ -1015,7 +1017,8 @@
           (let* ((in (open-string-input-port text)) (d (get-datum in)))
             (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
       (define (write-rule value)
-        (let ((v ((eval 'rule-value-check (environment '(theourgia query))) value)))
+        ;; AT THE STATE IT WRITES IN: a goal may name a stored relation there
+        (let ((v ((eval 'rule-value-check (environment '(theourgia query))) value #t (reduction-for store state))))
           (if (and (pair? v) (eq? (car v) 'error))
               v
               (one-write store actor (list 'rule (string->symbol (car args)) v) req options))))
@@ -1039,6 +1042,37 @@
                (write-rule (append (list (cons 'on (map string->symbol on)))
                                    (if where (list (list 'where w)) '())
                                    (list (list (if must 'must 'must-not) g))))))))))
+
+;; A STORED RELATION: `derive <name> <value>` declares or redeclares it,
+  ;; `derive <name> --retire` retires it. The value is one datum, ((head
+  ;; (<name> <kind> ...)) (clause (<name> <term> ...) <goal> ...) ...); the
+  ;; store checks it where it writes (derive-value-check). A write that
+  ;; changes what settled rules and stored relations can answer says so:
+  ;; (affects (rule <name> ...) (derive <name> ...)), informational -- the
+  ;; next write such a rule judges is the one refused.
+  (define (parse-derive store actor args req options state)
+    (let ((retire (argument-option options "--retire")))
+      (define unreadable (list 'unreadable))
+      (define (value-of text)
+        (guard (e (#t unreadable))
+          (let* ((in (open-string-input-port text)) (d (get-datum in)))
+            (if (and (not (eof-object? d)) (eof-object? (get-datum in))) d unreadable))))
+      (define (write-derive name value)
+        (let* ((n (string->symbol name))
+               (pre (reduction-for store state))
+               (a (one-write store actor (list 'derive n value) req options)))
+          (if (and (pair? a) (eq? (car a) 'ok))
+              (let ((affects ((eval 'derive-affects (environment '(theourgia query))) pre (reduction-for store #f) n)))
+                (if affects (append a (list affects)) a))
+              a)))
+      (cond
+        ((and retire (= 1 (length args))) (write-derive (car args) 'retired))
+        ((and (not retire) (= 2 (length args)))
+         (let ((v (value-of (cadr args))))
+           (if (eq? v unreadable)
+               '(error bad-request (reason value-unreadable))
+               (write-derive (car args) v))))
+        (else (usage derive-usage)))))
 
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the
   ;; bytes, handed here as a list of intents; running them one at a time
@@ -1178,6 +1212,9 @@
             "Remove a named relation between two blocks." #f 'daemon)
       (list 'relation relation-usage
             "Declare what a relation name does: --as one of the six relations with an effect (supersedes, refutes, depends-on, implements, verifies, conflicts-with), whose rules its edges then follow, or nothing, a listed edge with no effect. --from and --to name the blocks each end is for: a write that adds an edge whose end its selector does not match, or retypes such an end, is refused relation-endpoint. With --retire the name is a plain edge again. The same declaration again answers (ok (unchanged)) and writes nothing."
+            #f 'daemon)
+      (list 'derive derive-usage
+            "Declare a stored relation of the store: <value> is ((head (<name> <kind> ...)) (clause (<name> <term> ...) <goal> ...) ...), the head giving every column's kind, each clause a pattern and goals in the query language (facts, tests, library relations, other stored relations, itself). A query, a rule and another stored relation may then name it. Its clauses are checked where they are used: a goal naming one contested, retired or failing its own check there is refused relation-unavailable. --retire ends it. The answer carries (affects (rule ...) (derive ...)) when the write changes what settled rules and stored relations can answer. The same value again answers (ok (unchanged)) and writes nothing."
             #f 'daemon)
       (list 'rule rule-usage
             "Declare a rule of the store: on writes to blocks of the --on kinds (repeated for several), selected by --where when given, the --must goal must have a row for the block, or the --must-not goal none; ?w stands for the block. --builtin names a built-in rule (citation-coverage); --retire ends a rule. A goal is a query goal over the stored facts; one that reads outside the log is refused. Every committed write after it is judged before anything is written; a write that fails is refused rule-violation, naming every failing pair. The same rule again answers (ok (unchanged)) and writes nothing."
@@ -1590,7 +1627,8 @@
       (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req options)))))
       (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req options)))))
       (cons 'relation (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-relation store actor args req options)))))
-      (cons 'rule (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-rule store actor args req options)))))
+      (cons 'rule (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-rule store actor args req options state)))))
+      (cons 'derive (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-derive store actor args req options state)))))
       (cons 'write
             (lambda (store actor args req options state writer cwd)
               (if (= 2 (length args))
@@ -2447,7 +2485,7 @@
 
   (define (tracked-request? verb args)
     (case verb
-      ((insert set move del link unlink relation rule batch commit import-code def) #t)
+      ((insert set move del link unlink relation rule derive batch commit import-code def) #t)
       ((tag) (= 1 (length args)))
       (else #f)))
 

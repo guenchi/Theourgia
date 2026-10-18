@@ -35,7 +35,7 @@
   (export write-judgement state-audit)
   (import (rnrs)
           (only (theourgia query) make-query-session session-rows session-spent session-budget-set!
-                refusal? refusal-answer query-budget-default rule-value-check)
+                refusal? refusal-answer query-budget-default rule-value-check rule-names-stored?)
           (only (theourgia reduce) state-declared-rules state-declared-relations known-kinds relation-kind
                 state-edges))
 
@@ -208,12 +208,18 @@
   ;; this build does not know. A rule that reached the store some other way, a
   ;; writer whose build checked less, is never asked so; it is unevaluable at
   ;; every block it applies to.
-  (define (rule-plan name value)
+  ;; STATE is the state the rule is evaluated in -- a write rule's PRE, a
+  ;; state rule's POST, the audit's own -- where the stored relations its
+  ;; goals name are read.
+  (define (rule-plan name value state)
     (define (clause k) (let ((c (assq k value))) (and c (cadr c))))
     (define bad
       ;; WITHOUT THE KINDS: a write revalidates a stored rule with the checks
-      ;; it was declared under, so a kind can never make it unevaluable.
-      (let ((checked (rule-value-check value #f)))
+      ;; it was declared under, so a kind can never make it unevaluable --
+      ;; unless its goals name a stored relation: such a rule postdates the
+      ;; kinds, and the only way its check newly fails is a change under it,
+      ;; so it is checked with them, at STATE.
+      (let ((checked (rule-value-check value (rule-names-stored? value state) state)))
         (cond ((and (pair? checked) (eq? (car checked) 'error)) checked)
               ((not (equal? checked value)) (list 'error 'bad-request 'rule-not-in-its-form (list 'form checked)))
               (else #f))))
@@ -266,7 +272,15 @@
   (define (rule-refusal pre post targets receipt post-S pre-S ask kind-of edges-at remaining)
     (let* ((rules (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                              (state-declared-rules pre)))
-           (plans (map (lambda (r) (rule-plan (car r) (cadr r))) rules))
+           ;; EACH RULE AT THE STATE ITS SESSION READS: a write rule at PRE, a
+           ;; state rule at POST (a built-in is a write rule)
+           (plans (map (lambda (r)
+                         (let ((v (cadr r)))
+                           (rule-plan (car r) v
+                                      (if (or (assq 'builtin v)
+                                              (let ((c (assq 'class v))) (and c (pair? (cdr c)) (eq? (cadr c) 'write))))
+                                          pre post))))
+                       rules))
            (state-rules (filter (lambda (p) (eq? (cadr p) 'state)) plans))
            (write-rules (filter (lambda (p) (eq? (cadr p) 'write)) plans)))
       (and (pair? plans) (pair? targets)
@@ -403,7 +417,7 @@
              (rule-rows
                (append-map-in-order
                  (lambda (r)
-                   (let ((p (rule-plan (car r) (cadr r))))
+                   (let ((p (rule-plan (car r) (cadr r) state)))
                      (cond
                        ((list-ref p 7)
                         (list (list 'rule-unevaluable (list 'rule (car p)) (list 'reason (list-ref p 7)))))
