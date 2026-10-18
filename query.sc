@@ -839,14 +839,26 @@
                  (for-each (lambda (a) (unless (or (variable? a) (simple-constant? a))
                                          (refuse 'error 'bad-request 'not-a-term (list 'term a))))
                            (cdr head))
+                 ;; NO AND IN A CLAUSE, as in the library: a body is its goals,
+                 ;; read as they are by the evaluator, the reach and the
+                 ;; external walk alike
+                 (for-each (lambda (g) (when (eq? (car g) 'and)
+                                         (refuse 'error 'bad-request 'and-in-a-clause (list 'relation rel))))
+                           body)
                  (let* ((goals (if (null? body) '() (query-goals-with (cons 'and body) env (query-reporter rule-library) #f '())))
                         (bound (apply append (map goal-variables
                                                   (filter (lambda (g) (handler-binds? (dispatch env (car g)))) goals)))))
                    (for-each (lambda (x) (unless (memq x bound)
                                            (refuse 'error 'bad-request 'head-variable-unbound (list 'relation rel) (list 'variable x))))
                              (goal-variables head))
-                   (let ((kenv (goal-kinds goals '() (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))))
-                     (let loop ((as (cdr head)) (ds declared) (n 1))
+                   (let ((kenv (goal-kinds goals '() (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r))))))
+                         ;; A CALLEE WITH NO HEAD IN FORCE gives no kinds: the
+                         ;; head's containment is not read for this clause (an
+                         ;; untyped variable would read as ANY), the reach is
+                         ;; what reports the callee
+                         (unknown (exists (lambda (g) (let ((h (dispatch env (car g)))) (and h (not ((handler-kinds-of h) (car g))))))
+                                          goals)))
+                     (let loop ((as (if unknown '() (cdr head))) (ds declared) (n 1))
                        (unless (null? as)
                          (let ((k (term-kind (car as) kenv)))
                            (unless (kind<=? k (kind-normal (kind-union (car ds))))
