@@ -5,7 +5,4 @@
 ;; every listed one to be observed, so an item that means to change a
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
-;;
-;; The verb derive: the catalogue and the unknown-verb refusal list it.
-((describe "the catalogue lists the new verb derive")
- (no-such-verb "the unknown-verb refusal lists the verbs, derive among them"))
+()
