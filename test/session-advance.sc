@@ -16,9 +16,11 @@
 ;; A query session advanced to a later state (query.sc, session-advance): a
 ;; new session at the later state holding the tables of the old one's named
 ;; keys that are carried, each what a fresh session would hold, maintained by
-;; delete-and-rederive; the old session untouched. Each row first INSPECTS
-;; the new session's tables (a seam that reads without evaluating), then asks
-;; it and a fresh session at the same state the same keys (the oracle).
+;; delete-and-rederive; the old session untouched. A row reads the new
+;; session's tables first, through a seam that reads without evaluating; a
+;; row that then asks compares the answer with a fresh session's at the same
+;; state (the oracle), and some rows compare the inspected tables with
+;; literals instead.
 ;; Stores are built through the verbs, a concurrent writer's record published
 ;; as another writer's segment; each state is its own reduction object.
 
