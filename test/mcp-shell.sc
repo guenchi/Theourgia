@@ -1873,7 +1873,8 @@
             '((pos "--writer") (pos "w"))
             '(serve [<store>] ["--socket" <path>]
                     ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
-                    ["--attempt" <token> (started-by-a-client-not-by-hand)])))
+                    ["--attempt" <token> (started-by-a-client-not-by-hand)]
+                    ["--session-size" <entries>])))
 
 ;; ---- X: eval, carried out as the shell's own child ----------------------------
 ;;

@@ -37,7 +37,7 @@
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs register-verbs! dispatch-helper
           request-frame transport-unreachable?
           count-argument outline-text write-protocol verb-catalogue
-          describe-log-error eval-usage subscribe-shape-error)
+          describe-log-error eval-usage subscribe-shape-error query-session-provider!)
   (import (only (theourgia view) view-read block-code-field)
           (only (theourgia render) render-wire)
           (only (theourgia client) request-frame verb-spelling-error no-daemon-errno?)
@@ -851,6 +851,14 @@
                            (append (list 'import (car r))
                                    (filter (lambda (c) c) (cdr r))))))))))
 
+;; THE QUERY SESSION PROVIDER: #f, or a procedure (store view) -> a query
+  ;; session, which the query verb and context's assemble ask for in place of a
+  ;; fresh session. One for the whole VM, like the resident cache: the daemon
+  ;; installs its own at start; a process that installs none makes a fresh
+  ;; session per request.
+  (define query-session-provider #f)
+  (define (query-session-provider! p) (set! query-session-provider p))
+
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
   (define (dispatch-helper name)
@@ -858,6 +866,7 @@
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((count-argument) count-argument)
       ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
+      ((session) query-session-provider)
       ((read) (cdr (assq 'read (verb-table))))
       (else (assertion-violation 'dispatch-helper "no such helper" name))))
 

@@ -59,7 +59,7 @@
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire printed-entry)
-          (only (theourgia query) make-query-session session-answer query-budget-default)
+          (only (theourgia query) make-query-session session-answer query-budget-default fresh-query-session)
           (prefix (theourgia lifecycle) lc:)
           (only (theourgia extensions) context-usage))
 
@@ -215,7 +215,10 @@
   (define role-order '(unit member unsettled supersedes cause implementer stale))
 
   (define (assemble dispatch-helper store view t budget all? appended)
-    (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
+    ;; THE SESSION IS THE DISPATCHER'S when it has one (the daemon's, kept
+    ;; across requests), else a fresh one, as the query verb takes it
+    (let* ((S (let ((p (dispatch-helper 'session)))
+                (if p (p store view) (fresh-query-session view ((dispatch-helper 'keyword-hook) store)))))
            (goals (hard-goals t))
            (answers (map (lambda (g) (ask S g)) goals))
            (k1 (car (list-ref answers 0)))

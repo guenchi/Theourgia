@@ -4173,14 +4173,14 @@ exported, and the claimed `eval-<token>/` is removed.
 
 ### `serve`
 
-    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>))
+    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>) ("--session-size" <entries>))
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 The program is `theourgiad.sc`; it takes this verb and no other, and
 answers any other with `(error bad-request (reason not-a-daemon-verb)
 (usage ...))`, this usage inside the error, exit 1. It reads `--store`,
-`--socket`, `--detach`, `--log` and `--attempt`, and refuses any other option,
+`--socket`, `--detach`, `--log`, `--attempt` and `--session-size`, and refuses any other option,
 `--wire` and the other verbs' shared options included, with `(error
 bad-request (reason unknown-option) (option "<the option>") (usage ...))`,
 exit 1, before anything is opened or bound. A shared option given without
@@ -4197,6 +4197,26 @@ for this one start, and the daemon echoes it as the last clause of every
 startup report it writes, so the client can tell its own start's report
 from another's in the shared log. A start made by hand has none, and its
 reports end with `(attempt #f)`.
+
+**The query session.** `query` and `context` are answered by the daemon's store
+process from the publication, made current first when the disk has moved past
+it (as a read at a cut is): a request replays nothing while the store has not
+changed, and a query after a write made outside the daemon sees that write. The
+daemon keeps ONE query session across their requests. A request over the
+same publication reuses it: what earlier requests derived is not derived
+again. When the publication has moved forward, the session is advanced to it
+(the tables that can be carried are kept and maintained, the rest dropped);
+when it cannot be advanced, or after a `supply` or `clear-derived` through the
+daemon (they change `score`'s answers without moving the log), a fresh session
+replaces it. Every answer is the one a fresh session would give, with one
+exception: a query whose budget a fresh session would exhaust may be answered,
+since the budget counts the new work of a query and the kept session has done
+some of it already. `--session-size <entries>` bounds the kept session: past
+that many entries (table tuples, memo, builds and marks) it is dropped and the
+next request starts afresh; 0 keeps none, a fresh session per request; the
+default is 1000000. A value that is not a count is refused with `(error
+bad-request (reason not-a-count) (option "--session-size") (value "<v>")
+(usage ...))`, exit 1.
 
 A `--socket` given by hand is not given a directory. An empty one answers
 `(error bad-socket-path (reason empty))`. One whose directory does not

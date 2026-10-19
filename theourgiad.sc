@@ -60,7 +60,8 @@
 (define serve-usage
   '(serve [<store>] ["--socket" <path>]
           ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
-          ["--attempt" <token> (started-by-a-client-not-by-hand)]))
+          ["--attempt" <token> (started-by-a-client-not-by-hand)]
+          ["--session-size" <entries>]))
 
 ;; ---- serve -----------------------------------------------------------------
 ;;
@@ -82,7 +83,13 @@
 ;; `d` and drop the rest. Serve reads exactly the four below; anything
 ;; else spelled as an option is named back with the usage. A positional
 ;; after `--` is a literal, as for every verb, and is not an option.
-(define serve-options '("--store" "--socket" "--detach" "--log" "--attempt"))
+(define serve-options '("--store" "--socket" "--detach" "--log" "--attempt" "--session-size"))
+
+;; a --session-size value: its digits as a count, else #f
+(define (session-size-value text)
+  (and (string? text) (> (string-length text) 0)
+       (for-all char-numeric? (string->list text))
+       (string->number text)))
 
 (define (serve-unknown-option nodes)
   (let loop ((ns nodes))
@@ -112,6 +119,14 @@
       (when unknown
         (say (list 'error 'bad-request '(reason unknown-option)
                    (list 'option unknown) (list 'usage serve-usage)))
+        (exit 1)))
+    ;; `--session-size <entries>`: how large the query session the daemon keeps
+    ;; across requests may grow before it is dropped; 0 keeps none. A count,
+    ;; refused before anything is opened when it is not one.
+    (let ((size (argument-option nodes "--session-size")))
+      (when (and size (not (session-size-value size)))
+        (say (list 'error 'bad-request '(reason not-a-count)
+                   (list 'option "--session-size") (list 'value size) (list 'usage serve-usage)))
         (exit 1)))
     ;; THIS PROGRAM'S OWN FAILURES ANSWER BY THE TABLE: the
     ;; socket's derivation, the refusal checks and the detach run inside one
@@ -208,7 +223,8 @@
               ((later '(theourgia rpc) 'register-verbs!) extension-verbs)
               ;; Does not return: the daemon runs until it is told to go, or
               ;; until it finds a reason to leave and reports it.
-              ((later '(theourgia daemon) 'serve) store socket attempt)
+              ((later '(theourgia daemon) 'serve) store socket attempt
+               (let ((size (argument-option nodes "--session-size"))) (and size (session-size-value size))))
               (exit 0))))))))
 
 ;; ---- leaving the caller behind ------------------------------------------

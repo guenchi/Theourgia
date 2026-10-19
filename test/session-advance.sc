@@ -39,12 +39,12 @@
 (define advance-proc (late '(theourgia query) 'session-advance))
 (define table-of-proc (late '(theourgia query) 'session-table-of))
 (define named-expansions-proc (late '(theourgia query) 'session-named-expansions))
-(define root-names-proc (late '(theourgia query) 'session-root-names))
+(define synthetic-count-proc (late '(theourgia query) 'session-synthetic-count))
 (define forward-proc (late '(theourgia reduce) 'reduction-forward?))
 (define (advance S st) (if advance-proc (advance-proc S st) 'absent))
 (define (table-of S . key) (if table-of-proc (apply table-of-proc S key) 'absent))
 (define (named-expansions S) (if named-expansions-proc (named-expansions-proc S) 'absent))
-(define (root-names S) (if root-names-proc (root-names-proc S) 'absent))
+(define (synthetic-count S) (if synthetic-count-proc (synthetic-count-proc S) 'absent))
 (define (forward? a b) (if forward-proc (forward-proc a b) 'absent))
 (define (session? x) (and x (not (symbol? x)) (not (pair? x))))
 (define bad 0)
@@ -256,12 +256,12 @@
 (want "DRED-2 a key of the same stratum S never held, demanded by the insertion: evaluated inside the advance, complete"
       (inspected DS2 'rch d5 '?x)
       '(complete ()))
-(want "DRED-3 S's roots are not in the new session, and asking a carried key adds no named expansion"
+(want "DRED-3 S holds no synthetic key after its query (its own key and its forms' are removed when it ends), so none reaches the new session; asking a carried key adds no named expansion"
       (let ((before (named-expansions DS2)))
-        (in-order (filter (lambda (r) (member r (root-names DS2))) (root-names DS))
+        (in-order (list (synthetic-count DS) (synthetic-count DS2))
                   (equal? (rows-of DS2 (list 'rch d1 '?x)) (oracle dst2 (list 'rch d1 '?x)))
                   (- (named-expansions DS2) before)))
-      '(() #t 0))
+      '((0 0) #t 0))
 ;; A KEY OF THE SAME STRATUM DEMANDED BY THE INSERTION, NOT EMPTY, AND
 ;; EVALUATED WHILE A HELD KEY IT READS IS STILL SHORT: a cites b, c cites d,
 ;; d cites e; hold rch(a, ?) and rch(d, ?); insert b cites c and e cites f.

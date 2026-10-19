@@ -60,7 +60,7 @@
                 start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
-          (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error)
+          (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error query-session-provider!)
           (only (theourgia client) socket-path envelope-version resolved-name store-here?)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
@@ -261,9 +261,45 @@
     ;; other. A subscriber resuming with another token is told the daemon
     ;; restarted; it is compared for equality and nothing else.
     (set! daemon-token (string-append (number->string (process-id)) "-" (number->string (wall-clock-ms))))
-    (let ((socket (if (pair? opts) (car opts) (socket-path store)))
-          (attempt (and (pair? opts) (pair? (cdr opts)) (cadr opts))))
+    (let ((socket (if (and (pair? opts) (car opts)) (car opts) (socket-path store)))
+          (attempt (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
+          (size (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)) (caddr opts) session-size-default)))
+      (set! session-size size)
       (start-scheduler (lambda () (main store socket attempt)))))
+
+  ;; ---- the query session kept across requests -------------------------------
+  ;;
+  ;; ONE SESSION FOR THE DAEMON, kept by query.sc's provider (make-session-provider,
+  ;; its rules written there) and handed to every query and context request by
+  ;; the dispatcher. ONE ACTOR TOUCHES IT: both verbs are published reads of the
+  ;; store process (published-read?), which serves one request at a time. Taken
+  ;; by eval, so the daemon's own import closure stays what it was, and LAZILY,
+  ;; at the first published read: serve's start enters no verb library, as the
+  ;; dispatcher enters each on first use, so a daemon that answers only reads of
+  ;; the outline never runs the query library. A tree without the procedure
+  ;; makes a fresh session per request, as before.
+  ;; THE DERIVED GENERATION counts the derived-table writes this daemon has
+  ;; executed (supply, clear-derived: they change score's answers without
+  ;; moving the log); a session made before one is not reused after it.
+  ;; THE TRACE: (trace session <word> <rest>) for each decision, <rest> #f, one
+  ;; datum or a list; (trace session served (<verb> <expanded> <new> <size>))
+  ;; after each query or context answer.
+  (define session-size-default 1000000)
+  (define derived-generation 0)
+  (define session-provider #f)
+  (define session-size session-size-default)
+  (define session-installed? #f)
+  (define (session-trace! word . rest)
+    (trace-event! 'session word (cond ((null? rest) #f) ((null? (cdr rest)) (car rest)) (else rest))))
+  (define (install-session-provider!)
+    (unless session-installed?
+      (set! session-installed? #t)
+      (let ((make (guard (e (#t #f)) (eval 'make-session-provider (environment '(theourgia query))))))
+        (set! session-provider (and make (make published-state (lambda () derived-generation) session-size session-trace!)))
+        (query-session-provider! session-provider))))
+  (define (session-served! verb)
+    (let ((d (and session-provider (session-provider 'served))))
+      (when d (trace-event! 'session 'served (cons verb d)))))
 
   ;; ---- the startup report ------------------------------------------------
   ;;
@@ -1551,8 +1587,16 @@
                                ;; published read (query, context).
                                (begin
                                  (refresh-if-behind! store)
+                                 ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
+                                 (when (published-read? parsed) (install-session-provider!))
                                  (answer-published store self parsed actor writer piped cwd))
                                (answer-for store parsed actor #f writer piped cwd))))
+               ;; A PUBLISHED READ TOLD THE KEPT SESSION'S WORK: the served line,
+               ;; after the verb has answered
+               (when (published-read? parsed) (session-served! (car parsed)))
+               ;; A DERIVED-TABLE WRITE moves the generation the kept session is judged by
+               (when (and (pair? parsed) (memq (car parsed) '(supply clear-derived)))
+                 (set! derived-generation (+ derived-generation 1)))
                (executed! main-pid ticket)
                (send from (list 'answer seq answer 'core)))
              (send from (list 'answer seq draining-answer 'transport)))

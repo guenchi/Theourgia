@@ -147,7 +147,7 @@
           (list expect-rc expect-out #t))))
 (theourgiad-row "DVERB-1 theourgiad.sc with a verb that is not serve answers bad-request not-a-daemon-verb with the serve usage, exit 1"
                 "init --store d" 1
-                "(error bad-request (reason not-a-daemon-verb) (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
+                "(error bad-request (reason not-a-daemon-verb) (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)) (\"--session-size\" <entries>))))\n")
 (let ((d (string-append here "/r" (number->string row-n))))
   (want "DVERB-2 TWIN: and it created nothing under the store it was named"
         (if (program-exists? "theourgiad.sc") (file-exists? (string-append d "/cwd/d")) 'no-such-program)
@@ -156,7 +156,7 @@
                 "serve d --socket \"\"" 2 "(error bad-socket-path (reason empty))\n")
 (theourgiad-row "DSERVE-2 theourgiad.sc serve --detach without --log answers detach-needs-a-log with the usage, exit 71"
                 "serve d --detach" 71
-                "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
+                "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)) (\"--session-size\" <entries>))))\n")
 (let ((d (row-dir!)))
   (want "DSERVE-3 theourgiad.sc serve on an absent store answers store-not-found, exit 75, and makes nothing: no run directory, no lock, no exiting line"
         (if (not (program-exists? "theourgiad.sc"))

@@ -60,6 +60,8 @@
           query-budget-default
           derive-value-check derive-affects rule-names-stored? rule-value-form stored-walk-counter
           session-advance session-table-of session-named-expansions session-root-names
+          fresh-query-session make-session-provider session-carriable-keys session-size session-counters
+          session-advance-calls session-synthetic-count
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
@@ -70,7 +72,7 @@
                 state-declared-relations kind-known? known-kinds
                 state-derived state-derived-names state-derived-all state-declaration state-rule reduction? reduction-forward?
                 derive-value-reason state-declared-rules)
-          (only (theourgia store) library-locator defs-index search-state field-strings)
+          (only (theourgia store) library-locator defs-index search-state field-strings search-keyword-hook)
           (only (theourgia md) md-refs)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
           (only (theourgia field-reading) field-of field-missing?)
@@ -814,6 +816,9 @@
                   (lambda (rel) (eq? (list-ref (assq rel fact-relations) 3) 'external))
                   #f #t
                   (lambda (S g b rest)
+                    ;; NAME USE IS CONSULTED HERE, whether its tuples come from the
+                    ;; scan, the memo or the builds: the key being expanded is flagged
+                    (when (eq? (car g) 'uses-name) (flag-consulted! S))
                     (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
                               (fact-tuples S (car g) (call-args (cdr g) b))))
                   (lambda (g seen) #f)))
@@ -850,6 +855,7 @@
                     (lambda (S g b rest)
                       (let ((key (cons (car g) (call-args (cdr g) b))))
                         (ensure-expanded S key)
+                        (consulted-read! S key)
                         (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
                                   (table-tuples S key))))
                     (lambda (g seen) #f))))
@@ -1189,6 +1195,7 @@
                    (lambda (S g b rest)
                      (let ((key (cons (car g) (call-args (cdr g) b))))
                        (ensure-expanded S key)
+                       (consulted-read! S key)
                        (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
                                  (table-tuples S key))))
                    (lambda (g seen) #f)
@@ -1389,7 +1396,15 @@
     (fields state rules index builds memo tables complete expansion-counts
             (mutable visited) (mutable changed) (mutable tuples) (mutable budget)
             (mutable provider) (mutable attestation) (mutable consulted) keyword-hook (mutable passes)
-            write-facts env-of))
+            write-facts env-of
+            ;; THE TUPLES DERIVED OVER THE SESSION'S LIFE, as count! counts them;
+            ;; `tuples` restarts at each query, this never does
+            (mutable derived-total)
+            ;; THE KEY BEING EXPANDED, #f outside an expansion; CONSULTED-FLAGS,
+            ;; the keys whose answer depends on a name-use consultation; SYNTHETIC,
+            ;; the query's own and form keys expanded during the running query,
+            ;; removed when it ends
+            (mutable current-key) consulted-flags (mutable synthetic)))
 
   (define query-budget-default 1000000)
 
@@ -1423,7 +1438,8 @@
       (new-session state rules index (make-eq-hashtable) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?)
                    (make-hashtable equal-hash equal?) (make-hashtable equal-hash equal?) #f 0 budget
-                   #f #f #f keyword-hook 0 write-facts env)))
+                   #f #f #f keyword-hook 0 write-facts env
+                   0 #f (make-hashtable equal-hash equal?) #f)))
 
   ;; How many times one call was expanded in the session: (rel arg ...),
   ;; a variable for an unbound argument.
@@ -1446,8 +1462,21 @@
   ;; string no goal can spell (session-query).
   (define (count! S rel n)
     (session-tuples-set! S (+ (session-tuples S) n))
+    (session-derived-total-set! S (+ (session-derived-total S) n))
     (when (> (session-tuples S) (session-budget S))
       (refuse 'error 'query-budget (list 'relation (if (string? rel) 'query rel)) (list 'tuples (session-tuples S)))))
+;; NAME USE CONSULTED, A PROPERTY OF A KEY'S ANSWER: the key being expanded is
+  ;; flagged when a uses-name goal is dispatched in it, and a key that reads a
+  ;; flagged key (complete or not, empty or not) is flagged in turn. A new flag
+  ;; is a change, so the passes go on until the flags settle; flags only ever
+  ;; turn on, so they do.
+  (define (flag-consulted! S)
+    (let ((k (session-current-key S)))
+      (when (and k (not (hashtable-ref (session-consulted-flags S) k #f)))
+        (hashtable-set! (session-consulted-flags S) k #t)
+        (session-changed-set! S #t))))
+  (define (consulted-read! S key)
+    (when (hashtable-ref (session-consulted-flags S) key #f) (flag-consulted! S)))
   ;; What the session's last query was charged; its passes are session-passes.
   (define (session-spent S) (session-tuples S))
 
@@ -1579,8 +1608,7 @@
                                records))
                    (let-values (((ks vs) (hashtable-entries index))) vs))
                  out))
-        ((uses-name) (session-consulted-set! S #t)
-                     (let ((by-name (vector-ref (name-use-table st) 0)) (out '()))
+        ((uses-name) (let ((by-name (vector-ref (name-use-table st) 0)) (out '()))
                        (vector-for-each (lambda (name) (for-each (lambda (id) (set! out (cons (list id name) out)))
                                                                  (hashtable-ref by-name name '())))
                                         (hashtable-keys by-name))
@@ -1756,6 +1784,15 @@
   (define (expand S key)
     (hashtable-set! (session-visited S) key #t)
     (hashtable-update! (session-expansion-counts S) key (lambda (n) (+ n 1)) 0)
+    ;; A QUERY'S OWN KEY OR A FORM'S, recorded for the cleanup at the query's end
+    (when (and (string? (car key)) (session-synthetic S))
+      (hashtable-set! (session-synthetic S) key #t))
+    (let ((outer (session-current-key S)))
+      (dynamic-wind
+        (lambda () (session-current-key-set! S key))
+        (lambda () (expand-body S key))
+        (lambda () (session-current-key-set! S outer)))))
+  (define (expand-body S key)
     (for-each
       (lambda (rule)
         (let ((b (head-bindings (cdr (car rule)) (cdr key))))
@@ -1870,8 +1907,11 @@
       (unless (hashtable-contains? (session-index S) name)
         (hashtable-set! (session-index S) name (list (cons (cons name vars) (goal-conjuncts sub)))))
       (let* ((key (cons name (map (lambda (v) (let ((e (assq v b))) (if e (cdr e) unbound))) vars)))
+             ;; RECORDED FOR THE CLEANUP HERE, where its name enters the index:
+             ;; a statically empty form is never expanded
+             (recorded (when (session-synthetic S) (hashtable-set! (session-synthetic S) key #t)))
              (empty (form-empty? S g b vars)))
-        (unless empty (complete-key! S key))
+        (unless empty (complete-key! S key) (consulted-read! S key))
         (let ((rows (if empty '() (table-tuples S key))) (head (car g)))
           (define (bind v value) (let ((b2 (unify (list v) (list value) b))) (when b2 (rest b2))))
           (define (column-values)
@@ -1924,11 +1964,59 @@
   ;; enumerated at both states, and of each stratum's tables. Any refusal (the
   ;; budget, a demanded key's own, the new session's construction) is the
   ;; answer, and no new session exists.
+  (define advance-calls 0)
+  ;; how many times session-advance has been called in this process
+  (define (session-advance-calls) advance-calls)
   (define (session-advance S state2)
+    (set! advance-calls (+ advance-calls 1))
     (guard (e ((refusal? e) (refusal-answer e)))
       (if (not (reduction-forward? (session-state S) state2))
           '(error not-forward)
           (advance-session S state2))))
+
+;; THE RELATIONS A RELATION'S CLAUSES CALL, by the clauses in INDEXES (a
+  ;; list of sessions' indexes): ((<name> . <negative?>) ...), each pair once,
+  ;; in the order met. The advance's strata and the carriable keys both read it.
+  (define (relation-callees indexes rel)
+    (let ((seen (make-hashtable equal-hash equal?)) (out '()))
+      (for-each (lambda (r)
+                  (for-each (lambda (a)
+                              (let ((n (car (car a))) (neg (eq? (cadr a) 'negative)))
+                                (unless (hashtable-ref seen (cons n neg) #f)
+                                  (hashtable-set! seen (cons n neg) #t)
+                                  (set! out (cons (cons n neg) out)))))
+                            (apply append (map goal-atoms (cdr r)))))
+                (apply append (map (lambda (index) (hashtable-ref index rel '())) indexes)))
+      (reverse out)))
+  ;; WHETHER REL'S CLOSURE BY THOSE CLAUSES REACHES AN EXTERNAL FACT RELATION
+  ;; (def, uses-name, score): the walk the advance's eligibility makes
+  (define (relation-reaches-external? indexes rel)
+    (let ((seen (make-eq-hashtable)))
+      (let walk ((r rel))
+        (cond ((hashtable-ref seen r #f) #f)
+              ((assq r fact-relations) => (lambda (f) (eq? (list-ref f 3) 'external)))
+              (else (hashtable-set! seen r #t)
+                    (exists (lambda (p) (walk (car p))) (relation-callees indexes r)))))))
+  ;; THE KEYS AN ADVANCE COULD CARRY: S's complete named keys whose relation
+  ;; reaches no external relation by the clauses at S's state. No enumeration.
+  (define (session-carriable-keys S)
+    (let ((memo (make-eq-hashtable)) (indexes (list (session-index S))))
+      (filter (lambda (k)
+                (and (named-key? k) (held-complete? S k)
+                     (not (let ((m (hashtable-ref memo (car k) 'none)))
+                            (if (eq? m 'none)
+                                (let ((v (relation-reaches-external? indexes (car k)))) (hashtable-set! memo (car k) v) v)
+                                m)))))
+              (vector->list (hashtable-keys (session-tables S))))))
+  ;; THE SESSION'S SIZE, IN ENTRIES: every table's tuples, and the entries of
+  ;; the memo, the builds, the tables, the complete marks and the expansion counts
+  (define (session-size S)
+    (let-values (((ks ts) (hashtable-entries (session-tables S))))
+      (+ (fold-left (lambda (n t) (+ n (hashtable-size (car t)))) 0 (vector->list ts))
+         (hashtable-size (session-memo S)) (hashtable-size (session-builds S)) (hashtable-size (session-tables S))
+         (hashtable-size (session-complete S)) (hashtable-size (session-expansion-counts S)))))
+  ;; the two cumulative counters a served line reports the deltas of
+  (define (session-counters S) (list (session-named-expansions S) (session-derived-total S)))
 
   ;; a table of S read without making one: #f, or its tuples
   (define (held-tuples S key)
@@ -1983,17 +2071,7 @@
       (define (rules-of index rel) (hashtable-ref index rel '()))
       (define (derived? rel) (or (pair? (rules-of (session-index S) rel)) (pair? (rules-of (session-index S2) rel))))
       (define (fact-provider rel) (let ((f (assq rel fact-relations))) (and f (list-ref f 3))))
-      (define (callees rel)
-        (let ((seen (make-hashtable equal-hash equal?)) (out '()))
-          (for-each (lambda (r)
-                      (for-each (lambda (a)
-                                  (let ((n (car (car a))) (neg (eq? (cadr a) 'negative)))
-                                    (unless (hashtable-ref seen (cons n neg) #f)
-                                      (hashtable-set! seen (cons n neg) #t)
-                                      (set! out (cons (cons n neg) out)))))
-                                (apply append (map goal-atoms (cdr r)))))
-                    (append (rules-of (session-index S) rel) (rules-of (session-index S2) rel)))
-          (reverse out)))
+      (define (callees rel) (relation-callees (list (session-index S) (session-index S2)) rel))
       ;; THE STRATA of the derived relations S's named keys reach, callees first
       (define strata
         (let ((index (make-eq-hashtable)) (low (make-eq-hashtable)) (on (make-eq-hashtable)) (stack '()) (n 0) (out '()))
@@ -2216,7 +2294,84 @@
               ((pair? keys) (dred! members keys))
               (else #f))))
         strata)
+      ;; THE FORMS THE ADVANCE EVALUATED (a demanded key's aggregate groups)
+      ;; leave S2 as a query's leave its session
+      (session-drop-synthetic! S2)
       S2))
+
+;; ---- one session kept across requests ---------------------------------------------------
+  ;;
+  ;; THE LOCAL IMPLEMENTATION: a fresh session per request, as every verb had.
+  (define (fresh-query-session view hook) (make-query-session view '() query-budget-default hook))
+  ;; THE DAEMON'S: (make-session-provider published generation bound trace) ->
+  ;; P. (P store view) answers a session for a request over VIEW; (P 'served)
+  ;; answers (expanded new size) for the last session P handed out: the named
+  ;; expansions and the tuples derived since it was handed out, and its size.
+  ;; PUBLISHED and GENERATION are thunks: the published state, and the count of
+  ;; derived-table writes the daemon has executed. BOUND is the size past which
+  ;; the kept session is dropped, 0 to keep none. TRACE is called with the
+  ;; words of each decision. THE CELL is #f or #(S state cut generation): the
+  ;; session, the published object it was made at or advanced to, that object's
+  ;; applied cut then, and the generation then. THE RULES, in this order:
+  ;;   0 disabled: fresh, nothing kept;  1 not the publication: fresh, the cell
+  ;;   untouched;  2 the generation moved: dropped;  3 over the bound: dropped;
+  ;;   4 no cell: fresh, kept;  5 the same publication: reused (its cut moved:
+  ;;   dropped, then 4);  6 something carriable: advanced (refused: fresh,
+  ;;   kept);  7 else: fresh, kept, no enumeration.
+  (define (make-session-provider published generation bound trace)
+    (let ((cell #f) (hook #f) (last #f))
+      (define (handed S)
+        (set! last (cons S (session-counters S)))
+        S)
+      (define (kept S view)
+        (set! cell (vector S view (reduce-applied-cut view) (generation)))
+        (handed S))
+      (define (fresh view) (fresh-query-session view hook))
+      (define (provide store view)
+        (unless hook (set! hook (search-keyword-hook store)))
+        (cond
+          ((eqv? bound 0) (trace 'fresh 'disabled) (handed (fresh view)))
+          ((not (eq? view (published))) (trace 'fresh 'cut) (handed (fresh view)))
+          (else
+           (when (and cell (not (eqv? (vector-ref cell 3) (generation))))
+             (trace 'dropped 'derived-changed)
+             (set! cell #f))
+           (when cell
+             (let ((size (session-size (vector-ref cell 0))))
+               (when (> size bound)
+                 (trace 'dropped 'bound size)
+                 (set! cell #f))))
+           (when (and cell (eq? view (vector-ref cell 1)) (not (equal? (reduce-applied-cut view) (vector-ref cell 2))))
+             (trace 'dropped 'moved)
+             (set! cell #f))
+           (cond
+             ((not cell) (trace 'fresh 'none) (kept (fresh view) view))
+             ((eq? view (vector-ref cell 1)) (trace 'reuse) (handed (vector-ref cell 0)))
+             ((pair? (session-carriable-keys (vector-ref cell 0)))
+              (let* ((S (vector-ref cell 0))
+                     (held (filter (lambda (k) (and (named-key? k) (held-complete? S k)))
+                                   (vector->list (hashtable-keys (session-tables S)))))
+                     (S2 (session-advance S view)))
+                (if (session? S2)
+                    (let ((carried (length (filter (lambda (k) (held-complete? S2 k)) held))))
+                      (trace 'advance carried (- (length held) carried) (session-spent S2))
+                      (kept S2 view))
+                    (begin
+                      (if (equal? S2 '(error not-forward))
+                          (trace 'fresh 'not-forward)
+                          (trace 'fresh 'advance-refused (if (and (pair? S2) (pair? (cdr S2))) (cadr S2) S2)))
+                      (kept (fresh view) view)))))
+             (else (trace 'fresh 'nothing-held) (kept (fresh view) view))))))
+      (case-lambda
+        ((store view) (provide store view))
+        ((message)
+         ;; ONCE PER SESSION HANDED OUT: a request that took none (query
+         ;; --relations, an unreadable goal) reports nothing
+         (and (eq? message 'served) last
+              (let* ((S (car last)) (now (session-counters S))
+                     (d (list (- (car now) (cadr last)) (- (cadr now) (caddr last)) (session-size S))))
+                (set! last #f)
+                d))))))
 
   ;; THE FIXTURES' VIEW OF A SESSION'S TABLES, read without making one: #f
   ;; for a key it does not hold, else (complete|incomplete <tuples>); a
@@ -2225,6 +2380,14 @@
     (let ((key (cons rel (map (lambda (a) (if (variable? a) unbound a)) args))))
       (let ((t (held-tuples S key)))
         (and t (list (if (held-complete? S key) 'complete 'incomplete) t)))))
+;; the synthetic keys (a query's own, a form's) left in the session's index,
+  ;; tables, complete marks and expansion counts: 0 between queries
+  (define (session-synthetic-count S)
+    (let ((n 0))
+      (for-each (lambda (h) (vector-for-each (lambda (k) (when (string? (car k)) (set! n (+ n 1)))) (hashtable-keys h)))
+                (list (session-tables S) (session-complete S) (session-expansion-counts S) (session-consulted-flags S)))
+      (vector-for-each (lambda (name) (when (string? name) (set! n (+ n 1)))) (hashtable-keys (session-index S)))
+      n))
   ;; every expansion of a named key the session made
   (define (session-named-expansions S)
     (let-values (((keys counts) (hashtable-entries (session-expansion-counts S))))
@@ -2495,20 +2658,56 @@
            (name (begin (set! query-counter (+ query-counter 1))
                         (string-append "query " (number->string query-counter))))
            (key (cons name (map (lambda (v) unbound) vars))))
-      (hashtable-set! (session-index S) name (list (cons (cons name vars) goals)))
-      (session-tuples-set! S 0)
-      (session-passes-set! S 0)
-      (let loop ()
-        (session-passes-set! S (+ (session-passes S) 1))
-        (session-changed-set! S #f)
-        (session-visited-set! S (make-hashtable equal-hash equal?))
-        (expand S key)
-        (when (session-changed S) (loop)))
-      ;; EVERY TABLE THE PASSES TOUCHED IS COMPLETE: the last pass expanded each
-      ;; against tables that did not change.
-      (vector-for-each (lambda (k) (hashtable-set! (session-complete S) k #t))
-                       (hashtable-keys (session-visited S)))
-      (values (table-tuples S key) vars)))
+      ;; THE QUERY'S OWN KEY AND EVERY FORM KEY EXPANDED DURING IT ARE REMOVED
+      ;; WHEN IT ENDS, its refusal included: a session that answers many
+      ;; queries keeps its named keys and nothing of the queries themselves
+      (dynamic-wind
+        (lambda ()
+          (session-synthetic-set! S (make-hashtable equal-hash equal?))
+          (session-consulted-set! S #f))
+        (lambda ()
+          (hashtable-set! (session-index S) name (list (cons (cons name vars) goals)))
+          (session-tuples-set! S 0)
+          (session-passes-set! S 0)
+          (let loop ()
+            (session-passes-set! S (+ (session-passes S) 1))
+            (session-changed-set! S #f)
+            (session-visited-set! S (make-hashtable equal-hash equal?))
+            (expand S key)
+            (when (session-changed S) (loop)))
+          ;; EVERY TABLE THE PASSES TOUCHED IS COMPLETE: the last pass expanded each
+          ;; against tables that did not change.
+          (vector-for-each (lambda (k) (hashtable-set! (session-complete S) k #t))
+                           (hashtable-keys (session-visited S)))
+          (values (table-tuples S key) vars))
+        (lambda () (session-cleanup! S key)))))
+;; EVERY SYNTHETIC KEY OF S REMOVED: a string name in the index, a key whose
+  ;; relation is a string in the tables, complete marks, expansion counts and
+  ;; flags. The cleanup's form for work done outside a query (the advance).
+  (define (session-drop-synthetic! S)
+    (vector-for-each (lambda (name) (when (string? name) (hashtable-delete! (session-index S) name)))
+                     (hashtable-keys (session-index S)))
+    (for-each (lambda (h)
+                (vector-for-each (lambda (k) (when (and (pair? k) (string? (car k))) (hashtable-delete! h k)))
+                                 (hashtable-keys h)))
+              (list (session-tables S) (session-complete S) (session-expansion-counts S) (session-consulted-flags S))))
+  ;; THE CLEANUP: the query's answer said whether it depends on a name-use
+  ;; consultation (its own key's flag, read first), then every synthetic key
+  ;; leaves the index, the tables, the complete marks, the expansion counts and
+  ;; the flags. A table never made (it is made lazily) is skipped by the delete.
+  (define (session-cleanup! S key)
+    (let ((syn (session-synthetic S)))
+      (session-consulted-set! S (and (hashtable-ref (session-consulted-flags S) key #f) #t))
+      (hashtable-set! syn key #t)
+      (vector-for-each
+        (lambda (k)
+          (hashtable-delete! (session-index S) (car k))
+          (hashtable-delete! (session-tables S) k)
+          (hashtable-delete! (session-complete S) k)
+          (hashtable-delete! (session-expansion-counts S) k)
+          (hashtable-delete! (session-consulted-flags S) k))
+        (hashtable-keys syn))
+      (session-synthetic-set! S #f)))
 
   ;; ---- the answer ---------------------------------------------------------------------------
 
@@ -2644,7 +2843,8 @@
                   ;; session as before; one it accepts is read against the kinds.
                   ;; THE SESSION FIRST, its environment the kinds': a call to a
                   ;; stored relation is read against the relation's head
-                  (let* ((S (make-query-session view '() query-budget-default ((dispatch-helper 'keyword-hook) store)))
+                  (let* ((S (let ((p (dispatch-helper 'session)))
+                              (if p (p store view) (fresh-query-session view ((dispatch-helper 'keyword-hook) store)))))
                          (kinds (query-kind-refusal goal (session-env-of S)))
                          (a (or kinds (session-answer S goal))))
                     (if (not (eq? (car a) 'ok))

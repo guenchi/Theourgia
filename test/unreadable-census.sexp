@@ -297,6 +297,11 @@
    fact a
    "socket device/inode: only an absent entry (ENOENT, ENOTDIR) is no inode; any other unreadable-entry, and anything else, propagates to the caller's table (P2b)"
    (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #f)))
+  ("daemon.sc" (install-session-provider!) 1 guard
+   (#t)
+   conservative a
+   "the query session provider is taken by eval from (theourgia query) at serve's start; a tree where that fails (the procedure absent) installs none, and every query and context request makes a fresh session, as before the provider existed"
+   (e (#t #f)))
   ("daemon.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
