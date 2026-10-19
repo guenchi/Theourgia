@@ -780,7 +780,11 @@
   ;; admission lifts (admission-lifted) wakes the record gated under it. Each
   ;; woken record is filed again. The ready heap therefore holds exactly the
   ;; applicable records whenever drain! takes the least of them: the order
-  ;; today's whole-list drain took.
+  ;; today's whole-list drain took. Applying can make a record inapplicable in
+  ;; one way only: an event below a writer's applied cursor (a seq 0 after its
+  ;; seq 1) moves the cursor back, so drain! then files the heap's records
+  ;; again (pq-refile-ready!), and a record whose predecessor is no longer
+  ;; reached leaves the heap as the whole-list drain left it pending.
   ;; NEVER: SHARED BY A CLONE. A rehearsal changes its queue in place; pq-copy
   ;; copies the tables and the heap (the entries are replaced, never changed).
   (define-record-type pq
@@ -860,6 +864,13 @@
       (unless (null? waiting)
         (hashtable-delete! (pq-waiters q) key)
         (for-each (lambda (rec) (pq-file! r rec)) (reverse waiting)))))
+  ;; THE READY RECORDS FILED AGAIN, after an application moved a cursor back
+  (define (pq-refile-ready! r)
+    (let ((q (reduction-pending r)))
+      (let take ((out '()))
+        (if (= 0 (pq-size q))
+            (for-each (lambda (rec) (pq-file! r rec)) out)
+            (take (cons (heap-pop! q) out))))))
   ;; THE GATES LIFTED: each record gated under a lifted key, filed again
   (define (pq-lift! r keys)
     (let ((q (reduction-pending r)))
@@ -1006,9 +1017,11 @@
     (let ((q (reduction-pending r)))
       (let loop ()
         (unless (= 0 (pq-size q))
-          (let* ((next (heap-pop! q)) (id (rec-event next)))
+          (let* ((next (heap-pop! q)) (id (rec-event next))
+                 (was (assoc (car id) (reduction-applied r))))
             (hashtable-delete! (pq-by-id q) id)
             (apply-one! r next)
+            (when (and was (< (cdr id) (cdr was))) (pq-refile-ready! r))
             (pq-wake! r id)
             (when (= (cdr id) 1) (pq-wake! r (cons (car id) 0)))
             (loop))))))

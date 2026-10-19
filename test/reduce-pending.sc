@@ -181,6 +181,21 @@
             '(#t #t))))
   '(#t #f))
 
+;; THE GATES' SIDE: N members, each of its own request whose plan never
+;; arrives, so each is gated in its own bucket and the gate set grows to N.
+;; Each arrival touches one bucket, whose own gates are compared before and
+;; after its judgement: one scanned entry per arrival. A scan of the whole
+;; gate set per arrival would be N^2/2.
+(define (gated-many! r n)
+  (do ((i 0 (+ i 1))) ((= i n) r)
+    (reduce-apply! r (string-append "g" (pad i 7)) 1 '() (produced "t0") (member-actor (string-append "o" (pad i 7)) "q" 0))))
+(let* ((at-n (work-of (lambda () (gated-many! (reduce-empty) N))))
+       (at-2n (work-of (lambda () (gated-many! (reduce-empty) (* 2 N))))))
+  (printf "NOTE PEND-1c gated, work ~s ~s\n" at-n at-2n)
+  (want (format "PEND-1c N = ~a more gated members in their own buckets add at most 4N, 3N, 3N" N)
+        (within? at-n at-2n (list (* 4 N) (* 3 N) (* 3 N)))
+        #t))
+
 ;; ---- PEND-2 the order ----------------------------------------------------------
 
 (printf "== PEND-2: the order records apply in ==\n")
@@ -286,8 +301,9 @@
     (reduce-apply! r "y0000000" 1 '(("q0000000" . 1)) (section))
     r))
 (want "PEND-6 waiting records of three classes answer in arrival order, each the four fields"
-      (map (lambda (x) (list (car x) (cadr x) (caddr x))) (reduce-pending (three-classes!)))
-      '(("x0000000" 2 ()) ("g0000000" 1 ()) ("y0000000" 1 (("q0000000" . 1)))))
+      (reduce-pending (three-classes!))
+      (list (list "x0000000" 2 '() (section)) (list "g0000000" 1 '() (produced "t0"))
+            (list "y0000000" 1 '(("q0000000" . 1)) (section))))
 (want "PEND-6 after a rebuild: the history's order"
       (let ((r (three-classes!)))
         (claims! r)
@@ -319,6 +335,18 @@
         (("x0000000" . 1) ("x0000000" . 2))
         (("y0000000" . 2))))
 
+;; THE GATED RECORDS ARE THE CLONE'S OWN: a gate lifted in the clone leaves
+;; the original's gated record in place, and the original's own lift wakes it.
+(want "PEND-7 a gate lifted in the clone; the original's member still gated, and its plan then applies it there"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '() "o0000000" "q")
+        (let ((c (reduce-clone r)))
+          (plan! c "o0000000" "q")
+          (let ((clone-trace (events c)) (original-pending (pending-events r)))
+            (plan! r "o0000000" "q")
+            (list clone-trace original-pending (events r) (dump-pending r)))))
+      '((("m0000000" . 1) ("o0000000" . 1)) (("m0000000" . 1)) (("m0000000" . 1) ("o0000000" . 1)) 0))
+
 ;; ---- PEND-8 boundaries ---------------------------------------------------------
 
 (printf "== PEND-8: boundaries ==\n")
@@ -347,6 +375,17 @@
           (reduce-apply! r "x0000000" 1 '() (section))
           (list before (events r))))
       '((("x0000000" . 2)) (("x0000000" . 1) ("x0000000" . 2))))
+
+;; A CURSOR MOVED BACK: x0 needs only that x has an applied event, and sorts
+;; before x2; applying it after x1 sets x's cursor to 0, so x2's predecessor
+;; is no longer reached and x2 stays pending, as the whole-list drain left it.
+(want "PEND-8 x0, x2, x1: x1 then x0 apply, and x2, its predecessor no longer reached, stays pending"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "x" 0 '() (section))
+        (reduce-apply! r "x" 2 '() (section))
+        (reduce-apply! r "x" 1 '() (section))
+        (list (events r) (pending-events r) (dump-pending r)))
+      '((("x" . 1) ("x" . 0)) (("x" . 2)) 1))
 
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
