@@ -351,13 +351,13 @@
 ;; the original's gated record in place, and the original's own lift wakes it.
 (want "PEND-7 a gate lifted in the clone; the original's member still gated, and its plan then applies it there"
       (let ((r (reduce-empty)))
-        (member! r "m0000000" 1 '() "o0000000" "q")
+        (member! r "m0000000" 1 '(("o0000000" . 1)) "o0000000" "q")
         (let ((c (reduce-clone r)))
           (plan! c "o0000000" "q")
           (let ((clone-trace (events c)) (original-pending (pending-events r)))
             (plan! r "o0000000" "q")
             (list clone-trace original-pending (events r) (dump-pending r)))))
-      '((("m0000000" . 1) ("o0000000" . 1)) (("m0000000" . 1)) (("m0000000" . 1) ("o0000000" . 1)) 0))
+      '((("o0000000" . 1) ("m0000000" . 1)) (("m0000000" . 1)) (("o0000000" . 1) ("m0000000" . 1)) 0))
 
 ;; ---- PEND-8 boundaries ---------------------------------------------------------
 

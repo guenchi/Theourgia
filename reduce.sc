@@ -910,15 +910,18 @@
   ;; exact integer >= 0 is what wire.sc record-envelope-refusal refuses on the
   ;; log path, so only a defective in-process caller passes one; the queue
   ;; files by exact event and would strand it. Written in the body, not as a
-  ;; contract, so it holds whatever the contract level.
-  (define (reduce-apply! r writer seq deps payload . rest)
+  ;; contract, so it holds whatever the contract level. Asked first in the
+  ;; let's body: the lookup before it changes nothing.
+  (define (envelope-refusal! writer seq deps)
     (unless (envelope-seq? seq)
       (assertion-violation 'reduce-apply! "a seq outside the log's envelope" writer seq))
     (for-each (lambda (d)
                 (unless (and (pair? d) (envelope-seq? (cdr d)))
                   (assertion-violation 'reduce-apply! "a dep outside the log's envelope" writer seq d)))
-              deps)
+              deps))
+  (define (reduce-apply! r writer seq deps payload . rest)
     (let ((have (assoc writer (reduction-applied r))))
+      (envelope-refusal! writer seq deps)
       (cond
         ((and have (>= (cdr have) seq)) (list 'refused 'already-applied))
         ((hashtable-contains? (pq-by-id (reduction-pending r)) (cons writer seq))
