@@ -1148,6 +1148,13 @@
       (list (availability-of IS 'd0) (availability-of IS 'd30))
       (list (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 1))) (iota I-depth))))
             (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 31))) (iota 10))))))
+;; ONE LISTING BUILDS EACH CHAIN ONCE: every relation's chain is the tail of
+;; the one before it, so the forty unavailable relations' chains cost forty
+;; steps in all, not the 820 a walk of each would.
+(want "WALK-I a listing of the chain builds forty chain steps in all"
+      (let ((c (counting 'chain (lambda () (availability-of IS 'd0)))))
+        (and (number? (car c)) (> (car c) 0) (<= (car c) (+ I-depth 1))))
+      #t)
 ;; EACH LOOKUP OF A STATE'S ENTRY, by what it compared: the token (eq?, in
 ;; constant time) or a copied cut. A tree that compares neither reads none.
 (define (lookups-by thunk)
@@ -1163,7 +1170,8 @@
       '(#t 0))
 ;; THE DEFINITIONS INDEX: asked twice of one reduction, the second finds it
 ;; by the token and copies no cut; asked of a new reduction of the unchanged
-;; store, it copies one cut and finds the same index, building nothing.
+;; store, it copies one cut and finds the same index, building nothing; asked
+;; of that new reduction again, it finds it by the token it now holds.
 (define defs-index-of (guard (e (#t #f)) (eval 'defs-index (environment '(theourgia store)))))
 (define defs-builds (guard (e (#t #f)) (eval 'defs-index-build-count (environment '(theourgia store)))))
 (define defs-cut-reads (guard (e (#t #f)) (eval 'defs-index-cut-read-count (environment '(theourgia store)))))
@@ -1175,10 +1183,27 @@
                  (r1 (defs-cut-reads)) (b1 (defs-builds))
                  (again (defs-index-of st))
                  (r2 (defs-cut-reads))
-                 (other (defs-index-of (state IS)))
-                 (r3 (defs-cut-reads)) (b3 (defs-builds)))
-            (list (- r2 r1) (- r3 r2) (- b3 b1) (eq? first again) (eq? first other))))
-      '(0 1 0 #t #t))
+                 (st2 (state IS))
+                 (other (defs-index-of st2))
+                 (r3 (defs-cut-reads)) (b3 (defs-builds))
+                 (other-again (defs-index-of st2))
+                 (r4 (defs-cut-reads)))
+            (list (- r2 r1) (- r3 r2) (- b3 b1) (eq? first again) (eq? first other) (- r4 r3))))
+      '(0 1 0 #t #t 0))
+;; AND A REDUCTION THAT MOVES IN PLACE is asked again by its cut: a record
+;; applied into the object the index was last built for (as a write applies
+;; into the reduction it read before it) is a new token, a new cut, a rebuild.
+(want "WALK-I defs-index: a record applied into the same reduction, asked again: one cut read, one rebuild"
+      (if (not (and defs-index-of defs-builds defs-cut-reads))
+          'no-counter
+          (let* ((st (state IS))
+                 (before (defs-index-of st))
+                 (r1 (defs-cut-reads)) (b1 (defs-builds))
+                 (applied (reduce-apply! st "zzzzzzzz" 1 '() '(put ((kind . section)))))
+                 (after (defs-index-of st))
+                 (r2 (defs-cut-reads)) (b2 (defs-builds)))
+            (list applied (- r2 r1) (- b2 b1) (eq? before after))))
+      '(accepted 1 1 #f))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)
