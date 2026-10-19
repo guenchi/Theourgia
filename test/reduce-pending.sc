@@ -61,14 +61,16 @@
 ;; THE SEAM, found by name: a tree without it reads #f, and the count rows
 ;; are red there rather than the file failing to load.
 (define counter (guard (e (#t #f)) (eval 'pending-work-counter (environment '(theourgia reduce)))))
-;; -> (<examine> <scan> <heap>) counted while THUNK runs, or #f without the seam
+;; -> (<examine> <scan> <heap>) counted while THUNK runs, or #f without the
+;; seam; THUNK runs either way, so the rows beside a count still read a tree
+;; without it
 (define (work-of thunk)
   (if counter
       (let ((t (make-eq-hashtable)))
         (parameterize ((counter (lambda (kind n) (hashtable-update! t kind (lambda (v) (+ v n)) 0))))
           (thunk))
         (map (lambda (k) (hashtable-ref t k 0)) '(examine scan heap)))
-      #f))
+      (begin (thunk) #f)))
 (define (ms-of thunk)
   (let ((t0 (current-time 'time-monotonic)))
     (thunk)
@@ -167,15 +169,17 @@
 (printf "== PEND-1b: one application readies N records ==\n")
 ;; Each record is pushed once and popped once: a push compares at most once
 ;; per level, a pop twice, so 3 log2(2N) per record bounds the comparisons.
+;; A dependent is examined at its arrival and at the root's application, and
+;; a waiter's bucket is never walked: 4N and 3N bound the other two kinds.
 (for-each
   (lambda (increasing?)
     (let* ((n-r (reduce-empty)) (n2-r (reduce-empty))
            (at-n (work-of (lambda () (fan-out! n-r N increasing?))))
            (at-2n (work-of (lambda () (fan-out! n2-r (* 2 N) increasing?)))))
       (printf "NOTE PEND-1b ~a, work ~s ~s\n" (if increasing? "increasing" "decreasing") at-n at-2n)
-      (want (format "PEND-1b ~a writer order: the heap's comparisons for N = ~a more within 3N log2 2N, and the trace in writer order"
+      (want (format "PEND-1b ~a writer order: N = ~a more dependents within 4N, 3N, 3N log2 2N, and the trace in writer order"
                     (if increasing? "increasing" "decreasing") N)
-            (list (and at-n at-2n (<= (- (caddr at-2n) (caddr at-n)) (* 3 N (log2-ceiling (* 2 N)))))
+            (list (within? at-n at-2n (list (* 4 N) (* 3 N) (* 3 N (log2-ceiling (* 2 N)))))
                   (equal? (events n-r)
                           (cons '("r0000000" . 1) (map (lambda (i) (cons (string-append "d" (pad i 7)) 1)) (iota N)))))
             '(#t #t))))
@@ -227,6 +231,14 @@
         (reduce-apply! r "b" 1 '() (section))
         (events r))
       '(("c" . 1) ("b" . 1) ("a" . 1)))
+(want "PEND-2 a1 depending on b1 and c1, then b1: a1 still waits, for c1; then c1: b1 c1 a1"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "a" 1 '(("b" . 1) ("c" . 1)) (section))
+        (reduce-apply! r "b" 1 '() (section))
+        (let ((mid (list (events r) (pending-events r))))
+          (reduce-apply! r "c" 1 '() (section))
+          (list mid (events r))))
+      '(((("b" . 1)) (("a" . 1))) (("b" . 1) ("c" . 1) ("a" . 1))))
 (want "PEND-2 a1 depending on b1 and c1, b1 depending on c1, then c1: c1 b1 a1"
       (let ((r (reduce-empty)))
         (reduce-apply! r "a" 1 '(("b" . 1) ("c" . 1)) (section))
@@ -386,6 +398,45 @@
         (reduce-apply! r "x" 1 '() (section))
         (list (events r) (pending-events r) (dump-pending r)))
       '((("x" . 1) ("x" . 0)) (("x" . 2)) 1))
+
+;; THE SAME EVENT PENDING TWICE: x0 applied after x1 moves x's cursor back, so
+;; x1 is accepted again, and waits; the rebuild files both copies of x1, and
+;; the one that applies leaves the waiting one pending.
+(want "PEND-8 x1 delivered again after x0 moved the cursor back, then a rebuild: the waiting copy stays pending, and is refused again"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "x" 0 '() (section))
+        (reduce-apply! r "x" 1 '() (section))
+        (reduce-apply! r "x" 1 '(("ghost000" . 1)) (section))
+        (claims! r)
+        (list (events r) (pending-events r) (dump-pending r) (reduce-apply! r "x" 1 '(("ghost000" . 1)) (section))))
+      '((("x" . 1) ("x" . 0)) (("x" . 1) ("claim000" . 1) ("claim001" . 1)) 3 (refused already-pending)))
+
+;; OUTSIDE THE LOG'S ENVELOPE: wire.sc refuses a seq or a dep that is not an
+;; exact integer >= 0, so only an in-process caller delivers these; the queue
+;; still answers what the whole list answered.
+(want "PEND-8 deps 1.0 and 3/2: met by w1 and by w2"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "a" 1 '(("w" . 1.0)) (section))
+        (reduce-apply! r "b" 1 '(("w" . 3/2)) (section))
+        (reduce-apply! r "w" 1 '() (section))
+        (reduce-apply! r "w" 2 '() (section))
+        (events r))
+      '(("w" . 1) ("a" . 1) ("w" . 2) ("b" . 1)))
+(want "PEND-8 negative seqs: w-2, w-1, z1 depending on (w . -1), then w1"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "w" -2 '() (section))
+        (reduce-apply! r "w" -1 '() (section))
+        (reduce-apply! r "z" 1 '(("w" . -1)) (section))
+        (reduce-apply! r "w" 1 '() (section))
+        (list (events r) (dump-pending r)))
+      '((("w" . 1) ("w" . -2) ("w" . -1) ("z" . 1)) 0))
+(want "PEND-8 x 1.0 while x1 is pending: already pending; z1 then applies x1"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "x" 1 '(("z" . 1)) (section))
+        (let ((again (reduce-apply! r "x" 1.0 '(("z" . 1)) (section))))
+          (reduce-apply! r "z" 1 '() (section))
+          (list again (events r) (dump-pending r))))
+      '((refused already-pending) (("z" . 1) ("x" . 1)) 0))
 
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
