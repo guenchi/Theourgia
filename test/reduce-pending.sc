@@ -558,5 +558,73 @@
           (list (reduce-gates c) (reduce-gates r) (reduce-noted r))))
       '(() ((("m0000000" . 1) . pending-plan)) ((pending-plan (event "m0000000" 1)))))
 
+;; GATE-6b: THE CLONE'S TABLE IS A COPY, not a fresh one: before the lift it
+;; holds both gates, and after it the one in the untouched bucket.
+(want "GATE-6b the clone's gates: both before its plan arrives, the untouched bucket's after"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '(("o0000000" . 1)) "o0000000" "q")
+        (member! r "n0000000" 1 '() "planless" "q")
+        (let* ((c (reduce-clone r)) (before (reduce-gates c)))
+          (plan! c "o0000000" "q")
+          (list before (reduce-gates c))))
+      '(((("m0000000" . 1) . pending-plan) (("n0000000" . 1) . pending-plan))
+        ((("n0000000" . 1) . pending-plan))))
+;; GATE-7: THE CLONE'S NOTES ARE ITS OWN: a clone whose notes have a merged
+;; part, the gate block and an appended part merges and appends on its own.
+(want "GATE-7 the notes of a clone and of its original, each merged and appended on its own"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '() "planless" "q")
+        (reduce-apply! r "u0000000" 1 '() (unknown 'frobnicate))
+        (reduce-apply! r "p0000000" 1 '() (section))
+        (reduce-apply! r "x0000000" 1 '() (unknown 'frob-x))
+        (let ((c (reduce-clone r)))
+          (reduce-apply! c "y0000000" 1 '() (unknown 'frob-y))
+          (list (reduce-noted r) (reduce-noted c))))
+      '(((unknown-verb (event "u0000000" 1) (verb frobnicate)) (pending-plan (event "m0000000" 1))
+         (unknown-verb (event "x0000000" 1) (verb frob-x)))
+        ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (unknown-verb (event "x0000000" 1) (verb frob-x))
+         (pending-plan (event "m0000000" 1)) (unknown-verb (event "y0000000" 1) (verb frob-y)))))
+;; GATE-8: A REBUILD STARTS THE NOTES OVER: the record that still reaches the
+;; interpreter is noted once, after the gate notes; the one that now depends
+;; on a gated claim is not noted at all.
+(want "GATE-8 after a reversal: the gate notes, then the re-applied record's note once, and none for the blocked one"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "u0000000" 1 '() (unknown 'frobnicate))
+        (reduce-apply! r "claim000" 1 '() (produced "c") (claim-actor))
+        (reduce-apply! r "v0000000" 1 '(("claim000" . 1)) (unknown 'frob-v))
+        (let ((before (reduce-noted r)))
+          (reduce-apply! r "claim001" 1 '() (produced "d") (claim-actor))
+          (list before (reduce-noted r))))
+      '(((unknown-verb (event "u0000000" 1) (verb frobnicate)) (unknown-verb (event "v0000000" 1) (verb frob-v)))
+        ((plan-conflict (event "claim000" 1)) (plan-conflict (event "claim001" 1))
+         (unknown-verb (event "u0000000" 1) (verb frobnicate)))))
+;; GATE-9: THE NOTES THROUGH A SNAPSHOT: the rows restore the list as it
+;; was, and the restored reduction's next arrival merges it as today's would.
+(want "GATE-9 the notes written as rows and read back: the same list, then the next arrival's merge"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '() "planless" "q")
+        (reduce-apply! r "u0000000" 1 '() (unknown 'frobnicate))
+        (reduce-apply! r "p0000000" 1 '() (section))
+        (reduce-apply! r "w0000000" 1 '(("x0000000" . 1)) (unknown 'frob-w))
+        (reduce-apply! r "x0000000" 1 '() (unknown 'frob-x))
+        (let ((back (rows->state (state->rows r))))
+          (let ((restored (reduce-noted back)))
+            (reduce-apply! back "q0000000" 1 '() (section))
+            (list (equal? restored (reduce-noted r)) (reduce-noted back)))))
+      '(#t ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (unknown-verb (event "x0000000" 1) (verb frob-x))
+            (unknown-verb (event "w0000000" 1) (verb frob-w)) (pending-plan (event "m0000000" 1)))))
+;; GATE-10: THE SORTED GATES ARE KEPT UNTIL THEY CHANGE: read again, or after
+;; arrivals that gate nothing, they are not sorted again; after a new gate
+;; they are.
+(want "GATE-10 the sorted gates: no work read again or after plain arrivals, fifty-one after a new gate"
+      (let ((r (gated-many! (reduce-empty) 50)))
+        (reduce-gates r)
+        (let* ((again (gate-work-of (lambda () (reduce-gates r))))
+               (plain (begin (plain-many! r 5) (gate-work-of (lambda () (reduce-gates r)))))
+               (new (begin (reduce-apply! r "z0000000" 1 '() (produced "t0") (member-actor "zz000000" "q" 0))
+                           (gate-work-of (lambda () (reduce-gates r))))))
+          (list again plain new)))
+      '(0 0 51))
+
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

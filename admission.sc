@@ -235,8 +235,17 @@
                          (list-sort event<? (judgement-bound-events j))
                          (list-sort event<? (map ev-event bindings)))
                 (differ! 'gates (gates-sorted (judgement-fresh-gates j)) (gates-sorted fresh))
+                ;; THE TABLE'S ENTRIES FOR THIS BUCKET'S EVENTS, read from its
+                ;; own records (each event once), not by a walk of every gate
                 (differ! 'gate-list
-                         (filter (lambda (p) (judgement-holds? j (car p))) (admission-gates a))
+                         (let ((seen (make-hashtable equal-hash equal?)))
+                           (gates-sorted
+                             (fold-left (lambda (out r)
+                                          (let* ((e (event r)) (s (admission-gated? a e)))
+                                            (if (or (not s) (hashtable-contains? seen e))
+                                                out
+                                                (begin (hashtable-set! seen e #t) (cons (cons e s) out)))))
+                                        '() (ref (admission-buckets a) id '()))))
                          (gates-sorted fresh))))))
         ids)))
 )
