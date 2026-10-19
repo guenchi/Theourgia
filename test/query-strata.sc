@@ -25,7 +25,7 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia query) make-query-session session-answer session-spent session-expansions session-budget-set!
-              check-rules rule-library)
+              check-rules rule-library fact-relations)
         (only (theourgia store) open-and-reduce)
         (only (theourgia reduce) reduce-applied-cut block-id state-rule)
         (only (theourgia wire) encode-record storable-encode)
@@ -337,6 +337,9 @@
                 (sorted-rows A '(and (field ?b "g" ?v) (count ?n (and (sum ?s ?x (and (field ?c "g" ?x) (= ?x ?v))) (= ?s "text"))))))
       (list (sorted (list (list e1 1 0) (list e2 "x" 0)))
             (sorted (list (list e1 '?z 0) (list e2 '?z 0) (list e3 'w 0)))))
+(want "AGG-40 a nested min over a title whose own nested sum the group's value makes wrong: still a STR result, so (= ?m 0) is the contradiction, 0"
+      (sorted-rows A '(and (field ?b "g" ?v) (count ?n (and (min ?m ?t (and (title ?a ?t) (sum ?s ?x (and (field ?c "g" ?x) (= ?x ?v))))) (= ?m 0)))))
+      (sorted (list (list e1 '?z 0) (list e2 '?z 0) (list e3 'w 0))))
 (field! A e3 'f #f)
 (want "AGG-37 a value the form cannot take that is #f: aggregate-value naming it"
       (q A '(sum ?s ?v (field ?b "f" ?v)))
@@ -545,6 +548,17 @@
 (want "RV-7 a library relation reaching an external, inside an aggregate: rule-relation-not-allowed"
       (rule! R "amb" "--on" "doc" "--must" "(count ?n (ambiguous ?w ?name))")
       '(error bad-request rule-relation-not-allowed (relation ambiguous)))
+(rule! R "cites-read" "--on" "doc" "--must-not" "(and (cited ?w ?s) (not (unread ?s)))")
+(want "RV-8 a per-write fact the write fills inside a not: a depends-on link with no receipt makes its target unread, so the must-not holds"
+      (in-order (head-of (on R 'link rp "depends-on" rd)) (head-of (rule! R "cites-read" "--retire")))
+      '(ok ok))
+(forge! R "rulefrmz" '(rule legacyform ((class state) (on doc) (must-not (sum ?s ?t (title ?w ?t))))) (cut-of R))
+(want "RV-9 describe lists a stored rule whose form fails the kinds with that refusal"
+      (let* ((d (assq 'declared-rules (cdr (rpc-dispatch R '(describe) "author" (state R)))))
+             (r (and d (assq 'legacyform (cdr d)))))
+        (and r (cddr r)))
+      '((kind-mismatch (error bad-request wrong-kind (form sum) (variable ?t) (kind STR)))))
+(rule! R "legacyform" "--retire")
 (want "RV-3 an external relation inside an aggregate, in a rule and in a stored relation: rule-relation-not-allowed"
       (in-order (rule! R "scored" "--on" "doc" "--must" "(count ?n (score ?w \"x\" ?s))")
                 (derive! R 'ps '((head (ps INT)) (clause (ps ?n) (count ?n (and (kind ?b doc) (score ?b "x" ?s)))))))
@@ -564,11 +578,14 @@
         (check-rules (append rule-library (list '((usesnot ?x) (kind ?x doc) (not (kind ?x code))))))
         'loaded)
       "unknown relation")
-(want "LIB-4 a library clause headed by a form's name does not load"
-      (guard (e ((and (condition? e) (message-condition? e)) (condition-message e)))
-        (check-rules (append rule-library (list '((count ?x) (kind ?x doc)))))
-        'loaded)
-      "a rule heads a form")
+(want "LIB-4 a library clause headed by any form's name does not load; no fact relation is named like one"
+      (in-order (map (lambda (nm)
+                       (guard (e ((and (condition? e) (message-condition? e)) (condition-message e)))
+                         (check-rules (append rule-library (list (list (list nm '?x) '(kind ?x doc)))))
+                         'loaded))
+                     '(not count sum min max))
+                (filter (lambda (nm) (assq nm fact-relations)) '(not count sum min max)))
+      '(("a rule heads a form" "a rule heads a form" "a rule heads a form" "a rule heads a form" "a rule heads a form") ()))
 (define L (store! "names"))
 (make L 'doc "l")
 (want "LIB-2 the five form heads refused as a stored relation's name: name-taken, where form"

@@ -1807,26 +1807,43 @@
   ;; nothing (not holds, count and sum 0, min and max no row).
   (define (value-kind v)
     (cond ((string? v) '(str)) ((symbol? v) (list (list 'syms v))) ((and (integer? v) (exact? v)) '(int)) (else '(any))))
+  ;; A FORM'S OWN REFUSAL MET WITH THE VALUES' KINDS (a nested sum whose
+  ;; column the group's value makes a string) is no emptiness of the goal
+  ;; around it: the form gives the kinds it still can -- a not none, count's
+  ;; and sum's result INT, min's and max's their column's kind (its goal read
+  ;; the same way) met with INT or STR -- and the goals after it are read.
+  (define (form-own-refusal? a) (and (pair? a) (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a)))
+  (define (forms-lenient kinds-of)
+    (letrec ((lenient
+              (lambda (r)
+                (let ((k (kinds-of r)))
+                  (if (and (pair? k) (eq? (car k) 'form))
+                      (cons 'form
+                            (lambda (g env recur)
+                              (guard (e ((and (refusal? e) (form-own-refusal? (refusal-answer e))) (form-kinds-left g env recur)))
+                                ((cdr k) g env recur))))
+                      k)))))
+      lenient))
+  (define (form-kinds-left g env recur)
+    (case (car g)
+      ((not) env)
+      ((count sum) (cons (list (form-result g) '(int) '()) env))
+      (else
+       (let* ((inner (guard (e ((refusal? e) env)) (recur (goal-conjuncts (form-sub g)) env)))
+              (k (kind-meet (term-kind (form-column g) inner) '(int str))))
+         (cons (list (form-result g) (if (null? k) '(int str) k) '()) env)))))
   (define (form-empty? S g b vars)
     (let* ((env (session-env-of S))
-           (kinds-of (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r)))))
+           (kinds-of (forms-lenient (lambda (r) (let ((h (dispatch env r))) (and h ((handler-kinds-of h) r))))))
            (seed (filter values (map (lambda (v) (let ((e (assq v b))) (and e (list v (value-kind (cdr e)) '())))) vars))))
       (define (static? a)
         (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
-             (not (exists (lambda (c) (and (pair? c) (eq? (car c) 'form))) a))))
+             (not (form-own-refusal? a))))
       ;; GOAL BY GOAL: one no cut satisfies is the emptiness; one refused for
-      ;; another reason (a nested form's own rule, met with the values' kinds)
-      ;; is passed over, and the rest still read
+      ;; another reason is passed over, and the rest still read
       (let loop ((cs (goal-conjuncts (form-sub g))) (env seed))
         (and (pair? cs)
-             (let ((next (guard (e ((refusal? e)
-                                    (cond ((static? (refusal-answer e)) 'empty)
-                                          ;; A NESTED AGGREGATE PASSED OVER still gives its
-                                          ;; result its kind
-                                          ((and (form-goal? (car cs)) (not (eq? (car (car cs)) 'not)))
-                                           (cons (list (form-result (car cs)) (if (memq (car (car cs)) '(count sum)) '(int) '(int str)) '())
-                                                 env))
-                                          (else env))))
+             (let ((next (guard (e ((refusal? e) (if (static? (refusal-answer e)) 'empty env)))
                            (goal-kinds (list (car cs)) env kinds-of))))
                (or (eq? next 'empty) (loop (cdr cs) next)))))))
   (define (form-solve S g b rest)
