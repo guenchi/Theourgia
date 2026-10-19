@@ -1149,6 +1149,23 @@ relations, under a `not` or inside an aggregate is `(unavailable (state
 (unstratified (cycle <r1> ... <rk>))))`, the cycle from it in callee order,
 and `derive` refuses a declaration that would make one, `unstratified`.
 
+A query session is bound to one state. `(session-advance S state2)` (the
+library's, no verb) answers a NEW session at a later state of the same
+store, with S's options, holding what S held that can be carried, each table
+what a fresh session at `state2` would hold for it; S itself is not changed.
+`state2` must be a different reduction whose applied cut covers S's and moves
+past it, with S's history a suffix of its own, else `(error not-forward)`.
+The tables are carried stratum by stratum from the facts upward: a stratum
+that reaches `def`, `uses-name` or `score`, whose stored declaration or
+availability changed between the states, or that reads a stratum not carried,
+is dropped; one that reads a lower stratum under a `not` or an aggregate is
+carried as it is when nothing it reads changed, and dropped otherwise; a
+positive one is maintained by delete-and-rederive, the facts' change found by
+enumerating each stored fact relation at both states. A dropped table is
+simply absent, and the next query evaluates it afresh. The work counts
+against S's budget like a query's, and any refusal (the budget, a key's own
+refusal) is the answer, with no new session.
+
 `query --relations` lists the two tables below as items, then the
 store's declared relations, one `(declared <name> <kind> (from <selector>)
 (to <selector>))` each, or `(declared <name> (contested))`, and then the

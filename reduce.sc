@@ -42,7 +42,7 @@
 (library (theourgia reduce)
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
           reduce-empty reduce-clone reduce-rehearsal? state-written-records reduce-apply! reduce-pending reduce-noted
-          reduce-applied-cut reduce-trace reduce-gates
+          reduce-applied-cut reduce-trace reduce-gates reduction-forward?
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           declaration-kinds relation-kind state-declared-relations state-relation-contested
@@ -3028,6 +3028,18 @@
   ;; sequence numbers across writers.
   (define (cut-covers? a b)
     (for-all (lambda (e) (past-covers? a (car e) (cdr e))) b))
+
+  ;; S2 IS S1 MOVED FORWARD: two distinct reductions, S2's applied cut covering
+  ;; S1's and not equal to it, and S1's history (newest first) a suffix of
+  ;; S2's, whole records compared. A reduction rebuilt in place (a record that
+  ;; reversed an applied membership resets the applied cursor and does not
+  ;; apply the withdrawn event again) fails it.
+  (define (reduction-forward? s1 s2)
+    (and (reduction? s1) (reduction? s2) (not (eq? s1 s2))
+         (let ((c1 (reduce-applied-cut s1)) (c2 (reduce-applied-cut s2)))
+           (and (cut-covers? c2 c1) (not (equal? c1 c2))))
+         (let* ((h1 (reduction-history s1)) (h2 (reduction-history s2)) (extra (- (length h2) (length h1))))
+           (and (>= extra 0) (equal? (list-tail h2 extra) h1)))))
 
   ;; THE APPLIED PUTS, as event ids in the order they were DELIVERED to this
   ;; reduction -- not the order they were applied: a record waiting on

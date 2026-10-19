@@ -59,6 +59,7 @@
           query-relations-text
           query-budget-default
           derive-value-check derive-affects rule-names-stored? rule-value-form stored-walk-counter
+          session-advance session-table-of session-named-expansions session-root-names
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
@@ -67,7 +68,7 @@
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
                 reduce-applied-cut state-field-contested? relation-kind effect-relation-names
                 state-declared-relations kind-known? known-kinds
-                state-derived state-derived-names state-derived-all state-declaration state-rule reduction?
+                state-derived state-derived-names state-derived-all state-declaration state-rule reduction? reduction-forward?
                 derive-value-reason state-declared-rules)
           (only (theourgia store) library-locator defs-index search-state field-strings)
           (only (theourgia md) md-refs)
@@ -1883,6 +1884,331 @@
                                       (lambda (a b) (let ((x (string->utf8 a)) (y (string->utf8 b)))
                                                       (if (eq? head 'min) (bytes<? x y) (bytes<? y x)))))))
                      (bind (form-result g) (fold-left (lambda (m v) (if (better? v m) v m)) (car vs) (cdr vs)))))))))))))
+
+;; ---- a session advanced to a later state ---------------------------------------------------
+  ;;
+  ;; (session-advance S state2) -> a NEW session at STATE2, or a refusal's
+  ;; answer. S is not touched, whatever the outcome. The new session is
+  ;; make-query-session's at STATE2 with S's options; it holds the tables of
+  ;; S's named keys that are CARRIED, each what a fresh session at STATE2 would
+  ;; hold for that key, and nothing else from S.
+  ;; WHAT IS CARRIED, stratum by stratum from the facts upward (the strata of
+  ;; the relations S's named keys reach, by their clauses at both states): a
+  ;; stratum reaching an external relation, a stored relation whose
+  ;; declaration changed between the states (its in-force value or its
+  ;; availability), or a dropped stratum is DROPPED; a NON-MONOTONE stratum
+  ;; (one reading a lower one under a not or an aggregate) is carried as it
+  ;; is when nothing it reads changed, else dropped; a POSITIVE stratum is
+  ;; carried and maintained by DELETE-AND-REDERIVE: (i) over-delete what is
+  ;; derivable through a deleted tuple, every other position read from the
+  ;; OLD database (S's tables, never written, and for a key S does not hold an
+  ;; auxiliary session at S's state); (ii) re-derive each deleted tuple that
+  ;; still has a derivation at STATE2; (iii) insert, semi-naively, what the
+  ;; added tuples derive. A key a phase demands that the new session does not
+  ;; hold is evaluated then, as a query would; one of the stratum being
+  ;; maintained joins it. The deltas are set differences: of the facts,
+  ;; enumerated at both states, and of each stratum's tables. Any refusal (the
+  ;; budget, a demanded key's own, the new session's construction) is the
+  ;; answer, and no new session exists.
+  (define (session-advance S state2)
+    (guard (e ((refusal? e) (refusal-answer e)))
+      (if (not (reduction-forward? (session-state S) state2))
+          '(error not-forward)
+          (advance-session S state2))))
+
+  ;; a table of S read without making one: #f, or its tuples
+  (define (held-tuples S key)
+    (let ((t (hashtable-ref (session-tables S) key #f))) (and t (reverse (cdr t)))))
+  (define (held-complete? S key) (hashtable-ref (session-complete S) key #f))
+  (define (named-key? k) (and (pair? k) (symbol? (car k))))
+  ;; a table given its tuples outright: copied, not derived, so not charged
+  (define (table-set! S key tuples)
+    (let ((ht (make-hashtable equal-hash equal?)))
+      (for-each (lambda (t) (hashtable-set! ht t #t)) tuples)
+      (hashtable-set! (session-tables S) key (cons ht (reverse tuples)))))
+  (define (table-remove! S key tuple)
+    (let ((t (table S key)))
+      (when (hashtable-ref (car t) tuple #f)
+        (hashtable-delete! (car t) tuple)
+        (set-cdr! t (remove tuple (cdr t)))
+        (count! S (car key) 1))))
+  (define (session-options S)
+    (list (list-tail (session-rules S) (length rule-library)) (session-budget S) (session-keyword-hook S) (session-write-facts S)))
+
+  (define (advance-session S state2)
+    (let* ((state1 (session-state S))
+           (options (session-options S))
+           (S2 (apply make-query-session state2 options))
+           (aux #f)
+           (aux-charged 0)
+           (env1 (session-env-of S)) (env2 (session-env-of S2))
+           (held (filter (lambda (k) (and (named-key? k) (held-complete? S k)))
+                         (vector->list (hashtable-keys (session-tables S))))))
+      ;; THE AUXILIARY SESSION AT STATE1, made when the old database needs a
+      ;; key S does not hold or a fact; its work is charged to S2's budget
+      (define (aux!)
+        (unless aux (set! aux (apply make-query-session state1 options)))
+        aux)
+      (define (charge-aux!)
+        (when aux
+          (let ((spent (session-tuples aux)))
+            (when (> spent aux-charged)
+              (count! S2 'advance (- spent aux-charged))
+              (set! aux-charged spent)))))
+      ;; derived relations: those a session's index or stored table answers
+      (define (rules-of index rel) (hashtable-ref index rel '()))
+      (define (derived? rel) (or (pair? (rules-of (session-index S) rel)) (pair? (rules-of (session-index S2) rel))))
+      (define (fact-provider rel) (let ((f (assq rel fact-relations))) (and f (list-ref f 3))))
+      (define (callees rel)
+        (let ((seen (make-eq-hashtable)) (out '()))
+          (for-each (lambda (r)
+                      (for-each (lambda (a)
+                                  (let ((n (car (car a))) (neg (eq? (cadr a) 'negative)))
+                                    (unless (hashtable-ref seen (cons n neg) #f)
+                                      (hashtable-set! seen (cons n neg) #t)
+                                      (set! out (cons (cons n neg) out)))))
+                                (apply append (map goal-atoms (cdr r)))))
+                    (append (rules-of (session-index S) rel) (rules-of (session-index S2) rel)))
+          (reverse out)))
+      ;; THE STRATA of the derived relations S's named keys reach, callees first
+      (define strata
+        (let ((index (make-eq-hashtable)) (low (make-eq-hashtable)) (on (make-eq-hashtable)) (stack '()) (n 0) (out '()))
+          (define (strong v)
+            (hashtable-set! index v n) (hashtable-set! low v n) (set! n (+ n 1))
+            (set! stack (cons v stack)) (hashtable-set! on v #t)
+            (for-each (lambda (p)
+                        (let ((w (car p)))
+                          (when (derived? w)
+                            (cond ((not (hashtable-contains? index w))
+                                   (strong w) (hashtable-set! low v (min (hashtable-ref low v 0) (hashtable-ref low w 0))))
+                                  ((hashtable-ref on w #f)
+                                   (hashtable-set! low v (min (hashtable-ref low v 0) (hashtable-ref index w 0))))))))
+                      (callees v))
+            (when (= (hashtable-ref low v 0) (hashtable-ref index v 0))
+              (let pop ((members '()))
+                (let ((w (car stack)))
+                  (set! stack (cdr stack)) (hashtable-set! on w #f)
+                  (if (eq? w v) (set! out (cons (cons w members) out)) (pop (cons w members)))))))
+          (for-each (lambda (k) (unless (hashtable-contains? index (car k)) (strong (car k)))) held)
+          (reverse out)))
+      ;; A STORED RELATION WHOSE DECLARATION CHANGED: its value or its availability
+      (define available1 (handler-available (stored-handler state1 #f)))
+      (define available2 (handler-available (stored-handler state2 #f)))
+      (define (declaration-changed? rel)
+        (and (or (state-derived state1 rel) (state-derived state2 rel))
+             (or (not (equal? (state-derived state1 rel) (state-derived state2 rel)))
+                 (not (equal? (available1 rel) (available2 rel))))))
+      ;; deltas, per relation: (added . retracted), each an equal-hashtable of tuples
+      (define deltas (make-eq-hashtable))
+      (define (delta-of rel) (hashtable-ref deltas rel #f))
+      (define (hash-of tuples) (let ((h (make-hashtable equal-hash equal?))) (for-each (lambda (t) (hashtable-set! h t #t)) tuples) h))
+      (define (set-delta! rel old new)
+        (let ((ho (hash-of old)) (hn (hash-of new)))
+          (hashtable-set! deltas rel
+                          (cons (filter (lambda (t) (not (hashtable-ref ho t #f))) new)
+                                (filter (lambda (t) (not (hashtable-ref hn t #f))) old)))))
+      (define (changed? rel) (let ((d (delta-of rel))) (and d (or (pair? (car d)) (pair? (cdr d))))))
+      ;; THE BASE DELTA of a stored fact relation: every tuple at each state
+      (define (fact-delta! rel)
+        (unless (delta-of rel)
+          (let* ((arity (cadr (assq rel fact-relations)))
+                 (args (let loop ((i 0) (out '())) (if (= i arity) out (loop (+ i 1) (cons unbound out)))))
+                 (old (fact-tuples (aux!) rel args)))
+            (charge-aux!)
+            (set-delta! rel old (fact-tuples S2 rel args)))))
+      (define dropped (make-eq-hashtable))
+      (define maintained-of (make-eq-hashtable))
+      ;; THE OLD DATABASE: S's complete tables, else the auxiliary session's
+      (define (old-tuples key)
+        (if (held-complete? S key)
+            (held-tuples S key)
+            (let ((A (aux!)))
+              (complete-key! A key)
+              (charge-aux!)
+              (table-tuples A key))))
+      ;; THE NEW DATABASE: S2's complete tables, else evaluated in S2 now; a
+      ;; key of the stratum being maintained joins it, with every key of that
+      ;; stratum its evaluation completed
+      (define current #f)
+      (define pending-additions '())
+      (define (new-tuples key)
+        (unless (held-complete? S2 key)
+          (let ((before (hash-of (vector->list (hashtable-keys (session-complete S2))))))
+            (complete-key! S2 key)
+            (when (and current (memq (car key) (car current)))
+              (for-each (lambda (k)
+                          (when (and (named-key? k) (memq (car k) (car current)) (not (hashtable-ref before k #f)))
+                            (hashtable-set! maintained-of k (table-tuples S2 k))
+                            (set! pending-additions (cons (cons (car k) (table-tuples S2 k)) pending-additions))))
+                        (vector->list (hashtable-keys (session-complete S2)))))))
+        (table-tuples S2 key))
+      ;; GOALS SOLVED OVER A DATABASE: derived goals read OLD or NEW tables, the
+      ;; rest through their handlers in the session at that state
+      (define (view-solve old? goals b k)
+        (if (null? goals)
+            (k b)
+            (let* ((g (car goals))
+                   (h (or (dispatch (session-env-of (if old? S S2)) (car g))
+                          (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g)))))
+                   ;; a fact at the old state is the auxiliary session's, so S's memo stays as it was
+                   (Sv (if (and old? (not (eq? (handler-name h) 'TEST))) (aux!) S2)))
+              (if (memq (handler-name h) '(RULE STORED))
+                  (let ((key (cons (car g) (call-args (cdr g) b))))
+                    (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (view-solve old? (cdr goals) b2 k))))
+                              (if old? (old-tuples key) (new-tuples key))))
+                  ((handler-solve h) Sv g b (lambda (b2) (when old? (charge-aux!)) (view-solve old? (cdr goals) b2 k)))))))
+      (define (head-tuple rule b) (map (lambda (a) (value-of a b)) (cdr (car rule))))
+      ;; every head tuple of RULE for KEY with position I bound to a tuple of DELTA
+      (define (delta-heads old? rule key i delta emit)
+        (let ((b0 (head-bindings (cdr (car rule)) (cdr key))) (g (list-ref (cdr rule) i)))
+          (when b0
+            (for-each (lambda (d)
+                        (let ((b1 (unify (cdr g) d b0)))
+                          (when b1
+                            (view-solve old? (let drop ((gs (cdr rule)) (j 0))
+                                               (cond ((null? gs) '()) ((= j i) (cdr gs)) (else (cons (car gs) (drop (cdr gs) (+ j 1))))))
+                                        b1
+                                        (lambda (b2)
+                                          (let ((t (head-tuple rule b2)))
+                                            (when (for-all (lambda (c v) (or (unbound? c) (equal? c v))) (cdr key) t)
+                                              (emit t))))))))
+                      delta))))
+      ;; deltas as one entry a relation: ((<rel> <tuple> ...) ...)
+      (define (merged ds)
+        (let loop ((ds ds) (out '()))
+          (cond ((null? ds) (reverse out))
+                ((assq (car (car ds)) out)
+                 => (lambda (e) (set-cdr! e (append (cdr e) (cdr (car ds)))) (loop (cdr ds) out)))
+                (else (loop (cdr ds) (cons (cons (car (car ds)) (cdr (car ds))) out))))))
+      ;; the positions of RULE's body whose relation has tuples in DELTAS (rel -> list)
+      (define (delta-positions rule deltas)
+        (let loop ((gs (cdr rule)) (i 0) (out '()))
+          (if (null? gs) (reverse out)
+              (loop (cdr gs) (+ i 1)
+                    (let ((d (assq (car (car gs)) deltas))) (if (and d (pair? (cdr d))) (cons (cons i (cdr d)) out) out))))))
+      (define restored '())
+      ;; one positive stratum, its carried keys maintained by DRed
+      (define (dred! members keys)
+        (set! current (list members))
+        (hashtable-clear! maintained-of)
+        (set! pending-additions '())
+        (for-each (lambda (k) (hashtable-set! maintained-of k (held-tuples S k)) (table-set! S2 k (held-tuples S k))
+                    (hashtable-set! (session-complete S2) k #t))
+                  keys)
+        (let* ((outside (filter (lambda (p) (not (memq (car p) members)))
+                                (apply append (map callees members))))
+               (seed (lambda (pick) (filter values (map (lambda (p) (let ((d (delta-of (car p)))) (and d (cons (car p) (pick d)))))
+                                                        outside))))
+               (old-set (make-hashtable equal-hash equal?))
+               (deleted (make-hashtable equal-hash equal?)))
+          (for-each (lambda (k) (hashtable-set! old-set k (hash-of (held-tuples S k)))) keys)
+          ;; (i) OVER-DELETE, the old database at every other position
+          (let loop ((ds (merged (seed cdr))))
+            (let ((found '()))
+              (for-each (lambda (k)
+                          (for-each (lambda (rule)
+                                      (for-each (lambda (p)
+                                                  (delta-heads #t rule k (car p) (cdr p)
+                                                               (lambda (t)
+                                                                 (when (and (hashtable-ref (hashtable-ref old-set k #f) t #f)
+                                                                            (not (hashtable-ref deleted (cons k t) #f)))
+                                                                   (hashtable-set! deleted (cons k t) #t)
+                                                                   (set! found (cons (cons (car k) t) found))))))
+                                                (delta-positions rule ds)))
+                                    (rules-of (session-index S) (car k))))
+                        keys)
+              (unless (null? found)
+                (loop (merged (map (lambda (m) (cons m (map cdr (filter (lambda (f) (eq? (car f) m)) found)))) members))))))
+          (vector-for-each (lambda (kt) (table-remove! S2 (car kt) (cdr kt))) (hashtable-keys deleted))
+          ;; (ii) RE-DERIVE, the new database
+          (set! restored '())
+          (let loop ()
+            (let ((again #f))
+              (vector-for-each
+                (lambda (kt)
+                  (let ((k (car kt)) (t (cdr kt)))
+                    (unless (hashtable-ref (car (table S2 k)) t #f)
+                      (call/cc
+                        (lambda (done)
+                          (for-each (lambda (rule)
+                                      (let ((b0 (head-bindings (cdr (car rule)) t)))
+                                        (when b0
+                                          (view-solve #f (cdr rule) b0
+                                                      (lambda (b2)
+                                                        (table-add! S2 k t)
+                                                        (set! restored (cons (list (car k) t) restored))
+                                                        (set! again #t)
+                                                        (done #t))))))
+                                    (rules-of (session-index S2) (car k))))))))
+                (hashtable-keys deleted))
+              (when again (loop))))
+          ;; (iii) INSERT, semi-naively, the new database: the added tuples
+          ;; below, the keys joined so far, and what (ii) restored, which a key
+          ;; joined while the tables were short of it has not seen
+          (let loop ((ds (merged (append (seed car) pending-additions restored))))
+            (set! pending-additions '())
+            (let ((found '()))
+              (for-each (lambda (k)
+                          (for-each (lambda (rule)
+                                      (for-each (lambda (p)
+                                                  (delta-heads #f rule k (car p) (cdr p)
+                                                               (lambda (t)
+                                                                 (unless (hashtable-ref (car (table S2 k)) t #f)
+                                                                   (table-add! S2 k t)
+                                                                   (set! found (cons (cons (car k) t) found))))))
+                                                (delta-positions rule ds)))
+                                    (rules-of (session-index S2) (car k))))
+                        (vector->list (hashtable-keys maintained-of)))
+              (let ((next (append (map (lambda (m) (cons m (map cdr (filter (lambda (f) (eq? (car f) m)) found)))) members)
+                                  pending-additions)))
+                (when (or (pair? found) (pair? pending-additions)) (loop (merged next))))))
+          ;; THE STRATUM'S DELTA, per relation, for the strata above
+          (for-each (lambda (m)
+                      (let ((ks (filter (lambda (k) (eq? (car k) m)) (vector->list (hashtable-keys maintained-of)))))
+                        (set-delta! m
+                                    (apply append (map (lambda (k) (if (held-complete? S k) (held-tuples S k) '())) ks))
+                                    (apply append (map (lambda (k) (table-tuples S2 k)) ks)))))
+                    members)
+          (set! current #f)))
+      ;; STRATUM BY STRATUM, from the facts upward
+      (for-each
+        (lambda (members)
+          (let* ((reads (apply append (map callees members)))
+                 (keys (filter (lambda (k) (memq (car k) members)) held))
+                 (negative? (exists cdr reads))
+                 (outside (filter (lambda (p) (not (memq (car p) members))) reads)))
+            (for-each (lambda (p) (when (eq? (fact-provider (car p)) 'stored) (fact-delta! (car p)))) outside)
+            (cond
+              ((or (exists (lambda (p) (eq? (fact-provider (car p)) 'external)) outside)
+                   (exists declaration-changed? members)
+                   (exists (lambda (p) (hashtable-ref dropped (car p) #f)) outside))
+               (for-each (lambda (m) (hashtable-set! dropped m #t)) members))
+              (negative?
+               (if (exists (lambda (p) (changed? (car p))) outside)
+                   (for-each (lambda (m) (hashtable-set! dropped m #t)) members)
+                   (for-each (lambda (k) (table-set! S2 k (held-tuples S k)) (hashtable-set! (session-complete S2) k #t)) keys)))
+              ((pair? keys) (dred! members keys))
+              (else #f))))
+        strata)
+      S2))
+
+  ;; THE FIXTURES' VIEW OF A SESSION'S TABLES, read without making one: #f
+  ;; for a key it does not hold, else (complete|incomplete <tuples>); a
+  ;; variable stands for an unbound argument
+  (define (session-table-of S rel . args)
+    (let ((key (cons rel (map (lambda (a) (if (variable? a) unbound a)) args))))
+      (let ((t (held-tuples S key)))
+        (and t (list (if (held-complete? S key) 'complete 'incomplete) t)))))
+  ;; every expansion of a named key the session made
+  (define (session-named-expansions S)
+    (let-values (((keys counts) (hashtable-entries (session-expansion-counts S))))
+      (let loop ((i 0) (n 0))
+        (if (= i (vector-length keys)) n
+            (loop (+ i 1) (if (named-key? (vector-ref keys i)) (+ n (vector-ref counts i)) n))))))
+  ;; the names of the session's query tables (the roots: strings)
+  (define (session-root-names S)
+    (filter (lambda (n) (and (string? n) (>= (string-length n) 6) (string=? (substring n 0 6) "query ")))
+            (map car (vector->list (hashtable-keys (session-tables S))))))
 
   ;; ---- one query ------------------------------------------------------------------------------
 
