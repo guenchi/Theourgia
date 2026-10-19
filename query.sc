@@ -1970,7 +1970,7 @@
       (define (derived? rel) (or (pair? (rules-of (session-index S) rel)) (pair? (rules-of (session-index S2) rel))))
       (define (fact-provider rel) (let ((f (assq rel fact-relations))) (and f (list-ref f 3))))
       (define (callees rel)
-        (let ((seen (make-eq-hashtable)) (out '()))
+        (let ((seen (make-hashtable equal-hash equal?)) (out '()))
           (for-each (lambda (r)
                       (for-each (lambda (a)
                                   (let ((n (car (car a))) (neg (eq? (cadr a) 'negative)))
