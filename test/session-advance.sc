@@ -117,6 +117,8 @@
 (define (identity name rel arity kinds)
   (let ((vars (let loop ((i 0) (out '())) (if (= i arity) (reverse out) (loop (+ i 1) (cons (string->symbol (string-append "?v" (number->string i))) out))))))
     (list (cons 'head (list (cons name kinds))) (cons 'clause (cons (cons name vars) (list (cons rel vars)))))))
+;; what a fresh session at ST spends building every edge (a row-less query)
+(define (edge-build st) (let ((S (make-query-session st))) (session-answer S '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent S)))
 ;; held: S asked GOAL, so its keys are complete in S
 (define (hold! S goal) (session-answer S goal))
 
@@ -139,6 +141,7 @@
 (define bs (make B 'section "s"))
 (define bz (make B 'section "z"))
 (define blib (new-id (car (cadr (batch B (list 'insert 'root #f (list (cons 'kind 'library) (cons 'name '(my lib)))))))))
+(define b-uses (link! B bx "uses" bz))
 (define bcode (new-id (car (cadr (batch B (list 'insert blib #f (list (cons 'kind 'code) (cons 'title "fn"))))))))
 (derive! B 'iff (identity 'iff 'field 3 '(ID STR ANY)))
 (derive! B 'ife (identity 'ife 'edge 3 '(ID SYM ID)))
@@ -146,7 +149,8 @@
 (derive! B 'ifr (identity 'ifr 'validity-reason 3 '(ID SYM ID)))
 (derive! B 'ifu (identity 'ifu 'under 2 '(ID PARENT)))
 (derive! B 'ifl (identity 'ifl 'in-library 2 '(ID NAME-OR-NONE)))
-(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p) (ifl ?b ?n)))
+(derive! B 'ifk (identity 'ifk 'edge-kind 3 '(ID SYM ID)))
+(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p) (ifl ?b ?n) (ifk ?a ?k ?b)))
 (define b1 (state B))
 (define BS (make-query-session b1))
 (for-each (lambda (g) (hold! BS g)) base-keys)
@@ -159,6 +163,7 @@
 (on B 'del bb)
 (define b-moved (on B 'move bz bs))
 (define b-renamed (field! B blib 'name '(my lib2)))
+(define b-declared (on B 'relation "uses" "--as" "depends-on"))
 (define b2 (state B))
 (define BS2 (advance BS b2))
 (define (member-of? t tbl) (if (pair? tbl) (and (member t (cadr tbl)) #t) tbl))
@@ -198,7 +203,12 @@
              (before (named-expansions BS2))
              (same (map (lambda (g) (equal? (rows-of BS2 g) (oracle b2 g))) base-keys)))
         (list kinds same (if (number? before) (- (named-expansions BS2) before) before)))
-      '((complete complete complete complete complete complete) (#t #t #t #t #t #t) 0))
+      '((complete complete complete complete complete complete complete) (#t #t #t #t #t #t #t) 0))
+(want "BASE-9 a relation name given a kind: the edge under it gains an edge-kind tuple, no edge written"
+      (let ((t (inspected BS2 'ifk '?a '?k '?b)))
+        (list (head-of b-uses) (head-of b-declared)
+              (member-of? (list bx 'depends-on bz) (inspected BS 'ifk '?a '?k '?b)) (member-of? (list bx 'depends-on bz) t)))
+      '(ok ok #f #t))
 
 ;; ---- DRED: positive strata, delete and rederive ----------------------------------------------
 (printf "== DRED: a positive stratum maintained ==\n")
@@ -223,6 +233,10 @@
 (link! D d4 "cites" d5)
 (define dst2 (state D))
 (define DS2 (advance DS dst2))
+(want "BUDGET-2 the advance is charged its insertions: the four tuples ending at 5, beyond the edge enumeration at both states"
+      (let ((n1 (edge-build dst1)) (n2 (edge-build dst2)) (spent (if (session? DS2) (session-spent DS2) DS2)))
+        (in-order (list n1 n2) (and (number? spent) (>= spent (+ n1 n2 4)))))
+      (list (list 3 4) #t))
 (want "DRED-1 an edge added at the end of a chain: the tuples four recursive steps out derived, inspected before any ask"
       (in-order (inspected DS2 'rch d1 '?x) (inspected DS2 'rch d2 '?x) (inspected DS2 'rch d3 '?x) (inspected DS2 'rch d4 '?x))
       (list (list 'complete (sorted (map (lambda (b) (list d1 b)) (list d2 d3 d4 d5))))
@@ -318,6 +332,32 @@
 (want "OLD-JOIN an over-deletion that asks the old database for a key S never held: answered at S's state, the tuple deleted, S untouched"
       (in-order (inspected OS2 'vv oa '?z) (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS)))
       (list (list 'complete '()) os-keys-before))
+(want "S-CACHES S's builds kept through the advance: an edge query on S builds nothing"
+      (begin (session-answer OS '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent OS))
+      0)
+;; THE SAME, a->b also unlinked: lo(a, b) differs between the states; the
+;; old one is derived in the auxiliary session (one tuple), which a state2
+;; reading would not find
+(define O2 (store! "old-join-2"))
+(define o2a (make O2 'doc "a"))
+(define o2b (make O2 'doc "b"))
+(define o2c (make O2 'doc "c"))
+(link! O2 o2a "cites" o2b)
+(link! O2 o2b "depends-on" o2c)
+(derive! O2 'lo '((head (lo ID ID)) (clause (lo ?x ?y) (edge ?x cites ?y))))
+(derive! O2 'lo2 '((head (lo2 ID ID)) (clause (lo2 ?x ?y) (edge ?x depends-on ?y))))
+(derive! O2 'vv '((head (vv ID ID)) (clause (vv ?x ?z) (lo ?x ?y) (lo2 ?y ?z))))
+(define o2st1 (state O2))
+(define O2S (make-query-session o2st1))
+(hold! O2S (list 'vv o2a '?z))
+(unlink! O2 o2b "depends-on" o2c)
+(unlink! O2 o2a "cites" o2b)
+(define o2st2 (state O2))
+(define O2S2 (advance O2S o2st2))
+(want "OLD-JOIN-2 the old answer of the key S lacks is the old state's, and charged: both enumerations, three deletions and lo(a, b) derived"
+      (let ((n1 (edge-build o2st1)) (n2 (edge-build o2st2)) (spent (if (session? O2S2) (session-spent O2S2) O2S2)))
+        (in-order (list n1 n2) (inspected O2S2 'vv o2a '?z) (and (number? spent) (>= spent (+ n1 n2 3 1)))))
+      (list (list 2 0) (list 'complete '()) #t))
 
 ;; A POSITIVE STRATUM ABOVE A POSITIVE ONE, the lower's delta both ways: a
 ;; cites b cites c cites d, c and d code; b->c unlinked, a->d and d->e linked,
@@ -340,11 +380,38 @@
 (define yst2 (state Y))
 (define YS2 (advance YS yst2))
 (want "DRED-6 a positive stratum over a positive one: the lower's retraction deletes c above it, its insertion adds e, inspected"
-      (in-order (inspected YS 'upc ya '?y) (inspected YS2 'upc ya '?y) (inspected YS2 'rch yd '?x) (inspected YS2 'rch ya '?x))
+      (in-order (inspected YS 'upc ya '?y) (inspected YS2 'upc ya '?y) (inspected YS2 'rch yd '?x) (inspected YS2 'rch ya '?x)
+                (inspected YS2 'rch yb '?x) (inspected YS2 'rch yc '?x))
       (list (list 'complete (sorted (list (list ya yc) (list ya yd))))
             (list 'complete (sorted (list (list ya yd) (list ya ye))))
             (list 'complete (list (list yd ye)))
-            (list 'complete (sorted (list (list ya yb) (list ya yd) (list ya ye))))))
+            (list 'complete (sorted (list (list ya yb) (list ya yd) (list ya ye))))
+            (list 'complete '())
+            (list 'complete (sorted (list (list yc yd) (list yc ye))))))
+
+;; A POSITIVE COMPONENT OF TWO RELATIONS: pp reaches through qq, qq is pp;
+;; a cites b cites c, then c cites d
+(define Z (store! "two-names"))
+(define za (make Z 'doc "a"))
+(define zb (make Z 'doc "b"))
+(define zc (make Z 'doc "c"))
+(define zd (make Z 'doc "d"))
+(link! Z za "cites" zb)
+(link! Z zb "cites" zc)
+(derive! Z 'qq '((head (qq ID ID)) (clause (qq ?x ?y) (edge ?x cites ?y))))
+(derive! Z 'pp '((head (pp ID ID)) (clause (pp ?x ?y) (edge ?x cites ?y)) (clause (pp ?x ?y) (edge ?x cites ?m) (qq ?m ?y))))
+(derive! Z 'qq '((head (qq ID ID)) (clause (qq ?x ?y) (pp ?x ?y))))
+(define zst1 (state Z))
+(define ZS (make-query-session zst1))
+(hold! ZS (list 'pp za '?y))
+(link! Z zc "cites" zd)
+(define zst2 (state Z))
+(define ZS2 (advance ZS zst2))
+(want "DRED-7 a positive component of two relations maintained: both names' carried keys gain d, inspected"
+      (in-order (inspected ZS2 'pp za '?y) (inspected ZS2 'qq zb '?y) (inspected ZS2 'pp zc '?y))
+      (list (list 'complete (sorted (list (list za zb) (list za zc) (list za zd))))
+            (list 'complete (sorted (list (list zb zc) (list zb zd))))
+            (list 'complete (list (list zc zd)))))
 
 ;; ---- EXTERNALS and DECLARATIONS ------------------------------------------------------------
 (printf "== EXT and DECL: what is not carried ==\n")
@@ -364,6 +431,19 @@
       (in-order (inspected XS2 'def-for '?b '?n '?d) (car (inspected XS2 'rch xa '?x))
                 (equal? (rows-of XS2 '(def-for ?b ?n ?d)) (oracle xst2 '(def-for ?b ?n ?d))))
       '(#f complete #t))
+;; EACH EXTERNAL RELATION ON ITS OWN, through S's extra clauses
+(define XE (store! "externals"))
+(define xea (make XE 'doc "a"))
+(define xest1 (state XE))
+(define XES (make-query-session xest1 '(((xun ?b ?n) (uses-name ?b ?n)) ((xdd ?d ?l ?n) (def ?d ?l ?n)) ((xsc ?b ?s) (score ?b "alpha" ?s)))))
+(for-each (lambda (g) (hold! XES g)) '((xun ?b ?n) (xdd ?d ?l ?n) (xsc ?b ?s)))
+(make XE 'doc "b")
+(define xest2 (state XE))
+(define XES2 (advance XES xest2))
+(want "EXT-2 uses-name, def and score each make their own reader dropped; complete in S before"
+      (in-order (map (lambda (k) (let ((t (apply inspected XES k))) (if (pair? t) (car t) t))) '((xun ?b ?n) (xdd ?d ?l ?n) (xsc ?b ?s)))
+                (map (lambda (k) (apply inspected XES2 k)) '((xun ?b ?n) (xdd ?d ?l ?n) (xsc ?b ?s))))
+      '((complete complete complete) (#f #f #f)))
 ;; a derive-only write: r's clause replaced, no fact changes
 (define R (store! "declaration"))
 (define ra (make R 'doc "a"))
@@ -503,7 +583,6 @@
 (unlink! F f2 "cites" f3)
 (define fst2 (state F))
 (define f-cost (let ((S2 (advance (fresh-held) fst2))) (if (session? S2) (session-spent S2) S2)))
-(define (edge-build st) (let ((S (make-query-session st))) (session-answer S '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent S)))
 (want "BUDGET-1 the advance is charged the facts' enumeration at BOTH states (the old state's is the auxiliary session's) and its two deletions"
       (let ((n1 (edge-build fst1)) (n2 (edge-build fst2)))
         (in-order (list n1 n2) (and (number? f-cost) (>= f-cost (+ n1 n2 2)))))
@@ -654,6 +733,15 @@
                      r)))
         (in-order (reduce-applied-cut other) (forward? r-planned other) (advance (make-query-session r-planned) other)))
       (list (list (cons fo 1) (cons "fw400000" 1)) #f '(error not-forward)))
+
+(want "FWD-6 the same event identities and payloads with another actor: not forward"
+      (let ((other (let ((r (reduce-empty)))
+                     (reduce-apply! r fo 1 '() (list 'plan "w" "fp" (cons fo 0) (list (cons 0 (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title "w0"))))))
+                                    (list "test2" (cons fo "w") 'plan "fp" #f (cons fo 0)))
+                     (reduce-apply! r "fw500000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "q") '(parent . root) '(ord . 5))))
+                     r)))
+        (in-order (reduce-applied-cut other) (forward? r-planned other) (advance (make-query-session r-planned) other)))
+      (list (list (cons fo 1) (cons "fw500000" 1)) #f '(error not-forward)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nsession-advance complete\n" rows bad)
