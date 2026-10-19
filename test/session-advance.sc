@@ -259,6 +259,44 @@
                   (equal? (rows-of DS2 (list 'rch d1 '?x)) (oracle dst2 (list 'rch d1 '?x)))
                   (- (named-expansions DS2) before)))
       '(() #t 0))
+;; A KEY OF THE SAME STRATUM DEMANDED BY THE INSERTION, NOT EMPTY, AND
+;; EVALUATED WHILE A HELD KEY IT READS IS STILL SHORT: a cites b, c cites d,
+;; d cites e; hold rch(a, ?) and rch(d, ?); insert b cites c and e cites f.
+;; In the first round rch(b, ?) demands rch(c, ?), evaluated then over
+;; rch(d, ?) = {(d e)}: {(c d) (c e)}. rch(d, ?) gains (d f) only in the second
+;; round (through (e f)), and rch(c, ?) gains (c f) only because it joined the
+;; maintained set; (b f) and (a f) follow from it
+(define DN (store! "demand-nonempty"))
+(define dna (make DN 'doc "a"))
+(define dnb (make DN 'doc "b"))
+(define dnc (make DN 'doc "c"))
+(define dnd (make DN 'doc "d"))
+(define dne (make DN 'doc "e"))
+(define dnf (make DN 'doc "f"))
+(link! DN dna "cites" dnb)
+(link! DN dnc "cites" dnd)
+(link! DN dnd "cites" dne)
+(derive! DN 'rch (reach-clauses 'rch))
+(define dnst1 (state DN))
+(define DNS (make-query-session dnst1))
+(hold! DNS (list 'rch dna '?x))
+(hold! DNS (list 'rch dnd '?x))
+(link! DN dnb "cites" dnc)
+(link! DN dne "cites" dnf)
+(define dnst2 (state DN))
+(define DNS2 (advance DNS dnst2))
+(define (dn-pairs from tos) (sorted (map (lambda (t) (list from t)) tos)))
+(want "DRED-8 a demanded key of the stratum, evaluated while a held key it reads is short, joins the maintained set: rch(c, ?) gains f, and so do b and a, inspected, then the oracle's"
+      (in-order (inspected DNS 'rch dnc '?x)
+                (inspected DNS2 'rch dna '?x) (inspected DNS2 'rch dnb '?x) (inspected DNS2 'rch dnc '?x) (inspected DNS2 'rch dnd '?x)
+                (if (session? DNS2) (equal? (rows-of DNS2 (list 'rch dna '?x)) (oracle dnst2 (list 'rch dna '?x))) DNS2))
+      (list #f
+            (list 'complete (dn-pairs dna (list dnb dnc dnd dne dnf)))
+            (list 'complete (dn-pairs dnb (list dnc dnd dne dnf)))
+            (list 'complete (dn-pairs dnc (list dnd dne dnf)))
+            (list 'complete (dn-pairs dnd (list dne dnf)))
+            #t))
+
 ;; TWO FACTS GONE: p of a block citing two others, both edges unlinked at once
 (define P (store! "two-facts"))
 (define px (make P 'doc "x"))
