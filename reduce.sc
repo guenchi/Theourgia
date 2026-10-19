@@ -41,7 +41,7 @@
 ;;; snapshot and from empty and be checked against each other.
 (library (theourgia reduce)
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
-          reduce-empty reduce-clone reduce-rehearsal? state-written-records reduce-apply! reduce-pending reduce-noted
+          reduce-empty reduce-clone reduce-rehearsal? state-written-records reduce-apply! reduce-pending pending-work-counter reduce-noted
           reduce-applied-cut reduce-trace reduce-gates reduction-forward?
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
@@ -132,7 +132,8 @@
   ;; pasts    -- alist of event-id to that event's causal past, newest first;
   ;;             pasts-index is the same by event-id
   ;; applied  -- alist of writer to the highest sequence applied
-  ;; pending  -- records whose premises have not all arrived
+  ;; pending  -- the queue of records not yet applied (make-pending-queue): the
+  ;;             ones waiting, filed by what they wait for, and the ready ones
   ;; trace    -- event-ids in the order they were applied
   ;; noted    -- integrity observations this layer made while applying
   ;; declared-relations -- a declaration table (decls): a declared relation
@@ -656,14 +657,15 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
+    (make-reduction '() '() '() '() '() (make-pending-queue) '() '() '() '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
                     (make-empty-structure)))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
-  ;; the admission tables, the consumption tables and the plan entries in
-  ;; by-plan -- and everything it replaces on update is shared. The copy
+  ;; the admission tables, the consumption tables, the plan entries in
+  ;; by-plan and the pending queue (pq-copy) -- and everything it replaces on
+  ;; update is shared. The copy
   ;; answers every question the original answers, and reducing records into
   ;; it changes nothing the original holds. Not the snapshot round trip,
   ;; which drops pending records and filters the history to the cut.
@@ -680,7 +682,7 @@
                      (reduction-blocks-rev r))))
       (make-reduction rev
                       (reduction-links r) (reduction-tags r) (reduction-pasts r)
-                      (reduction-applied r) (reduction-pending r) (reduction-trace r)
+                      (reduction-applied r) (pq-copy (reduction-pending r)) (reduction-trace r)
                       (reduction-noted r) (reduction-history r) (reduction-gates r)
                       (admission-copy (reduction-admission-index r))
                       (consumption-copy (reduction-consumption r))
@@ -718,7 +720,12 @@
                             (reduction-history r)))))
 
   (define (reduction-state r) r)
-  (define (reduce-pending r) (map record-of (reduction-pending r)))
+  ;; THE PENDING RECORDS IN ARRIVAL ORDER, as the list held them (after a
+  ;; rebuild, the history's order); conflicts reads them. Not on a hot path.
+  (define (reduce-pending r)
+    (let-values (((keys entries) (hashtable-entries (pq-by-id (reduction-pending r)))))
+      (map (lambda (e) (record-of (cdr e)))
+           (list-sort (lambda (a b) (< (car a) (car b))) (vector->list entries)))))
   (define (reduce-noted r) (reduction-noted r))
   (define (reduce-gates r) (reduction-gates r))
   (define (reduce-trace r) (reverse (reduction-trace r)))
@@ -751,6 +758,119 @@
                (reached? (rec-writer rec) (- (rec-seq rec) 1)))
            (for-all (lambda (d) (reached? (car d) (cdr d))) (rec-deps rec)))))
 
+  ;; ---- the pending queue -------------------------------------------------------
+  ;;
+  ;; THE RECORDS NOT YET APPLIED, held by what they wait for, so releasing them
+  ;; costs the queue's bookkeeping and not a pass over every waiting record per
+  ;; application. Four parts:
+  ;;   waiters -- an awaited event (writer . seq) to the records filed under it;
+  ;;              a record is filed under exactly one unmet requirement: its
+  ;;              predecessor (writer . seq-1) when unmet, else its first unmet
+  ;;              dep in its own order, a dep (w . 0) under (w . 0);
+  ;;   gated   -- a record's own event to the record, while the gates hold it;
+  ;;   ready   -- a binary heap of the applicable records, least first by writer
+  ;;              (string<?) then seq, the order drain! applies them in;
+  ;;   by-id   -- a record's event to (arrival . record): the already-pending
+  ;;              check, the arrival order reduce-pending answers, and the count.
+  ;; A record is FILED by reading the current state (the gates, then
+  ;; record-ready?'s requirements against the applied cursors), so nothing is
+  ;; filed under a requirement already met. Applying (w . s) wakes the records
+  ;; filed under it, and a writer's first event (seq 1) also those under (w . 0)
+  ;; (record-ready? reads (w . 0) as "w has an applied event"); a gate the
+  ;; admission lifts (admission-lifted) wakes the record gated under it. Each
+  ;; woken record is filed again. The ready heap therefore holds exactly the
+  ;; applicable records whenever drain! takes the least of them: the order
+  ;; today's whole-list drain took.
+  ;; NEVER: SHARED BY A CLONE. A rehearsal changes its queue in place; pq-copy
+  ;; copies the tables and the heap (the entries are replaced, never changed).
+  (define-record-type pq
+    (fields waiters gated by-id (mutable heap) (mutable size) (mutable next)))
+  (define (event-table) (make-hashtable equal-hash equal?))
+  (define (make-pending-queue) (make-pq (event-table) (event-table) (event-table) (make-vector 16 #f) 0 0))
+  (define (vector-prefix-copy v n size)
+    (let ((out (make-vector size #f)))
+      (do ((i 0 (+ i 1))) ((= i n) out) (vector-set! out i (vector-ref v i)))))
+  (define (pq-copy q)
+    (make-pq (hashtable-copy (pq-waiters q) #t) (hashtable-copy (pq-gated q) #t) (hashtable-copy (pq-by-id q) #t)
+             (vector-prefix-copy (pq-heap q) (pq-size q) (vector-length (pq-heap q))) (pq-size q) (pq-next q)))
+  (define (work! kind n) (let ((c (pending-work-counter))) (when c (c kind n))))
+  (define (rec-event rec) (cons (rec-writer rec) (rec-seq rec)))
+
+  ;; THE HEAP, least first by writer then seq; every comparison counted
+  (define (rec-before? a b)
+    (work! 'heap 1)
+    (if (string=? (rec-writer a) (rec-writer b))
+        (< (rec-seq a) (rec-seq b))
+        (string<? (rec-writer a) (rec-writer b))))
+  (define (heap-push! q rec)
+    (let ((n (pq-size q)))
+      (when (= n (vector-length (pq-heap q)))
+        (pq-heap-set! q (vector-prefix-copy (pq-heap q) n (* 2 n))))
+      (let ((h (pq-heap q)))
+        (let up ((i n))
+          (let ((parent (div (- i 1) 2)))
+            (if (and (> i 0) (rec-before? rec (vector-ref h parent)))
+                (begin (vector-set! h i (vector-ref h parent)) (up parent))
+                (vector-set! h i rec))))
+        (pq-size-set! q (+ n 1)))))
+  (define (heap-pop! q)
+    (let* ((h (pq-heap q)) (n (- (pq-size q) 1)) (top (vector-ref h 0)) (last (vector-ref h n)))
+      (vector-set! h n #f)
+      (pq-size-set! q n)
+      (when (> n 0)
+        (let down ((i 0))
+          (let* ((l (+ (* 2 i) 1)) (r (+ l 1))
+                 (least (if (and (< r n) (rec-before? (vector-ref h r) (vector-ref h l))) r l)))
+            (if (and (< l n) (rec-before? (vector-ref h least) last))
+                (begin (vector-set! h i (vector-ref h least)) (down least))
+                (vector-set! h i last)))))
+      top))
+
+  ;; -> the record's first unmet requirement, read as record-ready? reads them
+  ;; (its predecessor unless it is seq 1, then its deps in order), or #f. The
+  ;; key it is filed under: a requirement below seq 1 is met by the writer's
+  ;; first applied event, so it is filed under (w . 0), which that event wakes.
+  (define (first-unmet applied rec)
+    (define (unmet? w s) (let ((e (assoc w applied))) (not (and e (>= (cdr e) s)))))
+    (define (key w s) (cons w (if (< s 1) 0 s)))
+    (cond ((and (not (= (rec-seq rec) 1)) (unmet? (rec-writer rec) (- (rec-seq rec) 1)))
+           (key (rec-writer rec) (- (rec-seq rec) 1)))
+          (else (let ((d (find (lambda (d) (unmet? (car d) (cdr d))) (rec-deps rec))))
+                  (and d (key (car d) (cdr d)))))))
+  ;; FILE ONE RECORD by the current state, one examination: ready when
+  ;; applicable? says so (the predicate drain! chose by before), else gated
+  ;; under its own event, else waiting under its first unmet requirement.
+  (define (pq-file! r rec)
+    (work! 'examine 1)
+    (let ((q (reduction-pending r)) (id (rec-event rec)))
+      (cond ((applicable? r rec) (heap-push! q rec))
+            ((assoc id (reduction-gates r)) (hashtable-set! (pq-gated q) id rec))
+            ((first-unmet (reduction-applied r) rec)
+             => (lambda (need) (hashtable-update! (pq-waiters q) need (lambda (l) (cons rec l)) '())))
+            (else (assertion-violation 'pending "a record neither applicable, gated nor waiting" id)))))
+  ;; A RECORD ARRIVES: entered with the next arrival number, then filed
+  (define (pq-arrive! r rec)
+    (let ((q (reduction-pending r)))
+      (hashtable-set! (pq-by-id q) (rec-event rec) (cons (pq-next q) rec))
+      (pq-next-set! q (+ (pq-next q) 1))
+      (pq-file! r rec)))
+  ;; THE RECORDS WAITING ON KEY, filed again
+  (define (pq-wake! r key)
+    (let* ((q (reduction-pending r)) (waiting (hashtable-ref (pq-waiters q) key '())))
+      (unless (null? waiting)
+        (hashtable-delete! (pq-waiters q) key)
+        (for-each (lambda (rec) (pq-file! r rec)) (reverse waiting)))))
+  ;; THE GATES LIFTED: each record gated under a lifted key, filed again
+  (define (pq-lift! r keys)
+    (let ((q (reduction-pending r)))
+      (work! 'scan (length keys))
+      (for-each (lambda (k)
+                  (let ((rec (hashtable-ref (pq-gated q) k #f)))
+                    (when rec
+                      (hashtable-delete! (pq-gated q) k)
+                      (pq-file! r rec))))
+                keys)))
+
   ;; Applies everything that can be applied, then looks again: applying
   ;; one record can make a pending one applicable.
   ;; AN EVENT IS APPLIED ONCE. Delivering it again used to regress the
@@ -762,9 +882,7 @@
     (let ((have (assoc writer (reduction-applied r))))
       (cond
         ((and have (>= (cdr have) seq)) (list 'refused 'already-applied))
-        ((exists (lambda (rec) (and (string=? (rec-writer rec) writer)
-                                    (= (rec-seq rec) seq)))
-                 (reduction-pending r))
+        ((hashtable-contains? (pq-by-id (reduction-pending r)) (cons writer seq))
          (list 'refused 'already-pending))
         (else
          (let* ((actor (and (pair? rest) (car rest)))
@@ -787,7 +905,8 @@
                (begin
                  (reduction-gates-set! r gates)
                  (reduction-noted-set! r (merge-gate-notes r gates))
-                 (reduction-pending-set! r (append (reduction-pending r) (list rec)))
+                 (pq-lift! r (admission-lifted (reduction-admission-index r)))
+                 (pq-arrive! r rec)
                  (drain! r))))
          'accepted))))
 
@@ -851,8 +970,12 @@
       ;; THE `seen` TABLE COMES BACK FROM THE RECORDS, because it is
       ;; about arrival and the records are all still here. Only the
       ;; applied half is re-derived by folding.
-      (reduction-pending-set! r records)
+      ;; THE QUEUE CLEARED AND REFILLED under the final gates: every retained
+      ;; record filed in the history's order, numbered in that order, with no
+      ;; admission and no drain per record; the one drain is below.
+      (reduction-pending-set! r (make-pending-queue))
       (reduction-gates-set! r gates)
+      (for-each (lambda (rec) (pq-arrive! r rec)) records)
       ;; A REBUILD STARTS THE NOTES OVER, and that is the opposite of
       ;; what the other path must do. The retained records are about to
       ;; be folded again, so every note the interpreter makes about a
@@ -880,18 +1003,14 @@
   ;; ORDER is what a case can assert, and it should be the order the
   ;; contract describes.
   (define (drain! r)
-    (let loop ()
-      (let ((ready (filter (lambda (rec) (applicable? r rec)) (reduction-pending r))))
-        (unless (null? ready)
-          (let ((next (car (list-sort
-                             (lambda (a b)
-                               (if (string=? (rec-writer a) (rec-writer b))
-                                   (< (rec-seq a) (rec-seq b))
-                                   (string<? (rec-writer a) (rec-writer b))))
-                             ready))))
+    (let ((q (reduction-pending r)))
+      (let loop ()
+        (unless (= 0 (pq-size q))
+          (let* ((next (heap-pop! q)) (id (rec-event next)))
+            (hashtable-delete! (pq-by-id q) id)
             (apply-one! r next)
-            (reduction-pending-set!
-              r (remp (lambda (rec) (eq? rec next)) (reduction-pending r)))
+            (pq-wake! r id)
+            (when (= (cdr id) 1) (pq-wake! r (cons (car id) 0)))
             (loop))))))
 
   (define (apply-one! r rec)
@@ -2116,7 +2235,7 @@
                                  (map (lambda (t)
                                         (cons (car t) (candidates->datum (cdr t))))
                                       (reduction-tags r))))
-          (cons 'pending (length (reduction-pending r)))))
+          (cons 'pending (hashtable-size (pq-by-id (reduction-pending r))))))
 
   (define (link<? a b)
     (let ((sa (sexpr->string-extended (list (car a) (cadr a) (caddr a))))
