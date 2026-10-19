@@ -107,7 +107,9 @@
 ;; forward); the local name is eight base-36 digits, so a peer named
 ;; zzzzzzzz sorts after it (or equals it, one chance in 36^8)
 (define (forge! st peer payload past)
-  (let* ((w (local-writer st))
+  (let* ((w (let ((w (local-writer st)))
+              (when (equal? w peer) (error 'forge! "the local writer has the peer's name; rerun" w))
+              w))
          (bytes (encode-record 1 1789000000001 "peer" (list (cons w (cdr (assoc w past)))) (storable-encode payload))))
     (log-publish! st peer 1 bytes (segment-sha bytes))))
 (define (sorted rs) (list-sort (lambda (x y) (string<? (format "~s" x) (format "~s" y))) rs))
@@ -292,9 +294,12 @@
 (unlink! E e2 "cites" e4)
 (define est2 (state E))
 (define ES2 (advance ES est2))
-(want "DELETION-ONLY a middle edge retracted: what lay beyond it through 2 deleted, (1 4) re-derived through 3, nothing inserted"
-      (in-order (inspected ES2 'rch e2 '?x) (inspected ES2 'rch e1 '?x))
-      (list (list 'complete '()) (list 'complete (sorted (list (list e1 e2) (list e1 e3) (list e1 e4))))))
+(want "DELETION-ONLY a middle edge retracted: what lay beyond it through 2 deleted, (1 4) re-derived through 3, nothing inserted; every carried key, the empty one included; charged exactly two deletions and two derivations (the restored (1 4), and (3 4) of the key rch(3, 4) the re-derivation demands)"
+      (let ((n1 (edge-build est1)) (n2 (edge-build est2)) (spent (if (session? ES2) (session-spent ES2) ES2)))
+        (in-order (inspected ES2 'rch e2 '?x) (inspected ES2 'rch e1 '?x) (inspected ES2 'rch e3 '?x) (inspected ES2 'rch e4 '?x)
+                  (list n1 n2) (and (number? spent) (- spent (+ n1 n2)))))
+      (list (list 'complete '()) (list 'complete (sorted (list (list e1 e2) (list e1 e3) (list e1 e4))))
+            (list 'complete (list (list e3 e4))) (list 'complete '()) (list 4 3) 4))
 ;; A LOWER STRATUM'S KEY DEMANDED, and a positive stratum above a positive one
 (define Q (store! "demand"))
 (define qa (make Q 'doc "a"))
@@ -331,13 +336,22 @@
 (define OS (make-query-session ost1))
 (hold! OS (list 'vv oa '?z))
 (hold! OS (list 'version oa '?v))
-(define os-keys-before (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS)))
+;; read before S's invariants are taken: the query itself spends
+(define oa-version-before (rows-of OS (list 'version oa '?v)))
+(define os-keys-before (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS) (named-expansions OS)))
 (unlink! O ob "depends-on" oc)
+(on O 'set oa "title" "a moved on")
 (define ost2 (state O))
 (define OS2 (advance OS ost2))
 (want "OLD-JOIN an over-deletion that asks the old database for a key S never held: answered at S's state, the tuple deleted, S untouched"
-      (in-order (inspected OS2 'vv oa '?z) (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS)))
+      (in-order (inspected OS2 'vv oa '?z) (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS) (named-expansions OS)))
       (list (list 'complete '()) os-keys-before))
+(want "MEMO-NEW a version S had cached, of a block changed between the states: the new session reads the new one"
+      (if (session? OS2)
+          (let ((now (rows-of OS2 (list 'version oa '?v))))
+            (list (equal? now (oracle ost2 (list 'version oa '?v))) (equal? now oa-version-before)))
+          OS2)
+      '(#t #f))
 (want "S-CACHES S's builds and memo kept through the advance: an edge query and a bound version call on S cost nothing"
       (in-order (session? OS2)
                 (begin (session-answer OS '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent OS))
@@ -476,8 +490,8 @@
 (define rst3 (state R))
 (define RS3 (advance RS2 rst3))
 (want "DECL-2 rr retired: dropped, and a query of it refused retired, not an old table"
-      (in-order (inspected RS3 'rr '?x) (head3 (session-answer RS3 '(rr ?x))))
-      '(#f (error bad-request relation-unavailable)))
+      (in-order (inspected RS3 'rr '?x) (session-answer RS3 '(rr ?x)))
+      '(#f (error bad-request relation-unavailable (relation rr) (state retired))))
 (define RO (store! "declaration-outside"))
 (define roa (make RO 'doc "a"))
 (derive! RO 'kept '((head (kept ID)) (clause (kept ?x) (kind ?x doc))))
@@ -641,8 +655,8 @@
       (let ((S (fresh-held)))
         (session-budget-set! S (- f-cost 1))
         (let ((a (advance S fst2)))
-          (in-order (head-of a) (inspected S 'rch f1 '?x))))
-      (list '(error query-budget) (list 'complete (sorted (list (list f1 f2) (list f1 f3))))))
+          (in-order (equal? a (list 'error 'query-budget '(relation rch) (list 'tuples f-cost))) (inspected S 'rch f1 '?x))))
+      (list #t (list 'complete (sorted (list (list f1 f2) (list f1 f3))))))
 ;; a held sum's field made a string: the stratum dropped, the refusal on demand
 (define G (store! "sum-string"))
 (define g1 (make G 'doc "1"))
