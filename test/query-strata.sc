@@ -170,6 +170,12 @@
 (want "NOT-14 a refinement inside a not stays inside: ?v compared with an integer inside, joined with a title after, accepted"
       (q N '(and (field ?b "title" ?v) (not (= ?v 1)) (title ?x ?v)))
       (q N '(and (field ?b "title" ?v) (title ?x ?v))))
+(define twice '(not (not (kind ?b doc))))
+(want "NOT-15 one goal datum asked alone and then after ?b is bound to a code block: a doc exists; no code block is a doc"
+      (let ((S (make-query-session (state N))))
+        (in-order (let ((a (session-answer S twice))) (and (pair? a) (list-head a 2)))
+                  (let ((a (session-answer S (list 'and '(kind ?b code) twice)))) (and (pair? a) (list-head a 2)))))
+      '((ok (())) (ok ())))
 (want "NOT-11 an unknown relation inside a not: unknown-relation, as outside"
       (head4 (q N '(and (kind ?b code) (not (nosuch ?b)))))
       '(error bad-request unknown-relation (relation nosuch)))
@@ -300,8 +306,12 @@
       '(error bad-request wrong-kind (form sum) (variable ?x) (kind STR)))
 (want "AGG-32 a disjoint goal inside a form does not stop the kind check: a sum over STR after it, and a column known before it"
       (in-order (q A '(not (and (= 1 "x") (sum ?s ?t (title ?b ?t)))))
-                (q A '(sum ?s ?t (and (title ?b ?t) (= 1 "x")))))
+                (q A '(sum ?s ?t (and (title ?b ?t) (= 1 "x"))))
+                (q A '(sum ?s ?t (title 1 ?t)))
+                (q A '(sum ?s ?t (and (kind ?b ?k) (title ?k ?t)))))
       '((error bad-request wrong-kind (form sum) (variable ?t) (kind STR))
+        (error bad-request wrong-kind (form sum) (variable ?t) (kind STR))
+        (error bad-request wrong-kind (form sum) (variable ?t) (kind STR))
         (error bad-request wrong-kind (form sum) (variable ?t) (kind STR))))
 (want "AGG-33 a statically empty goal evaluates nothing: a count over an external relation beside a disjoint test is 0"
       (query-rows A '(count ?n (and (score ?b ?q ?s) (= 1 "x"))))
@@ -319,6 +329,14 @@
                 (query-rows A '(min ?m ?v (and (field ?b "n" ?v) (= 1 "x"))))
                 (query-rows A '(max ?m ?v (and (field ?b "n" ?v) (= 1 "x")))))
       '(((0)) () ()))
+(want "AGG-38 sum over an INT relation: the docs counted once, 3"
+      (query-rows A '(sum ?s ?n (qn ?n)))
+      '((3)))
+(want "AGG-39 a nested aggregate the group's values make wrong, before a contradiction: the count's goal is empty, 0, nothing evaluated"
+      (in-order (sorted-rows A '(and (field ?b "m" ?v) (count ?n (and (sum ?s ?x (and (field ?c "m" ?x) (= ?x ?v))) (= 1 "x")))))
+                (sorted-rows A '(and (field ?b "g" ?v) (count ?n (and (sum ?s ?x (and (field ?c "g" ?x) (= ?x ?v))) (= ?s "text"))))))
+      (list (sorted (list (list e1 1 0) (list e2 "x" 0)))
+            (sorted (list (list e1 '?z 0) (list e2 '?z 0) (list e3 'w 0)))))
 (field! A e3 'f #f)
 (want "AGG-37 a value the form cannot take that is #f: aggregate-value naming it"
       (q A '(sum ?s ?v (field ?b "f" ?v)))
@@ -473,9 +491,17 @@
              (goal (list 'and '(kind ?x doc) (list '= '?x ca) (list 'not (list 'reach '?x cd))))
              (refused (head3 (session-answer S goal))))
         (session-budget-set! S 1000000)
-        (list refused (let ((a (session-answer S goal))) (and (pair? a) (list-head a 2)))
-              (let ((a (session-answer S (list 'count '?n (list 'reach ca '?y))))) (and (pair? a) (list-head a 2)))))
+        (in-order refused (let ((a (session-answer S goal))) (and (pair? a) (list-head a 2)))
+                  (let ((a (session-answer S (list 'count '?n (list 'reach ca '?y))))) (and (pair? a) (list-head a 2)))))
       '((error query-budget (relation reach)) (ok ()) (ok ((3)))))
+
+(want "COMP-5 several groups share one budget: what one group costs fits, the four docs' groups together do not"
+      (let* ((one (let ((S0 (make-query-session (state C))))
+                    (session-answer S0 (list 'and '(kind ?x doc) (list '= '?x ca) (list 'count '?n (list 'reach '?x '?y))))
+                    (session-spent S0)))
+             (S (make-query-session (state C) '() (+ one 1))))
+        (head-of (session-answer S '(and (kind ?x doc) (count ?n (reach ?x ?y))))))
+      '(error query-budget))
 
 ;; ---- RULE VALUES ---------------------------------------------------------------------------
 (printf "== RV: forms in rule values ==\n")
@@ -505,6 +531,20 @@
                 (head3 (title! R rp "p4"))
                 (head-of (rule! R "kindout" "--retire")))
       '(ok ok ok ok (error refused rule-violation) ok))
+;; A STORED NAME ONLY INSIDE A RULE'S FORM: the rule is re-checked with the
+;; kinds when it is evaluated, so rk redeclared from INT to STR makes its sum
+;; wrong-kind (without the recheck it would be evaluated, aggregate-value)
+(derive! R 'rk '((head (rk INT)) (clause (rk 1))))
+(rule! R "inform" "--on" "doc" "--must" "(sum ?s ?x (rk ?x))")
+(derive! R 'rk '((head (rk STR)) (clause (rk "a"))))
+(want "RV-6 a stored relation named only inside a rule's sum gets the kind recheck: rk redeclared STR, the rule unevaluable, wrong-kind"
+      (let ((a (title! R rp "p5")))
+        (list (head3 a) (and (clause-of a 'reason) (head3 (cadr (clause-of a 'reason))))))
+      '((error refused rule-unevaluable) (error bad-request wrong-kind)))
+(rule! R "inform" "--retire")
+(want "RV-7 a library relation reaching an external, inside an aggregate: rule-relation-not-allowed"
+      (rule! R "amb" "--on" "doc" "--must" "(count ?n (ambiguous ?w ?name))")
+      '(error bad-request rule-relation-not-allowed (relation ambiguous)))
 (want "RV-3 an external relation inside an aggregate, in a rule and in a stored relation: rule-relation-not-allowed"
       (in-order (rule! R "scored" "--on" "doc" "--must" "(count ?n (score ?w \"x\" ?s))")
                 (derive! R 'ps '((head (ps INT)) (clause (ps ?n) (count ?n (and (kind ?b doc) (score ?b "x" ?s)))))))

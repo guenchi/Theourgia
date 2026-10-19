@@ -1502,7 +1502,12 @@
    ((refusal? e))
    unrelated a
    "a form's goal read goal by goal with the group's values as kinds: a kind refusal no form owns is its emptiness, any other refusal passes that goal over, and no file is read"
-   (e ((refusal? e) (if (static? (refusal-answer e)) 'empty env))))
+   (e ((refusal? e)
+       (cond ((static? (refusal-answer e)) 'empty)
+             ((and (form-goal? (car cs)) (not (eq? (car (car cs)) 'not)))
+              (cons (list (form-result (car cs)) (if (memq (car (car cs)) '(count sum)) '(int) '(int str)) '())
+                    env))
+             (else env)))))
   ("query.sc" (lenient-kinds) 1 guard
    ((refusal? e))
    unrelated a

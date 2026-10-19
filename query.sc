@@ -630,14 +630,24 @@
   ;; min's and max's not disjoint from both INT and STR (wrong-kind, with
   ;; (form ...)). count's and sum's results are INT; min's and max's the
   ;; column's kind met with INT or STR.
-;; A GOAL NO CUT SATISFIES, read again with its constants as `_`: its
-  ;; variables still take its columns' kinds (a sum over a title is over STR
-  ;; however empty its goal), unless they cannot, when the kinds stay as they were
+;; A GOAL NO CUT SATISFIES, read again one variable at a time, every other
+  ;; argument `_`: each variable still takes its column's kind (a sum over a
+  ;; title is over STR however empty its goal), and one that cannot keeps the
+  ;; kind it had
   (define (lenient-kinds goal-kinds-of g env)
     (if (or (form-goal? g) (not (list? g)) (assq (car g) tests))
         env
-        (guard (e ((refusal? e) env))
-          (goal-kinds-of (list (cons (car g) (map (lambda (a) (if (variable? a) a '_)) (cdr g)))) env))))
+        (let loop ((i 0) (env env))
+          (if (= i (length (cdr g)))
+              env
+              (loop (+ i 1)
+                    (if (variable? (list-ref (cdr g) i))
+                        (guard (e ((refusal? e) env))
+                          (goal-kinds-of (list (cons (car g) (let mask ((as (cdr g)) (j 0))
+                                                                (if (null? as) '()
+                                                                    (cons (if (= j i) (car as) '_) (mask (cdr as) (+ j 1)))))))
+                                         env))
+                        env))))))
   (define (form-result-kind g env goal-kinds-of)
     (define (static-emptiness? a)
       (and (pair? a) (pair? (cdr a)) (pair? (cddr a)) (memq (caddr a) '(wrong-kind join-across-kinds))
@@ -1809,7 +1819,14 @@
       ;; is passed over, and the rest still read
       (let loop ((cs (goal-conjuncts (form-sub g))) (env seed))
         (and (pair? cs)
-             (let ((next (guard (e ((refusal? e) (if (static? (refusal-answer e)) 'empty env)))
+             (let ((next (guard (e ((refusal? e)
+                                    (cond ((static? (refusal-answer e)) 'empty)
+                                          ;; A NESTED AGGREGATE PASSED OVER still gives its
+                                          ;; result its kind
+                                          ((and (form-goal? (car cs)) (not (eq? (car (car cs)) 'not)))
+                                           (cons (list (form-result (car cs)) (if (memq (car (car cs)) '(count sum)) '(int) '(int str)) '())
+                                                 env))
+                                          (else env))))
                            (goal-kinds (list (car cs)) env kinds-of))))
                (or (eq? next 'empty) (loop (cdr cs) next)))))))
   (define (form-solve S g b rest)
