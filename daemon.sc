@@ -1543,11 +1543,12 @@
          ;; fold made before the lock was taken is how two writers
          ;; come to disagree about what was there.
          (if (may-execute? main-pid ticket)
-             (let ((answer (if (cut-read? parsed)
+             (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
                                ;; A READ AT A CUT IS JUDGED AGAINST THE
                                ;; PUBLICATION, made current first when the
                                ;; disk has moved past it, and reached the one
-                               ;; way the published state is read.
+                               ;; way the published state is read; so is a
+                               ;; published read (query, context).
                                (begin
                                  (refresh-if-behind! store)
                                  (answer-published store self parsed actor writer piped cwd))
@@ -1805,6 +1806,13 @@
   ;; of the publication: the probe before it may notice an outside change and
   ;; start a reload, and it writes nothing. Sent to the store process it would
   ;; be handed no state and add nothing.
+  ;;
+  ;; NEVER: `query` AND `context` ARE NOT AMONG THEM, although each reads the
+  ;; state only through reduction-for and the keyword hook. A connection
+  ;; answers the publication as it stands while a reload the probe asked for
+  ;; is still queued, and a consumer that writes outside the daemon and then
+  ;; queries through it must see its write: those two are published reads of
+  ;; the store process (published-read?, below).
   (define conn-local-read-verbs '(read outline search describe))
 
   (define (conn-local-read? request)
@@ -1820,6 +1828,24 @@
                 ;; A READ AT A CUT REPLAYS THE LOG, which only the store
                 ;; process may open.
                 (not (argument-option nodes "--cut"))))))
+
+;; A PUBLISHED READ: `query` and `context`, answered by the store process
+  ;; from the publication made current first, as a read at a cut is: no replay
+  ;; while the disk has not moved past the publication, one fold when it has.
+  ;; Each reads the state only through reduction-for (the published object,
+  ;; unsealed) and the store's keyword hook (test/daemon-session.sc's census
+  ;; walks both files for the names that reach the store). Handed no state, as
+  ;; they were before, every request replayed the store from its snapshot.
+  ;; -> #t or #f
+  (define published-read-verbs '(query context))
+  (define (published-read? request)
+    (and (pair? request)
+         (memq (car request) published-read-verbs)
+         (for-all string? (cdr request))
+         (let ((nodes (parse-arguments (car request) (cdr request))))
+           (and (list? nodes)
+                (not (and (pair? nodes) (eq? 'error (car nodes))))
+                #t))))
 
   ;; A read, or an export, at a causal cut: both are judged against the
   ;; publication, so an export at a cut serves the state a read at that cut
