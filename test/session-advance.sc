@@ -492,6 +492,42 @@
       (in-order (asked-all YS2 yst2 (list (list 'upc ya '?y) (list 'rch ya '?x) (list 'rch yb '?x) (list 'rch yc '?x) (list 'rch yd '?x)))
                 (asked-all ES2 est2 (list (list 'rch e1 '?x) (list 'rch e2 '?x) (list 'rch e3 '?x) (list 'rch e4 '?x))))
       '(((#t #t #t #t #t) 0) ((#t #t #t #t) 0)))
+;; A JOINED KEY'S TUPLES FED TO THE INSERTION: p, q and r one positive
+;; component (clauses no cut satisfies, (= 0 1) before a call of p, close the
+;; cycle without answers); p(x) :- r(x), q(x); q(x) :- x cites z; r(x) :- x
+;; depends on z. S holds p(?), r(?) and q(a); b depends on z is added. r(?)
+;; gains b, p(?) gains b through it, demanding q(b) (joined, (b)); q(b)'s tuple
+;; fed to the insertion meets p's clause at its second position with x bound,
+;; so the first position demands r(b): one more key, one more charge (4 beyond
+;; the two enumerations, and a budget that stops at the eleventh tuple)
+(define FD (store! "feeding"))
+(define fda (make FD 'doc "a"))
+(define fdb (make FD 'doc "b"))
+(define fdz (make FD 'doc "z"))
+(link! FD fda "cites" fdz)
+(link! FD fdb "cites" fdz)
+(link! FD fda "depends-on" fdz)
+(derive! FD 'rf (list '(head (rf ID)) (list 'clause '(rf ?x) (list 'edge '?x 'depends-on fdz))))
+(derive! FD 'qf (list '(head (qf ID)) (list 'clause '(qf ?x) (list 'edge '?x 'cites fdz))))
+(derive! FD 'pf '((head (pf ID)) (clause (pf ?x) (rf ?x) (qf ?x))))
+(derive! FD 'qf (list '(head (qf ID)) (list 'clause '(qf ?x) (list 'edge '?x 'cites fdz)) '(clause (qf ?x) (= 0 1) (pf ?x))))
+(derive! FD 'rf (list '(head (rf ID)) (list 'clause '(rf ?x) (list 'edge '?x 'depends-on fdz)) '(clause (rf ?x) (= 0 1) (pf ?x))))
+(define fdst1 (state FD))
+(define (fd-held) (let ((S (make-query-session fdst1))) (hold! S '(pf ?x)) S))
+(link! FD fdb "depends-on" fdz)
+(define fdst2 (state FD))
+(define FDS2 (advance (fd-held) fdst2))
+(want "FEED-1 a joined key's tuples fed to the insertion demand the key the other position needs: r(b) complete in the new session, charged, and a budget one short refused"
+      (let ((n1 (edge-build fdst1)) (n2 (edge-build fdst2))
+            (S (fd-held)))
+        (in-order (list n1 n2)
+                  (inspected (fd-held) 'qf fdb)
+                  (if (session? FDS2) (- (session-spent FDS2) (+ n1 n2)) FDS2)
+                  (inspected FDS2 'rf fdb)
+                  (inspected FDS2 'pf '?x)
+                  (begin (session-budget-set! S (+ n1 n2 3)) (head-of (advance S fdst2)))))
+      (list (list 3 4) #f 4 (list 'complete (list (list fdb))) (list 'complete (sorted (list (list fda) (list fdb))))
+            '(error query-budget)))
 ;; A DEMANDED LOWER KEY THAT ADDS ITS OWN TUPLE ABOVE: as DEMAND-1, but c
 ;; depends on e, not d; a cites c inserted: up(a, ?) gains (a e) through lo(c, ?)
 (define Q2 (store! "demand-own"))
