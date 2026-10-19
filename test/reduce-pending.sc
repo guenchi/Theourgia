@@ -599,7 +599,9 @@
         ((plan-conflict (event "claim000" 1)) (plan-conflict (event "claim001" 1))
          (unknown-verb (event "u0000000" 1) (verb frobnicate)))))
 ;; GATE-9: THE NOTES THROUGH A SNAPSHOT: the rows restore the list as it
-;; was, and the restored reduction's next arrival merges it as today's would.
+;; was, and the restored reduction's next arrival merges it as today's does:
+;; the restored gate note is a literal and goes, and the snapshot does not
+;; carry the member's gate (read on master), so none comes back.
 (want "GATE-9 the notes written as rows and read back: the same list, then the next arrival's merge"
       (let ((r (reduce-empty)))
         (member! r "m0000000" 1 '() "planless" "q")
@@ -612,7 +614,7 @@
             (reduce-apply! back "q0000000" 1 '() (section))
             (list (equal? restored (reduce-noted r)) (reduce-noted back)))))
       '(#t ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (unknown-verb (event "x0000000" 1) (verb frob-x))
-            (unknown-verb (event "w0000000" 1) (verb frob-w)) (pending-plan (event "m0000000" 1)))))
+            (unknown-verb (event "w0000000" 1) (verb frob-w)))))
 ;; GATE-10: THE SORTED GATES ARE KEPT UNTIL THEY CHANGE: read again, or after
 ;; arrivals that gate nothing, they are not sorted again; after a new gate
 ;; they are.
