@@ -775,14 +775,9 @@
   ;;              same event can be pending twice when an event below the
   ;;              cursor let it be delivered again, and an entry leaves by
   ;;              identity, not by event.
-  ;;   loose   -- records outside the log's envelope (a seq that is not an exact
-  ;;              integer >= 0, or such a dep; wire.sc record-envelope-refusal
-  ;;              refuses them, so only an in-process caller makes one): no
-  ;;              event wakes them, so they are examined before every
-  ;;              application, as the whole list was, and applying one files
-  ;;              every waiting and ready record again. ODD counts the pending
-  ;;              ones; while it is not zero, already-pending compares
-  ;;              numerically over every entry, as the list did.
+  ;; Every seq and dep here is an exact integer >= 0: reduce-apply! refuses any
+  ;; other at its entry, as wire.sc record-envelope-refusal does on the log
+  ;; path, so an event is equal? to another exactly when the list's = said so.
   ;; A record is FILED by reading the current state (the gates, then
   ;; record-ready?'s requirements against the applied cursors), so nothing is
   ;; filed under a requirement already met. Applying (w . s) wakes the records
@@ -799,12 +794,11 @@
   ;; NEVER: SHARED BY A CLONE. A rehearsal changes its queue in place; pq-copy
   ;; copies the tables and the heap (the entries are replaced, never changed).
   (define-record-type pq
-    (fields waiters gated by-id (mutable heap) (mutable size) (mutable next) (mutable loose) (mutable odd)))
+    (fields waiters gated by-id (mutable heap) (mutable size) (mutable next)))
   (define (event-table) (make-hashtable equal-hash equal?))
-  (define (make-pending-queue) (make-pq (event-table) (event-table) (event-table) (make-vector 16 #f) 0 0 '() 0))
+  (define (make-pending-queue) (make-pq (event-table) (event-table) (event-table) (make-vector 16 #f) 0 0))
+  ;; THE LOG'S ENVELOPE FOR A SEQ OR A DEP (wire.sc record-envelope-refusal)
   (define (envelope-seq? x) (and (integer? x) (exact? x) (>= x 0)))
-  (define (in-envelope? rec)
-    (and (envelope-seq? (rec-seq rec)) (for-all (lambda (d) (envelope-seq? (cdr d))) (rec-deps rec))))
   ;; -> the pending entries, each (arrival . record), in no particular order
   (define (pq-entries q)
     (let-values (((keys lists) (hashtable-entries (pq-by-id q))))
@@ -814,8 +808,7 @@
       (do ((i 0 (+ i 1))) ((= i n) out) (vector-set! out i (vector-ref v i)))))
   (define (pq-copy q)
     (make-pq (hashtable-copy (pq-waiters q) #t) (hashtable-copy (pq-gated q) #t) (hashtable-copy (pq-by-id q) #t)
-             (vector-prefix-copy (pq-heap q) (pq-size q) (vector-length (pq-heap q))) (pq-size q) (pq-next q)
-             (pq-loose q) (pq-odd q)))
+             (vector-prefix-copy (pq-heap q) (pq-size q) (vector-length (pq-heap q))) (pq-size q) (pq-next q)))
   (define (work! kind n) (let ((c (pending-work-counter))) (when c (c kind n))))
   (define (rec-event rec) (cons (rec-writer rec) (rec-seq rec)))
 
@@ -862,14 +855,12 @@
                   (and d (key (car d) (cdr d)))))))
   ;; FILE ONE RECORD by the current state, one examination: ready when
   ;; applicable? says so (the predicate drain! chose by before), else gated
-  ;; under its own event, else loose when outside the envelope, else waiting
-  ;; under its first unmet requirement.
+  ;; under its own event, else waiting under its first unmet requirement.
   (define (pq-file! r rec)
     (work! 'examine 1)
     (let ((q (reduction-pending r)) (id (rec-event rec)))
       (cond ((applicable? r rec) (heap-push! q rec))
             ((assoc id (reduction-gates r)) (hashtable-update! (pq-gated q) id (lambda (l) (cons rec l)) '()))
-            ((not (in-envelope? rec)) (pq-loose-set! q (cons rec (pq-loose q))))
             ((first-unmet (reduction-applied r) rec)
              => (lambda (need) (hashtable-update! (pq-waiters q) need (lambda (l) (cons rec l)) '())))
             (else (assertion-violation 'pending "a record neither applicable, gated nor waiting" id)))))
@@ -878,39 +869,12 @@
     (let ((q (reduction-pending r)))
       (hashtable-update! (pq-by-id q) (rec-event rec) (lambda (l) (cons (cons (pq-next q) rec) l)) '())
       (pq-next-set! q (+ (pq-next q) 1))
-      (unless (in-envelope? rec) (pq-odd-set! q (+ (pq-odd q) 1)))
       (pq-file! r rec)))
   ;; AN APPLIED RECORD LEAVES: its own entry, found by identity
   (define (pq-leave! q rec)
     (let* ((id (rec-event rec))
            (rest (remp (lambda (e) (eq? (cdr e) rec)) (hashtable-ref (pq-by-id q) id '()))))
-      (if (null? rest) (hashtable-delete! (pq-by-id q) id) (hashtable-set! (pq-by-id q) id rest))
-      (unless (in-envelope? rec) (pq-odd-set! q (- (pq-odd q) 1)))))
-  ;; -> #t when an entry for WRITER and SEQ is pending: one probe in the
-  ;; envelope, else the list's own comparison over every entry
-  (define (pq-pending? q writer seq)
-    (if (and (envelope-seq? seq) (= 0 (pq-odd q)))
-        (hashtable-contains? (pq-by-id q) (cons writer seq))
-        (let ((entries (pq-entries q)))
-          (work! 'scan (length entries))
-          (exists (lambda (e) (and (string=? (rec-writer (cdr e)) writer) (= (rec-seq (cdr e)) seq))) entries))))
-  ;; THE LOOSE RECORDS NOW APPLICABLE move to the heap
-  (define (pq-take-loose! r)
-    (let ((q (reduction-pending r)))
-      (unless (null? (pq-loose q))
-        (work! 'scan (length (pq-loose q)))
-        (let-values (((ready rest) (partition (lambda (rec) (work! 'examine 1) (applicable? r rec)) (pq-loose q))))
-          (pq-loose-set! q rest)
-          (for-each (lambda (rec) (heap-push! q rec)) ready)))))
-  ;; EVERY WAITING AND READY RECORD FILED AGAIN, after a loose record applied:
-  ;; its event is not one any waiter is filed under, but it moved a cursor
-  (define (pq-refile-all! r)
-    (let* ((q (reduction-pending r))
-           (waiting (let-values (((keys lists) (hashtable-entries (pq-waiters q))))
-                      (apply append (map reverse (vector->list lists))))))
-      (hashtable-clear! (pq-waiters q))
-      (pq-refile-ready! r)
-      (for-each (lambda (rec) (pq-file! r rec)) waiting)))
+      (if (null? rest) (hashtable-delete! (pq-by-id q) id) (hashtable-set! (pq-by-id q) id rest))))
   ;; THE RECORDS WAITING ON KEY, filed again
   (define (pq-wake! r key)
     (let* ((q (reduction-pending r)) (waiting (hashtable-ref (pq-waiters q) key '())))
@@ -942,11 +906,22 @@
   ;; the log layer delivers each record once, so no caller reaches it
   ;; today, but a reduction that quietly corrupts itself on a repeat is
   ;; not something to leave for the first caller who does.
+  ;; THE LOG'S ENVELOPE, REFUSED AT THE ENTRY: a seq or a dep that is not an
+  ;; exact integer >= 0 is what wire.sc record-envelope-refusal refuses on the
+  ;; log path, so only a defective in-process caller passes one; the queue
+  ;; files by exact event and would strand it. Written in the body, not as a
+  ;; contract, so it holds whatever the contract level.
   (define (reduce-apply! r writer seq deps payload . rest)
+    (unless (envelope-seq? seq)
+      (assertion-violation 'reduce-apply! "a seq outside the log's envelope" writer seq))
+    (for-each (lambda (d)
+                (unless (and (pair? d) (envelope-seq? (cdr d)))
+                  (assertion-violation 'reduce-apply! "a dep outside the log's envelope" writer seq d)))
+              deps)
     (let ((have (assoc writer (reduction-applied r))))
       (cond
         ((and have (>= (cdr have) seq)) (list 'refused 'already-applied))
-        ((pq-pending? (reduction-pending r) writer seq)
+        ((hashtable-contains? (pq-by-id (reduction-pending r)) (cons writer seq))
          (list 'refused 'already-pending))
         (else
          (let* ((actor (and (pair? rest) (car rest)))
@@ -1069,14 +1044,12 @@
   (define (drain! r)
     (let ((q (reduction-pending r)))
       (let loop ()
-        (pq-take-loose! r)
         (unless (= 0 (pq-size q))
           (let* ((next (heap-pop! q)) (id (rec-event next))
                  (was (assoc (car id) (reduction-applied r))))
             (pq-leave! q next)
             (apply-one! r next)
-            (cond ((not (in-envelope? next)) (pq-refile-all! r))
-                  ((and was (< (cdr id) (cdr was))) (pq-refile-ready! r)))
+            (when (and was (< (cdr id) (cdr was))) (pq-refile-ready! r))
             (pq-wake! r id)
             (when (= (cdr id) 1) (pq-wake! r (cons (car id) 0)))
             (loop))))))

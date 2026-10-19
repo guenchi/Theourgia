@@ -412,31 +412,23 @@
       '((("x" . 1) ("x" . 0)) (("x" . 1) ("claim000" . 1) ("claim001" . 1)) 3 (refused already-pending)))
 
 ;; OUTSIDE THE LOG'S ENVELOPE: wire.sc refuses a seq or a dep that is not an
-;; exact integer >= 0, so only an in-process caller delivers these; the queue
-;; still answers what the whole list answered.
-(want "PEND-8 deps 1.0 and 3/2: met by w1 and by w2"
-      (let ((r (reduce-empty)))
-        (reduce-apply! r "a" 1 '(("w" . 1.0)) (section))
-        (reduce-apply! r "b" 1 '(("w" . 3/2)) (section))
-        (reduce-apply! r "w" 1 '() (section))
-        (reduce-apply! r "w" 2 '() (section))
-        (events r))
-      '(("w" . 1) ("a" . 1) ("w" . 2) ("b" . 1)))
-(want "PEND-8 negative seqs: w-2, w-1, z1 depending on (w . -1), then w1"
-      (let ((r (reduce-empty)))
-        (reduce-apply! r "w" -2 '() (section))
-        (reduce-apply! r "w" -1 '() (section))
-        (reduce-apply! r "z" 1 '(("w" . -1)) (section))
-        (reduce-apply! r "w" 1 '() (section))
-        (list (events r) (dump-pending r)))
-      '((("w" . 1) ("w" . -2) ("w" . -1) ("z" . 1)) 0))
-(want "PEND-8 x 1.0 while x1 is pending: already pending; z1 then applies x1"
-      (let ((r (reduce-empty)))
-        (reduce-apply! r "x" 1 '(("z" . 1)) (section))
-        (let ((again (reduce-apply! r "x" 1.0 '(("z" . 1)) (section))))
-          (reduce-apply! r "z" 1 '() (section))
-          (list again (events r) (dump-pending r))))
-      '((refused already-pending) (("z" . 1) ("x" . 1)) 0))
+;; exact integer >= 0 on the log path, and reduce-apply! refuses the same at its
+;; entry, before anything is entered.
+(define (refusal-of thunk)
+  (let ((r (reduce-empty)))
+    (list (guard (e (#t (list (and (condition? e) (message-condition? e) (condition-message e))
+                              (and (condition? e) (irritants-condition? e) (condition-irritants e)))))
+            (thunk r))
+          (events r) (dump-pending r))))
+(want "PEND-8 a seq that is not an integer is refused at the entry"
+      (refusal-of (lambda (r) (reduce-apply! r "x" 1.0 '() (section))))
+      '(("a seq outside the log's envelope" ("x" 1.0)) () 0))
+(want "PEND-8 a negative seq is refused at the entry"
+      (refusal-of (lambda (r) (reduce-apply! r "x" -1 '() (section))))
+      '(("a seq outside the log's envelope" ("x" -1)) () 0))
+(want "PEND-8 a dep that is not an exact integer >= 0 is refused at the entry"
+      (refusal-of (lambda (r) (reduce-apply! r "a" 1 '(("w" . 3/2)) (section))))
+      '(("a dep outside the log's envelope" ("a" 1 ("w" . 3/2))) () 0))
 
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
