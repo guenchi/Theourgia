@@ -1118,7 +1118,7 @@
             (head3 (title! HS hsB "y")))
       '((ok ok) #t (unavailable (state retired)) (error refused rule-unevaluable)))
 
-;; I: A CHAIN BUILT ONCE AN ENTRY, AND THE ENTRY FOUND IN CONSTANT TIME.
+;; J: A CHAIN BUILT ONCE AN ENTRY, AND THE ENTRY FOUND IN CONSTANT TIME.
 ;; d0 names d1, ..., d39 names d40; ten rules each name d0; d40 is retired.
 ;; affects checks every rule at PRE and at POST, and at POST each check asks
 ;; d0's availability, whose chain is forty relations long: built once at
@@ -1139,19 +1139,19 @@
 (define is-pre (state IS))
 (retire! IS (dn I-depth))
 (define is-post (state IS))
-(want "WALK-I affects over ten rules naming the head of a chain of forty, its end retired: the chain is built once at POST, not once a rule"
+(want "WALK-J affects over ten rules naming the head of a chain of forty, its end retired: the chain is built once at POST, not once a rule"
       (let ((c (counting 'chain (lambda () (derive-affects is-pre is-post (dn I-depth))))))
         (list is-rules (and (number? (car c)) (> (car c) 0) (<= (car c) (* 2 (+ I-depth 1))))
               (let ((r (and (pair? (cadr c)) (assq 'rule (cdr (cadr c)))))) (and r (length (cdr r))))))
       '((ok ok ok ok ok ok ok ok ok ok) #t 10))
-(want "WALK-I the chains it shares are each relation's own: d0's is the whole chain, d30's its last ten"
+(want "WALK-J the chains it shares are each relation's own: d0's is the whole chain, d30's its last ten"
       (list (availability-of IS 'd0) (availability-of IS 'd30))
       (list (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 1))) (iota I-depth))))
             (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 31))) (iota 10))))))
 ;; ONE LISTING BUILDS EACH CHAIN ONCE: every relation's chain is the tail of
 ;; the one before it, so the forty unavailable relations' chains cost forty
 ;; steps in all, not the 820 a walk of each would.
-(want "WALK-I a listing of the chain builds forty chain steps in all"
+(want "WALK-J a listing of the chain builds forty chain steps in all"
       (let ((c (counting 'chain (lambda () (availability-of IS 'd0)))))
         (and (number? (car c)) (> (car c) 0) (<= (car c) (+ I-depth 1))))
       #t)
@@ -1164,7 +1164,7 @@
         (parameterize ((stored-walk-counter (lambda (w how) (when (eq? w 'lookup) (if (eq? how 'token) (set! token (+ token 1)) (set! cut (+ cut 1)))))))
           (thunk))
         (list token cut))))
-(want "WALK-I the ten rules' checks find their state's entry by its token: some lookups, no cut copied"
+(want "WALK-J the ten rules' checks find their state's entry by its token: some lookups, no cut copied"
       (let ((l (lookups-by (lambda () (derive-affects is-pre is-post (dn I-depth))))))
         (and (pair? l) (list (> (car l) 0) (cadr l))))
       '(#t 0))
@@ -1175,7 +1175,7 @@
 (define defs-index-of (guard (e (#t #f)) (eval 'defs-index (environment '(theourgia store)))))
 (define defs-builds (guard (e (#t #f)) (eval 'defs-index-build-count (environment '(theourgia store)))))
 (define defs-cut-reads (guard (e (#t #f)) (eval 'defs-index-cut-read-count (environment '(theourgia store)))))
-(want "WALK-I defs-index: the same reduction by its token, a new one of the unchanged store by its cut, no rebuild"
+(want "WALK-J defs-index: the same reduction by its token, a new one of the unchanged store by its cut, no rebuild"
       (if (not (and defs-index-of defs-builds defs-cut-reads))
           'no-counter
           (let* ((st (state IS))
@@ -1193,7 +1193,7 @@
 ;; AND A REDUCTION THAT MOVES IN PLACE is asked again by its cut: a record
 ;; applied into the object the index was last built for (as a write applies
 ;; into the reduction it read before it) is a new token, a new cut, a rebuild.
-(want "WALK-I defs-index: a record applied into the same reduction, asked again: one cut read, one rebuild"
+(want "WALK-J defs-index: a record applied into the same reduction, asked again: one cut read, one rebuild"
       (if (not (and defs-index-of defs-builds defs-cut-reads))
           'no-counter
           (let* ((st (state IS))
