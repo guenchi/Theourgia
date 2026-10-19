@@ -137,13 +137,16 @@
 (field! B ba 'm 1)
 (field! B bc 'spell bb)
 (define bs (make B 'section "s"))
-(define bz (make B 'doc "z"))
+(define bz (make B 'section "z"))
+(define blib (new-id (car (cadr (batch B (list 'insert 'root #f (list (cons 'kind 'library) (cons 'name '(my lib)))))))))
+(define bcode (new-id (car (cadr (batch B (list 'insert blib #f (list (cons 'kind 'code) (cons 'title "fn"))))))))
 (derive! B 'iff (identity 'iff 'field 3 '(ID STR ANY)))
 (derive! B 'ife (identity 'ife 'edge 3 '(ID SYM ID)))
 (derive! B 'ifv (identity 'ifv 'validity 2 '(ID (SYM valid needs-review refuted superseded))))
 (derive! B 'ifr (identity 'ifr 'validity-reason 3 '(ID SYM ID)))
 (derive! B 'ifu (identity 'ifu 'under 2 '(ID PARENT)))
-(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p)))
+(derive! B 'ifl (identity 'ifl 'in-library 2 '(ID NAME-OR-NONE)))
+(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p) (ifl ?b ?n)))
 (define b1 (state B))
 (define BS (make-query-session b1))
 (for-each (lambda (g) (hold! BS g)) base-keys)
@@ -154,7 +157,8 @@
 (unlink! B ba "cites" bb)
 (on B 'set by "title" "y moved")
 (on B 'del bb)
-(on B 'move bz bs)
+(define b-moved (on B 'move bz bs))
+(define b-renamed (field! B blib 'name '(my lib2)))
 (define b2 (state B))
 (define BS2 (advance BS b2))
 (define (member-of? t tbl) (if (pair? tbl) (and (member t (cadr tbl)) #t) tbl))
@@ -180,14 +184,21 @@
       '(#f #t #t))
 (want "BASE-6 a block moved: its under tuple at the old parent retracted, at the new one added"
       (let ((t (inspected BS2 'ifu '?b '?p)))
-        (list (member-of? (list bz "root") t) (member-of? (list bz bs) t)))
-      '(#f #t))
+        (list (head-of b-moved) (member-of? (list bz "root") t) (member-of? (list bz bs) t)))
+      '(ok #f #t))
+(want "BASE-8 a library renamed: the code block under it changes library, no record of its own (a tuple of a block the write did not name)"
+      (let ((old (inspected BS 'ifl '?b '?n)) (new (inspected BS2 'ifl '?b '?n)))
+        (list (head-of b-renamed)
+              (and (pair? old) (pair? new) (length (filter (lambda (t) (equal? (car t) bcode)) (cadr old))))
+              (and (pair? new) (equal? (cadr new) (oracle b2 '(ifl ?b ?n))))
+              (and (pair? old) (pair? new) (equal? (cadr old) (cadr new)))))
+      '(ok 1 #t #f))
 (want "BASE-7 every identity table complete in the new session before any ask, then each the fresh session's, the asks expanding nothing"
       (let* ((kinds (map (lambda (g) (let ((t (apply inspected BS2 g))) (if (pair? t) (car t) t))) base-keys))
              (before (named-expansions BS2))
              (same (map (lambda (g) (equal? (rows-of BS2 g) (oracle b2 g))) base-keys)))
         (list kinds same (if (number? before) (- (named-expansions BS2) before) before)))
-      '((complete complete complete complete complete) (#t #t #t #t #t) 0))
+      '((complete complete complete complete complete complete) (#t #t #t #t #t #t) 0))
 
 ;; ---- DRED: positive strata, delete and rederive ----------------------------------------------
 (printf "== DRED: a positive stratum maintained ==\n")
@@ -213,9 +224,11 @@
 (define dst2 (state D))
 (define DS2 (advance DS dst2))
 (want "DRED-1 an edge added at the end of a chain: the tuples four recursive steps out derived, inspected before any ask"
-      (in-order (inspected DS2 'rch d1 '?x) (inspected DS2 'rch d2 '?x))
+      (in-order (inspected DS2 'rch d1 '?x) (inspected DS2 'rch d2 '?x) (inspected DS2 'rch d3 '?x) (inspected DS2 'rch d4 '?x))
       (list (list 'complete (sorted (map (lambda (b) (list d1 b)) (list d2 d3 d4 d5))))
-            (list 'complete (sorted (map (lambda (b) (list d2 b)) (list d3 d4 d5))))))
+            (list 'complete (sorted (map (lambda (b) (list d2 b)) (list d3 d4 d5))))
+            (list 'complete (sorted (map (lambda (b) (list d3 b)) (list d4 d5))))
+            (list 'complete (list (list d4 d5)))))
 (want "DRED-2 a key of the same stratum S never held, demanded by the insertion: evaluated inside the advance, complete"
       (inspected DS2 'rch d5 '?x)
       '(complete ()))
@@ -327,9 +340,11 @@
 (define yst2 (state Y))
 (define YS2 (advance YS yst2))
 (want "DRED-6 a positive stratum over a positive one: the lower's retraction deletes c above it, its insertion adds e, inspected"
-      (in-order (inspected YS 'upc ya '?y) (inspected YS2 'upc ya '?y))
+      (in-order (inspected YS 'upc ya '?y) (inspected YS2 'upc ya '?y) (inspected YS2 'rch yd '?x) (inspected YS2 'rch ya '?x))
       (list (list 'complete (sorted (list (list ya yc) (list ya yd))))
-            (list 'complete (sorted (list (list ya yd) (list ya ye))))))
+            (list 'complete (sorted (list (list ya yd) (list ya ye))))
+            (list 'complete (list (list yd ye)))
+            (list 'complete (sorted (list (list ya yb) (list ya yd) (list ya ye))))))
 
 ;; ---- EXTERNALS and DECLARATIONS ------------------------------------------------------------
 (printf "== EXT and DECL: what is not carried ==\n")
@@ -489,10 +504,30 @@
 (define fst2 (state F))
 (define f-cost (let ((S2 (advance (fresh-held) fst2))) (if (session? S2) (session-spent S2) S2)))
 (define (edge-build st) (let ((S (make-query-session st))) (session-answer S '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent S)))
-(want "BUDGET-1 the advance is charged the facts' enumeration at BOTH states (the old state's is the auxiliary session's)"
+(want "BUDGET-1 the advance is charged the facts' enumeration at BOTH states (the old state's is the auxiliary session's) and its two deletions"
       (let ((n1 (edge-build fst1)) (n2 (edge-build fst2)))
-        (in-order (list n1 n2) (and (number? f-cost) (>= f-cost (+ n1 n2)))))
+        (in-order (list n1 n2) (and (number? f-cost) (>= f-cost (+ n1 n2 2)))))
       (list (list 9 8) #t))
+;; AN AUXILIARY REFUSAL AFTER THE NEW SESSION HAS SPENT: ek reads edge, then
+;; kind; the enumeration runs edge at the old state, edge at the new, then kind
+;; at the old, which the budget, one short, refuses
+(define FA (store! "aux-refusal"))
+(define fa1 (make FA 'doc "1"))
+(define fa2 (make FA 'doc "2"))
+(link! FA fa1 "cites" fa2)
+(derive! FA 'ek '((head (ek ID)) (clause (ek ?x) (edge ?x cites ?y) (kind ?y doc))))
+(define fast1 (state FA))
+(make FA 'doc "3")
+(define fast2 (state FA))
+(define (kind-build st) (let ((S (make-query-session st))) (session-answer S '(and (kind ?b ?k) (/= ?b ?b))) (session-spent S)))
+(want "FAIL-8 the old state's enumeration refused after the new session spent: the advance's refusal, counting the whole spend"
+      (let* ((ne1 (edge-build fast1)) (ne2 (edge-build fast2)) (nk1 (kind-build fast1))
+             (S (make-query-session fast1)))
+        (hold! S '(ek ?x))
+        (session-budget-set! S (+ ne1 ne2 nk1 -1))
+        (let ((a (advance S fast2)))
+          (in-order (list ne1 ne2 nk1) a)))
+      (list (list 1 1 2) '(error query-budget (relation advance) (tuples 4))))
 (want "FAIL-1 an advance over its budget: the refusal, no new session; S's held key reads S's state, not the new one"
       (let ((S (fresh-held)))
         (session-budget-set! S (- f-cost 1))
@@ -608,8 +643,8 @@
                      (reduce-apply! r "fw300000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "o") '(parent . root) '(ord . 3))))
                      (fw-plan! r)
                      r)))
-        (forward? r-planned other))
-      #f)
+        (in-order (forward? r-planned other) (advance (make-query-session r-planned) other)))
+      '(#f (error not-forward)))
 
 (want "FWD-5 the same event identities with another payload (the plan's title): not forward, records compared whole"
       (let ((other (let ((r (reduce-empty)))
@@ -617,8 +652,8 @@
                                     (list "test" (cons fo "w") 'plan "fp" #f (cons fo 0)))
                      (reduce-apply! r "fw400000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "p") '(parent . root) '(ord . 4))))
                      r)))
-        (in-order (reduce-applied-cut other) (forward? r-planned other)))
-      (list (list (cons fo 1) (cons "fw400000" 1)) #f))
+        (in-order (reduce-applied-cut other) (forward? r-planned other) (advance (make-query-session r-planned) other)))
+      (list (list (cons fo 1) (cons "fw400000" 1)) #f '(error not-forward)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nsession-advance complete\n" rows bad)
