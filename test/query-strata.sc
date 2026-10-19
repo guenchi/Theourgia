@@ -548,10 +548,11 @@
 (want "RV-7 a library relation reaching an external, inside an aggregate: rule-relation-not-allowed"
       (rule! R "amb" "--on" "doc" "--must" "(count ?n (ambiguous ?w ?name))")
       '(error bad-request rule-relation-not-allowed (relation ambiguous)))
-(rule! R "cites-read" "--on" "doc" "--must-not" "(and (cited ?w ?s) (not (unread ?s)))")
-(want "RV-8 a per-write fact the write fills inside a not: a depends-on link with no receipt makes its target unread, so the must-not holds"
-      (in-order (head-of (on R 'link rp "depends-on" rd)) (head-of (rule! R "cites-read" "--retire")))
-      '(ok ok))
+(want "RV-8 a per-write fact the write fills inside a not: the rule declared, a depends-on link with no receipt makes its target unread, so the must-not holds"
+      (in-order (head-of (rule! R "cites-read" "--on" "doc" "--must-not" "(and (cited ?w ?s) (not (unread ?s)))"))
+                (head-of (on R 'link rp "depends-on" rd))
+                (head-of (rule! R "cites-read" "--retire")))
+      '(ok ok ok))
 (forge! R "rulefrmz" '(rule legacyform ((class state) (on doc) (must-not (sum ?s ?t (title ?w ?t))))) (cut-of R))
 (want "RV-9 describe lists a stored rule whose form fails the kinds with that refusal"
       (let* ((d (assq 'declared-rules (cdr (rpc-dispatch R '(describe) "author" (state R)))))

@@ -139,7 +139,7 @@ query-cells 77 80 d120b4f008422072b2e7dd7d2d0e4159
 query-dispatch 23 32 a4e6fcc870a8deefdedab5dbd37cf0b7
 query-facts 33 36 e6d6af7e7d0f24b2044d5b288a55cc04
 query-kinds 32 41 46b7eaae52d4ad35a42d74f390c3fbc9
-query-strata 89 99 043bf7a29ec7dd971ff691a8a3574a48
+query-strata 89 99 18b3dc32970ea602fa4eaaf0b2e7e882
 read-at-cut 40 51 7f9131b71cbc3749d8b323abe0fd146d
 read-receipt 123 127 8d25e7c66e1a65ff125d563294f65509
 read1 19 34 c975d77362bb4eafc60a961aa0e9d848
