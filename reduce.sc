@@ -54,13 +54,14 @@
           reserved-relation-names state-reserved-relation-records
           state-structure state-siblings state-sibling-last-ord state-sibling-bracket reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
           cut-covers? state-put-events block-creation event-actor state-field-events state-field-contested? state-block-ids state-link-events
-          state->rows rows->state
+          state->rows rows->state declaration-lookup-counter
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version
           cut-join
           ord-between block-id
           reduction? reduction-state)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
+          (only (chezscheme) make-parameter)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
           (rnrs unicode) (rnrs io simple)
           (only (rnrs io ports) call-with-string-output-port)
@@ -958,7 +959,14 @@
   ;; so reduce-clone copies each table (decls-copy).
   (define-record-type decls (fields index (mutable touch)))
   (define (make-decls-table) (make-decls (make-eq-hashtable) 0))
+  ;; THE COUNTING SEAM: #f, or a procedure called with 1 at each lookup in a
+  ;; declaration table (decls-candidates: every put makes one, and so does
+  ;; every by-name reader). A fixture binds it in process to count a
+  ;; replay's lookups, a count that does not depend on the machine's load;
+  ;; nothing else reads it. In the shape of query.sc's stored-walk-counter.
+  (define declaration-lookup-counter (make-parameter #f))
   (define (decls-candidates t name)
+    (let ((c (declaration-lookup-counter))) (when c (c 1)))
     (let ((e (hashtable-ref (decls-index t) name #f))) (if e (cdr e) '())))
   (define (decls-put! t name candidates)
     (hashtable-set! (decls-index t) name (cons (decls-touch t) candidates))

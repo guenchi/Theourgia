@@ -899,24 +899,44 @@
                       (loop (- i 1) (cons (encode-record (+ i 1) 1789000000001 "peer" (list (cons w (cdr (assoc w cut))))
                                                          (storable-encode (list 'derive (r i) (value i))))
                                           acc))))))
-        (log-publish! st "peerzzzz" 1 bytes (segment-sha bytes))
+        ;; THE FORGED WRITER'S NAME: the fifth argument, else "zzzzzzzz", which
+        ;; sorts after every writer id. Writers are delivered in name order, so
+        ;; the store's own record comes first and no forged record waits for
+        ;; it; a forged writer that sorts first makes every record wait in the
+        ;; reduction's pending queue, a cost of the delivery order, not of the
+        ;; tables these rows read.
+        (log-publish! st (if (> (length args) 4) (list-ref args 4) "zzzzzzzz") 1 bytes (segment-sha bytes))
+        ;; THE REPLAY'S LOOKUPS COUNTED through reduce.sc's seam, found
+        ;; through eval so a tree without it still loads (the count is then #f)
+        (define counter (guard (e (#t #f)) (eval 'declaration-lookup-counter (environment '(theourgia reduce)))))
+        (define lookups 0)
         ;; THE LISTING ALONE IS TIMED: the state is replayed first and
         ;; supplied, so the replay's own cost is not the listing's
         (let* ((r0 (real-time))
-               (replayed (open-and-reduce st))
+               (replayed (if counter
+                             (parameterize ((counter (lambda (k) (set! lookups (+ lookups k))))) (open-and-reduce st))
+                             (open-and-reduce st)))
                (replay-ms (- (real-time) r0))
                (t0 (real-time))
                (a (rpc-dispatch st '(query "--relations") "author" replayed))
                (ms (- (real-time) t0))
                (derived (if (and (pair? a) (eq? (car a) 'ok)) (filter (lambda (e) (and (pair? e) (eq? (car e) 'derived))) (cdr (cadr a))) '())))
           (call-with-output-file (cadddr args)
-            (lambda (p) (write (list (length derived) (length (filter (lambda (e) (eq? (list-ref e (- (length e) 1)) 'available)) derived)) ms replay-ms) p))
+            (lambda (p) (write (list (length derived) (length (filter (lambda (e) (eq? (list-ref e (- (length e) 1)) 'available)) derived)) ms replay-ms (and counter lookups)) p))
             'replace))))))
-(define (forged-listing seconds shape n)
-  (let* ((st (string-append root "/forged-" (symbol->string shape) "-" (number->string n))) (out (string-append st ".out")))
+;; EACH CALL ITS OWN STORE: two calls with one shape and size (a WALK row and
+;; a REPLAY row both forge a chain of 3200) would otherwise forge into the
+;; same directory, and the second would read the first's store.
+(define forged-calls 0)
+(define (forged-listing seconds shape n . peer)
+  (set! forged-calls (+ forged-calls 1))
+  (let* ((st (string-append root "/forged-" (number->string forged-calls) "-" (symbol->string shape) "-" (number->string n)
+                            (if (pair? peer) (string-append "-" (car peer)) "")))
+         (out (string-append st ".out")))
     (child-reading
       (system (string-append "perl -e 'alarm " (number->string seconds) "; exec @ARGV' scheme --script '" forge-child "' '"
-                             st "' " (symbol->string shape) " " (number->string n) " '" out "' < /dev/null > /dev/null 2> '" st ".err'"))
+                             st "' " (symbol->string shape) " " (number->string n) " '" out "'" (if (pair? peer) (string-append " " (car peer)) "")
+                             " < /dev/null > /dev/null 2> '" st ".err'"))
       out)))
 (define (counts r) (if (pair? r) (list-head r 2) r))
 (want "WALK-A the crafted order (r<i> names r<i+1>, r3200, r<i-1>), 3200 deep, forged: every relation listed available, inside a minute"
@@ -934,19 +954,33 @@
         (if (pair? r) (list (car r) (cadr r) (< (caddr r) 10000)) r))
       '(25601 25601 #t))
 
-;; REPLAY: THE TABLES ARE INDEXED BY NAME, so replaying n declarations of
-;; one kind is linear. The child times the replay alone (open-and-reduce,
-;; the fourth number it writes) at 12800 and 25600 derive records of a
-;; chain: the ratio is near 2 with the index; with a scan per record (an
-;; alist's assq and remp) it was near 4 (1.1 s and 4.0 s measured).
-(want "REPLAY-1 a replay of 25600 forged derive records against 12800: the replay's time grows less than 2.5 times"
-      (let ((a (forged-listing 300 'chain 12800)) (b (forged-listing 300 'chain 25600)))
-        (printf "NOTE REPLAY-1 replay ms at 12800 and 25600: ~s ~s\n"
-                (and (pair? a) (= 4 (length a)) (cadddr a)) (and (pair? b) (= 4 (length b)) (cadddr b)))
-        (if (and (pair? a) (pair? b) (= 4 (length a)) (= 4 (length b)))
-            (list (car a) (car b) (< (/ (cadddr b) (max 1 (cadddr a))) 5/2))
-            (list 'READINGS a b)))
-      '(12801 25601 #t))
+;; REPLAY: THE TABLES ARE INDEXED BY NAME, so a replay makes one lookup per
+;; declaration record. Read as a COUNT, through reduce.sc's
+;; declaration-lookup-counter (the fifth number the child writes), not as a
+;; time: a timing ratio moves with the machine's load (it read above its
+;; bound under a gate's parallel load). At N and 2N derive records of a chain
+;; the counts differ by exactly N, the lookups the replay makes outside the
+;; derive records cancelling; an alist scanned per record would differ by
+;; about 3N^2/2. The two replay times are printed as a NOTE only.
+(define N-replay 1600)
+(want "REPLAY-1 a replay of 2N forged derive records makes exactly N more declaration lookups than one of N (N = 1600): one per record"
+      (let ((a (forged-listing 300 'chain N-replay)) (b (forged-listing 300 'chain (* 2 N-replay))))
+        (define (field r k) (and (pair? r) (= 5 (length r)) (list-ref r k)))
+        (printf "NOTE REPLAY-1 replay ms at ~a and ~a: ~s ~s; lookups ~s ~s\n" N-replay (* 2 N-replay)
+                (field a 3) (field b 3) (field a 4) (field b 4))
+        (list (field a 0) (field b 0)
+              (and (integer? (field a 4)) (integer? (field b 4)) (- (field b 4) (field a 4)))))
+      (list (+ N-replay 1) (+ (* 2 N-replay) 1) N-replay))
+;; THE COUNT DOES NOT DEPEND ON THE DELIVERY ORDER: the same N records from a
+;; writer that sorts before the store's own ("00000000") wait in the pending
+;; queue until its record arrives, and the replay is slower; the lookups are
+;; the same, one per declaration record applied.
+(want "REPLAY-2 N forged derive records from a writer delivered first make the same declaration lookups as from one delivered last"
+      (let ((a (forged-listing 300 'chain N-replay)) (b (forged-listing 300 'chain N-replay "00000000")))
+        (define (field r k) (and (pair? r) (= 5 (length r)) (list-ref r k)))
+        (printf "NOTE REPLAY-2 replay ms delivered last and first: ~s ~s\n" (field a 3) (field b 3))
+        (list (field b 0) (and (integer? (field a 4)) (equal? (field a 4) (field b 4)))))
+      (list (+ N-replay 1) #t))
 
 ;; C: THE SHORTEST CHAIN, ties by each caller's callee order, and the sink's
 ;; own state. One store, five graphs.
