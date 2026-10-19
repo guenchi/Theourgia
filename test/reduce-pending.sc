@@ -446,5 +446,117 @@
       (refusal-of "a" (lambda (r) (reduce-apply! r "a" 1 '(("w" . 3/2)) (section))))
       '(("a dep outside the log's envelope" ("a" 1 ("w" . 3/2))) () 0 ()))
 
+;; ---- GATE the gated arrivals -------------------------------------------------
+
+(printf "== GATE: an arrival's work does not grow with the standing gates ==\n")
+;; -> the gate kind's count while THUNK runs, or #f without the seam: every
+;; gate-list element scanned or sorted (admission's per-bucket diff, a sorted
+;; list produced, gate notes produced, the added keys reversal reads)
+(define (gate-work-of thunk)
+  (if counter
+      (let ((n 0))
+        (parameterize ((counter (lambda (kind k) (when (eq? kind 'gate) (set! n (+ n k))))))
+          (thunk))
+        n)
+      (begin (thunk) #f)))
+;; GATE-1: PEND-1c's workload, each arrival gated in its own bucket, so the
+;; standing gates grow to N. An arrival diffs its one bucket (no key before,
+;; one after) and reversal reads its one added key: two a record, so N more
+;; records add 2N, within 3N. A tree that reads the whole gate set per
+;; arrival adds about N^2/2 or more; one without the kind reads none.
+(let* ((at-n (gate-work-of (lambda () (gated-many! (reduce-empty) N))))
+       (at-2n (gate-work-of (lambda () (gated-many! (reduce-empty) (* 2 N))))))
+  (printf "NOTE GATE-1 gate work at ~a and ~a: ~s ~s\n" N (* 2 N) at-n at-2n)
+  (want (format "GATE-1 N = ~a more gated arrivals add more than none and at most 3N gate-list elements" N)
+        (and at-n at-2n (> (- at-2n at-n) 0) (<= (- at-2n at-n) (* 3 N)))
+        #t))
+;; GATE-1b: AN ORDINARY ARRIVAL BESIDE STANDING GATES reads none of them: N
+;; plain records counted beside N standing gates, then beside 2N. A tree that
+;; scans or renders the gate set per arrival counts N per record more.
+(define (plain-many! r n)
+  (do ((i 0 (+ i 1))) ((= i n) r)
+    (reduce-apply! r (string-append "c" (pad i 7)) 1 '() (section))))
+(let* ((beside-n (let ((r (gated-many! (reduce-empty) N))) (gate-work-of (lambda () (plain-many! r N)))))
+       (beside-2n (let ((r (gated-many! (reduce-empty) (* 2 N)))) (gate-work-of (lambda () (plain-many! r N))))))
+  (printf "NOTE GATE-1b gate work of ~a plain arrivals beside ~a and ~a gates: ~s ~s\n" N N (* 2 N) beside-n beside-2n)
+  (want (format "GATE-1b N = ~a plain arrivals beside N, then 2N, standing gates: the same work, at most 3N" N)
+        (or (not counter) (and (<= beside-2n (* 3 N)) (<= (- beside-2n beside-n) 0)))
+        #t))
+;; GATE-2, A NOTE: the reading's series, gated beside the ungated control
+(for-each
+  (lambda (n)
+    (let* ((g (ms-of (lambda () (gated-many! (reduce-empty) n))))
+           (p (ms-of (lambda () (plain-many! (reduce-empty) n)))))
+      (printf "NOTE GATE-2 N ~a gated-ms ~a plain-ms ~a\n" n g p)))
+  '(500 1000 2000))
+;; GATE-3: A REVERSAL IS STILL SEEN. The second claim gates the first, which
+;; was applied: the reduction is rebuilt and the first leaves the trace.
+(want "GATE-3 a claim that gates an applied one rebuilds: the applied claim leaves the trace, both gated"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "b0000000" 1 '() (section))
+        (reduce-apply! r "claim000" 1 '() (produced "c") (claim-actor))
+        (let ((before (events r)))
+          (reduce-apply! r "claim001" 1 '() (produced "d") (claim-actor))
+          (list before (events r) (map car (reduce-gates r)))))
+      '((("b0000000" . 1) ("claim000" . 1)) (("b0000000" . 1)) (("claim000" . 1) ("claim001" . 1))))
+;; AND AN ARRIVAL THAT GATES ONLY ITSELF IS NO REVERSAL: fifty applied records,
+;; then a member whose plan never arrives; one examination, not a rebuild's
+;; fifty-one.
+(want "GATE-3 a gated arrival beside fifty applied records reverses nothing: one examination, the trace unchanged"
+      (let ((r (reduce-empty)))
+        (do ((k 1 (+ k 1))) ((> k 50)) (reduce-apply! r "h0000000" k '() (if (= k 1) (section) (titled "h0000000.1" (format "h~a" k)))))
+        (let* ((before (events r))
+               (w (work-of (lambda () (member! r "g0000000" 1 '() "planless" "q")))))
+          (list (and w (car w)) (equal? before (events r)) (pending-events r))))
+      '(1 #t (("g0000000" . 1))))
+;; GATE-4: THE NOTES IN TODAY'S ORDER. A gated member's note; a record with
+;; a verb this build does not know, its note appended after the gate notes;
+;; the next arrival's merge moves it before them; then one drain applies two
+;; records with unknown verbs, their notes appended in that order after the
+;; gate notes, and the next merge moves both, in order, after the first.
+(define (unknown verb) (list verb))
+(want "GATE-4 the notes in the order each arrival's merge and each drain's appends make them"
+      (let ((r (reduce-empty)) (G '(pending-plan (event "m0000000" 1))))
+        (member! r "m0000000" 1 '() "planless" "q")
+        (let ((one (reduce-noted r)))
+          (reduce-apply! r "u0000000" 1 '() (unknown 'frobnicate))
+          (let ((two (reduce-noted r)))
+            (reduce-apply! r "p0000000" 1 '() (section))
+            (let ((three (reduce-noted r)))
+              (reduce-apply! r "w0000000" 1 '(("x0000000" . 1)) (unknown 'frob-w))
+              (reduce-apply! r "x0000000" 1 '() (unknown 'frob-x))
+              (let ((four (reduce-noted r)))
+                (reduce-apply! r "q0000000" 1 '() (section))
+                (list (equal? one (list G)) two three four (reduce-noted r)))))))
+      '(#t
+        ((pending-plan (event "m0000000" 1)) (unknown-verb (event "u0000000" 1) (verb frobnicate)))
+        ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (pending-plan (event "m0000000" 1)))
+        ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (pending-plan (event "m0000000" 1))
+         (unknown-verb (event "x0000000" 1) (verb frob-x)) (unknown-verb (event "w0000000" 1) (verb frob-w)))
+        ((unknown-verb (event "u0000000" 1) (verb frobnicate)) (unknown-verb (event "x0000000" 1) (verb frob-x))
+         (unknown-verb (event "w0000000" 1) (verb frob-w)) (pending-plan (event "m0000000" 1)))))
+;; GATE-5: A GATE THAT STAYS, ITS REASON CHANGED. A member with no dep on its
+;; plan, delivered before it, waits as pending-plan; the plan's arrival leaves
+;; it gated for another reason: the gate list and the notes carry the new one.
+(want "GATE-5 a member that stays gated when its plan arrives: its status and its note change"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '() "o0000000" "q")
+        (let ((before (list (reduce-gates r) (reduce-noted r))))
+          (plan! r "o0000000" "q")
+          (list before (reduce-gates r)
+                (filter (lambda (n) (equal? (cadr n) '(event "m0000000" 1))) (reduce-noted r)))))
+      '((((("m0000000" . 1) . pending-plan)) ((pending-plan (event "m0000000" 1))))
+        ((("m0000000" . 1) . plan-order))
+        ((plan-order (event "m0000000" 1)))))
+;; GATE-6: THE CLONE'S GATES ARE ITS OWN. The clone receives the plan and its
+;; member's gate lifts there; the original's gates and notes still hold it.
+(want "GATE-6 a gate lifted in the clone stays in the original's gates and notes"
+      (let ((r (reduce-empty)))
+        (member! r "m0000000" 1 '(("o0000000" . 1)) "o0000000" "q")
+        (let ((c (reduce-clone r)))
+          (plan! c "o0000000" "q")
+          (list (reduce-gates c) (reduce-gates r) (reduce-noted r))))
+      '(() ((("m0000000" . 1) . pending-plan)) ((pending-plan (event "m0000000" 1)))))
+
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

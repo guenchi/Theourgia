@@ -135,7 +135,8 @@
   ;; pending  -- the queue of records not yet applied (make-pending-queue): the
   ;;             ones waiting, filed by what they wait for, and the ready ones
   ;; trace    -- event-ids in the order they were applied
-  ;; noted    -- integrity observations this layer made while applying
+  ;; noted    -- integrity observations this layer made while applying, kept
+  ;;             in three parts (a notes record: reduce-noted reads them)
   ;; declared-relations -- a declaration table (decls): a declared relation
   ;;             name to its candidates
   ;; declared-rules -- a declaration table: a rule name to its candidates
@@ -149,7 +150,7 @@
             (mutable applied)
             (mutable pending)
             (mutable trace)
-            (mutable noted) (mutable history) (mutable gates)
+            (mutable noted) (mutable history)
             (mutable admission-index)
             (mutable consumption)
             (mutable declared-relations)
@@ -389,7 +390,7 @@
     (define (event<? a b)
       (or (string<? (car a) (car b)) (and (string=? (car a) (car b)) (< (cdr a) (cdr b)))))
     (define (version-of x) (cadr (car x)))
-    (let loop ((all (state-revoked-raw r owner (if (pair? gates) (car gates) (reduction-gates r)))) (out '()))
+    (let loop ((all (state-revoked-raw r owner (if (pair? gates) (car gates) (gates-of r)))) (out '()))
       (if (null? all)
           (list-sort (lambda (x y) (string<? (version-of x) (version-of y))) out)
           (let* ((x (car all))
@@ -657,7 +658,7 @@
             (mutable tomb)))
 
   (define (reduce-empty)
-    (make-reduction '() '() '() '() '() (make-pending-queue) '() '() '() '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
+    (make-reduction '() '() '() '() '() (make-pending-queue) '() (empty-notes) '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
                     (make-empty-structure)))
 
@@ -683,7 +684,7 @@
       (make-reduction rev
                       (reduction-links r) (reduction-tags r) (reduction-pasts r)
                       (reduction-applied r) (pq-copy (reduction-pending r)) (reduction-trace r)
-                      (reduction-noted r) (reduction-history r) (reduction-gates r)
+                      (notes-copy (reduction-noted r)) (reduction-history r)
                       (admission-copy (reduction-admission-index r))
                       (consumption-copy (reduction-consumption r))
                       (decls-copy (reduction-declared-relations r)) (decls-copy (reduction-declared-rules r))
@@ -725,8 +726,12 @@
   (define (reduce-pending r)
     (map (lambda (e) (record-of (cdr e)))
          (list-sort (lambda (a b) (< (car a) (car b))) (pq-entries (reduction-pending r)))))
-  (define (reduce-noted r) (reduction-noted r))
-  (define (reduce-gates r) (reduction-gates r))
+  (define (reduce-noted r) (notes-answer r))
+  (define (reduce-gates r) (gates-of r))
+  ;; THE GATES ARE THE ADMISSION INDEX'S, read from it and never copied here:
+  ;; the sorted list when an answer needs it, one probe for a membership
+  (define (gates-of r) (admission-gates (reduction-admission-index r)))
+  (define (gated? r event) (admission-gated? (reduction-admission-index r) event))
   (define (reduce-trace r) (reverse (reduction-trace r)))
   (define (reduce-applied-cut r)
     (list-sort (lambda (x y) (string<? (car x) (car y)))
@@ -753,7 +758,7 @@
   ;; applied. A record whose deps are merely present but themselves
   ;; pending would be applied against a state that does not contain them.
   (define (applicable? r rec)
-    (and (not (assoc (cons (rec-writer rec) (rec-seq rec)) (reduction-gates r)))
+    (and (not (gated? r (cons (rec-writer rec) (rec-seq rec))))
          (record-ready? (reduction-applied r) rec)))
 
   (define (record-ready? applied rec)
@@ -873,7 +878,7 @@
     (work! 'examine 1)
     (let ((q (reduction-pending r)) (id (rec-event rec)))
       (cond ((applicable? r rec) (heap-push! q rec))
-            ((assoc id (reduction-gates r)) (hashtable-update! (pq-gated q) id (lambda (l) (cons rec l)) '()))
+            ((gated? r id) (hashtable-update! (pq-gated q) id (lambda (l) (cons rec l)) '()))
             ((first-unmet (reduction-applied r) rec)
              => (lambda (need) (hashtable-update! (pq-waiters q) need (lambda (l) (cons rec l)) '())))
             (else (assertion-violation 'pending "a record neither applicable, gated nor waiting" id)))))
@@ -942,11 +947,13 @@
         (else
          (let* ((actor (and (pair? rest) (car rest)))
                 (rec (make-record writer seq deps payload actor))
-                (gates (admission-add! (reduction-admission-index r) rec (reduction-rehearsal? r)))
+                (a (begin (admission-add! (reduction-admission-index r) rec (reduction-rehearsal? r))
+                          (reduction-admission-index r)))
+                ;; A REVERSAL is a key this arrival newly gated whose event was
+                ;; already applied: only the added keys can be one
                 (reversed?
-                  (exists (lambda (p)
-                            (and (not (assoc (car p) (reduction-gates r)))
-                                 (event-applied? r (car p)))) gates)))
+                  (begin (work! 'gate (length (admission-added a)))
+                         (exists (lambda (k) (event-applied? r k)) (admission-added a)))))
            (reduction-history-set! r (cons rec (reduction-history r)))
            (let ((payload (rec-payload rec)) (a (rec-actor rec)))
              (when (and (pair? payload) (eq? 'plan (car payload)) (plan? payload)
@@ -956,11 +963,10 @@
                (when (and pe (integer? sub))
                  (consumption-note-member-of! r (cons writer seq) pe))))
            (if reversed?
-               (rebuild-request-state! r gates)
+               (rebuild-request-state! r)
                (begin
-                 (reduction-gates-set! r gates)
-                 (reduction-noted-set! r (merge-gate-notes r gates))
-                 (pq-lift! r (admission-lifted (reduction-admission-index r)))
+                 (notes-merge! r)
+                 (pq-lift! r (admission-lifted a))
                  (pq-arrive! r rec)
                  (drain! r))))
          'accepted))))
@@ -988,12 +994,38 @@
   ;; IT IS NOT VISIBLE IN state-hash. The hash covers blocks; a case
   ;; comparing two orders by hash alone agrees while the notes differ,
   ;; which is why the set of notes is compared beside it.
-  (define (merge-gate-notes r gates)
-    (append (filter (lambda (n)
-                      (not (memq (car n) '(plan-mismatch plan-conflict plan-order
-                                           pending-plan req-mismatch))))
-                    (reduction-noted r))
-            (gate-notes gates)))
+  ;;
+  ;; THE NOTES IN THREE PARTS, so an arrival does not render the gates. Every
+  ;; arrival merges, as it always did: the notes become the non-gate notes,
+  ;; then the gate notes, and what the drain then appends comes after those.
+  ;; Kept as a reversed PREFIX (the merged non-gate notes), a BLOCK flag (the
+  ;; gate notes stand between; off until the first merge, so a list restored
+  ;; from a snapshot is read as it was) and a reversed SUFFIX (the notes
+  ;; appended since the last merge). A merge moves the suffix's non-gate notes
+  ;; onto the prefix: the suffix's work, never the gates'. The gate notes are
+  ;; rendered from the admission index's gates when the notes are read: the
+  ;; gates change only at an arrival, and each arrival merges or rebuilds, so
+  ;; they are the gates of the last merge. reduce-noted answers the list the
+  ;; merge-per-arrival made, at every moment, order included.
+  (define-record-type notes (fields (mutable rprefix) (mutable block?) (mutable rsuffix)))
+  (define (empty-notes) (make-notes '() #f '()))
+  (define (notes-copy n) (make-notes (notes-rprefix n) (notes-block? n) (notes-rsuffix n)))
+  (define (gate-note? n)
+    (memq (car n) '(plan-mismatch plan-conflict plan-order pending-plan req-mismatch)))
+  (define (notes-merge! r)
+    (let ((n (reduction-noted r)))
+      (notes-rprefix-set! n (append (filter (lambda (x) (not (gate-note? x))) (notes-rsuffix n)) (notes-rprefix n)))
+      (notes-rsuffix-set! n '())
+      (notes-block?-set! n #t)))
+  (define (note-append! r note)
+    (let ((n (reduction-noted r))) (notes-rsuffix-set! n (cons note (notes-rsuffix n)))))
+  (define (notes-answer r)
+    (let ((n (reduction-noted r)))
+      (append (reverse (notes-rprefix n))
+              (if (notes-block? n)
+                  (let ((gates (gates-of r))) (work! 'gate (length gates)) (gate-notes gates))
+                  '())
+              (reverse (notes-rsuffix n)))))
 
   ;; FOLDING THE WHOLE SET AGAIN, because there is no other way to take a
   ;; record back. Nothing here undoes anything: the state is dropped and
@@ -1005,7 +1037,7 @@
   ;; IT IS NOT AN OPTIMISATION PATH; IT IS THE ONLY PATH. The cost is
   ;; paid only when a record reverses a membership that was already
   ;; applied, which is what makes it rare -- see the caller.
-  (define (rebuild-request-state! r gates)
+  (define (rebuild-request-state! r)
     (let ((records (reverse (reduction-history r))))
       (blocks-reset! r)
       (reduction-structure-set! r (make-empty-structure))
@@ -1029,7 +1061,6 @@
       ;; record filed in the history's order, numbered in that order, with no
       ;; admission and no drain per record; the one drain is below.
       (reduction-pending-set! r (make-pending-queue))
-      (reduction-gates-set! r gates)
       (for-each (lambda (rec) (pq-arrive! r rec)) records)
       ;; A REBUILD STARTS THE NOTES OVER, and that is the opposite of
       ;; what the other path must do. The retained records are about to
@@ -1046,7 +1077,7 @@
       ;; the same thing. The
       ;; other path interprets only the new record, so there the older
       ;; notes are the only copy and have to be kept.
-      (reduction-noted-set! r (gate-notes gates))
+      (reduction-noted-set! r (make-notes '() #t '()))
       (fill-seen-from-history! r)
       (drain! r)))
 
@@ -1205,11 +1236,9 @@
   ;; change no block. Leaving them to the last arm would report every one
   ;; of them as a verb this build does not know.
   (define (note-verb! r event-id verb)
-    (reduction-noted-set!
-      r (append (reduction-noted r)
-                (list (list 'unknown-verb
-                            (list 'event (car event-id) (cdr event-id))
-                            (list 'verb verb))))))
+    (note-append! r (list 'unknown-verb
+                          (list 'event (car event-id) (cdr event-id))
+                          (list 'verb verb))))
 
   ;; WHAT A RECORD HAS TO LOOK LIKE FOR THIS REDUCER TO APPLY IT, in one
   ;; place, answering a REASON rather than a boolean so that whoever
@@ -1812,11 +1841,9 @@
                     (loop (cdr es)))))))))))
 
   (define (note-malformed! r event-id reason)
-    (reduction-noted-set!
-      r (append (reduction-noted r)
-                (list (list 'malformed-record
-                            (list 'event (car event-id) (cdr event-id))
-                            (list 'reason reason))))))
+    (note-append! r (list 'malformed-record
+                          (list 'event (car event-id) (cdr event-id))
+                          (list 'reason reason))))
 
   (define (interpret! r event-id past payload)
     (cond
@@ -3497,7 +3524,7 @@
       ;; snapshot silently erased them: `conflicts` went quiet about a
       ;; damaged record that is still on disk, and the store looked
       ;; healthier for having been snapshotted.
-      (map (lambda (n) (list 'noted n)) (reduction-noted r))
+      (map (lambda (n) (list 'noted n)) (notes-answer r))
       (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))
       ;; A DECLARATION'S CANDIDATES, one row a name; none in a store with
       ;; no declaration, whose rows are as they were.
@@ -3531,7 +3558,7 @@
              (for-each (lambda (rec) (admission-add! (reduction-admission-index r) rec))
                        (cadr row)))
             ((noted)
-             (reduction-noted-set! r (append (reduction-noted r) (list (cadr row)))))
+             (note-append! r (cadr row)))
             ((pasts) (pasts-restore! r (expand-pasts (cadr row) cut)))
             ((consumed) (restore-consumption! r (cadr row)))
             ((block)
@@ -3553,7 +3580,6 @@
              (decls-put! (reduction-declared-derived r) (cadr row) (caddr row)))
             (else (if #f #f))))
         rows)
-      (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
       ;; KEY: `seen` IS REFILLED EITHER WAY. It is about what a plan NAMED,
       ;; which is a fact about the records the snapshot carries and not
       ;; about what was applied -- so it does not travel in the
