@@ -1949,6 +1949,16 @@
       (define (aux!)
         (unless aux (set! aux (apply make-query-session state1 options)))
         aux)
+      ;; WORK IN THE AUXILIARY SESSION, bounded by what the advance has left:
+      ;; its budget is what it has spent plus S2's remainder, so it refuses no
+      ;; later than the advance would, and its refusal is charged to S2, whose
+      ;; own refusal then counts the advance's whole spend
+      (define (on-aux work)
+        (let ((A (aux!)))
+          (session-budget-set! A (+ (session-tuples A) (max 0 (- (session-budget S2) (session-tuples S2)))))
+          (let ((v (guard (e ((refusal? e) (charge-aux!) (raise e))) (work A))))
+            (charge-aux!)
+            v)))
       (define (charge-aux!)
         (when aux
           (let ((spent (session-tuples aux)))
@@ -2013,8 +2023,7 @@
         (unless (delta-of rel)
           (let* ((arity (cadr (assq rel fact-relations)))
                  (args (let loop ((i 0) (out '())) (if (= i arity) out (loop (+ i 1) (cons unbound out)))))
-                 (old (fact-tuples (aux!) rel args)))
-            (charge-aux!)
+                 (old (on-aux (lambda (A) (fact-tuples A rel args)))))
             (set-delta! rel old (fact-tuples S2 rel args)))))
       (define dropped (make-eq-hashtable))
       (define maintained-of (make-eq-hashtable))
@@ -2022,10 +2031,7 @@
       (define (old-tuples key)
         (if (held-complete? S key)
             (held-tuples S key)
-            (let ((A (aux!)))
-              (complete-key! A key)
-              (charge-aux!)
-              (table-tuples A key))))
+            (on-aux (lambda (A) (complete-key! A key) (table-tuples A key)))))
       ;; THE NEW DATABASE: S2's complete tables, else evaluated in S2 now; a
       ;; key of the stratum being maintained joins it, with every key of that
       ;; stratum its evaluation completed
@@ -2051,12 +2057,18 @@
                    (h (or (dispatch (session-env-of (if old? S S2)) (car g))
                           (refuse 'error 'bad-request 'unknown-relation (list 'relation (car g)))))
                    ;; a fact at the old state is the auxiliary session's, so S's memo stays as it was
-                   (Sv (if (and old? (not (eq? (handler-name h) 'TEST))) (aux!) S2)))
+                   (Sv (if (and old? (not (eq? (handler-name h) 'TEST))) 'aux S2)))
               (if (memq (handler-name h) '(RULE STORED))
                   (let ((key (cons (car g) (call-args (cdr g) b))))
                     (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (view-solve old? (cdr goals) b2 k))))
                               (if old? (old-tuples key) (new-tuples key))))
-                  ((handler-solve h) Sv g b (lambda (b2) (when old? (charge-aux!)) (view-solve old? (cdr goals) b2 k)))))))
+                  (if (eq? Sv S2)
+                      ((handler-solve h) S2 g b (lambda (b2) (view-solve old? (cdr goals) b2 k)))
+                      (for-each (lambda (b2) (view-solve old? (cdr goals) b2 k))
+                                (on-aux (lambda (A)
+                                          (let ((bs '()))
+                                            ((handler-solve h) A g b (lambda (b2) (set! bs (cons b2 bs))))
+                                            (reverse bs))))))))))
       (define (head-tuple rule b) (map (lambda (a) (value-of a b)) (cdr (car rule))))
       ;; every head tuple of RULE for KEY with position I bound to a tuple of DELTA
       (define (delta-heads old? rule key i delta emit)
