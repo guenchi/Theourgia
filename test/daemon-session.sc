@@ -141,6 +141,16 @@
 ;; a request through the socket: VERB and its argument strings -> the answer
 ;; read as a datum, or the text when it does not read
 (define (ask d verb . args)
+  (ask-again d verb args 20))
+;; THE MACHINE'S INSTANCE REGISTRY LOCK (~/.theourgia/lock) is shared by every
+;; store on the machine: a first write that meets another process holding it
+;; answers store-busy, and is asked again (up to N times, 100 ms apart)
+(define (ask-again d verb args n)
+  (let ((a (ask-once d verb args)))
+    (if (and (> n 0) (pair? a) (eq? (car a) 'error) (pair? (cdr a)) (eq? (cadr a) 'store-busy))
+        (begin (sleep-ms 100) (ask-again d verb args (- n 1)))
+        a)))
+(define (ask-once d verb args)
   (let* ((text (apply string-append (symbol->string verb) (map (lambda (a) (string-append " " (format "~s" a))) args)))
          (frame (string-append "(request 1 \"" (daemon-store d) "\" \"tester\" #f wire #f #f " text ")\n"))
          (r (exchange (daemon-socket d) (string->utf8 frame) line-complete? 20000)))
