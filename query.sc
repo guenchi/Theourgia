@@ -66,7 +66,7 @@
           (only (chezscheme) make-parameter make-weak-eq-hashtable)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-outline state-edges block-hash
-                reduce-applied-cut state-field-contested? relation-kind effect-relation-names
+                reduce-applied-cut reduce-applied-token state-field-contested? relation-kind effect-relation-names
                 state-declared-relations kind-known? known-kinds
                 state-derived state-derived-names state-derived-all state-declaration state-rule reduction? reduction-forward?
                 derive-value-reason state-declared-rules)
@@ -965,30 +965,34 @@
   ;; the sink, (through <hop> ... <sink>): the SHORTEST chain to an
   ;; own-failing relation, ties by callee order.
   (define-record-type (stored-entry make-stored-entry stored-entry?)
-    (fields cut order index own closure (mutable members) distance hop sink (mutable check-env)))
+    (fields token order index own closure (mutable members) distance hop sink chain (mutable check-env)))
   ;; A NEW ENTRY carries its own checks' environment, whose STORED handler
   ;; reads the same entry's heads
   (define (new-stored-entry state override)
     (let ((table (stored-table state override)) (index (make-eq-hashtable)))
       (for-each (lambda (e) (hashtable-set! index (car e) (cdr e))) table)
-      (let ((e (make-stored-entry (and state (reduction? state) (reduce-applied-cut state)) (map car table) index
+      (let ((e (make-stored-entry (and state (reduction? state) (reduce-applied-token state)) (map car table) index
                                   (make-eq-hashtable) (make-eq-hashtable) '()
-                                  (make-eq-hashtable) (make-eq-hashtable) (make-eq-hashtable) #f)))
+                                  (make-eq-hashtable) (make-eq-hashtable) (make-eq-hashtable) (make-eq-hashtable) #f)))
         (stored-entry-check-env-set! e (make-dispatch-env (list test-handler fact-handler (rule-handler rule-library)
                                                                 not-handler agg-handler (stored-handler-of e))))
         e)))
-  ;; THE TABLE BELONGS TO THE STATE AT ITS APPLIED CUT: every environment
+  ;; THE TABLE BELONGS TO THE STATE AT ITS APPLIED STATE: every environment
   ;; built on a state shares one entry while the state has not moved, and a
-  ;; state whose applied cut differs (the same reduction rehearsed, then
-  ;; written to and published) gets a fresh one. A hypothetical head (the
-  ;; derive verb's OVERRIDE) has an entry of its own, shared with nothing.
+  ;; state that has moved (the same reduction read before a write, then
+  ;; written to and published) gets a fresh one. The entries are kept per
+  ;; reduction object, so the applied state is compared by its token
+  ;; (reduce-applied-token), which every application replaces: eq?, in
+  ;; constant time, where the cut was copied and sorted on every lookup. A
+  ;; hypothetical head (the derive verb's OVERRIDE) has an entry of its own,
+  ;; shared with nothing.
   (define stored-entries (make-weak-eq-hashtable))
   (define (stored-entry-for state override)
     (if (or override (not (and state (reduction? state))))
         (new-stored-entry state override)
         (let ((e (hashtable-ref stored-entries state #f)))
-          (if (and e (equal? (stored-entry-cut e) (reduce-applied-cut state)))
-              e
+          (if (and e (eq? (stored-entry-token e) (reduce-applied-token state)))
+              (begin (walk-count! 'lookup 'token) e)
               (let ((fresh (new-stored-entry state #f)))
                 (hashtable-set! stored-entries state fresh)
                 fresh)))))
@@ -1144,10 +1148,20 @@
             ((= d 0) (entry-own e rel))
             (else
              (append (entry-own e (hashtable-ref (stored-entry-sink e) rel #f))
-                     (list (cons 'through (let chain ((v (hashtable-ref (stored-entry-hop e) rel #f)))
-                                            (if (= (hashtable-ref (stored-entry-distance e) v 0) 0)
-                                                (list v)
-                                                (cons v (chain (hashtable-ref (stored-entry-hop e) v #f))))))))))))
+                     (list (cons 'through (entry-chain e (hashtable-ref (stored-entry-hop e) rel #f)))))))))
+  ;; THE CHAIN FROM V TO ITS SINK, built once an entry: V's chain is V before
+  ;; its hop's, so every relation's shares the tail of the one it reaches, and
+  ;; a rule check that asks a relation's availability for one bit, once per
+  ;; rule, builds no chain after the first. A chain is never changed in place.
+  (define (entry-chain e v)
+    (or (hashtable-ref (stored-entry-chain e) v #f)
+        (let ((c (begin
+                   (walk-count! 'chain v)
+                   (if (= (hashtable-ref (stored-entry-distance e) v 0) 0)
+                       (list v)
+                       (cons v (entry-chain e (hashtable-ref (stored-entry-hop e) v #f)))))))
+          (hashtable-set! (stored-entry-chain e) v c)
+          c)))
 
   ;; THE STORED HANDLER of a state. applies? answers for every name declared
   ;; there and not masked -- in force, contested or retired, so a retired

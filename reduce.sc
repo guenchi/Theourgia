@@ -42,7 +42,7 @@
 (library (theourgia reduce)
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
           reduce-empty reduce-clone reduce-rehearsal? state-written-records reduce-apply! reduce-pending pending-work-counter reduce-noted
-          reduce-applied-cut reduce-trace reduce-gates reduction-forward?
+          reduce-applied-cut reduce-applied-token reduce-trace reduce-gates reduction-forward?
           known-kinds kind-known? known-classes vocabulary-fields vocabulary-known?
           vocabulary-not-known-reason effect-relation-names state-edges state-effect-relation?
           declaration-kinds relation-kind state-declared-relations state-relation-contested
@@ -731,6 +731,13 @@
   (define (reduce-applied-cut r)
     (list-sort (lambda (x y) (string<? (car x) (car y)))
                (map (lambda (e) (cons (car e) (cdr e))) (reduction-applied r))))
+  ;; THE APPLIED STATE AS AN IDENTITY, read in constant time: the applied list
+  ;; itself, which every application REPLACES (apply-one! conses a fresh one,
+  ;; a rebuild and rows->state set a new one) and nothing changes in place.
+  ;; Two readings that are eq? saw one applied state; two that are not may
+  ;; still have equal cuts. A reader compares it with eq? and takes nothing
+  ;; from it; reduce-applied-cut is the value.
+  (define (reduce-applied-token r) (reduction-applied r))
 
   ;; A record as this layer receives it: everything the log layer knows
   ;; about one line, with the payload already decoded.

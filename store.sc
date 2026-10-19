@@ -25,7 +25,7 @@
           ;; The interface pinned at dispatch (the cells look these up
           ;; in this library): re-exported from (theourgia incomplete).
           incomplete-accepted incomplete-reduction? incomplete-reduction-notes
-          defs-index defs-index-build-count defs-index-skipped-count name-bearing-kinds
+          defs-index defs-index-build-count defs-index-cut-read-count defs-index-skipped-count name-bearing-kinds
           text-decode-skipped-count prepared-generation-count prepared-token-now
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
@@ -1118,12 +1118,17 @@
   ;; the reduction each time it is wanted, at the cost measured above.
   ;; ---- and it is built once per reduction, not once per question -----------
   ;;
-  ;; NEVER: THE KEY IS THE APPLIED CUT, NOT THE REDUCTION OBJECT. When the
-  ;; resident cache is on, a write DELIVERS INTO THE SAME reduction object
-  ;; rather than making a new one, so an index remembered against that object
-  ;; would answer about a store that has since changed -- and the row that
-  ;; catches staleness dispatches twice in one process with a write between,
-  ;; which is exactly that case. The applied cut moves with every record, so
+  ;; NEVER: THE KEY IS THE APPLIED CUT, NOT THE REDUCTION OBJECT. Three
+  ;; readings. With the resident cache off, every call replays into a NEW
+  ;; reduction, so an index remembered against the object is never found
+  ;; again. With it on, an unchanged store answers the same object and an
+  ;; appended one a new one (the load's fingerprint holds each writer's end:
+  ;; test/resident.sc ED-12), so replay never moves an object a reader holds.
+  ;; But a write builds its own reduction, reads it as the state before the
+  ;; write (the rule judgement, rehearsal-refusal) and then applies its
+  ;; records INTO THAT OBJECT before publishing it, so an index remembered
+  ;; against the object at that read would answer about the published state
+  ;; with what it held before. The applied cut moves with every record, so
   ;; it is what identifies the state an index describes.
   ;;
   ;; Measured on a store of this tree's own sources, 906 blocks: one build is
@@ -1141,25 +1146,36 @@
   (define (defs-index-build-count) defs-index-builds)
   (define cached-index #f)
   (define cached-index-cut #f)
+  (define cached-index-token #f)
+  ;; HOW MANY TIMES A CUT WAS COPIED TO ANSWER defs-index: once per question
+  ;; that is not about the object the index was last asked for
+  (define defs-index-cut-reads 0)
+  (define (defs-index-cut-read-count) defs-index-cut-reads)
 
   (define (defs-index state)
-    (let ((cut (reduce-applied-cut state)))
-      ;; NEVER: AND THE KEY CANNOT BE THE OBJECT. Two readings, opposite ways:
-      ;; with the resident cache ON a write delivers into the SAME reduction
-      ;; object, so object identity says "unchanged" about a store that
-      ;; changed; with it OFF every call replays into a NEW object, so object
-      ;; identity says "changed" on every question and the memo never hits --
-      ;; measured, two answers in one process rebuilt the index twice. The
-      ;; applied cut is the thing that moves exactly when the store does, and
-      ;; a cut carries writer ids that are generated per store, so two stores
-      ;; cannot collide on one.
-      (if (and cached-index (equal? cached-index-cut cut))
+    (let ((token (reduce-applied-token state)))
+      ;; NEVER: AND THE KEY CANNOT BE THE OBJECT ALONE, by the three readings
+      ;; above: with the resident cache off every question is a new object,
+      ;; so identity never hits -- measured, two answers in one process rebuilt
+      ;; the index twice -- and a write moves its own object between reading
+      ;; it and publishing it. The applied cut moves exactly when the store
+      ;; does, and a cut carries writer ids that are generated per store, so
+      ;; two stores cannot collide on one.
+      ;; THE TOKEN FIRST (reduce-applied-token): the same applied state of
+      ;; the same object, answered without copying the cut; any other is
+      ;; compared by its cut, so a new object of an unchanged store still hits.
+      (if (and cached-index (eq? cached-index-token token))
           cached-index
-          (let ((built (build-defs-index state)))
-            (set! cached-index built)
-            (set! cached-index-cut cut)
-            (set! defs-index-builds (+ defs-index-builds 1))
-            built))))
+          (let ((cut (begin (set! defs-index-cut-reads (+ defs-index-cut-reads 1))
+                            (reduce-applied-cut state))))
+            (set! cached-index-token token)
+            (if (and cached-index (equal? cached-index-cut cut))
+                cached-index
+                (let ((built (build-defs-index state)))
+                  (set! cached-index built)
+                  (set! cached-index-cut cut)
+                  (set! defs-index-builds (+ defs-index-builds 1))
+                  built))))))
 
   ;; THE LIBRARY A BLOCK BELONGS TO: the nearest enclosing block whose kind
   ;; is library, walking the outline's parents, or #f when there is none.

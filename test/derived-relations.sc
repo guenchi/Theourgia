@@ -1118,6 +1118,68 @@
             (head3 (title! HS hsB "y")))
       '((ok ok) #t (unavailable (state retired)) (error refused rule-unevaluable)))
 
+;; I: A CHAIN BUILT ONCE AN ENTRY, AND THE ENTRY FOUND IN CONSTANT TIME.
+;; d0 names d1, ..., d39 names d40; ten rules each name d0; d40 is retired.
+;; affects checks every rule at PRE and at POST, and at POST each check asks
+;; d0's availability, whose chain is forty relations long: built once at
+;; POST, its steps read by the seam's chain kind (a tree that builds it per
+;; check reads ten times as many, and one without the kind reads none).
+(define IS (store! "chain-once"))
+(make IS 'doc "b")
+(define I-depth 40)
+(define (dn i) (string->symbol (string-append "d" (number->string i))))
+(let loop ((i I-depth))
+  (when (>= i 0)
+    (derive! IS (dn i) (if (= i I-depth) (over-kind (dn i) 'code) (body (dn i) (dn (+ i 1)))))
+    (loop (- i 1))))
+(define is-rules
+  (let loop ((k 1) (out '()))
+    (if (> k 10) (reverse out)
+        (loop (+ k 1) (cons (head-of (rule! IS (string-append "i" (number->string k)) "--on" "doc" "--must-not" "(d0 ?w)")) out)))))
+(define is-pre (state IS))
+(retire! IS (dn I-depth))
+(define is-post (state IS))
+(want "WALK-I affects over ten rules naming the head of a chain of forty, its end retired: the chain is built once at POST, not once a rule"
+      (let ((c (counting 'chain (lambda () (derive-affects is-pre is-post (dn I-depth))))))
+        (list is-rules (and (number? (car c)) (> (car c) 0) (<= (car c) (* 2 (+ I-depth 1))))
+              (let ((r (and (pair? (cadr c)) (assq 'rule (cdr (cadr c)))))) (and r (length (cdr r))))))
+      '((ok ok ok ok ok ok ok ok ok ok) #t 10))
+(want "WALK-I the chains it shares are each relation's own: d0's is the whole chain, d30's its last ten"
+      (list (availability-of IS 'd0) (availability-of IS 'd30))
+      (list (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 1))) (iota I-depth))))
+            (list 'unavailable '(state retired) (cons 'through (map (lambda (i) (dn (+ i 31))) (iota 10))))))
+;; EACH LOOKUP OF A STATE'S ENTRY, by what it compared: the token (eq?, in
+;; constant time) or a copied cut. A tree that compares neither reads none.
+(define (lookups-by thunk)
+  (if (not stored-walk-counter)
+      'no-seam
+      (let ((token 0) (cut 0))
+        (parameterize ((stored-walk-counter (lambda (w how) (when (eq? w 'lookup) (if (eq? how 'token) (set! token (+ token 1)) (set! cut (+ cut 1)))))))
+          (thunk))
+        (list token cut))))
+(want "WALK-I the ten rules' checks find their state's entry by its token: some lookups, no cut copied"
+      (let ((l (lookups-by (lambda () (derive-affects is-pre is-post (dn I-depth))))))
+        (and (pair? l) (list (> (car l) 0) (cadr l))))
+      '(#t 0))
+;; THE DEFINITIONS INDEX: asked twice of one reduction, the second finds it
+;; by the token and copies no cut; asked of a new reduction of the unchanged
+;; store, it copies one cut and finds the same index, building nothing.
+(define defs-index-of (guard (e (#t #f)) (eval 'defs-index (environment '(theourgia store)))))
+(define defs-builds (guard (e (#t #f)) (eval 'defs-index-build-count (environment '(theourgia store)))))
+(define defs-cut-reads (guard (e (#t #f)) (eval 'defs-index-cut-read-count (environment '(theourgia store)))))
+(want "WALK-I defs-index: the same reduction by its token, a new one of the unchanged store by its cut, no rebuild"
+      (if (not (and defs-index-of defs-builds defs-cut-reads))
+          'no-counter
+          (let* ((st (state IS))
+                 (first (defs-index-of st))
+                 (r1 (defs-cut-reads)) (b1 (defs-builds))
+                 (again (defs-index-of st))
+                 (r2 (defs-cut-reads))
+                 (other (defs-index-of (state IS)))
+                 (r3 (defs-cut-reads)) (b3 (defs-builds)))
+            (list (- r2 r1) (- r3 r2) (- b3 b1) (eq? first again) (eq? first other))))
+      '(0 1 0 #t #t))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nderived-relations complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
