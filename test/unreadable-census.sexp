@@ -417,6 +417,16 @@
    unrelated a
    "a query's refusal, raised as a record from wherever it is found, becomes the answer; nothing else is caught"
    (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (session-advance) 1 guard
+   ((refusal? e))
+   unrelated a
+   "a session advanced: any refusal while the new session is built (the budget, a key's own) is the answer, and no new session exists; nothing else is caught"
+   (e ((refusal? e) (refusal-answer e))))
+  ("query.sc" (advance-session on-aux) 1 guard
+   ((refusal? e))
+   unrelated a
+   "the auxiliary session at the old state refused: its work is charged to the new session first, so the refusal that goes on counts the advance's whole spend; it is raised again unchanged"
+   (e ((refusal? e) (charge-aux!) (raise e))))
   ("query.sc" (query-verb) 1 guard
    (#t)
    unrelated a
