@@ -411,24 +411,40 @@
         (list (events r) (pending-events r) (dump-pending r) (reduce-apply! r "x" 1 '(("ghost000" . 1)) (section))))
       '((("x" . 1) ("x" . 0)) (("x" . 1) ("claim000" . 1) ("claim001" . 1)) 3 (refused already-pending)))
 
+;; TWO COPIES OF ONE EVENT READY AT ONCE: after the rebuild, a1 wakes the
+;; earlier x1 while the later one is already ready; the list's stable sort
+;; applied the earlier copy first, so the later one, with no deps, applies
+;; last and x1's past is its own, empty.
+(want "PEND-8 two copies of x1 ready at once after a rebuild apply in arrival order"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "a" 1 '() (section))
+        (reduce-apply! r "x" 0 '() (section))
+        (reduce-apply! r "x" 1 '(("a" . 1)) (section))
+        (reduce-apply! r "x" 1 '() (section))
+        (claims! r)
+        (list (events r) (state-event-past r '("x" . 1))))
+      '((("a" . 1) ("x" . 1) ("x" . 0) ("x" . 1)) ()))
+
 ;; OUTSIDE THE LOG'S ENVELOPE: wire.sc refuses a seq or a dep that is not an
 ;; exact integer >= 0 on the log path, and reduce-apply! refuses the same at its
 ;; entry, before anything is entered.
-(define (refusal-of thunk)
-  (let ((r (reduce-empty)))
-    (list (guard (e (#t (list (and (condition? e) (message-condition? e) (condition-message e))
-                              (and (condition? e) (irritants-condition? e) (condition-irritants e)))))
-            (thunk r))
-          (events r) (dump-pending r))))
-(want "PEND-8 a seq that is not an integer is refused at the entry"
-      (refusal-of (lambda (r) (reduce-apply! r "x" 1.0 '() (section))))
-      '(("a seq outside the log's envelope" ("x" 1.0)) () 0))
-(want "PEND-8 a negative seq is refused at the entry"
-      (refusal-of (lambda (r) (reduce-apply! r "x" -1 '() (section))))
-      '(("a seq outside the log's envelope" ("x" -1)) () 0))
-(want "PEND-8 a dep that is not an exact integer >= 0 is refused at the entry"
-      (refusal-of (lambda (r) (reduce-apply! r "a" 1 '(("w" . 3/2)) (section))))
-      '(("a dep outside the log's envelope" ("a" 1 ("w" . 3/2))) () 0))
+;; -> (<the condition's message and irritants> <trace> <pending count>
+;; <the history's records for the writer>), the refusal read before the state
+(define (refusal-of writer thunk)
+  (let* ((r (reduce-empty))
+         (raised (guard (e (#t (list (and (condition? e) (message-condition? e) (condition-message e))
+                                     (and (condition? e) (irritants-condition? e) (condition-irritants e)))))
+                   (thunk r))))
+    (list raised (events r) (dump-pending r) (state-written-records r writer -100 100))))
+(want "PEND-8 an inexact seq (1.0) is refused at the entry, nothing entered"
+      (refusal-of "x" (lambda (r) (reduce-apply! r "x" 1.0 '() (section))))
+      '(("a seq outside the log's envelope" ("x" 1.0)) () 0 ()))
+(want "PEND-8 a negative seq is refused at the entry, nothing entered"
+      (refusal-of "x" (lambda (r) (reduce-apply! r "x" -1 '() (section))))
+      '(("a seq outside the log's envelope" ("x" -1)) () 0 ()))
+(want "PEND-8 a dep that is not an exact integer >= 0 is refused at the entry, nothing entered"
+      (refusal-of "a" (lambda (r) (reduce-apply! r "a" 1 '(("w" . 3/2)) (section))))
+      '(("a dep outside the log's envelope" ("a" 1 ("w" . 3/2))) () 0 ()))
 
 (printf "rows: ~a\n~a failures\nreduce-pending complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

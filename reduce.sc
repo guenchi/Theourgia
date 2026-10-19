@@ -812,12 +812,18 @@
   (define (work! kind n) (let ((c (pending-work-counter))) (when c (c kind n))))
   (define (rec-event rec) (cons (rec-writer rec) (rec-seq rec)))
 
-  ;; THE HEAP, least first by writer then seq; every comparison counted
-  (define (rec-before? a b)
+  ;; THE HEAP, least first by writer then seq, then arrival: two copies of
+  ;; one event (delivered again after a cursor moved back) apply in the order
+  ;; they arrived, as the list's stable sort applied them. The arrival is
+  ;; looked up only on that tie. Every comparison counted.
+  (define (arrival-of q rec)
+    (let ((e (find (lambda (e) (eq? (cdr e) rec)) (hashtable-ref (pq-by-id q) (rec-event rec) '()))))
+      (if e (car e) 0)))
+  (define (rec-before? q a b)
     (work! 'heap 1)
-    (if (string=? (rec-writer a) (rec-writer b))
-        (< (rec-seq a) (rec-seq b))
-        (string<? (rec-writer a) (rec-writer b))))
+    (cond ((not (string=? (rec-writer a) (rec-writer b))) (string<? (rec-writer a) (rec-writer b)))
+          ((not (= (rec-seq a) (rec-seq b))) (< (rec-seq a) (rec-seq b)))
+          (else (< (arrival-of q a) (arrival-of q b)))))
   (define (heap-push! q rec)
     (let ((n (pq-size q)))
       (when (= n (vector-length (pq-heap q)))
@@ -825,7 +831,7 @@
       (let ((h (pq-heap q)))
         (let up ((i n))
           (let ((parent (div (- i 1) 2)))
-            (if (and (> i 0) (rec-before? rec (vector-ref h parent)))
+            (if (and (> i 0) (rec-before? q rec (vector-ref h parent)))
                 (begin (vector-set! h i (vector-ref h parent)) (up parent))
                 (vector-set! h i rec))))
         (pq-size-set! q (+ n 1)))))
@@ -836,8 +842,8 @@
       (when (> n 0)
         (let down ((i 0))
           (let* ((l (+ (* 2 i) 1)) (r (+ l 1))
-                 (least (if (and (< r n) (rec-before? (vector-ref h r) (vector-ref h l))) r l)))
-            (if (and (< l n) (rec-before? (vector-ref h least) last))
+                 (least (if (and (< r n) (rec-before? q (vector-ref h r) (vector-ref h l))) r l)))
+            (if (and (< l n) (rec-before? q (vector-ref h least) last))
                 (begin (vector-set! h i (vector-ref h least)) (down least))
                 (vector-set! h i last)))))
       top))
