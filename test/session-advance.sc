@@ -100,7 +100,12 @@
 (define (retire! st name) (on st 'derive (symbol->string name) "--retire"))
 (define (local-writer st)
   (let ((p (clause-of (on st 'position) 'position))) (and p (car (cadr p)))))
-;; a record from another writer, PEER (eight characters), whose premise is PAST on the local writer
+;; a record from another writer, PEER (eight characters), whose premise is PAST on the local writer.
+;; A STORE IS REPLAYED WRITER BY WRITER IN NAME ORDER, so a peer whose name
+;; sorts before the local writer's is delivered before the local history and
+;; the later state's history no longer ends with the earlier one's (not
+;; forward); the local name is eight base-36 digits, so a peer named
+;; zzzzzzzz sorts after it (or equals it, one chance in 36^8)
 (define (forge! st peer payload past)
   (let* ((w (local-writer st))
          (bytes (encode-record 1 1789000000001 "peer" (list (cons w (cdr (assoc w past)))) (storable-encode payload))))
@@ -157,7 +162,7 @@
 (define b-past (cut-of B))
 (field! B ba 'n 2)
 (field! B ba 'm 2)
-(forge! B "peerbase" (list 'set ba 'm 3) b-past)
+(forge! B "zzzzzzzz" (list 'set ba 'm 3) b-past)
 (unlink! B ba "cites" bb)
 (on B 'set by "title" "y moved")
 (on B 'del bb)
@@ -233,10 +238,10 @@
 (link! D d4 "cites" d5)
 (define dst2 (state D))
 (define DS2 (advance DS dst2))
-(want "BUDGET-2 the advance is charged its insertions: the four tuples ending at 5, beyond the edge enumeration at both states"
+(want "BUDGET-2 the advance is charged its insertions: the four tuples ending at 5, exactly, beyond the edge enumeration at both states"
       (let ((n1 (edge-build dst1)) (n2 (edge-build dst2)) (spent (if (session? DS2) (session-spent DS2) DS2)))
-        (in-order (list n1 n2) (and (number? spent) (>= spent (+ n1 n2 4)))))
-      (list (list 3 4) #t))
+        (in-order (list n1 n2) (and (number? spent) (- spent (+ n1 n2)))))
+      (list (list 3 4) 4))
 (want "DRED-1 an edge added at the end of a chain: the tuples four recursive steps out derived, inspected before any ask"
       (in-order (inspected DS2 'rch d1 '?x) (inspected DS2 'rch d2 '?x) (inspected DS2 'rch d3 '?x) (inspected DS2 'rch d4 '?x))
       (list (list 'complete (sorted (map (lambda (b) (list d1 b)) (list d2 d3 d4 d5))))
@@ -325,6 +330,7 @@
 (define ost1 (state O))
 (define OS (make-query-session ost1))
 (hold! OS (list 'vv oa '?z))
+(hold! OS (list 'version oa '?v))
 (define os-keys-before (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS)))
 (unlink! O ob "depends-on" oc)
 (define ost2 (state O))
@@ -332,9 +338,11 @@
 (want "OLD-JOIN an over-deletion that asks the old database for a key S never held: answered at S's state, the tuple deleted, S untouched"
       (in-order (inspected OS2 'vv oa '?z) (list (inspected OS 'lo oa ob) (inspected OS 'vv oa '?z) (session-spent OS)))
       (list (list 'complete '()) os-keys-before))
-(want "S-CACHES S's builds kept through the advance: an edge query on S builds nothing"
-      (begin (session-answer OS '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent OS))
-      0)
+(want "S-CACHES S's builds and memo kept through the advance: an edge query and a bound version call on S cost nothing"
+      (in-order (session? OS2)
+                (begin (session-answer OS '(and (edge ?a ?r ?b) (/= ?a ?a))) (session-spent OS))
+                (begin (session-answer OS (list 'and (list 'version oa '?v) '(/= ?v ?v))) (session-spent OS)))
+      '(#t 0 0))
 ;; THE SAME, a->b also unlinked: lo(a, b) differs between the states; the
 ;; old one is derived in the auxiliary session (one tuple), which a state2
 ;; reading would not find
@@ -354,10 +362,10 @@
 (unlink! O2 o2a "cites" o2b)
 (define o2st2 (state O2))
 (define O2S2 (advance O2S o2st2))
-(want "OLD-JOIN-2 the old answer of the key S lacks is the old state's, and charged: both enumerations, three deletions and lo(a, b) derived"
+(want "OLD-JOIN-2 the old answer of the key S lacks is the old state's, and charged: both enumerations, then exactly three deletions and lo(a, b) derived"
       (let ((n1 (edge-build o2st1)) (n2 (edge-build o2st2)) (spent (if (session? O2S2) (session-spent O2S2) O2S2)))
-        (in-order (list n1 n2) (inspected O2S2 'vv o2a '?z) (and (number? spent) (>= spent (+ n1 n2 3 1)))))
-      (list (list 2 0) (list 'complete '()) #t))
+        (in-order (list n1 n2) (inspected O2S2 'vv o2a '?z) (and (number? spent) (- spent (+ n1 n2)))))
+      (list (list 2 0) (list 'complete '()) 4))
 
 ;; A POSITIVE STRATUM ABOVE A POSITIVE ONE, the lower's delta both ways: a
 ;; cites b cites c cites d, c and d code; b->c unlinked, a->d and d->e linked,
@@ -408,8 +416,11 @@
 (define zst2 (state Z))
 (define ZS2 (advance ZS zst2))
 (want "DRED-7 a positive component of two relations maintained: both names' carried keys gain d, inspected"
-      (in-order (inspected ZS2 'pp za '?y) (inspected ZS2 'qq zb '?y) (inspected ZS2 'pp zc '?y))
+      (in-order (inspected ZS2 'pp za '?y) (inspected ZS2 'qq zb '?y) (inspected ZS2 'pp zc '?y)
+                (inspected ZS2 'pp zb '?y) (inspected ZS2 'qq zc '?y))
       (list (list 'complete (sorted (list (list za zb) (list za zc) (list za zd))))
+            (list 'complete (sorted (list (list zb zc) (list zb zd))))
+            (list 'complete (list (list zc zd)))
             (list 'complete (sorted (list (list zb zc) (list zb zd))))
             (list 'complete (list (list zc zd)))))
 
@@ -492,7 +503,7 @@
 (hold! US '(q ?x))
 (define u-past (cut-of U))
 (derive! U 'p (body 'p '(kind ?x doc) '(not (q ?x))))
-(forge! U "peerunst" (list 'derive 'q (body 'q '(kind ?x doc) '(not (p ?x)))) u-past)
+(forge! U "zzzzzzzz" (list 'derive 'q (body 'q '(kind ?x doc) '(not (p ?x)))) u-past)
 (define ust2 (state U))
 (define US2 (advance US ust2))
 (want "DECL-4 a cycle made unstratified by declarations between the states: both dropped, and a query refused unstratified"
@@ -583,10 +594,10 @@
 (unlink! F f2 "cites" f3)
 (define fst2 (state F))
 (define f-cost (let ((S2 (advance (fresh-held) fst2))) (if (session? S2) (session-spent S2) S2)))
-(want "BUDGET-1 the advance is charged the facts' enumeration at BOTH states (the old state's is the auxiliary session's) and its two deletions"
+(want "BUDGET-1 the advance is charged the facts' enumeration at BOTH states (the old state's is the auxiliary session's) and exactly its two deletions"
       (let ((n1 (edge-build fst1)) (n2 (edge-build fst2)))
-        (in-order (list n1 n2) (and (number? f-cost) (>= f-cost (+ n1 n2 2)))))
-      (list (list 9 8) #t))
+        (in-order (list n1 n2) (and (number? f-cost) (- f-cost (+ n1 n2)))))
+      (list (list 9 8) 2))
 ;; AN AUXILIARY REFUSAL AFTER THE NEW SESSION HAS SPENT: ek reads edge, then
 ;; kind; the enumeration runs edge at the old state, edge at the new, then kind
 ;; at the old, which the budget, one short, refuses
@@ -599,6 +610,25 @@
 (make FA 'doc "3")
 (define fast2 (state FA))
 (define (kind-build st) (let ((S (make-query-session st))) (session-answer S '(and (kind ?b ?k) (/= ?b ?b))) (session-spent S)))
+;; A PARTIAL TABLE: a query refused by its budget leaves its keys incomplete;
+;; an advance does not carry them
+(define PT (store! "partial"))
+(define pts (let loop ((i 0) (out '())) (if (= i 5) (reverse out) (loop (+ i 1) (cons (make PT 'doc (format "p~a" i)) out)))))
+(let loop ((l pts)) (when (pair? (cdr l)) (link! PT (car l) "cites" (cadr l)) (loop (cdr l))))
+(derive! PT 'rch (reach-clauses 'rch))
+(define ptst1 (state PT))
+(define PTS (make-query-session ptst1))
+(session-budget-set! PTS (+ (edge-build ptst1) 2))
+(define pt-refused (session-answer PTS (list 'rch (car pts) '?x)))
+(session-budget-set! PTS 1000000)
+(make PT 'section "elsewhere")
+(define ptst2 (state PT))
+(want "FAIL-9 a key a refused query left incomplete is not carried: absent in the new session, then the fresh answer"
+      (let ((before (inspected PTS 'rch (car pts) '?x)) (S2 (advance PTS ptst2)))
+        (in-order (head-of pt-refused) (if (pair? before) (car before) before)
+                  (if (session? S2) (inspected S2 'rch (car pts) '?x) S2)
+                  (if (session? S2) (equal? (rows-of S2 (list 'rch (car pts) '?x)) (oracle ptst2 (list 'rch (car pts) '?x))) S2)))
+      '((error query-budget) incomplete #f #t))
 (want "FAIL-8 the old state's enumeration refused after the new session spent: the advance's refusal, counting the whole spend"
       (let* ((ne1 (edge-build fast1)) (ne2 (edge-build fast2)) (nk1 (kind-build fast1))
              (S (make-query-session fast1)))
@@ -708,15 +738,16 @@
 (define r-applied (let ((r (reduce-clone r-planned))) (fw-member! r fo 2 '() "w0") r))
 (define r-withdrawn (let ((r (reduce-clone r-applied))) (fw-member! r "fw100000" 1 (list (cons fo 1)) "w0") r))
 (want "FWD-2 a rebuild that withdrew an event the first state had applied: not forward"
-      (in-order (fw-gate r-applied fo 2) (fw-gate r-withdrawn fo 2) (forward? r-applied r-withdrawn))
-      '(#f plan-conflict #f))
+      (in-order (fw-gate r-applied fo 2) (fw-gate r-withdrawn fo 2) (forward? r-applied r-withdrawn)
+                (advance (make-query-session r-applied) r-withdrawn))
+      '(#f plan-conflict #f (error not-forward)))
 (define r-later
   (let ((r (reduce-clone r-withdrawn)))
     (reduce-apply! r "fw200000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "z") '(parent . root) '(ord . 2))))
     r))
 (want "FWD-3 a rebuild between the states that withdrew only later events, the cut covering and moved: forward"
-      (forward? r-planned r-later)
-      #t)
+      (in-order (forward? r-planned r-later) (session? (advance (make-query-session r-planned) r-later)))
+      '(#t #t))
 (want "FWD-4 a history that is not a suffix (another record before the shared one): not forward"
       (let ((other (let ((r (reduce-empty)))
                      (reduce-apply! r "fw300000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "o") '(parent . root) '(ord . 3))))
@@ -742,6 +773,16 @@
                      r)))
         (in-order (reduce-applied-cut other) (forward? r-planned other) (advance (make-query-session r-planned) other)))
       (list (list (cons fo 1) (cons "fw500000" 1)) #f '(error not-forward)))
+
+(want "FWD-7 the same event identity, payload and actor with other dependencies: not forward"
+      (let ((other (let ((r (reduce-empty)))
+                     (reduce-apply! r fo 1 (list (cons "fw600000" 1))
+                                    (list 'plan "w" "fp" (cons fo 0) (list (cons 0 (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title "w0"))))))
+                                    (list "test" (cons fo "w") 'plan "fp" #f (cons fo 0)))
+                     (reduce-apply! r "fw600000" 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "d") '(parent . root) '(ord . 6))))
+                     r)))
+        (in-order (reduce-applied-cut other) (forward? r-planned other) (advance (make-query-session r-planned) other)))
+      (list (list (cons fo 1) (cons "fw600000" 1)) #f '(error not-forward)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\nsession-advance complete\n" rows bad)
