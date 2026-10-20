@@ -139,10 +139,15 @@
         ;; `--for` names whose view a supply was projected from, and so
         ;; whose table it fills; "-" when absent.
         ((supply) '("--for"))
-        ;; A scope names its cut, its roots and its reader.
-        ((scope) '("--cut" "--roots" "--for"))
-        ;; The datum review-results answered, as text.
-        ((collect-into) '("--results"))
+        ;; A scope names its cut, its roots and its reader; a scope of a
+        ;; frozen candidate names the freeze, and a packet of sections.
+        ((scope) '("--cut" "--roots" "--for" "--freeze" "--packet"))
+        ;; A collect of a candidate's review: the landing's mapping of
+        ;; provisional ids, and the writer its proposals are drafted for.
+        ((collect) '("--map" "--to-writer"))
+        ;; The datum review-results answered, as text; `--letter new` in
+        ;; place of a letter id makes the letter.
+        ((collect-into) '("--results" "--letter" "--map" "--to-writer"))
         ((reach) '("--rel" "--depth"))
         ;; A relation's declaration: its kind, and the selectors of its ends.
         ((relation) '("--as" "--from" "--to"))

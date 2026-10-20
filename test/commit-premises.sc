@@ -534,10 +534,12 @@
 ;; below and counted in the output; a product source the reader cannot read
 ;; is a failure, not a file with no calls.
 ;; channel.sc's collect-into-write holds TWO calls, its two writes (the
-;; results, then their about links), so it has two entries.
+;; results, then their about links), so it has two entries; draft-proposals
+;; holds the third, the provenance of a candidate's proposals.
 (define census
   '((("channel.sc" collect-into-write) (exempt "collect-into's first write, the results under the letter: it takes no --premises; the plan is made from the state at the locked point, which is what makes a retry safe"))
     (("channel.sc" collect-into-write) (exempt "collect-into's second write, the about links the logical edge set lacks: it takes no --premises; planned from the state at the locked point"))
+    (("channel.sc" draft-proposals) (exempt "collect-into's provenance write, the drafts a candidate's proposals became, named on the collected blocks they belong to: it takes no --premises; planned from the state at the locked point, and not written again when already there"))
     (("code-project.sc" import-code) premises)
     (("datum-project.sc" execute) premises)
     (("project.sc" import-md-report) premises)

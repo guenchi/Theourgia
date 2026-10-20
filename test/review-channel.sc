@@ -31,7 +31,8 @@
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia client) call! request-frame socket-path answer-field)
         (only (theourgia arguments) parse-arguments argument-positionals)
-        (only (theourgia extensions) extension-verbs))
+        (only (theourgia extensions) extension-verbs)
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define bad 0)
 (define rows 0)
@@ -865,6 +866,289 @@
                 (let ((l (find (lambda (id) (equal? (field-of M id 'scope) (string-append root "/mcp-scoped"))) (outline-order M))))
                   (and l (car (block-creation (state M) l)))))
       '(#t #t "author"))
+
+;; ---- a review of a frozen candidate ------------------------------------------------
+;;
+;; A store imported from files, a.txt and b.txt; the coder W drafts a.txt,
+;; and tools/landing-freeze.sc freezes it. The scope of that freeze holds the
+;; candidate; a stand-in reviewer, a process of its own, reads its mail
+;; through the shipped hook, edits b.txt's copy under its own writer, writes
+;; a complete verdict and a finding, and answers. Then the landing, then the
+;; collect with --letter new and --to-writer W.
+(define (sh-rc name command)
+  (system (string-append command " > '" root "/" name ".out' 2> '" root "/" name ".err' < /dev/null; echo $? > '" root "/" name ".rc'"))
+  (let ((t (file-text (string-append root "/" name ".rc")))) (and (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))))))
+(define (tool-run name script . args)
+  (first-datum (sh-out name (string-append (env "") "scheme --script ../tools/" script
+                                          (apply string-append (map (lambda (a) (string-append " '" a "'")) args))))))
+(define MF (string-append root "/main-freeze"))
+(define MF-src (string-append root "/freeze-src"))
+(define W "coder")
+(system (string-append "mkdir -p '" MF-src "' && printf 'one\\n' > '" MF-src "/a.txt' && printf 'two\\n' > '" MF-src "/b.txt'"))
+(run MF "author" 'init)
+(run MF "author" 'import-code MF-src)
+(define (holder-of store path) (find (lambda (id) (equal? (field-of store id 'path) path)) (outline-order store)))
+(define (child-of store id) (find (lambda (c) (equal? (parent-of store c) id)) (outline-order store)))
+(define HA (holder-of MF "a.txt"))
+(define HB (holder-of MF "b.txt"))
+(define CA (and HA (child-of MF HA)))
+(define CB (and HB (child-of MF HB)))
+(run MF "author" 'write CA "one, as the change has it\n" "--writer" W)
+(define FZ (string-append root "/freeze"))
+(define frozen (tool-run "freeze" "landing-freeze.sc" MF "--writer" W FZ))
+(define PK (string-append root "/packet.sexp"))
+(call-with-output-file PK
+  (lambda (p) (write '(packet (section (title "What changed") (text "a.txt's first line")
+                                       (children (section (title "Why") (text "the reader asked")))))
+                     p)))
+(define cut-before (reduce-applied-cut (state MF)))
+(define XF (string-append root "/scoped-freeze"))
+(define SF (scope-run MF "author" XF "--freeze" FZ "--roots" HA "--roots" HB "--for" "codex" "--packet" PK))
+(define LCF (one SF 'letter-copy))
+(define (copy-in store origin) (find (lambda (id) (equal? (field-of store id 'origin) origin)) (outline-order store)))
+(define (children-in store id) (filter (lambda (c) (equal? (parent-of store c) id)) (outline-order store)))
+(want "CR-1 a scope of a freeze: ok, no letter yet, one before; the drafted copy holds the candidate, its before the committed src; the other copy has none"
+      (in-order (car frozen) (car SF) (one SF 'letter) (one SF 'before) (one SF 'packet)
+                (field-of XF (copy-in XF CA) 'src)
+                (map (lambda (b) (list (field-of XF b 'title) (field-of XF b 'before-of) (field-of XF b 'src)))
+                     (children-in XF (copy-in XF CA)))
+                (children-in XF (copy-in XF CB))
+                (field-of XF LCF 'freeze))
+      (list 'ok 'ok 'new 1 2 (string->utf8 "one, as the change has it\n")
+            (list (list "before" CA (string->utf8 "one\n"))) '() FZ))
+(want "CR-2 the packet's sections are under the letter copy, the second under the first, and in the baseline"
+      (let* ((secs (filter (lambda (id) (and (equal? (field-of XF id 'kind) 'section) (not (field-of XF id 'before-of))))
+                           (outline-order XF)))
+             (base (field-of XF LCF 'baseline)))
+        (in-order (map (lambda (id) (field-of XF id 'title)) secs)
+                  (and (pair? secs) (parent-of XF (car secs)))
+                  (and (pair? secs) (pair? (cdr secs)) (equal? (parent-of XF (cadr secs)) (car secs)))
+                  (map (lambda (id) (car (run XF "codex" 'read id "--cut" base))) secs)))
+      (list '("What changed" "Why") LCF #t '(ok ok)))
+(want "CR-3 the main store is not written by the scope: its applied cut is the one before, and no letter names the scope"
+      (in-order (equal? (reduce-applied-cut (state MF)) cut-before)
+                (find (lambda (id) (equal? (field-of MF id 'scope) XF)) (outline-order MF)))
+      '(#t #f))
+(define XW (string-append root "/scoped-whole"))
+(define SW (scope-run MF "author" XW "--freeze" FZ "--roots" "all" "--for" "codex"))
+(want "CR-4 --roots all copies every top-level block, each at the top level"
+      (in-order (car SW)
+                (list-sort string<? (map (lambda (id) (field-of XW id 'origin))
+                                         (filter (lambda (id) (and (eq? (parent-of XW id) 'root) (not (equal? id (one SW 'letter-copy)))))
+                                                 (outline-order XW)))))
+      (list 'ok (list-sort string<? (list HA HB))))
+(want "CR-5 a candidate's review-results with no verdict is pending"
+      (run XF "codex" 'review-results)
+      (list 'pending (list 'letter-copy LCF) '(status "unread")))
+(want "CR-6 a --cut other than the freeze's pinned cut is refused, and a freeze that cannot be read is refused, both before anything is made"
+      (in-order (caddr (scope-run MF "author" (string-append root "/x-mismatch") "--freeze" FZ "--cut" "()" "--roots" HA "--for" "codex"))
+                (caddr (scope-run MF "author" (string-append root "/x-nofreeze") "--freeze" (string-append root "/nosuch") "--roots" HA "--for" "codex"))
+                (dir-exists? (string-append root "/x-mismatch")) (dir-exists? (string-append root "/x-nofreeze")))
+      '((reason freeze-cut-mismatch) (reason freeze-unreadable) #f #f))
+
+;; THE STAND-IN REVIEWER, a process: the mail its hook names, read and then
+;; answered; a.txt's copy set to something else and back, so its src is the
+;; reviewer's and unchanged; an edit of b.txt's copy committed under its own
+;; writer; a verdict with sources and the four conditions, and a finding
+;; about the copy it edited. It prints what it did.
+(define reviewer (string-append root "/reviewer.ss"))
+(call-with-output-file reviewer
+  (lambda (p)
+    (write '(import (chezscheme) (theourgia rpc) (only (theourgia store) open-and-reduce)
+                    (only (theourgia reduce) state-read state-block-ids block-id))
+           p)
+    (put-string p (string-append "
+(define store (getenv \"THEOURGIA_STORE\"))
+(define me (getenv \"THEOURGIA_ACTOR\"))
+(define (run . args) (rpc-dispatch store args me))
+(define (field-of id k) (let* ((b (state-read (open-and-reduce store) id)) (f (and b (assq k (cdr (assq 'fields b)))))) (and f (cdr f))))
+(define (new-id a) (let* ((ev (assq 'events (cdr (car (cadr a))))) (e (car (cadr ev)))) (block-id (car e) (cdr e))))
+(define (insert parent fields) (new-id (run 'batch (format \"~s\" (list (list 'insert parent #f fields))))))
+(system \"sh '" tree "/contrib/mail-hook.sh' PostToolUse > '" root "/reviewer-hook.out'\")
+(define hook (call-with-input-file \"" root "/reviewer-hook.out\" get-string-all))
+(define (index-of text needle)
+  (let find ((i 0)) (cond ((> (+ i (string-length needle)) (string-length text)) #f)
+                          ((string=? (substring text i (+ i (string-length needle))) needle) i)
+                          (else (find (+ i 1))))))
+(define lc (let* ((head (string-append \"unread mail for \" me \": \"))
+                  (from (+ (index-of hook head) (string-length head))))
+             (substring hook from (+ from (index-of (substring hook from (string-length hook)) \". Read\")))))
+(run 'set lc \"status\" \"read\")
+(define (copy-of origin) (find (lambda (id) (equal? (field-of id 'origin) origin)) (state-block-ids (open-and-reduce store))))
+(define edit (copy-of (getenv \"REVIEW_EDIT\")))
+(define read-too (copy-of (getenv \"REVIEW_READ\")))
+(run 'set read-too \"src\" \"tried something else\\n\")
+(run 'set read-too \"src\" \"one, as the change has it\\n\")
+(run 'write edit \"two, as the reviewer proposes\\n\" \"--writer\" me)
+(define committed (run 'commit \"--writer\" me))
+(define v (insert lc (list '(kind . section) '(title . \"Verdict\") '(verdict . \"findings\")
+                           (cons 'sources (list read-too edit)) '(model . \"m\") '(approval . \"never\")
+                           '(sandbox . \"workspace-write\") '(effort . \"high\"))))
+(define f (insert v '((kind . section) (title . \"b.txt\") (claim . \"two should say so\") (evidence . \"line 1\") (confidence . \"high\"))))
+(run 'link f \"about\" edit)
+(run 'set lc \"status\" \"answered\")
+(write (list 'reviewed lc v f (car committed)))
+(newline)
+"))))
+(define reviewed
+  (first-datum (sh-out "reviewer" (string-append "PATH='" root "/bin':\"$PATH\" "
+                                                 (env (string-append "THEOURGIA_ACTOR=codex THEOURGIA_STORE='" XF "' REVIEW_EDIT='" CB
+                                                                     "' REVIEW_READ='" CA "'"))
+                                                 "scheme --script '" reviewer "'"))))
+(define VF (and (pair? reviewed) (eq? (car reviewed) 'reviewed) (caddr reviewed)))
+(define FF (and VF (cadddr reviewed)))
+(want "CR-7 the reviewer process found its letter through the hook, committed its edit, and set the letter answered; the status is its"
+      (in-order (and (pair? reviewed) (car reviewed)) (and (pair? reviewed) (cadr reviewed)) (and (pair? reviewed) (list-ref reviewed 4))
+                (field-of XF LCF 'status)
+                (let ((r (run XF "codex" 'review-results)))
+                  (and (pair? r) (eq? (car r) 'ok)
+                       (cadr (assq 'status (cdr (cadr r)))))))
+      (list 'reviewed LCF 'ok "answered" "answered"))
+(define RF (run XF "codex" 'review-results))
+(define RF-results (and (pair? RF) (eq? (car RF) 'ok) (cadr RF)))
+(define (rpart key) (and RF-results (let ((p (assq key (cdr RF-results)))) (and p (if (memq key '(blocks proposals)) (cdr p) (cadr p))))))
+(want "CR-8 complete results: ok, with the letter's fields, the verdict and the finding"
+      (in-order (and (pair? RF) (car RF)) (rpart 'letter) (rpart 'to) (rpart 'letter-copy) (rpart 'scope)
+                (equal? (rpart 'roots) (list HA HB)) (string? (rpart 'cut)) (map cadr (or (rpart 'blocks) '())))
+      (list 'ok 'new "codex" LCF XF #t #t (list VF FF)))
+(want "CR-9 the copy the reviewer edited is a proposal, on its finding; the copy it did not is not"
+      (map (lambda (p) (list (cadr (assq 'origin (cdr p))) (cadr (assq 'src (cdr p))) (cadr (assq 'on (cdr p)))))
+           (or (rpart 'proposals) '()))
+      (list (list CB (string->utf8 "two, as the reviewer proposes\n") FF)))
+
+;; THE LANDING, then the collect: the main store's cut is the freeze's, so
+;; landing-commit commits; the collect makes the letter and drafts the
+;; proposal for W, from the command line, so the program's options are read.
+(define landed (tool-run "landing" "landing-commit.sc" MF FZ))
+(want "CR-10 landing-commit commits the frozen drafts: the scope moved nothing"
+      (car landed)
+      'ok)
+(define CF (first-datum (cli "collect-freeze" "author" "collect" XF "--to-writer" W "--store" MF)))
+(define LF (and (pair? CF) (one CF 'letter)))
+(define (collected-in store sid)
+  (let ((st (state store)))
+    (filter (lambda (id) (let ((c (block-creation st id)))
+                           (and c (let ((p (assq 'scoped-id (cadr (cdr c))))) (and p (equal? (cdr p) sid))))))
+            (outline-order store))))
+(define VF* (and VF (let ((c (collected-in MF VF))) (and (pair? c) (car c)))))
+(define FF* (and FF (let ((c (collected-in MF FF))) (and (pair? c) (car c)))))
+(want "CR-11 collect --letter new: the letter made with the letter's fields and the letter copy's id, the results under it, the finding's edge on the committed block"
+      (in-order (and (pair? CF) (list-head CF 4)) (string? LF)
+                (and LF (map (lambda (k) (field-of MF LF k)) '(kind to status scope scoped-id freeze)))
+                (and VF* (parent-of MF VF*)) (and FF* (parent-of MF FF*)) (and FF* (edges-of MF FF*)))
+      (list '(ok (inserted 2) (linked 1) (already 0)) #t (list 'doc "codex" "answered" XF LCF FZ) LF VF*
+            (list (cons 'about CB))))
+(define (w-drafts) (let ((a (run MF "author" 'drafts "--writer" W))) (and (pair? a) (eq? (car a) 'ok) a)))
+(want "CR-12 the proposal is a draft for W on b.txt's block, named on the finding's copy; a.txt's block has none; the store's b.txt is unchanged"
+      (in-order (and (pair? CF) (map car (or (one CF 'drafted) '())))
+                (and (pair? CF) (map cadr (or (one CF 'drafted) '())))
+                (and FF* (map car (or (field-of MF FF* 'proposed) '())))
+                (field-of MF CB 'src))
+      (list '(draft) (list CB) (list CB) (string->utf8 "two\n")))
+(define WX (string-append root "/w-export"))
+(run MF "author" 'export-code WX "--working" "--writer" W "--raw")
+(want "CR-13 W's working export shows the proposal, and a.txt as landed"
+      (in-order (file-text (string-append WX "/b.txt")) (file-text (string-append WX "/a.txt")))
+      '("two, as the reviewer proposes\n" "one, as the change has it\n"))
+(define before-again (events-applied MF))
+(want "CR-14 the same collect again: nothing inserted or linked, one letter, the provenance not written again"
+      (let ((a (first-datum (cli "collect-freeze-2" "author" "collect" XF "--to-writer" W "--store" MF))))
+        (in-order (and (pair? a) (list-head a 4)) (length (collected-in MF LCF))
+                  (equal? (and (pair? a) (one a 'letter)) LF) (- (events-applied MF) before-again)))
+      (list '(ok (inserted 0) (linked 0) (already 1)) 1 #t 0))
+
+;; ---- a candidate with a file it adds and a holder it deletes -----------------------
+;;
+;; A freeze written by hand in part 1's format: a new file, c.txt, under its
+;; provisional id, and a deletion of a.txt's holder. A landing's answer,
+;; also by hand, maps the provisional id to the holder it made.
+(define (provisional-of path) (string-append "new-" (substring (bytevector->hex (sha256 (string->utf8 path))) 0 56)))
+(define PID (provisional-of "c.txt"))
+(define FZ2 (string-append root "/freeze2"))
+(system (string-append "mkdir -p '" FZ2 "' && printf 'three\\n' > '" FZ2 "/1.bytes'"))
+(define pinned2 (reduce-applied-cut (state MF)))
+(call-with-output-file (string-append FZ2 "/DRAFTS.sexp")
+  (lambda (p)
+    (write (list 'drafts '(store "s") (list 'writer W) (list 'pinned-cut pinned2)
+                 (list 'new (list 'provisional PID) '(path "c.txt") (list 'version (make-string 64 #\0)) (list 'cut pinned2)
+                       '(bytes "1.bytes") (list 'sha256 (bytevector->hex (sha256 (string->utf8 "three\n")))))
+                 (list 'delete (list 'holder HA) (list 'version (make-string 64 #\1)) (list 'based-on (make-string 64 #\2)) (list 'cut pinned2)))
+           p)))
+(define X2 (string-append root "/scoped-new"))
+(define S2 (scope-run MF "author" X2 "--freeze" FZ2 "--roots" PID "--roots" HA "--for" "codex"))
+(define LC2 (one S2 'letter-copy))
+(define NH (copy-in X2 PID))
+(want "CR-15 a file the freeze adds is copied as a holder under its provisional id, the file whole in one block; a deleted holder's copy says proposed"
+      (in-order (car S2) (field-of X2 NH 'path) (field-of X2 NH 'kind)
+                (map (lambda (c) (list (field-of X2 c 'origin) (field-of X2 c 'src))) (children-in X2 NH))
+                (field-of X2 (copy-in X2 HA) 'deleted))
+      (list 'ok "c.txt" 'file (list (list PID (string->utf8 "three\n"))) "proposed"))
+;; THE RESULTS, MADE COMPLETE A PIECE AT A TIME: each row reads the first gap.
+(define (gap) (let ((a (run X2 "codex" 'review-results))) (if (and (pair? a) (eq? (car a) 'error)) (cddr a) (car a))))
+(define V2 (insert-as X2 "codex" LC2 '((kind . section) (title . "Verdict"))))
+(define g-verdict (gap))
+(run X2 "codex" 'set V2 "verdict" "findings")
+(define g-sources (gap))
+(run X2 "codex" 'set V2 "sources" "")
+(define g-empty (gap))
+(run X2 "codex" 'set V2 "sources" LC2)
+(define g-foreign (gap))
+(run X2 "codex" 'set V2 "sources" (car (children-in X2 NH)))
+(define g-conditions (gap))
+(for-each (lambda (k) (run X2 "codex" 'set V2 k "x")) '("model" "approval" "sandbox" "effort"))
+(define F2 (insert-as X2 "codex" V2 '((kind . section) (title . "c.txt") (evidence . "e") (confidence . "low"))))
+(define g-claim (gap))
+(run X2 "codex" 'set F2 "claim" "c")
+(define g-about (gap))
+(run X2 "codex" 'link F2 "about" NH)
+(want "CR-16 results-incomplete names the first gap: the verdict, then sources absent, empty and not a copy, then a condition"
+      (list g-verdict g-sources g-empty g-foreign g-conditions)
+      (list (list (list 'block V2) '(field verdict)) (list (list 'block V2) '(field sources)) (list (list 'block V2) '(field sources))
+            (list (list 'block V2) '(field sources)) (list (list 'block V2) '(field model))))
+(want "CR-17 a finding without claim, then without about, is incomplete; with both the results are ok"
+      (list g-claim g-about (gap))
+      (list (list (list 'block F2) '(field claim)) (list (list 'block F2) '(field about)) 'ok))
+(define complete2 (cadr (run X2 "codex" 'review-results)))
+(define (strip-field d id k)
+  (cons 'results
+        (map (lambda (part)
+               (if (eq? (car part) 'blocks)
+                   (cons 'blocks (map (lambda (b) (if (equal? (cadr b) id)
+                                                      (cons 'block (cons (cadr b) (map (lambda (x) (if (eq? (car x) 'fields)
+                                                                                                         (list 'fields (filter (lambda (f) (not (eq? (car f) k))) (cadr x)))
+                                                                                                         x))
+                                                                                       (cddr b))))
+                                                      b))
+                                      (cdr part)))
+                   part))
+             (cdr d))))
+(want "CR-18 collect-into refuses a candidate's datum missing a verdict's field by name, and writes nothing"
+      (let ((n (events-applied MF)))
+        (in-order (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" (strip-field complete2 V2 'verdict)))
+                  (- (events-applied MF) n)))
+      (list (list 'error 'results-incomplete (list 'block V2) '(field verdict)) 0))
+;; THE LANDING'S ANSWER, as landing-commit prints it: the provisional id to
+;; the holder it made. A holder made here stands in for the landing's.
+(define NH* (insert-as MF "author" 'root '((kind . file) (mode . text) (path . "c.txt"))))
+(define LANDED (string-append root "/LANDED.sexp"))
+(call-with-output-file LANDED (lambda (p) (write (list 'ok '(committed 1) (list 'created (cons PID NH*))) p) (newline p)))
+(define C2a (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2)))
+(define C2b (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2) "--map" LANDED))
+(define F2* (let ((c (collected-in MF F2))) (and (pair? c) (car c))))
+(want "CR-19 without the map the provisional origin is named unresolved and not linked; with the landing's map it is linked to the holder the landing made"
+      (in-order (and (pair? C2a) (list-head C2a 4)) (and (member (list 'unresolved F2 (list 'origin PID)) C2a) #t)
+                (and (pair? C2b) (list-head C2b 4)) (and F2* (edges-of MF F2*)))
+      (list '(ok (inserted 2) (linked 0) (already 0)) #t '(ok (inserted 0) (linked 1) (already 0)) (list (cons 'about NH*))))
+
+;; ---- the hook: a failed query is not an empty mailbox -----------------------------
+(define (hook-rc name store)
+  (sh-rc name (string-append "PATH='" root "/bin':\"$PATH\" THEOURGIA_STORE='" store "' THEOURGIA_ACTOR=nobody sh ../contrib/mail-hook.sh PostToolUse")))
+(want "CR-20 the hook exits 1 with a line naming the failure when its query fails, and 0 with nothing when there is no mail"
+      (in-order (hook-rc "hook-fail" (string-append root "/no-store-here"))
+                (string-contains? (file-text (string-append root "/hook-fail.err")) "theourgia: mail query failed for nobody")
+                (file-text (string-append root "/hook-fail.out"))
+                (hook-rc "hook-none" M) (file-text (string-append root "/hook-none.out")) (file-text (string-append root "/hook-none.err")))
+      '(1 #t "" 0 "" ""))
 
 ;; The directories are kept when a row failed: they are what the row read.
 (teardown!)

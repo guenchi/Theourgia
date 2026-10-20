@@ -1601,12 +1601,15 @@ late.
 
 ### `scope`
 
-    (scope <dir> "--cut" <cut> "--roots" <id> "--for" <actor>)
+    (scope <dir> "--roots" <id> "--for" <actor> ["--cut" <cut>] ["--freeze" <dir>]
+           ["--packet" <packet-file>])
 
 Makes a new store at `<dir>` for one reader, holding exactly what it is
 asked to review and nothing else. `--cut` is a causal cut, a literal or a
-tag name; `--roots` names a block, and is given once per root; `--for` is
-the reader's actor name. All three are required.
+tag name; `--roots` names a block, and is given once per root (`--roots
+all` names every top-level block); `--for` is the reader's actor name.
+`--roots` and `--for` are required, and so is `--cut` unless `--freeze` is
+given.
 
 The new store holds the LETTER COPY -- a `doc` with `to` (the reader),
 `status` `"unread"`, `cut` (the cut's literal, as text), `roots` (the root
@@ -1651,6 +1654,25 @@ scope-unwritable (items ...))`, and nothing is written. A failure after the
 new store exists leaves it as it is and answers `(error scope-failed (dir
 <dir>) (step import|baseline|letter) ...)`.
 
+A REVIEW OF A FROZEN CANDIDATE. `--freeze <dir>` names a landing freeze
+(tools/landing-freeze.sc): the cut is its pinned cut (a `--cut` that
+differs is refused, `freeze-cut-mismatch`), and the copies are the change
+as it would land. A copied block the freeze has a draft of holds the
+draft's bytes as its `src`, and when they differ from the committed src a
+section titled `before`, with `before-of` (the block's id) and the
+committed `src`, is written under the copy. A root that is a file the
+freeze adds is not read here: its copy is a holder whose `origin` is the
+provisional id (`new-` and 56 hex digits), with one code block holding the
+whole file. A root the freeze deletes is copied with `deleted` set to
+`"proposed"`. The letter copy gets `freeze`, and NO record is written in
+this store: its cut stays the freeze's pinned cut, so the landing is not
+refused, and `collect-into --letter new` writes the letter after it. The
+answer has `(letter new)`, and `(before <n>)` and `(packet <n>)` after the
+block count. `--packet <file>` holds one datum, `(packet <section> ...)`,
+each `(section (title <t>) [(text <x>)] [(children <section> ...)])`,
+written as sections under the letter copy before the baseline is taken; a
+packet section has no `origin`, so it is not a copy.
+
 `scope` is a program over ordinary requests, and like `eval` its route is
 `child`: it runs in the command line's own program, or as the MCP shell's
 child, and never in a daemon. It sends each store its own requests, through
@@ -1688,9 +1710,32 @@ refused for either. A store that `scope` did not make is refused
 (`not-a-scoped-store`), and so is one whose letter copy has no `letter`
 yet (`letter-not-set`).
 
+A CANDIDATE'S RESULTS (the letter copy has `freeze`) are answered strictly.
+With no verdict under the letter copy the answer is `(pending (letter-copy
+<id>) (status <s>))`. A verdict must hold `verdict` (`no-objection`,
+`findings` or `could-not-review`), `sources` (at least one id, each a copy
+in this store: a list of ids, or one string of ids separated by spaces),
+and the four condition fields; each finding under it must hold `claim`,
+`evidence` and `confidence` and have an `about` edge. The first piece
+missing, verdicts in order and each verdict's findings after it, is
+`(error results-incomplete (block <id>) (field <field>))`. Complete
+results are
+
+    (ok (results (letter new) (to <actor>) (letter-copy <id>) (cut <cut>)
+                 (roots (<id> ...)) (scope <dir>) (status <s>) (freeze <dir>)
+                 (blocks ...)
+                 (proposals (proposal (origin <id>) (scoped <id>) (src <bytes>) (on <id>|letter)) ...)))
+
+where a result that is under neither the letter copy nor another result
+has the parent `root`, and is not a verdict. A PROPOSAL is a copy whose
+`src` the reader changed: its src now, last set by the letter's `to`, is
+not the src it was copied with. It belongs to the first finding about it,
+else to the first verdict. A copy the reader did not change is not one.
+
 ### `collect-into`
 
-    (collect-into <letter-id> "--results" <datum>)
+    (collect-into [<letter-id>] "--results" <datum> ["--letter" new]
+                  ["--map" <map-file>] ["--to-writer" <writer>])
 
 Writes a `review-results` datum under the letter `<letter-id>` in this
 store, in two writes, each planned from the store as it is when the write
@@ -1723,13 +1768,37 @@ inserts and links nothing; one stopped between its two writes, run again,
 inserts nothing and links what is missing; two at once take the store's
 lock in turn.
 
+A CANDIDATE'S RESULTS (the datum has `freeze`) are refused unless complete,
+by the check `review-results` answers with (`results-incomplete`, naming
+the block and the field; with no verdict, the letter copy and `verdict`).
+`--letter new`, in place of `<letter-id>`, makes the letter: the first write
+inserts it at the top level, a `doc` with the datum's `to`, `status`,
+`cut`, `roots`, `scope` and `freeze`, and the letter copy's id as its
+`scoped-id`, and the results under it; a retry finds it by that
+`scoped-id` and inserts nothing twice. The answer then has `(letter <id>)`,
+and for a candidate `(proposals <n>)` and `(drafted ...)`. `--map <file>`
+is the landing's mapping of provisional ids to the ids it made -- the
+file holds what tools/landing-commit.sc printed, whose `(created
+("<provisional>" . "<id>") ...)` clause is read: every
+`origin` the datum names is read through it, and one still provisional is
+named as unresolved and not linked. `--to-writer <W>` makes each proposal a
+DRAFT for `W` on the block its origin names, by this store's `write`, as
+the reader -- never a record of this store; `W` keeps, rewrites or
+discards it. Each is answered `(draft <block> <version> <on>)`, and the
+collected block the proposal belongs to gets `proposed`, a list of
+`(<block> <version>)`, in one more write, not written again when it is
+already there.
+
 ### `collect`
 
-    (collect <dir>)
+    (collect <dir> ["--map" <map-file>] ["--to-writer" <writer>])
 
 Asks the store at `<dir>` for its `review-results` and gives them to this
 store's `collect-into`, each request on its own store's route, and answers
 `collect-into`'s answer with the `no-about` and `missing` lists after it.
+A candidate's results are given with `--letter new`, and `--map` and
+`--to-writer` are passed on; a `pending` or `results-incomplete` answer
+from `<dir>` is the answer, and nothing is written here.
 It writes nothing in `<dir>`. Like `scope`, its route is `child`: it runs
 in the command line's program or as the MCP shell's child, never in a
 daemon.

@@ -576,7 +576,7 @@
                (socket (or (argument-option nodes "--socket") (env-or "THEOURGIA_SOCKET")))
                (answer (if (eq? verb 'scope)
                            ((later '(theourgia channel) 'scope-verb) store actor args options (current-directory) socket)
-                           ((later '(theourgia channel) 'collect-verb) store actor args (current-directory) socket))))
+                           ((later '(theourgia channel) 'collect-verb) store actor args (current-directory) socket options))))
           (finish (if (eq? answer 'usage)
                       (list 'usage (cadr (assq verb (verb-catalogue))))
                       answer)

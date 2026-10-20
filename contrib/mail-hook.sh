@@ -34,7 +34,19 @@ event=${1:?usage: mail-hook.sh <hook-event-name>}
 actor=${THEOURGIA_ACTOR:?THEOURGIA_ACTOR names the reader}
 goal="(and (field ?m \"to\" \"$actor\") (field ?m \"status\" \"unread\"))"
 
-ids=$(theourgia query "$goal" --wire < /dev/null 2>/dev/null |
+# A QUERY THAT FAILED IS NOT AN EMPTY MAILBOX: the command exits non-zero
+# for any answer that is not ok (a store it cannot open, a daemon gone, a
+# command not on the PATH), and that is said, on stderr, with the first
+# line of what it printed, and the hook exits 1. No mail is exit 0 and
+# nothing printed.
+out=$(theourgia query "$goal" --wire < /dev/null 2>&1)
+status=$?
+if [ "$status" -ne 0 ]; then
+  printf 'theourgia: mail query failed for %s (exit %s): %s\n' "$actor" "$status" \
+    "$(printf '%s\n' "$out" | head -n 1)" >&2
+  exit 1
+fi
+ids=$(printf '%s\n' "$out" |
   grep -o -E '\(row "[^"]*"\)' | sed -E 's/^\(row "([^"]*)"\)$/\1/')
 [ -n "$ids" ] || exit 0
 blocks=$(printf '%s ' $ids | sed 's/ $//')

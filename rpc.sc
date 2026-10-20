@@ -728,11 +728,14 @@
   ;; THE REVIEW CHANNEL'S FORMS. scope and collect are core.sc's programs and
   ;; answer these through the catalogue; review-results and collect-into
   ;; through channel-answer below. A required option is written bare, as
-  ;; insert's --title is.
-  (define scope-usage '(scope <dir> "--cut" <cut> "--roots" <id> "--for" <actor>))
-  (define collect-usage '(collect <dir>))
+  ;; insert's --title is. A scope takes --cut, or --freeze (whose pinned cut
+  ;; it is), and a collect-into takes a letter id, or --letter new.
+  (define scope-usage '(scope <dir> "--roots" <id> "--for" <actor> ["--cut" <cut>] ["--freeze" <dir>]
+                              ["--packet" <packet-file>]))
+  (define collect-usage '(collect <dir> ["--map" <map-file>] ["--to-writer" <writer>]))
   (define review-results-usage '(review-results))
-  (define collect-into-usage '(collect-into <letter-id> "--results" <datum>))
+  (define collect-into-usage '(collect-into [<letter-id>] "--results" <datum> ["--letter" new]
+                                            ["--map" <map-file>] ["--to-writer" <writer>]))
 
   (define relation-usage
     '(relation <name> ["--as" <kind>] ["--from" <selector>] ["--to" <selector>] ["--retire"] ["--premises" <datum>]))
@@ -1339,13 +1342,13 @@
       (list 'subscribe subscribe-usage
             "Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave." #f 'stream)
       (list 'scope scope-usage
-            "Make a new store at <dir> holding a letter to <actor> and a copy of each block under the roots as it was at the cut, each copy carrying origin (the block's id here) and origin-cut; the edges between copies are copied, an edge leaving the roots is dropped and listed, and a contested field is listed and not copied. The letter copy's baseline is the new store's cut after the copies. --roots is given once per root. One record is written here: the letter, at the top level, with to, status, cut, roots and scope. An existing <dir> is refused before anything is written, and so is a block or edge the write would refuse. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
+            "Make a new store at <dir> holding a letter to <actor> and a copy of each block under the roots as it was at the cut, each copy carrying origin (the block's id here) and origin-cut; the edges between copies are copied, an edge leaving the roots is dropped and listed, and a contested field is listed and not copied. The letter copy's baseline is the new store's cut after the copies. --roots is given once per root, or as all, every top-level block. One record is written here: the letter, at the top level, with to, status, cut, roots and scope. With --freeze, a landing freeze, the cut is its pinned cut, each copy the freeze has a draft of holds the draft's bytes with the committed src in a before section under it, and nothing is written here: collect-into --letter new writes the letter after the landing. --packet writes a file's sections under the letter copy. An existing <dir> is refused before anything is written, and so is a block or edge the write would refuse. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
       (list 'collect collect-usage
-            "Bring a scoped store's review results back under its letter here: the blocks the letter's reviewer created in <dir>, with their settled fields, under the reviewer's name, and their about edges, to the origin of a copy or to the collected block. A second collect writes nothing new. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
+            "Bring a scoped store's review results back under its letter here: the blocks the letter's reviewer created in <dir>, with their settled fields, under the reviewer's name, and their about edges, to the origin of a copy or to the collected block. A candidate's results are collected with --letter new, and --map and --to-writer are passed on. A second collect writes nothing new. It runs in the caller's own program -- the command line's, or the MCP shell's child -- never in a store's server." #f 'child)
       (list 'review-results review-results-usage
-            "In a scoped store, list the review results as one datum: each live block the letter's reviewer created that is not a copy, with its parent, settled fields and the actor of each, and its about targets; a finding with no about and a verdict missing a condition field are listed." #f 'daemon)
+            "In a scoped store, list the review results as one datum: each live block the letter's reviewer created that is not a copy, with its parent, settled fields and the actor of each, and its about targets; a finding with no about and a verdict missing a condition field are listed. For a scope of a freeze it answers pending while there is no verdict and results-incomplete for the first field missing, and the results carry the letter's fields and the proposals, the copies whose src the reviewer changed." #f 'daemon)
       (list 'collect-into collect-into-usage
-            "Write a review-results datum under a letter: the blocks not collected before, then the about edges not present, as the reviewer's records. Answers how many were inserted, linked and already linked, and every field another actor set." #f 'daemon)
+            "Write a review-results datum under a letter: the blocks not collected before, then the about edges not present, as the reviewer's records. Answers how many were inserted, linked and already linked, and every field another actor set. A candidate's datum is refused unless complete; --letter new makes its letter, --map reads a landing's answer for the ids it gave provisional origins, and --to-writer makes each proposal a draft for that writer." #f 'daemon)
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
 
