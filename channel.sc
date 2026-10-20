@@ -48,7 +48,7 @@
           (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum)
           (only (theourgia ffi) entry-type read-entry)
           (only (theourgia languages) language-for-path)
-          (only (theourgia code-project) lang-fields)
+          (only (theourgia code-project) lang-fields code-children)
           (only (theourgia store) with-store-write judgement-refusal?)
           (only (theourgia reduce) state-read state-outline outline-subtree state-datum
                 caller-payload-reason caller-fields-reason reserved-relation-names
@@ -192,7 +192,9 @@
                    ((and fz (string? cut) (not (equal? cut (written (freeze-cut fz)))))
                     (list 'error 'bad-request '(reason freeze-cut-mismatch) (list 'cut cut) (list 'pinned-cut (freeze-cut fz))))
                    (else
-                    (let ((all (if (equal? roots '("all")) (top-level-ids store socket actor) roots)))
+                    (let ((all (if (equal? roots '("all"))
+                                   (top-level-ids store socket actor (if fz (written (freeze-cut fz)) cut) fz)
+                                   roots)))
                       (if (and (pair? all) (eq? (car all) 'error))
                           all
                           (scope-read store socket actor dir (if fz (written (freeze-cut fz)) cut) all for fz pk))))))))))))
@@ -247,14 +249,21 @@
       (if (and (list? d) (pair? d) (eq? (car d) 'packet) (for-all section? (cdr d)))
           (cdr d)
           (list 'error 'bad-request '(reason packet-malformed) (list 'file path)))))
-  ;; THE WHOLE TREE: every block whose parent is the root, as `under` answers it
-  ;; now; each is then read at the cut, so one the cut does not have is that
-  ;; read's refusal.
-  (define (top-level-ids store socket actor)
-    (let ((a (routed store 'query (list "(under ?b \"root\")") actor socket)))
-      (if (ok? a)
-          (map cadr (filter (lambda (row) (and (pair? row) (eq? (car row) 'row))) (or (clause a 'items) '())))
-          a)))
+  ;; THE WHOLE TREE: every block whose parent is the root, as `under` answers
+  ;; it, and every file a freeze adds. A query answers at the store's cut,
+  ;; and that must be the cut the scope reads at, compared as text: a store
+  ;; that has moved since (or a cut named by a tag) is refused rather than
+  ;; given another cut's tree.
+  (define (top-level-ids store socket actor cut fz)
+    (let* ((a (routed store 'query (list "(under ?b \"root\")") actor socket))
+           (at (and (ok? a) (clause a 'cut))))
+      (cond
+        ((not (ok? a)) a)
+        ((not (and (pair? at) (equal? (written (car at)) cut)))
+         (list 'error 'bad-request '(reason roots-all-at-another-cut) (list 'cut cut) (list 'now (and (pair? at) (car at)))))
+        (else
+         (append (map cadr (filter (lambda (row) (and (pair? row) (eq? (car row) 'row))) (or (clause a 'items) '())))
+                 (if fz (map car (freeze-news fz)) '()))))))
 
   ;; (1) THE MAIN STORE'S BLOCKS AT THE CUT. Each root is read through the
   ;; main store's route at the cut, so the answer is the cut's bytes or the
@@ -403,7 +412,9 @@
           (scope-write store socket actor dir cut-text letter copies kept dropped (reverse contested) fz sections))))
 
   ;; THE PACKET'S SECTIONS, parent first: each (<depth-first index of its
-  ;; parent, or #f for the letter copy> . <fields>).
+  ;; parent, or #f for the letter copy> . <fields>), marked `packet`: the
+  ;; scope's own blocks, which a candidate's results leave out whoever made
+  ;; them.
   (define (packet-sections pk)
     (let ((out '()) (n 0))
       (let walk ((xs pk) (parent #f))
@@ -411,7 +422,7 @@
                     (let ((k n))
                       (set! n (+ n 1))
                       (set! out (cons (cons parent
-                                            (append (list '(kind . section) (cons 'title (entry-part x 'title)))
+                                            (append (list '(kind . section) (cons 'title (entry-part x 'title)) '(packet . #t))
                                                     (let ((t (entry-part x 'text))) (if t (list (cons 'text t)) '()))))
                                       out))
                       (walk (let ((c (assq 'children (cdr x)))) (if c (cdr c) '())) k)))
@@ -630,6 +641,11 @@
   ;; landing, and the PROPOSALS: each copy whose src the reviewer changed.
   ;; A block of the reviewer's that is under neither the letter copy nor
   ;; another result has the parent `root`, so it is not taken for a verdict.
+  ;; The scope's own blocks (a `before`, a packet section) are not results,
+  ;; even when the scope's actor is the reader. A SOURCE is a CANDIDATE COPY:
+  ;; live, and created with an `origin` -- a field set later does not make
+  ;; one -- and the envelope lists them, `(candidates <id> ...)`, so
+  ;; collect-into asks the same question of the datum.
   ;; A scope without `freeze` is answered as before (review-results-of).
   (define verdict-values '(no-objection findings could-not-review))
   (define finding-fields '(claim evidence confidence))
@@ -672,26 +688,32 @@
                                          (and (null? (or (block-part (car fs) 'about) '())) 'about))))
                               (if k (list (cadr (car fs)) k) (finding (cdr fs)))))))))))))
 
+  (define (created-fields r id)
+    (let ((made (block-creation r id)))
+      (and made (pair? (cdr made)) (pair? (cddr made)) (list? (cadr (cdr made))) (cadr (cdr made)))))
+  (define (candidate-copy? r id)
+    (let ((b (state-read r id)) (fs (created-fields r id)))
+      (and b (not (field b 'deleted)) fs (string? (field fs 'origin)) (not (field fs 'before-of)) (not (field fs 'packet)))))
+  (define (scope-own? r id)
+    (let ((fs (created-fields r id))) (and fs (or (field fs 'before-of) (field fs 'packet)) #t)))
   (define (candidate-results r letter-copy lfs to)
     (let* ((plain (review-results-of r letter-copy to 'new))
            (d (find (lambda (x) (and (pair? x) (eq? (car x) 'results))) (cdr plain)))
-           (blocks (results-part d 'blocks))
-           (ids (map cadr blocks))
+           (blocks (filter (lambda (b) (not (scope-own? r (cadr b)))) (results-part d 'blocks)))
            (blocks (map (lambda (b)
                           (let ((p (field (state-read r (cadr b)) 'position)))
                             (if (and (eq? (block-part b 'parent) 'letter) (not (and (pair? p) (equal? (car p) letter-copy))))
                                 (cons 'block (cons (cadr b) (map (lambda (x) (if (eq? (car x) 'parent) '(parent root) x)) (cddr b))))
                                 b)))
                         blocks))
-           (candidate? (lambda (id)
-                         (let ((b (state-read r id)))
-                           (and b (not (field b 'deleted)) (string? (field (field b 'fields) 'origin))))))
+           (candidates (filter (lambda (id) (candidate-copy? r id)) (state-block-ids r)))
            (proposals (candidate-proposals r letter-copy to blocks))
            (envelope (list 'results (list 'letter 'new) (list 'to to) (list 'letter-copy letter-copy)
                            (list 'cut (field lfs 'cut)) (list 'roots (field lfs 'roots))
                            (list 'scope (field lfs 'scope)) (list 'status (field lfs 'status))
-                           (list 'freeze (field lfs 'freeze)) (cons 'blocks blocks) (cons 'proposals proposals)))
-           (gap (results-gap envelope candidate?)))
+                           (list 'freeze (field lfs 'freeze)) (cons 'candidates candidates)
+                           (cons 'blocks blocks) (cons 'proposals proposals)))
+           (gap (results-gap envelope (lambda (id) (and (member id candidates) #t)))))
       (cond
         ((eq? gap 'none) (list 'pending (list 'letter-copy letter-copy) (list 'status (field lfs 'status))))
         (gap (list 'error 'results-incomplete (list 'block (car gap)) (list 'field (cadr gap))))
@@ -699,30 +721,30 @@
 
   ;; A PROPOSAL IS A COPY THE REVIEWER CHANGED: its src now, set by the
   ;; letter's `to`, is not the src it was copied with. It belongs to the
-  ;; first finding about it, else to the first verdict. An unchanged copy is
-  ;; not one, whatever else was written to it.
+  ;; first FINDING about it (a result under a verdict), else to the first
+  ;; verdict. An unchanged copy is not one, whatever else was written to it.
   (define (candidate-proposals r letter-copy to blocks)
     (let* ((verdicts (filter (lambda (b) (eq? (block-part b 'parent) 'letter)) blocks))
+           (verdict-ids (map cadr verdicts))
            (events (let ((t (make-hashtable string-hash string=?)))
                      (for-each (lambda (b) (hashtable-set! t (cadr b) (cadr (assq 'fields (cddr b)))))
                                (state-datum r))
                      t))
            ;; an about names a copy by its origin (review-results-of's target)
            (on (lambda (origin)
-                 (let ((f (find (lambda (b) (and (not (eq? (block-part b 'parent) 'letter))
+                 (let ((f (find (lambda (b) (and (member (block-part b 'parent) verdict-ids)
                                                  (member (list 'origin origin) (or (block-part b 'about) '()))))
                                 blocks)))
                    (cond (f (cadr f)) ((pair? verdicts) (cadr (car verdicts))) (else 'letter))))))
       (filter (lambda (x) x)
               (map (lambda (id)
                      (let* ((b (state-read r id)) (fs (and b (field b 'fields)))
-                            (made (block-creation r id))
-                            (was (and made (pair? (cdr made)) (pair? (cddr made)) (list? (cadr (cdr made)))
-                                      (field (cadr (cdr made)) 'src)))
+                            (made (created-fields r id))
+                            (was (and made (field made 'src)))
                             (now (and fs (field fs 'src)))
                             (origin (and fs (field fs 'origin)))
                             (setter (and now (assq 'src (settled-fields r events id)))))
-                       (and b (not (field b 'deleted)) (string? origin) now (not (equal? now was))
+                       (and (candidate-copy? r id) (string? origin) now (not (equal? now was))
                             setter (equal? (caddr setter) to)
                             (list 'proposal (list 'origin origin) (list 'scoped id) (list 'src now) (list 'on (on origin))))))
                    (live-in-order r)))))
@@ -764,8 +786,8 @@
           (let ((d (plain-datum text)) (mapping (if map-file (read-mapping map-file) '())))
             (cond
               ((not (results-datum? d)) '(error bad-request (reason results-malformed)))
-              ((not (list? mapping)) mapping)
-              ((and (candidate-datum? d) (results-gap d (lambda (id) #t)))
+              ((and (pair? mapping) (eq? (car mapping) 'error)) mapping)
+              ((and (candidate-datum? d) (results-gap d (lambda (id) (and (member id (results-part d 'candidates)) #t))))
                => (lambda (gap)
                     (if (eq? gap 'none)
                         (list 'error 'results-incomplete (list 'block (results-part d 'letter-copy)) '(field verdict))
@@ -777,7 +799,9 @@
   (define (candidate-datum? d) (and (results-part d 'freeze) #t))
   ;; A PROVISIONAL ID is a landing's name for a block it has not made yet:
   ;; `new-` and 56 hex digits.
-  (define (provisional? id) (and (string? id) (>= (string-length id) 4) (string=? (substring id 0 4) "new-")))
+  (define (provisional? id)
+    (and (string? id) (= (string-length id) 60) (string=? (substring id 0 4) "new-")
+         (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f))) (string->list (substring id 4 60)))))
   ;; THE MAPPING IS THE LANDING'S ANSWER: the file holds what
   ;; tools/landing-commit.sc printed, `(ok ... (created ("<provisional>" .
   ;; "<id>") ...) ...)`; a landing that added no file has no `created`
@@ -819,7 +843,7 @@
                        (else part)))
                    (cdr d)))))
 
-  (define (results-part d key) (let ((p (assq key (cdr d)))) (and p (if (memq key '(blocks proposals)) (cdr p) (cadr p)))))
+  (define (results-part d key) (let ((p (assq key (cdr d)))) (and p (if (memq key '(blocks proposals candidates)) (cdr p) (cadr p)))))
   (define (block-part b key) (let ((p (assq key (cddr b)))) (and p (cadr p))))
   (define (proposal-part p key) (let ((x (assq key (cdr p)))) (and x (cadr x))))
 
@@ -827,20 +851,23 @@
   ;; reads is checked for its shape before anything is planned.
   (define (results-datum? d)
     (and (list? d) (pair? d) (eq? (car d) 'results)
-         (for-all (lambda (x) (and (list? x) (pair? x) (or (memq (car x) '(blocks proposals)) (pair? (cdr x))))) (cdr d))
+         (for-all (lambda (x) (and (list? x) (pair? x) (or (memq (car x) '(blocks proposals candidates)) (pair? (cdr x))))) (cdr d))
          (string? (results-part d 'to)) (list? (results-part d 'blocks))
          (let ((l (results-part d 'letter))) (or (string? l) (and (eq? l 'new) (string? (results-part d 'letter-copy)))))
          ;; a candidate's: the letter's fields, and the proposals
          (or (not (results-part d 'freeze))
              (and (string? (results-part d 'freeze)) (string? (results-part d 'cut)) (string? (results-part d 'scope))
                   (let ((rs (results-part d 'roots))) (and (list? rs) (for-all string? rs)))
-                  (let ((ps (or (results-part d 'proposals) '())))
+                  (let ((cs (results-part d 'candidates))) (and (list? cs) (for-all string? cs)))
+                  (let ((ps (or (results-part d 'proposals) '()))
+                        (ids (map (lambda (b) (and (pair? b) (pair? (cdr b)) (cadr b))) (or (results-part d 'blocks) '()))))
                     (for-all (lambda (p)
                                (and (list? p) (pair? p) (eq? (car p) 'proposal)
                                     (for-all (lambda (x) (and (list? x) (= 2 (length x)))) (cdr p))
                                     (string? (proposal-part p 'origin)) (string? (proposal-part p 'scoped))
                                     (let ((src (proposal-part p 'src))) (or (string? src) (bytevector? src)))
-                                    (let ((on (proposal-part p 'on))) (or (string? on) (eq? on 'letter)))))
+                                    ;; a proposal belongs to a result the datum carries, or to the letter
+                                    (let ((on (proposal-part p 'on))) (or (and (string? on) (member on ids) #t) (eq? on 'letter)))))
                              ps))))
          ;; one result one id: two blocks with one id would both be planned
          ;; as new, and the second write would find them ambiguous
@@ -941,7 +968,19 @@
                                                                   (block-part b 'fields)))
                                                      (list (cons 'scoped-id (cadr b)))))))
                                    new (iota (length new))))
-                            (all (if fresh? (cons (list 'insert 'root #f (main-letter-fields d)) intents) intents)))
+                            (all (if fresh? (cons (list 'insert 'root #f (main-letter-fields d)) intents) intents))
+                            ;; A CANDIDATE'S RESULTS GO IN WHOLE OR NOT AT ALL: a
+                            ;; batch answers each item, so every insert, the
+                            ;; letter's included, is put to the write's own
+                            ;; validator first, and one it would refuse refuses
+                            ;; the collect with nothing written.
+                            (unwritable (if (candidate-datum? d)
+                                            (filter (lambda (x) x)
+                                                    (map (lambda (i) (let ((r (put-reason (cadddr i)))) (and r (list 'fields r))))
+                                                         all))
+                                            '())))
+                       (when (and (pair? unwritable) (not refused))
+                         (set! refused (list 'error 'collect-unwritable (cons 'items unwritable))))
                        (if refused '() (begin (set! inserted (length intents)) all))))))
                to #f #f)))
       (cond
@@ -967,7 +1006,7 @@
                                                              (map (lambda (target)
                                                                     (list from
                                                                           (if (eq? (car target) 'origin)
-                                                                              (and (not (provisional? (cadr target))) (cadr target))
+                                                                              (and (not (and (candidate-datum? d) (provisional? (cadr target)))) (cadr target))
                                                                               (one t (cadr target)))
                                                                           (cadr b) target))
                                                                   (or (block-part b 'about) '()))))
@@ -993,7 +1032,7 @@
              (else
               (let ((drafted (if to-writer (draft-proposals store d to to-writer) '())))
                (if (not (and (list? drafted)
-                             (for-all (lambda (x) (and (pair? x) (memq (car x) '(draft unresolved)))) drafted)))
+                             (for-all (lambda (x) (and (pair? x) (memq (car x) '(draft unresolved unknown already held undraftable)))) drafted)))
                 drafted
               (append (list 'ok (list 'inserted inserted) (list 'linked linked) (list 'already already))
                       (if (eq? letter 'new) (list (list 'letter letter-id)) '())
@@ -1010,51 +1049,94 @@
   ;; A PROPOSAL BECOMES A DRAFT FOR THE RECEIVING WRITER, never a record of
   ;; the store: the store's own `write`, on the block the proposal's origin
   ;; names, as the reviewer, into the receiver's working area, where the
-  ;; receiver keeps, rewrites or discards it. A proposal whose origin is still
-  ;; provisional is named, not drafted. THE PROVENANCE is then written on the
-  ;; collected block the proposal belongs to, `(proposed (<block> <version>)
-  ;; ...)`, in one write, planned from the state at the locked point, and not
-  ;; written again when it is already there.
-  ;; -> ((draft <block> <version> <on>) | (unresolved <scoped> (origin <id>)) ...), or a refusal
+  ;; receiver keeps, rewrites or discards it. EACH IS PLANNED FIRST, from the
+  ;; state at the locked point and the receiver's live drafts, and is not
+  ;; written when:
+  ;; - its origin is still provisional: `(unresolved <scoped> (origin <id>))`;
+  ;; - the block is not there: `(unknown <scoped> <block>)`;
+  ;; - its provenance is already recorded on the collected block it belongs
+  ;;   to -- a retry, after the receiver kept, rewrote or discarded it:
+  ;;   `(already <block>)`;
+  ;; - the receiver holds a draft of that block already, which is the
+  ;;   receiver's and is not overwritten: `(held <block> <version>)`.
+  ;; A FILE THE LANDING ADDED is named by its holder; its proposal is drafted
+  ;; on the holder's one code block, and a file split into more than one is
+  ;; named, `(undraftable <scoped> <holder>)`, not drafted.
+  ;; A draft written is `(draft <block> <version> <on>)`, and THE PROVENANCE
+  ;; is written on the collected block it belongs to, `(proposed (<block>
+  ;; <version>) ...)`, adding to what is there, in one more write planned at
+  ;; the locked point, and not written when nothing is added.
+  ;; -> those entries, or a refusal
   (define (draft-proposals store d to to-writer)
-    (let loop ((ps (or (results-part d 'proposals) '())) (out '()))
-      (if (pair? ps)
-          (let* ((p (car ps)) (origin (proposal-part p 'origin)) (src (proposal-part p 'src))
-                 (text (if (bytevector? src) (utf8->string src) src)))
-            (if (provisional? origin)
-                (loop (cdr ps) (cons (list 'unresolved (proposal-part p 'scoped) (list 'origin origin)) out))
-                (let ((a (rpc-dispatch-parsed store 'write (parse-arguments 'write (list origin text "--writer" to-writer))
-                                              to #f #f)))
-                  (if (ok? a)
-                      (loop (cdr ps) (cons (list 'draft origin (car (clause a 'version)) (proposal-part p 'on)) out))
-                      a))))
-          (let* ((drafts (reverse out))
-                 (written-at
-                   (with-store-write store
-                     (lambda (state view)
-                       (let* ((t (copies-by-scoped-id state))
-                              (main-of (lambda (on)
-                                         (let ((xs (hashtable-ref t (if (eq? on 'letter) (results-part d 'letter-copy) on) '())))
-                                           (and (= 1 (length xs)) (car xs)))))
-                              (ons (let dedup ((xs (map cadddr (filter (lambda (x) (eq? (car x) 'draft)) drafts))) (seen '()))
-                                     (cond ((null? xs) (reverse seen))
-                                           ((member (car xs) seen) (dedup (cdr xs) seen))
-                                           (else (dedup (cdr xs) (cons (car xs) seen)))))))
-                         (filter (lambda (x) x)
-                                 (map (lambda (on)
-                                        (let* ((id (main-of on))
-                                               (value (map (lambda (x) (list (cadr x) (caddr x)))
-                                                           (filter (lambda (x) (and (eq? (car x) 'draft) (equal? (cadddr x) on))) drafts)))
-                                               (b (and id (state-read state id))))
-                                          (and b (not (equal? (field (field b 'fields) 'proposed) value))
-                                               (list 'set id 'proposed value))))
-                                      ons))))
-                     to #f #f)))
-            (if (all-ok written-at)
-                drafts
-                (if (and (= 1 (length written-at)) (judgement-refusal? (car written-at)))
-                    (car written-at)
-                    (cons 'batch (list written-at))))))))
+    (let* ((ps (or (results-part d 'proposals) '()))
+           (main-of (lambda (t on)
+                      (let ((xs (hashtable-ref t (if (eq? on 'letter) (results-part d 'letter-copy) on) '())))
+                        (and (= 1 (length xs)) (car xs)))))
+           (proposed-of (lambda (state id) (let ((v (and id (state-read state id)))) (or (and v (field (field v 'fields) 'proposed)) '()))))
+           (live (let ((a (rpc-dispatch-parsed store 'drafts (parse-arguments 'drafts (list "--writer" to-writer)) to #f #f)))
+                   (if (ok? a)
+                       (map (lambda (x) (cons (entry-part x 'block) (entry-part x 'version)))
+                            (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (or (clause a 'items) '())))
+                       a)))
+           (plan '()))
+      (if (not (list? live))
+          live
+          (begin
+            (with-store-write store
+              (lambda (state view)
+                (let ((t (copies-by-scoped-id state)))
+                  (set! plan
+                    (map (lambda (p)
+                           (let* ((origin (proposal-part p 'origin)) (scoped (proposal-part p 'scoped)) (on (proposal-part p 'on))
+                                  (b (and (not (provisional? origin)) (state-read state origin)))
+                                  (holder? (and b (eq? (field (field b 'fields) 'kind) 'file)))
+                                  (kids (if holder? (code-children state origin) '()))
+                                  (target (cond ((not holder?) origin) ((= 1 (length kids)) (car kids)) (else #f))))
+                             (cond
+                               ((provisional? origin) (list 'unresolved scoped (list 'origin origin)))
+                               ((or (not b) (field b 'deleted)) (list 'unknown scoped origin))
+                               ((not target) (list 'undraftable scoped origin))
+                               ((assoc target (proposed-of state (main-of t on))) (list 'already target))
+                               ((assoc target live) => (lambda (h) (list 'held target (cdr h))))
+                               (else (list 'write target (proposal-part p 'src) on)))))
+                         ps))
+                  '()))
+              to #f #f)
+            (let loop ((xs plan) (out '()))
+              (if (pair? xs)
+                  (if (not (eq? (car (car xs)) 'write))
+                      (loop (cdr xs) (cons (car xs) out))
+                      (let* ((target (cadr (car xs))) (src (caddr (car xs))) (on (cadddr (car xs)))
+                             (a (rpc-dispatch-parsed store 'write
+                                                     (parse-arguments 'write (list target (if (bytevector? src) (utf8->string src) src)
+                                                                                   "--writer" to-writer))
+                                                     to #f #f)))
+                        (if (ok? a)
+                            (loop (cdr xs) (cons (list 'draft target (car (clause a 'version)) on) out))
+                            a)))
+                  (let* ((done (reverse out))
+                         (drafts (filter (lambda (x) (eq? (car x) 'draft)) done))
+                         (written-at
+                           (with-store-write store
+                             (lambda (state view)
+                               (let* ((t (copies-by-scoped-id state))
+                                      (ons (let dedup ((xs (map cadddr drafts)) (seen '()))
+                                             (cond ((null? xs) (reverse seen))
+                                                   ((member (car xs) seen) (dedup (cdr xs) seen))
+                                                   (else (dedup (cdr xs) (cons (car xs) seen)))))))
+                                 (filter (lambda (x) x)
+                                         (map (lambda (on)
+                                                (let* ((id (main-of t on)) (had (proposed-of state id))
+                                                       (adds (filter (lambda (e) (not (member e had)))
+                                                                     (map (lambda (x) (list (cadr x) (caddr x)))
+                                                                          (filter (lambda (x) (equal? (cadddr x) on)) drafts)))))
+                                                  (and id (pair? adds) (list 'set id 'proposed (append had adds)))))
+                                              ons))))
+                             to #f #f)))
+                    (cond
+                      ((all-ok written-at) done)
+                      ((and (= 1 (length written-at)) (judgement-refusal? (car written-at))) (car written-at))
+                      (else (cons 'batch (list written-at)))))))))))
 
   ;; ---- collect: review-results, then collect-into --------------------------
   ;;
