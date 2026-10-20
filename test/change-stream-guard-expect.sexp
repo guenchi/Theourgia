@@ -5,4 +5,4 @@
 ;; every listed one to be observed, so an item that means to change a
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
-((describe "the review channel's verbs: scope's --freeze, --packet and --roots all, collect's --map and --to-writer, collect-into's --letter new, and review-results' strict answer for a candidate, in the usage forms and descriptions"))
+()
