@@ -1059,6 +1059,11 @@
 
 ;; ---- a candidate with a file it adds and a holder it deletes -----------------------
 ;;
+;; ON A TREE WITHOUT THE CANDIDATE'S SCOPE the scoped store below is never
+;; made, and what reads it raises; such a statement answers #f instead, so
+;; the rows report red one by one rather than ending the file.
+(define-syntax safely (syntax-rules () ((_ e) (guard (x (#t #f)) e))))
+;;
 ;; A freeze written by hand in part 1's format: a new file, c.txt, under its
 ;; provisional id, and a deletion of a.txt's holder. A landing's answer,
 ;; also by hand, maps the provisional id to the holder it made.
@@ -1077,7 +1082,7 @@
 (define X2 (string-append root "/scoped-new"))
 (define S2 (scope-run MF "author" X2 "--freeze" FZ2 "--roots" PID "--roots" HA "--for" "codex"))
 (define LC2 (one S2 'letter-copy))
-(define NH (copy-in X2 PID))
+(define NH (safely (copy-in X2 PID)))
 (want "CR-15 a file the freeze adds is copied as a holder under its provisional id, the file whole in one block; a deleted holder's copy says proposed"
       (in-order (car S2) (field-of X2 NH 'path) (field-of X2 NH 'kind)
                 (map (lambda (c) (list (field-of X2 c 'origin) (field-of X2 c 'src))) (children-in X2 NH))
@@ -1085,22 +1090,22 @@
       (list 'ok "c.txt" 'file (list (list PID (string->utf8 "three\n"))) "proposed"))
 ;; THE RESULTS, MADE COMPLETE A PIECE AT A TIME: each row reads the first gap.
 (define (gap) (let ((a (run X2 "codex" 'review-results))) (if (and (pair? a) (eq? (car a) 'error)) (cddr a) (car a))))
-(define V2 (insert-as X2 "codex" LC2 '((kind . section) (title . "Verdict"))))
+(define V2 (safely (insert-as X2 "codex" LC2 '((kind . section) (title . "Verdict")))))
 (define g-verdict (gap))
-(run X2 "codex" 'set V2 "verdict" "findings")
+(safely (run X2 "codex" 'set V2 "verdict" "findings"))
 (define g-sources (gap))
-(run X2 "codex" 'set V2 "sources" "")
+(safely (run X2 "codex" 'set V2 "sources" ""))
 (define g-empty (gap))
-(run X2 "codex" 'set V2 "sources" LC2)
+(safely (run X2 "codex" 'set V2 "sources" LC2))
 (define g-foreign (gap))
-(run X2 "codex" 'set V2 "sources" (car (children-in X2 NH)))
+(safely (run X2 "codex" 'set V2 "sources" (car (children-in X2 NH))))
 (define g-conditions (gap))
-(for-each (lambda (k) (run X2 "codex" 'set V2 k "x")) '("model" "approval" "sandbox" "effort"))
-(define F2 (insert-as X2 "codex" V2 '((kind . section) (title . "c.txt") (evidence . "e") (confidence . "low"))))
+(safely (for-each (lambda (k) (run X2 "codex" 'set V2 k "x")) '("model" "approval" "sandbox" "effort")))
+(define F2 (safely (insert-as X2 "codex" V2 '((kind . section) (title . "c.txt") (evidence . "e") (confidence . "low")))))
 (define g-claim (gap))
-(run X2 "codex" 'set F2 "claim" "c")
+(safely (run X2 "codex" 'set F2 "claim" "c"))
 (define g-about (gap))
-(run X2 "codex" 'link F2 "about" NH)
+(safely (run X2 "codex" 'link F2 "about" NH))
 (want "CR-16 results-incomplete names the first gap: the verdict, then sources absent, empty and not a copy, then a condition"
       (list g-verdict g-sources g-empty g-foreign g-conditions)
       (list (list (list 'block V2) '(field verdict)) (list (list 'block V2) '(field sources)) (list (list 'block V2) '(field sources))
@@ -1108,7 +1113,7 @@
 (want "CR-17 a finding without claim, then without about, is incomplete; with both the results are ok"
       (list g-claim g-about (gap))
       (list (list (list 'block F2) '(field claim)) (list (list 'block F2) '(field about)) 'ok))
-(define complete2 (cadr (run X2 "codex" 'review-results)))
+(define complete2 (safely (cadr (run X2 "codex" 'review-results))))
 (define (strip-field d id k)
   (cons 'results
         (map (lambda (part)
@@ -1132,8 +1137,8 @@
 (define NH* (insert-as MF "author" 'root '((kind . file) (mode . text) (path . "c.txt"))))
 (define LANDED (string-append root "/LANDED.sexp"))
 (call-with-output-file LANDED (lambda (p) (write (list 'ok '(committed 1) (list 'created (cons PID NH*))) p) (newline p)))
-(define C2a (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2)))
-(define C2b (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2) "--map" LANDED))
+(define C2a (safely (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2))))
+(define C2b (safely (run MF "author" 'collect-into "--letter" "new" "--results" (format "~s" complete2) "--map" LANDED)))
 (define F2* (let ((c (collected-in MF F2))) (and (pair? c) (car c))))
 (want "CR-19 without the map the provisional origin is named unresolved and not linked; with the landing's map it is linked to the holder the landing made"
       (in-order (and (pair? C2a) (list-head C2a 4)) (and (member (list 'unresolved F2 (list 'origin PID)) C2a) #t)

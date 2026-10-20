@@ -734,7 +734,7 @@
                               ["--packet" <packet-file>]))
   (define collect-usage '(collect <dir> ["--map" <map-file>] ["--to-writer" <writer>]))
   (define review-results-usage '(review-results))
-  (define collect-into-usage '(collect-into [<letter-id>] "--results" <datum> ["--letter" new]
+  (define collect-into-usage '(collect-into [<letter-id>] "--results" <datum> ["--letter" <new>]
                                             ["--map" <map-file>] ["--to-writer" <writer>]))
 
   (define relation-usage

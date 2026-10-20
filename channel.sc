@@ -46,7 +46,7 @@
           (only (theourgia rpc) rpc-dispatch-parsed)
           (only (theourgia arguments) parse-arguments argument-option argument-option-list)
           (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum)
-          (only (theourgia ffi) entry-type)
+          (only (theourgia ffi) entry-type read-entry)
           (only (theourgia languages) language-for-path)
           (only (theourgia code-project) lang-fields)
           (only (theourgia store) with-store-write judgement-refusal?)
@@ -187,7 +187,9 @@
                  (cond
                    ((and fz (pair? fz)) fz)
                    ((and (pair? pk) (eq? (car pk) 'error)) pk)
-                   ((and fz (string? cut) (not (equal? (guard (e (#t cut)) (plain-datum cut)) (freeze-cut fz))))
+                   ;; compared as text: a --cut given with a freeze is the
+                   ;; pinned cut's literal, and anything else is refused
+                   ((and fz (string? cut) (not (equal? cut (written (freeze-cut fz)))))
                     (list 'error 'bad-request '(reason freeze-cut-mismatch) (list 'cut cut) (list 'pinned-cut (freeze-cut fz))))
                    (else
                     (let ((all (if (equal? roots '("all")) (top-level-ids store socket actor) roots)))
@@ -209,40 +211,42 @@
   (define (freeze-deletes fz) (vector-ref fz 3))
   (define (freeze-dir fz) (vector-ref fz 4))
   (define (entry-part x key) (let ((p (and (list? x) (assq key (cdr x))))) (and p (pair? (cdr p)) (cadr p))))
-  (define (file-bytes path)
-    (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
-      (if (eof-object? b) (make-bytevector 0) b)))
+  ;; THROUGH THE STORE'S ONE DOOR TO THE FILESYSTEM: an entry that cannot be
+  ;; read raises unreadable-entry, and one that is not there is `absent`.
+  ;; -> the bytes, or #f
+  (define (file-bytes path) (let ((b (read-entry path))) (and (bytevector? b) b)))
+  ;; -> the file's one plain datum, or #f when it is absent or holds no one datum
+  (define (file-datum path)
+    (let* ((b (file-bytes path)) (d (and b (plain-datum (utf8->string b)))))
+      (and b (not (eof-object? d)) d)))
+  (define (freeze-refusal fdir) (list 'error 'bad-request '(reason freeze-unreadable) (list 'dir fdir)))
   (define (read-freeze fdir)
-    (guard (e (#t (list 'error 'bad-request '(reason freeze-unreadable) (list 'dir fdir))))
-      (let* ((d (call-with-port (open-input-file (string-append fdir "/DRAFTS.sexp")) read))
-             (entries (if (and (list? d) (pair? d) (eq? (car d) 'drafts)) (cdr d) (raise 'malformed)))
-             (cut (entry-part d 'pinned-cut))
-             (bytes-of (lambda (x) (file-bytes (string-append fdir "/" (entry-part x 'bytes))))))
-        (unless (list? cut) (raise 'malformed))
-        (vector cut
-                (map (lambda (x) (cons (entry-part x 'block) (bytes-of x)))
-                     (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) entries))
-                (map (lambda (x)
-                       (let ((pid (entry-part x 'provisional)) (path (entry-part x 'path)))
-                         (unless (and (string? pid) (string? path)) (raise 'malformed))
-                         (list pid path (bytes-of x))))
-                     (filter (lambda (x) (and (pair? x) (eq? (car x) 'new))) entries))
-                (map (lambda (x) (or (entry-part x 'holder) (raise 'malformed)))
-                     (filter (lambda (x) (and (pair? x) (eq? (car x) 'delete))) entries))
-                fdir))))
+    (let* ((d (file-datum (string-append fdir "/DRAFTS.sexp")))
+           (entries (and (list? d) (pair? d) (eq? (car d) 'drafts) (for-all pair? (cdr d)) (cdr d)))
+           (cut (and entries (entry-part d 'pinned-cut)))
+           (bytes-of (lambda (x) (let ((n (entry-part x 'bytes))) (and (string? n) (file-bytes (string-append fdir "/" n))))))
+           (of (lambda (kind) (if entries (filter (lambda (x) (eq? (car x) kind)) entries) '())))
+           (drafts (map (lambda (x) (cons (entry-part x 'block) (bytes-of x))) (of 'draft)))
+           (news (map (lambda (x) (list (entry-part x 'provisional) (entry-part x 'path) (bytes-of x))) (of 'new)))
+           (deletes (map (lambda (x) (entry-part x 'holder)) (of 'delete))))
+      (if (and (list? cut)
+               (for-all (lambda (x) (and (string? (car x)) (bytevector? (cdr x)))) drafts)
+               (for-all (lambda (x) (and (string? (car x)) (string? (cadr x)) (bytevector? (caddr x)))) news)
+               (for-all string? deletes))
+          (vector cut drafts news deletes fdir)
+          (freeze-refusal fdir))))
   ;; THE PACKET: (packet <section> ...), a section (section (title <t>) (text
   ;; <x>) [(children <section> ...)]); sections, since a doc may not be nested.
   ;; -> the sections, or the refusal
   (define (read-packet path)
-    (guard (e (#t (list 'error 'bad-request '(reason packet-malformed) (list 'file path))))
-      (let ((d (call-with-port (open-input-file path) read)))
-        (define (section? x)
-          (and (list? x) (pair? x) (eq? (car x) 'section) (string? (entry-part x 'title))
-               (let ((t (entry-part x 'text))) (or (not t) (string? t)))
-               (let ((c (assq 'children (cdr x)))) (or (not c) (for-all section? (cdr c))))))
-        (if (and (list? d) (pair? d) (eq? (car d) 'packet) (for-all section? (cdr d)))
-            (cdr d)
-            (raise 'malformed)))))
+    (let ((d (file-datum path)))
+      (define (section? x)
+        (and (list? x) (pair? x) (eq? (car x) 'section) (for-all pair? (cdr x)) (string? (entry-part x 'title))
+             (let ((t (entry-part x 'text))) (or (not t) (string? t)))
+             (let ((c (assq 'children (cdr x)))) (or (not c) (and (list? c) (for-all section? (cdr c)))))))
+      (if (and (list? d) (pair? d) (eq? (car d) 'packet) (for-all section? (cdr d)))
+          (cdr d)
+          (list 'error 'bad-request '(reason packet-malformed) (list 'file path)))))
   ;; THE WHOLE TREE: every block whose parent is the root, as `under` answers it
   ;; now; each is then read at the cut, so one the cut does not have is that
   ;; read's refusal.
@@ -779,15 +783,14 @@
   ;; "<id>") ...) ...)`; a landing that added no file has no `created`
   ;; clause, and maps nothing. -> ((<provisional> <id>) ...), or the refusal
   (define (read-mapping path)
-    (guard (e (#t (list 'error 'bad-request '(reason map-unreadable) (list 'file path))))
-      (let* ((m (call-with-port (open-input-file path) read))
-             (c (and (list? m) (pair? m) (eq? (car m) 'ok) (assq 'created (cdr m)))))
-        (cond
-          ((not (and (list? m) (pair? m) (eq? (car m) 'ok))) (raise 'malformed))
-          ((not c) '())
-          ((for-all (lambda (x) (and (pair? x) (string? (car x)) (string? (cdr x)))) (cdr c))
-           (map (lambda (x) (list (car x) (cdr x))) (cdr c)))
-          (else (raise 'malformed))))))
+    (let* ((m (file-datum path))
+           (c (and (list? m) (pair? m) (eq? (car m) 'ok) (for-all pair? (cdr m)) (assq 'created (cdr m)))))
+      (cond
+        ((not (and (list? m) (pair? m) (eq? (car m) 'ok))) (list 'error 'bad-request '(reason map-unreadable) (list 'file path)))
+        ((not c) '())
+        ((and (list? c) (for-all (lambda (x) (and (pair? x) (string? (car x)) (string? (cdr x)))) (cdr c)))
+         (map (lambda (x) (list (car x) (cdr x))) (cdr c)))
+        (else (list 'error 'bad-request '(reason map-unreadable) (list 'file path))))))
   ;; THE DATUM WITH EVERY ORIGIN READ THROUGH THE MAPPING: the about targets
   ;; and the proposals' origins.
   (define (mapped d mapping)

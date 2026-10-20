@@ -1655,8 +1655,9 @@ new store exists leaves it as it is and answers `(error scope-failed (dir
 <dir>) (step import|baseline|letter) ...)`.
 
 A REVIEW OF A FROZEN CANDIDATE. `--freeze <dir>` names a landing freeze
-(tools/landing-freeze.sc): the cut is its pinned cut (a `--cut` that
-differs is refused, `freeze-cut-mismatch`), and the copies are the change
+(tools/landing-freeze.sc): the cut is its pinned cut (a `--cut` given
+with it must be that cut's literal, and any other is refused,
+`freeze-cut-mismatch`), and the copies are the change
 as it would land. A copied block the freeze has a draft of holds the
 draft's bytes as its `src`, and when they differ from the committed src a
 section titled `before`, with `before-of` (the block's id) and the
@@ -1734,7 +1735,7 @@ else to the first verdict. A copy the reader did not change is not one.
 
 ### `collect-into`
 
-    (collect-into [<letter-id>] "--results" <datum> ["--letter" new]
+    (collect-into [<letter-id>] "--results" <datum> ["--letter" <new>]
                   ["--map" <map-file>] ["--to-writer" <writer>])
 
 Writes a `review-results` datum under the letter `<letter-id>` in this
