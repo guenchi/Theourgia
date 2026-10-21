@@ -23,14 +23,19 @@
 ;; not load this library. It never imports rpc, the daemon or the client.
 (library (theourgia landing-files)
   (export locate-file locate-pieces changed-files-between raw-projection path-collision spelling-key
-          ambiguous-groups volume-insensitivity landing-collision base-entry-judgement)
+          ambiguous-groups volume-insensitivity landing-collision base-entry-judgement
+          store-route-domain file-pieces file-new-intents file-delete-intents file-baseline
+          structural-outputs)
   (import (rnrs)
-          (only (theourgia code-project) code-field code-files projection-outputs projected-file export-code-view)
+          (only (theourgia code-project) code-field code-files projection-outputs projected-file export-code-view
+                lang-fields code-safe-path?)
+          (only (theourgia code-suggest) suggest-boundaries)
+          (only (theourgia languages) language-for-path)
           (rename (only (theourgia code-project) code-project-answer) (code-project-answer answer))
-          (only (theourgia reduce) reduce-applied-cut state-path-claimants)
+          (only (theourgia reduce) reduce-applied-cut state-path-claimants file-baseline)
           (only (theourgia ffi) directory-entries entry-bytes entry-name-type machine-home mkdir-exclusive!
                 mkdir-p! process-id rmdir! unlink!)
-          (only (theourgia markers) bytes-append import-text?)
+          (only (theourgia markers) bytes-append import-text? byte-slice)
           (theourgia degeneracy))
 
   ;; ---- the raw projection: each file's bytes, its children's srcs run together --
@@ -59,6 +64,62 @@
           ((not (member mode '("100644" "100755"))) 'mode)
           ((not (and (bytevector? bytes) (import-text? bytes))) 'not-text)
           (else 'in)))
+  ;; THE STORE ROUTE'S DOMAIN: what a structural draft may create. The
+  ;; importer's domain (base-entry-judgement) less what the store route cannot
+  ;; carry: a mode other than 100644 (publication writes 100644 only; an
+  ;; executable keeps the git route), a path the export would not write
+  ;; (code-safe-path?), and a path another of OTHERS, the tree's paths, would
+  ;; meet on a volume that folds case or normalisation. -> in, or the reason.
+  (define (store-route-domain path mode bytes others)
+    (let ((judged (base-entry-judgement path mode bytes)))
+      (cond ((not (eq? judged 'in)) judged)
+            ((not (equal? mode "100644")) 'mode)
+            ((not (code-safe-path? path)) 'unsafe-path)
+            ((let ((mine (cons path (path-ancestors path))))
+               (exists (lambda (g) (exists (lambda (p) (member p g)) mine))
+                       (ambiguous-groups 'both (cons path (remove path others)))))
+             'case-collision)
+            (else 'in))))
+
+  ;; ---- a file as blocks: the one construction --------------------------------
+  ;;
+  ;; A FILE BECOMES BLOCKS ONE WAY, whoever creates it: the importer
+  ;; (tools/import-git.sc) for a path the store does not hold, and a commit of
+  ;; a structural draft (working.sc). The bytes are cut at suggest-boundaries'
+  ;; cuts for the path's language; a root-level holder carries kind, mode,
+  ;; path and language; the pieces are its code children in order. Deleting a
+  ;; file deletes its children, then its holder.
+  ;; -> the pieces of BYTES, a vector of byte slices
+  (define (file-pieces path bytes)
+    (let ((cuts (car (suggest-boundaries (language-for-path path) bytes))))
+      (list->vector (map (lambda (from to) (byte-slice bytes from to))
+                         cuts (append (cdr cuts) (list (bytevector-length bytes)))))))
+  ;; -> the intents creating the file, the holder's at index FIRST of the
+  ;; batch they join, each child after the one before it
+  (define (file-new-intents path bytes first)
+    (let ((entry (language-for-path path)))
+      (let loop ((pieces (vector->list (file-pieces path bytes))) (k (+ first 1)) (prev #f)
+                 (out (list (list 'insert 'root #f
+                                  (append (list '(kind . file) '(mode . text) (cons 'path path))
+                                          (lang-fields entry))))))
+        (if (null? pieces)
+            (reverse out)
+            (loop (cdr pieces) (+ k 1) (list 'from k)
+                  (cons (list 'insert (list 'from first) prev
+                              (append (list '(kind . code) '(mode . text) (cons 'src (car pieces)))
+                                      (lang-fields entry)))
+                        out))))))
+  ;; -> the intents deleting the file: its children, then the holder
+  (define (file-delete-intents holder children)
+    (append (map (lambda (c) (list 'del c)) children) (list (list 'del holder))))
+  ;; THE WORKING TREE'S FILES WITH THE STRUCTURAL DRAFTS: OUTPUTS, ((<path>
+  ;; <bytes>) ...), less the paths DELETED names, with NEWS, ((<path> <bytes>)
+  ;; ...), added. A new file has no blocks yet, so it is its bytes in a marked
+  ;; export too.
+  (define (structural-outputs outputs news deleted)
+    (list-sort (lambda (x y) (string<? (car x) (car y)))
+               (append (filter (lambda (o) (not (member (car o) deleted))) outputs) news)))
+
   ;; -> the components of a relative path, split at "/"
   (define (path-components path)
     (let loop ((i 0) (from 0) (out '()))

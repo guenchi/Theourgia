@@ -363,11 +363,14 @@
                              (projection-encode entry (list (store-id-of store) id cut) entries)))))
            (projected-files state))))
 
-  (define (export-code-view store dir raw? view)
+  ;; OVERLAY, when given: a procedure from the outputs to the outputs written,
+  ;; the working tree's structural drafts laid over them (working.sc).
+  (define (export-code-view store dir raw? view . overlay)
     (answer
       (lambda ()
         (let* ((state (view))
-               (outputs (projection-outputs store state raw?)))
+               (outputs (let ((o (projection-outputs store state raw?)))
+                          (if (and (pair? overlay) (car overlay)) ((car overlay) o) o))))
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
           (list 'ok (list 'files (length outputs)))))))

@@ -151,8 +151,18 @@
   (guard (e (#t (list 'UNREADABLE (file-text out)))) (call-with-input-file out read)))
 (define runs 0)
 (define (next-out s) (set! runs (+ runs 1)) (string-append (dir-of s) "/run" (number->string runs) ".out"))
-(define (export! s dir w)
+;; AN EXPORT A ROW STANDS ON MUST HAVE HAPPENED: export! stops the fixture on
+;; a refusal (a directory reused by an earlier row is one), so no row reads
+;; an earlier row's state; export-answer! gives the answer, for the row that
+;; asks for the refusal itself
+(define (export-answer! s dir w)
   (tool! s "edit-export.sc" (next-out s) (st-of s) dir "--writer" w "--git" (wt-of s) "--base" (base-of s)))
+(define (export! s dir w)
+  (let ((a (export-answer! s dir w)))
+    (unless (eq? 'ok (head-of a)) (assertion-violation 'edit-tools "export refused" dir a))
+    a))
+;; A PROCEDURE THE BASE MAY LACK, reached by eval so this file loads on it: #f there
+(define provisional-id (guard (e (#t #f)) (eval 'provisional-id (environment '(theourgia reduce)))))
 (define (sync! s dir w . store)
   (tool! s "edit-sync.sc" (next-out s) (if (pair? store) (car store) (st-of s)) dir "--writer" w))
 (define (edit-dir s name) (string-append (dir-of s) "/" name))
@@ -187,6 +197,24 @@
 (define (pristine-name side path)
   (let ((c (assq 'pristine (cddr (sidecar-file side path))))) (if c (cadr c) "none")))
 (define (stat-or-absent path) (guard (e (#t 'absent)) (path-stat path)))
+;; W's structural drafts, as the listing names them: ((new <path>) ...) and
+;; ((delete <holder>) ...), sorted; and the version of the one at KEY
+(define (structural-of s w)
+  (let* ((a (ask (st-of s) 'drafts "--writer" w))
+         (items (filter (lambda (x) (and (pair? x) (memq (car x) '(new delete)))) (if (and (pair? a) (pair? (cdr a))) (cdr (cadr a)) '()))))
+    (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
+               (map (lambda (it) (list (car it) (cadr (assq (if (eq? (car it) 'new) 'path 'holder) (cdr it))))) items))))
+(define (structural-version-of s w key)
+  (let* ((a (ask (st-of s) 'drafts "--writer" w))
+         (it (find (lambda (x) (and (pair? x) (memq (car x) '(new delete))
+                                    (equal? (cadr (assq (if (eq? (car x) 'new) 'path 'holder) (cdr x))) key)))
+                   (if (and (pair? a) (pair? (cdr a))) (cdr (cadr a)) '()))))
+    (and it (cadr (assq 'version (cdr it))))))
+(define (sidecar-new side path)
+  (find (lambda (c) (and (pair? c) (eq? (car c) 'new) (equal? (cadr c) path))) (cdr side)))
+;; -> (head drafts structural): a refusal leaves W no draft of either kind
+(define (refused-all s dir w)
+  (let ((a (sync! s dir w))) (in-order (head-of a) (clause-of a 'reason) (drafts-of s w) (structural-of s w))))
 
 ;; ---- the store every row but the last two uses ----------------------------------------
 (printf "== the store: a.sc four blocks, b.sc two, x.sc one and executable in git ==\n")
@@ -224,7 +252,7 @@
 (want "ET-4 an export into a directory that exists refuses export-exists and writes no sidecar"
       (let* ((dir (edit-dir s1 "e4")))
         (sh "mkdir -p " (quoted dir))
-        (in-order (head-of (export! s1 dir "we4")) (file-exists? (string-append dir ".edit/SIDECAR.sexp"))))
+        (in-order (head-of (export-answer! s1 dir "we4")) (file-exists? (string-append dir ".edit/SIDECAR.sexp"))))
       '((error export-exists) #f))
 
 ;; ---- ET-5..ET-9: edits that sync ----------------------------------------------------------
@@ -287,14 +315,165 @@
   (export! s1 dir "we10")
   (edit! (string-append dir "/a.sc") "a3\nb0\n" "A3\nB0\n")
   (want "ET-10 a hunk across a block boundary refuses crossing" (refused s1 dir "we10") '((error crossing) ())))
-(let ((dir (edit-dir s1 "e11")))
+;; ---- SN, SD, SR, SS, SO, SP: files added and removed are structural drafts ----
+(printf "== SN..SP: files added and removed, structural drafts ==\n")
+(let ((dir (edit-dir s1 "e11")) (dir2 (edit-dir s1 "e11b")))
   (export! s1 dir "we11")
   (write-file! (string-append dir "/new.sc") "n0\n")
-  (want "ET-11 an added file refuses added-file" (refused s1 dir "we11") '((error added-file) ())))
-(let ((dir (edit-dir s1 "e12")))
+  (let* ((a (sync! s1 dir "we11")) (again (sync! s1 dir "we11")))
+    (want "SN-1 an added file becomes a working-new draft, and a second sync writes nothing"
+          (in-order (head-of a) (value-of a 'files-added) (structural-of s1 "we11") (drafts-of s1 "we11")
+                    (value-of again 'writes) (cdr (clause-of again 'skipped)))
+          '(ok 1 ((new "new.sc")) () 0 ("new.sc"))))
+  (let* ((v1 (structural-version-of s1 "we11" "new.sc")) (ex (export! s1 dir2 "we11")) (entry (sidecar-new (sidecar-of dir2) "new.sc")))
+    (want "SN-2 a fresh export writes the new file from its draft, and its sidecar records it with the draft's version"
+          (in-order (head-of ex) (clause-of ex 'new-files)
+                    (guard (e (#t 'absent)) (file-text (string-append dir2 "/new.sc")))
+                    (and entry (equal? (cadr (assq 'version (cddr entry))) v1)))
+          '(ok (new-files 1) "n0\n" #t))
+    (edit! (string-append dir2 "/new.sc") "n0\n" "n0\nn1\n")
+    (let* ((a (sync! s1 dir2 "we11")) (v2 (structural-version-of s1 "we11" "new.sc")) (again (sync! s1 dir2 "we11")))
+      (want "SN-3 the round: the exported new file edited and synced writes a new version of the same draft; a second sync writes nothing"
+            (in-order (head-of a) (value-of a 'writes) (structural-of s1 "we11") (and v1 v2 (not (equal? v1 v2)))
+                      (value-of again 'writes))
+            '(ok 1 ((new "new.sc")) #t 0)))
+    (want "LIM outline --working does not show the new file (v1: only the file trees built from the working view do)"
+          (let ((a (ask (st-of s1) 'outline "--working" "--writer" "we11")))
+            (let walk ((x a)) (cond ((equal? x "new.sc") #t) ((pair? x) (or (walk (car x)) (walk (cdr x)))) (else #f))))
+          #f)))
+(let ((dir (edit-dir s1 "e12")) (dir2 (edit-dir s1 "e12b")))
   (export! s1 dir "we12")
   (sh "rm " (quoted (string-append dir "/b.sc")))
-  (want "ET-12 a removed file refuses removed-file" (refused s1 dir "we12") '((error removed-file) ())))
+  (let ((a (sync! s1 dir "we12")))
+    (want "SD-1 a removed file becomes a working-delete draft of its holder; the next export does not write it"
+          (in-order (head-of a) (value-of a 'files-removed) (structural-of s1 "we12")
+                    (begin (export! s1 dir2 "we12") (file-exists? (string-append dir2 "/b.sc")))
+                    (file-exists? (string-append dir2 "/a.sc")))
+          (list 'ok 1 (list (list 'delete (file-at (st-of s1) "b.sc"))) #f #t))))
+(let ((dir (edit-dir s1 "e12r")))
+  (export! s1 dir "we12r")
+  (sh "mv " (quoted (string-append dir "/b.sc")) " " (quoted (string-append dir "/bb.sc")))
+  (let ((a (sync! s1 dir "we12r")))
+    (want "SR a rename is a delete of the old path's holder and a new file at the new path"
+          (in-order (head-of a) (structural-of s1 "we12r"))
+          (list 'ok (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
+                               (list (list 'new "bb.sc") (list 'delete (file-at (st-of s1) "b.sc"))))))))
+(let ((dir (edit-dir s1 "e12s")))
+  (export! s1 dir "we12s")
+  (write-file! (string-append dir "/sub/deeper/n.sc") "n\n")
+  (want "SS a file in a new subdirectory becomes a new file at its path"
+        (let ((a (sync! s1 dir "we12s"))) (in-order (head-of a) (structural-of s1 "we12s")))
+        '(ok ((new "sub/deeper/n.sc")))))
+(let ((dir (edit-dir s1 "e12o1")))
+  (export! s1 dir "we12o1")
+  (write-file! (string-append dir "/.hidden.sc") "h\n")
+  (want "SO-1 a dot-named added file refuses outside-domain before any write"
+        (refused-all s1 dir "we12o1") '((error outside-domain) (reason dot-named) () ())))
+(let ((dir (edit-dir s1 "e12o2")))
+  (export! s1 dir "we12o2")
+  (write-file! (string-append dir "/run.sc") "r\n")
+  (sh "chmod 755 " (quoted (string-append dir "/run.sc")))
+  (want "SO-2 an executable added file refuses outside-domain before any write"
+        (refused-all s1 dir "we12o2") '((error outside-domain) (reason mode) () ())))
+(let ((dir (edit-dir s1 "e12o3")))
+  (export! s1 dir "we12o3")
+  (write-bytes! (string-append dir "/blob.sc") (bytevector 0 1 2 255 0))
+  (want "SO-3 an added file that is not text refuses outside-domain before any write"
+        (refused-all s1 dir "we12o3") '((error outside-domain) (reason not-text) () ())))
+;; A CASE COLLISION IS ASKED OF THE PREDICATE edit-sync asks: the volume these
+;; rows run on folds case, so an A.sc written beside a.sc is a.sc, edited
+(want "SO-4 a path a case-folding volume would merge with another is outside the store route's domain"
+      (let ((domain (guard (e (#t #f)) (eval 'store-route-domain (environment '(theourgia landing-files))))))
+        (and domain (list (domain "A.sc" "100644" (string->utf8 "c\n") '("a.sc" "b.sc"))
+                          (domain "sub/A.sc" "100644" (string->utf8 "c\n") '("Sub/b.sc"))
+                          (domain "c.sc" "100644" (string->utf8 "c\n") '("a.sc" "b.sc")))))
+      '(case-collision case-collision in))
+(want "SP a draft of a block named by a provisional id refuses provisional-target"
+      (let ((a (ask (st-of s1) 'write (string-append "new-" (make-string 56 #\a)) "x\n" "--writer" "we12p")))
+        (and (pair? a) (list-head a (min 3 (length a)))))
+      '(error bad-request provisional-target))
+;; A REMOVED EXECUTABLE IS OUTSIDE THE DOMAIN too, renamed as well as deleted
+(let ((dir (edit-dir s1 "e12o5")) (dir2 (edit-dir s1 "e12o5b")))
+  (export! s1 dir "we12o5")
+  (export! s1 dir2 "we12o5b")
+  (sh "rm " (quoted (string-append dir "/x.sc")))
+  (sh "mv " (quoted (string-append dir2 "/x.sc")) " " (quoted (string-append dir2 "/xx.sc")) " && chmod 644 " (quoted (string-append dir2 "/xx.sc")))
+  (want "SO-5 a removed file whose git mode is 100755 refuses outside-domain before any write, deleted or renamed"
+        (list (refused-all s1 dir "we12o5") (refused-all s1 dir2 "we12o5b"))
+        '(((error outside-domain) (reason mode) () ()) ((error outside-domain) (reason mode) () ()))))
+;; A MODE-ONLY CHANGE: the bytes unchanged, the file made executable on disk,
+;; beside an added file that would otherwise be written
+(let ((dir (edit-dir s1 "s17")))
+  (export! s1 dir "we17")
+  (sh "chmod 755 " (quoted (string-append dir "/a.sc")))
+  (write-file! (string-append dir "/m.sc") "m\n")
+  (want "SM-1 a recorded file made executable with its bytes unchanged refuses file-mode before any write"
+        (refused-all s1 dir "we17") '((error file-mode) #f () ())))
+;; A CASE-ONLY RENAME: the tree the sync leaves holds A.sc alone
+(let ((dir (edit-dir s1 "e12r2")))
+  (export! s1 dir "we12r2")
+  (sh "mv " (quoted (string-append dir "/a.sc")) " " (quoted (string-append dir "/A.sc")))
+  (let ((a (sync! s1 dir "we12r2")))
+    (want "SR-2 a.sc renamed A.sc is a delete of a.sc's holder and a new A.sc, not a case collision"
+          (in-order (head-of a) (structural-of s1 "we12r2"))
+          (list 'ok (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
+                               (list (list 'new "A.sc") (list 'delete (file-at (st-of s1) "a.sc"))))))))
+;; A STALE EXPORT: two exports show the new file at v1; one syncs v2; the other
+;; can neither overwrite v2 nor discard it
+(let ((dir (edit-dir s1 "s14")) (e1 (edit-dir s1 "s14a")) (e2 (edit-dir s1 "s14b")))
+  (export! s1 dir "we14")
+  (write-file! (string-append dir "/n.sc") "n0
+")
+  (sync! s1 dir "we14")
+  (export! s1 e1 "we14")
+  (export! s1 e2 "we14")
+  (edit! (string-append e2 "/n.sc") "n0
+" "n0
+n2
+")
+  (sync! s1 e2 "we14")
+  (let ((v2 (structural-version-of s1 "we14" "n.sc")))
+    (edit! (string-append e1 "/n.sc") "n0
+" "n0
+n3
+")
+    (let ((edited (sync! s1 e1 "we14")))
+      (sh "rm " (quoted (string-append e1 "/n.sc")))
+      (let ((removed (sync! s1 e1 "we14")))
+        (want "SN-4 a stale export's edit or removal of a new file refuses draft-changed, and the newer version stays"
+              (list (head-of edited) (head-of removed) (clause-of removed 'remedy)
+                    (and v2 (equal? (structural-version-of s1 "we14" "n.sc") v2)))
+              '((error draft-changed) (error draft-changed) (remedy export-again) #t))))))
+;; AN UNDONE ADD: the new file synced, then deleted from the same export
+(let ((dir (edit-dir s1 "s15")) (dir2 (edit-dir s1 "s15b")))
+  (export! s1 dir "we15")
+  (write-file! (string-append dir "/u.sc") "u
+")
+  (sync! s1 dir "we15")
+  (sh "rm " (quoted (string-append dir "/u.sc")))
+  (let ((a (sync! s1 dir "we15")))
+    (want "SN-5 an add undone in the same export refuses draft-changed and keeps the draft; a fresh export's removal discards it"
+          (in-order (head-of a) (clause-of a 'key) (structural-of s1 "we15")
+                    (begin (export! s1 dir2 "we15")
+                           (sh "rm " (quoted (string-append dir2 "/u.sc")))
+                           (head-of (sync! s1 dir2 "we15")))
+                    (structural-of s1 "we15"))
+          (list '(error draft-changed) (list 'key (if provisional-id (provisional-id "u.sc") "none"))
+                '((new "u.sc")) 'ok '()))))
+;; AN UNDONE DELETE: b.sc removed and synced, then its bytes put back
+(let* ((dir (edit-dir s1 "s16")) (h (file-at (st-of s1) "b.sc")))
+  (export! s1 dir "we16")
+  (let ((bytes (file-bytes (string-append dir "/b.sc"))))
+    (sh "rm " (quoted (string-append dir "/b.sc")))
+    (sync! s1 dir "we16")
+    (write-bytes! (string-append dir "/b.sc") bytes)
+    (let ((a (sync! s1 dir "we16")))
+      (want "SD-2 a delete undone in the same export refuses draft-changed naming discard delete-<holder>, which clears it"
+            (in-order (head-of a) (clause-of a 'remedy) (structural-of s1 "we16")
+                      (head-of (ask (st-of s1) 'discard (string-append "delete-" h) "--writer" "we16"))
+                      (structural-of s1 "we16"))
+            (list '(error draft-changed) (list 'remedy (list 'export-again (list 'discard (string-append "delete-" h))))
+                  (list (list 'delete h)) 'ok '())))))
 (let ((dir (edit-dir s1 "e13")))
   (export! s1 dir "we13")
   (edit! (string-append dir "/x.sc") "x0\n" "X0\n")

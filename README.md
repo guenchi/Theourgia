@@ -2389,11 +2389,13 @@ what they were computed from has changed, and `(via ...)` for those it lists.
     (discard <block> ("--writer" <name>))
 
 Drops that writer's draft for that block. The committed block is
-untouched.
+untouched. A structural draft (below, under `commit`) is dropped by its key:
+a new file's provisional id, or `delete-` and the holder.
 
 ### `commit`
 
     (commit (<block> ...) ("--writer" <name>) ("--working-version" <block>=<version>)
+            ("--working-new" <provisional>=<version>) ("--working-delete" <holder>=<version>)
             ("--premises" <datum>))
 
 Turns drafts into committed versions. Naming no block commits all of that
@@ -2401,6 +2403,29 @@ writer's drafts. `--working-version` may be given once per block to say
 which version of the draft is being committed; with exactly one block
 named, the bare version may be given.
 A commit that carries `--req` must name a version for every block it consumes, or it is refused `(error bad-request req-needs-versions (blocks <id> ...))`. A named block with no draft is refused `(error no-draft (blocks <id> ...))`, and a draft that is no longer the version named is refused `(error working-version-changed (blocks ...))`. A draft whose baseline the block has moved on from is refused `stale-baseline`. A commit that repeats a request this store has already applied is answered from that request's record, without these checks: its `items` hold `(ok (replay #t) (event ...))`. What makes two requests the same, and what `req-mismatch` answers, is in *Requests and replay* below; for `commit`, the blocks are compared as a set, so naming them in another order is the same request. Every refusal that `commit` itself makes carries `(usage ...)`, the commit form; when the store missed a writer, an `(incomplete ...)` clause follows it. The checks the dispatcher makes before it -- among them the transport options, the store's presence and the `--req` and `--cursor` rules -- answer without it: `commit --req <id>` with no `--cursor` is `(error bad-request req-without-cursor)`.
+
+STRUCTURAL DRAFTS create or delete a whole file. A writer holds them beside
+its block drafts (`tools/edit-sync.sc` makes them from a file added to or
+removed from an exported directory): a new file is its path and bytes, named
+by a provisional id, `new-` and the first 56 hex digits of the sha256 of
+the path; a deleted file is its holder, with the file's baseline (its
+bytes and its children's ids at the draft's cut). `drafts` lists them as
+`(new (writer ..) (provisional ..) (path ..) (version ..) (cut ..))` and
+`(delete (writer ..) (holder ..) (version ..) (based-on ..) (cut ..))`. A
+commit takes them only when named, `--working-new <provisional>=<version>`
+and `--working-delete <holder>=<version>`, in the same write as its block
+drafts: a new file becomes its holder and code children, split as
+`tools/import-git.sc` splits a file it adds; a deleted file's children are
+deleted, then its holder. A new file whose path a live file now holds is
+refused `(error path-exists (path ..))`; a delete whose file changed since
+its draft, `(error stale-delete (holder ..))`; either refuses the whole
+commit before any record. The answer adds `(created (<provisional> .
+<holder id>) ...)`. A draft of a block named by a provisional id is refused
+`(error bad-request provisional-target)`. In this version only the file
+trees built from the working view (`export-code --working`,
+`tools/edit-export.sc`, `tools/landing-freeze.sc`) show a new file and hide
+a deleted one; `outline`, `context`, `read --working` and `eval --working`
+read the committed blocks under the drafts and show neither.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is
@@ -3166,10 +3191,28 @@ runs before any write, and a refusal writes nothing:
   hash at the recorded cut (`committed-not-at-cut`) and a drafted one's
   recorded version from its exported bytes, based-on and cut
   (`draft-inconsistent`);
-- the directory: `unexpected-entry` (not a file or a directory),
-  `added-file`, `removed-file` (drafts cannot add or remove a block);
-- a changed file: `file-mode` (its git mode is not 100644, or it became
-  executable on disk: publication writes 100644 only), `invalid-utf8`,
+- the directory: `unexpected-entry` (not a file or a directory);
+  `outside-domain` (an added file, or a new file the export wrote, outside
+  the store route's domain: dot-named, executable, not text, a path the
+  export would not write, or one a volume folding case or normalisation
+  would merge with another file of the tree the sync leaves, so a
+  case-only rename passes; or a removed file whose recorded mode is not
+  100644); `removed-file` (a removed file whose sidecar
+  entry names no holder) and `removed-drafted-file` (a removed file holding
+  a draft of one of its blocks). Otherwise an added file (a new
+  subdirectory's too) becomes a structural `new` draft, a removed one (a
+  directory gone is its files) a `delete` draft of its holder, a rename
+  both, and a new file the export wrote and that is gone again is
+  discarded. Every structural draft the writer holds must be one this
+  export accounts for -- the version its sidecar recorded, or the one this
+  sync writes -- or the sync is refused `draft-changed`, naming the file,
+  the key and the remedy: an add or delete undone in the export after its
+  sync, or another export's newer draft, is resolved by exporting again,
+  and a delete is undone by `discard delete-<holder>`. Once a writer holds
+  structural drafts, one export of it is live at a time;
+- a changed file: `file-mode` (its git mode is not 100644; and any
+  recorded file that became executable on disk, its bytes changed or not:
+  publication writes 100644 only), `invalid-utf8`,
   `no-block`, `crossing`, `not-reconstructed`;
 - a touched block: `stale` (its committed hash moved since the export, or
   the draft it carried stands on another version), `draft-changed` (the
@@ -3252,7 +3295,13 @@ nothing is committed and the answer is `(error cut-moved (pinned <cut>) (now
 <cut>))`; the drafts are rebased (`write --rebase --based-on <v>
 --working-cut <cut>`) and frozen again. At the pinned cut it commits the
 drafts by name, each with its frozen version (`--working-version
-<block>=<version>`), and prints the commit's answer.
+<block>=<version>`), its structural drafts with them in the same commit
+(`--working-new` and `--working-delete`), and prints the commit's answer,
+whose `(created ...)` maps each new file's provisional id to its holder.
+A commit refused after the start tag was written leaves the tag. The tag
+is a record, so the store's cut has moved past the drafts': they are
+rebased onto it (a structural draft is discarded and written again) and
+frozen again, and the next attempt takes a new start name.
 
 With `--start <tag>` it also names the landing's start, the tag
 `publish-landing` publishes from (its export must be the git base). A name

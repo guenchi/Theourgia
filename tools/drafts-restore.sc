@@ -46,11 +46,23 @@
 ;;   draft's baseline, and the version would not be the dumped one.
 ;; After the writes, each answer's version is compared with the dumped one.
 ;;
+;; THE STRUCTURAL DRAFTS (new, delete; working.sc) come back the same way:
+;; each version recomputed from its own fields (and a new file's bytes from
+;; its file), none consumed, its cut replayable here, the writer's slot for
+;; it empty or holding this very version; then written with its recorded
+;; cut, and the written version compared with the dumped one. A deleted
+;; file's freshness is the commit's to judge (stale-delete), as it is for a
+;; delete draft written now.
+;;
 ;; A refusal prints (error <kind> ...) and exits 1; success prints
 ;; (ok (restored <n>) (already <n>)) and exits 0.
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia reduce) draft-version block-hash reduce-applied-cut state-read state-consumed?)
+        (only (theourgia reduce) draft-version block-hash reduce-applied-cut state-read state-consumed?
+              structural-version)
+        (only (theourgia working) working-new! working-delete! working-structural)
+        (only (theourgia code-project) lang-fields)
+        (only (theourgia languages) language-for-path)
         (only (theourgia markers) src-text)
         (only (theourgia store) open-and-reduce store-state-at-cut)
         (only (theourgia log) store-id-of)
@@ -110,6 +122,52 @@
             ((equal? (cdr slot) version) (cons 'already text))
             (else (refuse 'slot-occupied (list 'block id) (list 'holds (cdr slot)) (list 'dumped version)))))))
 
+;; -> 'write or 'already for one dumped structural draft, or a refusal.
+(define (judge-structural store dir state held writer d)
+  (let* ((new? (eq? (car d) 'new))
+         (key (if new? (clause 'provisional d) (clause 'holder d)))
+         (version (clause 'version d)) (cut (clause 'cut d))
+         (bytes (and new? (entry-bytes (string-append dir "/" (clause 'bytes d))))))
+    (when new?
+      (unless (equal? (bytevector->hex (sha256 bytes)) (clause 'sha256 d))
+        (refuse 'bytes-changed (list 'structural key))))
+    (unless (equal? version (if new?
+                                (structural-version 'new (clause 'path d) (bytevector->hex (sha256 bytes)) cut)
+                                (structural-version 'delete key (clause 'based-on d) cut)))
+      (refuse 'draft-unreproducible (list 'structural key) (list 'version version)))
+    (when (and new? (not (src-text bytes))) (refuse 'not-text (list 'structural key)))
+    (when (state-consumed? state writer version)
+      (refuse 'version-consumed (list 'structural key) (list 'version version)))
+    (let ((past (store-state-at-cut store #f (format "~s" cut))))
+      (when (and (pair? past) (eq? (car past) 'error))
+        (refuse 'cut-unusable (list 'structural key) (list 'cut cut) (list 'answer past)))
+      (unless (equal? (cut-set (reduce-applied-cut past)) (cut-set cut))
+        (refuse 'cut-not-reproduced (list 'structural key) (list 'cut cut))))
+    (let ((slot (assoc key held)))
+      (cond ((not slot) 'write)
+            ((equal? (cdr slot) version) 'already)
+            (else (refuse 'slot-occupied (list 'structural key) (list 'holds (cdr slot)) (list 'dumped version)))))))
+;; -> ((<provisional id or holder> . <version>) ...), the structural slots held now
+(define (held-structural store writer)
+  (let ((a (working-structural store #f writer)))
+    (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'structural-refused a))
+    (map (lambda (i) (cons (if (eq? (car i) 'new) (clause 'provisional i) (clause 'holder i)) (clause 'version i)))
+         (caddr a))))
+;; -> 1 when written, after its version was compared; or a refusal
+(define (write-structural! store dir writer d written)
+  (let* ((new? (eq? (car d) 'new))
+         (a (if new?
+                (working-new! store #f writer (clause 'path d) (lang-fields (language-for-path (clause 'path d)))
+                              (entry-bytes (string-append dir "/" (clause 'bytes d))) (format "~s" (clause 'cut d)))
+                (working-delete! store #f writer (clause 'holder d) (format "~s" (clause 'cut d))))))
+    (unless (and (pair? a) (eq? (car a) 'ok))
+      (refuse 'write-refused (list 'structural (or (clause 'provisional d) (clause 'holder d))) (list 'answer a)
+              (list 'restored written)))
+    (unless (equal? (clause 'version a) (clause 'version d))
+      (refuse 'version-not-reproduced (list 'structural (or (clause 'provisional d) (clause 'holder d)))
+              (list 'dumped (clause 'version d)) (list 'written (clause 'version a)) (list 'restored (+ written 1))))
+    1))
+
 (define (restore store dir writer)
   (let* ((m (read-manifest dir))
          (drafts (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) (cdr m))))
@@ -120,10 +178,18 @@
       (refuse 'other-writer (list 'dumped (clause 'writer m)) (list 'given writer)))
     (let* ((state (open-and-reduce store))
            (held (held-drafts store writer))
-           (verdicts (map (lambda (d) (judge store dir state held writer d)) drafts)))
+           (verdicts (map (lambda (d) (judge store dir state held writer d)) drafts))
+           (structural (filter (lambda (d) (and (pair? d) (memq (car d) '(new delete)))) (cdr m)))
+           (structural-held (if (null? structural) '() (held-structural store writer)))
+           ;; every structural draft judged, too, before anything is written
+           (structural-verdicts (map (lambda (d) (judge-structural store dir state structural-held writer d)) structural)))
       (let loop ((ds drafts) (vs verdicts) (written 0) (already 0))
         (cond
-          ((null? ds) (list 'ok (list 'restored written) (list 'already already)))
+          ((null? ds)
+           (let s-loop ((ss structural) (svs structural-verdicts) (written written) (already already))
+             (cond ((null? ss) (list 'ok (list 'restored written) (list 'already already)))
+                   ((eq? (car svs) 'already) (s-loop (cdr ss) (cdr svs) written (+ already 1)))
+                   (else (s-loop (cdr ss) (cdr svs) (+ written (write-structural! store dir writer (car ss) written)) already)))))
           ((eq? (car (car vs)) 'already) (loop (cdr ds) (cdr vs) written (+ already 1)))
           (else
            (let* ((d (car ds)) (id (clause 'block d))

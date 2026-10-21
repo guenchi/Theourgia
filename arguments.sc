@@ -119,7 +119,7 @@
         ;; An editor's symbols file, which splits a first text import.
         ((import-code) '("--symbols"))
         ((def) '("--under"))
-        ((commit) '("--writer" "--working-version"))
+        ((commit) '("--writer" "--working-version" "--working-new" "--working-delete"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
         ;; NOTE: `restore` IS IN THIS GROUP BECAUSE ITS HANDLER READS
         ;; `--writer`, and it was not. The token then parsed as a
@@ -217,7 +217,7 @@
   ;; wrote.
   ;; A scope's roots are a set too, one `--roots` per root.
   (define (repeatable-options verb)
-    (case verb ((commit) '("--working-version")) ((scope) '("--roots")) ((rule) '("--on")) (else '())))
+    (case verb ((commit) '("--working-version" "--working-new" "--working-delete")) ((scope) '("--roots")) ((rule) '("--on")) (else '())))
 
   (define (flag-options verb)
     (append global-flags (append (case verb

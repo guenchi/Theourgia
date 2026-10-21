@@ -104,10 +104,9 @@
         (only (theourgia store) open-and-reduce store-tags)
         (only (theourgia reduce) reduce-applied-cut block-hash block-id state-read)
         (only (theourgia code-project) code-files code-field code-children projected-files projected-file lang-fields code-safe-path?)
-        (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia languages) language-for-path)
         (only (theourgia markers) import-text? byte-slice bytes-append)
-        (only (theourgia landing-files) base-entry-judgement)
+        (only (theourgia landing-files) base-entry-judgement file-pieces file-new-intents file-delete-intents)
         (only (theourgia query) make-query-session session-answer)
         (only (theourgia ffi) hold-point!))
 
@@ -451,12 +450,10 @@
                 ((pair? os) (set! dels (append dels os))))))
       (values result (list-sort < dels)))))
 
-;; THE PIECES OF A FILE'S BYTES, as a fresh import splits them: the slices
-;; between suggest-boundaries' cuts.
-(define (pieces-of path bytes)
-  (let ((cuts (car (suggest-boundaries (language-for-path path) bytes))))
-    (list->vector (map (lambda (from to) (byte-slice bytes from to))
-                       cuts (append (cdr cuts) (list (bytevector-length bytes)))))))
+;; THE PIECES OF A FILE'S BYTES, as a fresh import splits them, and a file
+;; created or deleted whole: landing-files.sc's construction (file-pieces,
+;; file-new-intents, file-delete-intents), the one a commit of a structural
+;; draft uses too.
 
 ;; ---- the batch -------------------------------------------------------------
 ;;
@@ -494,17 +491,18 @@
          (entry (language-for-path path)))
     (cond
       ((not target)
-       (for-each (lambda (c) (emit! (list 'del (car c)) 'deleted (car c))) children)
-       (when holder (emit! (list 'del holder) 'deleted holder))
+       (when holder
+         (for-each (lambda (i) (emit! i 'deleted (cadr i))) (file-delete-intents holder (map car children))))
+       0)
+      ;; A PATH THE STORE DOES NOT HOLD: created whole, holder then pieces
+      ((not holder)
+       (for-each (lambda (i) (emit! i 'inserted #f)) (file-new-intents path target item-count))
        0)
       (else
-       (let ((parent (or holder
-                         (list 'from (emit! (list 'insert 'root #f (append (list '(kind . file) '(mode . text) (cons 'path path))
-                                                                          (lang-fields entry)))
-                                            'inserted #f))))
+       (let ((parent holder)
              (old (list->vector (map cadr children)))
              (ids (list->vector (map car children)))
-             (new (pieces-of path target)))
+             (new (file-pieces path target)))
          (let-values (((result dels) (match-pieces old new)))
            (for-each (lambda (i) (emit! (list 'del (vector-ref ids i)) 'deleted (vector-ref ids i))) dels)
            (let loop ((j 0) (prev 'none) (S (filter (lambda (id) (not (member id (map (lambda (i) (vector-ref ids i)) dels))))

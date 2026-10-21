@@ -56,7 +56,7 @@
           cut-covers? state-put-events block-creation event-actor state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state declaration-lookup-counter
           state-consumed? state-consumption state-consumed-completions
-          state-consumed-parent-cuts state-seen state-revoked draft-version
+          state-consumed-parent-cuts state-seen state-revoked draft-version structural-version structural-version? file-baseline provisional-id provisional-id?
           cut-join
           ord-between block-id
           reduction? reduction-state)
@@ -219,9 +219,10 @@
   (define (draft-hex-digit? c)
     (or (char<=? #\0 c #\9) (char<=? #\a c #\f)))
 
+  (define (draft-hash? x)
+    (and (string? x) (= (string-length x) draft-hash-width) (for-all draft-hex-digit? (string->list x))))
   (define (draft-version bytes based-on cut)
-    (unless (and (string? based-on) (= (string-length based-on) draft-hash-width)
-                 (for-all draft-hex-digit? (string->list based-on)))
+    (unless (draft-hash? based-on)
       (assertion-violation 'draft-version "A baseline is a fixed-width block hash" based-on))
     (bytevector->hex
       (sha256
@@ -232,6 +233,40 @@
           (bytevector-copy! bytes 0 out 0 (bytevector-length bytes))
           (bytevector-copy! tail 0 out (bytevector-length bytes) (bytevector-length tail))
           out))))
+
+  ;; A STRUCTURAL DRAFT'S VERSION: a draft that creates a file (kind new,
+  ;; subject its path, content its bytes' sha256) or deletes one (kind delete,
+  ;; subject its holder, content the file's baseline). Its own encoding, not
+  ;; draft-version's: those inputs are a kind, a subject and a digest, not a
+  ;; block's bytes on a block hash. The datum is encoded whole, so no field
+  ;; can run into the next; anything but these shapes is refused rather than
+  ;; named.
+  (define (structural-version? kind subject content cut)
+    (and (memq kind '(new delete)) (string? subject) (> (string-length subject) 0)
+         (draft-hash? content) (list? cut)))
+  (define (structural-version kind subject content cut)
+    (unless (structural-version? kind subject content cut)
+      (assertion-violation 'structural-version "A structural draft is a kind, a subject, a digest and a cut"
+                           kind subject content))
+    (bytevector->hex
+      (sha256 (string->utf8 (sexpr->string-extended
+                              (storable-encode (list 'structural 1 kind subject content cut)))))))
+;; A NEW FILE'S PROVISIONAL ID: new- and the first 56 hex digits of the
+  ;; sha256 of its path, so the same path gives the same id across retries and
+  ;; sessions. It is a working id and a request id (sixty characters of
+  ;; [a-z0-9-]) and never a block id, which holds exactly one dot.
+  (define (provisional-id path)
+    (string-append "new-" (substring (bytevector->hex (sha256 (string->utf8 path))) 0 56)))
+  (define (provisional-id? x)
+    (and (string? x) (= (string-length x) 60) (string=? (substring x 0 4) "new-")
+         (for-all draft-hex-digit? (string->list (substring x 4 60)))))
+  ;; THE BASELINE OF A FILE a delete draft stands on: its exported bytes and
+  ;; its children's ids in order, since the holder's block hash covers its own
+  ;; fields and edges and none of its children's src. -> 64 hex
+  (define (file-baseline bytes children)
+    (bytevector->hex
+      (sha256 (string->utf8 (sexpr->string-extended
+                              (list 'file-baseline 1 (bytevector->hex (sha256 bytes)) children))))))
 
   ;; ---- what a commit consumed ----------------------------------------------
   ;;

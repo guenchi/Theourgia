@@ -40,6 +40,14 @@
 ;; only (held at freeze-before-list, after the view check and the export) is
 ;; refused by the final list, the one check that sees it, and CHANGED.sexp is
 ;; not written; landing-commit commits from the freeze's directory.
+;; ST: a writer's structural drafts (a file created, a file deleted) dumped
+;; and restored; frozen (the tree holds the new file and not the deleted one;
+;; CHANGED names both); landed, the new file's holder and children equal to
+;; tools/import-git.sc's for the same bytes in a twin store; a delete whose
+;; file changed since is refused at commit, and a mixed landing with it
+;; commits nothing; a refused landing keeps its start tag, the same name is
+;; then refused, a new name lands; the construction is one procedure (a
+;; census of the sources); the completion check reads a structural item.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -49,7 +57,8 @@
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce store-tags)
         (only (theourgia reduce) block-hash reduce-applied-cut state-block-ids state-read)
-        (only (theourgia code-project) code-files code-field code-children)
+        (only (theourgia code-project) code-files code-field code-children lang-fields)
+        (only (theourgia languages) language-for-path)
         (only (theourgia log) writer-directory)
         (only (theourgia ffi) path-stat)
         (only (theourgia digest) sha256 bytevector->hex))
@@ -484,6 +493,229 @@
                   (drafts-of (car lc7))
                   (and done-lc7 (file-datum rc-lc7))))
       (list #t #t '(error start-tag-cut) #t #t (list (cadr lc7)) 1))
+
+;; ---- ST: structural drafts ----------------------------------------------------------
+(printf "== ST: files created and deleted, dumped, frozen and landed ==\n")
+;; THE NEW PROCEDURES ARE FOUND BY NAME, so the file loads on a tree without
+;; them and its rows read red there rather than the file failing to load.
+(define (entry lib name) (guard (e (#t #f)) (eval name (environment lib))))
+(define working-new! (entry '(theourgia working) 'working-new!))
+(define working-delete! (entry '(theourgia working) 'working-delete!))
+(define structural-version (entry '(theourgia reduce) 'structural-version))
+(define provisional-id (entry '(theourgia reduce) 'provisional-id))
+(define file-new-intents (entry '(theourgia landing-files) 'file-new-intents))
+(define structural-consumes-mismatch (entry '(theourgia store) 'structural-consumes-mismatch))
+(define (st-file st path)
+  (let ((state (open-and-reduce st)))
+    (find (lambda (id) (and (eq? 'text (code-field state id 'mode)) (equal? (code-field state id 'path) path)))
+          (code-files state))))
+(define (new-draft! st path text)
+  (if working-new!
+      (checked "working-new" (working-new! st #f W path (lang-fields (language-for-path path)) (string->utf8 text) #f))
+      'no-working-new))
+(define (delete-draft! st path)
+  (if working-delete! (checked "working-delete" (working-delete! st #f W (st-file st path) #f)) 'no-working-delete))
+(define (structural-items st)
+  (filter (lambda (d) (and (pair? d) (memq (car d) '(new delete))))
+          (or (clause 'items (ask st 'drafts "--writer" W)) '())))
+(define (structural-key d) (if (eq? (car d) 'new) (clause1 'provisional d) (string-append "delete-" (clause1 'holder d))))
+(define (version-of st kind key)
+  (let ((d (find (lambda (d) (and (eq? (car d) kind) (equal? (clause1 (if (eq? kind 'new) 'path 'holder) d) key)))
+                 (structural-items st))))
+    (and d (clause1 'version d))))
+;; -> ((kind mode path lang) ((kind mode src lang) ...)), a file as blocks, ids aside
+(define (file-shape st path)
+  (let* ((state (open-and-reduce st)) (h (st-file st path)))
+    (and h (list (map (lambda (k) (code-field state h k)) '(kind mode path lang))
+                 (map (lambda (c) (map (lambda (k) (let ((v (code-field state c k))) (if (string? v) (string->utf8 v) v)))
+                                       '(kind mode src lang)))
+                      (code-children state h))))))
+(define (live-paths st)
+  (let ((state (open-and-reduce st)))
+    (list-sort string<? (map (lambda (id) (code-field state id 'path))
+                             (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state))))))
+(define (block-count st) (length (state-block-ids (open-and-reduce st))))
+(define c-sc "(define c 1)\n(define d 2)\n")
+
+;; DUMP AND RESTORE: both kinds dumped, discarded, restored to the same versions
+(define st1 (imported-store!))
+(new-draft! st1 "c.sc" c-sc)
+(delete-draft! st1 "b.txt")
+(define st1-before (list-sort (lambda (x y) (string<? (car x) (car y)))
+                              (map (lambda (d) (cons (structural-key d) (clause1 'version d))) (structural-items st1))))
+(define st1-dump (string-append root "/st1-dump"))
+(want "ST-DR both kinds are dumped, and after a discard each is restored at its dumped version"
+      (in-order (head-of (tool "drafts-dump" st1 "--writer" W st1-dump))
+                (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+                           (map car (filter (lambda (d) (and (pair? d) (memq (car d) '(new delete))))
+                                            (let ((m (file-datum (string-append st1-dump "/DRAFTS.sexp")))) (if (pair? m) (cdr m) '())))))
+                (begin (for-each (lambda (p) (ask st1 'discard (car p) "--writer" W)) st1-before) (length (structural-items st1)))
+                (head-of (tool "drafts-restore" st1 st1-dump "--writer" W))
+                (equal? st1-before (list-sort (lambda (x y) (string<? (car x) (car y)))
+                                              (map (lambda (d) (cons (structural-key d) (clause1 'version d))) (structural-items st1)))))
+      '(ok (delete new) 0 ok #t))
+;; THE FREEZE: the tree has the new file and not the deleted one
+(define st1-freeze (string-append root "/st1-freeze"))
+(define st1-frozen (tool "landing-freeze" st1 "--writer" W st1-freeze))
+(want "ST-FZ the freeze's tree holds the new file and not the deleted one, and CHANGED names both"
+      (list (head-of st1-frozen) (clause1 'frozen st1-frozen)
+            (text-of (string-append st1-freeze "/tree/c.sc"))
+            (text-of (string-append st1-freeze "/tree/b.txt"))
+            (text-of (string-append st1-freeze "/tree/a.txt"))
+            (let ((items (clause 'items (file-datum (string-append st1-freeze "/CHANGED.sexp")))))
+              (and (list? items) (list (and (member '(path "c.sc" added) items) #t) (and (member '(path "b.txt" removed) items) #t)))))
+      (list 'ok 2 c-sc 'ABSENT "one\n" '(#t #t)))
+;; THE TWIN: the same bytes imported by tools/import-git.sc from a git commit
+(define (twin-shape)
+  (let* ((t (imported-store!)) (wt (string-append root "/twin-wt")))
+    (checked "export" (ask t 'export-code wt "--raw"))
+    (sh "git init -q " (quoted wt) " && git -C " (quoted wt) " config user.name fixture && git -C " (quoted wt)
+        " config user.email fixture@example.invalid && git -C " (quoted wt) " config commit.gpgsign false && git -C "
+        (quoted wt) " add -A && git -C " (quoted wt) " commit -q -m base")
+    (call-with-output-file (string-append wt "/c.sc") (lambda (p) (display c-sc p)))
+    (sh "rm " (quoted (string-append wt "/b.txt")) " && git -C " (quoted wt) " add -A && git -C " (quoted wt) " commit -q -m change")
+    (let ((a (tool "import-git" t wt "HEAD~1" "HEAD" "--tag" "twin")))
+      (list (head-of a) (file-shape t "c.sc") (live-paths t)))))
+;; b.txt is one holder and one child, c.sc one holder and two: a landing that
+;; deletes the one whole and creates the other changes the live count by one
+(define st1-count-before (block-count st1))
+(define st1-landed (tool "landing-commit" st1 st1-freeze "--start" "st-1"))
+(define st1-twin (twin-shape))
+(want "ST-LC1 the landing creates the file as import-git does for the same bytes, deletes the other, and maps the provisional id"
+      (let ((shape (file-shape st1 "c.sc")))
+        (list (head-of st1-landed)
+              (live-paths st1)
+              (and shape (length (cadr shape)))
+              (and shape (equal? shape (cadr st1-twin)))
+              (car st1-twin)
+              (let ((c (clause 'created st1-landed)))
+                (and (list? c) (= 1 (length c)) (equal? (cdr (car c)) (st-file st1 "c.sc"))))
+              (structural-items st1)
+              (- (block-count st1) st1-count-before)))
+      (list 'ok '("a.txt" "c.sc") 2 #t 'ok #t '() 1))
+;; THE SAME COMMIT AGAIN, under one request identity (--req and --cursor): a
+;; replay, and its answer maps the provisional id as the first one did. A
+;; commit without --req has a fresh identity each time and is never replayed:
+;; its retry answers no-draft, its drafts being retired.
+(define st6 (imported-store!))
+(new-draft! st6 "f.sc" "(define f 1)\n")
+(define st6-request
+  (let ((c (car (cut-of st6))))
+    (list 'commit "--writer" W
+          "--working-new" (string-append (if provisional-id (provisional-id "f.sc") "none") "="
+                                         (or (version-of st6 'new "f.sc") "none"))
+          "--req" "st-lc6" "--cursor" (string-append (car c) ":" (number->string (cdr c))))))
+(want "ST-LC6 a commit of a new file sent again under its request identity is a replay whose created clause is the first answer's"
+      (let* ((first (rpc-dispatch st6 st6-request "test")) (again (rpc-dispatch st6 st6-request "test")))
+        (list (head-of first) (head-of again)
+              (and (clause 'created first) #t)
+              (and (clause 'created first) (equal? (clause 'created again) (clause 'created first)))))
+      '(ok ok #t #t))
+;; A DAMAGED ENVELOPE AT THE REPLAYED REQUEST'S SLOT: the replay needs no draft,
+;; so the damage is not the answer
+(define st7 (imported-store!))
+(new-draft! st7 "g.sc" "(define g 1)\n")
+(define st7-request
+  (let ((c (car (cut-of st7))))
+    (list 'commit "--writer" W
+          "--working-new" (string-append (if provisional-id (provisional-id "g.sc") "none") "="
+                                         (or (version-of st7 'new "g.sc") "none"))
+          "--req" "st-lc7" "--cursor" (string-append (car c) ":" (number->string (cdr c))))))
+(want "ST-LC7 a replay whose provisional slot holds a damaged envelope answers the replay and its created clause"
+      (let* ((first (rpc-dispatch st7 st7-request "test"))
+             (slot (string-append (writer-directory st7 W) "/structural/" (if provisional-id (provisional-id "g.sc") "none"))))
+        (call-with-output-file slot (lambda (p) (display "(not an envelope" p)) 'replace)
+        (let ((again (rpc-dispatch st7 st7-request "test")))
+          (list (head-of first) (head-of again)
+                (and (clause 'created first) (equal? (clause 'created again) (clause 'created first))))))
+      '(ok ok #t))
+;; A DELETE WHOSE FILE CHANGED SINCE: refused at commit, nothing written
+(define (changed-under! st path)
+  (let* ((state (open-and-reduce st)) (kid (car (code-children state (st-file st path)))))
+    (checked "other write" (ask st 'write kid "changed\n" "--writer" "other"))
+    (checked "other commit" (ask st 'commit "--writer" "other"))))
+(define st2 (imported-store!))
+(delete-draft! st2 "a.txt")
+(changed-under! st2 "a.txt")
+(want "ST-LC3 a delete whose file changed since its draft is refused stale-delete at commit, and nothing is written"
+      (let ((h (st-file st2 "a.txt")) (count (block-count st2)) (cut (cut-of st2)))
+        (in-order (head-of (ask st2 'commit "--writer" W "--working-delete" (string-append h "=" (or (version-of st2 'delete h) "none"))))
+                  (= count (block-count st2)) (equal? (cut-set cut) (cut-set (cut-of st2)))))
+      '((error stale-delete) #t #t))
+;; THE MIXED LANDING: a valid new file beside that stale delete commits nothing
+(define st3 (imported-store!))
+(new-draft! st3 "d.sc" c-sc)
+(delete-draft! st3 "a.txt")
+(changed-under! st3 "a.txt")
+(want "ST-LC4 a valid new file and a stale delete in one commit: refused, no record of the new file, the count and the cut unchanged"
+      (let ((h (st-file st3 "a.txt")) (count (block-count st3)) (cut (cut-of st3))
+            (pid (and provisional-id (provisional-id "d.sc"))))
+        (in-order (head-of (ask st3 'commit "--writer" W
+                                "--working-new" (string-append (or pid "none") "=" (or (version-of st3 'new "d.sc") "none"))
+                                "--working-delete" (string-append h "=" (or (version-of st3 'delete h) "none"))))
+                  (= count (block-count st3)) (equal? (cut-set cut) (cut-set (cut-of st3))) (st-file st3 "d.sc")))
+      '((error stale-delete) #t #t #f))
+;; THE START TAG OF A REFUSED LANDING: kept; the same name then refused. The
+;; tag is a record, so the store's cut has moved past the drafts': the new
+;; file's draft is discarded and written again on it, frozen again, and lands
+;; under a new name
+(define st4 (imported-store!))
+(new-draft! st4 "e.sc" "(define e 1)\n")
+(define st4-freeze (string-append root "/st4-freeze"))
+(tool "landing-freeze" st4 "--writer" W st4-freeze)
+(new-draft! st4 "e.sc" "(define e 2)\n")
+(define st4-freeze2 (string-append root "/st4-freeze2"))
+(want "ST-LC5 a landing refused after its tag keeps the tag; the same name is refused; a fresh freeze lands under a new name"
+      (in-order (head-of (tool "landing-commit" st4 st4-freeze "--start" "st4-a"))
+                (and (tag-cut st4 "st4-a") #t)
+                (head-of (tool "landing-commit" st4 st4-freeze "--start" "st4-a"))
+                (begin (ask st4 'discard (if provisional-id (provisional-id "e.sc") "none") "--writer" W)
+                       (new-draft! st4 "e.sc" "(define e 2)\n")
+                       (head-of (tool "landing-freeze" st4 "--writer" W st4-freeze2)))
+                (head-of (tool "landing-commit" st4 st4-freeze2 "--start" "st4-b"))
+                (live-paths st4))
+      '((error working-version-changed) #t (error start-tag-exists) ok ok ("a.txt" "b.txt" "e.sc")))
+;; THE CENSUS: a file's construction is written once. Two other sites build a
+;; file holder and are listed on purpose: import-code's own (code-project.sc),
+;; and the review channel's scope of a freeze (channel.sc), whose copy of a
+;; frozen new file is the holder and ONE child "<pid>/src" holding the whole
+;; file, where the landing splits the file into pieces. That shape is not the
+;; landed one, so a proposal on that child cannot be mapped after the landing;
+;; the scope taking its records from landing-files' file-pieces removes the
+;; exception, and this list then loses channel.sc.
+(define src-root (path-parent (current-directory)))
+(define (source-text rel) (guard (e (#t "")) (call-with-input-file (string-append src-root "/" rel) get-string-all)))
+(define (contains? s sub)
+  (let ((n (string-length s)) (m (string-length sub)))
+    (let loop ((i 0)) (cond ((> (+ i m) n) #f) ((string=? (substring s i (+ i m)) sub) #t) (else (loop (+ i 1)))))))
+(want "ST-CEN a file holder's insert is built in landing-files.sc (and import-code's own, code-project.sc, and the review scope's one-child copy, channel.sc), and import-git and the commit call that one construction"
+      (list (list-sort string<? (filter (lambda (f) (contains? (source-text f) "'(kind . file)"))
+                                        (append (filter (lambda (f) (and (> (string-length f) 3) (string=? (substring f (- (string-length f) 3) (string-length f)) ".sc")))
+                                                        (directory-list src-root))
+                                                (map (lambda (f) (string-append "tools/" f))
+                                                     (filter (lambda (f) (and (> (string-length f) 3) (string=? (substring f (- (string-length f) 3) (string-length f)) ".sc")))
+                                                             (directory-list (string-append src-root "/tools")))))))
+            (map (lambda (f) (and (contains? (source-text f) "file-new-intents") (contains? (source-text f) "file-delete-intents")))
+                 '("tools/import-git.sc" "working.sc")))
+      '(("channel.sc" "code-project.sc" "landing-files.sc") (#t #t)))
+;; THE COMPLETION CHECK reads a structural item against the plan's members
+(want "ST-CMP a new file's frozen members agree with their consumes item; a changed piece is named"
+      (if (not (and structural-consumes-mismatch file-new-intents structural-version provisional-id))
+          'no-structural-check
+          (let* ((bytes (string->utf8 c-sc)) (intents (file-new-intents "c.sc" bytes 0))
+                 (content (sha256-hex bytes)) (cut '(("wwwwwwww" . 1)))
+                 (pid (provisional-id "c.sc"))
+                 (consumes (list 'consumes "req1" (list (list pid (structural-version 'new "c.sc" content cut) content cut))))
+                 (members (map cons (iota (length intents)) intents))
+                 (tampered (map (lambda (m) (if (= (car m) 1)
+                                                (cons 1 (list 'insert (cadr (cdr m)) (caddr (cdr m))
+                                                              (map (lambda (f) (if (eq? (car f) 'src) (cons 'src (string->utf8 "(define c 9)\n")) f))
+                                                                   (cadddr (cdr m)))))
+                                                m))
+                                members)))
+            (list (structural-consumes-mismatch members consumes)
+                  (equal? (structural-consumes-mismatch tampered consumes) pid))))
+      '(#f #t))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

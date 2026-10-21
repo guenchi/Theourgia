@@ -18,7 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
-          judgement-refusal?
+          judgement-refusal? structural-consumes-mismatch
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes
@@ -4058,6 +4058,61 @@
                       block
                       (loop (cdr es))))))))))
 
+;; A STRUCTURAL DRAFT'S FROZEN MEMBERS ARE CHECKED AGAINST ITS ITEM TOO
+  ;; (working.sc commits them): a new file's item names its provisional id,
+  ;; and the plan's holder insert for a path of that id, with the code
+  ;; children inserted under it in order, must give bytes whose sha256 is the
+  ;; item's content and a structural version that is the item's; a delete's
+  ;; item (a block the plan deletes and does not set) must carry the version
+  ;; its own baseline and cut give. ENTRIES are all the plan's members, (<index>
+  ;; . <member>): a completion may have produced the holder before it stopped.
+  ;; -> #f, or the first item's id that does not agree.
+  (define (structural-consumes-mismatch entries consumes)
+    (and consumes
+         (let* ((members (map (lambda (e) (cons (car e) (plan-member-intent (cdr e)))) entries))
+                (insert? (lambda (i n) (and (list? i) (= 4 (length i)) (eq? (car i) 'insert) (list? (cadddr i)))))
+                (path-of (lambda (i) (let ((p (assq 'path (cadddr i)))) (and p (string? (cdr p)) (cdr p)))))
+                (verb-on (lambda (verb id) (exists (lambda (m) (let ((i (cdr m)))
+                                                                (and (pair? i) (eq? (car i) verb) (pair? (cdr i))
+                                                                     (equal? (cadr i) id))))
+                                                   members))))
+           (let loop ((items (caddr consumes)))
+             (if (null? items) #f
+                 (let* ((it (car items)) (id (car it)))
+                   (cond
+                     ((provisional-id? id)
+                      (let* ((holder (find (lambda (m) (let ((i (cdr m)))
+                                                         (and (insert? i 4) (eq? (cadr i) 'root) (path-of i)
+                                                              (equal? (provisional-id (path-of i)) id))))
+                                           members))
+                             (kids (if holder
+                                       (filter (lambda (m) (let ((i (cdr m)))
+                                                             (and (insert? i 4) (equal? (cadr i) (list 'from (car holder))))))
+                                               members)
+                                       '()))
+                             (srcs (map (lambda (m) (let ((s (assq 'src (cadddr (cdr m)))))
+                                                      (cond ((not s) (make-bytevector 0))
+                                                            ((string? (cdr s)) (string->utf8 (cdr s)))
+                                                            (else (cdr s)))))
+                                        kids))
+                             (bytes (let ((out (make-bytevector (fold-left + 0 (map bytevector-length srcs)))))
+                                      (let fill ((ss srcs) (at 0))
+                                        (if (null? ss) out
+                                            (begin (bytevector-copy! (car ss) 0 out at (bytevector-length (car ss)))
+                                                   (fill (cdr ss) (+ at (bytevector-length (car ss)))))))))
+                             (content (bytevector->hex (sha256 bytes))))
+                        (if (and holder (equal? content (caddr it))
+                                 (structural-version? 'new (path-of (cdr holder)) content (cadddr it))
+                                 (equal? (structural-version 'new (path-of (cdr holder)) content (cadddr it)) (cadr it)))
+                            (loop (cdr items))
+                            id)))
+                     ((and (verb-on 'del id) (not (verb-on 'set id)))
+                      (if (and (structural-version? 'delete id (caddr it) (cadddr it))
+                               (equal? (structural-version 'delete id (caddr it) (cadddr it)) (cadr it)))
+                          (loop (cdr items))
+                          id))
+                     (else (loop (cdr items))))))))))
+
   ;; ---- completing a plan -------------------------------------------------
   ;;
   ;; A RETRY FINISHES A PERSISTED PLAN FROM THE PLAN, and the frozen entries
@@ -4078,7 +4133,7 @@
            (consumes (and (>= (length verdict) 5) (list-ref verdict 4)))
            (missing (filter (lambda (e) (not (memv (car e) present))) entries))
            (indices (map car missing))
-           (bad (consumes-mismatch missing consumes)))
+           (bad (or (consumes-mismatch missing consumes) (structural-consumes-mismatch entries consumes))))
       (if bad
           (list (list 'error 'consumes-version-mismatch (list 'block bad)))
           ((eval 'completion-run (environment '(theourgia completion)))

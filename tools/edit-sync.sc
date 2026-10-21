@@ -31,10 +31,19 @@
 ;;   missing-sidecar, bad-sidecar, foreign-store, foreign-writer (the
 ;;     sidecar is another store's or another writer's);
 ;;   pristine-damaged (a pristine copy no longer has its recorded hash);
-;;   unexpected-entry (not a regular file or a directory), added-file,
-;;     removed-file;
-;;   file-mode (a changed file whose git mode is not 100644, or that has
-;;     become executable on disk: publication writes 100644 only);
+;;   unexpected-entry (not a regular file or a directory);
+;;   outside-domain (an added file, or a new file the export wrote, outside
+;;     the store route's domain: dot-named, executable, not text, a path the
+;;     export would not write, or one that a volume folding case or
+;;     normalisation would merge with another file of the tree the sync
+;;     leaves; landing-files.sc, store-route-domain; or a removed file whose
+;;     recorded mode is not 100644): the change takes the git route;
+;;   removed-file (a removed file whose sidecar entry names no holder: an
+;;     export from before structural drafts), removed-drafted-file (a removed
+;;     file holding a draft of one of its blocks: discard it first);
+;;   file-mode (a changed file whose git mode is not 100644, or any recorded
+;;     file that has become executable on disk, its bytes changed or not:
+;;     publication writes 100644 only);
 ;;   invalid-utf8 (a changed file or a block's new text);
 ;;   no-block, crossing (a hunk answering no block, or more than one);
 ;;   not-reconstructed (the blocks' new texts do not give the edited file);
@@ -45,8 +54,21 @@
 ;;     still projects the draft's old cut);
 ;;   draft-changed (W's slot for the block holds a version that is neither
 ;;     the one the export recorded nor the one this sync would write: another
-;;     write under W, which the protocol forbids);
+;;     write under W, which the protocol forbids; and for a structural draft,
+;;     one this export does not account for: an add or delete undone in the
+;;     export after its sync, or another export's newer draft. The answer
+;;     names the file, the key and the remedy: export again, and a delete is
+;;     undone by `discard delete-<holder>`. Once a writer holds structural
+;;     drafts, one export of it is live at a time);
 ;;   non-text-block (the slot's text cannot be read as text).
+;;
+;; FILES ADDED AND REMOVED ARE STRUCTURAL DRAFTS (working.sc): a file on
+;; disk the sidecar does not record, a new subdirectory's included, becomes a
+;; working-new draft; a recorded file gone (a directory gone is its files)
+;; becomes a working-delete draft of its holder; a rename is both; a new file
+;; the export wrote from its draft and that is gone again is discarded. Each
+;; is predicted -- structural-version, reduce.sc -- and skipped when the
+;; store already holds it.
 ;;
 ;; A RETRY WRITES NOTHING. A block whose slot already holds exactly the
 ;; version this sync would write -- sha256 of the new bytes, the based-on
@@ -64,9 +86,13 @@
 ;; (written (block "<id>" (version "<v>")) ...) (skipped "<id>" ...)).
 (import (chezscheme)
         (only (theourgia store) open-and-reduce store-state-at-cut)
-        (only (theourgia reduce) reduction? reduce-applied-cut block-hash draft-version)
-        (only (theourgia working) working-read working-write!)
-        (only (theourgia landing-files) locate-pieces)
+        (only (theourgia reduce) reduction? reduce-applied-cut block-hash draft-version
+              structural-version provisional-id file-baseline)
+        (only (theourgia working) working-read working-write! working-new! working-delete! working-discard!
+              working-structural)
+        (only (theourgia landing-files) locate-pieces store-route-domain)
+        (only (theourgia code-project) lang-fields)
+        (only (theourgia languages) language-for-path)
         (only (theourgia log) store-id-of)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia ffi) entry-bytes entry-name-type directory-entries path-executable?))
@@ -142,7 +168,9 @@
                        (let* ((rel (cadr f)) (fields (cddr f))
                               (pristine (value fields 'pristine)) (sum (value fields 'sha256))
                               (mode (value fields 'mode)))
-                         (unless (and (string? pristine) (string? sum) (or (string? mode) (eq? mode 'none))) (bad 'file))
+                         (unless (and (string? pristine) (string? sum) (or (string? mode) (eq? mode 'none))
+                                      (or (not (clause fields 'holder)) (string? (value fields 'holder))))
+                           (bad 'file))
                          (let* ((bytes (let ((p (string-append side "/pristine/" pristine)))
                                          (unless (eq? 'regular (entry-name-type p)) (refuse 'pristine-damaged (list 'file rel)))
                                          (entry-bytes p)))
@@ -167,13 +195,30 @@
                            (unless (equal? (hash-of bytes) sum) (refuse 'pristine-damaged (list 'file rel)))
                            (unless (tiles? (map (lambda (b) (cons (cadr b) (caddr b))) blocks) (bytevector-length bytes))
                              (bad 'spans))
-                           (list rel mode bytes blocks))))
-                     (filter (lambda (c) (and (pair? c) (eq? (car c) 'file))) (cdr d)))))
+                           (list rel mode bytes blocks (value fields 'holder)))))
+                     (filter (lambda (c) (and (pair? c) (eq? (car c) 'file))) (cdr d))))
+              ;; A NEW FILE: ((<path> <version> <sha256> <cut> <pristine bytes>) ...),
+              ;; a structural draft the export wrote from its entry
+              (news
+                (map (lambda (f)
+                       (unless (and (list? f) (>= (length f) 6) (string? (cadr f))) (bad 'new))
+                       (let* ((rel (cadr f)) (fields (cddr f))
+                              (version (value fields 'version)) (sum (value fields 'sha256))
+                              (pristine (value fields 'pristine)) (c (clause fields 'cut)))
+                         (unless (and (hex64? version) (hex64? sum) (string? pristine)
+                                      c (list? c) (= 2 (length c)) (cut? (cadr c)))
+                           (bad 'new))
+                         (let ((bytes (let ((p (string-append side "/pristine/" pristine)))
+                                        (unless (eq? 'regular (entry-name-type p)) (refuse 'pristine-damaged (list 'file rel)))
+                                        (entry-bytes p))))
+                           (unless (equal? (hash-of bytes) sum) (refuse 'pristine-damaged (list 'file rel)))
+                           (list rel version sum (cadr c) bytes))))
+                     (filter (lambda (c) (and (pair? c) (eq? (car c) 'new))) (cdr d)))))
           ;; every path and every block named once: a second entry for the same
           ;; one would be read as two places for one text
-          (unless (distinct? (map car files)) (bad 'duplicate-file))
+          (unless (distinct? (append (map car files) (map car news))) (bad 'duplicate-file))
           (unless (distinct? (apply append (map (lambda (f) (map car (cadddr f))) files))) (bad 'duplicate-block))
-          (values store-id writer (cadr cut) files))))))
+          (values store-id writer (cadr cut) files news))))))
 
 ;; ---- the directory ---------------------------------------------------------------
 
@@ -309,23 +354,61 @@
 
 (define (sync store dir writer)
   (let ((side (string-append dir ".edit")))
-    (let-values (((store-id side-writer cut files) (read-sidecar side)))
+    (let-values (((store-id side-writer cut files news) (read-sidecar side)))
       (unless (equal? store-id (store-id-of store)) (refuse 'foreign-store (list 'sidecar store-id)))
       (unless (equal? side-writer writer) (refuse 'foreign-writer (list 'sidecar side-writer)))
       (unless (eq? 'directory (entry-name-type dir)) (refuse 'removed-file (list 'path dir)))
       (let* ((on-disk (files-under dir))
-             (recorded (map car files)))
-        (for-each (lambda (f) (unless (member (car f) recorded) (refuse 'added-file (list 'file (car f))))) on-disk)
-        (for-each (lambda (r) (unless (assoc r on-disk) (refuse 'removed-file (list 'file r)))) recorded)
-        (let* ((changed (filter (lambda (f) (not (bytevector=? (caddr f) (cdr (assoc (car f) on-disk))))) files))
+             (recorded (append (map car files) (map car news)))
+             ;; THE PATHS, CLASSIFIED: a file on disk the sidecar does not record
+             ;; is ADDED (a new subdirectory's too); a recorded file gone is
+             ;; REMOVED (a directory gone is its files); a new file the export
+             ;; wrote is KEPT or GONE. A rename is a removal and an addition.
+             (added (filter (lambda (f) (not (member (car f) recorded))) on-disk))
+             (removed (filter (lambda (f) (not (assoc (car f) on-disk))) files))
+             (news-kept (filter (lambda (n) (assoc (car n) on-disk)) news))
+             (news-gone (filter (lambda (n) (not (assoc (car n) on-disk))) news))
+             ;; A CASE COLLISION IS JUDGED ON THE TREE THE SYNC LEAVES: a path
+             ;; being removed is not there, so a.sc renamed A.sc collides with
+             ;; nothing, as the landing's own check reads it
+             (paths (map car on-disk)))
+        ;; EVERY CHECK OF A STRUCTURAL CHANGE BEFORE ANY WRITE. A new file must
+        ;; be in the store route's domain (landing-files.sc): outside it, the
+        ;; whole item takes the git route, and nothing is written here.
+        (for-each (lambda (f)
+                    (let* ((rel (car f))
+                           (mode (if (path-executable? (string-append dir "/" rel)) "100755" "100644"))
+                           (judged (store-route-domain rel mode (cdr f) paths)))
+                      (unless (eq? judged 'in) (refuse 'outside-domain (list 'file rel) (list 'reason judged)))))
+                  (append added (map (lambda (n) (cons (car n) (cdr (assoc (car n) on-disk)))) news-kept)))
+        ;; A REMOVED FILE NAMES ITS HOLDER, and carries no draft of a block: its
+        ;; baseline is its committed bytes, which a drafted block is not. Its
+        ;; recorded mode is in the store route's domain too: removing an
+        ;; executable (or renaming it, a removal and an addition) takes the git
+        ;; route, since publication writes 100644 only.
+        (for-each (lambda (f)
+                    (when (and (string? (cadr f)) (not (equal? (cadr f) "100644")))
+                      (refuse 'outside-domain (list 'file (car f)) '(reason mode)))
+                    (unless (list-ref f 4) (refuse 'removed-file (list 'file (car f)) '(reason no-holder-recorded)))
+                    (when (exists (lambda (b) (car (cddddr b))) (cadddr f))
+                      (refuse 'removed-drafted-file (list 'file (car f)))))
+                  removed)
+        ;; A RECORDED FILE MADE EXECUTABLE ON DISK is a change of mode whether or
+        ;; not its bytes changed: the export writes none, and publication writes
+        ;; 100644 only, so it takes the git route
+        (for-each (lambda (f)
+                    (when (and (assoc (car f) on-disk) (path-executable? (string-append dir "/" (car f))))
+                      (refuse 'file-mode (list 'file (car f)) '(mode executable-on-disk))))
+                  files)
+        (let* ((changed (filter (lambda (f) (and (assoc (car f) on-disk)
+                                                 (not (bytevector=? (caddr f) (cdr (assoc (car f) on-disk))))))
+                                files))
                ;; ((<id> <new bytes> <committed> <draft or #f> <old bytes>) ...), every check of a file passed
                (touched
                  (apply append
                    (map (lambda (f)
                           (let ((rel (car f)) (new (cdr (assoc (car f) on-disk))))
                             (unless (equal? (cadr f) "100644") (refuse 'file-mode (list 'file rel) (list 'mode (cadr f))))
-                            (when (path-executable? (string-append dir "/" rel))
-                              (refuse 'file-mode (list 'file rel) '(mode executable-on-disk)))
                             (unless (utf8? new) (refuse 'invalid-utf8 (list 'file rel)))
                             (map (lambda (t)
                                    (unless (utf8? (cdr t)) (refuse 'invalid-utf8 (list 'file rel) (list 'block (car t))))
@@ -378,7 +461,112 @@
                                  (list 'write id new based-on (format "~s" at) version))
                                 (else (refuse 'draft-changed (list 'block id) (list 'held held)
                                               (list 'recorded (and draft (car draft))))))))))
-                      touched)))
+                      touched))
+               ;; THE STRUCTURAL WRITES, every one predicted before any write:
+               ;; (new <path> <pid> <bytes> <version>), (delete <path> <holder>
+               ;; <version>), (discard <path> <pid>) for a new file gone from
+               ;; disk, or a skip when the store already holds that version.
+               ;; A new file not yet drafted, and a removed file, stand on the
+               ;; cut the store answers for the sidecar's; a new file the export
+               ;; wrote keeps its entry's cut.
+               (structural-cut (and (or (pair? added) (pair? removed))
+                            (let ((at (store-state-at-cut store state (format "~s" cut))))
+                              (unless (reduction? at) (refuse 'cut-unavailable (list 'cut cut)))
+                              (reduce-applied-cut at))))
+               ;; READ ON EVERY SYNC, not only when a path is classified: a
+               ;; structural draft this export does not show (an undone add or
+               ;; delete, or another export's) is refused below, never left
+               ;; standing under an ok
+               (live (let ((a (working-structural store state writer)))
+                       (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'structural-refused (list 'answer a)))
+                       (caddr a)))
+               (held (lambda (kind key)
+                       (let ((e (find (lambda (i) (and (eq? (car i) kind)
+                                                       (equal? (value (cdr i) (if (eq? kind 'new) 'provisional 'holder)) key)))
+                                      live)))
+                         (and e (value (cdr e) 'version)))))
+               (structural-plan
+                 (append
+                   (map (lambda (f)
+                          (let* ((rel (car f)) (pid (provisional-id rel))
+                                 (v (structural-version 'new rel (hash-of (cdr f)) structural-cut)))
+                            (if (equal? (held 'new pid) v) (list 'skip rel 'new pid v) (list 'new rel pid (cdr f) v))))
+                        added)
+                   (map (lambda (n)
+                          (let* ((rel (car n)) (bytes (cdr (assoc rel on-disk))) (pid (provisional-id rel))
+                                 (v (structural-version 'new rel (hash-of bytes) (cadddr n))))
+                            (if (or (bytevector=? bytes (list-ref n 4)) (equal? (held 'new pid) v))
+                                (list 'skip rel 'new pid v)
+                                (list 'new rel pid bytes v))))
+                        news-kept)
+                   (map (lambda (n) (if (held 'new (provisional-id (car n)))
+                                        (list 'discard (car n) (provisional-id (car n)))
+                                        (list 'skip (car n) 'gone (provisional-id (car n)) #f)))
+                        news-gone)
+                   (map (lambda (f)
+                          (let* ((holder (list-ref f 4))
+                                 (v (structural-version 'delete holder (file-baseline (caddr f) (map car (cadddr f))) structural-cut)))
+                            (if (equal? (held 'delete holder) v) (list 'skip (car f) 'delete holder v) (list 'delete (car f) holder v))))
+                        removed))))
+          ;; EVERY LIVE STRUCTURAL DRAFT IS ACCOUNTED FOR BY THIS EXPORT before any
+          ;; write, as a block draft is (draft-changed): its slot holds the
+          ;; version the export recorded, or the one this sync writes, or
+          ;; nothing. A new file the export wrote is its sidecar entry; a new
+          ;; file on disk the sidecar does not record holds at most this sync's
+          ;; version; a removed file's delete likewise; a delete of a file the
+          ;; export did not write was there when it was made. Anything else --
+          ;; an undone add or delete, or another export's newer draft -- is
+          ;; refused, and the remedy is a fresh export (a delete is undone by
+          ;; `discard delete-<holder>`): one live export per writer once
+          ;; structural drafts exist.
+          ;; (new <path> <pid> <bytes> <v>), (delete <path> <holder> <v>) and
+          ;; (skip <path> <kind> <key> <v>) each carry the version predicted
+          (let* ((predicted (lambda (kind key)
+                              (let ((x (find (lambda (x)
+                                               (or (and (eq? (car x) kind) (equal? (caddr x) key))
+                                                   (and (eq? (car x) 'skip) (eq? (caddr x) kind) (equal? (cadddr x) key))))
+                                             structural-plan)))
+                                (and x (cond ((eq? (car x) 'skip) (list-ref x 4))
+                                             ((eq? kind 'new) (list-ref x 4))
+                                             (else (cadddr x)))))))
+                 (allowed
+                   (append
+                     (map (lambda (n) (let ((pid (provisional-id (car n))))
+                                        (list (cons 'new pid) (car n)
+                                              (if (assoc (car n) on-disk)
+                                                  (list (cadr n) (or (predicted 'new pid) (cadr n)))
+                                                  (list (cadr n))))))
+                          news)
+                     (map (lambda (f) (let ((pid (provisional-id (car f))))
+                                        (list (cons 'new pid) (car f) (list (predicted 'new pid)))))
+                          added)
+                     (map (lambda (f) (list (cons 'delete (list-ref f 4)) (car f) (list (predicted 'delete (list-ref f 4)))))
+                          removed)))
+                 (exported-holders (filter values (map (lambda (f) (list-ref f 4)) files))))
+            (for-each
+              (lambda (i)
+                (let* ((kind (car i)) (key (value (cdr i) (if (eq? kind 'new) 'provisional 'holder)))
+                       (v (value (cdr i) 'version)) (a (assoc (cons kind key) allowed)))
+                  (cond
+                    ((and a (member v (caddr a))) #t)
+                    ((and (not a) (eq? kind 'delete) (not (member key exported-holders))) #t)
+                    (else
+                     (refuse 'draft-changed
+                             (list 'file (if a (cadr a) (value (cdr i) 'path)))
+                             (list 'key (if (eq? kind 'new) key (string-append "delete-" key)))
+                             (list 'held v)
+                             (list 'remedy (if (eq? kind 'new)
+                                               'export-again
+                                               (list 'export-again (list 'discard (string-append "delete-" key))))))))))
+              live)
+            ;; AND A NEW FILE THE EXPORT WROTE IS STILL DRAFTED when it is kept:
+            ;; one discarded since is not written again from this export (a
+            ;; discard's retry, the file still gone, holds nothing and is a skip)
+            (for-each (lambda (n)
+                        (unless (held 'new (provisional-id (car n)))
+                          (refuse 'draft-changed (list 'file (car n)) (list 'key (provisional-id (car n)))
+                                  '(held none) '(remedy export-again))))
+                      news-kept))
           (for-each
             (lambda (p)
               (when (eq? (car p) 'write)
@@ -390,9 +578,31 @@
                   (unless (equal? v (list-ref p 5))
                     (refuse 'version-unexpected (list 'block id) (list 'version v) (list 'predicted (list-ref p 5)))))))
             plan)
-          (list 'ok (list 'files-changed (length changed)) (list 'writes (length written))
+          (for-each
+            (lambda (p)
+              (case (car p)
+                ((new delete)
+                 (let* ((a (if (eq? (car p) 'new)
+                               (working-new! store #f writer (cadr p) (lang-fields (language-for-path (cadr p)))
+                                             (cadddr p) (format "~s" cut))
+                               (working-delete! store #f writer (caddr p) (format "~s" cut))))
+                        (v (and (pair? a) (eq? (car a) 'ok) (value (cdr a) 'version)))
+                        (predicted (if (eq? (car p) 'new) (list-ref p 4) (cadddr p))))
+                   (unless v (refuse 'write-refused (list 'file (cadr p)) (list 'answer a)))
+                   (set! written (cons (list (car p) (cadr p) (list 'version v)) written))
+                   (unless (equal? v predicted)
+                     (refuse 'version-unexpected (list 'file (cadr p)) (list 'version v) (list 'predicted predicted)))))
+                ((discard)
+                 (let ((a (working-discard! store writer (caddr p))))
+                   (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'discard-refused (list 'file (cadr p)) (list 'answer a)))
+                   (set! written (cons (list 'discarded (cadr p)) written))))
+                (else #f)))
+            structural-plan)
+          (list 'ok (list 'files-changed (length changed)) (list 'files-added (length added))
+                (list 'files-removed (length removed)) (list 'writes (length written))
                 (cons 'written (reverse written))
-                (cons 'skipped (map cadr (filter (lambda (p) (eq? (car p) 'skip)) plan)))))))))
+                (cons 'skipped (append (map cadr (filter (lambda (p) (eq? (car p) 'skip)) plan))
+                                       (map cadr (filter (lambda (p) (eq? (car p) 'skip)) structural-plan))))))))))
 
 ;; ---- the command line ------------------------------------------------------------------
 

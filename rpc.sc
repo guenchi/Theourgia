@@ -87,13 +87,21 @@
   ;; `(cut <c>)` is the committed cut the view stands on, `(working #t)`
   ;; says the files are a view and not the committed state. A plain export
   ;; answers byte for byte as before.
-  (define (working-export store state writer export)
-    (let* ((view #f)
-           (a (export (lambda ()
-                        (let ((w (working-state store state writer)))
-                          (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
-                          (set! view (caddr w))
-                          view)))))
+  ;; WITH-OVERLAY, when given and true: EXPORT is also given the working
+  ;; tree's overlay, a procedure from the projection's outputs to the outputs
+  ;; with the writer's structural drafts laid over them (working.sc,
+  ;; working-structural-outputs), read in the same working-state call.
+  (define (working-export store state writer export . with-overlay)
+    (let* ((view #f) (structural '())
+           (view-thunk (lambda ()
+                         (let ((w (working-state store state writer)))
+                           (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                           (set! view (caddr w))
+                           (set! structural (if (> (length w) 4) (list-ref w 4) '()))
+                           view)))
+           (a (if (and (pair? with-overlay) (car with-overlay))
+                  (export view-thunk (lambda (outputs) (working-structural-outputs view structural outputs)))
+                  (export view-thunk))))
       (if (and view (pair? a) (eq? 'ok (car a)))
           (append a (list (list 'cut (reduce-applied-cut view)) '(working #t)))
           a)))
@@ -689,7 +697,8 @@
   ;; the shape is that an agent can read it back -- a form this library
   ;; could not itself read would be a poor thing to hand out.
   (define commit-usage
-    '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>] ["--premises" <datum>]))
+    '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>]
+             ["--working-new" <provisional>=<version>] ["--working-delete" <holder>=<version>] ["--premises" <datum>]))
 
   (define outline-usage
     '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"]))
@@ -1284,7 +1293,7 @@
       (list 'diagnostics '(diagnostics ["--writer" <name>])
             "List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src; one whose range cannot be mapped onto a single block's src is listed with (at unmappable)." #f 'daemon)
       (list 'discard '(discard <block> ["--writer" <name>])
-            "Throw away a writer's draft of a block." #f 'daemon)
+            "Throw away a writer's draft of a block, or a structural draft by its key (a new file's provisional id, or delete- and the holder)." #f 'daemon)
       (list 'batch '(batch <intents> ["--premises" <datum>])
             "Carry out several changes as one request." #f 'daemon)
       (list 'split-suggest '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])
@@ -1691,7 +1700,9 @@
               (let ((answer (working-commit! store writer
                                              args actor req
                                              (argument-option-list options "--working-version")
-                                             (argument-option options "--premises"))))
+                                             (argument-option options "--premises")
+                                             (argument-option-list options "--working-new")
+                                             (argument-option-list options "--working-delete"))))
                 (if (and (pair? answer) (eq? (car answer) 'error))
                     (append answer (list (list 'usage commit-usage)))
                     answer))))
@@ -1762,10 +1773,11 @@
                                    ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view)))))
                           ((argument-option options "--working")
                            (working-export store state writer
-                             (lambda (view)
+                             (lambda (view overlay)
                                (if (argument-option options "--datum")
                                    ((datum-project-entry 'export-datum-view) store (car args) view)
-                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view)))))
+                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view overlay)))
+                             #t))
                           ((argument-option options "--datum") ((datum-project-entry 'export-datum) store (car args)))
                           (else ((code-project-entry 'export-code) store (car args) (argument-option options "--raw"))))))
                   (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])))))

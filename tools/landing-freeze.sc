@@ -34,6 +34,11 @@
 ;;   read differs from the dump;
 ;; - the draft list is read again at the end, and must still be the one
 ;;   dumped, so a freeze does not report a draft list a writer has since left.
+;; - THE STRUCTURAL DRAFTS (new and delete, working.sc) are frozen beside the
+;;   block drafts: listed, dumped, checked in the view by key and version; the
+;;   tree is the view's with them laid over it (working.sc,
+;;   working-structural-outputs: a new file written, a deleted one left out),
+;;   and CHANGED.sexp names each as (path <p> added) or (path <p> removed).
 ;; A draft written during the freeze is refused (error drafts-changed ...),
 ;; with nothing written after it; the directory is left for the coder to
 ;; remove before freezing again.
@@ -43,7 +48,7 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) store-state-at-cut)
-        (only (theourgia working) working-state)
+        (only (theourgia working) working-state working-structural-outputs)
         (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
@@ -76,22 +81,32 @@
       (close-port from) (close-port err)
       (read (open-string-input-port (if (eof-object? text) "" text))))))
 
-;; -> ((<block> . <version>) ...), sorted: the writer's live drafts now
+;; A STRUCTURAL DRAFT'S KEY in a frozen list: its provisional id, or delete-
+;; and its holder (the names working.sc files them under)
+(define (structural-key-of item)
+  (if (eq? (car item) 'new) (clause 'provisional item) (string-append "delete-" (clause 'holder item))))
+;; -> ((<block or structural key> . <version>) ...), sorted: the writer's live
+;; drafts now
 (define (listed store writer)
   (let ((a (rpc-dispatch store (list 'drafts "--writer" writer) actor)))
     (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'drafts-refused a))
-    (list-sort (lambda (x y) (string<? (car x) (car y)))
-               (map (lambda (d) (cons (clause 'block d) (clause 'version d)))
-                    (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft)))
-                            (let ((i (assq 'items (cdr a)))) (if i (cdr i) '())))))))
+    (let ((items (let ((i (assq 'items (cdr a)))) (if i (cdr i) '()))))
+      (list-sort (lambda (x y) (string<? (car x) (car y)))
+                 (append
+                   (map (lambda (d) (cons (clause 'block d) (clause 'version d)))
+                        (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) items))
+                   (map (lambda (d) (cons (structural-key-of d) (clause 'version d)))
+                        (filter (lambda (d) (and (pair? d) (memq (car d) '(new delete)))) items)))))))
 
 (define (freeze store writer dir)
   (let ((dumped (run-dump store writer dir)))
     (unless (and (pair? dumped) (eq? (car dumped) 'ok)) (refuse 'dump-refused dumped))
     (let* ((manifest (read (open-string-input-port (utf8->string (entry-bytes (string-append dir "/DRAFTS.sexp"))))))
-           (drafts (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) (cdr manifest)))
+           (drafts (filter (lambda (d) (and (pair? d) (memq (car d) '(draft new delete)))) (cdr manifest)))
            (frozen (list-sort (lambda (x y) (string<? (car x) (car y)))
-                              (map (lambda (d) (cons (clause 'block d) (clause 'version d))) drafts)))
+                              (map (lambda (d) (cons (if (eq? (car d) 'draft) (clause 'block d) (structural-key-of d))
+                                                     (clause 'version d)))
+                                   drafts)))
            (pinned (clause 'pinned-cut manifest)))
       (when (null? drafts) (refuse 'nothing-to-freeze (list 'dir dir)))
       (hold-point! 'freeze-after-dump)
@@ -110,9 +125,18 @@
 (define (freeze-view store writer dir frozen pinned count)
   (let* ((w (working-state store #f writer))
          (view (if (and (pair? w) (eq? (car w) 'ok)) (caddr w) (refuse 'working-view-refused w)))
-         ;; the view's own drafts, each (<id> <version> <based-on> <bytes>)
+         ;; the view's own drafts, each (<id> <version> <based-on> <bytes>), and
+         ;; its structural entries by key
+         (structural (if (> (length w) 4) (list-ref w 4) '()))
          (in-view (list-sort (lambda (x y) (string<? (car x) (car y)))
-                             (map (lambda (d) (cons (car d) (cadr d))) (cadddr w))))
+                             (append (map (lambda (d) (cons (car d) (cadr d))) (cadddr w))
+                                     (map (lambda (e) (cons (if (eq? (car e) 'working-new) (list-ref e 3)
+                                                                (string-append "delete-" (list-ref e 3)))
+                                                            (list-ref e 4)))
+                                          structural))))
+         ;; THE TREE'S FILES: the view's raw projection with the structural drafts
+         ;; laid over it, ((<path> <bytes>) ...)
+         (tree-files (working-structural-outputs view structural (raw-projection view)))
          (base (store-state-at-cut store #f (format "~s" pinned))))
     (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
     (unless (equal? in-view frozen)
@@ -126,7 +150,7 @@
     ;; above them: a tree written to such a volume would not be the view's,
     ;; and identical bytes under both names would pass the read-back. Refused
     ;; on any volume, as the export's result must not depend on where it lands.
-    (let ((paths (map car (raw-projection view))))
+    (let ((paths (map car tree-files)))
       (for-each (lambda (kind)
                   (let ((groups (ambiguous-groups kind paths)))
                     (unless (null? groups)
@@ -134,12 +158,13 @@
                 ;; each folding a volume may apply, and the two together: a
                 ;; pair can meet under both and under neither alone
                 '(case normalisation both)))
-    (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view))))
+    (let ((e (export-code-view store (string-append dir "/tree") #t (lambda () view)
+                               (lambda (outputs) (working-structural-outputs view structural outputs)))))
       (unless (and (pair? e) (eq? (car e) 'ok)) (refuse 'export-refused e)))
     ;; ((<path> <bytes>) ...), the files export-code-view wrote, each read
     ;; back: on a volume that folds case or normalisation two paths can
     ;; land on one file, and the tree would not be the view's
-    (let ((files (raw-projection view)))
+    (let ((files tree-files))
       (for-each (lambda (f)
                   (unless (equal? (entry-bytes (string-append dir "/tree/" (car f))) (cadr f))
                     (refuse 'export-mismatch (list 'path (car f)))))
@@ -154,11 +179,24 @@
       (let ((now (listed store writer)))
         (unless (equal? now frozen)
           (refuse 'drafts-changed (list 'dumped frozen) (list 'now now))))
-      (overwrite-entry! (string-append dir "/CHANGED.sexp")
-                        (string->utf8 (string-append (format "~s" changed) "\n")))
-      (list 'ok (list 'frozen count)
-            (list 'changed (length (let ((i (assq 'items (cdr changed)))) (if i (cdr i) '()))))
-            (list 'dir dir)))))
+      ;; A NEW FILE IS ADDED AND A DELETED ONE REMOVED, beside the contents
+      ;; changed-files-between compared over the view
+      (let* ((news (filter (lambda (e) (eq? (car e) 'working-new)) structural))
+             (gone (map (lambda (o) (car o))
+                        (filter (lambda (o) (not (assoc (car o) tree-files))) (raw-projection view))))
+             (changed (if (and (pair? changed) (eq? (car changed) 'ok) (assq 'items (cdr changed)))
+                          (cons 'ok
+                                (map (lambda (c) (if (and (pair? c) (eq? (car c) 'items))
+                                                     (append c (map (lambda (e) (list 'path (list-ref e 5) 'added)) news)
+                                                             (map (lambda (p) (list 'path p 'removed)) gone))
+                                                     c))
+                                     (cdr changed)))
+                          changed)))
+        (overwrite-entry! (string-append dir "/CHANGED.sexp")
+                          (string->utf8 (string-append (format "~s" changed) "\n")))
+        (list 'ok (list 'frozen count)
+              (list 'changed (length (let ((i (assq 'items (cdr changed)))) (if i (cdr i) '()))))
+              (list 'dir dir))))))
 
 (define (main args)
   (if (not (and (= 4 (length args)) (string=? (cadr args) "--writer")))

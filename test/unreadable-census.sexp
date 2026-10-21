@@ -41,7 +41,7 @@
   ("tools/edit-export.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("tools/edit-export.sc" (export) entry-name-type 2 keep a "not writer layout: the export directory and its sidecar directory, each name asked with an lstat; anything present refuses export-exists before anything is written")
   ("tools/edit-sync.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("tools/edit-sync.sc" (read-sidecar) entry-name-type 2 keep a "not writer layout: the sidecar file and each pristine copy beside an edited export, asked with an lstat; one that is not a regular file refuses missing-sidecar or pristine-damaged before any write")
+  ("tools/edit-sync.sc" (read-sidecar) entry-name-type 3 keep a "not writer layout: the sidecar file and each pristine copy beside an edited export (a block file's and a new file's), asked with an lstat; one that is not a regular file refuses missing-sidecar or pristine-damaged before any write")
   ("tools/edit-sync.sc" (files-under) entry-name-type 1 keep a "not writer layout: the edited export directory, walked without following a link; an entry that is neither a regular file nor a directory refuses unexpected-entry before any write")
   ("tools/edit-sync.sc" (sync) entry-name-type 1 keep a "not writer layout: the edited export directory itself; one that is not a directory refuses removed-file before any write")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -1347,11 +1347,26 @@
    fact b
    "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (found in review)"
    (failure (#t #f)))
+  ("working.sc" (state-at-cut-text) 1 guard
+   (#t)
+   propagate b
+   "state-at-cut-text: the state at a structural draft's cut; a cut that does not parse or cannot be rebuilt is #f, refused cut-unusable, as working-write!'s historical reduction"
+   (e (#t #f)))
+  ("working.sc" (retire-structural!) 1 guard
+   (#t)
+   fact b
+   "retire-structural!, a commit that landed: the draft lock cannot be taken, or a structural draft cannot be read or removed -- the commit keeps its answer and carries (cleanup-failed (path draft.lock) (reason r)) (U10), as retire!"
+   (failure (#t (cleanup-failed (lock-path store writer) failure))))
   ("working.sc" (commit-premises) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a
    "a commit's --premises the store cannot check (premise-not-understood, premise-inconsistent) is the commit's answer; the set is the request's argument, never a file"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("working.sc" (deferred-read) 1 guard
+   ((unreadable-entry? e) #t)
+   fact b
+   "deferred-read: a commit's named structural draft that cannot be read is deferred as a block draft's is (working-commit!'s first handler), so a request carrying --req still reaches the store's replay"
+   (e ((unreadable-entry? e) (list #f (unreadable-answer e) #t)) (#t (list #f (if (and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "A draft could not be read")))) #f))))
   ("working.sc" (working-commit!) 1 guard
    ((unreadable-entry? e) #t)
    fact b

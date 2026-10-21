@@ -32,7 +32,18 @@
 ;;
 ;; THEN THE DRAFTS ARE COMMITTED BY NAME, each with its frozen version
 ;; (--working-version <block>=<version>), so a draft rewritten since the
-;; freeze is refused by the store (working-version-changed).
+;; freeze is refused by the store (working-version-changed). The structural
+;; drafts go in the same commit, one batch (working.sc): --working-new
+;; <provisional id>=<version> and --working-delete <holder>=<version>; the
+;; answer's (created (<provisional id> . <holder id>) ...) is the mapping a
+;; review collected after the landing reads.
+;;
+;; A REFUSED COMMIT LEAVES THE START TAG it was preceded by: the tag binds the
+;; pinned cut and is harmless, but it is a record, so the store's cut has
+;; moved past the drafts' (a retry is cut-moved): the drafts are rebased onto
+;; it (a structural draft discarded and written again) and frozen again, and
+;; the next attempt takes a new start name (the old one is refused
+;; start-tag-exists).
 ;;
 ;; THE START TAG, with --start <tag>: publish-landing publishes from a start
 ;; tag whose export is the git base, so the landing names its start before it
@@ -96,11 +107,13 @@
   (let* ((m (read-manifest dir))
          (writer (clause 'writer m))
          (pinned (clause 'pinned-cut m))
-         (drafts (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) (cdr m))))
+         (drafts (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft))) (cdr m)))
+         (news (filter (lambda (d) (and (pair? d) (eq? (car d) 'new))) (cdr m)))
+         (deletes (filter (lambda (d) (and (pair? d) (eq? (car d) 'delete))) (cdr m))))
     (let ((here (store-id-of store)))
       (unless (equal? (clause 'store m) here)
         (refuse 'other-store (list 'frozen (clause 'store m)) (list 'here here))))
-    (when (null? drafts) (refuse 'nothing-frozen (list 'dir dir)))
+    (when (and (null? drafts) (null? news) (null? deletes)) (refuse 'nothing-frozen (list 'dir dir)))
     (when (and start (tag-bound? store start)) (refuse 'start-tag-exists (list 'tag start)))
     (let ((now (reduce-applied-cut (open-and-reduce store))))
       (unless (equal? (cut-set now) (cut-set pinned))
@@ -114,7 +127,17 @@
                                            (map (lambda (d)
                                                   (list "--working-version"
                                                         (string-append (clause 'block d) "=" (clause 'version d))))
-                                                drafts)))
+                                                drafts))
+                                    (apply append
+                                           (map (lambda (d)
+                                                  (list "--working-new"
+                                                        (string-append (clause 'provisional d) "=" (clause 'version d))))
+                                                news))
+                                    (apply append
+                                           (map (lambda (d)
+                                                  (list "--working-delete"
+                                                        (string-append (clause 'holder d) "=" (clause 'version d))))
+                                                deletes)))
                             actor)))
       (if (and bound (pair? a) (eq? (car a) 'ok))
           (append a (list (list 'start-tag start (list 'cut bound))))

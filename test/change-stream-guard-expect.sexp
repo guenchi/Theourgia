@@ -5,4 +5,4 @@
 ;; every listed one to be observed, so an item that means to change a
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
-()
+((describe "the catalogue's commit usage gains --working-new and --working-delete, and discard's description names a structural draft"))

@@ -15,13 +15,15 @@
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit! latest-parent-cut
           working-restore! working-snapshot working-baseline working-state
+          working-new! working-delete! working-structural provisional-id provisional-id?
+          working-structural-outputs
           ;; NOTE: EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
           ;; the lock a write takes, and a seam holding a path spelled
           ;; independently would be holding a different file on the day
           ;; this one moved -- and would still look like it was working.
           (rename (lock-path draft-lock-path)))
-  (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
+  (import (rnrs) (only (rnrs eval) eval environment) (theourgia store) (theourgia reduce) (theourgia baseline)
           (theourgia wire) (theourgia digest) (only (theourgia markers) src-text)
           (only (theourgia log) store-writers writer-directory atomic-write!
                 remember-unreadable-notes! unreadable-behind
@@ -329,7 +331,9 @@
   (define (working-write! store state supplied id bytes rebase? . provenance)
     (needing-writer supplied (lambda ()
     (well-formed-first
-      (lambda () (and (not (block-name? id)) '(error bad-request invalid-block-id)))
+      (lambda () (cond ((provisional-id? id) '(error bad-request provisional-target))
+                       ((not (block-name? id)) '(error bad-request invalid-block-id))
+                       (else #f)))
       (lambda ()
     (problem
       (lambda ()
@@ -530,6 +534,15 @@
     (problem (lambda ()
       (let ((writer (requested-writer store supplied)))
         (cond ((not writer) (invalid-writer))
+              ;; A STRUCTURAL DRAFT IS NAMED BY ITS KEY: a new file's provisional
+              ;; id, or delete- and the holder it deletes.
+              ((structural-key? id)
+               (with-draft-lock store writer
+                 (lambda ()
+                   (let ((p (structural-path store writer id)))
+                     (unless (eq? (read-entry p) 'absent)
+                       (unlink! p) (directory-entry-durable! p 'working))
+                     (list 'ok (list 'discarded id))))))
               ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
               ;; says so -- `safe-id?` admits names no block can have.
               ((not (block-name? id)) '(error bad-request invalid-block-id))
@@ -539,6 +552,327 @@
                       (unless (eq? (read-entry p) 'absent)
                         (unlink! p) (directory-entry-durable! p 'working))
                       (list 'ok (list 'discarded id)))))))))))
+
+;; ---- structural drafts: a file created, a file deleted -------------------
+  ;;
+  ;; A DRAFT THAT CREATES OR DELETES A FILE, beside the per-block drafts. They
+  ;; live in the writer's `structural` area, apart from `working`, whose
+  ;; readers take every name there for a block's envelope:
+  ;;
+  ;;   (working-new 1 <writer> <provisional id> <version> <path> <language> <cut> <bytes>)
+  ;;     file <provisional id>: a file with these bytes at this path, split into
+  ;;     blocks when committed, as the importer splits one (landing-files.sc);
+  ;;   (working-delete 1 <writer> <holder> <version> <based-on> <cut>)
+  ;;     file delete-<holder>: the file this holder carries, deleted, its
+  ;;     based-on the file's baseline at the cut (reduce.sc, file-baseline).
+  ;;
+  ;; THE PROVISIONAL ID is reduce.sc's provisional-id of the path. THE VERSION is structural-version's (reduce.sc),
+  ;; recomputed wherever an envelope is read. THE CUT is the draft's baseline,
+  ;; joined into the working view's as a block draft's is; a draft written
+  ;; again keeps its cut, as a block draft keeps its baseline.
+  ;; NOTE: CODE-PROJECT IS ENTERED, NOT IMPORTED: this library loads at every
+  ;; start, and only a structural draft needs a file's projection.
+  (define (code-project-entry name) (eval name (environment '(theourgia code-project))))
+  (define (hex-digest bytes) (bytevector->hex (sha256 bytes)))
+  ;; a cut as the text a reader of a cut parses (parse-cut)
+  (define (cut->text c) (call-with-string-output-port (lambda (p) (write c p))))
+  (define (delete-key holder) (string-append "delete-" holder))
+  (define (structural-key? x)
+    (or (provisional-id? x)
+        (and (string? x) (> (string-length x) 7) (string=? (substring x 0 7) "delete-")
+             (block-name? (substring x 7 (string-length x))))))
+  (define (structural-path store writer key) (string-append (area store writer "structural") "/" key))
+  (define (new-entry? x)
+    (and (list? x) (= (length x) 9) (eq? (car x) 'working-new) (equal? (cadr x) 1)
+         (safe-id? (list-ref x 2)) (provisional-id? (list-ref x 3)) (string? (list-ref x 4))
+         (string? (list-ref x 5)) (list? (list-ref x 6)) (list? (list-ref x 7)) (bytevector? (list-ref x 8))))
+  (define (delete-entry? x)
+    (and (list? x) (= (length x) 7) (eq? (car x) 'working-delete) (equal? (cadr x) 1)
+         (safe-id? (list-ref x 2)) (block-name? (list-ref x 3)) (string? (list-ref x 4))
+         (string? (list-ref x 5)) (list? (list-ref x 6))))
+  (define (entry-key e) (if (eq? (car e) 'working-new) (list-ref e 3) (delete-key (list-ref e 3))))
+  ;; -> the inputs of the version an envelope's own fields name:
+  ;; (kind subject content cut)
+  (define (structural-inputs e)
+    (if (eq? (car e) 'working-new)
+        (list 'new (list-ref e 5) (hex-digest (list-ref e 8)) (list-ref e 7))
+        (list 'delete (list-ref e 3) (list-ref e 5) (list-ref e 6))))
+  (define (structural-at store writer key)
+    (let ((bytes (read-entry (structural-path store writer key))))
+      (and (not (eq? bytes 'absent))
+           (let ((x (storable-decode (string->sexpr-extended (utf8->string bytes)))))
+             (unless (and (or (new-entry? x) (delete-entry? x)) (equal? writer (list-ref x 2))
+                          (equal? key (entry-key x)))
+               (assertion-violation 'working "Corrupt structural envelope" key))
+             (let ((inputs (structural-inputs x)))
+               (unless (and (apply structural-version? inputs) (equal? (list-ref x 4) (apply structural-version inputs)))
+                 (raise (list 'working-error 'version-mismatch key))))
+             x))))
+  ;; A NAMED STRUCTURAL DRAFT IS READ AS A BLOCK DRAFT IS by a commit: a
+  ;; failure is deferred, not raised, so a request carrying --req still
+  ;; reaches the store, whose replay of it needs no draft at all; without
+  ;; --req the failure is the answer, as for a block draft.
+  ;; -> (<entry or #f> <deferred answer or #f> <unreadable?>)
+  (define (deferred-read thunk)
+    (guard (e ((unreadable-entry? e) (list #f (unreadable-answer e) #t))
+              (#t (list #f
+                        (if (and (pair? e) (eq? 'working-error (car e)))
+                            (list 'error 'working-unavailable (list 'reason (cadr e)))
+                            (list 'error 'working-unavailable
+                                  (list 'message (if (message-condition? e) (condition-message e) "A draft could not be read"))))
+                        #f)))
+      (list (thunk) #f #f)))
+  ;; -> the writer's live structural entries, by key
+  (define (active-structural store writer state)
+    (let ((names (list-entries (area store writer "structural"))))
+      (if (eq? names 'absent) '()
+          (filter (lambda (e) (not (consumed? store state e)))
+                  (map (lambda (k) (structural-at store writer k))
+                       (filter structural-key? (list-sort string<? names)))))))
+  ;; -> (<bytes> <child ids>) of the live text file HOLDER carries in STATE, or #f
+  (define (file-content state holder)
+    (and (block-name? holder)
+         (eq? 'text ((code-project-entry 'code-field) state holder 'mode))
+         (equal? 'file ((code-project-entry 'code-field) state holder 'kind))
+         (let ((file ((code-project-entry 'projected-file) state holder)))
+           (and (pair? file)
+                (let ((children (cadddr file)))
+                  (list (apply-bytes (map (lambda (c) (let ((s (cadr c))) (if (string? s) (string->utf8 s) s)))
+                                          children))
+                        (map car children)))))))
+  (define (apply-bytes parts)
+    (let ((out (make-bytevector (fold-left + 0 (map bytevector-length parts)))))
+      (let loop ((ps parts) (at 0))
+        (if (null? ps) out
+            (begin (bytevector-copy! (car ps) 0 out at (bytevector-length (car ps)))
+                   (loop (cdr ps) (+ at (bytevector-length (car ps)))))))))
+  ;; -> the live text holder of PATH in STATE, or #f
+  (define (path-holder state path)
+    (find (lambda (id) (and (eq? 'text ((code-project-entry 'code-field) state id 'mode))
+                            (equal? path ((code-project-entry 'code-field) state id 'path))))
+          ((code-project-entry 'code-files) state)))
+  ;; -> the file baseline of HOLDER in STATE, or #f
+  (define (holder-baseline state holder)
+    (let ((c (file-content state holder))) (and c (file-baseline (car c) (cadr c)))))
+  ;; -> the state at CUT-TEXT, or STATE when there is none; #f when unusable
+  (define (state-at-cut-text store state cut-text)
+    (if cut-text
+        (guard (e (#t #f))
+          (let ((parsed (parse-cut cut-text))) (and parsed (let ((s (open-and-reduce store parsed))) (and (reduction? s) s)))))
+        state))
+  ;; SAVE A STRUCTURAL ENTRY, or answer the one saved when it is already this
+  ;; version: a retry writes nothing.
+  (define (save-structural! store writer entry)
+    (with-draft-lock store writer
+      (lambda ()
+        (let ((old (structural-at store writer (entry-key entry))))
+          (unless (and old (equal? (list-ref old 4) (list-ref entry 4)))
+            (ensure-area! store writer "structural")
+            (atomic-write! (structural-path store writer (entry-key entry)) (encode entry) 'working))
+          (list 'ok (list 'saved (entry-key entry)) (list 'writer writer) (list 'version (list-ref entry 4)))))))
+  ;; A FILE CREATED: PATH with BYTES, LANGUAGE its language fields as the
+  ;; importer gives them. CUT-TEXT is the cut it stands on (the export's), kept
+  ;; from an earlier draft of the same path when there is one. Refused: the
+  ;; path held by a live file at that cut (path-exists), bytes that are not
+  ;; text (not-text), an unusable cut.
+  (define (working-new! store state supplied path language bytes cut-text)
+    (needing-writer supplied (lambda ()
+    (problem (lambda ()
+      (let* ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
+        (cond
+          ((not writer) (invalid-writer))
+          ((not (and (string? path) (> (string-length path) 0) (bytevector? bytes) (list? language)))
+           '(error bad-request invalid-new-file))
+          ((not (src-text bytes)) (list 'error 'not-text (list 'path path)))
+          (else
+           (let* ((pid (provisional-id path))
+                  (old (structural-at store writer pid))
+                  (live-old (and old (not (consumed? store state old)) old))
+                  (at (if live-old (state-at-cut-text store state (cut->text (list-ref live-old 7)))
+                          (state-at-cut-text store state cut-text))))
+             (cond
+               ((not at) '(error invalid-working-baseline (reason cut-unusable)))
+               ((path-holder at path) (list 'error 'path-exists (list 'path path)))
+               (else
+                (let ((cut (if live-old (list-ref live-old 7) (reduce-applied-cut at))))
+                  (save-structural! store writer
+                    (list 'working-new 1 writer pid
+                          (structural-version 'new path (hex-digest bytes) cut)
+                          path language cut bytes))))))))))))))
+  ;; A FILE DELETED: the file HOLDER carries, at CUT-TEXT (kept from an earlier
+  ;; draft as above). Refused: no live text file holder there (not-a-file).
+  (define (working-delete! store state supplied holder cut-text)
+    (needing-writer supplied (lambda ()
+    (problem (lambda ()
+      (let* ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
+        (cond
+          ((not writer) (invalid-writer))
+          ((not (block-name? holder)) '(error bad-request invalid-block-id))
+          (else
+           (let* ((old (structural-at store writer (delete-key holder)))
+                  (live-old (and old (not (consumed? store state old)) old))
+                  (at (if live-old (state-at-cut-text store state (cut->text (list-ref live-old 6)))
+                          (state-at-cut-text store state cut-text)))
+                  (based-on (and at (holder-baseline at holder))))
+             (cond
+               ((not at) '(error invalid-working-baseline (reason cut-unusable)))
+               ((not based-on) (list 'error 'not-a-file (list 'holder holder)))
+               (else
+                (let ((cut (if live-old (list-ref live-old 6) (reduce-applied-cut at))))
+                  (save-structural! store writer
+                    (list 'working-delete 1 writer holder
+                          (structural-version 'delete holder based-on cut)
+                          based-on cut))))))))))))))
+  ;; -> (ok <writer> <items>): each live structural draft, (new (provisional
+  ;; <id>) (path <p>) (version <v>) (cut <c>) (bytes <b>)) or (delete (holder
+  ;; <h>) (version <v>) (based-on <b>) (cut <c>))
+  (define (working-structural store state supplied)
+    (needing-writer supplied (lambda ()
+    (problem (lambda ()
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
+        (if (not writer)
+            (invalid-writer)
+            (list 'ok writer
+                  (map structural-item
+                       (with-draft-lock store writer (lambda () (active-structural store writer state))))))))))))
+  (define (structural-item e)
+    (if (eq? (car e) 'working-new)
+        (list 'new (list 'provisional (list-ref e 3)) (list 'path (list-ref e 5)) (list 'version (list-ref e 4))
+              (list 'cut (list-ref e 7)) (list 'bytes (list-ref e 8)))
+        (list 'delete (list 'holder (list-ref e 3)) (list 'version (list-ref e 4))
+              (list 'based-on (list-ref e 5)) (list 'cut (list-ref e 6)))))
+
+;; THE WORKING TREE'S FILES: OUTPUTS, ((<path> <bytes>) ...) of VIEW, with
+  ;; STRUCTURAL, the entries working-state answered beside VIEW, laid over
+  ;; them: each new file added, each deleted holder's file left out
+  ;; (landing-files.sc, structural-outputs).
+  (define (working-structural-outputs view structural outputs)
+    (if (null? structural)
+        outputs
+        ((eval 'structural-outputs (environment '(theourgia landing-files)))
+         outputs
+         (map (lambda (e) (list (list-ref e 5) (list-ref e 8)))
+              (filter (lambda (e) (eq? (car e) 'working-new)) structural))
+         (map (lambda (e) ((code-project-entry 'code-field) view (list-ref e 3) 'path))
+              (filter (lambda (e) (eq? (car e) 'working-delete)) structural)))))
+
+  ;; ---- committing structural drafts ---------------------------------------
+  ;;
+  ;; NAMED BY KEY AND VERSION: --working-new <provisional id>=<version> and
+  ;; --working-delete <holder>=<version>. -> ((new|delete <key> <version>) ...),
+  ;; or #f when one is malformed, named twice, or deletes a holder the request
+  ;; also names as a block (one consumes item a block).
+  (define (parse-structural new-specs delete-specs ids)
+    (let ((parsed (append (map (lambda (s) (let ((p (split-at-equals s)))
+                                             (and p (provisional-id? (car p)) (> (string-length (cdr p)) 0)
+                                                  (list 'new (car p) (cdr p)))))
+                               new-specs)
+                          (map (lambda (s) (let ((p (split-at-equals s)))
+                                             (and p (block-name? (car p)) (> (string-length (cdr p)) 0)
+                                                  (not (member (car p) ids))
+                                                  (list 'delete (car p) (cdr p)))))
+                               delete-specs))))
+      (and (for-all values parsed)
+           (no-duplicate-blocks? (map (lambda (n) (cons (structural-file-key n) (caddr n))) parsed))
+           parsed)))
+  (define (structural-file-key n) (if (eq? (car n) 'new) (cadr n) (delete-key (cadr n))))
+  (define (structural-pair n) (cons (structural-file-key n) (caddr n)))
+  ;; THE PREMISES OF THE NAMED STRUCTURAL DRAFTS, against CURRENT, the state
+  ;; the write lands on: each is there at the version named; a new file's path
+  ;; is held by no live file; a deleted file is still the file its draft was
+  ;; written on (bytes and children: its baseline). -> #f, or the refusal.
+  (define (structural-preflight current structural)
+    (let loop ((ps structural))
+      (if (null? ps) #f
+          (let ((n (car (car ps))) (e (cdr (car ps))))
+            (cond
+              ((not e) (list 'error 'no-draft (list 'blocks (structural-file-key n))))
+              ((not (equal? (caddr n) (list-ref e 4)))
+               (list 'error 'working-version-changed (list 'blocks (structural-file-key n))))
+              ((and (eq? (car e) 'working-new) (path-holder current (list-ref e 5)))
+               (list 'error 'path-exists (list 'path (list-ref e 5))))
+              ((and (eq? (car e) 'working-delete)
+                    (not (equal? (holder-baseline current (list-ref e 3)) (list-ref e 5))))
+               (list 'error 'stale-delete (list 'holder (list-ref e 3))))
+              (else (loop (cdr ps))))))))
+  ;; THE INTENTS OF THE STRUCTURAL DRAFTS, appended to a batch whose first
+  ;; FIRST intents come before them: each new file by the importer's own
+  ;; construction, each deleted file's children and then its holder, read from
+  ;; CURRENT. -> (values <intents> ((<provisional id> . <holder insert's index>) ...))
+  (define (structural-intents current first entries)
+    (if (null? entries)
+        (values '() '())
+        (let ((lf (lambda (name) (eval name (environment '(theourgia landing-files))))))
+          (let loop ((es entries) (k first) (out '()) (at '()))
+            (if (null? es)
+                (values (apply append (reverse out)) (reverse at))
+                (let* ((e (car es))
+                       (is (if (eq? (car e) 'working-new)
+                               ((lf 'file-new-intents) (list-ref e 5) (list-ref e 8) k)
+                               (let ((c (file-content current (list-ref e 3))))
+                                 ((lf 'file-delete-intents) (list-ref e 3) (if c (cadr c) '()))))))
+                  (loop (cdr es) (+ k (length is)) (cons is out)
+                        (if (eq? (car e) 'working-new) (cons (cons (list-ref e 3) k) at) at))))))))
+  ;; A STRUCTURAL DRAFT IN A PLAN'S consumes: (<key id> <version> <content> <cut>),
+  ;; the content the version is computed from (the new file's bytes' sha256,
+  ;; or the deleted file's baseline)
+  (define (structural-consumes-item e)
+    (if (eq? (car e) 'working-new)
+        (list (list-ref e 3) (list-ref e 4) (hex-digest (list-ref e 8)) (list-ref e 7))
+        (list (list-ref e 3) (list-ref e 4) (list-ref e 5) (list-ref e 6))))
+  ;; THE STRUCTURAL DRAFTS A COMMIT CONSUMED, removed when their envelope is
+  ;; still the one consumed (a later write keeps its file). -> #f, or the
+  ;; cleanup failure.
+  (define (retire-structural! store writer entries)
+    (and (pair? entries)
+         (guard (failure (#t (cleanup-failed (lock-path store writer) failure)))
+           (with-draft-lock store writer
+             (lambda ()
+               (for-each (lambda (e)
+                           (let* ((k (entry-key e)) (now (structural-at store writer k)))
+                             (when (and now (equal? (list-ref now 4) (list-ref e 4)))
+                               (let ((p (structural-path store writer k)))
+                                 (unlink! p) (directory-entry-durable! p 'working)))))
+                         entries)
+               #f)))))
+  ;; A REPLAY'S MAPPING IS READ FROM THE RECORDS IT REPEATS: the drafts were
+  ;; retired by the commit it replays, so no holder is known here, and its
+  ;; answer is (ok (replay #t) (event <writer . seq>)) with no events to read.
+  ;; The record at that event carries the request's identity in its actor, as
+  ;; every record of the request does; read in the order they were applied,
+  ;; each holder insert among them names its path, whose provisional id this
+  ;; request names, and its own event is the id it made.
+  (define (replayed-created-clause state answers pids)
+    (let* ((ev (exists (lambda (a) (and (pair? a) (eq? (car a) 'ok)
+                                        (let ((c (assq 'event (cdr a)))) (and c (pair? (cdr c)) (pair? (cadr c)) (cadr c)))))
+                       answers))
+           (identity-of (lambda (r) (let ((a (list-ref r 4))) (and (list? a) (> (length a) 2) (list-ref a 1)))))
+           (history (let ((h (assq 'request-history (state->rows state)))) (if h (cadr h) '())))
+           (at (and ev (find (lambda (r) (and (equal? (car r) (car ev)) (equal? (cadr r) (cdr ev)))) history)))
+           (identity (and at (identity-of at)))
+           (made (if identity
+                     (filter values
+                             (map (lambda (r)
+                                    (let ((p (list-ref r 3)))
+                                      (and (equal? (identity-of r) identity)
+                                           (pair? p) (eq? (car p) 'put) (pair? (cdr p)) (list? (cadr p))
+                                           (let ((kind (assq 'kind (cadr p))) (path (assq 'path (cadr p))))
+                                             (and kind (eq? (cdr kind) 'file) path (string? (cdr path))
+                                                  (let ((pid (provisional-id (cdr path))))
+                                                    (and (member pid pids) (cons pid (block-id (car r) (cadr r))))))))))
+                                  history))
+                     '())))
+      (if (null? made) '() (list (cons 'created made)))))
+  ;; (created (<provisional id> . <holder id>) ...): each new file's committed
+  ;; holder, read from its insert's answer; nothing when no file was created
+  (define (created-clause holders answers)
+    (define (made-id answer)
+      (let ((ev (and (pair? answer) (eq? (car answer) 'ok) (assq 'events (cdr answer)))))
+        (and ev (pair? (cadr ev)) (block-id (car (car (cadr ev))) (cdr (car (cadr ev)))))))
+    (if (null? holders) '()
+        (list (cons 'created (map (lambda (h) (cons (car h) (and (< (cdr h) (length answers))
+                                                                 (made-id (list-ref answers (cdr h))))))
+                                  holders)))))
 
   ;; "NOTHING TO COMMIT" IS READ, NOT STORED.
   ;;
@@ -625,10 +959,15 @@
             (list 'ok writer
                   (with-draft-lock store writer
                     (lambda ()
-                      (entries-cut (active-entries store writer state)))))))))))))
+                      (cut-join (entries-cut (active-entries store writer state))
+                                (structural-cut (active-structural store writer state))))))))))))))
 
   (define (entries-cut entries)
     (fold-left (lambda (acc e) (cut-join acc (list-ref e 6))) '() entries))
+  ;; the join of the structural entries' cuts (a new file's is its eighth
+  ;; field, a delete's its seventh)
+  (define (structural-cut entries)
+    (fold-left (lambda (acc e) (cut-join acc (list-ref e (if (eq? (car e) 'working-new) 7 6)))) '() entries))
 
   ;; ---- the working view as a reduction -------------------------------------
   ;;
@@ -659,6 +998,12 @@
   ;;
   ;; KEY: A DRAFT CANNOT INSERT A BLOCK -- working-write! refuses an id the
   ;; state does not hold -- so the view has the committed state's blocks.
+  ;; NOTE: THE STRUCTURAL DRAFTS ARE THE ANSWER'S FIFTH ELEMENT, not part of
+  ;; the view: a new file has no blocks until it is committed, so only the
+  ;; file trees built from this answer (export-code --working, edit-export,
+  ;; landing-freeze: landing-files.sc structural-outputs) show it, and a
+  ;; deleted file is hidden there alone. outline, context and read --working
+  ;; read the view and show neither (v1).
   (define (working-state store state supplied)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
@@ -666,9 +1011,12 @@
         (cond
           ((not writer) (invalid-writer))
           (else
-            (let* ((entries (with-draft-lock store writer
-                              (lambda () (active-entries store writer state))))
-                   (cut (entries-cut entries))
+            (let* ((both (with-draft-lock store writer
+                           (lambda () (cons (active-entries store writer state)
+                                            (active-structural store writer state)))))
+                   (entries (car both))
+                   (structural (cdr both))
+                   (cut (cut-join (entries-cut entries) (structural-cut structural)))
                    (drafts (map entry-draft entries))
                    (base (if (null? cut) (open-and-reduce store) (open-and-reduce store cut))))
               (if (not (reduction? base))
@@ -676,7 +1024,7 @@
                   (let ((fields (draft-fields base drafts)))
                     (if (eq? (car fields) 'error)
                         fields
-                        (list 'ok writer (overlay-drafts base (cdr fields)) drafts)))))))))))))
+                        (list 'ok writer (overlay-drafts base (cdr fields)) drafts structural)))))))))))))
 
   ;; `(ok (<id> <field> . <value>) ...)`, the stored field each draft
   ;; replaces, or the refusal of the first draft that does not read.
@@ -788,7 +1136,17 @@
                              (list 'plan-event (cadr r)))))
                    (filter (lambda (r)
                              (not (present? (path-for store writer (car (car r))))))
-                           (state-revoked state writer))))))))))))))
+                           (state-revoked state writer)))
+              ;; THE STRUCTURAL DRAFTS, after the block drafts: (new ...) and
+              ;; (delete ...) items, the new file's bytes left out of the
+              ;; listing (working-structural reads them)
+              (map (lambda (e)
+                     (let ((item (structural-item e)))
+                       (if (eq? (car item) 'new)
+                           (append (list 'new (list 'writer writer))
+                                   (filter (lambda (c) (not (eq? (car c) 'bytes))) (cdr item)))
+                           (append (list 'delete (list 'writer writer)) (cdr item)))))
+                   (active-structural store writer state)))))))))))))
 
   ;; THE (block . version) PAIRS THIS REQUEST IS ABOUT.
   ;;
@@ -1096,6 +1454,7 @@
        (run (lambda ()
         (cond
           ((not writer) (invalid-writer))
+          ((exists provisional-id? ids) '(error bad-request provisional-target))
           ((not (for-all safe-id? ids)) '(error bad-request invalid-block-id))
           ((not (= (length ids) (length (list-sort string<? (let loop ((xs ids) (out '()))
                                       (if (null? xs) out (loop (cdr xs) (if (member (car xs) out) out (cons (car xs) out)))))))))
@@ -1139,6 +1498,12 @@
                                        (no-duplicate-blocks? parsed)
                                        parsed))))
                     (version-shape-ok (or (null? selected-version) (and named #t)))
+                    ;; THE STRUCTURAL DRAFTS THIS REQUEST NAMES: ((new|delete <key>
+                    ;; <version>) ...), or #f for a malformed one. A structural
+                    ;; draft is committed only when named.
+                    (structural-named (parse-structural (if (> (length rest) 2) (or (list-ref rest 2) '()) '())
+                                                        (if (> (length rest) 3) (or (list-ref rest 3) '()) '())
+                                                        ids))
                     (selection (cond ((pair? ids) ids)
                                      (named (map car named))
                                      (else '())))
@@ -1163,9 +1528,26 @@
                                                               "A draft could not be read")))))
                                     '()))
                         (let ((all (active-entries store writer state)))
-                          (if (null? ids) all
-                              (filter (lambda (e) (member (list-ref e 3) ids)) all)))))
-                    (missing (filter (lambda (id) (not (exists (lambda (e) (equal? id (list-ref e 3))) entries))) selection))
+                          (cond ((pair? ids) (filter (lambda (e) (member (list-ref e 3) ids)) all))
+                                ;; NAMING ONLY STRUCTURAL DRAFTS SELECTS NO BLOCK DRAFT
+                                ((and (null? selected-version) (pair? structural-named)) '())
+                                (else all)))))
+                    ;; ((<named> . <entry or #f>) ...), each named structural draft
+                    ;; and its live envelope
+                    (structural
+                      (if (list? structural-named)
+                          (map (lambda (n)
+                                 (cons n (let* ((r (deferred-read (lambda () (structural-at store writer (structural-file-key n)))))
+                                                (x (car r)))
+                                           (when (cadr r)
+                                             (unless read-failure (set! read-failure (cadr r)))
+                                             (when (caddr r) (set! unreadable-failure #t)))
+                                           (and x (not (consumed? store state x)) x))))
+                               structural-named)
+                          '()))
+                    (structural-entries (filter values (map cdr structural)))
+                    (missing (append (filter (lambda (id) (not (exists (lambda (e) (equal? id (list-ref e 3))) entries))) selection)
+                                     (map (lambda (p) (cadr (car p))) (filter (lambda (p) (not (cdr p))) structural))))
                     ;; KEY: AN UNCHANGED DRAFT HAS NO SUB-OPERATION.
                     ;;
                     ;; Its bytes are what the block already says, so a
@@ -1246,11 +1628,12 @@
                     ;; `req-mismatch`. Sorting the suffix does not
                     ;; canonicalise a list that still carries the
                     ;; original order in front of it.
-                    (effective (and version-shape-ok
+                    (effective (and version-shape-ok pairs (list? structural-named)
                                     (make-write-request actor 'commit
                                       (cons writer
                                             (map (lambda (p) (string-append (car p) "\x0;" (cdr p)))
-                                                 pairs))
+                                                 (list-sort (lambda (a b) (string<? (car a) (car b)))
+                                                            (append pairs (map structural-pair structural-named)))))
                                       (list-ref external 4) (list-ref external 5)))))
                   (cond
                     ;; NEVER: NO `no-draft` HERE. §7.5.4 fixes the order:
@@ -1274,6 +1657,7 @@
                     ;; every row in `empty-plan.sc` with `bad-request`
                     ;; where the answer should have been about identity.
                     ((not pairs) '(error bad-request malformed-working-version))
+                    ((not (list? structural-named)) '(error bad-request malformed-working-version))
                     ;; KEY: THE VERSIONS NAME THE SELECTION, AND THE
                     ;; SELECTION IS THE IDENTITY.
                     ;;
@@ -1345,11 +1729,11 @@
                     ;; read, not under the store's lock: nothing is written on
                     ;; this path, so there is no later state to protect), and
                     ;; a refusal retires nothing.
-                    ((and (not supplied-req) (null? intents) (not read-failure)
+                    ((and (not supplied-req) (null? intents) (null? structural) (not read-failure)
                           (or (premises-asked premise-check state)
                               (preflight state entries missing ids pairs)))
                      => (lambda (refusal) (finish refusal)))
-                    ((and (not supplied-req) (null? intents) (not read-failure))
+                    ((and (not supplied-req) (null? intents) (null? structural) (not read-failure))
                      ;; NOTE: THIS ARM ANSWERS THE SAME QUESTION AND USED TO
                      ;; SKIP IT. Nothing is written here -- the request has
                      ;; no identity to record and no sub-operations -- but
@@ -1369,19 +1753,28 @@
                      ;; rebuild the draft.
                      (finish
                      (let* ((live #f)
+                            ;; ((<provisional id> . <index of its holder's insert>) ...)
+                            (holders '())
                             (answers (with-store-write store
-                                       (lambda (current view) (set! live current) intents)
+                                       (lambda (current view)
+                                         (set! live current)
+                                         (let-values (((more at) (structural-intents current (length intents) structural-entries)))
+                                           (set! holders at)
+                                           (append intents more)))
                                       actor effective
                                       (premises-also premise-check
                                         (lambda (current)
-                                          (or read-failure (preflight current entries missing ids pairs))))
+                                          (or read-failure (preflight current entries missing ids pairs)
+                                              (structural-preflight current structural))))
                                       #t
-                                      (and (pair? entries)
+                                      (and (or (pair? entries) (pair? structural-entries))
                                            (list 'consumes writer
-                                                 (map (lambda (e)
-                                                        (list (list-ref e 3) (list-ref e 4)
-                                                              (list-ref e 5) (list-ref e 6)))
-                                                      entries))))))
+                                                 (append
+                                                   (map (lambda (e)
+                                                          (list (list-ref e 3) (list-ref e 4)
+                                                                (list-ref e 5) (list-ref e 6)))
+                                                        entries)
+                                                   (map structural-consumes-item structural-entries)))))))
                        (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers)
                            (begin
                              ;; NEVER: A REPLAY RETIRES NOTHING. The drafts
@@ -1402,6 +1795,7 @@
                                ;; failure is the cleanup clause, with its path and reason.
                                (let ((failed (and (not replay?)
                                                   (or (retire! store writer entries pairs #t)
+                                                      (retire-structural! store writer structural-entries)
                                                       (and unreadable-failure
                                                            (cons 'cleanup-failed (cddr read-failure)))))))
                                ;; KEY: THE CUT IS THE ONE THE WRITE PRODUCED, not the
@@ -1427,7 +1821,13 @@
                                                                  writer entries)
                                                  '())))
                                  (with-cleanup
-                                   (append (list 'ok (cons 'items answers)) behind)
+                                   (append (list 'ok (cons 'items answers)) behind
+                                           (if replay?
+                                               (replayed-created-clause
+                                                 state answers
+                                                 (map cadr (filter (lambda (n) (eq? (car n) 'new))
+                                                                   (if (list? structural-named) structural-named '()))))
+                                               (created-clause holders answers)))
                                    failed)))))
                            (if (= (length answers) 1) (car answers) (batch-answer answers)))))))))))))))))))))
 )

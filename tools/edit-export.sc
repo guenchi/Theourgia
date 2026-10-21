@@ -33,12 +33,19 @@
 ;;   (edit-export (format 1) (store "<id>") (writer "<W>") (cut <cut>)
 ;;                (base "<40-hex>")
 ;;     (file "<path>" (mode "<git mode>" | none) (pristine "<n>.bytes")
-;;                    (sha256 "<64-hex>")
+;;                    (sha256 "<64-hex>") (holder "<id>")
 ;;       (block "<id>" (span <start> <end>) (committed "<64-hex>")
 ;;              [(draft (version "<64-hex>") (based-on "<64-hex>") (cut <cut>))])
 ;;       ...)
+;;     ...
+;;     (new "<path>" (version "<64-hex>") (sha256 "<64-hex>") (pristine "<n>.bytes") (cut <cut>))
 ;;     ...)
 ;;
+;; - new: a file W's structural draft creates (working.sc, working-new), written
+;;   from the draft's bytes; its version and cut are the draft's, so edit-sync
+;;   writes the same entry again when the file changes. A file W's structural
+;;   draft deletes is not written and has no entry.
+;; - holder: the block carrying the file, which a delete draft names.
 ;; - cut: the committed cut the view stands on (the export's working cut).
 ;; - mode: the file's mode in the git tree the store was published from,
 ;;   since the export writes every file 0644 and keeps no mode; `none` for a
@@ -170,9 +177,12 @@
         (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
         (let* ((view (caddr w))
                (drafts (cadddr w))
+               (structural (if (> (length w) 4) (list-ref w 4) '()))
+               (news (filter (lambda (e) (eq? (car e) 'working-new)) structural))
+               (deleted (map (lambda (e) (list-ref e 3)) (filter (lambda (e) (eq? (car e) 'working-delete)) structural)))
                (cut (reduce-applied-cut view))
                (committed (if (null? drafts) view (open-and-reduce store cut)))
-               (files (projected-files view))
+               (files (filter (lambda (f) (not (member (cadr f) deleted))) (projected-files view)))
                ;; the blocks the files hold; a draft on any other block
                ;; (one in no text file) has no span and is not read
                (exported (let ((h (make-hashtable string-hash string=?)))
@@ -212,16 +222,33 @@
                               (cons (append (list 'file rel
                                                   (list 'mode (hashtable-ref modes rel 'none))
                                                   (list 'pristine pristine)
-                                                  (list 'sha256 (hash-of bytes)))
+                                                  (list 'sha256 (hash-of bytes))
+                                                  (list 'holder (cadr f)))
                                             (reverse out))
                                     entries)))))
-                (let ((datum (append (list 'edit-export '(format 1) (list 'store store-id) (list 'writer writer)
-                                           (list 'cut cut) (list 'base base))
-                                     (reverse entries)))
+                (let* ((new-entries
+                         (let new-loop ((ns news) (k k) (out '()))
+                           (if (null? ns)
+                               (reverse out)
+                               (let* ((e (car ns)) (rel (list-ref e 5)) (bytes (list-ref e 8))
+                                      (pristine (string-append (number->string k) ".bytes"))
+                                      (path (string-append dir "/" rel)))
+                                 (mkdir-p! (parent-of path))
+                                 (overwrite-entry! path bytes)
+                                 (overwrite-entry! (string-append side "/pristine/" pristine) bytes)
+                                 (new-loop (cdr ns) (+ k 1)
+                                           (cons (list 'new rel (list 'version (list-ref e 4)) (list 'sha256 (hash-of bytes))
+                                                       (list 'pristine pristine) (list 'cut (list-ref e 7)))
+                                                 out))))))
+                       (datum (append (list 'edit-export '(format 1) (list 'store store-id) (list 'writer writer)
+                                            (list 'cut cut) (list 'base base))
+                                      (reverse entries)
+                                      new-entries))
                       (tmp (string-append side "/SIDECAR.sexp.tmp")))
                   (overwrite-entry! tmp (string->utf8 (format "~s\n" datum)))
                   (rename-over! tmp (string-append side "/SIDECAR.sexp"))
                   (list 'ok (list 'files (length files)) (list 'blocks blocks) (list 'drafts (length drafts))
+                        (list 'new-files (length news)) (list 'deleted-files (length deleted))
                         (list 'cut cut) (list 'sidecar (string-append side "/SIDECAR.sexp")))))))))))
 
 ;; ---- the command line ------------------------------------------------------------------
