@@ -669,7 +669,8 @@
 (call-with-output-file (string-append root "/bin/theourgia")
   (lambda (p) (put-string p (string-append "#!/bin/sh\nexec env " (env "") "scheme --script '" tree "/theourgia.sc' \"$@\"\n"))))
 (call-with-output-file (string-append root "/bin/tmux")
-  (lambda (p) (put-string p (string-append "#!/bin/sh\necho \"$@\" >> '" root "/tmux.log'\n"))))
+  (lambda (p) (put-string p (string-append "#!/bin/sh\necho \"$@\" >> '" root "/tmux.log'\n"
+                                           "perl -MTime::HiRes=time -e 'printf \"%.3f\\n\", time' >> '" root "/tmux.times'\n"))))
 (system (string-append "chmod +x '" root "/bin/theourgia' '" root "/bin/tmux'"))
 (define hooks-text (file-text "../contrib/codex-hooks.json"))
 (define (hook-command-in text event)
@@ -779,18 +780,35 @@
       '(#t #f #t))
 ;; THE ENTER IS ITS OWN KEY PRESS: a terminal UI reads fast text followed by
 ;; Enter as one paste and leaves the line unsubmitted, so the doorbell sends
-;; the line, then Enter alone. Every Enter in the log is a call of its own.
-(want "B the doorbell's Enter is a send of its own, after the line"
-      (let* ((log (file-text (string-append root "/tmux.log")))
-             (count (lambda (sub)
-                      (let loop ((i 0) (n 0))
-                        (let ((at (let find ((j i))
-                                    (cond ((> (+ j (string-length sub)) (string-length log)) #f)
-                                          ((string=? (substring log j (+ j (string-length sub))) sub) j)
-                                          (else (find (+ j 1)))))))
-                          (if at (loop (+ at (string-length sub)) (+ n 1)) n))))))
-        (let ((all (count "Enter")) (alone (count "send-keys -t pane Enter\n")))
-          (list (> alone 0) (= all alone))))
+;; the line, pauses, then sends Enter alone. The fake tmux logs each call and
+;; its time on a line of its own (tmux.log, tmux.times): every mail line is
+;; followed at once by a lone Enter call, at least 0.25 s later, and no Enter
+;; stands anywhere else.
+(define (lines-of text)
+  (let loop ((cs (string->list text)) (cur '()) (out '()))
+    (cond ((null? cs) (reverse (if (null? cur) out (cons (list->string (reverse cur)) out))))
+          ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+          (else (loop (cdr cs) (cons (car cs) cur) out)))))
+(define (mail-line? l) (let ((m "mail: block "))
+                         (let find ((j 0))
+                           (cond ((> (+ j (string-length m)) (string-length l)) #f)
+                                 ((string=? (substring l j (+ j (string-length m))) m) #t)
+                                 (else (find (+ j 1)))))))
+(want "B the doorbell sends each mail line, then after a pause Enter alone, and no Enter elsewhere"
+      (let* ((ls (lines-of (file-text (string-append root "/tmux.log"))))
+             (ts (map string->number (lines-of (file-text (string-append root "/tmux.times")))))
+             (enter "send-keys -t pane Enter"))
+        (let loop ((ls ls) (ts ts) (mails 0) (ok (= (length ls) (length ts))))
+          (cond ((null? ls) (list (> mails 0) ok))
+                ((mail-line? (car ls))
+                 (let ((paired (and (pair? (cdr ls)) (string=? (cadr ls) enter)
+                                    (pair? (cdr ts)) (car ts) (cadr ts)
+                                    (>= (- (cadr ts) (car ts)) 1/4))))
+                   (if paired
+                       (loop (cddr ls) (cddr ts) (+ mails 1) ok)
+                       (loop (cdr ls) (cdr ts) (+ mails 1) #f))))
+                ((string=? (car ls) enter) (loop (cdr ls) (cdr ts) mails #f))
+                (else (loop (cdr ls) (cdr ts) mails ok)))))
       '(#t #t))
 
 ;; ---- 3.5: three routes to one message ---------------------------------------
