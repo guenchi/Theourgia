@@ -777,6 +777,21 @@
       (in-order (string? rang) (string-contains? (file-text (string-append root "/tmux.log")) other)
                 (string-contains? (file-text (string-append root "/tmux.log")) "-t pane "))
       '(#t #f #t))
+;; THE ENTER IS ITS OWN KEY PRESS: a terminal UI reads fast text followed by
+;; Enter as one paste and leaves the line unsubmitted, so the doorbell sends
+;; the line, then Enter alone. Every Enter in the log is a call of its own.
+(want "B the doorbell's Enter is a send of its own, after the line"
+      (let* ((log (file-text (string-append root "/tmux.log")))
+             (count (lambda (sub)
+                      (let loop ((i 0) (n 0))
+                        (let ((at (let find ((j i))
+                                    (cond ((> (+ j (string-length sub)) (string-length log)) #f)
+                                          ((string=? (substring log j (+ j (string-length sub))) sub) j)
+                                          (else (find (+ j 1)))))))
+                          (if at (loop (+ at (string-length sub)) (+ n 1)) n))))))
+        (let ((all (count "Enter")) (alone (count "send-keys -t pane Enter\n")))
+          (list (> alone 0) (= all alone))))
+      '(#t #t))
 
 ;; ---- 3.5: three routes to one message ---------------------------------------
 ;;

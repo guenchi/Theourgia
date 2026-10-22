@@ -927,6 +927,27 @@
         (if (field (cadr out) "result" "tools") 'served (list 'said (cadr out)))
         'served))
 
+;; ONLY A CURSOR ASKS FOR A PAGE: a client may send params with no cursor (an
+;; empty object, or a cursor that is null), and that is the whole listing; a
+;; cursor with a value is refused, there being one page.
+(let ((out (talk (list hello ready
+                       "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":{}}"
+                       "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\",\"params\":{\"cursor\":null}}"
+                       "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\",\"params\":{\"cursor\":\"x\"}}"
+                       "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{\"_meta\":{\"progressToken\":1}}}"))))
+  (want "MC-08b a listing whose params are {} is served"
+        (if (field (list-ref out 1) "result" "tools") 'served (list 'said (list-ref out 1)))
+        'served)
+  (want "MC-08b a listing whose cursor is null is served"
+        (if (field (list-ref out 2) "result" "tools") 'served (list 'said (list-ref out 2)))
+        'served)
+  (want "MC-08b a listing with a cursor value is refused -32602, no pagination"
+        (list (code-of (list-ref out 3)) (field (list-ref out 3) "error" "message"))
+        '(-32602 "Pagination is not available"))
+  (want "MC-08b a listing whose params carry other members and no cursor is served"
+        (if (field (list-ref out 4) "result" "tools") 'served (list 'said (list-ref out 4)))
+        'served))
+
 
 ;; ---- MC-11 collecting the children a start leaves behind -----------------
 ;;

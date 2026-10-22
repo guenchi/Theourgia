@@ -1029,8 +1029,13 @@
          ((string=? method "initialize") (do-initialize identity params))
          ((string=? method "ping") (list 'result identity "{}"))
          ((not session-ready) (list 'error identity -32600 "Session is not initialized"))
+         ;; ONLY A CURSOR ASKS FOR A PAGE: params absent, {}, other members, or
+         ;; a cursor that is null answer the whole listing (a client may send
+         ;; params with no cursor at all); a cursor with a value is refused,
+         ;; since there is one page.
          ((string=? method "tools/list")
-          (if (not (null? params))
+          (if (let ((cursor (and (object? params) (assoc "cursor" params))))
+                (and cursor (not (eq? (cdr cursor) 'null))))
               (list 'error identity -32602 "Pagination is not available")
               ;; A refusal is an ERROR -32000 "core did not
               ;; start" whose data is the refusal object; not-sent keeps its

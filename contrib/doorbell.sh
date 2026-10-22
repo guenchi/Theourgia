@@ -70,7 +70,12 @@ while :; do
     [ -n "$cut" ] || continue
     for id in $(frame_ids "$line"); do
       if addressed "$id" "$cut"; then
-        tmux send-keys -t "$target" "mail: block $id at $cut" Enter
+        # The line and its Enter go as two sends: a terminal UI that reads
+        # fast text followed by Enter as one paste leaves the line in its
+        # input box unsubmitted, and the pause makes the Enter a key press.
+        tmux send-keys -t "$target" "mail: block $id at $cut"
+        sleep 0.3
+        tmux send-keys -t "$target" Enter
       fi
     done
   done
