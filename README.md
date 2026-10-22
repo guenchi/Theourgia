@@ -1031,16 +1031,18 @@ search exactly as before.
 
     (query (<goal>) ("--relations"))
 
-A language of queries and rules over the committed state at one cut, and
-nothing else: it reads no log, runs no code, writes nothing, and takes no
+Manteia, a language of queries and rules over the committed state at one
+cut, and nothing else: it reads no log, runs no code, writes nothing, and takes no
 rule over the wire. A TERM is a constant (a string, a symbol, an exact
 integer, or a list of those as the second argument of `member`), a
 variable (a symbol starting with `?`), or `_`, a variable never reported
 and never joined. A GOAL is a fact relation, a rule of the library, a test,
 or `(and <goal> ...)`; an `and` inside an `and` is its goals in place. A rule body is a conjunction read left to right;
 several rules with one head are a disjunction, and a rule may call itself.
-There is no negation: every answer is the least model of the rules, and
-the same whatever order the facts were written in.
+A library rule has no negation and builds no value: the library's answer is
+the least model of its rules, the same whatever order the facts were
+written in. Negation and aggregates are the forms below (`not`, `count`,
+`sum`, `min`, `max`), which stand only outside the library.
 
 It answers every binding of the goal's named variables, in the order they
 first appear, one row each:
@@ -1247,10 +1249,14 @@ Rules of the library:
 working on a block, within a budget, with the receipt a commit gives back.
 `--for` takes any live block T; its UNIT is T and everything under it, its
 SCOPE the unit and what the unit depends on, transitively. It writes
-nothing, reads no log, runs no user code and keeps nothing between
-requests. An unknown or deleted id is answered as `read` answers it.
+nothing, reads no log and runs no user code. Under the daemon it runs in
+the query session `query` uses, kept across requests (see "The query
+session" under `serve`): what an earlier request derived may be reused,
+and the answer is the one a fresh session would give, with the budget
+exception described there. An unknown or deleted id is answered as `read`
+answers it.
 
-What MUST be shown is the answer of five queries of the query language,
+What MUST be shown is the answer of five queries of Manteia,
 run in one session with T's id written into each:
 
     (and (hard T ?h ?role ?about) (validity ?h ?v))
@@ -1350,9 +1356,10 @@ notes one per line, the `insufficient`, `excluded` and `budget` clauses as
 writer could not be read, follows it. The cut and the versions are `--wire`'s
 only.
 
-## The query and rule language, construct by construct
+## The query and rule language (Manteia), construct by construct
 
-This chapter states what each construct of the language means, with one
+This chapter states what each construct of Manteia, the query and rule
+language, means, with one
 small example each. The language itself is introduced under `query` and
 `rule`, and its relations are the two lists under `query`, which are
 generated from `query.sc`'s own tables and compared with them by a test:
@@ -1391,8 +1398,9 @@ the term written in it is refused `not-a-term`.
 
 ### Goals
 
-A goal is a fact relation, a rule of the library, a test, or `(and <goal>
-...)`, a conjunction: it stands as the whole query (or as a rule's `--where`
+A goal is a fact relation, a rule of the library, a stored relation
+(`derive`), a test, one of the forms `not`, `count`, `sum`, `min` and `max`
+(outside the library; see `query`), or `(and <goal> ...)`, a conjunction: it stands as the whole query (or as a rule's `--where`
 and goal), and an `and` inside an `and` is its goals in place, at any
 depth. It is not allowed in a library rule's body, and an empty `(and)` is
 no goal, nested or not. The goals of a conjunction are solved left to right,
@@ -1427,9 +1435,11 @@ it does not:
     (edge "<a>" depends-on "<b>")   ->  (row)  (vars ())
     (edge "<b>" depends-on "<a>")   ->  no row  (vars ())
 
-There is no negation and no rule builds a value, so every answer is the
-least model of the rules over the facts, whatever order the facts were
-written in, and the evaluation ends.
+A library rule has no negation and builds no value, so the library's answer
+is the least model of its rules over the facts, whatever order the facts
+were written in, and the evaluation ends. The forms that negate or aggregate
+stand only in a query, a rule value or a stored relation's clause, and a
+cycle of stored relations through one is refused `unstratified`.
 
 ### One variable, one value
 
@@ -1607,7 +1617,10 @@ late.
 Makes a new store at `<dir>` for one reader, holding exactly what it is
 asked to review and nothing else. `--cut` is a causal cut, a literal or a
 tag name; `--roots` names a block, and is given once per root (`--roots
-all` names every top-level block); `--for` is the reader's actor name.
+all` names every top-level block, read from the store as it is now, so
+it is refused `(error bad-request (reason roots-all-at-another-cut) (cut
+..) (now ..))` when the scope's cut is not the store's current one);
+`--for` is the reader's actor name.
 `--roots` and `--for` are required, and so is `--cut` unless `--freeze` is
 given.
 
@@ -1657,8 +1670,10 @@ new store exists leaves it as it is and answers `(error scope-failed (dir
 A REVIEW OF A FROZEN CANDIDATE. `--freeze <dir>` names a landing freeze
 (tools/landing-freeze.sc): the cut is its pinned cut (a `--cut` given
 with it must name the same writers at the same sequences, in any order,
-and any other, a tag name included, is refused, `freeze-cut-mismatch`),
-and the copies are the change
+and any other, a tag name included, is refused, `freeze-cut-mismatch`; a
+directory that is not a freeze, or whose `DRAFTS.sexp` cannot be read, is
+`(error bad-request (reason freeze-unreadable) (dir ..))`), and the copies
+are the change
 as it would land. A copied block the freeze has a draft of holds the
 draft's bytes as its `src`, and when they differ from the committed src a
 section titled `before`, with `before-of` (the block's id) and the
@@ -1674,7 +1689,8 @@ answer has `(letter new)`, and `(before <n>)` and `(packet <n>)` after the
 block count. `--packet <file>` holds one datum, `(packet <section> ...)`,
 each `(section (title <t>) [(text <x>)] [(children <section> ...)])`,
 written as sections under the letter copy before the baseline is taken; a
-packet section has no `origin`, so it is not a copy.
+packet section has no `origin`, so it is not a copy. A file that is not one
+such datum is `(error bad-request (reason packet-malformed) (file ..))`.
 
 A SCOPED STORE UNDER ITS OWN HOME. `--home <h>` makes the new store under
 the machine home `<h>` (THEOURGIA_HOME) instead of the caller's: every
@@ -1738,10 +1754,14 @@ results are
 
     (ok (results (letter new) (to <actor>) (letter-copy <id>) (cut <cut>)
                  (roots (<id> ...)) (scope <dir>) (status <s>) (freeze <dir>)
+                 (candidates <id> ...) (own <id> ...)
                  (blocks ...)
                  (proposals (proposal (origin <id>) (scoped <id>) (src <bytes>) (on <id>|letter)) ...)))
 
-where a result that is under neither the letter copy nor another result
+where `candidates` are the scope's live copies of the candidate's blocks
+(each made with an `origin`) and `own` the letter copy and the scope's own
+sections (the `before` copies and the packet); `collect-into` checks both.
+A result that is under neither the letter copy nor another result
 has the parent `root`, and is not a verdict. A PROPOSAL is a copy whose
 `src` the reader changed: its src now, last set by the letter's `to`, is
 not the src it was copied with. It belongs to the first finding about it,
@@ -1805,7 +1825,20 @@ the reader -- never a record of this store; `W` keeps, rewrites or
 discards it. Each is answered `(draft <block> <version> <on>)`, and the
 collected block the proposal belongs to gets `proposed`, a list of
 `(<block> <version>)`, in one more write, not written again when it is
-already there.
+already there. A proposal that is not drafted is answered instead
+`(unresolved <scoped> (origin <id>))` (its origin is still provisional),
+`(unknown <scoped> <block>)` (its origin is no live block here),
+`(already <block>)` (the collected block already records a proposal on that
+block, so a retry does not recreate a draft the receiver discarded or
+rewrote) or `(held <block> <version>)` (`W` already holds a draft of that
+block, which is not overwritten).
+
+Refused, with nothing written: `(error bad-request (reason map-unreadable)
+(file ..))` (the `--map` file is not a landing's answer), `(reason
+results-malformed)` (the results datum is not of this shape), `(reason
+letter-new-needs-a-candidate)` (`--letter new` with a plain letter's
+results) and `(error collect-unwritable (items ..))` (a candidate's results
+this store's validator would refuse).
 
 ### `collect`
 
@@ -1847,7 +1880,10 @@ then carry one message to it, and each one missing leaves the others:
   `PostToolUse` (during a turn) and `UserPromptSubmit` (at the start of
   one). The script asks the store named by `THEOURGIA_STORE` for the
   unread mail of `THEOURGIA_ACTOR` and prints the hook's answer naming
-  each block, or nothing when there is none. Copy the file to
+  each block, or nothing when there is none (exit 0). A query that fails --
+a store it cannot open, a daemon gone, `theourgia` not on the PATH -- is
+not an empty mailbox: it says so on stderr, with the first line of what
+the query printed, and exits 1. Copy the file to
   `~/.codex/hooks.json` with the script's path filled in.
   `contrib/codex-mail.sh`, the script's earlier name, still runs it.
 - THE DOORBELL, for a Codex idle at its prompt, where no hook runs.
@@ -1884,7 +1920,12 @@ another actor's name, or reads the filesystem: on one machine the user
 owns every session, and an actor is a stated name. That is a cooperation
 assumption, not a property of locality. A block's text or a field may
 name an id outside the roots as a string. A reader's edits to the copies
-are not collected; the baseline keeps the copies as they were written.
+are not collected; the baseline keeps the copies as they were written. The
+exception is a review of a frozen candidate (`scope --freeze`): there a
+candidate copy whose `src` the reader changed is a proposal in
+`review-results`, and it becomes a draft for a writer only through
+`collect-into --to-writer <W>`, which `W` keeps, rewrites or discards.
+Nothing is committed by it.
 
 ### Where this runs
 
@@ -2088,7 +2129,7 @@ agreement being by value.
           ("--builtin" <name>) ("--retire") ("--premises" <datum>))
 
 Declares a rule of this store: a statement about the blocks a write touches,
-written as goals of the query language (see `query`) in which `?w` stands for
+written as goals of Manteia (see `query`) in which `?w` stands for
 the block. `--on` names a kind the rule is about, once per kind; `--where`, when
 given, selects among those blocks (a block the selector does not match is not
 judged); `--must` says the goal has at least one row for the block, `--must-not`
@@ -2196,7 +2237,7 @@ other stored relations name as they name the library's. `<value>` is one datum,
 -- the head gives the arity and every column's kind (the kinds of the query
 language: `ID`, `STR`, `SYM`, `INT`, `ANY`, `PARENT`, `NAME-OR-NONE`, `(SYM
 <symbol> ...)`), each clause a pattern of the relation and its body, goals of
-the query language written one after another (no `and`, as in the library): fact relations, tests, the library's relations, other
+Manteia written one after another (no `and`, as in the library): fact relations, tests, the library's relations, other
 stored relations, the relation itself (recursion is allowed, as in the
 library). `--retire` ends it. Declaring the same value again answers `(ok
 (unchanged))` and writes nothing; a later value replaces it for every cut
@@ -2344,7 +2385,10 @@ version and NO bytes: the bytes come from the log.
 A version is looked up in that writer's own revoked consumptions -- the
 drafts a commit took and a later retraction gave back -- so `--writer`
 selects whose list is searched, and the same version can be unknown to
-one writer and restorable by another.
+one writer and restorable by another. A version not in that list is
+`(error unknown-version <version>)`; one whose bytes, read back from the
+log, do not hash to it with the recorded based-on and cut is
+`(error consumes-version-mismatch (block <id>))`, and nothing is written.
 
 ### The working view on disk
 
@@ -2353,7 +2397,9 @@ the committed side and the drafts are the ones `eval --working` uses (no
 `--cut`, no `--latest`). Two things differ today: a code block's text keeps
 its stored bytes in the files where eval reads it as a string, and a datum
 block's draft -- one written before `write` refused a datum block -- is written
-as its body, which eval does not do. The
+as its body, which eval does not do (a datum draft whose text the reader
+refuses is answered `(error working-draft-unreadable (block <id>) (reason
+..))`). The
 committed side is PINNED the same way as eval's -- it
 is the state at the join of the writer's own drafts' cuts, so a commit
 another writer made after those drafts is not in the files -- and every
@@ -2438,7 +2484,12 @@ deleted, then its holder. A new file whose path a live file now holds is
 refused `(error path-exists (path ..))`; a delete whose file changed since
 its draft, `(error stale-delete (holder ..))`; either refuses the whole
 commit before any record. The answer adds `(created (<provisional> .
-<holder id>) ...)`. A draft of a block named by a provisional id is refused
+<holder id>) ...)` and `(pieces ("<provisional>/<K>" . <piece id>) ...)`,
+each new file's code children in the order they were inserted, K from 0
+(the name the review channel gives a piece of a file a freeze adds). A
+replay of the commit, sent again under its `--req`, answers both again,
+read from the request's own records: the holder by its path, its pieces
+by their parent, ordered by the intent index. A draft of a block named by a provisional id is refused
 `(error bad-request provisional-target)`. In this version only the file
 trees built from the working view (`export-code --working`,
 `tools/edit-export.sc`, `tools/landing-freeze.sc`) show a new file and hide
@@ -3123,8 +3174,10 @@ Everything is checked before the worktree changes, each as a refusal:
   `ambiguous-landing`; a contested field reads as missing), a decision whose
   status is `(closed done)` -- a dropped one refuses -- with a 40-hex base
   and a non-empty text (`invalid-landing` with the reason);
-- no `.theourgia-landing-*` entry at the worktree root (`leftover-scratch`:
-  a run that died left it, and the operator removes it); the worktree clean,
+- no `.theourgia-landing-*` entry at the worktree root, and no
+  `theourgia-landing-*` entry in the git directory (`leftover-scratch`,
+  naming them: a run that died left it, and the operator removes it); the
+  path given the worktree's root (`not-a-worktree-root`); the worktree clean,
   untracked files included (`dirty`); its HEAD the base (`wrong-head`);
 - the base equals the start cut's raw export path by path, compared with
   the LITERAL blobs (`git ls-tree` and `git cat-file`, not `git archive`,
@@ -3161,8 +3214,15 @@ paths with A, M or D, each staged blob equal to the projection's bytes (a
 `text`, `eol` or filter attribute would convert them: `staging-converted`)
 and no removed path left in the index (`staged-set-mismatch`); a refusal
 here leaves the worktree staged and says `(state staged)`. It commits with
-the block's text verbatim (`--no-verify`; author and committer from the
-repository's configuration), never pushes, and answers
+the block's text verbatim (`--no-verify`, and every git command it runs
+has `core.hooksPath=/dev/null`, so no hook runs, `prepare-commit-msg`
+included; author and committer from the repository's configuration),
+reads the committed message back and refuses `commit-message-changed`
+unless it is the block's text byte for byte, and a refusal after the
+commit says `(state committed <id>)`. A git command that fails is
+`(error git-failed (command ..) (status ..))`, and an entry of an export
+it reads that is neither a file nor a directory, `unexpected-entry`. It
+never pushes, and answers
 
     (ok (commit <id>) (landing <block>) (base <id>) (added ...) (content ...) (removed ...) (skipped ...))
 
@@ -3191,6 +3251,23 @@ working state. `<dir>` and `<dir>.edit` must not exist (`export-exists`):
 the export removes nothing, so a file left from an earlier export would be
 synced as if the store held it. The sidecar is written last, so an export
 that dies leaves none.
+
+The writer's structural drafts are in the export too: a new file is
+written from its draft, and recorded in the sidecar as `(new "<path>"
+(version <v>) (sha256 <hex>) (pristine <n>.bytes) (cut <cut>))` instead of
+block spans; a deleted holder's file is not written and has no entry; and
+each file's entry names its holder, `(holder <id>)`. It answers `(ok (files
+<n>) (blocks <n>) (drafts <n>) (new-files <n>) (deleted-files <n>) (cut
+<cut>) (sidecar <path>))`. Besides `export-exists`, it refuses a store
+directory that is not a store (`not-a-store`), a git command that fails
+(`git-failed`, with its command, status and stderr; this is also the answer
+to a `--base` that does not resolve to a commit, since `git rev-parse
+--verify <rev>^{commit}` fails first), a `--base` whose resolved id is not
+40 hexadecimal characters (`bad-base`, which a SHA-256 repository's
+64-character ids meet), a draft that changed between the two reads of the
+working state (`drafts-moved`), a block with no committed hash at the cut
+(`no-committed-block`), and a cut the store cannot rebuild
+(`cut-unavailable`).
 
 `edit-sync` diffs each file against its pristine copy by lines and maps each
 hunk's old side to the blocks by `locate`'s rule: a range answers every block
@@ -3238,6 +3315,14 @@ runs before any write, and a refusal writes nothing:
   this sync would write: another write under the same writer),
   `non-text-block`.
 
+Once every check has passed, a write the store still refuses stops the sync
+with the store's answer: `write-refused` (a block draft or a structural one;
+for a delete, `(error not-a-file (holder ..))` when no live text file
+holder is there), `discard-refused` (a new file's draft), and
+`structural-refused` (the writer's structural listing); a write that
+answers another version than the one predicted is `version-unexpected`.
+The writes before it stay, and a second run skips them.
+
 An undrafted block is written on its committed hash at the export's cut, a
 drafted one with its draft's own based-on and cut. A block whose slot
 already holds exactly the version the sync would write is its own earlier
@@ -3269,14 +3354,25 @@ exact bytes per draft of W and `DRAFTS.sexp`, one datum:
     (drafts (store "<store id>") (writer "<W>") (pinned-cut <cut>)
             (draft (block "<id>") (version "<v>") (based-on "<v>") (cut <cut>)
                    (bytes "<n>.bytes") (sha256 "<hex>"))
+            ...
+            (new (provisional "<id>") (path "<p>") (version "<v>") (cut <cut>)
+                 (bytes "<n>.bytes") (sha256 "<hex>"))
+            (delete (holder "<id>") (version "<v>") (based-on "<v>") (cut <cut>))
             ...)
 
-The pinned cut is the join of the drafts' cuts. Each draft is read with
+`new` and `delete` are the writer's structural drafts (a file created, with
+its bytes; a file deleted, with its baseline), after the block drafts; a
+new file's bytes share the numbering of the block drafts' files, and a
+delete has none. The pinned cut is the join of all the entries' cuts. Each draft is read with
 `read --working-info`, checked to be the version `drafts` listed, and its
 bytes, based-on and cut to hash to that version; a draft that is not text,
 or that changed between the two reads, is refused by name
-(`draft-unreadable`, `draft-changed`, `draft-unreproducible`), as is an
-existing directory (`dir-exists`).
+(`draft-unreadable`, `draft-changed`, `draft-unreproducible`, the last
+also for a structural entry whose version its own fields do not give), as
+is an existing directory (`dir-exists`); a draft the listing named that the
+read no longer finds is `draft-gone`, and a listing the store refuses is
+`drafts-refused` (`structural-refused` for the structural listing),
+carrying the store's answer.
 
 `drafts-restore` writes each dumped draft back with its own based-on and
 cut, so it comes back as the dumped version. It works on the same store or
@@ -3289,7 +3385,25 @@ rebased); the recorded cut, replayed here, against itself and the based-on
 writer's slot, which must be empty or hold this very version, left as it is
 (`slot-occupied` otherwise); the bytes must be text that re-encodes exactly
 (`not-text`), and a version a commit has consumed is refused
-(`version-consumed`). It answers `(ok (restored <n>) (already <n>))`.
+(`version-consumed`). A structural entry (a new file or a delete) is also
+checked before any write, but by its own list: its version recomputed from
+its own fields (`draft-unreproducible`), a new file's bytes against their
+sha256 (`bytes-changed`) and as text (`not-text`), its version not consumed
+(`version-consumed`), its recorded cut replayed (`cut-unusable`,
+`cut-not-reproduced`), and its slot empty or holding this very version
+(`slot-occupied`); it is then written back as a structural draft. No
+baseline is compared for it (`baseline-moved` and `baseline-not-at-cut`
+are block checks), so a restored delete is not checked against the file's
+current state: whether it is still current is the commit's to judge, as it
+is for a delete drafted now, and the commit refuses one whose file has
+changed (`stale-delete`). A restore that succeeds does not say that a
+restored delete is current. A manifest that is not one `drafts` datum is
+`manifest-unreadable`; a block the store does not hold, `unknown-block`; a
+listing the store refuses, `drafts-refused` or `structural-refused`; a
+write the store refuses,
+`write-refused`, and one that answers another version than the dumped one,
+`version-not-reproduced`, each naming the draft and carrying the store's
+answer. It answers `(ok (restored <n>) (already <n>))`.
 
 `landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list;
 then the working view, read once and as strictly as `export-code` reads (a
@@ -3299,9 +3413,15 @@ procedure and each file read back (`export-mismatch`), after any two paths a
 volume could fold into one, files or directories, have been refused
 (`paths-ambiguous`); `MANIFEST.sha256` (each file's sha256 and path); and
 `CHANGED.sexp`, `changed-files` between the store at the pinned cut and that
-view. The draft list is then read again. A draft written during the freeze
+view, with `(path <p> added)` for each new file and `(path <p> removed)` for
+each deleted one (the tree holds the structural drafts too: a new file
+written, a deleted file left out). The draft list is then read again. A draft written during the freeze
 refuses it (`drafts-changed`), and the directory is left for the coder to
-remove. It answers `(ok (frozen
+remove. A writer with no draft of either kind is `nothing-to-freeze`; a
+pinned cut the store cannot rebuild, `pinned-cut-unusable`; and a step the
+store refuses is named with the store's answer: `drafts-refused` (the
+listing), `dump-refused`, `working-view-refused`, `export-refused` and
+`changed-files-refused`. It answers `(ok (frozen
 <n>) (changed <k>) (dir <dir>))`.
 
 `landing-commit` reads a freeze's `DRAFTS.sexp` (a freeze's directory, or a
@@ -3316,6 +3436,11 @@ drafts by name, each with its frozen version (`--working-version
 <block>=<version>`), its structural drafts with them in the same commit
 (`--working-new` and `--working-delete`), and prints the commit's answer,
 whose `(created ...)` maps each new file's provisional id to its holder.
+A freeze directory whose `DRAFTS.sexp` is not one `drafts` datum is
+`manifest-unreadable`; one frozen from another store, `(error other-store
+(frozen <id>) (here <id>))`; one holding no draft of either kind,
+`nothing-frozen`; and a start tag the store refuses to bind,
+`(error start-tag-refused (tag <name>) (answer ..))`.
 A commit refused after the start tag was written leaves the tag. The tag
 is a record, so the store's cut has moved past the drafts': they are
 rebased onto it (a structural draft is discarded and written again) and
@@ -3351,7 +3476,10 @@ removal of the old path and the addition of the new (ids do not follow it),
 any other letter is `paths-unsupported`, a changed file that is not text is
 `not-text`, an added path the store cannot hold (a backslash in it) is
 `unsafe-path`, a path git lists that is not its own UTF-8 is `path-not-utf8`,
-and a range with nothing left is `nothing-to-import`.
+and a range with nothing left is `nothing-to-import`. A repository git
+cannot read -- a revision that does not resolve, a git command that fails,
+an object it cannot give -- is `repo-unreadable`, naming the repository and
+what failed.
 
 Before writing, the store's export at its applied cut is compared with the
 git trees by literal bytes, and one of three states is accepted: no import
@@ -3449,6 +3577,7 @@ abbreviated as `...`. An RPC `batch` answer is wrapped once more, as
 | `(error unknown <why>)` | the store cannot tell whether the request ran. It never guesses. |
 | `(error not-written reserved-not-written (sequence <n>))` | the append was reserved and nothing reached the log. Sending the request again runs it. |
 | `(error incomplete-request ...)` | some of the request's sub-operations are on disk and its plan record cannot be found to finish it from. |
+| `(error internal (reason "<message>") ...)` | a verb raised a condition no handler of its own answered; the dispatch answers it with the condition's message instead of failing. A verb that raises an `(error ...)` datum is answered with that datum. |
 
 `unknown` always says why, and the reason is something an operator can act on.
 They fall into three families, and this is not the whole list — the store adds a
@@ -4610,11 +4739,14 @@ was found rather than left for a reader to discover.
     rewrites `<home>/instances.sexp` whole, and entries for stores that
     have been deleted stay in it marked `active`. Measured on the
     development machine: 319 KB, 5421 records, all `active`.
-  * **The export verbs take no `--cut`.** `export-md --working` and
-    `export-code --working` stand on the writer's pinned baseline, as
-    `eval --working` does without options; a historical cut with drafts
-    over it (`eval --cut ... --working`) has no export. The rows for the
-    working exports are in `test/export-working.sc`.
+  * **A past cut has no working export.** `export-md` and `export-code`
+    take `--cut` for the committed state at a past cut, but not together
+    with `--working` or `--writer` (`incompatible-cut-options`):
+    `export-md --working` and `export-code --working` stand on the
+    writer's pinned baseline, as `eval --working` does without options,
+    and a historical cut with drafts over it (`eval --cut ... --working`)
+    has no export. The rows for the working exports are in
+    `test/export-working.sc`.
   * **Twenty-two fixtures define `want` as a procedure**, which evaluates
     both arguments before the call: a row that raises ends the file
     rather than failing. `run-fixtures.sh` counts and names them on every
