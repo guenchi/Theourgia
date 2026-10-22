@@ -872,7 +872,14 @@
         (if (null? made) '() (list (cons 'created made)))
         ;; ITS PIECES are the request's own puts whose parent is the holder,
         ;; resolved in the record, ORDERED BY THE INTENT INDEX (the third of
-        ;; the request actor): a plan's members can apply out of index order.
+        ;; the request actor). The members of a plan are applied by the
+        ;; writer that owns it, in ascending index order (the order a
+        ;; completion writes the missing ones in); a member forged into
+        ;; another writer's segment references a plan that segment does not
+        ;; hold and is held pending-plan, and a forged lower index is refused
+        ;; consumes-version-mismatch (test/drafts-tools.sc, beside ST-LC9).
+        ;; The sort is kept as a defence; whether any other path can hand it
+        ;; out-of-order input is not claimed here.
         (let ((pieces
                 (apply append
                        (map (lambda (m)

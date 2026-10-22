@@ -632,6 +632,46 @@
       (list 'ok 'ok 2
             (map (lambda (k id) (cons (string-append st8-pid "/" (number->string k)) id)) '(0 1) st8-kids)
             (map (lambda (k id) (cons (string-append st8-pid "/" (number->string k)) id)) '(0 1) st8-kids)))
+;; A MIXED LANDING NAMES EVERY PIECE: an ordinary edit, two new files and a
+;; deletion in one landing. The edit is the plan's first intent, so the new
+;; files' inserts do not start at index 0, and each piece the commit names is
+;; the block live at that place under its own holder after the landing.
+(define st9 (imported-store!))
+(define e-sc "(define e 1)\n(define f 2)\n(define g 3)\n")
+(draft! st9 (block-of st9 "a.txt") "one, edited\n")
+(new-draft! st9 "d.sc" c-sc)
+(new-draft! st9 "e.sc" e-sc)
+(delete-draft! st9 "b.txt")
+(define st9-freeze (string-append root "/st9-freeze"))
+(define st9-frozen (tool "landing-freeze" st9 "--writer" W st9-freeze))
+(define st9-landed (tool "landing-commit" st9 st9-freeze))
+(define (st9-kids path) (let ((h (st-file st9 path))) (if h (code-children (open-and-reduce st9) h) '())))
+(define (st9-named path)
+  (let ((pid (if provisional-id (provisional-id path) "none")) (kids (st9-kids path)))
+    (map (lambda (id k) (cons (string-append pid "/" (number->string k)) id)) kids (iota (length kids)))))
+(define (by-name xs) (list-sort (lambda (x y) (string<? (car x) (car y))) xs))
+(want "ST-LC9 a landing of an edit, two new files and a deletion names every piece of both files as the block live at its place under its own holder"
+      (list (head-of st9-frozen) (head-of st9-landed)
+            (map (lambda (p) (length (st9-kids p))) '("d.sc" "e.sc"))
+            (by-name (or (clause 'pieces st9-landed) '()))
+            (by-name (or (clause 'created st9-landed) '()))
+            (live-paths st9)
+            (let ((v (code-field (open-and-reduce st9) (block-of st9 "a.txt") 'src))) (if (bytevector? v) (utf8->string v) v)))
+      (list 'ok 'ok '(2 3)
+            (by-name (append (st9-named "d.sc") (st9-named "e.sc")))
+            (by-name (map (lambda (p) (cons (if provisional-id (provisional-id p) "none") (st-file st9 p))) '("d.sc" "e.sc")))
+            '("a.txt" "d.sc" "e.sc")
+            "one, edited\n"))
+;; NO ROW FOR A REPLAY WHOSE HISTORY APPLIES THE PIECES OUT OF INDEX ORDER.
+;; The replay names a new file's pieces by their intent index. The rule: the
+;; members of a plan are applied by the writer that owns it, in ascending index
+;; order (the order a completion writes the missing ones in); ST-LC9 pins the
+;; pieces of that order. Measured when ST-LC9 was written, and not pinned by a
+;; row: a member forged into another writer's segment references a plan that
+;; segment does not hold and is held pending-plan (check answers verdict
+;; damaged), and a forged lower index is refused consumes-version-mismatch.
+;; Whether any other path can hand the replay out-of-order pieces is not
+;; claimed here.
 ;; A DAMAGED ENVELOPE AT THE REPLAYED REQUEST'S SLOT: the replay needs no draft,
 ;; so the damage is not the answer
 (define st7 (imported-store!))
