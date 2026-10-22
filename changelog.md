@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.3.0 — unreleased
+
+*310 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+
+### Manteia, the rule language
+
+- Column kinds for the rule language, checked statically; kind containment normalises both sides; goals dispatched to one handler per kind in three environments.
+- Stored derived relations, declared by a verb (`derive`) and checked where they are used; a resent rule is its replay; recursive relations kept whole; availability by one search over the reach, the shortest through-chain reported; a relation's through-chain built once a table.
+- `not`, `count`, `sum`, `min` and `max` over a goal; stored relations stratified; a form's table named by its occurrence and group; emptiness read goal by goal.
+- `session-advance`: a session advanced to a later state, its positive strata maintained by delete-and-rederive, the auxiliary session's work charged to the advance; each callee collected once.
+- An `and` nested in an `and` is its goals in place; `supply` from any tool with its version.
+- The README's language chapter, construct by construct, its example answers measured.
+
+### Daemon
+
+- `query` and `context` are published reads of the store process: the publication made current first, no replay while the store has not changed; a query after an outside write sees it (the `theourgia` hooks rely on it).
+- One query session kept by the daemon across requests: reused on the same publication, advanced when the publication moves forward, replaced otherwise; `serve --session-size <entries>` (0 disables); `(name-use syntactic)` reported per answer; the one exception to byte-identity with the local route: a query the local route refuses for its budget may be answered by the daemon.
+- A store whose directory is removed is drained and the daemon exits `store-gone`; an absent store creates nothing.
+
+### Reducer and admission
+
+- Gated arrivals: an arrival's work no longer grows with the number of standing gates (the square of the standing gates per arrival before, the whole fold the cube).
+- The pending queue indexed by what each record waits for: arrivals wake only their waiters; a seq or dep outside the log's envelope refused at `reduce-apply!`; two copies of one event leave the heap in arrival order.
+- An arrival's work independent of the standing gates (the gates as a table in admission; the notes exact); the declaration tables indexed by name and replayed in linear time; the blocks and the pasts found by id; the block structure maintained, not recomputed; the outline's order total.
+- Admission judges only what an arrival can change; a single record naming a plan is judged again when its plan's binding changes.
+
+### Structural drafts
+
+- A draft can create a file or delete one: `working-new` and `working-delete` beside the block drafts, each with its own version and cut; `commit --working-new <provisional>=<version>` and `--working-delete <holder>=<version>`; the commit makes the holder and its pieces by the construction import-git shares, in one batch with the block drafts, and answers `(created ...)` and `(pieces ...)`, also on a replay. edit-sync turns an added file into a new-file draft and a removed one into a delete draft, refusing paths outside the store route's domain (dot-named, not text, a mode other than 100644, a case collision in the resulting tree) and any live structural draft the export does not account for (`draft-changed`, remedy: export again). A new file is shown by the export only (not by outline, context or eval --working).
+
+### The review channel
+
+- `scope --freeze <dir>` reviews a frozen candidate (the copies hold the drafts' bytes, a `before` section the committed text) and writes no main letter; `--packet` adds the questions; `--roots all` copies the whole tree; `--home <h>` gives the scoped store its own home so the reviewer writes its verdict there. review-results answers `pending` until a verdict exists and refuses an incomplete one by name; sources must include a candidate copy. `collect-into --letter new --map <LANDED.sexp> --to-writer <W>` brings the verdict into the main store after the landing, resolving provisional ids and pieces, and turns the reviewer's proposals into drafts for writer W. Cuts are compared as sets. The mail handler is now contrib/mail-hook.sh (codex-mail.sh still runs it), and contrib/claude-hooks.json runs it for Claude Code with `THEOURGIA_ACTOR=claude`; it exits 1 with a line when its query fails, since a failed query is not an empty mailbox.
+
+### Store tools and the git bridge
+
+- `import-git`: a git range absorbed into the store as committed blocks and a tag; one comparison-domain judgement for publication and import.
+- `publish-landing`: the files a landing changed published from the store as one git commit; `landing-commit` tags the start of a landing; `edit-export` and `edit-sync` turn an agent's file edits into a writer's drafts; dump and restore a writer's drafts; the freeze as one script checking the view its tree came from.
+- `changed-files`: the files whose exported bytes or presence differ between two cuts; `locate`: a file's byte or line range, or one diff hunk, to the blocks holding it; `position`: the local writer's last sequence; a named tag's answer carries the cut it bound.
+- Exports at a past cut (`export-code`, `export-md --cut`), judged against the daemon's publication as a read at a cut is.
+
+### Reading and rendering
+
+- A text-mode code block's src and doc given as text; a src held as bytes renders and is measured as its text; a draft beginning with a UTF-8 byte-order mark commits as its bytes; `whereis` nearest finds a name in another case.
+
+### Log, ffi, platform
+
+- An append keeps its own writer's prefix; the tail check lists segments without a stat per entry; the kept prefix seeds past an older empty segment.
+- `path-stat` and `fd-stat`; a child receives this process's environment on every platform, FreeBSD included; reading the environment fails as a spawn failure.
+- A test-only timing seam on the write path (the wrappers a library of their own, decided at expansion).
+
+### Transport and CLI
+
+- `--help` and `-h` answer the verb's usage and touch nothing; the verb libraries entered on first use; a registered verb handed the dispatcher's helpers; a transport option on the stream's route refused by name; a trace line written whole.
+- Programs compiled as program objects at optimize-level 2.
+
+### Fixed
+
+- `split-suggest` reads Scheme character literals, so `#\(` opens nothing and a file with one is no longer a single block; a Scheme library's body is cut at its definitions.
+- A `define-values` definition names its formals, so `whereis` finds it as a definition.
+- A marked export whose last body row would be a marker line but for a trailing carriage return, followed by a pad, now escapes that row; such a file decoded as `invalid-padding` before.
+- `context` finds the blocks relevant to a committed text held as bytes.
+- `adopt` on a store with no local writer is refused `no-local-writer`, before any step; it answered `internal`.
+- `write` given only half a baseline names the missing half: `--based-on` alone is refused `cut-missing`, `--working-cut` alone `based-on-missing`, a working parent's likewise.
+- An error raised out of a verb is answered with the dispatch's clause on every route; the command line ended on an uncaught exception.
+- `diff` checks that each replay covers its cut, and is refused `cut-moved` when one does not.
+
+### Known at this release
+
+- The median start-up, 668 ms over ten runs, is above its 637 ms budget; recorded, with a profiling item open.
+
 ## 1.2.0 — 2026-10-11
 
 *156 commits.* Mail and review between sessions of any vendor through a store, rules and relation effects declared as data and judged before every write, a first import cut at an editor's symbols, stale verifications named by `context`, and a run of fixes found by the first two measurements on the real tree.
