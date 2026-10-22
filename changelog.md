@@ -67,6 +67,7 @@
 - An error raised out of a verb is answered with the dispatch's clause on every route; the command line ended on an uncaught exception.
 - `diff` checks that each replay covers its cut, and is refused `cut-moved` when one does not.
 - An endpoint selector whose field clause held `_` matched nothing, so every link under its relation was refused `relation-endpoint`. `_` now holds for any value of a field the block carries (a contested field holds none), and a new declaration that writes a variable there is refused `selector-value-not-literal`. An earlier declaration with `_` now holds for any value; nothing stored is reinterpreted.
+- The MCP shell refused `tools/list` whenever it carried params, answering "Pagination is not available", so a client that sends params with no cursor (Codex does) could not start; it now serves the whole list and refuses only a cursor with a value. `contrib/doorbell.sh` sends the Enter as its own keystroke after the line, which a combined send left unsubmitted in some terminals.
 
 ### Known at this release
 
