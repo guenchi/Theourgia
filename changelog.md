@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*310 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*315 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -66,6 +66,7 @@
 - `write` given only half a baseline names the missing half: `--based-on` alone is refused `cut-missing`, `--working-cut` alone `based-on-missing`, a working parent's likewise.
 - An error raised out of a verb is answered with the dispatch's clause on every route; the command line ended on an uncaught exception.
 - `diff` checks that each replay covers its cut, and is refused `cut-moved` when one does not.
+- An endpoint selector whose field clause held `_` matched nothing, so every link under its relation was refused `relation-endpoint`. `_` now holds for any value of a field the block carries (a contested field holds none), and a new declaration that writes a variable there is refused `selector-value-not-literal`. An earlier declaration with `_` now holds for any value; nothing stored is reinterpreted.
 
 ### Known at this release
 
