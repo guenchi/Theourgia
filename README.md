@@ -1602,7 +1602,7 @@ late.
 ### `scope`
 
     (scope <dir> "--roots" <id> "--for" <actor> ["--cut" <cut>] ["--freeze" <dir>]
-           ["--packet" <packet-file>])
+           ["--packet" <packet-file>] ["--home" <dir>])
 
 Makes a new store at `<dir>` for one reader, holding exactly what it is
 asked to review and nothing else. `--cut` is a causal cut, a literal or a
@@ -1656,15 +1656,17 @@ new store exists leaves it as it is and answers `(error scope-failed (dir
 
 A REVIEW OF A FROZEN CANDIDATE. `--freeze <dir>` names a landing freeze
 (tools/landing-freeze.sc): the cut is its pinned cut (a `--cut` given
-with it must be that cut's literal, and any other is refused,
-`freeze-cut-mismatch`), and the copies are the change
+with it must name the same writers at the same sequences, in any order,
+and any other, a tag name included, is refused, `freeze-cut-mismatch`),
+and the copies are the change
 as it would land. A copied block the freeze has a draft of holds the
 draft's bytes as its `src`, and when they differ from the committed src a
 section titled `before`, with `before-of` (the block's id) and the
 committed `src`, is written under the copy. A root that is a file the
-freeze adds is not read here: its copy is a holder whose `origin` is the
-provisional id (`new-` and 56 hex digits), with one code block holding the
-whole file. A root the freeze deletes is copied with `deleted` set to
+freeze adds is not read here: its copy is the file as the landing will
+make it (landing-files' construction): a holder whose `origin` is the
+provisional id (`new-` and 56 hex digits), and its pieces in order, piece
+K's `origin` `<provisional id>/<K>`. A root the freeze deletes is copied with `deleted` set to
 `"proposed"`. The letter copy gets `freeze`, and NO record is written in
 this store: its cut stays the freeze's pinned cut, so the landing is not
 refused, and `collect-into --letter new` writes the letter after it. The
@@ -1673,6 +1675,16 @@ block count. `--packet <file>` holds one datum, `(packet <section> ...)`,
 each `(section (title <t>) [(text <x>)] [(children <section> ...)])`,
 written as sections under the letter copy before the baseline is taken; a
 packet section has no `origin`, so it is not a copy.
+
+A SCOPED STORE UNDER ITS OWN HOME. `--home <h>` makes the new store under
+the machine home `<h>` (THEOURGIA_HOME) instead of the caller's: every
+write registers in its home's registry, and a store answers only the home
+it was made under, so a reader confined to a review directory holding both
+the store and `<h>`, side by side, can write in it. Each request scope
+sends to `<dir>` runs under `<h>`, and the main store's under the caller's
+home; `<h>` may be neither `<dir>` nor inside it (`home-inside-scope`), nor
+inside any store. The letter copy records `home`. A reader is launched with
+THEOURGIA_HOME set to `<h>`; `collect <dir> --home <h>` reads it.
 
 `scope` is a program over ordinary requests, and like `eval` its route is
 `child`: it runs in the command line's own program, or as the MCP shell's
@@ -1717,7 +1729,9 @@ With no verdict under the letter copy the answer is `(pending (letter-copy
 `findings` or `could-not-review`), `sources` (at least one id, each a copy
 in this store: a list of ids, or one string of ids separated by spaces),
 and the four condition fields; each finding under it must hold `claim`,
-`evidence` and `confidence` and have an `about` edge. The first piece
+`evidence` and `confidence` and have an `about` edge. The scope's own
+blocks (a `before`, a packet section, the letter copy) may be listed among
+the sources and do not count; at least one source must be a copy. The first piece
 missing, verdicts in order and each verdict's findings after it, is
 `(error results-incomplete (block <id>) (field <field>))`. Complete
 results are
@@ -1782,7 +1796,10 @@ is the landing's mapping of provisional ids to the ids it made -- the
 file holds what tools/landing-commit.sc printed, whose `(created
 ("<provisional>" . "<id>") ...)` clause is read: every
 `origin` the datum names is read through it, and one still provisional is
-named as unresolved and not linked. `--to-writer <W>` makes each proposal a
+named as unresolved and not linked; a piece, `<provisional id>/<K>`, is the
+block the landing's `(pieces ("<provisional id>/<K>" . "<id>") ...)` clause
+names for it, as the commit made it, wherever it is now, and one the clause
+does not name is unresolved. `--to-writer <W>` makes each proposal a
 DRAFT for `W` on the block its origin names, by this store's `write`, as
 the reader -- never a record of this store; `W` keeps, rewrites or
 discards it. Each is answered `(draft <block> <version> <on>)`, and the
@@ -1792,13 +1809,14 @@ already there.
 
 ### `collect`
 
-    (collect <dir> ["--map" <map-file>] ["--to-writer" <writer>])
+    (collect <dir> ["--map" <map-file>] ["--to-writer" <writer>] ["--home" <dir>])
 
 Asks the store at `<dir>` for its `review-results` and gives them to this
 store's `collect-into`, each request on its own store's route, and answers
 `collect-into`'s answer with the `no-about` and `missing` lists after it.
 A candidate's results are given with `--letter new`, and `--map` and
-`--to-writer` are passed on; a `pending` or `results-incomplete` answer
+`--to-writer` are passed on, and `--home <h>` reads `<dir>` under the
+home it was made under; a `pending` or `results-incomplete` answer
 from `<dir>` is the answer, and nothing is written here.
 It writes nothing in `<dir>`. Like `scope`, its route is `child`: it runs
 in the command line's program or as the MCP shell's child, never in a

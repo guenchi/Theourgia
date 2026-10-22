@@ -799,20 +799,26 @@
   ;; FIRST intents come before them: each new file by the importer's own
   ;; construction, each deleted file's children and then its holder, read from
   ;; CURRENT. -> (values <intents> ((<provisional id> . <holder insert's index>) ...))
+  ;; -> (values <intents> ((<provisional id> . <index of its holder's insert>) ...)
+  ;; ((<provisional id> <index of its holder's insert> <piece count>) ...)):
+  ;; only file-new-intents knows a file's pieces, so their count is read from
+  ;; its intents here, not by reading forward from the holder (a delete's
+  ;; intents can follow in the same batch).
   (define (structural-intents current first entries)
     (if (null? entries)
-        (values '() '())
+        (values '() '() '())
         (let ((lf (lambda (name) (eval name (environment '(theourgia landing-files))))))
-          (let loop ((es entries) (k first) (out '()) (at '()))
+          (let loop ((es entries) (k first) (out '()) (at '()) (spans '()))
             (if (null? es)
-                (values (apply append (reverse out)) (reverse at))
+                (values (apply append (reverse out)) (reverse at) (reverse spans))
                 (let* ((e (car es))
                        (is (if (eq? (car e) 'working-new)
                                ((lf 'file-new-intents) (list-ref e 5) (list-ref e 8) k)
                                (let ((c (file-content current (list-ref e 3))))
                                  ((lf 'file-delete-intents) (list-ref e 3) (if c (cadr c) '()))))))
                   (loop (cdr es) (+ k (length is)) (cons is out)
-                        (if (eq? (car e) 'working-new) (cons (cons (list-ref e 3) k) at) at))))))))
+                        (if (eq? (car e) 'working-new) (cons (cons (list-ref e 3) k) at) at)
+                        (if (eq? (car e) 'working-new) (cons (list (list-ref e 3) k (- (length is) 1)) spans) spans))))))))
   ;; A STRUCTURAL DRAFT IN A PLAN'S consumes: (<key id> <version> <content> <cut>),
   ;; the content the version is computed from (the new file's bytes' sha256,
   ;; or the deleted file's baseline)
@@ -862,7 +868,49 @@
                                                     (and (member pid pids) (cons pid (block-id (car r) (cadr r))))))))))
                                   history))
                      '())))
-      (if (null? made) '() (list (cons 'created made)))))
+      (append
+        (if (null? made) '() (list (cons 'created made)))
+        ;; ITS PIECES are the request's own puts whose parent is the holder,
+        ;; resolved in the record, ORDERED BY THE INTENT INDEX (the third of
+        ;; the request actor): a plan's members can apply out of index order.
+        (let ((pieces
+                (apply append
+                       (map (lambda (m)
+                              (let* ((holder (cdr m))
+                                     (mine (filter values
+                                                   (map (lambda (r)
+                                                          (let ((p (list-ref r 3)) (a (list-ref r 4)))
+                                                            (and (equal? (identity-of r) identity)
+                                                                 (pair? p) (eq? (car p) 'put) (pair? (cdr p)) (list? (cadr p))
+                                                                 (let ((parent (assq 'parent (cadr p))))
+                                                                   (and parent (equal? (cdr parent) holder)
+                                                                        (list? a) (> (length a) 3) (integer? (list-ref a 2))
+                                                                        (cons (list-ref a 2) (block-id (car r) (cadr r))))))))
+                                                        history)))
+                                     (ordered (list-sort (lambda (x y) (< (car x) (car y))) mine)))
+                                (map (lambda (x k) (cons (piece-name (car m) k) (cdr x))) ordered (count-up (length ordered)))))
+                            made))))
+          (if (null? pieces) '() (list (cons 'pieces pieces)))))))
+  ;; A PIECE'S NAME: "<provisional id>/<K>", K from 0, the order the file's
+  ;; pieces are inserted in -- the name the review channel gives a piece of a
+  ;; file a freeze adds.
+  (define (piece-name pid k) (string-append pid "/" (number->string k)))
+  ;; -> (0 1 ... N-1)
+  (define (count-up n) (let loop ((k (- n 1)) (out '())) (if (< k 0) out (loop (- k 1) (cons k out)))))
+  ;; (pieces (<piece name> . <block id>) ...): each new file's committed
+  ;; pieces, read from their inserts' answers, the K-th after the holder's;
+  ;; nothing when no file was created
+  (define (pieces-clause spans answers)
+    (define (made-id answer)
+      (let ((ev (and (pair? answer) (eq? (car answer) 'ok) (assq 'events (cdr answer)))))
+        (and ev (pair? (cadr ev)) (block-id (car (car (cadr ev))) (cdr (car (cadr ev)))))))
+    (let ((pieces (apply append
+                         (map (lambda (s)
+                                (map (lambda (k) (cons (piece-name (car s) k)
+                                                       (let ((i (+ (cadr s) 1 k))) (and (< i (length answers)) (made-id (list-ref answers i))))))
+                                     (count-up (caddr s))))
+                              spans))))
+      (if (null? pieces) '() (list (cons 'pieces pieces)))))
   ;; (created (<provisional id> . <holder id>) ...): each new file's committed
   ;; holder, read from its insert's answer; nothing when no file was created
   (define (created-clause holders answers)
@@ -1755,11 +1803,14 @@
                      (let* ((live #f)
                             ;; ((<provisional id> . <index of its holder's insert>) ...)
                             (holders '())
+                            ;; ((<provisional id> <holder's index> <piece count>) ...)
+                            (spans '())
                             (answers (with-store-write store
                                        (lambda (current view)
                                          (set! live current)
-                                         (let-values (((more at) (structural-intents current (length intents) structural-entries)))
+                                         (let-values (((more at piece-spans) (structural-intents current (length intents) structural-entries)))
                                            (set! holders at)
+                                           (set! spans piece-spans)
                                            (append intents more)))
                                       actor effective
                                       (premises-also premise-check
@@ -1827,7 +1878,7 @@
                                                  state answers
                                                  (map cadr (filter (lambda (n) (eq? (car n) 'new))
                                                                    (if (list? structural-named) structural-named '()))))
-                                               (created-clause holders answers)))
+                                               (append (created-clause holders answers) (pieces-clause spans answers))))
                                    failed)))))
                            (if (= (length answers) 1) (car answers) (batch-answer answers)))))))))))))))))))))
 )

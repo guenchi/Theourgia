@@ -141,10 +141,10 @@
         ((supply) '("--for"))
         ;; A scope names its cut, its roots and its reader; a scope of a
         ;; frozen candidate names the freeze, and a packet of sections.
-        ((scope) '("--cut" "--roots" "--for" "--freeze" "--packet"))
+        ((scope) '("--cut" "--roots" "--for" "--freeze" "--packet" "--home"))
         ;; A collect of a candidate's review: the landing's mapping of
         ;; provisional ids, and the writer its proposals are drafted for.
-        ((collect) '("--map" "--to-writer"))
+        ((collect) '("--map" "--to-writer" "--home"))
         ;; The datum review-results answered, as text; `--letter new` in
         ;; place of a letter id makes the letter.
         ((collect-into) '("--results" "--letter" "--map" "--to-writer"))

@@ -5,4 +5,4 @@
 ;; every listed one to be observed, so an item that means to change a
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
-()
+((describe "the review channel's scope and collect take --home, the scoped store's machine home; review-results' sources count the copies, the scope's own blocks beside them not counting: in the usage forms and descriptions"))

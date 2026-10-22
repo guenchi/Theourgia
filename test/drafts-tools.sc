@@ -611,6 +611,27 @@
               (and (clause 'created first) #t)
               (and (clause 'created first) (equal? (clause 'created again) (clause 'created first)))))
       '(ok ok #t #t))
+;; THE PIECES, NAMED AS THE REVIEW CHANNEL NAMES THEM: a new file's commit names
+;; each piece "<provisional id>/<K>", K from 0, as the block live under its
+;; holder at that place after the landing; the replay of the same request
+;; names them the same.
+(define st8 (imported-store!))
+(new-draft! st8 "p.sc" c-sc)
+(define st8-pid (if provisional-id (provisional-id "p.sc") "none"))
+(define st8-request
+  (let ((c (car (cut-of st8))))
+    (list 'commit "--writer" W
+          "--working-new" (string-append st8-pid "=" (or (version-of st8 'new "p.sc") "none"))
+          "--req" "st-lc8" "--cursor" (string-append (car c) ":" (number->string (cdr c))))))
+(define st8-first (rpc-dispatch st8 st8-request "test"))
+(define st8-again (rpc-dispatch st8 st8-request "test"))
+(define st8-kids (let ((h (st-file st8 "p.sc"))) (if h (code-children (open-and-reduce st8) h) '())))
+(want "ST-LC8 a new file's commit names its pieces, <pid>/0 and <pid>/1, the blocks live under its holder in order; its replay names them the same"
+      (list (head-of st8-first) (head-of st8-again) (length st8-kids)
+            (clause 'pieces st8-first) (clause 'pieces st8-again))
+      (list 'ok 'ok 2
+            (map (lambda (k id) (cons (string-append st8-pid "/" (number->string k)) id)) '(0 1) st8-kids)
+            (map (lambda (k id) (cons (string-append st8-pid "/" (number->string k)) id)) '(0 1) st8-kids)))
 ;; A DAMAGED ENVELOPE AT THE REPLAYED REQUEST'S SLOT: the replay needs no draft,
 ;; so the damage is not the answer
 (define st7 (imported-store!))
@@ -675,20 +696,18 @@
                 (head-of (tool "landing-commit" st4 st4-freeze2 "--start" "st4-b"))
                 (live-paths st4))
       '((error working-version-changed) #t (error start-tag-exists) ok ok ("a.txt" "b.txt" "e.sc")))
-;; THE CENSUS: a file's construction is written once. Two other sites build a
-;; file holder and are listed on purpose: import-code's own (code-project.sc),
-;; and the review channel's scope of a freeze (channel.sc), whose copy of a
-;; frozen new file is the holder and ONE child "<pid>/src" holding the whole
-;; file, where the landing splits the file into pieces. That shape is not the
-;; landed one, so a proposal on that child cannot be mapped after the landing;
-;; the scope taking its records from landing-files' file-pieces removes the
-;; exception, and this list then loses channel.sc.
+;; THE CENSUS: a file's construction is written once. One other site builds a
+;; file holder and is listed on purpose: import-code's own (code-project.sc).
+;; The review channel's scope of a freeze (channel.sc) takes its copy of a
+;; frozen new file from the same construction, the holder and its pieces as
+;; the landing makes them, so it calls file-new-intents and builds no holder
+;; of its own.
 (define src-root (path-parent (current-directory)))
 (define (source-text rel) (guard (e (#t "")) (call-with-input-file (string-append src-root "/" rel) get-string-all)))
 (define (contains? s sub)
   (let ((n (string-length s)) (m (string-length sub)))
     (let loop ((i 0)) (cond ((> (+ i m) n) #f) ((string=? (substring s i (+ i m)) sub) #t) (else (loop (+ i 1)))))))
-(want "ST-CEN a file holder's insert is built in landing-files.sc (and import-code's own, code-project.sc, and the review scope's one-child copy, channel.sc), and import-git and the commit call that one construction"
+(want "ST-CEN a file holder's insert is built in landing-files.sc (and import-code's own, code-project.sc), and import-git, the commit and the review channel's scope call that one construction"
       (list (list-sort string<? (filter (lambda (f) (contains? (source-text f) "'(kind . file)"))
                                         (append (filter (lambda (f) (and (> (string-length f) 3) (string=? (substring f (- (string-length f) 3) (string-length f)) ".sc")))
                                                         (directory-list src-root))
@@ -696,8 +715,10 @@
                                                      (filter (lambda (f) (and (> (string-length f) 3) (string=? (substring f (- (string-length f) 3) (string-length f)) ".sc")))
                                                              (directory-list (string-append src-root "/tools")))))))
             (map (lambda (f) (and (contains? (source-text f) "file-new-intents") (contains? (source-text f) "file-delete-intents")))
-                 '("tools/import-git.sc" "working.sc")))
-      '(("channel.sc" "code-project.sc" "landing-files.sc") (#t #t)))
+                 '("tools/import-git.sc" "working.sc"))
+            ;; the review channel's copy of a file a freeze adds is built by it too
+            (contains? (source-text "channel.sc") "file-new-intents"))
+      '(("code-project.sc" "landing-files.sc") (#t #t) #t))
 ;; THE COMPLETION CHECK reads a structural item against the plan's members
 (want "ST-CMP a new file's frozen members agree with their consumes item; a changed piece is named"
       (if (not (and structural-consumes-mismatch file-new-intents structural-version provisional-id))

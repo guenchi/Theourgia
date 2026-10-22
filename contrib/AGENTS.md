@@ -26,16 +26,19 @@ is another.
   change as it would land. A copy the change rewrites has a section
   `before` under it, with the source as it is now. A copy with `deleted`
   set to `"proposed"` is one the change removes; an `origin` that begins
-  with `new-` is a file the change adds. Sections under the letter copy
+  with `new-` is a file the change adds, its pieces `<id>/<K>` in order. Sections under the letter copy
   that are not yours are the author's notes for this review.
 - Write your VERDICT as a section under the letter copy with these fields:
   `verdict`, one of `no-objection`, `findings` or `could-not-review`;
   `sources`, the ids of the copies you read, at least one (a list, or one
-  string of ids separated by spaces); and `model`, `approval`, `sandbox`
+  string of ids separated by spaces; a `before` or packet section may be
+  listed too, but does not count: at least one must be a copy); and `model`, `approval`, `sandbox`
   and `effort` of this session. Write each FINDING as a section under the
   verdict with `claim`, `evidence` and `confidence`, and an `about` edge to
   the copy it concerns (`link <finding> about <copy>`). Results missing any
   of these are not collected: the review reads as incomplete.
+- Your launch sets THEOURGIA_HOME to the scope's own home; never write in
+  the scoped store with another.
 - When the verdict is written, set the letter copy's `status` to
   `"answered"`.
 - An edit of a copy is a proposal. You have your own writer in the scoped

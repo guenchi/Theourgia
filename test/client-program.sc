@@ -831,13 +831,14 @@
       (cond ((> (+ i n) (string-length t)) k)
             ((string=? (substring t i (+ i n)) needle) (loop (+ i n) (+ k 1)))
             (else (loop (+ i 1) k))))))
-;; channel.sc's file-datum reads the review channel's own files (a freeze's
-;; DRAFTS.sexp, a packet, a landing's answer) with the same one rule.
+;; channel.sc's text-datum reads the review channel's own files (a freeze's
+;; DRAFTS.sexp, a packet, a landing's answer) and a scope's --cut with the
+;; same one rule.
 (want "DT-census the readers of a daemon's text: the envelope's with the reader, the rendered datum's only through plain-datum"
       (dt-census '("client.sc" "channel.sc" "core.sc" "theourgia.sc" "mcp/server.sc" "stream-client.sc"))
       (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
                  '(("channel.sc" "collect-into-verb" plain-datum 1) ("channel.sc" "envelope-answer" plain-datum 1)
-                   ("channel.sc" "envelope-answer" read 1) ("channel.sc" "file-datum" plain-datum 1) ("client.sc" "line-datum" plain-datum 1) ("client.sc" "plain-datum" read 2)
+                   ("channel.sc" "envelope-answer" read 1) ("channel.sc" "text-datum" plain-datum 1) ("client.sc" "line-datum" plain-datum 1) ("client.sc" "plain-datum" read 2)
                    ("core.sc" "forward-then-exit!" read 1) ("mcp/server.sc" "catalogue" plain-datum 1)
                    ("mcp/server.sc" "refusal-datum" plain-datum 1) ("mcp/server.sc" "unpack" read 1)
                    ("theourgia.sc" "read-envelope" read 1) ("theourgia.sc" "stream-terminal" plain-datum 1))))
