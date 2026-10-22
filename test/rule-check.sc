@@ -21,7 +21,8 @@
 ;; copy; a rule refuses with every failing pair and writes nothing; the
 ;; targets of a write; a write rule's two views; a batch's prefix; citation
 ;; coverage; typed endpoints; the order of a write's checks; check's audit;
-;; the copy of a reduction sharing nothing it could change.
+;; the copy of a reduction sharing nothing it could change; a large write,
+;; its + facts charged by the tuples a call matches.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read state-edges
@@ -33,6 +34,7 @@
               view-revision view-epoch view-writer view-expect-seq session-written-events)
         (only (theourgia trace) trace-enable!)
         (only (theourgia crc32) crc32-hex)
+        (only (theourgia query) make-query-session session-answer session-spent)
         (only (theourgia extensions) extension-verbs))
 
 ;; The verbs registered from outside the core table (query among them), as
@@ -614,6 +616,161 @@
                                                                 (else (loop (+ i 1))))))))
                                      product-files))))
       '(2 2 ("store.sc")))
+
+;; ---- a large write: a + fact is charged by the tuples a call matches -------------------------
+;;
+;; A write rule is asked at every target of a write, and every ask reads the
+;; write's + facts. A call is charged the tuples it matches, each time it is
+;; dispatched; were it charged the whole relation at each ask, the cost of a
+;; batch would grow as the square of its size and a few hundred inserts
+;; would exhaust the write's one budget.
+
+(define (store-at name)
+  (let ((s (string-append root "/" name)))
+    (tolerant (rpc-dispatch s '(init) "author"))
+    s))
+(define (on s . args) (rpc-dispatch s args "author"))
+(define (events-of s) (apply + (map cdr (reduce-applied-cut (open-and-reduce s)))))
+(define (items-ok? a) (and (pair? a) (pair? (cdr a)) (list? (cadr a)) (for-all (lambda (i) (and (pair? i) (eq? (car i) 'ok))) (cadr a))))
+(define (clause-in a name) (and (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) name))) a)))
+(define (reason-of a) (let ((r (clause-in a 'reason))) (and r (cadr r))))
+
+;; THE LEDGER'S DECLARATIONS, as a ledger of items declares them: two
+;; vocabularies, the risk list and its gate, the decision's edges, and nine
+;; rules, five of them write rules over field+.
+(define ledger-declarations
+  (list
+    (list 'derive "ledger-status"
+          "((head (ledger-status STR)) (clause (ledger-status \"open\") (= \"open\" \"open\")) (clause (ledger-status \"in-progress\") (= \"open\" \"open\")) (clause (ledger-status \"landed\") (= \"open\" \"open\")) (clause (ledger-status \"closed\") (= \"open\" \"open\")) (clause (ledger-status \"deferred\") (= \"open\" \"open\")) (clause (ledger-status \"accepted\") (= \"open\" \"open\")))")
+    (list 'derive "ledger-severity"
+          "((head (ledger-severity STR)) (clause (ledger-severity \"high\") (= \"open\" \"open\")) (clause (ledger-severity \"medium\") (= \"open\" \"open\")) (clause (ledger-severity \"low\") (= \"open\" \"open\")) (clause (ledger-severity \"none\") (= \"open\" \"open\")))")
+    (list 'derive "release-risk"
+          "((head (release-risk ID)) (clause (release-risk ?i) (field ?i \"ledger\" \"F\") (field ?i \"severity\" \"high\") (field ?i \"status\" ?s) (member ?s (\"open\" \"in-progress\" \"deferred\" \"accepted\"))))")
+    (list 'derive "release-blocker"
+          "((head (release-blocker ID)) (clause (release-blocker ?i) (release-risk ?i) (field ?i \"status\" ?s) (/= ?s \"accepted\")))")
+    (list 'relation "lists" "--as" "nothing" "--from" "(kind doc) (field ledger \"D\")" "--to" "(kind doc) (field ledger \"F\")")
+    (list 'rule "status-vocab" "--on" "doc" "--where" "(field ?w \"ledger\" \"F\")"
+          "--must" "(and (field ?w \"status\" ?s) (ledger-status ?s))")
+    (list 'rule "severity-vocab" "--on" "doc" "--where" "(field ?w \"ledger\" \"F\")"
+          "--must" "(and (field ?w \"severity\" ?s) (ledger-severity ?s))")
+    (list 'rule "accepted-has-ruling" "--on" "doc" "--where" "(field ?w \"status\" \"accepted\")"
+          "--must" "(field ?w \"accepted\" _)")
+    (list 'rule "decision-vocab" "--on" "doc" "--where" "(field ?w \"decision\" _)"
+          "--must" "(and (field ?w \"decision\" ?k) (member ?k (\"release\" \"tag\" \"deploy\" \"report\")))")
+    (list 'rule "decision-lists-risks" "--on" "doc" "--where" "(and (field+ ?w \"decision\" _) (not (field ?w \"decision\" _)))"
+          "--must-not" "(and (release-risk ?i) (not (edge+ ?w lists ?i)))")
+    (list 'rule "decision-ledger-settled" "--on" "doc" "--where" "(and (field+ ?w \"decision\" _) (not (field ?w \"decision\" _)))"
+          "--must-not" "(and (field ?i \"ledger\" \"F\") (not (and (field ?i \"status\" ?s) (ledger-status ?s) (field ?i \"severity\" ?v) (ledger-severity ?v))))")
+    (list 'rule "action-not-blocked" "--on" "doc" "--where" "(and (field+ ?w \"decision\" _) (not (field ?w \"decision\" _)))"
+          "--must-not" "(and (field+ ?w \"decision\" ?k) (member ?k (\"release\" \"tag\" \"deploy\")) (release-blocker ?i))")
+    (list 'rule "decision-batch-pure" "--on" "doc" "--on" "section" "--where" "(field+ ?w \"ledger\" \"F\")"
+          "--must-not" "(and (field+ ?d \"decision\" _) (not (field ?d \"decision\" _)) (not (and (field ?w \"ledger\" \"F\") (field ?w \"status\" ?s) (field+ ?w \"status\" ?s) (field ?w \"severity\" ?v) (field+ ?w \"severity\" ?v))))")
+    (list 'rule "decision-batch-keeps-members" "--on" "doc" "--on" "section" "--where" "(field ?w \"ledger\" \"F\")"
+          "--must-not" "(and (field+ ?d \"decision\" _) (not (field ?d \"decision\" _)) (not (field+ ?w \"ledger\" \"F\")))")))
+;; ONE LEDGER ROW: an item, a status and a severity from the vocabularies,
+;; an accepted row with its ruling, and a line of text.
+(define (ledger-row i)
+  (let* ((status (list-ref '("open" "in-progress" "landed" "closed" "deferred" "accepted") (mod i 6)))
+         (severity (list-ref '("high" "medium" "low" "none") (mod i 4))))
+    (list 'insert 'root #f
+          (append (list '(kind . doc) (cons 'title (format "row ~a" i)) '(ledger . "F") (cons 'item (format "F~a" i))
+                        (cons 'status status) (cons 'severity severity)
+                        (cons 'src (format " **row ~a** | the item's text, as a ledger line holds it | ~a |" i status))
+                        (cons 'size (list-ref '("small" "medium" "large") (mod i 3))))
+                  (if (string=? status "accepted") (list '(accepted . "2026-10-22: ruled")) '())))))
+
+(define LS (store-at "ledger"))
+(want "W the ledger's four relations, its edge relation and its nine rules are declared on a fresh store, each answering ok"
+      ;; IN ORDER, a rule after the relations it names: map's order is open
+      (let loop ((ds ledger-declarations) (out '()))
+        (if (null? ds)
+            (reverse out)
+            (let ((a (apply on LS (car ds))))
+              (unless (and (pair? a) (eq? (car a) 'ok)) (printf "reading: ~a refused ~s\n" (cadr (car ds)) a))
+              (loop (cdr ds) (cons (and (pair? a) (car a)) out)))))
+      (map (lambda (d) 'ok) ledger-declarations))
+(define ledger-events (tolerant (events-of LS)))
+(define ledger-batch (tolerant (on LS 'batch (format "~s" (map ledger-row (iota 307))))))
+(want "W 307 ledger rows in one batch are accepted under the nine rules: every item ok, 307 blocks written"
+      (in-order (head ledger-batch 1) (items-ok? ledger-batch) (and (items-ok? ledger-batch) (length (cadr ledger-batch))) (- (events-of LS) ledger-events))
+      '((batch) #t 307 307))
+
+;; CONTROL: at that size the nine rules still judge: a decision block in
+;; the same batch as 307 more rows is refused by the batch's purity rule.
+(define mixed-events (tolerant (events-of LS)))
+(define mixed-batch
+  (tolerant (on LS 'batch (format "~s" (append (map (lambda (i) (ledger-row (+ 1000 i))) (iota 307))
+                                               (list (list 'insert 'root #f '((kind . doc) (title . "release") (ledger . "D") (decision . "report")))))))))
+(want "W CONTROL: a decision block in a batch with 307 ledger rows is refused by decision-batch-pure, nothing written"
+      (in-order (head mixed-batch 3)
+                (let ((f (clause-in mixed-batch 'failures)))
+                  (and f (memq 'decision-batch-pure (map (lambda (x) (cadr (car x))) (cdr f))) #t))
+                (- (events-of LS) mixed-events))
+      '((error refused rule-violation) #t 0))
+
+;; A WRITE RULE OVER field+ ALONE, at every target of a batch of 300.
+(define PS (store-at "owned"))
+(tolerant (on PS 'rule "phase-owned" "--on" "doc" "--where" "(field+ ?w \"phase\" _)" "--must" "(field+ ?w \"owner\" _)"))
+(define (owned-row i owner?)
+  (list 'insert 'root #f
+        (append (list '(kind . doc) (cons 'title (format "o~a" i)) (cons 'phase (format "p~a" (mod i 5)))
+                      (cons 'note (format "n~a" i)))
+                (if owner? (list (cons 'owner (format "w~a" (mod i 7)))) '()))))
+(define owned-events (tolerant (events-of PS)))
+(define owned-batch (tolerant (on PS 'batch (format "~s" (map (lambda (i) (owned-row i #t)) (iota 300))))))
+(want "W a batch of 300 inserts under a field+ write rule is accepted: every item ok, 300 blocks written"
+      (in-order (head owned-batch 1) (items-ok? owned-batch) (and (items-ok? owned-batch) (length (cadr owned-batch))) (- (events-of PS) owned-events))
+      '((batch) #t 300 300))
+(define unowned-events (tolerant (events-of PS)))
+(define unowned-batch (tolerant (on PS 'batch (format "~s" (map (lambda (i) (owned-row i (not (= i 150)))) (iota 300))))))
+(want "W CONTROL: the rule still bites at that size: the one insert of 300 without an owner refuses the batch, one failure, nothing written"
+      (in-order (head unowned-batch 3)
+                (let ((f (clause-in unowned-batch 'failures))) (and f (map (lambda (x) (cadr (car x))) (cdr f))))
+                (- (events-of PS) unowned-events))
+      '((error refused rule-violation) (phase-owned) 0))
+
+;; WHAT A CALL IS CHARGED, read from the budget: field+ of 50 tuples, two of
+;; them a's; a call naming a matches those two. Each dispatch is charged the
+;; tuples it matches, the ones it then unifies; the query runs two passes.
+(define fifty
+  (list (cons* 'field+ 3 (list "a" "p" "1") (list "a" "q" "2")
+               (map (lambda (i) (list (format "b~a" i) "p" (number->string i))) (iota 48)))))
+(define (fact-session budget) (make-query-session (open-and-reduce PS) '() budget #f fifty))
+(define a-goal '(field+ "a" ?f ?v))
+(want "W a field+ call is charged by its matched count each time it is dispatched, not the fifty of the relation: 2 at each of two passes and 2 for its two rows, 6"
+      (let* ((S (fact-session 1000000)) (a (session-answer S a-goal)))
+        (list (car a) (length (cadr a)) (session-spent S)))
+      '(ok 2 6))
+(want "W the same call again in the session is charged by its matched count each time again: the memo saves the scan, not the charge, 6"
+      (let ((S (fact-session 1000000)))
+        (session-answer S a-goal)
+        (let ((a (session-answer S a-goal))) (list (car a) (session-spent S))))
+      '(ok 6))
+(want "W a budget below the call's matched count refuses the query, naming field+ and the count it reached"
+      (session-answer (fact-session 1) a-goal)
+      '(error query-budget (relation field+) (tuples 2)))
+;; A JOIN WHOSE TEST REJECTS EVERY PAIR adds no row, so only the calls'
+;; charges bound its work: 300 tuples of one phase, every pair unified and
+;; every pair rejected. The second call is dispatched once per binding of
+;; the first, each charged its 300.
+(define one-phase
+  (list (cons* 'field+ 3 (map (lambda (i) (list (format "c~a" i) "phase" "same")) (iota 300)))))
+(want "W a field+ join whose test rejects every pair is bounded: at budget 1000 refused at the fourth dispatch, naming field+"
+      (session-answer (make-query-session (open-and-reduce PS) '() 1000 #f one-phase)
+                      '(and (field+ ?a "phase" ?x) (field+ ?b "phase" ?y) (/= ?x ?y)))
+      '(error query-budget (relation field+) (tuples 1200)))
+
+;; A JOIN OF field+ WITH ITSELF THAT NO BUDGET HOLDS: every pair of the 300
+;; targets sharing a phase, at each target.
+(tolerant (on PS 'rule "phase-pairs" "--on" "doc" "--must-not" "(and (field+ ?a \"phase\" ?x) (field+ ?b \"phase\" ?x))"))
+(define join-events (tolerant (events-of PS)))
+(define join-batch (tolerant (on PS 'batch (format "~s" (map (lambda (i) (owned-row (+ 1000 i) #t)) (iota 300))))))
+(printf "reading: the join's refusal reason ~s\n" (reason-of join-batch))
+(want "W a field+ join over budget is still refused as unevaluable at its rule, query-budget, nothing written"
+      (in-order (head join-batch 3) (clause-in join-batch 'rule)
+                (let ((r (reason-of join-batch))) (and (pair? r) (head r 2)))
+                (- (events-of PS) join-events))
+      '((error refused rule-unevaluable) (rule phase-pairs) (error query-budget) 0))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nrule-check complete\n" bad rows)

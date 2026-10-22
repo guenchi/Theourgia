@@ -825,6 +825,13 @@
   ;; FACTS: ((<relation> <arity> <tuple> ...) ...), a session's per-write
   ;; facts; for a rule value's check, rule-only-facts, whose rows are never
   ;; read (a rule value is checked, not evaluated).
+  ;; A CALL READS ITS TUPLES AS A FACT CALL DOES (fact-tuples): those whose
+  ;; bound positions hold the call's constants, memoized per call in the
+  ;; session. THE CHARGE IS THE WORK: every dispatch is charged the count
+  ;; that matched, the tuples it then unifies, memoized or not; the memo
+  ;; saves the scan. A rule asked at every target of a large write is not
+  ;; charged the whole relation at each of them, and a join whose test
+  ;; rejects every pair is still bounded by the budget.
   (define (write-fact-handler facts)
     (make-handler 'WRITE-FACT
                   (lambda (rel) (and (assq rel facts) #t))
@@ -833,11 +840,18 @@
                   (lambda (rel) #f)
                   #t #t
                   (lambda (S g b rest)
-                    (let ((f (assq (car g) facts)))
-                      (count! S (car g) (length (cddr f)))
-                      (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
-                                (cddr f))))
+                    (for-each (lambda (t) (let ((b2 (unify (cdr g) t b))) (when b2 (rest b2))))
+                              (write-fact-tuples S (assq (car g) facts) (call-args (cdr g) b))))
                   (lambda (g seen) #f)))
+  ;; F is (<relation> <arity> <tuple> ...), ARGS the call's arguments.
+  (define (write-fact-tuples S f args)
+    (let* ((key (cons* 'write-fact (car f) args))
+           (ts (or (hashtable-ref (session-memo S) key #f)
+                   (let ((ts (filter-by args (cddr f))))
+                     (hashtable-set! (session-memo S) key ts)
+                     ts))))
+      (count! S (car f) (length ts))
+      ts))
   ;; RULES: the clauses whose heads are callable (the library's, and a
   ;; session's extra clauses). A stored rule's NAME is a constraint's
   ;; identifier, never a relation, and is registered nowhere.

@@ -2205,7 +2205,9 @@ targets by id, rules by name:
 
 A `--must-not`'s witness is at most ten of its rows, the count exact. A rule that
 cannot be evaluated -- one budget of query work for the whole write, or a query's
-refusal -- refuses the write `(error refused rule-unevaluable (rule <name>)
+refusal; a call of a write fact (`field+` and the others) is charged, each time
+it is made, the tuples it matches, so asking one at every target of a large
+write does not charge the whole relation at each -- refuses the write `(error refused rule-unevaluable (rule <name>)
 (block <id>) (reason <the refusal>))`, never as ok. A created block is named by
 the id the write would have given it. Every route answers these refusals as they
 are, as it answers a premise's; a `batch` does not put them in its items, a
