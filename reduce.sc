@@ -1752,6 +1752,9 @@
         (vocabulary-field-reason payload)
         (and (pair? payload)
              (case (car payload)
+               ((relation) (let ((args (cdr payload)))
+                             (and (pair? args) (pair? (cdr args))
+                                  (selector-value-write-reason (car (cdr args))))))
                ((put) (let ((alist (car (cdr payload))))
                         (or (text-fields-reason alist)
                             (let ((e (assq 'title alist)))
@@ -1764,6 +1767,24 @@
                                    (and (eq? name 'title)
                                         (title-text-reason value)))))))
                (else #f)))))
+
+  ;; A SELECTOR'S FIELD VALUE IS A LITERAL OR `_`, AND THAT IS THE WRITE
+  ;; PATH'S RULE, NOT THE REDUCER'S, as the title rule is. A literal is a
+  ;; string, an exact integer or a symbol not spelled with a leading `?`
+  ;; (query.sc's variable?); `_` holds for any value of a field the block
+  ;; carries (rules.sc, selector-holds?). A variable binds nothing in a
+  ;; selector, so a new declaration that spells one is refused
+  ;; selector-value-not-literal. A declaration an earlier build wrote with
+  ;; one is still applied as it was written, by replay and by a snapshot
+  ;; alike: its value is compared as the literal symbol it is.
+  ;; selector-reason has already checked the value's shape.
+  (define (selector-value-write-reason value)
+    (define (variable? v)
+      (and (symbol? v) (let ((n (symbol->string v))) (and (> (string-length n) 0) (char=? (string-ref n 0) #\?)))))
+    (and (list? value) (= 3 (length value))
+         (exists (lambda (sel) (and (list? sel) (= 2 (length sel)) (variable? (caddr (cadr sel)))))
+                 (list (cadr value) (caddr value)))
+         'selector-value-not-literal))
 
   ;; PRESENCE IS ASKED SEPARATELY FROM VALUE, so a key holding #f is
   ;; refused while a key that is simply not there is allowed.

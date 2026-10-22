@@ -124,13 +124,17 @@
   ;; ---- typed endpoints --------------------------------------------------------------------------
 
   ;; A declared relation's ends are selectors: () for any block, else
-  ;; ((kind <k>)) or ((kind <k>) (field <name> <value>)).
+  ;; ((kind <k>)) or ((kind <k>) (field <name> <value>)). A value `_` holds
+  ;; for any value of the field, when the block carries it (a settled one:
+  ;; a contested field answers no value); any other value is a literal.
   (define (selector-holds? sel S id kind-of field-values)
     (or (null? sel)
         (and (eq? (kind-of S id) (cadr (car sel)))
              (or (null? (cdr sel))
-                 (let ((f (cadr sel)))
-                   (and (member (caddr f) (field-values S id (cadr f))) #t))))))
+                 (let* ((f (cadr sel)) (vs (field-values S id (cadr f))))
+                   (if (eq? (caddr f) '_)
+                       (pair? vs)
+                       (and (member (caddr f) vs) #t)))))))
 
   ;; THE EDGES JUDGED are every typed edge the write adds -- the state after
   ;; holds it, the state before does not, whether or not its ends are live

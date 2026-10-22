@@ -2093,7 +2093,13 @@ outside the seven is refused `(error bad-request kind-not-known (kind
 "<spelling>") (known (...)))`.
 
 `--from` and `--to` say which blocks each end is meant for, as the clauses
-of a selector: `(kind doc)`, or `(kind doc) (field slot "result")`. They are
+of a selector: `(kind doc)`, or `(kind doc) (field slot "result")`. A field's
+value is a literal (a string, a symbol or an exact integer) or `_`, which holds
+for any value of a field the block carries; a new declaration that spells a
+variable there is refused `(error malformed-intent
+(selector-value-not-literal))`, and any other value `(selector-malformed)`. A
+declaration an earlier build recorded with a variable is still applied as it
+was written, the symbol compared as a literal. They are
 stored with the declaration, printed by `query --relations`, and held: a write
 that adds an edge under the name whose end the selector does not match, or that
 changes the kind or a selector's field of a block at such an edge, writes

@@ -25,13 +25,14 @@
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia reduce) block-id reduce-applied-cut state-hash block-hash state->rows state-read state-edges
-              reduce-empty reduce-apply! reduce-gates)
+              reduce-empty reduce-apply! reduce-gates rows->state state-declaration)
         (only (theourgia store) open-and-reduce)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) writer-directory log-begin log-end! session-view session-append! make-frame
               log-publish! segment-sha
               view-revision view-epoch view-writer view-expect-seq session-written-events)
         (only (theourgia trace) trace-enable!)
+        (only (theourgia crc32) crc32-hex)
         (only (theourgia extensions) extension-verbs))
 
 ;; The verbs registered from outside the core table (query among them), as
@@ -337,6 +338,85 @@
 (want "E a store whose only judge is a typed relation refuses a link its selector does not match"
       (head (rpc-dispatch S4 (list 'link F1 "answers" F2) "author") 3)
       '(error bad-request relation-endpoint))
+
+;; THE WILDCARD END: `_` in a selector's field clause holds for any value of a
+;; field the block carries, and a variable there is refused when the relation
+;; is declared, writing nothing.
+(define S6 (string-append root "/s6"))
+(tolerant (rpc-dispatch S6 '(init) "author"))
+(define (run6 . args) (rpc-dispatch S6 args "author"))
+(define (batch6 . intents) (run6 'batch (format "~s" intents)))
+(define (events6) (apply + (map cdr (reduce-applied-cut (open-and-reduce S6)))))
+(define (make6 fields) (car (item-ids (batch6 (list 'insert 'root #f fields)))))
+(define G1 (tolerant (make6 '((kind . doc) (title . "G1")))))
+(define G2 (tolerant (make6 '((kind . doc) (title . "G2")))))
+(want "E a selector whose field clause is the wildcard is declared"
+      (head (run6 'relation "lists" "--as" "nothing" "--from" "(kind doc) (field decision _)") 1)
+      '(ok))
+(define made-r (tolerant (batch6 (list 'insert 'root #f '((kind . doc) (title . "R") (decision . "report")))
+                                 (list 'link '(from 0) 'lists G1))))
+(want "E a block that carries the field, whatever its value, matches the wildcard: created and linked in one batch"
+      (map car (cadr made-r))
+      '(ok ok))
+(want "E a block that does not carry the field does not match it, and the link is refused"
+      (run6 'link G2 "lists" G1)
+      (list 'error 'bad-request 'relation-endpoint
+            (list 'failures (list '(relation lists) (list 'edge G2 'lists G1) '(end from)
+                                  '(expected ((kind doc) (field decision _)))))))
+(define R6 (tolerant (make6 '((kind . doc) (title . "R6") (decision . "report")))))
+(tolerant (run6 'relation "tags" "--as" "nothing" "--from" "(kind doc) (field decision \"tag\")"))
+(want "E CONTROL: a literal field clause holds only for its own value: a report block is refused under \"tag\""
+      (head (run6 'link R6 "tags" G1) 3)
+      '(error bad-request relation-endpoint))
+(define events-before-variable (tolerant (events6)))
+(want "E a variable in a field clause is refused when the relation is declared, and nothing is written"
+      (in-order (run6 'relation "picks" "--as" "nothing" "--from" "(kind doc) (field decision ?k)")
+                (- (events6) events-before-variable))
+      '((error malformed-intent (selector-value-not-literal)) 0))
+(define events-before-batch (tolerant (events6)))
+(define batch-variable (tolerant (run6 'batch "((relation picks2 (nothing ((kind doc) (field decision ?k)) ())))")))
+(want "E a batch that declares with a variable is refused the same way, and nothing is written"
+      (in-order (and (memq 'selector-value-not-literal
+                           (let flat ((x batch-variable))
+                             (cond ((pair? x) (append (flat (car x)) (flat (cdr x)))) ((null? x) '()) (else (list x)))))
+                     #t)
+                (- (events6) events-before-batch))
+      '(#t 0))
+
+;; A DECLARATION AN EARLIER BUILD WROTE WITH A VARIABLE IS STILL APPLIED AS
+;; WRITTEN: the refusal is the write path's, and replay and a snapshot apply
+;; the record, comparing `?k` as the literal symbol it is.
+(include "forge-record.ss")
+(define S7 (string-append root "/s7"))
+(tolerant (rpc-dispatch S7 '(init) "author"))
+(define (run7 . args) (rpc-dispatch S7 args "author"))
+(define (make7 fields) (car (item-ids (run7 'batch (format "~s" (list (list 'insert 'root #f fields)))))))
+(define (declared7)
+  (filter (lambda (i) (and (pair? i) (eq? (car i) 'declared) (eq? (cadr i) 'picks)))
+          (let ((a (run7 'query "--relations"))) (if (and (pair? a) (assq 'items (cdr a))) (cdr (assq 'items (cdr a))) '()))))
+(tolerant (forge-record! S7 "(relation picks (nothing ((kind doc) (field custom ?k)) ()))"))
+(define K7 (tolerant (make7 '((kind . doc) (title . "K7") (custom . ?k)))))
+(define X7 (tolerant (make7 '((kind . doc) (title . "X7") (custom . "x")))))
+(define declared7-replayed (tolerant (declared7)))
+(want "E a declaration recorded with a variable by an earlier build is in force on replay"
+      declared7-replayed
+      '((declared picks nothing (from ((kind doc) (field custom ?k))) (to ()))))
+(want "E it compares the symbol as a literal: a block holding ?k is linked, one holding \"x\" is refused"
+      (in-order (head (run7 'link K7 "picks" X7) 1) (head (run7 'link X7 "picks" K7) 3))
+      '((ok) (error bad-request relation-endpoint)))
+(define snapshot7 (tolerant (run7 'snapshot)))
+(want "E the snapshot is taken"
+      (head snapshot7 1)
+      '(ok))
+;; THE RESTORE PATH ITSELF: the reduction's rows, read back by rows->state,
+;; hold the declaration replay applied, and the store read after the
+;; snapshot answers it too.
+(define reduced7 (tolerant (open-and-reduce S7)))
+(want "E the rows round trip and the read after the snapshot keep the declaration replay applied"
+      (in-order (state-declaration reduced7 'picks)
+                (equal? (state-declaration (rows->state (state->rows reduced7)) 'picks) (state-declaration reduced7 'picks))
+                (equal? (tolerant (declared7)) declared7-replayed))
+      '((in-force (nothing ((kind doc) (field custom ?k)) ())) #t #t))
 
 ;; A rule that reached the store by another writer's record and names a
 ;; relation the rule verb refuses (def reads outside the log) is never asked:
