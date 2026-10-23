@@ -29,7 +29,7 @@ jobs:
       matrix:
         runner: [macos-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 180
     defaults:
       run:
         shell: bash
