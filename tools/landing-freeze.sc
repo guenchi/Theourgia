@@ -17,8 +17,28 @@
 ;; tools/landing-commit.sc commits.
 ;;
 ;;   scheme --script tools/landing-freeze.sc <store> --writer <W> <dir>
+;;   scheme --script tools/landing-freeze.sc <store> --writer <W> --check <freeze-dir>
 ;;
 ;; <dir> must not exist. In order:
+;; - EVERY DRAFT IS BROUGHT ONTO THE STORE'S APPLIED CUT first, since
+;;   tools/landing-commit.sc commits only at the pinned cut, the join of the
+;;   drafts' cuts. A committed record moves the applied cut whatever block it
+;;   is on (a review letter as much as a code change); a draft never does. A
+;;   draft whose block's committed version is still its based-on is MOVED:
+;;   the same bytes, written again at the applied cut. A draft whose block was
+;;   committed since (`drafts` lists it `behind`) is REBASED: its change and
+;;   the committed one are merged line by line against the block's text at
+;;   the draft's cut (merge3 below), and the merged text is written onto the
+;;   committed version. Both go through `write --rebase --based-on
+;;   --working-cut` under the writer's name. When any draft's change and the
+;;   committed one touch the same or adjacent lines (and are not the same
+;;   edit), or lines repeat so that the alignment is in doubt, or a structural draft
+;;   (new, delete) stands on another cut, NOTHING is written and the freeze is
+;;   refused (error drafts-behind-conflict (blocks (<block> ...)) [(structural
+;;   (<key> ...))]), naming every one: the coder merges those by hand. Each
+;;   draft written is recorded in <dir>/REBASED.sexp as (rebased <block>
+;;   (from <hash>) (to <hash>)) or (moved <block> (from-cut <cut>) (to-cut
+;;   <cut>)), and the answer counts them;
 ;; - tools/drafts-dump.sc writes the draft list into <dir> (DRAFTS.sexp, with
 ;;   the pinned cut, the join of the drafts' cuts, and <n>.bytes);
 ;; - the working view is read ONCE, its own drafts are checked to be the
@@ -41,18 +61,37 @@
 ;;   and CHANGED.sexp names each as (path <p> added) or (path <p> removed).
 ;; A draft written during the freeze is refused (error drafts-changed ...),
 ;; with nothing written after it; the directory is left for the coder to
-;; remove before freezing again.
+;; remove before freezing again. So is a commit during the freeze, which
+;; leaves the pinned cut behind the applied one: (error cut-moved (pinned
+;; <cut>) (now <cut>)).
 ;;
 ;; A refusal prints (error <kind> ...) and exits 1; success prints
-;; (ok (frozen <n>) (changed <k>) (dir "<dir>")) and exits 0.
+;; (ok (frozen <n>) (changed <k>) (dir "<dir>")), followed by (rebased <r>)
+;; (moved <m>) when any draft was written, and exits 0. The drafts written
+;; stay written when the freeze is refused after them; a coder's edit-export
+;; of the old drafts is stale from then on and is exported again.
+;;
+;; --check reads a freeze already made, before it lands, and writes nothing.
+;; Each frozen item is first checked against its own record (bytes against
+;; their sha256, the version against its fields, a draft's bytes as text):
+;; (error frozen-damaged (block|structural <id>)). Then a frozen draft whose
+;; block was committed since is merged as above but only to judge it. Any
+;; conflicting one, or a structural item at another cut: (error
+;; drafts-behind-conflict (blocks ...) [(structural ...)]). Otherwise, any
+;; draft behind or only off the cut, or the applied cut no longer the pinned
+;; one: (error refreeze (behind (<block> ...)) (moved (<block> ...)) (pinned
+;; <cut>) (now <cut>)), since what was gated is not what would land. Else
+;; (ok (current (pinned <cut>))).
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia store) store-state-at-cut)
-        (only (theourgia working) working-state working-structural-outputs)
+        (only (theourgia store) store-state-at-cut open-and-reduce)
+        (only (theourgia reduce) reduce-applied-cut reduction? state-read block-hash draft-version structural-version)
+        (only (theourgia markers) src-text)
+        (only (theourgia working) working-state working-structural-outputs working-structural)
         (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes overwrite-entry! hold-point!)
+        (only (theourgia ffi) entry-bytes entry-name-type unreadable-entry? overwrite-entry! hold-point!)
         (only (theourgia log) load-declaration-set!)
         (only (theourgia incomplete) incomplete-refused))
 
@@ -98,9 +137,241 @@
                    (map (lambda (d) (cons (structural-key-of d) (clause 'version d)))
                         (filter (lambda (d) (and (pair? d) (memq (car d) '(new delete)))) items)))))))
 
+;; ---- bringing the drafts onto the applied cut ------------------------------
+
+;; -> the lines of S, each with the newline that ends it; the last one without
+;; when S does not end in a newline
+(define (lines-of s)
+  (let loop ((i 0) (from 0) (out '()))
+    (cond ((= i (string-length s))
+           (reverse (if (< from i) (cons (substring s from i) out) out)))
+          ((char=? (string-ref s i) #\newline)
+           (loop (+ i 1) (+ i 1) (cons (substring s from (+ i 1)) out)))
+          (else (loop (+ i 1) from out)))))
+
+;; -> the edits that turn the lines BASE into the lines SIDE, from a longest
+;; common subsequence: ((<start> <end> <lines>) ...) in order, each replacing
+;; base lines [start, end) with lines; between two edits at least one line is
+;; kept, so the edits of one side never touch
+(define (edits base side)
+  (let* ((a (list->vector base)) (b (list->vector side))
+         (n (vector-length a)) (m (vector-length b))
+         ;; t[i][j]: the length of a longest common subsequence of a[i..] and b[j..]
+         (t (let ((v (make-vector (+ n 1))))
+              (do ((i 0 (+ i 1))) ((> i n) v) (vector-set! v i (make-vector (+ m 1) 0))))))
+    (do ((i (- n 1) (- i 1))) ((< i 0))
+      (do ((j (- m 1) (- j 1))) ((< j 0))
+        (vector-set! (vector-ref t i) j
+                     (if (string=? (vector-ref a i) (vector-ref b j))
+                         (+ 1 (vector-ref (vector-ref t (+ i 1)) (+ j 1)))
+                         (max (vector-ref (vector-ref t (+ i 1)) j)
+                              (vector-ref (vector-ref t i) (+ j 1)))))))
+    (let loop ((i 0) (j 0) (si 0) (sj 0) (out '()))
+      (define (flush)
+        (if (and (= si i) (= sj j))
+            out
+            (cons (list si i (let take ((k sj) (acc '())) (if (= k j) (reverse acc) (take (+ k 1) (cons (vector-ref b k) acc)))))
+                  out)))
+      (cond ((and (= i n) (= j m)) (reverse (flush)))
+            ((and (< i n) (< j m) (string=? (vector-ref a i) (vector-ref b j))
+                  (= (vector-ref (vector-ref t i) j) (+ 1 (vector-ref (vector-ref t (+ i 1)) (+ j 1)))))
+             (let ((o (flush))) (loop (+ i 1) (+ j 1) (+ i 1) (+ j 1) o)))
+            ((and (< i n) (or (= j m) (>= (vector-ref (vector-ref t (+ i 1)) j) (vector-ref (vector-ref t i) (+ j 1)))))
+             (loop (+ i 1) j si sj out))
+            (else (loop i (+ j 1) si sj out))))))
+
+;; THE SAME EDITS FROM THE OTHER END: the alignment that keeps the LAST of
+;; several equal lines where `edits` keeps the first, read off the reversed
+;; texts and turned back into base coordinates
+(define (edits-late base side)
+  (let ((n (length base)))
+    (reverse (map (lambda (e) (list (- n (cadr e)) (- n (car e)) (reverse (caddr e))))
+                  (edits (reverse base) (reverse side))))))
+
+;; THE THREE-WAY MERGE OF ONE BLOCK'S TEXT, by lines: BASE is the text the
+;; draft was written on, OURS the draft, THEIRS the committed text. -> the
+;; merged text, or #f for a conflict.
+;; NEVER: A DOUBT IS A CONFLICT. An edit of ours and one of theirs that
+;; overlap OR ABUT (two insertions at one place, an insertion against the
+;; edge of a change) conflict unless they are the same edit; a text that is
+;; not a string is a conflict. A merge that guessed an order for two edits at
+;; one place would land a text nobody wrote, with no one told.
+;; NEVER: AND AN ALIGNMENT IS A GUESS WHERE LINES REPEAT. Deleting one of two
+;; equal runs can be read as deleting either, and whether it meets the other
+;; side's edit depends on which. Each side is aligned from both ends (edits,
+;; edits-late), and the four pairings must all merge, to one text.
+(define (merge3 base ours theirs)
+  (and (string? base) (string? ours) (string? theirs)
+       (let* ((b (lines-of base)) (o (lines-of ours)) (t (lines-of theirs))
+              (texts (apply append
+                            (map (lambda (eo) (map (lambda (et) (merge-edits b eo et)) (list (edits b t) (edits-late b t))))
+                                 (list (edits b o) (edits-late b o))))))
+         (and (for-all string? texts)
+              (for-all (lambda (x) (string=? x (car texts))) texts)
+              (car texts)))))
+
+;; -> the base lines B with the edits EO and ET applied, or #f when two of
+;; them touch and are not the same edit
+(define (merge-edits b eo et)
+  (let ((touch? (lambda (x y) (and (<= (car x) (cadr y)) (<= (car y) (cadr x))))))
+    (and (for-all (lambda (x) (for-all (lambda (y) (or (equal? x y) (not (touch? x y)))) et)) eo)
+         (let ((all (list-sort (lambda (x y) (< (car x) (car y)))
+                               (append eo (filter (lambda (y) (not (member y eo))) et))))
+               (bv (list->vector b)))
+           (let loop ((es all) (at 0) (out '()))
+             (define (kept from to acc)
+               (if (= from to) acc (kept (+ from 1) to (cons (vector-ref bv from) acc))))
+             (if (null? es)
+                 (apply string-append (reverse (kept at (vector-length bv) out)))
+                 (let ((e (car es)))
+                   (loop (cdr es) (cadr e) (append (reverse (caddr e)) (kept at (car e) out))))))))))
+
+(define (cut-set c)
+  (list-sort (lambda (a b) (string<? (car a) (car b)))
+             (filter (lambda (e) (and (pair? e) (integer? (cdr e)) (> (cdr e) 0))) c)))
+(define (src-of state id)
+  (let* ((b (and (reduction? state) (state-read state id)))
+         (fs (and b (assq 'fields b))) (v (and fs (assq 'src (cdr fs)))))
+    (cond ((not v) #f) ((string? (cdr v)) (cdr v)) ((bytevector? (cdr v)) (src-text (cdr v))) (else #f))))
+
+;; -> (<id> <version> <based-on> <cut> <text>) for one live draft of WRITER
+(define (draft-info store writer id)
+  (let ((a (rpc-dispatch store (list 'read id "--working-info" "--writer" writer) actor)))
+    (unless (and (pair? a) (eq? (car a) 'ok) (pair? (cadr a)) (eq? (car (cadr a)) 'projection) (eq? (cadr (cadr a)) 'working))
+      (refuse 'draft-unreadable (list 'block id) (list 'answer a)))
+    (let ((p (cadr a)))
+      (list id (list-ref p 4) (list-ref p 5) (list-ref p 6) (list-ref p 7)))))
+
+;; THE JUDGEMENT OF ONE DRAFT (<id> <based-on> <cut> <text>) against NOW, the
+;; store as applied: -> (current) when it stands at the applied cut, (moved
+;; <text>) when only the cut moved, (rebased <merged text> <committed hash>)
+;; when the block was committed since and the two changes merge, (conflict)
+;; when they do not.
+(define (judge store now id based-on cut text)
+  (let ((committed (block-hash now id)))
+    (cond ((equal? (cut-set cut) (cut-set (reduce-applied-cut now))) (list 'current))
+          ((equal? based-on committed) (list 'moved text))
+          (else
+           (let* ((past (store-state-at-cut store #f (format "~s" cut)))
+                  (merged (and committed (reduction? past) (equal? (block-hash past id) based-on)
+                               (merge3 (src-of past id) text (src-of now id)))))
+             (if merged (list 'rebased merged committed) (list 'conflict)))))))
+
+;; THE STRUCTURAL DRAFTS STAND ON THEIR CUT: none is moved or rebased, so one
+;; at another cut than the applied one is named. -> (<key> ...)
+(define (structural-off-cut store writer now)
+  (let ((a (working-structural store #f writer)))
+    (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'structural-refused a))
+    (map (lambda (i) (if (eq? (car i) 'new) (clause 'provisional i) (string-append "delete-" (clause 'holder i))))
+         (filter (lambda (i) (not (equal? (cut-set (clause 'cut i)) (cut-set (reduce-applied-cut now)))))
+                 (caddr a)))))
+
+(define (conflict-refusal blocks structural)
+  (apply refuse 'drafts-behind-conflict (list 'blocks blocks)
+         (if (null? structural) '() (list (list 'structural structural)))))
+
+;; EVERY DRAFT ONTO THE APPLIED CUT, or nothing written. -> the records,
+;; ((rebased <block> (from <hash>) (to <hash>)) | (moved <block> (from-cut <cut>) (to-cut <cut>)) ...)
+(define (bring-onto-applied-cut! store writer)
+  (let* ((now (open-and-reduce store))
+         (at (reduce-applied-cut now))
+         (drafts (map (lambda (d) (draft-info store writer (car d))) (block-drafts store writer)))
+         (judged (map (lambda (d) (cons d (judge store now (car d) (caddr d) (cadddr d) (list-ref d 4)))) drafts))
+         (conflicts (map caar (filter (lambda (j) (eq? (cadr j) 'conflict)) judged)))
+         (structural (structural-off-cut store writer now)))
+    (unless (and (null? conflicts) (null? structural)) (conflict-refusal conflicts structural))
+    (fold-right
+      (lambda (j records)
+        (let* ((d (car j)) (id (car d)) (verdict (cdr j)))
+          (if (eq? (car verdict) 'current)
+              records
+              (let* ((to (if (eq? (car verdict) 'rebased) (caddr verdict) (caddr d)))
+                     (a (rpc-dispatch store (list 'write id "-" "--writer" writer "--rebase"
+                                                  "--based-on" to "--working-cut" (format "~s" at))
+                                      actor #f #f (lambda () (cadr verdict)) #f)))
+                (unless (and (pair? a) (eq? (car a) 'ok))
+                  (refuse 'rebase-refused (list 'block id) (list 'answer a)))
+                (cons (if (eq? (car verdict) 'rebased)
+                          (list 'rebased id (list 'from (caddr d)) (list 'to to))
+                          (list 'moved id (list 'from-cut (cadddr d)) (list 'to-cut at)))
+                      records)))))
+      '() judged)))
+
+;; -> ((<block> . <version>) ...), the writer's live block drafts
+(define (block-drafts store writer)
+  (let ((a (rpc-dispatch store (list 'drafts "--writer" writer) actor)))
+    (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'drafts-refused a))
+    (map (lambda (d) (cons (clause 'block d) (clause 'version d)))
+         (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft)))
+                 (let ((i (assq 'items (cdr a)))) (if i (cdr i) '()))))))
+
+;; THE FREEZE'S MANIFEST, one `drafts` datum and nothing after it
+(define (frozen-manifest dir)
+  (let ((m (guard (e (#t #f))
+             (let ((p (open-string-input-port (utf8->string (entry-bytes (string-append dir "/DRAFTS.sexp"))))))
+               (let* ((m (read p)) (rest (read p))) (and (eof-object? rest) m))))))
+    (unless (and (pair? m) (eq? (car m) 'drafts) (list? m)) (refuse 'manifest-unreadable (list 'dir dir)))
+    m))
+;; -> the frozen bytes of item D, checked against its recorded sha256 and
+;; version; a damaged item is refused by name. A version is only matched once
+;; it is recorded as a string and rebuilt from the item's fields: two failed
+;; readings would otherwise compare equal.
+(define (frozen-bytes dir d)
+  (let* ((key (case (car d) ((draft) (clause 'block d)) ((new) (clause 'provisional d)) (else (clause 'holder d))))
+         (bytes (and (memq (car d) '(draft new)) (string? (clause 'bytes d))
+                     (guard (e ((unreadable-entry? e) #f)) (entry-bytes (string-append dir "/" (clause 'bytes d))))))
+         (sha-ok? (lambda () (and (bytevector? bytes) (equal? (bytevector->hex (sha256 bytes)) (clause 'sha256 d)))))
+         (version-ok? (lambda (rebuild)
+                        (let ((v (guard (e (#t #f)) (rebuild))))
+                          (and (string? v) (string? (clause 'version d)) (string=? v (clause 'version d)))))))
+    (unless (case (car d)
+              ((draft) (and (sha-ok?) (src-text bytes)
+                            (version-ok? (lambda () (draft-version bytes (clause 'based-on d) (clause 'cut d))))))
+              ((new) (and (sha-ok?)
+                          (version-ok? (lambda () (structural-version 'new (clause 'path d) (bytevector->hex (sha256 bytes)) (clause 'cut d))))))
+              (else (version-ok? (lambda () (structural-version 'delete (clause 'holder d) (clause 'based-on d) (clause 'cut d))))))
+      (refuse 'frozen-damaged (list (if (eq? (car d) 'draft) 'block 'structural) key)))
+    bytes))
+
+;; --check: a freeze already made, judged against the store now; nothing
+;; written. THE FROZEN BYTES ARE JUDGED, not the writer's live drafts: what
+;; was gated is what would land. A structural item stands on its cut: one at
+;; the applied cut is current (nothing was committed since, so a delete's
+;; file is as it was), one at another is named.
+(define (check store writer dir)
+  (let ((m (frozen-manifest dir)))
+    (unless (equal? (clause 'writer m) writer)
+      (refuse 'other-writer (list 'frozen (clause 'writer m)) (list 'given writer)))
+    (let* ((items (filter (lambda (d) (and (pair? d) (memq (car d) '(draft new delete)))) (cdr m)))
+           (bytes (map (lambda (d) (frozen-bytes dir d)) items))
+           (pinned (clause 'pinned-cut m))
+           (now (open-and-reduce store))
+           (at (reduce-applied-cut now))
+           (judged (filter values
+                           (map (lambda (d b)
+                                  (and (eq? (car d) 'draft)
+                                       (cons (clause 'block d)
+                                             (judge store now (clause 'block d) (clause 'based-on d) (clause 'cut d) (src-text b)))))
+                                items bytes)))
+           (named (lambda (kind) (map car (filter (lambda (j) (eq? (cadr j) kind)) judged))))
+           (structural (map (lambda (d) (if (eq? (car d) 'new) (clause 'provisional d) (string-append "delete-" (clause 'holder d))))
+                            (filter (lambda (d) (and (memq (car d) '(new delete))
+                                                     (not (equal? (cut-set (clause 'cut d)) (cut-set at)))))
+                                    items))))
+      (cond ((not (and (null? (named 'conflict)) (null? structural))) (conflict-refusal (named 'conflict) structural))
+            ((or (pair? (named 'rebased)) (pair? (named 'moved)) (not (equal? (cut-set at) (cut-set pinned))))
+             (refuse 'refreeze (list 'behind (named 'rebased)) (list 'moved (named 'moved)) (list 'pinned pinned) (list 'now at)))
+            (else (list 'ok (list 'current (list 'pinned pinned))))))))
+
 (define (freeze store writer dir)
-  (let ((dumped (run-dump store writer dir)))
+  ;; anything at the directory's name, asked with an lstat, refuses the freeze
+  ;; before any draft is moved, in the words the dump refuses it with
+  (unless (eq? 'absent (entry-name-type dir)) (refuse 'dump-refused (list 'error 'dir-exists (list 'dir dir))))
+  (let* ((records (strictly store (lambda (key) (bring-onto-applied-cut! key writer))))
+         (dumped (run-dump store writer dir)))
     (unless (and (pair? dumped) (eq? (car dumped) 'ok)) (refuse 'dump-refused dumped))
+    (overwrite-entry! (string-append dir "/REBASED.sexp")
+                      (string->utf8 (string-append (format "~s" (cons 'rebases records)) "\n")))
     (let* ((manifest (read (open-string-input-port (utf8->string (entry-bytes (string-append dir "/DRAFTS.sexp"))))))
            (drafts (filter (lambda (d) (and (pair? d) (memq (car d) '(draft new delete)))) (cdr manifest)))
            (frozen (list-sort (lambda (x y) (string<? (car x) (car y)))
@@ -110,16 +381,33 @@
            (pinned (clause 'pinned-cut manifest)))
       (when (null? drafts) (refuse 'nothing-to-freeze (list 'dir dir)))
       (hold-point! 'freeze-after-dump)
-      ;; THE FREEZE'S LOADS ARE STRICT, as export-code's are: a store whose
-      ;; history is cut by damage, or missing a writer, is refused rather
-      ;; than frozen from its readable part. The declaration rides on a copy
-      ;; of the store string for the extent of the freeze, as the dispatcher
-      ;; sets one for a verb.
-      (let ((key (string-copy store)))
-        (dynamic-wind
-          (lambda () (load-declaration-set! key incomplete-refused))
-          (lambda () (freeze-view key writer dir frozen pinned (length drafts)))
-          (lambda () (load-declaration-set! key #f)))))))
+      (let ((answer (strictly store (lambda (key) (freeze-view key writer dir frozen pinned (length drafts))))))
+        ;; A COMMIT DURING THE FREEZE leaves the pinned cut behind the applied
+        ;; one, whatever it touched, and landing-commit would refuse it: it is
+        ;; refused here, the directory left as for drafts-changed, and a new
+        ;; freeze brings the drafts onto the cut it moved to
+        (let ((now (reduce-applied-cut (open-and-reduce store))))
+          (unless (equal? (cut-set now) (cut-set pinned))
+            (refuse 'cut-moved (list 'pinned pinned) (list 'now now))))
+        ;; the counts follow the answer only when a draft was written: a freeze
+        ;; of drafts already at the applied cut answers as it always has
+        (append answer
+              (if (null? records)
+                  '()
+                  (list (list 'rebased (length (filter (lambda (r) (eq? (car r) 'rebased)) records)))
+                        (list 'moved (length (filter (lambda (r) (eq? (car r) 'moved)) records))))))))))
+
+;; THE FREEZE'S LOADS ARE STRICT, as export-code's are: a store whose history
+;; is cut by damage, or missing a writer, is refused rather than frozen from
+;; its readable part; the rebase before it and a check read the same way.
+;; -> (PROC <key>) with the declaration riding on a copy of the store string
+;; for its extent, as the dispatcher sets one for a verb
+(define (strictly store proc)
+  (let ((key (string-copy store)))
+    (dynamic-wind
+      (lambda () (load-declaration-set! key incomplete-refused))
+      (lambda () (proc key))
+      (lambda () (load-declaration-set! key #f)))))
 
 ;; -> the freeze's answer, from one read of the working view
 (define (freeze-view store writer dir frozen pinned count)
@@ -199,10 +487,16 @@
               (list 'dir dir))))))
 
 (define (main args)
-  (if (not (and (= 4 (length args)) (string=? (cadr args) "--writer")))
-      (begin (write '(usage (landing-freeze <store> "--writer" <W> <dir>))) (newline) (exit 2))
+  ;; `--check` IS NEVER A DIRECTORY: a check whose directory was left off is
+  ;; refused, not run as a freeze into a directory of that name
+  (if (not (and (or (and (= 4 (length args)) (not (string=? (cadddr args) "--check")))
+                    (and (= 5 (length args)) (string=? (cadddr args) "--check")))
+                (string=? (cadr args) "--writer")))
+      (begin (write '(usage (landing-freeze <store> "--writer" <W> ["--check"] <dir>))) (newline) (exit 2))
       (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
-                 (freeze (car args) (caddr args) (cadddr args)))))
+                 (if (= 5 (length args))
+                     (strictly (car args) (lambda (key) (check key (caddr args) (list-ref args 4))))
+                     (freeze (car args) (caddr args) (cadddr args))))))
         (write a)
         (newline)
         (exit (if (eq? (car a) 'ok) 0 1)))))

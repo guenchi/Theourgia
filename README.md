@@ -2320,6 +2320,22 @@ name and visible to nobody else until it is committed. A writer with
 drafts has a **working view**: the committed store, with its own drafts
 laid over the blocks they cover.
 
+NOTE: **A draft stands still while the store moves on.** A draft records the
+block version it is based on and the cut it was written at. Every committed
+record moves the store's applied cut, whatever block it is on and whoever
+wrote it (a review letter as much as a code change); a draft never moves it.
+When a commit changed the drafted block itself, so that its committed version
+is no longer the draft's `based-on`, the draft is **behind**: `drafts` reads
+it `(fresh #f)` and names it once more after its items, `(behind <block>
+(based-on <v>) (committed <v>))`. A commit on other blocks only moves the cut
+and leaves no draft behind. The landing tools bring every draft onto the
+applied cut before they freeze (see "Keeping drafts, and landing them at
+their cut"): a draft that is not behind is written again at the new cut, and
+one that is behind is merged with the committed change line by line and
+written onto the committed version. When the two changes touch the same or
+adjacent lines (and are not the same change), nothing is written and the
+freeze stops naming the blocks, for the coder to merge by hand.
+
 NEVER: **A writer id is held by one live agent at a time.** Two agents may
 use one id across TIME -- a later session binds the same id and its
 `drafts` shows what the earlier one left -- but not at the same moment.
@@ -2432,6 +2448,10 @@ Lists that writer's live drafts. Each carries `block`, `writer`,
 moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
 (#t when the draft is fresh and its bytes are the same as what is committed; a stale draft is never unchanged).
 After the drafts it lists the writer's revoked consumptions, drafts a commit took and a retraction gave back, whose slot is empty now: `(revoked (block <id>) (writer <w>) (version <v>) (based-on <v>) (plan-event <e>))`.
+After the items, each draft that is not fresh is named again, `(behind
+<block> (based-on <v>) (committed <v>))`, the block's committed version in
+place of `now`; a fresh draft has no such clause, and a writer whose drafts
+are all fresh gets none.
 
 Once an editor has supplied diagnostics for the writer (see "Derived data
 from an editor"), each draft also carries `(diagnostics <n>)`, the
@@ -3354,6 +3374,7 @@ and a fourth commits them.
     scheme --script tools/drafts-dump.sc <store> --writer <W> <dir>
     scheme --script tools/drafts-restore.sc <store> <dir> --writer <W>
     scheme --script tools/landing-freeze.sc <store> --writer <W> <dir>
+    scheme --script tools/landing-freeze.sc <store> --writer <W> --check <dir>
     scheme --script tools/landing-commit.sc <store> <dir> [--start <tag>]
 
 `drafts-dump` makes `<dir>`, which must not exist, and writes one file of
@@ -3413,7 +3434,28 @@ write the store refuses,
 `version-not-reproduced`, each naming the draft and carrying the store's
 answer. It answers `(ok (restored <n>) (already <n>))`.
 
-`landing-freeze` makes `<dir>`, which must not exist: `drafts-dump`'s list;
+`landing-freeze` first brings every draft of W onto the store's applied cut,
+since `landing-commit` commits only at the pinned cut. A draft whose block's
+committed version is still its `based-on` is written again with the same
+bytes at the applied cut; one that is behind is rebased: its change and the
+committed one are merged line by line against the block's text at the
+draft's cut, and the result is written onto the committed version. Both go
+through `write --rebase --based-on <v> --working-cut <cut>` under W's name.
+A draft whose change and the committed one touch the same or adjacent lines
+cannot be rebased unless the two are the same change, nor can one whose
+lines repeat so that which of them changed is in doubt (each side is
+aligned from both ends, and the merges must agree), nor a structural draft
+at another cut: then nothing
+is written and the freeze is refused `(error drafts-behind-conflict (blocks
+(<block> ...)) (structural (<key> ...)))`, the second clause only when a
+structural draft is named. Each draft written is recorded in
+`<dir>/REBASED.sexp`, `(rebases (rebased <block> (from <v>) (to <v>)) ...
+(moved <block> (from-cut <cut>) (to-cut <cut>)) ...)`, and the answer ends
+`(rebased <r>) (moved <m>)`; a freeze that wrote no draft answers without
+them. Drafts written stay written if the freeze is then refused, and an
+`edit-export` taken of the old drafts is to be exported again. Then it
+makes `<dir>`, which must not exist (an existing one is refused before any
+draft is written): `drafts-dump`'s list;
 then the working view, read once and as strictly as `export-code` reads (a
 store missing a writer or cut by damage is refused), whose own drafts must
 be the dumped ones, written raw into `<dir>/tree` by `export-code`'s own
@@ -3429,8 +3471,27 @@ remove. A writer with no draft of either kind is `nothing-to-freeze`; a
 pinned cut the store cannot rebuild, `pinned-cut-unusable`; and a step the
 store refuses is named with the store's answer: `drafts-refused` (the
 listing), `dump-refused`, `working-view-refused`, `export-refused` and
-`changed-files-refused`. It answers `(ok (frozen
+`changed-files-refused`. A commit to the store during the freeze leaves the
+pinned cut behind the applied one and refuses it, `(error cut-moved (pinned
+<cut>) (now <cut>))`, the directory left as for `drafts-changed`. It answers `(ok (frozen
 <n>) (changed <k>) (dir <dir>))`.
+
+`landing-freeze --check <dir>` judges a freeze already made against the
+store as it is now and writes nothing, for a landing to run before it
+commits. Each frozen item is first checked against its own record: its bytes
+against their sha256, its version against its fields, a draft's bytes as
+text, `(error frozen-damaged (block <id>))` or `(structural <key>)`
+otherwise. A frozen draft whose block was committed since is then merged as
+above, only to judge it: when any conflicts, or a structural item is at
+another cut than the applied one, `(error drafts-behind-conflict (blocks
+...))` as above; otherwise, when any draft is behind or only off the applied
+cut, or the applied cut is no longer the pinned one, `(error refreeze
+(behind (<block> ...)) (moved (<block> ...)) (pinned <cut>) (now <cut>))`,
+since what was gated is not what would land and a new freeze rebases it;
+else `(ok (current (pinned <cut>)))`. A structural item at the applied cut
+is current: nothing was committed since it was frozen. A freeze of another writer
+is `other-writer`, and a `DRAFTS.sexp` that is not one `drafts` datum
+`manifest-unreadable`.
 
 `landing-commit` reads a freeze's `DRAFTS.sexp` (a freeze's directory, or a
 dump's) and commits its drafts only
@@ -3438,8 +3499,7 @@ if the store's applied cut is still the pinned cut: a commit on another
 block since the freeze leaves every draft's baseline as it was, so the store
 would accept the drafts, and what landed would not be what was gated. Then
 nothing is committed and the answer is `(error cut-moved (pinned <cut>) (now
-<cut>))`; the drafts are rebased (`write --rebase --based-on <v>
---working-cut <cut>`) and frozen again. At the pinned cut it commits the
+<cut>))`; the drafts are frozen again, which rebases them. At the pinned cut it commits the
 drafts by name, each with its frozen version (`--working-version
 <block>=<version>`), its structural drafts with them in the same commit
 (`--working-new` and `--working-delete`), and prints the commit's answer,

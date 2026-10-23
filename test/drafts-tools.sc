@@ -48,6 +48,19 @@
 ;; commits nothing; a refused landing keeps its start tag, the same name is
 ;; then refused, a new name lands; the construction is one procedure (a
 ;; census of the sources); the completion check reads a structural item.
+;; BH: a draft on a block another writer commits is listed `behind` by drafts
+;; (a commit on another block, which moves only the cut, is not); landing-
+;; freeze rebases it when the two changes touch different lines (frozen bytes
+;; carry both, the pinned cut is the applied cut, the freeze lands), and stops
+;; with drafts-behind-conflict naming it when they touch the same or adjacent
+;; lines, or repeated lines put the alignment in doubt, nothing frozen and no
+;; draft touched; a draft whose block did not move is moved onto the applied
+;; cut, and the freeze lands; a commit during the freeze refuses it
+;; (cut-moved). --check judges a freeze already made, its frozen bytes and not
+;; the live drafts: current (a delete at the applied cut included), refreeze
+;; naming the drafts behind and those only moved, drafts-behind-conflict,
+;; frozen-damaged for bytes or fields that no longer match their record, and
+;; manifest-unreadable for a manifest that is not one datum.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -777,6 +790,230 @@
             (list (structural-consumes-mismatch members consumes)
                   (equal? (structural-consumes-mismatch tampered consumes) pid))))
       '(#f #t))
+
+;; ---- BH: a draft whose base fell behind, and the freeze that rebases it -----------
+(printf "== BH: drafts says which drafts fell behind; the freeze rebases them or stops ==\n")
+(define O "other-writer")
+;; -> a store imported from a directory holding a.txt (TEXT) and b.txt
+(define (lines-store! text)
+  (set! n (+ n 1))
+  (let ((src (string-append root "/src" (number->string n))) (st (string-append root "/s" (number->string n))))
+    (sh "mkdir -p " (quoted src) " " (quoted st))
+    (call-with-output-file (string-append src "/a.txt") (lambda (p) (display text p)))
+    (call-with-output-file (string-append src "/b.txt") (lambda (p) (display "two\n" p)))
+    (checked "init" (ask st 'init))
+    (checked "import" (ask st 'import-code src))
+    st))
+;; another writer's committed change to block ID
+(define (commit-other! st id text)
+  (checked "other write" (rpc-dispatch st (list 'write id "-" "--writer" O) "test" #f #f (lambda () text) #f))
+  (checked "other commit" (ask st 'commit id "--writer" O)))
+(define (behind-clauses st)
+  (filter (lambda (c) (and (pair? c) (eq? (car c) 'behind))) (cdr (ask st 'drafts "--writer" W))))
+(define five "l1\nl2\nl3\nl4\nl5\n")
+(define bh1 (lines-store! five))
+(define bh1-a (block-of bh1 "a.txt"))
+(define bh1-b (block-of bh1 "b.txt"))
+(draft! bh1 bh1-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(define bh1-h0 (hash-of bh1 bh1-a))
+(checked "set" (ask bh1 'set bh1-b "title" "B elsewhere"))
+(want "BH-1 TWIN a commit on another block moves the cut and not the drafted block's version: no behind clause"
+      (behind-clauses bh1)
+      '())
+(draft! bh1 bh1-b "two drafted\n")
+(commit-other! bh1 bh1-a "l1\nl2\nl3\nl4\nl5 committed\n")
+(define bh1-h1 (hash-of bh1 bh1-a))
+(want "BH-1 another writer commits the drafted block: drafts carries (behind <block> (based-on h0) (committed h1)), and the draft on the other block none"
+      (list (behind-clauses bh1) (not (equal? bh1-h0 bh1-h1)))
+      (list (list (list 'behind bh1-a (list 'based-on bh1-h0) (list 'committed bh1-h1))) #t))
+(want "BH-1 the items are as they were: the behind draft reads fresh #f with now h1"
+      (map (lambda (d) (list (clause1 'block d) (clause1 'now d) (clause1 'fresh d)))
+           (filter (lambda (d) (and (pair? d) (eq? (car d) 'draft) (equal? (clause1 'block d) bh1-a)))
+                   (or (clause 'items (ask bh1 'drafts "--writer" W)) '())))
+      (list (list bh1-a bh1-h1 #f)))
+;; THE FREEZE REBASES: the two changes touch different lines
+(define bh1-freeze (string-append root "/bh1-freeze"))
+(define bh1-frozen (tool "landing-freeze" bh1 "--writer" W bh1-freeze))
+(define (dumped-text dir id)
+  (let* ((m (file-datum (string-append dir "/DRAFTS.sexp")))
+         (d (and (pair? m) (find (lambda (d) (and (pair? d) (eq? (car d) 'draft) (equal? (clause1 'block d) id))) (cdr m)))))
+    (and d (text-of (string-append dir "/" (clause1 'bytes d))))))
+(want "BH-2 the freeze rebases the behind draft (and moves the other onto the applied cut), and records it"
+      (list (head-of bh1-frozen) (clause1 'rebased bh1-frozen) (clause1 'moved bh1-frozen)
+            (let ((r (file-datum (string-append bh1-freeze "/REBASED.sexp"))))
+              (and (pair? r) (filter (lambda (x) (eq? (car x) 'rebased)) (cdr r)))))
+      (list 'ok 1 1 (list (list 'rebased bh1-a (list 'from bh1-h0) (list 'to bh1-h1)))))
+(want "BH-2 the frozen bytes carry both changes, the tree too, and the pinned cut is the applied cut"
+      (list (dumped-text bh1-freeze bh1-a)
+            (text-of (string-append bh1-freeze "/tree/a.txt"))
+            (equal? (clause1 'pinned-cut (file-datum (string-append bh1-freeze "/DRAFTS.sexp"))) (cut-of bh1)))
+      (list "l1 drafted\nl2\nl3\nl4\nl5 committed\n" "l1 drafted\nl2\nl3\nl4\nl5 committed\n" #t))
+(define (committed-text st id)
+  (let* ((rec (state-read (open-and-reduce st) id))
+         (src (and (list? rec) (assq 'fields rec) (assq 'src (cdr (assq 'fields rec))))))
+    (cond ((not src) #f) ((bytevector? (cdr src)) (utf8->string (cdr src))) (else (cdr src)))))
+(want "BH-2 the rebased freeze lands, and the block holds both changes"
+      (in-order (head-of (tool "landing-commit" bh1 bh1-freeze))
+                (committed-text bh1 bh1-a)
+                (drafts-of bh1))
+      '(ok "l1 drafted\nl2\nl3\nl4\nl5 committed\n" ()))
+;; THE FREEZE STOPS: the two changes touch the same line
+(define bh2 (lines-store! five))
+(define bh2-a (block-of bh2 "a.txt"))
+(define bh2-b (block-of bh2 "b.txt"))
+(draft! bh2 bh2-a "l1\nl2\nl3 drafted\nl4\nl5\n")
+(draft! bh2 bh2-b "two drafted\n")
+(commit-other! bh2 bh2-a "l1\nl2\nl3 committed\nl4\nl5\n")
+(define bh2-facts (list (draft-facts bh2 bh2-a) (draft-facts bh2 bh2-b)))
+(define bh2-freeze (string-append root "/bh2-freeze"))
+(want "BH-2 changes to the same line: drafts-behind-conflict naming the block, nothing frozen, no draft touched"
+      (in-order (tool "landing-freeze" bh2 "--writer" W bh2-freeze)
+                (file-exists? bh2-freeze)
+                (equal? (list (draft-facts bh2 bh2-a) (draft-facts bh2 bh2-b)) bh2-facts))
+      (list (list 'error 'drafts-behind-conflict (list 'blocks (list bh2-a))) #f #t))
+;; ADJACENT LINES ARE A CONFLICT TOO: a doubt is not merged
+(define bh3 (lines-store! five))
+(define bh3-a (block-of bh3 "a.txt"))
+(draft! bh3 bh3-a "l1\nl2 drafted\nl3\nl4\nl5\n")
+(commit-other! bh3 bh3-a "l1\nl2\nl3 committed\nl4\nl5\n")
+(want "BH-2 changes to adjacent lines: drafts-behind-conflict"
+      (head-of (tool "landing-freeze" bh3 "--writer" W (string-append root "/bh3-freeze")))
+      '(error drafts-behind-conflict))
+;; THE CUT MOVED AND NO BLOCK DID: a commit on another block after the drafts
+(define bh4 (lines-store! five))
+(define bh4-a (block-of bh4 "a.txt"))
+(define bh4-b (block-of bh4 "b.txt"))
+(draft! bh4 bh4-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(commit-other! bh4 bh4-b "two committed\n")
+(define bh4-freeze (string-append root "/bh4-freeze"))
+(define bh4-frozen (tool "landing-freeze" bh4 "--writer" W bh4-freeze))
+(want "BH-2c a commit on another block since the drafts: the freeze moves the draft onto the applied cut, and the landing commits"
+      (in-order (list (head-of bh4-frozen) (clause1 'moved bh4-frozen)
+                      (let ((r (file-datum (string-append bh4-freeze "/REBASED.sexp"))))
+                        (and (pair? r) (map (lambda (x) (list (car x) (cadr x))) (cdr r)))))
+                (head-of (tool "landing-commit" bh4 bh4-freeze))
+                (committed-text bh4 bh4-a)
+                (drafts-of bh4))
+      (list (list 'ok 1 (list (list 'moved bh4-a))) 'ok "l1 drafted\nl2\nl3\nl4\nl5\n" '()))
+;; --check: a freeze made before another writer's commit, judged before it
+;; lands. THE FROZEN BYTES ARE JUDGED: after the freeze the writer's live
+;; draft also changes l5, so a check that read the live draft would call the
+;; first commit below a conflict where the frozen draft merges with it.
+(define bh5 (lines-store! five))
+(define bh5-a (block-of bh5 "a.txt"))
+(draft! bh5 bh5-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(define bh5-freeze (string-append root "/bh5-freeze"))
+(checked "freeze" (tool "landing-freeze" bh5 "--writer" W bh5-freeze))
+(want "BH-3 --check on a freeze at the applied cut: current"
+      (head-of (tool "landing-freeze" bh5 "--writer" W "--check" bh5-freeze))
+      'ok)
+(draft! bh5 bh5-a "l1 drafted\nl2\nl3\nl4\nl5 live\n")
+(commit-other! bh5 bh5-a "l1\nl2\nl3\nl4\nl5 committed\n")
+(define bh5-facts (draft-facts bh5 bh5-a))
+(want "BH-3 --check after a commit that merges with the FROZEN draft (not the live one): refreeze naming the block as behind"
+      (let ((a (tool "landing-freeze" bh5 "--writer" W "--check" bh5-freeze)))
+        (list (head-of a) (clause1 'behind a) (clause1 'moved a)))
+      (list '(error refreeze) (list bh5-a) '()))
+(commit-other! bh5 bh5-a "l1 committed\nl2\nl3\nl4\nl5 committed\n")
+(want "BH-3 --check after a commit to the drafted line: drafts-behind-conflict naming the block; the checks wrote no draft"
+      (in-order (tool "landing-freeze" bh5 "--writer" W "--check" bh5-freeze)
+                (equal? (draft-facts bh5 bh5-a) bh5-facts))
+      (list (list 'error 'drafts-behind-conflict (list 'blocks (list bh5-a))) #t))
+;; ONLY THE CUT MOVED: the check names the drafts it would move
+(define bh6 (lines-store! five))
+(define bh6-a (block-of bh6 "a.txt"))
+(draft! bh6 bh6-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(define bh6-freeze (string-append root "/bh6-freeze"))
+(checked "freeze" (tool "landing-freeze" bh6 "--writer" W bh6-freeze))
+(commit-other! bh6 (block-of bh6 "b.txt") "two committed\n")
+(want "BH-3 --check after a commit on another block: refreeze naming the draft as moved, none behind"
+      (let ((a (tool "landing-freeze" bh6 "--writer" W "--check" bh6-freeze)))
+        (list (head-of a) (clause1 'behind a) (clause1 'moved a)))
+      (list '(error refreeze) '() (list bh6-a)))
+;; A DELETE FROZEN AT THE APPLIED CUT is current, and the frozen items are
+;; checked against their records
+(define bh7 (lines-store! five))
+(define bh7-a (block-of bh7 "a.txt"))
+(draft! bh7 bh7-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(delete-draft! bh7 "b.txt")
+(define bh7-freeze (string-append root "/bh7-freeze"))
+(checked "freeze" (tool "landing-freeze" bh7 "--writer" W bh7-freeze))
+(want "BH-3 --check on a freeze holding a delete, at the applied cut: current"
+      (head-of (tool "landing-freeze" bh7 "--writer" W "--check" bh7-freeze))
+      'ok)
+;; A FROZEN DELETE WITH ITS VERSION AND BASELINE GONE: the version cannot be
+;; rebuilt and none is recorded, two failed readings that must not match
+(define bh7-bare (string-append root "/bh7-bare"))
+(sh "cp -R " (quoted bh7-freeze) " " (quoted bh7-bare))
+(let ((m (file-datum (string-append bh7-bare "/DRAFTS.sexp"))))
+  (call-with-output-file (string-append bh7-bare "/DRAFTS.sexp")
+    (lambda (p)
+      (write (cons (car m) (map (lambda (d) (if (and (pair? d) (eq? (car d) 'delete))
+                                                (filter (lambda (c) (not (and (pair? c) (memq (car c) '(version based-on))))) d)
+                                                d))
+                                (cdr m)))
+             p))
+    'replace))
+(want "BH-3 --check on a frozen delete with no version and no based-on: frozen-damaged naming it"
+      (head-of (tool "landing-freeze" bh7 "--writer" W "--check" bh7-bare))
+      '(error frozen-damaged))
+(want "BH-3 landing-freeze with no arguments answers its usage"
+      (head-of (tool "landing-freeze"))
+      'usage)
+(define bh7-before (draft-facts bh7 bh7-a))
+(want "BH-3 a check with its directory left off answers usage, freezes nothing and moves no draft"
+      (in-order (head-of (tool "landing-freeze" bh7 "--writer" W "--check"))
+                (file-exists? "--check")
+                (equal? (draft-facts bh7 bh7-a) bh7-before))
+      '(usage #f #t))
+;; THE DAMAGED FREEZES are copies of one holding a block draft only, so the
+;; rows read the record checks and nothing else
+(define bh10 (lines-store! five))
+(define bh10-a (block-of bh10 "a.txt"))
+(draft! bh10 bh10-a "l1 drafted\nl2\nl3\nl4\nl5\n")
+(define bh10-freeze (string-append root "/bh10-freeze"))
+(checked "freeze" (tool "landing-freeze" bh10 "--writer" W bh10-freeze))
+(define bh10-bad (string-append root "/bh10-bad"))
+(sh "cp -R " (quoted bh10-freeze) " " (quoted bh10-bad))
+(let ((d (find (lambda (d) (and (pair? d) (eq? (car d) 'draft))) (cdr (file-datum (string-append bh10-bad "/DRAFTS.sexp"))))))
+  (call-with-output-file (string-append bh10-bad "/" (clause1 'bytes d)) (lambda (p) (display "l1 tampered\n" p)) 'replace))
+(want "BH-3 --check on a freeze whose draft bytes no longer match their record: frozen-damaged naming the block"
+      (tool "landing-freeze" bh10 "--writer" W "--check" bh10-bad)
+      (list 'error 'frozen-damaged (list 'block bh10-a)))
+(define bh10-extra (string-append root "/bh10-extra"))
+(sh "cp -R " (quoted bh10-freeze) " " (quoted bh10-extra) " && echo '(drafts)' >> " (quoted (string-append bh10-extra "/DRAFTS.sexp")))
+(want "BH-3 --check on a manifest followed by a second datum: manifest-unreadable"
+      (head-of (tool "landing-freeze" bh10 "--writer" W "--check" bh10-extra))
+      '(error manifest-unreadable))
+;; LINES THAT REPEAT: the draft deletes one of two equal pairs and the commit
+;; changes the first line; read from the other end the deletion meets the
+;; change, so the alignment is in doubt and the freeze stops
+(define bh8 (lines-store! "a\nb\na\nb\n"))
+(define bh8-a (block-of bh8 "a.txt"))
+(draft! bh8 bh8-a "a\nb\n")
+(commit-other! bh8 bh8-a "A\nb\na\nb\n")
+(want "BH-2 a deletion of one of two equal runs against a change to the first: drafts-behind-conflict"
+      (head-of (tool "landing-freeze" bh8 "--writer" W (string-append root "/bh8-freeze")))
+      '(error drafts-behind-conflict))
+;; A COMMIT DURING THE FREEZE: held after its dump, another writer commits
+;; another block; the freeze is refused, its pinned cut behind the applied one
+(define bh9 (lines-store! five))
+(draft! bh9 (block-of bh9 "a.txt") "l1 drafted\nl2\nl3\nl4\nl5\n")
+(define bh9-freeze (string-append root "/bh9-freeze"))
+(define release9 (string-append root "/release9"))
+(define out9 (string-append root "/bh9.out"))
+(define rc9 (string-append root "/bh9.rc"))
+(sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append "freeze-after-dump:" release9))
+    " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted bh9) " --writer " (quoted W)
+    " " (quoted bh9-freeze) " > " (quoted out9) " 2> " (quoted (string-append root "/bh9.err")) " < /dev/null; echo $? > "
+    (quoted (string-append rc9 ".part")) " && mv " (quoted (string-append rc9 ".part")) " " (quoted rc9) " ) &")
+(define held9 (wait-for (string-append release9 ".held") 60000))
+(when held9 (commit-other! bh9 (block-of bh9 "b.txt") "two committed\n"))
+(call-with-output-file release9 (lambda (p) (display "go" p)))
+(define done9 (wait-for rc9 60000))
+(want "BH-4 a commit while the freeze waits after its dump refuses it, cut-moved, which exits 1"
+      (list held9 done9 (head-of (file-datum out9)) (and done9 (file-datum rc9)))
+      '(#t #t (error cut-moved) 1))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

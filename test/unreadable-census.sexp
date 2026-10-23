@@ -44,6 +44,8 @@
   ("tools/edit-sync.sc" (read-sidecar) entry-name-type 3 keep a "not writer layout: the sidecar file and each pristine copy beside an edited export (a block file's and a new file's), asked with an lstat; one that is not a regular file refuses missing-sidecar or pristine-damaged before any write")
   ("tools/edit-sync.sc" (files-under) entry-name-type 1 keep a "not writer layout: the edited export directory, walked without following a link; an entry that is neither a regular file nor a directory refuses unexpected-entry before any write")
   ("tools/edit-sync.sc" (sync) entry-name-type 1 keep a "not writer layout: the edited export directory itself; one that is not a directory refuses removed-file before any write")
+  ("tools/landing-freeze.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("tools/landing-freeze.sc" (freeze) entry-name-type 1 keep a "not writer layout: the freeze directory the caller names, asked with an lstat; anything present refuses dump-refused dir-exists before any draft is moved")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -267,6 +269,21 @@
    unrelated a
    "landing-commit's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/landing-freeze.sc" (frozen-manifest) 1 guard
+   (#t)
+   unrelated a
+   "the freeze's DRAFTS.sexp, a file the caller names, not a store entry: any failure to read it as one datum is the refusal manifest-unreadable"
+   (e (#t #f)))
+  ("tools/landing-freeze.sc" (frozen-bytes) 1 guard
+   ((unreadable-entry? e))
+   unrelated a
+   "a frozen item's bytes file in the freeze directory the caller names, not a store entry: one that cannot be read is the refusal frozen-damaged naming the item"
+   (e ((unreadable-entry? e) #f)))
+  ("tools/landing-freeze.sc" (frozen-bytes) 2 guard
+   (#t)
+   unrelated a
+   "a frozen item's version rebuilt from the fields its manifest records, no entry read: fields the rebuild raises on are damaged, the refusal frozen-damaged naming the item"
+   (e (#t #f)))
   ("tools/landing-freeze.sc" (main) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a

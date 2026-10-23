@@ -1161,18 +1161,25 @@
         (cond
           ((not writer) (invalid-writer))
           (else
+           ;; EACH DRAFT AGAINST ITS BLOCK'S COMMITTED VERSION, compared once:
+           ;; (<entry> <now> <fresh>), read by the item's `now` and `fresh` and
+           ;; by the `behind` clauses after the items, so the two cannot say
+           ;; different things about one draft
+           (let ((compared (map (lambda (e)
+                                  (let ((now (block-hash state (list-ref e 3))))
+                                    (list e now (equal? (list-ref e 5) now))))
+                                (active-entries store writer state))))
+            (append
             (list 'ok (cons 'items
               (append
-              (map (lambda (e)
-                     (let* ((id (list-ref e 3))
-                            (now (block-hash state id))
-                            (fresh (equal? (list-ref e 5) now)))
-                       (list 'draft (list 'block id) (list 'writer writer)
+              (map (lambda (c)
+                     (let ((e (car c)) (now (cadr c)) (fresh (caddr c)))
+                       (list 'draft (list 'block (list-ref e 3)) (list 'writer writer)
                              (list 'version (list-ref e 4)) (list 'based-on (list-ref e 5))
                              (list 'now now)
                              (list 'fresh fresh)
                              (list 'unchanged (unchanged? state e fresh)))))
-                   (active-entries store writer state))
+                   compared)
               ;; NEVER: A REVOKED CONSUMPTION IS NOT A DRAFT, AND IT IS NOT
               ;; NOTHING. The file was retired by a commit that has since
               ;; been taken back; the bytes are in the plan record, and
@@ -1201,7 +1208,17 @@
                            (append (list 'new (list 'writer writer))
                                    (filter (lambda (c) (not (eq? (car c) 'bytes))) (cdr item)))
                            (append (list 'delete (list 'writer writer)) (cdr item)))))
-                   (active-structural store writer state)))))))))))))
+                   (active-structural store writer state)))))
+            ;; A DRAFT WHOSE BASE FELL BEHIND, one clause each after the items:
+            ;; the block's committed version is no longer the one the draft was
+            ;; based on, and the draft is to be rebased onto the committed one
+            ;; before it lands. A cut that moved while the block's version did
+            ;; not is not behind: the landing tools move such a draft onto the
+            ;; new cut themselves (tools/landing-freeze.sc).
+            (map (lambda (c)
+                   (let ((e (car c)))
+                     (list 'behind (list-ref e 3) (list 'based-on (list-ref e 5)) (list 'committed (cadr c)))))
+                 (filter (lambda (c) (not (caddr c))) compared))))))))))))
 
   ;; THE (block . version) PAIRS THIS REQUEST IS ABOUT.
   ;;
