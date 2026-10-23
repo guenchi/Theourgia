@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*318 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*319 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -71,6 +71,7 @@
 - An endpoint selector whose field clause held `_` matched nothing, so every link under its relation was refused `relation-endpoint`. `_` now holds for any value of a field the block carries (a contested field holds none), and a new declaration that writes a variable there is refused `selector-value-not-literal`. An earlier declaration with `_` now holds for any value; nothing stored is reinterpreted.
 - The MCP shell refused `tools/list` whenever it carried params, answering "Pagination is not available", so a client that sends params with no cursor (Codex does) could not start; it now serves the whole list and refuses only a cursor with a value. `contrib/doorbell.sh` sends the Enter as its own keystroke after the line, which a combined send left unsubmitted in some terminals.
 - A batch of a few hundred inserts under a rule naming `field+` was refused `rule-unevaluable` (`query-budget`, `field+`) before a selector was asked: a write's facts (`kind+`, `field+`, `edge+`, `edge-kind+`) were read by scanning the whole relation and charged its full size on every dispatch. They are now read by their bound arguments and charged the rows matched each time the goal is dispatched; an over-budget join is still refused.
+- A writer directory copied in from another checkout that sorted first was taken as the local writer, so this copy's writes went into another instance's log. The local writer is now chosen by ownership: a live writer whose `owner.sexp` names the `(machine nonce)` of this copy's `instance.sexp` is preferred by every write, `position`, a commit's cursor and `adopt`, and name order decides only when none does; a request whose writer comes to be passed over while it runs is refused `writer-superseded` (remedy `reopen`). The verbs that change drafts refuse a `--writer` owned by another instance (`foreign-writer`, remedy `draft-writer`), and `check` reports `writer-owner-foreign`, `writer-owner-unverified`, `instance-absent` and `instance-unavailable` without changing its verdict.
 
 ### Known at this release
 
