@@ -502,25 +502,28 @@
 (printf "== AP-9: a refusal after a rotation ==\n")
 (build!)
 ;; The first append does not rotate; the instance file is then made
-;; unreadable as data, and the second append, past segment 1's age, rotates
-;; and is refused at the instance check that follows the rotation.
+;; unreadable as data. instance.sexp is metadata the session watches, so the
+;; next append reloads and its frame, prepared before the reload, is refused
+;; for its epoch. The append after it, past segment 1's age, rotates and is
+;; refused at the instance check that follows the rotation.
 (define ap-9
   (parameterize ((log-clock (lambda () fixed-ts)))
     (let* ((s (log-begin d (lambda args 'applied)))
            (a (append-one! s '(put "w.3" ())))
            (tamper (put! (string-append d "/instance.sexp") (string->utf8 "((oops\n")))
+           (r (caught (parameterize ((log-clock (lambda () age-ts))) (append-one! s '(put "w.4" ())))))
            (b (caught (parameterize ((log-clock (lambda () age-ts))) (append-one! s '(put "w.4" ())))))
            (k (kept? s))
            (text (traced (lambda () (caught (parameterize ((log-clock (lambda () age-ts)))
                                               (append-one! s '(put "w.4" ()))))))))
       (guard (e (#t (if #f #f))) (session-commit! s))
       (guard (e (#t (if #f #f))) (log-end! s))
-      (list a b (len-of (wpath 2)) k (paths-of text)))))
-(want "AP-9 ANSWER the rotating append is refused for the malformed instance; the new segment is there and empty"
-      (list (car ap-9) (cadr ap-9) (caddr ap-9))
-      '((committed 3 1) (refused-before-reserve instance-malformed) 0))
+      (list a r b (len-of (wpath 2)) k (paths-of text)))))
+(want "AP-9 ANSWER the append after the tamper reloads and is refused for its epoch; the rotating append after it is refused for the malformed instance; the new segment is there and empty"
+      (list (car ap-9) (cadr ap-9) (caddr ap-9) (cadddr ap-9))
+      '((committed 3 1) (refused-before-reserve epoch) (refused-before-reserve instance-malformed) 0))
 (want "AP-9 PATH the session keeps no prefix after a refusal that follows a rotation, and its next append validates in full"
-      (list-tail ap-9 3) '(#f (validated-in-full)))
+      (list-tail ap-9 4) '(#f (validated-in-full)))
 
 (printf "== AP-7(b): a frame appended from outside inside the window ==\n")
 (build!)

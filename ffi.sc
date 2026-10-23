@@ -2445,8 +2445,12 @@
     ;; `derived` is the write of a table of facts an editor supplied, beside
     ;; the store and never in it: a fault aimed there shows that a failed
     ;; write leaves the table a reader had.
+    ;; `ownership` is the ownership table's reads (log.sc): instance.sexp and
+    ;; each writer's owner and retirement, read under their own guards, so a
+    ;; fault there reaches the table alone and leaves delivery's own read of
+    ;; the same files as it was.
     '(deliver-barrier commit registry publish snapshot repair report working index conn client
-      eval-cleanup presence presence-decision mcp-wait mcp-signal admission derived))
+      eval-cleanup presence presence-decision mcp-wait mcp-signal admission derived ownership))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that

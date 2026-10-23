@@ -56,6 +56,7 @@
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
                 session-snapshot! log-open load-writers load-prefix load-commit! local-writer-of
+                ownership-check-lines load-ownership
                 discovery-end-seq discovery-integrity discovery-torn discovery-origin
                 enumerate-segment-files discovery-quarantine discover-prefix
                 manifest-segments read-manifest
@@ -5572,6 +5573,12 @@
         (if (pair? undecodable) (list (list 'undecodable-text undecodable)) '())
         (if (pair? rules) (list (cons 'rules rules)) '())
         (if (pair? endpoints) (list (cons 'relation-endpoints endpoints)) '())
+        ;; WHOSE WRITERS THESE ARE, as diagnostics that never decide
+        ;; the verdict: each writer not known to be retired whose owner names
+        ;; another instance, or carries no instance field; and the store's
+        ;; identity, when owners have none to be compared with or the
+        ;; comparison could not read it (log.sc, ownership-check-lines).
+        (ownership-check-lines (load-ownership ls))
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

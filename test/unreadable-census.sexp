@@ -799,11 +799,26 @@
    unrelated a
    "cleanup"
    (e (#t (if #f #f))))
-  ("log.sc" (file-version) 1 guard
+  ("log.sc" (path-file-version) 1 guard
    ((unreadable-entry? e))
    fact a
-   "file-version: the value (unreadable path reason errno) (R2c)"
+   "path-file-version (file-version's read, for any path): the value (unreadable path reason errno) (R2c)"
    (e ((unreadable-entry? e) (list (quote unreadable) p (unreadable-entry-reason e) (unreadable-entry-errno e)))))
+  ("log.sc" (ownership-read) 1 guard
+   ((unreadable-entry? e))
+   fact a
+   "the ownership table's read of one file: a read that fails is the value (unreadable path reason condition), which makes that entry's field unknown (an unknown owner is neither preferred nor passed over) or the table's instance unavailable; a retirement that could not be read keeps its condition, which the head's selection raises as retired-of does; delivery's own unguarded reads of the same files refuse as they did"
+   (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e) e))))
+  ("log.sc" (ownership-datum) 1 guard
+   (#t)
+   unrelated a
+   "the ownership table's parse of bytes already read: bytes that do not parse are #f, a legacy owner or a malformed instance; the read itself is ownership-read's"
+   (e (#t #f)))
+  ("log.sc" (ownership-table) 1 guard
+   ((unreadable-entry? e))
+   conservative a
+   "the ownership table's listing of writers: a listing that fails is an empty table that keeps the condition, and a selector asking it for a head raises that condition, as the listing it replaces did; the load that built it lists the same directory unguarded and refuses as it did"
+   (e ((unreadable-entry? e) e)))
   ("log.sc" (read-instance) 1 guard
    (#t)
    unrelated a
@@ -839,11 +854,6 @@
    refuse b
    "publish's candidate: absent is no-candidate, any other failure is candidate-unreadable with the path and reason (U9)"
    (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
-  ("log.sc" (owner-nonce) 1 guard
-   (#t)
-   fact b
-   "owner-nonce: a file that was read and does not parse answers #f, as it did; the read itself is R1's and outside this guard (found in review)"
-   (e (#t #f)))
   ("log.sc" (machine-id) 1 guard
    (#t)
    unrelated a

@@ -643,7 +643,10 @@ It answers:
     (ok (position (<writer> . <n>)))
 
 The local log writer's last sequence: the writer whose log this store appends to here,
-and the sequence of its last record, 0 before its first. It is read from the load's
+and the sequence of its last record, 0 before its first. Where a live writer's
+`owner.sexp` names this copy's instance, that one is the local writer: a writer copied
+in from another checkout, whose owner names another instance, is passed over (see
+`adopt`). It is read from the load's
 own discovery, with no write. It is the way to get a `--cursor` for a tracked request
 (*Requests and replay*): the cursor names the LOG writer that appends the request's
 records, so the cursor for `commit --writer <D>` is this writer's position, not D's,
@@ -2412,6 +2415,16 @@ written onto the committed version. When the two changes touch the same or
 adjacent lines (and are not the same change), nothing is written and the
 freeze stops naming the blocks, for the coder to merge by hand.
 
+NEVER: **A draft writer is a name of your own, never another checkout's
+writer.** While a live writer of this instance is there (see `adopt`), the
+paths that change drafts -- `write`, `restore`, `discard` of a draft that is
+there, `commit`, and the structural drafts a landing tool writes -- refuse a
+`--writer` whose `owner.sexp` names another instance:
+`(error foreign-writer (writer <w>) (remedy draft-writer))`. A session draft
+writer has no `owner.sexp` and is accepted as before. Reading such a draft
+(`read --working`, `drafts`), the replay of a tracked commit and the completion
+of a persisted plan are answered as before.
+
 NEVER: **A writer id is held by one live agent at a time.** Two agents may
 use one id across TIME -- a later session binds the same id and its
 `drafts` shows what the earlier one left -- but not at the same moment.
@@ -3140,7 +3153,21 @@ built-in among them, listed once as `(rule-skipped (rule <name>) (reason
 write-rule))`, since no write is in hand. An edge under a typed relation whose
 end does not match its selector is listed under `(relation-endpoints
 (relation-endpoint (relation <name>) (edge ...) (end from|to) (expected
-<selector>)) ...)`. Neither changes the verdict. The verdict
+<selector>)) ...)`. Neither changes the verdict. Whose writers these are is
+reported in four lines, none of which changes the verdict either:
+`(writer-owner-foreign <w>)` for a writer whose `owner.sexp` names another
+instance than this copy's `instance.sexp` (a writer directory copied in from
+another checkout), `(writer-owner-unverified <w>)` for one whose owner carries
+no instance field or does not parse, `(instance-absent (remedy adopt))` for a
+store with owners and no `instance.sexp`, and `(instance-unavailable (path <p>)
+(reason <r>))` when `instance.sexp` could not be read for the comparison. A
+writer known to be retired is not listed: after an adopt, the predecessor's
+owner names the instance the copy had before. When this copy's own live writer
+is known by its owner but its log could not be read (its quarantine record, a
+segment directory), `local-writer` is absent and that writer is listed
+`unreadable`; a foreign writer is never named in its place. A writer whose
+owner.sexp itself cannot be read is not known to be this copy's, so nothing
+is preferred over it or for it (see `adopt`). The verdict
 is `damaged` when a writer's log fails its integrity check, the reduction
 could not apply a record, or the registry is inside the store; otherwise
 `duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
@@ -3165,7 +3192,24 @@ is not. When the reason is the store's identity, the answer says which
 part of it: `(reason identity) (identity <field>)`, where `<field>` is
 `machine`, `device`, `inode`, `nonce`, or `instance-absent` for a checkout
 that has no `instance.sexp` yet.
-The answer is `(ok (from <old-writer>) (to <new-writer>) (prefix <segment> <offset> <seq>) (reason <r>))`. `<r>` is `identity`, or one of the recovery reasons: `retired` (an adopt left unfinished), `missing-generation`, `registry-ahead` (the log is behind what the registry saw written) or `damage` (the writer's log fails its integrity check). A store that needs none of these is refused `(error not-needed (checked (identity retired missing-generation registry-ahead damage)))`. A store file it cannot read is refused by kind (`owner-unreadable`, `segment-unreadable`, `metadata-unreadable`, `registry-unreadable`) with `(path <p>) (reason <r>)`, and nothing is written.
+The answer is `(ok (from <old-writer>) (to <new-writer>) (prefix <segment> <offset> <seq>) (reason <r>))`. `<r>` is `identity`, or one of the recovery reasons: `retired` (an adopt left unfinished), `missing-generation`, `registry-ahead` (the log is behind what the registry saw written) or `damage` (the writer's log fails its integrity check). A store that needs none of these is refused `(error not-needed (checked (identity retired missing-generation registry-ahead damage)))`.
+
+A writer directory copied in from another instance is read, never extended,
+while a live writer of this instance is there. A writer is this instance's when
+its `owner.sexp` names the `(machine nonce)` this copy's `instance.sexp`
+records; every choice of the writer to extend -- a write's, `position`'s, a
+commit's cursor, `adopt`'s own -- prefers such a writer and passes over a live
+one whose owner names another instance or carries no instance field. A writer
+whose owner cannot be read is not passed over: it stays where it is and its
+write is refused `owner-unreadable`. So a store holding both its own writer and
+another checkout's writes as its own, whichever sorts first, and `adopt`
+answers `not-needed`. When no live writer names this instance -- no
+`instance.sexp`, a changed nonce, a copy that pulled another's successor -- the
+choice is the first local writer in name order, as before, and the refusals
+above are unchanged. A request whose writer comes to be passed over while it
+runs (this instance's writer copied in, or `instance.sexp` rewritten, during it)
+is refused `(writer-superseded (writer <w>) (by <o>) (remedy reopen))`; the next
+request writes as `<o>`. A store file it cannot read is refused by kind (`owner-unreadable`, `segment-unreadable`, `metadata-unreadable`, `registry-unreadable`) with `(path <p>) (reason <r>)`, and nothing is written.
 
 ## A store in git
 

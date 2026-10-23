@@ -77,6 +77,8 @@
           load-declaration-set! load-declaration-of
           session-delivered? snapshot-unreadable-notes
           local-writer-of
+          ownership-table ownership-passed-over? ownership-foreign-beside-owned?
+          ownership-check-lines load-ownership
           log-begin log-end! session? session-store session-epoch session-writer session-own-prefix
           session-append! session-dry-clone session-dry?
           session-frontiers session-view session-view-refusal session-applied! session-load
@@ -1687,7 +1689,11 @@
             ;; WHY AN ABORTED LOAD ABORTED: the unreadable-entry that
             ;; stopped it, the scanner's verdict on readable bytes, or #f.
             ;; The outcome stays what it was; this is kept beside it.
-            (mutable abort-cause)))
+            (mutable abort-cause)
+            ;; WHICH OWNER-BEARING WRITER THIS INSTANCE OWNS (ownership-table),
+            ;; read once while the load is built, so every selector that
+            ;; chooses a writer to extend asks the same table.
+            ownership))
 
   ;; THE WRITERS A LOAD IS MISSING, in the order the load holds them: what
   ;; an answer built from this load must say (K10). Three ways to be
@@ -1903,7 +1909,8 @@
             ;; change a segment inside it (D-barrier) or park two loads
             ;; side by side (D-interleave).
             (hold-point! 'after-discovery)
-            (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f)))
+            (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f
+                                         (ownership-table store))))
               ;; Only the notes that refuse this consumer refuse it -- a cut
               ;; refuses the strict declaration alone (incomplete.sc,
               ;; refusing-notes) -- and the refusal names EVERY note of the
@@ -2062,7 +2069,12 @@
             ;; session last validated of its own writer, advanced by its own
             ;; writes, so an append need not read the writer's log again.
             ;; Replaced, never changed in place (a dry clone shares it).
-            (mutable own-prefix)))
+            (mutable own-prefix)
+            ;; A WRITER THE OWNERSHIP TABLE NOW PASSES OVER (reload!):
+            ;; (writer-superseded (writer w) (by o) (remedy reopen)), or #f.
+            ;; Set by a reload and never cleared: the session stays bound to
+            ;; the writer it began with, so only a new session can write.
+            (mutable superseded)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -2180,9 +2192,26 @@
   ;; one is local history this machine may no longer extend. Taking the
   ;; first left every session after an adopt holding the retired writer,
   ;; so `session-view` was #f and the store looked unwritable.
+  ;; the table a load was built with (load-session-ownership), for `check`
+  (define (load-ownership ls) (load-session-ownership ls))
+
   (define (local-writer-of store ls)
-    (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
-                          (load-session-prefixes ls))))
+    (let ((w (local-writer-selection store ls)))
+      (and (string? w) w)))
+
+  ;; -> the writer's name, #f, or (excluded <refusal>). THE PREFERENCE RUNS
+  ;; FIRST (ownership-table): with a live writer that names this instance,
+  ;; the live foreign and legacy ones are not candidates. And AN OWNED WRITER
+  ;; DISCOVERY LEFT OUT IS A REFUSAL, NEVER A FOREIGN ONE: when what is left
+  ;; holds no live writer because discovery could not read the owned one,
+  ;; the answer is that writer's own refusal, kept apart from a name so that
+  ;; `check`, which reads any truthy value as a name, reports no local
+  ;; writer and keeps its report.
+  (define (local-writer-selection store ls)
+    (let ((locals (ownership-prefer (load-session-ownership ls)
+                                    (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
+                                            (load-session-prefixes ls))
+                                    car)))
       ;; NEVER: EVERY LOCAL WRITER RETIRED IS "NO LOCAL WRITER", NOT "THE
       ;; FIRST RETIRED ONE". The earlier fallback answered the head of the
       ;; list when the search ran out, and a client placing its cursor on
@@ -2197,9 +2226,20 @@
       ;; guess.
       (let loop ((es locals))
         (cond
-          ((null? es) #f)
+          ((null? es) (ownership-exclusion (load-session-ownership ls) ls))
           ((not (retired-of store (car (car es)))) (car (car es)))
           (else (loop (cdr es)))))))
+
+  ;; -> (excluded (writer-unreadable (path p) (reason r))) for the first
+  ;; owned live writer whose discovery is `unreadable`, or #f
+  (define (ownership-exclusion t ls)
+    (let loop ((ws (ownership-owned-live t)))
+      (cond
+        ((null? ws) #f)
+        ((let ((e (assoc (car ws) (load-session-prefixes ls))))
+           (and e (eq? (discovery-origin (cdr e)) 'unreadable) e))
+         => (lambda (e) (list 'excluded (writer-unreadable-of e))))
+        (else (loop (cdr ws))))))
 
   ;; NEVER: THE WRITE PATH NEEDS THE RETIRED ONE, AND THE QUESTIONS ARE NOT THE
   ;; SAME. `local-writer-of` answers "is there a writer here I may write as",
@@ -2217,12 +2257,14 @@
     (let loop ((es (load-session-prefixes ls)))
       (cond
         ((null? es) #f)
-        ((eq? (discovery-origin (cdr (car es))) 'unreadable)
-         (let ((d (log-error-detail (unreadable-note (cdr (car es))))))
-           (list 'writer-unreadable
-                 (list 'path (cdr (assq 'path d)))
-                 (list 'reason (cdr (assq 'reason d))))))
+        ((eq? (discovery-origin (cdr (car es))) 'unreadable) (writer-unreadable-of (car es)))
         (else (loop (cdr es))))))
+  ;; ENTRY is (<writer> . <discovery>), its origin `unreadable`
+  (define (writer-unreadable-of entry)
+    (let ((d (log-error-detail (unreadable-note (cdr entry)))))
+      (list 'writer-unreadable
+            (list 'path (cdr (assq 'path d)))
+            (list 'reason (cdr (assq 'reason d))))))
 
   ;; A LOCAL WRITER STOPPED BY A SEGMENT IT CANNOT READ IS NOT WRITTEN
   ;; (K12). Its readable prefix is delivered, but what lies past the stop
@@ -2243,10 +2285,14 @@
                    (list 'path (cdr (assq 'path d)))
                    (list 'reason (cdr (assq 'reason d))))))))
 
+  ;; -> a name, #f, or local-writer-selection's (excluded <refusal>)
   (define (session-writer-of store ls)
-    (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
-                          (load-session-prefixes ls))))
-      (or (local-writer-of store ls)
+    (let ((locals (ownership-prefer (load-session-ownership ls)
+                                    (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
+                                            (load-session-prefixes ls))
+                                    car))
+          (selected (local-writer-selection store ls)))
+      (or selected
           (and (pair? locals) (car (car locals))))))
 
   ;; THE LOCK IS RELEASED BY THE SAME UNWIND THAT RELEASES THE GUARD.
@@ -2278,10 +2324,12 @@
               ;; that counts them read differently for no reason the
               ;; store cares about.
               (let ((ls (open-load store 'held-exclusive declaration)))
-                (let* ((found (session-writer-of store ls))
+                (let* ((selected (session-writer-of store ls))
+                       (excluded (and (pair? selected) (cadr selected)))
+                       (found (and (string? selected) selected))
                        (stopped (and found (segment-unreadable-refusal ls found)))
                        (local (and (not stopped) found))
-                       (refusal (or stopped (and (not local) (unreadable-writer-refusal ls))))
+                       (refusal (or stopped excluded (and (not local) (unreadable-writer-refusal ls))))
                        (entry (and local (assoc local (load-session-prefixes ls))))
                        (end (and entry (discovery-end-seq (cdr entry))))
                        ;; THE SEED: open-load's own discovery of this writer, kept
@@ -2303,7 +2351,7 @@
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
                                         (and end (+ end 1)) #f
-                                        refusal declaration #f seed)))
+                                        refusal declaration #f seed #f)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -2575,6 +2623,7 @@
     (check-live! 'session-view s)
     (let ((writer (session-writer s)))
       (and writer
+           (not (session-superseded s))
            (not (session-reset-pending s))
            (not (session-poisoned s))
            (not (session-retired? s))
@@ -2792,8 +2841,10 @@
   ;; -> #f when the file is not there, its sha when it is, or
   ;; (unreadable <path> <reason> <errno>) when it cannot be read.
   (define (file-version store writer name)
-    (let* ((p (writer-file store writer name))
-           (r (guard (e ((unreadable-entry? e)
+    (path-file-version (writer-file store writer name)))
+  ;; the same, for any path: #f absent, (unreadable p reason errno), or the hash
+  (define (path-file-version p)
+    (let* ((r (guard (e ((unreadable-entry? e)
                          (list 'unreadable p (unreadable-entry-reason e)
                                (unreadable-entry-errno e))))
                 (read-entry p))))
@@ -2823,14 +2874,18 @@
            (list (cadr v) (caddr v))))
         (else (loop (cdr names))))))
 
+  ;; instance.sexp IS ONE OF THEM: the ownership table depends on
+  ;; it as on the owner files, so a change to it alone reloads, and the
+  ;; reload re-selects.
   (define (metadata-versions store)
+    (cons (list 'instance (path-file-version (string-append store "/instance.sexp")))
     (map (lambda (w)
            (list w
                  (file-version store w "quarantine.sexp")
                  (file-version store w "retired.sexp")
                  (file-version store w "published.sexp")
                  (file-version store w "owner.sexp")))
-         (store-writers store)))
+         (store-writers store))))
 
   ;; RELOADED WHOLE, INSIDE THE LOCK THAT IS ALREADY HELD. An incremental
   ;; catch-up cannot express what a quarantine does: the boundary moves
@@ -2852,6 +2907,18 @@
       ;; boundary has removed and that this epoch never delivered.
       (session-delivered-set! s '())
       (session-versions-set! s (metadata-versions store))
+      ;; A RELOAD RE-SELECTS. The fresh load carries a fresh
+      ;; ownership table, and a session bound to a writer that table now
+      ;; passes over -- an owned live writer copied in beside it, or
+      ;; instance.sexp rewritten to name another writer's nonce -- would go
+      ;; on extending it while verification reads the owned one's nonce.
+      ;; It is refused instead, before any view is issued (session-view);
+      ;; the next log-begin selects the owned writer. A REFUSAL ALREADY
+      ;; RECORDED STANDS: a later reload that finds the writer no longer
+      ;; passed over (instance.sexp naming its nonce again) does not make
+      ;; this session writable; only a new session is.
+      (unless (session-superseded s)
+        (session-superseded-set! s (superseded-by (session-writer s) fresh)))
       (session-epoch-set! s (+ 1 (session-epoch s)))
       (session-revision-set! s (+ 1 (session-revision s)))
       (let* ((writer (session-writer s))
@@ -2896,6 +2963,14 @@
                              ((eq? (discovery-origin (cdr entry)) 'unreadable) 0)
                              (else (discovery-end-seq (cdr entry))))))
            (if (> (cdar es) reach) #t (loop (cdr es))))))))
+
+  ;; -> (writer-superseded (writer <w>) (by <o>) (remedy reopen)) when LS's
+  ;; ownership table passes WRITER over, else #f
+  (define (superseded-by writer ls)
+    (let ((t (load-session-ownership ls)))
+      (and writer (ownership-passed-over? t writer)
+           (list 'writer-superseded (list 'writer writer)
+                 (list 'by (car (ownership-owned-live t))) (list 'remedy 'reopen)))))
 
   (define (versions-changed? s)
     (not (equal? (session-versions s) (metadata-versions (session-store s)))))
@@ -2998,6 +3073,14 @@
   ;; -> ok | (mismatch field) | absent | malformed
   ;;    | (refused owner-unreadable (path p) (reason r))
   (define (verify-instance store)
+    (verify-instance-by store (lambda () (owner-nonce-or-refusal store (ownership-table store)))))
+  ;; OWNED answers the owner nonce instance.sexp is compared with: the
+  ;; nonce, #f, or an owner-unreadable record, always the head's as one
+  ;; ownership table read it (owner-nonce-or-refusal). verify-instance
+  ;; builds that table now; adopt passes the one its decision is made with;
+  ;; a session's append passes its load's. instance.sexp itself is reread
+  ;; here every time.
+  (define (verify-instance-by store owned)
     (let ((d (read-instance store)))
       (cond
         ((not d) 'absent)
@@ -3018,12 +3101,13 @@
                ;; records which instance the writer belongs to; the two
                ;; must agree.
                (else
-                (let ((owned (owner-nonce-or-refusal store)))
+                (let ((owned (owned)))
                   (cond
                     ((owner-unreadable? owned)
                      (list 'refused 'owner-unreadable
                            (list 'path (owner-unreadable-path owned))
                            (list 'reason (owner-unreadable-reason owned))))
+                    ((owner-divergent? owned) (list 'mismatch 'nonce))
                     ((and owned (not (equal? owned (alist-ref d 'nonce))))
                      (list 'mismatch 'nonce))
                     (else 'ok)))))))))))
@@ -3037,10 +3121,34 @@
   ;; whatever datum owner.sexp holds, and a list headed `refused` made a
   ;; readable owner whose nonce was such a list answer as a refusal.
   (define-record-type owner-unreadable (fields path reason))
-  (define (owner-nonce-or-refusal store)
+  ;; A SESSION'S APPEND ANSWERS FOR THE HEAD AND FOR THE WRITER IT EXTENDS, both
+  ;; as its load's table read them: the head's owner as verify-instance asks
+  ;; it (an owner that cannot be read is its refusal), and the written
+  ;; writer's own owner nonce besides. The two are one writer whenever the
+  ;; table and discovery agree; when a read failed for one of them and not
+  ;; the other they can differ, and a writer whose owner names another
+  ;; nonce must not be written because the head's owner vouches for the
+  ;; store. Two nonces that differ answer an owner-divergent record, which
+  ;; verify-instance-by refuses as (mismatch nonce) without comparing it.
+  ;; NEVER: THE DISAGREEMENT IS A RECORD, NOT A LIST (found in review). An
+  ;; instance nonce is whatever datum instance.sexp holds, so a list such as
+  ;; (divergent <head> <own>) can equal it, and the disagreement then passed
+  ;; as agreement.
+  (define-record-type owner-divergent (fields head own))
+  (define (session-owner-nonce s store writer)
+    (let* ((t (load-session-ownership (session-load s)))
+           (head (owner-nonce-or-refusal store t))
+           (own (ownership-owner-nonce t writer)))
+      (cond ((owner-unreadable? head) head)
+            ((owner-unreadable? own) own)
+            ((not own) head)
+            ((not head) own)
+            ((equal? head own) head)
+            (else (make-owner-divergent head own)))))
+  (define (owner-nonce-or-refusal store table)
     (guard (e ((unreadable-entry? e)
                (make-owner-unreadable (unreadable-entry-path e) (unreadable-entry-reason e))))
-      (owner-nonce store)))
+      (owner-nonce store table)))
 
 ;; THE HEAD'S OWNER, not whichever writer happens to sort first. After
   ;; an identity-mismatch adopt the store holds owners from two
@@ -3055,15 +3163,12 @@
   ;; before, and any other failure raises unreadable-entry naming
   ;; owner.sexp, which verify-instance answers as owner-unreadable. Only a
   ;; file that was read and does not parse still answers #f, as it did.
-  (define (owner-nonce store)
-    (let ((head (local-writer-name store)))
-      (and head
-           (let* ((path (writer-file store head "owner.sexp"))
-                  (bytes (read-entry path))
-                  (d (and (not (eq? bytes 'absent))
-                          (guard (e (#t #f))
-                            (string->sexpr-extended (utf8->string bytes))))))
-             (and d (alist-ref d 'instance))))))
+  ;; THE NONCE IS THE ONE THE TABLE READ for the head it names: an owner
+  ;; that could not be read is its owner-unreadable record, one that does
+  ;; not parse or has no instance field is #f, as before.
+  (define (owner-nonce store table)
+    (let ((head (local-writer-name-by store table)))
+      (and head (ownership-owner-nonce table head))))
 
   ;; The machine's own identity: a name plus a nonce minted once and kept
   ;; in the machine home, so that two machines that happen to share a
@@ -3468,19 +3573,202 @@
     (reserve! store (store-id-of store) (instance-nonce store)
               (local-writer-name store) 0))
 
+  ;; ---- the ownership table ------------------------------------------------
+
+  ;; WHICH OWNER-BEARING WRITER THIS INSTANCE OWNS. owner.sexp records
+  ;; (machine m) (instance n), and instance.sexp records this store copy's
+  ;; (machine m) (nonce n); nothing compared them, so a writer directory
+  ;; copied in from another checkout was as local as this checkout's own,
+  ;; and whichever sorted first was extended. A writer whose owner names
+  ;; this instance (machine and nonce both equal) is `owned`; one naming
+  ;; another is `foreign`; one whose owner reads but does not parse, or
+  ;; parses without an instance field, is `legacy`; one whose owner cannot
+  ;; be read is `unknown`. Retirement is #t, #f, or `unknown` when
+  ;; retired.sexp cannot be read, which is not liveness.
+  ;;
+  ;; A PREFERENCE, NOT A VERIFICATION. verify-instance's predicates are
+  ;; unchanged; the head whose owner it compares is the preferred one, taken
+  ;; from the table that chose the writer when a session appends
+  ;; (verify-instance-by). When at least one writer is owned and not retired, the
+  ;; selectors pass over the live foreign and legacy ones and keep the
+  ;; unknown ones where they stand; when none is, the table changes
+  ;; nothing and today's selection runs, every fallback included.
+  ;;
+  ;; IT NEVER RAISES. Each file is read under its own guard, so a read that
+  ;; fails makes that entry's field unknown and never aborts the load or
+  ;; another writer's entry. A failed read of instance.sexp makes the
+  ;; table's instance unavailable, and then no writer is owned, foreign or
+  ;; legacy; the delivery barrier's own read of that file refuses as it
+  ;; did. The reads run in the fault stage `ownership`, so a fault can be
+  ;; aimed at them alone.
+  ;;
+  ;; INSTANCE is (machine . nonce), absent, malformed, or an
+  ;; instance-unavailable record; ENTRIES is ((<writer> <class> <retired> <owned>) ...)
+  ;; in the store's writer order, one per writer with an owner.sexp, OWNED
+  ;; being the owner's instance field as read (#f when it has none or does
+  ;; not parse) or an owner-unreadable record.
+  ;; LISTING is #f, or the unreadable-entry condition listing the writers
+  ;; raised: the table is then empty, and a selector asking it for a head
+  ;; raises that condition, as the listing it replaces did.
+  (define-record-type ownership (fields instance entries listing))
+  ;; A FAILED READ OF instance.sexp. NEVER: IT IS A RECORD, NOT A LIST (found
+  ;; in review). The parsed identity is a pair of whatever data the file
+  ;; holds, so a list headed `unavailable` was also what a readable file
+  ;; naming the machine `unavailable` parsed to.
+  (define-record-type instance-unavailable (fields path reason))
+
+  ;; -> the file's bytes, absent, or (unreadable <path> <reason> <condition>)
+  (define (ownership-read path)
+    (guard (e ((unreadable-entry? e)
+               (list 'unreadable (unreadable-entry-path e) (unreadable-entry-reason e) e)))
+      (read-entry path)))
+  (define (ownership-unreadable? r) (and (pair? r) (eq? (car r) 'unreadable)))
+  ;; -> the datum the bytes hold, or #f for bytes that do not parse
+  (define (ownership-datum bytes)
+    (guard (e (#t #f))
+      (string->sexpr-extended (utf8->string bytes))))
+
+  (define (ownership-table store)
+    (parameterize ((theourgia-stage 'ownership))
+      (let* ((instance (let ((r (ownership-read (string-append store "/instance.sexp"))))
+                         (cond
+                           ((eq? r 'absent) 'absent)
+                           ((ownership-unreadable? r) (make-instance-unavailable (cadr r) (caddr r)))
+                           (else
+                            (let* ((d (ownership-datum r))
+                                   (m (and d (alist-ref d 'machine)))
+                                   (n (and d (alist-ref d 'nonce))))
+                              (if (and m n) (cons m n) 'malformed))))))
+             (listed (guard (e ((unreadable-entry? e) e)) (store-writers store)))
+             (writers (if (list? listed) listed '())))
+        (make-ownership instance
+          (filter values (map (lambda (w) (ownership-entry store w instance)) writers))
+          (and (not (list? listed)) listed)))))
+
+  (define (ownership-entry store writer instance)
+    (let* ((present (present-or-unreadable-skip? (writer-file store writer "owner.sexp")))
+           (owner (ownership-read (writer-file store writer "owner.sexp")))
+           (owned (cond ((eq? owner 'absent) #f)
+                        ((ownership-unreadable? owner) (make-owner-unreadable (cadr owner) (caddr owner)))
+                        (else (let ((d (ownership-datum owner))) (and d (alist-ref d 'instance))))))
+           (retired (ownership-read (writer-file store writer "retired.sexp"))))
+      (and (not (eq? owner 'absent))
+           (list writer
+                 (cond
+                   ((ownership-unreadable? owner) 'unknown)
+                   ;; NO IDENTITY TO COMPARE WITH: nobody is owned, foreign or
+                   ;; legacy. A parsed identity is a pair of the fields as read,
+                   ;; whatever data they hold; absent, malformed and a failed
+                   ;; read are not pairs.
+                   ((not (pair? instance)) 'unclassified)
+                   (else
+                    (let* ((d (ownership-datum owner))
+                           (n (and d (alist-ref d 'instance))))
+                      (cond
+                        ((not n) 'legacy)
+                        ((and (equal? n (cdr instance))
+                              (equal? (alist-ref d 'machine) (car instance)))
+                         'owned)
+                        (else 'foreign)))))
+                 (let ((r retired))
+                   (cond ((eq? r 'absent) #f)
+                         ((ownership-unreadable? r) 'unknown)
+                         (else #t)))
+                 owned
+                 present
+                 (and (ownership-unreadable? retired) (cadddr retired))))))
+  ;; AN ENTRY is (<writer> <class> <retired> <owned> <present> <failure>):
+  ;; OWNED the owner's instance field as read (#f when it has none or does
+  ;; not parse) or an owner-unreadable record; PRESENT whether the owner
+  ;; file is there by the presence test the selectors use (R2g: one that
+  ;; cannot be stat'ed is not); FAILURE the condition the read of
+  ;; retired.sexp raised, when RETIRED is unknown.
+  ;; -> the owner nonce of WRITER as table T read it: the nonce, #f for a
+  ;; writer with no owner.sexp or an owner without the field, or the
+  ;; owner-unreadable record
+  (define (ownership-owner-nonce t writer)
+    (let ((e (assoc writer (ownership-entries t))))
+      (and e (cadddr e))))
+
+  (define (ownership-class t writer)
+    (let ((e (assoc writer (ownership-entries t))))
+      (and e (cadr e))))
+  (define (ownership-owned-live t)
+    (map car (filter (lambda (e) (and (eq? (cadr e) 'owned) (eq? (caddr e) #f)))
+                     (ownership-entries t))))
+  ;; A live foreign or legacy writer while a live writer names this instance
+  (define (ownership-passed-over? t writer)
+    (and (pair? (ownership-owned-live t))
+         (let ((e (assoc writer (ownership-entries t))))
+           (and e (memq (cadr e) '(foreign legacy)) (eq? (caddr e) #f) #t))))
+  ;; CANDIDATES in the selector's own order, NAME-OF giving each one's writer:
+  ;; the same list less the ones passed over.
+  (define (ownership-prefer t candidates name-of)
+    (filter (lambda (c) (not (ownership-passed-over? t (name-of c)))) candidates))
+  ;; THE SUPPLIED-NAME GATE's question (working.sc): an owner naming another
+  ;; instance while a live owner names this one. WHATEVER THE NAME: the table
+  ;; lists the log writers' ids only, and a draft-writer name outside them
+  ;; can have an owner.sexp too, so a name the table has no entry for has its
+  ;; owner read here, classified against the table's identity as an entry is.
+  (define (ownership-foreign-beside-owned? store t writer)
+    (and (pair? (ownership-owned-live t))
+         (eq? (let ((e (or (assoc writer (ownership-entries t))
+                           (parameterize ((theourgia-stage 'ownership))
+                             (ownership-entry store writer (ownership-instance t))))))
+                (and e (cadr e)))
+              'foreign)))
+
+  ;; `check`'s diagnostics, none of which decides its verdict: each writer not
+  ;; known to be retired whose owner names another instance or carries no
+  ;; instance field, then the store's identity when owners have none to be
+  ;; checked against, or when the table could not read it.
+  (define (ownership-check-lines t)
+    (append
+      (filter values
+        (map (lambda (e)
+               (and (not (eq? (caddr e) #t))
+                    (case (cadr e)
+                      ((foreign) (list 'writer-owner-foreign (car e)))
+                      ((legacy) (list 'writer-owner-unverified (car e)))
+                      (else #f))))
+             (ownership-entries t)))
+      (let ((i (ownership-instance t)))
+        (cond
+          ((and (eq? i 'absent) (pair? (ownership-entries t)))
+           (list '(instance-absent (remedy adopt))))
+          ((instance-unavailable? i)
+           (list (list 'instance-unavailable
+                       (list 'path (instance-unavailable-path i))
+                       (list 'reason (instance-unavailable-reason i)))))
+          (else '())))))
+
 ;; THE HEAD OF THIS MACHINE'S CHAIN: local, and not already retired.
   ;; After an adopt both generations have an owner.sexp -- that is what
   ;; makes them local -- so taking the first would name a writer this
   ;; machine may no longer extend, and adopting it again would branch
   ;; from a generation that has already been superseded.
-  (define (local-writer-name store)
-    (let ((locals (filter (lambda (w) (present-or-unreadable-skip? (writer-file store w "owner.sexp")))
-                          (store-writers store))))
-      (let loop ((ws locals))
+  ;; AND THIS INSTANCE'S, where it has a live one: the table (above) is built
+  ;; here from the files, under whatever lock the caller holds, by the same
+  ;; reads a load's table makes.
+  ;; THE HEAD IS READ OFF ONE TABLE (local-writer-name-by): its listing,
+  ;; each owner's presence and each retirement as that table read them, so
+  ;; a caller holding a table -- a session's load, an adopt -- names the
+  ;; same head every time it asks, whatever the files do in between. A
+  ;; retirement that could not be read raises what its read raised, as
+  ;; retired-of does, and so does a listing that failed.
+  (define (local-writer-name store) (local-writer-name-by store (ownership-table store)))
+  (define (local-writer-name-by store table)
+    (when (ownership-listing table) (raise (ownership-listing table)))
+    (let ((locals (ownership-prefer
+                    table
+                    (filter (lambda (e) (list-ref e 4)) (ownership-entries table))
+                    car)))
+      (let loop ((es locals))
         (cond
-          ((null? ws) (if (null? locals) #f (car locals)))
-          ((not (retired-of store (car ws))) (car ws))
-          (else (loop (cdr ws)))))))
+          ((null? es) (if (null? locals) #f (car (car locals))))
+          ((eq? (caddr (car es)) #f) (car (car es)))
+          ((eq? (caddr (car es)) 'unknown) (raise (list-ref (car es) 5)))
+          (else (loop (cdr es)))))))
 
 ;; ---- publish: reading a segment record by record ---------------------------
 
@@ -5031,9 +5319,13 @@
     (parameterize ((theourgia-stage stage))
       (not (eq? (entry-name-type (string-append store "/instance.sexp")) 'absent))))
 
-  (define (adopt-needed? store)
-    (let* ((id (verify-instance store))
-           (writer (local-writer-name store)))
+  (define (adopt-needed? store) (adopt-needed-by? store (ownership-table store)))
+  ;; T is the one ownership table the caller decides with (adopt builds it
+  ;; under the store lock): the head verified and the head named are the
+  ;; same writer.
+  (define (adopt-needed-by? store t)
+    (let* ((id (verify-instance-by store (lambda () (owner-nonce-or-refusal store t))))
+           (writer (local-writer-name-by store t)))
       (cond
         ((and (pair? id) (eq? (car id) 'mismatch)) (list 'identity (cadr id)))
         ;; A CHECKOUT OF A STORE KEPT IN GIT HAS NO instance.sexp: its
@@ -5096,14 +5388,15 @@
   ;; verify-instance or a discovery is its answer, and a read that fails
   ;; raises unreadable-entry naming the file, with nothing written.
   (define (continue-adopt! store)
-    (or (adopt-inventory store)
-        (continue-adopt-read! store)))
+    (let ((t (ownership-table store)))
+      (or (adopt-inventory store t)
+          (continue-adopt-read! store t))))
 
-  (define (continue-adopt-read! store)
+  (define (continue-adopt-read! store t)
     (let* ((store-id (store-id-of store))
            (instance (instance-nonce store))
            (reg (with-machine-lock (lambda () (read-registry))))
-           (old (local-writer-name store)))
+           (old (local-writer-name-by store t)))
       (cond
         ((not (and store-id instance old)) 'nothing-to-do)
         ;; IDENTITY FIRST. A copied store still carries the original's
@@ -5112,7 +5405,8 @@
         ;; answer: an identity mismatch mints a new nonce BEFORE the
         ;; registry is consulted, and only then can "whose transaction
         ;; is this" be asked at all.
-        ((let ((v (verify-instance store))) (and (pair? v) (eq? (car v) 'mismatch)))
+        ((let ((v (verify-instance-by store (lambda () (owner-nonce-or-refusal store t)))))
+           (and (pair? v) (eq? (car v) 'mismatch)))
          'identity-mismatch)
         ;; THE GATE: history whose owner names another instance is
         ;; imported, not interrupted. It runs before the table because
@@ -5253,13 +5547,13 @@
   ;; -> #f, or the refusal adopt answers: (refused <kind> (path p) (reason r)),
   ;; kind owner-unreadable (verify-instance's own answer), segment-unreadable
   ;; or metadata-unreadable.
-  (define (adopt-preflight store)
+  (define (adopt-preflight store t)
     (guard (e ((unreadable-entry? e)
                (unreadable-refusal (if (equal? (unreadable-entry-path e) (registry-path))
                                        'registry-unreadable
                                        'metadata-unreadable)
                                    e)))
-      (adopt-inventory store)))
+      (adopt-inventory store t)))
 
   ;; KEY: THE WHOLE STORE IS READ, NOT A LIST OF WHAT ADOPT IS THOUGHT TO
   ;; REACH (found in review). A list of the head's files missed the registry,
@@ -5288,8 +5582,8 @@
   ;; that fails raises inside the preflight's guard, answered
   ;; metadata-unreadable naming the path, as any unreadable inventory file
   ;; is.
-  (define (adopt-inventory store)
-    (let ((v (verify-instance store)))
+  (define (adopt-inventory store t)
+    (let ((v (verify-instance-by store (lambda () (owner-nonce-or-refusal store t)))))
       (if (and (pair? v) (eq? (car v) 'refused))
           v
           (begin
@@ -5334,8 +5628,13 @@
     (read-entry (writer-file store writer "retired.sexp")))
 
   (define (adopt-locked! store)
-    (or (adopt-preflight store)
-        (adopt-decided! store)))
+    ;; ONE OWNERSHIP TABLE FOR THE WHOLE ADOPT, built here under the store
+    ;; lock and before any machine-lock acquisition: the inventory, the
+    ;; decision and the predecessor it names consult it, so a read that
+    ;; fails once cannot make one of them pick another head than the rest.
+    (let ((t (ownership-table store)))
+      (or (adopt-preflight store t)
+          (adopt-decided! store t))))
 
   ;; NEVER: NO LOCAL WRITER IS A REFUSAL, NOT A REASON TO ADOPT.
   ;; adopt-needed? answers (no-local-writer) when the store has no writer of
@@ -5345,17 +5644,17 @@
   ;; local writer is gone answers (identity ...) first, and its adopt minted a
   ;; new instance before failing on the same #f. There is nothing to retire and
   ;; nobody to succeed, so it is refused by name before any adoption step.
-  (define (adopt-decided! store)
-    (let ((why (adopt-needed? store)))
+  (define (adopt-decided! store t)
+    (let ((why (adopt-needed-by? store t)))
       (cond
         ((not why)
          (list 'refused 'not-needed
                (list 'checked '(identity retired missing-generation registry-ahead damage))))
-        ((not (local-writer-name store))
+        ((not (local-writer-name-by store t))
          (list 'refused 'no-local-writer))
         (else
           (let* ((store-id (store-id-of store))
-                 (old (local-writer-name store))
+                 (old (local-writer-name-by store t))
                  (instance (adopt-nonce store why))
                  (p (discover-prefix store old 'held-exclusive))
                  (seg (if (pair? (discovery-physical-current p))
@@ -5670,7 +5969,8 @@
                   (session-unreadable-refusal s)
                   (session-declaration s)
                   #t
-                  (session-own-prefix s)))
+                  (session-own-prefix s)
+                  (session-superseded s)))
 
   ;; THE LOGICAL SUCCESS OF AN APPEND AT SEQ: the next sequence, the record
   ;; waiting for its application, the revision, and that this session has
@@ -5766,7 +6066,14 @@
     (and (eq? (load-session-outcome (session-load s)) 'open)
          (not (session-reset-pending s))))
 
+  ;; A SUPERSEDED WRITER IS REFUSED FIRST: the reload this append
+  ;; just ran found the ownership table passing it over, and a reset it may
+  ;; also have started is about records, not about who writes them.
   (define (append-after-barrier! s frame)
+    (if (session-superseded s)
+        (list 'refused-before-reserve (session-superseded s))
+        (append-after-reset-check! s frame)))
+  (define (append-after-reset-check! s frame)
     (if (session-reset-pending s)
         ;; A STRUCTURED READINESS REFUSAL, naming the state. Not `unseen`
         ;; and not `unknown`: those are answers about the request, and
@@ -5805,6 +6112,10 @@
   ;; that has yet to acknowledge a reset.
   (define (no-view-reason s)
     (cond
+      ;; A WRITER THE OWNERSHIP TABLE NOW PASSES OVER is named
+      ;; first: whatever else stands in the way, this session is bound to a
+      ;; writer it may no longer extend, and only reopening helps.
+      ((session-superseded s))
       ((session-reset-pending s)
        (let ((why (session-reset-pending s)))
          (if (pair? why) why 'reset-pending)))
@@ -6182,7 +6493,13 @@
   (define (reserve-then-write-checked! s frame p line seq target target-path fresh?)
     (let* ((store (session-store s))
            (writer (session-writer s))
-           (identity (verify-instance store)))
+           ;; VERIFIED WITH THE LOAD'S TABLE, the one that chose this
+           ;; session's writer: the head compared, its owner's nonce and the
+           ;; written writer's own are the ones the load read
+           ;; (session-owner-nonce). A head chosen here afresh can be
+           ;; another writer, whose owner would vouch for this one.
+           ;; instance.sexp is reread, as before.
+           (identity (verify-instance-by store (lambda () (session-owner-nonce s store writer)))))
       (cond
         ((eq? identity 'malformed)
          (list 'refused-before-reserve 'instance-malformed))

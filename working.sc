@@ -27,7 +27,8 @@
           (theourgia wire) (theourgia digest) (only (theourgia markers) src-text)
           (only (theourgia log) store-writers writer-directory atomic-write!
                 remember-unreadable-notes! unreadable-behind
-                directory-entry-durable! present-or-unreadable-skip?)
+                directory-entry-durable! present-or-unreadable-skip?
+                ownership-table ownership-passed-over? ownership-foreign-beside-owned?)
           (only (theourgia answers) with-written)
           (only (theourgia arguments) working-id?)
           (only (theourgia ffi) mutation-record)
@@ -90,13 +91,43 @@
   ;; R2g's SKIP, KEPT AS RULED, THROUGH THE DOOR: an owner.sexp
   ;; or retired.sexp that cannot be stat'ed reads as absent, by
   ;; present-or-unreadable-skip?, defined once in log.sc for both R2g sites.
+  ;; THE DEFAULT IS THIS INSTANCE'S WRITER where it has a live one (log.sc's
+  ;; ownership table): a live foreign or legacy writer sorting
+  ;; first is passed over, as the session's selectors pass it over.
   (define (writer-for store supplied)
     (cond
       (supplied (and (safe-id? supplied) supplied))
-      (else (find (lambda (w)
-                    (and (present-or-unreadable-skip? (string-append (writer-directory store w) "/owner.sexp"))
-                         (not (present-or-unreadable-skip? (string-append (writer-directory store w) "/retired.sexp")))))
-                  (store-writers store)))))
+      (else (let ((t (ownership-table store)))
+              (find (lambda (w)
+                      (and (present-or-unreadable-skip? (string-append (writer-directory store w) "/owner.sexp"))
+                           (not (present-or-unreadable-skip? (string-append (writer-directory store w) "/retired.sexp")))
+                           (not (ownership-passed-over? t w))))
+                    (store-writers store))))))
+  ;; ---- the supplied name on a write path ----------------------------------
+  ;;
+  ;; A NAME WHOSE OWNER NAMES ANOTHER INSTANCE IS NOT WRITTEN AS while a live
+  ;; owner names this one. A draft writer is a session identity with no
+  ;; owner.sexp and is accepted as before, and so is a foreign name on a
+  ;; store where no live owner names this instance (its later append keeps
+  ;; the outcome verification gives it). The remedy is a draft writer of
+  ;; one's own: a store with a live owned writer has nothing to adopt.
+  ;;
+  ;; ON THE WRITE PATHS ONLY, AS AN EXECUTION PREMISE: write, restore,
+  ;; discard, new, delete, the commit with edits (with its other execution
+  ;; premises, after the request's identity is judged) and the commit that
+  ;; only retires drafts. A read, the draft listing, the replay of a tracked
+  ;; request and the completion of a persisted plan never ask it, so a
+  ;; foreign-named draft stays readable and recovery keeps its answers.
+  ;;
+  ;; ITS OWN TABLE, READ INSIDE THE DRAFT LOCK the mutation holds: a draft
+  ;; mutation performs no load, and the publication a daemon's draft worker
+  ;; uses does not watch instance.sexp, so a change to it or to an owner file
+  ;; between two requests is seen by the next one. An owner installed
+  ;; between this read and the mutation is outside that lock (owner-install!
+  ;; runs under the store lock), and is accepted.
+  (define (foreign-writer-refusal store writer)
+    (and (ownership-foreign-beside-owned? store (ownership-table store) writer)
+         (list 'error 'foreign-writer (list 'writer writer) (list 'remedy 'draft-writer))))
   ;; ---- whose drafts are these? ----------------------------------------------
   ;;
   ;; KEY: A REQUEST THAT NAMES NO WRITER IS REFUSED, and this is the one
@@ -433,11 +464,12 @@
                                  (content-version body based-on cut)
                                  based-on cut body)))
                (unless (bytevector? (list-ref entry 7)) (assertion-violation 'write "Expected bytes" bytes))
-               (with-draft-lock store writer
-                 (lambda ()
-                   (atomic-write! (path-for store writer id) (encode entry) 'working)))
-               (list 'ok (list 'saved id) (list 'writer writer)
-                     (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5))))))))))))))
+               (or (with-draft-lock store writer
+                     (lambda ()
+                       (or (foreign-writer-refusal store writer)
+                           (begin (atomic-write! (path-for store writer id) (encode entry) 'working) #f))))
+                   (list 'ok (list 'saved id) (list 'writer writer)
+                         (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5)))))))))))))))
 
   ;; ---- putting a revoked draft back ----------------------------------------
   ;;
@@ -488,16 +520,19 @@
                   (list 'error 'consumes-version-mismatch (list 'block id)))
                  (else
                   (let ((entry (list 'working 1 writer id version based-on cut body)))
-                    (with-draft-lock store writer
-                      (lambda ()
-                        ;; THE SLOT IS READ BEFORE IT IS WRITTEN (found in review):
-                        ;; a draft there that cannot be read raises
-                        ;; unreadable-entry, and nothing replaces it unseen. A
-                        ;; readable one is replaced, as before.
-                        (read-entry (path-for store writer id))
-                        (atomic-write! (path-for store writer id) (encode entry) 'working)))
-                    (list 'ok (list 'restored id) (list 'writer writer)
-                          (list 'version version) (list 'based-on based-on)))))))))))))) 
+                    (or (with-draft-lock store writer
+                          (lambda ()
+                            (or (foreign-writer-refusal store writer)
+                                (begin
+                                  ;; THE SLOT IS READ BEFORE IT IS WRITTEN (found in review):
+                                  ;; a draft there that cannot be read raises
+                                  ;; unreadable-entry, and nothing replaces it unseen. A
+                                  ;; readable one is replaced, as before.
+                                  (read-entry (path-for store writer id))
+                                  (atomic-write! (path-for store writer id) (encode entry) 'working)
+                                  #f))))
+                        (list 'ok (list 'restored id) (list 'writer writer)
+                              (list 'version version) (list 'based-on based-on))))))))))))))) 
 
   (define (working-read store state supplied id . information)
     (needing-writer supplied (lambda ()
@@ -539,19 +574,30 @@
               ((structural-key? id)
                (with-draft-lock store writer
                  (lambda ()
-                   (let ((p (structural-path store writer id)))
-                     (unless (eq? (read-entry p) 'absent)
-                       (unlink! p) (directory-entry-durable! p 'working))
-                     (list 'ok (list 'discarded id))))))
+                   (or (foreign-writer-refusal store writer)
+                       (let ((p (structural-path store writer id)))
+                         (unless (eq? (read-entry p) 'absent)
+                           (unlink! p) (directory-entry-durable! p 'working))
+                         (list 'ok (list 'discarded id)))))))
               ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
               ;; says so -- `safe-id?` admits names no block can have.
               ((not (block-name? id)) '(error bad-request invalid-block-id))
               ;; READ, NOT ONLY STATTED (found in review): a draft this process
               ;; cannot read raises unreadable-entry, and is not deleted unseen.
+              ;; AN ABSENT DRAFT IS TODAY'S NO-OP, with no lock taken and
+              ;; nothing created (with-draft-lock makes the working area
+              ;; first); a present one is asked about, and unlinked, inside
+              ;; one acquisition of the writer's draft lock.
               (else (let ((p (path-for store writer id)))
-                      (unless (eq? (read-entry p) 'absent)
-                        (unlink! p) (directory-entry-durable! p 'working))
-                      (list 'ok (list 'discarded id)))))))))))
+                      (if (eq? (read-entry p) 'absent)
+                          (list 'ok (list 'discarded id))
+                          (with-draft-lock store writer
+                            (lambda ()
+                              (or (foreign-writer-refusal store writer)
+                                  (begin
+                                    (unless (eq? (read-entry p) 'absent)
+                                      (unlink! p) (directory-entry-durable! p 'working))
+                                    (list 'ok (list 'discarded id))))))))))))))))
 
 ;; ---- structural drafts: a file created, a file deleted -------------------
   ;;
@@ -665,11 +711,12 @@
   (define (save-structural! store writer entry)
     (with-draft-lock store writer
       (lambda ()
+        (or (foreign-writer-refusal store writer)
         (let ((old (structural-at store writer (entry-key entry))))
           (unless (and old (equal? (list-ref old 4) (list-ref entry 4)))
             (ensure-area! store writer "structural")
             (atomic-write! (structural-path store writer (entry-key entry)) (encode entry) 'working))
-          (list 'ok (list 'saved (entry-key entry)) (list 'writer writer) (list 'version (list-ref entry 4)))))))
+          (list 'ok (list 'saved (entry-key entry)) (list 'writer writer) (list 'version (list-ref entry 4))))))))
   ;; A FILE CREATED: PATH with BYTES, LANGUAGE its language fields as the
   ;; importer gives them. CUT-TEXT is the cut it stands on (the export's), kept
   ;; from an earlier draft of the same path when there is one. Refused: the
@@ -1398,7 +1445,10 @@
                                  (cons (car p) (- (cdr p) (if mine (cdr mine) 0)))))
                              moved)))))))
 
-  (define (retire! store writer entries versions landed?)
+  ;; GATE, when given, is asked inside the lock before anything is retired,
+  ;; and a refusal it answers is the answer, nothing retired (the commit
+  ;; that only retires drafts).
+  (define (retire! store writer entries versions landed? . gate)
     ;; KEY: A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
     ;; envelopes were read at the top of the commit, and the store's
     ;; write session is already released by the time this runs -- so
@@ -1433,9 +1483,11 @@
                       (loop (cdr es) (or first failed))))))))
         (with-draft-lock store writer
           (lambda ()
-            (for-each (lambda (e) (guard (failure (#t #f)) (retire-one! store writer e versions)))
-                      entries)
-            #f))))
+            (or (and (pair? gate) ((car gate)))
+                (begin
+                  (for-each (lambda (e) (guard (failure (#t #f)) (retire-one! store writer e versions)))
+                            entries)
+                  #f))))))
 
   ;; -> #f, or (cleanup-failed ...) for a draft still there after its unlink.
   (define (retire-one! store writer e versions)
@@ -1813,9 +1865,13 @@
                      ;; the person is owed the same fact. Nothing was
                      ;; appended, so the cut this verb opened with is the
                      ;; current one.
-                     (let* ((failed (retire! store writer entries pairs #f))
-                            (behind (behind-clauses (reduce-applied-cut state) writer entries)))
-                       (finish (with-cleanup (append (list 'ok '(items)) behind) failed))))
+                     (let ((failed (retire! store writer entries pairs #f
+                                            (lambda () (foreign-writer-refusal store writer)))))
+                       (if (and (pair? failed) (eq? (car failed) 'error))
+                           (finish failed)
+                           (finish (with-cleanup (append (list 'ok '(items))
+                                                         (behind-clauses (reduce-applied-cut state) writer entries))
+                                                 failed)))))
                     ((and (not supplied-req) read-failure) read-failure)
                     (else
                      ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
@@ -1839,7 +1895,8 @@
                                       actor effective
                                       (premises-also premise-check
                                         (lambda (current)
-                                          (or read-failure (preflight current entries missing ids pairs)
+                                          (or (foreign-writer-refusal store writer)
+                                              read-failure (preflight current entries missing ids pairs)
                                               (structural-preflight current structural))))
                                       #t
                                       (and (or (pair? entries) (pair? structural-entries))
