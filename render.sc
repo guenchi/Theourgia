@@ -175,14 +175,14 @@
          (exists (lambda (x) (and (pair? x) (eq? (car x) 'rev))) (cdr answer))))
   ;; A CONTEXT ANSWER IS PRINTED BY SECTION, for a person: each section's
   ;; name, then one line per entry, its id, level and title; the notes one
-  ;; per line; the insufficient, excluded and budget clauses as the wire
-  ;; writes them; then THE RECEIPT ON ONE LINE, the clause exactly as the wire
+  ;; per line; the insufficient, excluded, folded, asked and budget clauses
+  ;; as the wire writes them; then THE RECEIPT ON ONE LINE, the clause exactly as the wire
   ;; writes it, so a person who reads the human form can hand it to commit
   ;; --premises as it stands. The cut and the versions are for a program,
   ;; which asks for the wire form. A kept clause (incomplete) follows the
   ;; receipt, as it does on the wire.
   (define context-sections '(for constraints evidence to-verify counterexamples background notes))
-  (define context-tail '(insufficient excluded budget))
+  (define context-tail '(insufficient excluded folded asked budget))
   (define (context-answer? answer)
     (and (pair? answer) (list? answer) (eq? (car answer) 'ok) (pair? (cdr answer))
          (pair? (cadr answer)) (eq? (car (cadr answer)) 'for)))

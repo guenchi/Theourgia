@@ -215,9 +215,11 @@
   ;; is `<block>=<version>`; a commit naming exactly one block may give
   ;; the bare version, which is what the single-block callers already
   ;; wrote.
-  ;; A scope's roots are a set too, one `--roots` per root.
+  ;; A scope's roots are a set too, one `--roots` per root, and so are the
+  ;; names a context request gives, one `--names` per name.
   (define (repeatable-options verb)
-    (case verb ((commit) '("--working-version" "--working-new" "--working-delete")) ((scope) '("--roots")) ((rule) '("--on")) (else '())))
+    (case verb ((commit) '("--working-version" "--working-new" "--working-delete")) ((scope) '("--roots")) ((rule) '("--on"))
+      ((context) '("--names")) (else '())))
 
   (define (flag-options verb)
     (append global-flags (append (case verb

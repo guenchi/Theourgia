@@ -98,10 +98,16 @@
 (write-file! (string-append src "/other.sc") "(library (qa other) (export f) (import (rnrs))\n(define (f) 2))\n")
 (run 'import-code src "--datum")
 ;; TEXT CODE under no library: h defined in javascript, used by javascript and
-;; by python (another language).
-(run 'batch "((insert root #f ((kind . code) (lang . \"javascript\") (title . \"h def\") (name . h) (src . \"function h() { return 1 }\")))
-              (insert root #f ((kind . code) (lang . \"javascript\") (title . \"h use\") (src . \"h()\")))
-              (insert root #f ((kind . code) (lang . \"python\") (title . \"h py\") (src . \"h()\"))))")
+;; by python (another language). A NO-LIBRARY DEFINITION'S SCOPE IS ITS FILE,
+;; so the three are under one file block; the same three at root are each
+;; their own file, and see nothing of each other.
+(define JSFILE (new-id (run 'insert "--title" "a file")))
+(run 'set JSFILE "kind" "file")
+(run 'batch (format "((insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"h def\") (name . h) (src . \"function h() { return 1 }\")))
+              (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"h use\") (src . \"h()\")))
+              (insert ~s #f ((kind . code) (lang . \"python\") (title . \"h py\") (src . \"h()\"))))" JSFILE JSFILE JSFILE))
+(run 'batch "((insert root #f ((kind . code) (lang . \"javascript\") (title . \"h def at root\") (name . hr) (src . \"function hr() { return 1 }\")))
+              (insert root #f ((kind . code) (lang . \"javascript\") (title . \"h use at root\") (src . \"hr()\"))))")
 ;; TEXT CODE INSIDE A LIBRARY, in h's language: it must not get h, which has no library.
 (define USE-ID (find (lambda (id) (and (eq? (field-of-row id 'kind) 'library) (equal? (field-of-row id 'name) '(qa use))))
                      (state-block-ids (state))))
@@ -200,6 +206,9 @@
 (want "Q7 def-for of text code with no library: within one language only"
       (in-order (q (list 'def-for HUSE "h" '?d)) (q (list 'def-for HPY "h" '?d)))
       (list (list (list HDEF)) '()))
+(want "Q7 text code with no library at root: each block its own file, so a use finds no definition in another"
+      (q (list 'def-for (titled "h use at root") "hr" '?d))
+      '())
 (want "Q7 a block inside a library does not get a definition that has no library, even in its language"
       (in-order (q (list 'in-library (titled "inside") '?n)) (q (list 'def-for (titled "inside") "h" '?d)))
       '((("(qa use)")) ()))
@@ -253,11 +262,12 @@
 ;; DEF-FOR'S EXCLUSIONS IN THE NO-LIBRARY RULE, on the first store: text code
 ;; with no library, in javascript. h2 calls itself; k and m are defined apart
 ;; and called together, and each definition is asked before and after it is
-;; superseded or made an inference.
-(run 'batch "((insert root #f ((kind . code) (lang . \"javascript\") (title . \"h2 self\") (name . h2) (src . \"function h2() { return h2() }\")))
-              (insert root #f ((kind . code) (lang . \"javascript\") (title . \"k def\") (name . k) (src . \"function k() { return 1 }\")))
-              (insert root #f ((kind . code) (lang . \"javascript\") (title . \"m def\") (name . m) (src . \"function m() { return 2 }\")))
-              (insert root #f ((kind . code) (lang . \"javascript\") (title . \"k m use\") (src . \"k(); m()\"))))")
+;; superseded or made an inference. All in one file block, which is their
+;; scope.
+(run 'batch (format "((insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"h2 self\") (name . h2) (src . \"function h2() { return h2() }\")))
+              (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"k def\") (name . k) (src . \"function k() { return 1 }\")))
+              (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"m def\") (name . m) (src . \"function m() { return 2 }\")))
+              (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"k m use\") (src . \"k(); m()\"))))" JSFILE JSFILE JSFILE JSFILE))
 (define H2SELF (titled "h2 self"))
 (define KDEF (titled "k def"))
 (define MDEF (titled "m def"))
@@ -391,7 +401,7 @@
         (in-order (length (filter (lambda (i) (eq? (car i) 'fact)) items))
                   (length (filter (lambda (i) (eq? (car i) 'rule)) items))
                   (string-contains? (file-text "../README.md") (query-relations-text))))
-      '(24 19 #t))
+      '(26 21 #t))
 (define child (string-append root "/ondemand.sc"))
 (write-file! child
   (string-append

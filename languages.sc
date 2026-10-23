@@ -15,7 +15,8 @@
 (library (theourgia languages)
   (export language-table register-language! language-for-path
     language-for-name language-property language-runner runner-valid?
-    override-valid? runner-problem runner-with-override checked-catalogue)
+    override-valid? runner-problem runner-with-override checked-catalogue
+    language-catalogue-generation)
   ;; The entry accessor moved to (theourgia markers), which
   ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
   ;; (theourgia wire), and nothing else. That, not "it imports nothing",
@@ -121,6 +122,10 @@
     (checked-catalogue
       '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls")) (identifier "[A-Za-z!$%&*/:<=>?^_~+.@\\-][A-Za-z0-9!$%&*/:<=>?^_~+.@\\-]*")
           (line-comment ";;") (block-comment ("#|" "|#"))
+          ;; THE SOURCE IS READ AS FORMS by reader.sc for name use, and a text
+          ;; file's first form is its header (its library and imports): the
+          ;; only entries with a reader and a header
+          (reader #t) (header #t)
           (def-heads
             ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
               "^\\(define\\s+([^\\s()\\[\\]\";]+)"
@@ -353,6 +358,13 @@
         (lambda (e)
           (member extension (language-property e 'extensions '())))
         (language-table))))
+  ;; THE CATALOGUE'S GENERATION: how many times an entry was registered in
+  ;; this process. What a store answers through the catalogue (definitions
+  ;; by their def-heads, a text file's header, name use through a reader) is
+  ;; kept under the cut AND this number, so replacing an entry, which writes
+  ;; nothing to any store, is seen by every one of those answers.
+  (define catalogue-generation 0)
+  (define (language-catalogue-generation) catalogue-generation)
   (define (register-language! entry)
     (unless (and (list? entry)
                  (string? (language-property entry 'lang #f))
@@ -372,4 +384,5 @@
             (not (equal?
                    (language-property e 'lang #f)
                    (language-property entry 'lang #f))))
-          (language-table))))))
+          (language-table))))
+    (set! catalogue-generation (+ catalogue-generation 1))))

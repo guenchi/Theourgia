@@ -61,7 +61,7 @@
           derive-value-check derive-affects rule-names-stored? rule-value-form stored-walk-counter
           session-advance session-table-of session-named-expansions session-root-names
           fresh-query-session make-session-provider session-carriable-keys session-size session-counters
-          session-advance-calls session-synthetic-count
+          session-advance-calls session-synthetic-count session-note!
           make-handler handler-name dispatch extra-handlers library-env rule-value-env session-env-of
           session-check session-evaluate)
   (import (rnrs) (rnrs mutable-pairs)
@@ -72,7 +72,9 @@
                 state-declared-relations kind-known? known-kinds
                 state-derived state-derived-names state-derived-all state-declaration state-rule reduction? reduction-forward?
                 derive-value-reason state-declared-rules)
-          (only (theourgia store) library-locator defs-index search-state field-strings search-keyword-hook)
+          (only (theourgia store) library-locator located-library-name file-header defs-index defs-index-build-count
+                search-state field-strings search-keyword-hook)
+          (only (theourgia languages) language-catalogue-generation)
           (only (theourgia md) md-refs)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
           (only (theourgia field-reading) field-of field-missing?)
@@ -105,7 +107,9 @@
   ;; `score` the keyword hook and the editor-supplied signature tables,
   ;; `uses-name` the name-use table, which consults the language catalogue
   ;; and the known-forms registry, both replaceable at run time, `def` the
-  ;; defs index through the text view, which asks the language catalogue. A
+  ;; defs index through the text view, which asks the language catalogue;
+  ;; `in-library`, `imports` and `file-imports`, which read a text file's
+  ;; library and imports from its header through the catalogue too. A
   ;; rule may name only stored facts and rules over them, so its answer is a
   ;; function of the records and the rules (rule-value-check).
   ;;
@@ -127,8 +131,10 @@
       (under 2 "a live block and its settled parent, \"root\" at the top" stored (ID PARENT))
       (ref 2 "a text reference [[id]] in a live block's text to a live block" stored (ID ID))
       (library 2 "a library block and its name" stored (ID STR))
-      (in-library 2 "every code block, and the name of the library containing it, or none; nothing under a library whose name is contested" stored (ID NAME-OR-NONE))
-      (imports 2 "a library, by name, and a library name it imports" stored (STR STR))
+      (in-library 2 "every code block, and the name of the library containing it (a library block, or the text file whose header names one), or none; nothing under a library whose name is contested" external (ID NAME-OR-NONE))
+      (imports 2 "a library, by name, and a library name it imports (a library block's imports, or a text library file's header imports)" external (STR STR))
+      (file-imports 2 "a text file holder, and a library name its header imports (a library file's or a script's)" external (ID STR))
+      (holder 2 "every code block, and its file holder: the nearest ancestor of kind file, else the block itself" stored (ID ID))
       (def 3 "a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested" external (ID NAME-OR-NONE STR))
       (uses-name 2 "a code block and a name it uses (name use, syntactic)" external (ID STR))
       (lang 2 "a code block's language" stored (ID ANY))
@@ -174,10 +180,23 @@
       ((unsettled-for ?t ?d) (scope-of ?t ?m) (within ?d ?m) (unsettled ?d) (in-force ?d) (authoritative ?d))
       ((scope-name ?b ?n) (in-library ?b ?n))
       ((scope-name ?b ?n) (in-library ?b ?m) (imports ?m ?n))
+      ((scope-name ?b ?n) (in-library ?b none) (holder ?b ?h) (file-imports ?h ?n))
       ((def-for ?b ?name ?d) (uses-name ?b ?name) (def ?d ?lib ?name) (/= ?lib none)
                              (scope-name ?b ?lib) (/= ?b ?d) (in-force ?d) (authoritative ?d))
       ((def-for ?b ?name ?d) (in-library ?b none) (uses-name ?b ?name) (def ?d none ?name)
+                             (holder ?b ?h) (holder ?d ?h)
                              (/= ?b ?d) (lang ?b ?l) (lang ?d ?l) (in-force ?d) (authoritative ?d))
+      ;; THE DEFINITIONS OF A GIVEN NAME IN T'S SCOPE, as def-for finds them with
+      ;; the name in place of a use, and without excluding T itself: a name T or
+      ;; a block of T's unit defines is found here. T's scope is T's when T is
+      ;; code, else that of every code block under T.
+      ((name-user ?t ?t) (kind ?t code))
+      ((name-user ?t ?b) (kind ?t ?k) (/= ?k code) (within ?b ?t) (kind ?b code))
+      ((def-for-name ?t ?name ?d) (name-user ?t ?b) (def ?d ?lib ?name) (/= ?lib none)
+                                  (scope-name ?b ?lib) (in-force ?d) (authoritative ?d))
+      ((def-for-name ?t ?name ?d) (name-user ?t ?b) (in-library ?b none) (def ?d none ?name)
+                                  (holder ?b ?h) (holder ?d ?h)
+                                  (lang ?b ?l) (lang ?d ?l) (in-force ?d) (authoritative ?d))
       ((ambiguous ?b ?name) (def-for ?b ?name ?x) (def-for ?b ?name ?y) (string< ?x ?y))
       ((contradicts ?a ?b) (edge-kind ?a conflicts-with ?b) (in-force ?a) (in-force ?b)
                            (authoritative ?a) (authoritative ?b))
@@ -216,8 +235,10 @@
       (scope-of "m is in t's unit, or what the unit depends on, transitively")
       (unsettled "a decision whose state is open or review")
       (unsettled-for "an unsettled, in-force, authoritative decision in t's scope or inside it")
-      (scope-name "a library name visible to b: its own library and those it imports")
-      (def-for "a definition d of a name b uses, in b's scope, in force and authoritative")
+      (scope-name "a library name visible to b: its own library and those it imports, or a script's header imports")
+      (def-for "a definition d of a name b uses, in b's scope, in force and authoritative; one in no library only in b's own file")
+      (name-user "b is t when t is code, else a code block inside t")
+      (def-for-name "a definition d of a given name in t's scope (t's own, or that of each code block inside t), t itself included")
       (ambiguous "b uses a name two such definitions answer")
       (contradicts "a and b conflict, both in force and authoritative, either way round")
       (replaces "c supersedes or refutes o")
@@ -1539,19 +1560,58 @@
             (hashtable-set! (session-memo S) '(library-locator) l)
             l)
           hit)))
+  ;; THE NAME IS located-library-name's, the one reading every consumer of the
+  ;; locator makes: a library block's stored name, or a file holder's header
+  ;; name. A contested stored name is no name, as before.
   (define (read-library-name S id)
     (let ((stored (field S id 'name)))
       (cond ((contested? S id 'name stored) #f)
-            ((and (list? stored) (library-name-proper stored)) => written)
+            ((let ((n (located-library-name (session-state S) id))) (and (list? n) (library-name-proper n))) => written)
             (else 'none))))
 
-  ;; Every tuple of a relation, built once per session.
+  ;; Every tuple of a relation, built once per session. EACH BUILD IS COUNTED,
+  ;; by relation, for the session trace (make-session-provider).
   (define (all-tuples S rel)
     (or (hashtable-ref (session-builds S) rel #f)
         (let ((ts (build S rel)))
           (hashtable-set! (session-builds S) rel ts)
+          (let ((builds (fact-build-table S)))
+            (hashtable-set! builds rel (+ 1 (hashtable-ref builds rel 0))))
           (count! S rel (length ts))
           ts)))
+  (define (fact-build-table S)
+    (or (hashtable-ref (session-memo S) '(fact-builds) #f)
+        (let ((t (make-eq-hashtable))) (hashtable-set! (session-memo S) '(fact-builds) t) t)))
+  ;; WHAT A VERB NOTED ON THE SESSION FOR THE TRACE: (session-note! S key value)
+  ;; keeps one value per key until the provider's served line reads it.
+  (define (session-note! S key value)
+    (let ((notes (or (hashtable-ref (session-memo S) '(notes) #f)
+                     (let ((t (make-eq-hashtable))) (hashtable-set! (session-memo S) '(notes) t) t))))
+      (hashtable-set! notes key value)))
+  (define (session-notes-taken! S)
+    (let ((notes (hashtable-ref (session-memo S) '(notes) #f)))
+      (if (not notes)
+          '()
+          (let-values (((ks vs) (hashtable-entries notes)))
+            (hashtable-clear! notes)
+            (map cons (vector->list ks) (vector->list vs))))))
+  ;; A FILE HOLDER'S HEADER IMPORTS, written as the facts write a library name
+  (define (header-import-names h)
+    (filter values (map (lambda (spec) (let ((m (import-library-name spec))) (and m (written m))))
+                        (if (eq? (car h) 'library) (caddr h) (cadr h)))))
+  ;; ONE HOLDER TABLE PER SESSION: each live code block's nearest file
+  ;; ancestor through its settled placement, else the block itself.
+  (define (session-holder S id)
+    (let ((parent (or (hashtable-ref (session-memo S) '(holder-parents) #f)
+                      (let ((t (make-hashtable string-hash string=?)))
+                        (for-each (lambda (r) (when (and (string? (car r)) (null? (cdddr r))) (hashtable-set! t (caddr r) (car r))))
+                                  (state-outline (session-state S)))
+                        (hashtable-set! (session-memo S) '(holder-parents) t)
+                        t))))
+      (let loop ((up (hashtable-ref parent id #f)) (k 0))
+        (cond ((or (not up) (> k 100000)) id)
+              ((eq? (kind-symbol S up) 'file) up)
+              (else (loop (hashtable-ref parent up #f) (+ k 1)))))))
 
   (define (build S rel)
     (let ((ids (live-ids S)) (st (session-state S)))
@@ -1600,13 +1660,26 @@
                                                                      (n (if lib (library-name S lib) 'none)))
                                                                 (and n (list id n)))))
                                             ids))))
+        ;; A TEXT LIBRARY FILE'S IMPORTS are its header's, under its header name.
         ((imports) (apply append
                           (map (lambda (id)
-                                 (let ((n (library-name S id)) (imps (field S id 'imports)))
-                                   (if (and (string? n) (eq? (kind-symbol S id) 'library) (list? imps) (not (contested? S id 'imports imps)))
-                                       (filter values (map (lambda (spec) (let ((m (import-library-name spec))) (and m (list n (written m))))) imps))
-                                       '())))
+                                 (let ((n (library-name S id)) (k (kind-symbol S id)))
+                                   (cond
+                                     ((and (string? n) (eq? k 'library))
+                                      (let ((imps (field S id 'imports)))
+                                        (if (and (list? imps) (not (contested? S id 'imports imps)))
+                                            (filter values (map (lambda (spec) (let ((m (import-library-name spec))) (and m (list n (written m))))) imps))
+                                            '())))
+                                     ((and (string? n) (eq? k 'file))
+                                      (map (lambda (m) (list n m)) (header-import-names (file-header st id))))
+                                     (else '()))))
                                ids)))
+        ((file-imports) (apply append
+                               (map (lambda (id)
+                                      (let ((h (and (eq? (kind-symbol S id) 'file) (file-header st id))))
+                                        (if h (map (lambda (m) (list id m)) (header-import-names h)) '())))
+                                    ids)))
+        ((holder) (filter values (map (lambda (id) (and (eq? (kind-symbol S id) 'code) (list id (session-holder S id)))) ids)))
         ;; A DEFINITION'S LIBRARY is found as in-library finds it, and named as
         ;; the library facts name it: the record's stored name cannot say
         ;; whether two writers contest it.
@@ -2328,39 +2401,51 @@
   ;; session, the published object it was made at or advanced to, that object's
   ;; applied cut then, and the generation then. THE RULES, in this order:
   ;;   0 disabled: fresh, nothing kept;  1 not the publication: fresh, the cell
-  ;;   untouched;  2 the generation moved: dropped;  3 over the bound: dropped;
+  ;;   untouched;  2 the generation moved: dropped; 2b the language catalogue's
+  ;;   generation moved (an entry replaced, no store write): dropped, traced
+  ;;   `dropped catalogue`;  3 over the bound: dropped;
   ;;   4 no cell: fresh, kept;  5 the same publication: reused (its cut moved:
   ;;   dropped, then 4);  6 something carriable: advanced (refused: fresh,
   ;;   kept);  7 else: fresh, kept, no enumeration.
+  ;; WHAT ONE CALL PAID FOR, in the served line after the three numbers:
+  ;; (defs-index-builds <n>), the definitions index built during the call;
+  ;; (fact-builds (<relation> <n>) ...), the session's fact builds during it;
+  ;; what the verb noted (session-note!: context's preferred-candidates);
+  ;; and (session reused | advanced | fresh <why> [(dropped <why> ...)]).
   (define (make-session-provider published generation bound trace)
-    (let ((cell #f) (hook #f) (last #f))
+    (let ((cell #f) (hook #f) (last #f) (decision '()) (dropped '()))
       (define (handed S)
-        (set! last (cons S (session-counters S)))
+        (set! last (list S (session-counters S) (defs-index-build-count) (fact-build-snapshot S)
+                         (if (null? dropped) decision (append decision (list (cons 'dropped (reverse dropped)))))))
+        (set! dropped '())
         S)
+      (define (drop! why . rest)
+        (apply trace 'dropped why rest)
+        (set! dropped (cons why dropped))
+        (set! cell #f))
       (define (kept S view)
-        (set! cell (vector S view (reduce-applied-cut view) (generation)))
+        (set! cell (vector S view (reduce-applied-cut view) (generation) (language-catalogue-generation)))
         (handed S))
       (define (fresh view) (fresh-query-session view hook))
       (define (provide store view)
         (unless hook (set! hook (search-keyword-hook store)))
         (cond
-          ((eqv? bound 0) (trace 'fresh 'disabled) (handed (fresh view)))
-          ((not (eq? view (published))) (trace 'fresh 'cut) (handed (fresh view)))
+          ((eqv? bound 0) (trace 'fresh 'disabled) (set! decision '(fresh disabled)) (handed (fresh view)))
+          ((not (eq? view (published))) (trace 'fresh 'cut) (set! decision '(fresh cut)) (handed (fresh view)))
           (else
            (when (and cell (not (eqv? (vector-ref cell 3) (generation))))
-             (trace 'dropped 'derived-changed)
-             (set! cell #f))
+             (drop! 'derived-changed))
+           (when (and cell (not (eqv? (vector-ref cell 4) (language-catalogue-generation))))
+             (drop! 'catalogue))
            (when cell
              (let ((size (session-size (vector-ref cell 0))))
                (when (> size bound)
-                 (trace 'dropped 'bound size)
-                 (set! cell #f))))
+                 (drop! 'bound size))))
            (when (and cell (eq? view (vector-ref cell 1)) (not (equal? (reduce-applied-cut view) (vector-ref cell 2))))
-             (trace 'dropped 'moved)
-             (set! cell #f))
+             (drop! 'moved))
            (cond
-             ((not cell) (trace 'fresh 'none) (kept (fresh view) view))
-             ((eq? view (vector-ref cell 1)) (trace 'reuse) (handed (vector-ref cell 0)))
+             ((not cell) (trace 'fresh 'none) (set! decision '(fresh none)) (kept (fresh view) view))
+             ((eq? view (vector-ref cell 1)) (trace 'reuse) (set! decision '(reused)) (handed (vector-ref cell 0)))
              ((pair? (session-carriable-keys (vector-ref cell 0)))
               (let* ((S (vector-ref cell 0))
                      (held (filter (lambda (k) (and (named-key? k) (held-complete? S k)))
@@ -2369,23 +2454,41 @@
                 (if (session? S2)
                     (let ((carried (length (filter (lambda (k) (held-complete? S2 k)) held))))
                       (trace 'advance carried (- (length held) carried) (session-spent S2))
+                      (set! decision '(advanced))
                       (kept S2 view))
                     (begin
                       (if (equal? S2 '(error not-forward))
-                          (trace 'fresh 'not-forward)
-                          (trace 'fresh 'advance-refused (if (and (pair? S2) (pair? (cdr S2))) (cadr S2) S2)))
+                          (begin (trace 'fresh 'not-forward) (set! decision '(fresh not-forward)))
+                          (begin (trace 'fresh 'advance-refused (if (and (pair? S2) (pair? (cdr S2))) (cadr S2) S2))
+                                 (set! decision '(fresh advance-refused))))
                       (kept (fresh view) view)))))
-             (else (trace 'fresh 'nothing-held) (kept (fresh view) view))))))
+             (else (trace 'fresh 'nothing-held) (set! decision '(fresh nothing-held)) (kept (fresh view) view))))))
       (case-lambda
         ((store view) (provide store view))
         ((message)
          ;; ONCE PER SESSION HANDED OUT: a request that took none (query
          ;; --relations, an unreadable goal) reports nothing
          (and (eq? message 'served) last
-              (let* ((S (car last)) (now (session-counters S))
-                     (d (list (- (car now) (cadr last)) (- (cadr now) (caddr last)) (session-size S))))
+              (let* ((S (car last)) (then (cadr last)) (now (session-counters S))
+                     (d (append (list (- (car now) (car then)) (- (cadr now) (cadr then)) (session-size S))
+                                (list (list 'defs-index-builds (- (defs-index-build-count) (caddr last)))
+                                      (cons 'fact-builds (fact-build-delta S (cadddr last))))
+                                (map (lambda (n) (list (car n) (cdr n)))
+                                     (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
+                                                (session-notes-taken! S)))
+                                (list (cons 'session (list-ref last 4))))))
                 (set! last #f)
                 d))))))
+  ;; the session's fact builds by relation, and their growth since a snapshot,
+  ;; sorted by relation, the relations that did not grow left out
+  (define (fact-build-snapshot S)
+    (let-values (((ks vs) (hashtable-entries (fact-build-table S))))
+      (map cons (vector->list ks) (vector->list vs))))
+  (define (fact-build-delta S before)
+    (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
+               (filter (lambda (p) (> (cadr p) 0))
+                       (map (lambda (p) (list (car p) (- (cdr p) (let ((b (assq (car p) before))) (if b (cdr b) 0)))))
+                            (fact-build-snapshot S)))))
 
   ;; THE FIXTURES' VIEW OF A SESSION'S TABLES, read without making one: #f
   ;; for a key it does not hold, else (complete|incomplete <tuples>); a

@@ -652,10 +652,13 @@
       '(2 (#t #t) ()))
 ;; Text code with no library: a use of k in javascript; k defined in
 ;; javascript and in python. Only the same language is brought.
+;; A DEFINITION IN NO LIBRARY SERVES ITS OWN FILE: the three are under one file
+;; block, as a projected file's pieces are.
 (define c6s3 (fresh-store!))
-(run c6s3 'batch "((insert root #f ((kind . code) (lang . \"javascript\") (title . \"k use\") (src . \"k()\")))
-                  (insert root #f ((kind . code) (lang . \"javascript\") (title . \"k def js\") (name . k) (src . \"function k() { return 1 }\")))
-                  (insert root #f ((kind . code) (lang . \"python\") (title . \"k def py\") (name . k) (src . \"def k(): return 1\"))))")
+(define c6s3-file (make! c6s3 "root" "a file" "kind" "file"))
+(run c6s3 'batch (format "((insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"k use\") (src . \"k()\")))
+                  (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"k def js\") (name . k) (src . \"function k() { return 1 }\")))
+                  (insert ~s #f ((kind . code) (lang . \"python\") (title . \"k def py\") (name . k) (src . \"def k(): return 1\"))))" c6s3-file c6s3-file c6s3-file))
 (define (titled s t) (find (lambda (id) (equal? (field-of s id 'title) t)) (state-block-ids (state-of s))))
 (define c6T3 (make! c6s3 "root" "Text code task" "kind" "task"))
 (link! c6s3 c6T3 "depends-on" (titled c6s3 "k use"))

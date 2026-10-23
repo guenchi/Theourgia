@@ -891,7 +891,7 @@ Which names a code block uses, and which libraries a library block imports, as t
 stored code shows them. It answers:
 
     (ok (items (name <sym>) ... (import <lib>) ... (import-unreadable <spec>) ...)
-        (name-use syntactic [(lexing whole-text)] | none (reason <r>)))
+        (name-use syntactic [(reading forms) | (lexing whole-text) [(reason <r>)]] | none (reason <r>)))
 
 The answer is **syntactic**: what the text shows, never what a compiler resolves.
 
@@ -920,7 +920,27 @@ name in it count as uses -- a pattern variable of `syntax-rules` too. That is th
 **over-approximation**. A name that only a macro's expansion introduces is not seen:
 the **under-approximation**.
 
-A text block's uses are every token of its text that matches its language's
+A text block of a language whose catalogue entry names a `reader` (Scheme's does) is
+read as a sequence of forms by the store's own bounded reader (`reader.sc`; the system
+reader is never called and nothing is evaluated), and each form is walked as a datum
+block's body is: comments and strings are not names, and the answer says `(reading
+forms)`. The reader takes lists in the three bracket pairs, symbols, strings, characters,
+booleans, the quote forms, line, block and datum comments, `#!` directives and a leading
+byte-order mark; a number is an exact integer when it is at most 18 decimal digits with a
+sign, and any other number is kept as its text, never converted. When any part of the
+text does not read, the WHOLE block falls back to the tokens below, and the answer says
+`(lexing whole-text) (reason <r>)`: `unbalanced` (a bracket left open or closed with
+nothing open, as a piece cut inside a form is), `label` (a datum label), `unsupported`
+(any other `#` syntax, `#(x)` say), `depth` (lists nested deeper than 1000), `nodes`
+(more than 200000) or `token` (one longer than 65536 bytes). One exception: in a file
+whose header is a library form, closing brackets with nothing open at the very end of a
+piece, only whitespace and comments around them, are the library's own closer, so the
+file's last piece reads. Binding holds within the forms a piece holds: a lambda body cut
+from its head reads, and its parameters are free there; the first piece of a library
+file, the header and its first definitions with the library form unclosed, always falls
+back.
+
+Any other text block's uses are every token of its text that matches its language's
 `identifier` pattern (the language table holds one per language), **comments and
 strings included** and keywords too: the answer says `(lexing whole-text)`. A token
 starts where the pattern first matches, so in `9abc` the token is `abc`, and is
@@ -945,7 +965,8 @@ The live code blocks that use a name, compared whole and exactly (case matters,
     (ok (items (use <id> (library <lib-id>|none) (mode datum|text)) ...)
         (name-use syntactic) [(skipped (no-language <n>) (unreadable-code <n>))])
 
-`library` is the nearest enclosing library block, or `none`. `skipped` counts the
+`library` is the nearest enclosing library block, else the file block of a text file
+whose header names a library (its id), or `none`. `skipped` counts the
 blocks in scope that could not be read, by reason, and is there only when there are
 some. With `--under <id>` the blocks in that block's subtree, the block included (an
 unknown id answers `unknown-id`).
@@ -1115,6 +1136,28 @@ A library whose name two writers contest has no name: no `library`,
 goes through a name reaches the code under it, and a query says nothing
 about it rather than something false.
 
+A TEXT FILE'S LIBRARY IS READ FROM ITS HEADER. A Scheme file imported in
+text mode is a file block with code children and no `library` block. Its
+header is read by the store's reader from the children's text joined in
+order, at most 65536 bytes: a first form `(library <name> ... (import ...)`
+gives the file that name and those imports (the library form need not
+close, so a file cut into pieces inside it still has them), and a first form
+that is a top-level `(import ...)`, a script, gives imports and no name. A
+code block with no `library` ancestor whose file block has a header name is
+`in-library` that name, the file's imports are its library's `imports`, and
+`file-imports` holds every header's imports by file block; the third
+`scope-name` clause gives a code block in no library its file's imports, so a
+script reaches the libraries it imports and no others. A `library` ancestor
+wins wherever it is. `in-library`, `imports` and `file-imports` read the
+language catalogue, which can be replaced while a process runs, so they are
+external, as `def` is: a rule naming one is refused, and a kept session is
+dropped when the catalogue changes.
+
+A DEFINITION IN NO LIBRARY IS SCOPED BY ITS FILE: `def-for`'s second clause
+joins a user and a definition only when they have one `holder`, the nearest
+`file` ancestor of each, a code block with none being its own. So a script's
+or a fixture's own definitions serve its own pieces and nothing else.
+
 What a query costs, measured on two stores with nothing else running: on a
 memory store of 3037 blocks, `unsettled-for` from its root (8030 tuples)
 takes about 165 ms; on this repository's own libraries imported as a datum
@@ -1202,8 +1245,10 @@ Fact relations:
 - `under/2` (ID, PARENT) -- a live block and its settled parent, "root" at the top
 - `ref/2` (ID, ID) -- a text reference [[id]] in a live block's text to a live block
 - `library/2` (ID, STR) -- a library block and its name
-- `in-library/2` (ID, NAME-OR-NONE) -- every code block, and the name of the library containing it, or none; nothing under a library whose name is contested
-- `imports/2` (STR, STR) -- a library, by name, and a library name it imports
+- `in-library/2` (ID, NAME-OR-NONE) -- every code block, and the name of the library containing it (a library block, or the text file whose header names one), or none; nothing under a library whose name is contested
+- `imports/2` (STR, STR) -- a library, by name, and a library name it imports (a library block's imports, or a text library file's header imports)
+- `file-imports/2` (ID, STR) -- a text file holder, and a library name its header imports (a library file's or a script's)
+- `holder/2` (ID, ID) -- every code block, and its file holder: the nearest ancestor of kind file, else the block itself
 - `def/3` (ID, NAME-OR-NONE, STR) -- a definition record: the block, its library's name or none, the name; nothing in a library whose name is contested
 - `uses-name/2` (ID, STR) -- a code block and a name it uses (name use, syntactic)
 - `lang/2` (ID, ANY) -- a code block's language
@@ -1233,8 +1278,10 @@ Rules of the library:
 - `scope-of/2` -- m is in t's unit, or what the unit depends on, transitively
 - `unsettled/1` -- a decision whose state is open or review
 - `unsettled-for/2` -- an unsettled, in-force, authoritative decision in t's scope or inside it
-- `scope-name/2` -- a library name visible to b: its own library and those it imports
-- `def-for/3` -- a definition d of a name b uses, in b's scope, in force and authoritative
+- `scope-name/2` -- a library name visible to b: its own library and those it imports, or a script's header imports
+- `def-for/3` -- a definition d of a name b uses, in b's scope, in force and authoritative; one in no library only in b's own file
+- `name-user/2` -- b is t when t is code, else a code block inside t
+- `def-for-name/3` -- a definition d of a given name in t's scope (t's own, or that of each code block inside t), t itself included
 - `ambiguous/2` -- b uses a name two such definitions answer
 - `contradicts/2` -- a and b conflict, both in force and authoritative, either way round
 - `replaces/2` -- c supersedes or refutes o
@@ -1243,7 +1290,7 @@ Rules of the library:
 
 ### `context`
 
-    (context "--for" <id> "--budget" <tokens> ("--all-validity"))
+    (context "--for" <id> "--budget" <tokens> ("--names" <name>) ... ("--all-validity"))
 
 `context --for <id> --budget <tokens>` answers the material to read before
 working on a block, within a budget, with the receipt a commit gives back.
@@ -1287,7 +1334,9 @@ lifecycle's word: past every name of the edge): `c` is a hard block, about `m`,
 so the receipt holds it and a verification going stale refuses an older one.
 
 What else fits follows, never in a hard section and never in the receipt,
-each candidate once, an earlier step winning: in `background`, the
+each candidate once, an earlier step winning: first, with `--names <name>`
+(repeated, one name each), the definitions of each given name in T's scope,
+`(why names "<name>")`, every one of them; then in `background`, the
 definitions of the names a hard code block in force uses, one step, each
 of several candidates for one name marked `(ambiguous)`; in `background`,
 the blocks that verify or implement a constraint; in `counterexamples`, the
@@ -1296,6 +1345,28 @@ blocks a constraint superseded or refuted that are not in force; in
 T's title and text by score, and the ancestors of hard blocks, nearest
 first. Without `--all-validity` only candidates in force are taken;
 with it the others are taken too, marked with their validity.
+
+AMBIGUITY IS FOLDED. When one using block's name has more than two
+definitions left after the hard blocks, those already entered and the
+validity filter, the first two by id are entered and the rest are left for
+a later step to enter for its own reason; the fold is said in `(folded
+(<name> <block> (candidates <n>) (shown <m>)) ...)` after `excluded`,
+`candidates` the definitions that were left and `shown` how many of the two
+the budget admitted. The clause is charged against the preferred room; when
+it does not fit, the folded groups' definitions are counted excluded
+instead. A name given with `--names` is never folded.
+
+THE NAMES ASKED FOR. T's scope for `--names` is T's own when T is code, and
+when T is any other block (a file block, say) that of every code block
+under it: what their files import and define. `(asked (names <n> ...)
+(in-hard <n> <block>) ... [(no-definition <n> ...)])` follows `folded`: a
+name defined in a hard block -- T itself, or a block of T's unit -- is
+`in-hard`, since a hard block is never entered as preferred material, and
+only a name with no definition in scope at all is `no-definition`. The
+clause is reserved with the envelope at its largest, every name in every
+hard block and every name without a definition, and what it does not use is
+given back to the preferred material. Names are not hard blocks: nothing
+enters the receipt.
 
 An entry is shown at a level: `identity`, `(<id> (kind <k>) (title "<t>")
 (version <h>) (level identity) <why> ... [(validity ...)] [(names <n>
@@ -1310,12 +1381,15 @@ as their bytes. Nine tenths of it are usable, and an
 `ok` answer without its cut is never larger. The envelope is reserved at
 its largest first, from the request and the hard set alone: the whole
 receipt, the notes, the budget clause at the budget's own digits,
-`insufficient` at twenty of the longest hard entries, and the six excluded
-counters at six digits, and the `(incomplete ...)` clause the
+`insufficient` at twenty of the longest hard entries, the six excluded
+counters at six digits, with `--names` the `asked` clause at its largest,
+and the `(incomplete ...)` clause the
 dispatcher appends when a writer could not be read, which a caller
 receives too. A budget that cannot hold that and T is refused with
 `(error budget-too-small (minimum <tokens>))`, the smallest budget that
-can. A hard block that cannot be hashed has no premise to give, and the
+can. `--budget min+<t>` asks for that minimum plus t tokens, and the
+budget clause shows the number it resolved to, so the answer is
+reproducible by number. A hard block that cannot be hashed has no premise to give, and the
 answer is refused with `(error unhashable-hard-block (id <id> ...))`. Then, greedily and in
 one pass: the hard blocks at identity in HARD ORDER -- T; the rest of the
 unit in document order; the other members by distance from the unit over
@@ -1334,7 +1408,7 @@ queries, the hard blocks' records and the request.
         (constraints (<entry> ...)) (evidence (<entry> ...))
         (to-verify (<entry> ...)) (counterexamples (<entry> ...))
         (background (<entry> ...)) (notes (<note> ...))
-        [(insufficient ...)] (excluded ...)
+        [(insufficient ...)] (excluded ...) [(folded ...)] [(asked ...)]
         (budget (tokens <t>) (used <u>) (reserve <r>))
         (receipt <premise> ...) (cut <cut>) (versions (...))
         [(name-use syntactic)])
@@ -1350,8 +1424,8 @@ as on every read. `(name-use syntactic)` says the definitions step
 consulted name use.
 
 The human output prints each section's name and one line per entry, the
-notes one per line, the `insufficient`, `excluded` and `budget` clauses as
-`--wire` writes them, and then the receipt on one line, the clause exactly as
+notes one per line, the `insufficient`, `excluded`, `folded`, `asked` and
+`budget` clauses as `--wire` writes them, and then the receipt on one line, the clause exactly as
 `--wire` writes it, ready for `commit --premises`; `(incomplete ...)`, when a
 writer could not be read, follows it. The cut and the versions are `--wire`'s
 only.
@@ -1493,7 +1567,8 @@ and the goal -- is checked as a query's goals are, with `?w` bound first and
 the 7 rule-only facts known, so an unknown relation, a wrong arity, a
 misplaced term or an unbound test variable is refused as it is for a query.
 A relation that reads outside the store's records -- `score`, `uses-name`,
-`def`, and the rules over them, `def-for` and `ambiguous` -- is refused
+`def`, `in-library`, `imports`, `file-imports`, and the rules over them,
+`scope-name`, `def-for`, `ambiguous`, `def-for-name` -- is refused
 `rule-relation-not-allowed`. The rule's class is computed then: WRITE when a
 goal names a rule-only fact, STATE otherwise.
 
@@ -2146,8 +2221,9 @@ the one built-in rule by name; `--retire` ends a rule.
 
 The goals are checked when the rule is declared, as a query's are: an unknown
 relation, a wrong arity or a misplaced term is refused, and so is a relation
-that reads anything outside the store's records -- `score`, `uses-name`, `def`
-and the rules over them (`def-for`, `ambiguous`): `(error bad-request
+that reads anything outside the store's records -- `score`, `uses-name`, `def`,
+`in-library`, `imports`, `file-imports` and the rules over them (`scope-name`,
+`def-for`, `ambiguous`, `def-for-name`): `(error bad-request
 rule-relation-not-allowed (relation <r>))`. A rule's answer is then a function
 of the records and the rules alone. A kind outside the store's kinds is refused
 `kind-not-known`. A rule is of one of two classes, decided by its goals and
@@ -4550,7 +4626,20 @@ that many entries (table tuples, memo, builds and marks) it is dropped and the
 next request starts afresh; 0 keeps none, a fresh session per request; the
 default is 1000000. A value that is not a count is refused with `(error
 bad-request (reason not-a-count) (option "--session-size") (value "<v>")
-(usage ...))`, exit 1.
+(usage ...))`, exit 1. The session is also dropped when the language catalogue
+changes in the daemon's process (an entry replaced, no store written), since
+`def`, `in-library`, `imports`, `file-imports` and `uses-name` read it.
+
+With `THEOURGIA_TRACE=1` the daemon writes each session decision as `(trace
+session <word> ...)` (`reuse`, `fresh <why>`, `advance ...`, `dropped
+derived-changed`, `dropped catalogue`, `dropped bound <size>`, `dropped
+moved`), and after each `query` or `context` answer `(trace session served
+(<verb> <expanded> <new> <size> (defs-index-builds <n>) (fact-builds (<relation>
+<n>) ...) [(preferred-candidates ((<step> <produced> <tried>) ...))] (session
+reused | advanced | fresh <why> [(dropped <why> ...)])))`: what that call paid
+for -- the definitions index built during it, the fact relations built, and for
+`context` the candidates each preferred step produced and how many were tried
+against the budget -- and whether it had the kept session.
 
 A `--socket` given by hand is not given a directory. An empty one answers
 `(error bad-socket-path (reason empty))`. One whose directory does not

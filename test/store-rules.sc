@@ -334,7 +334,10 @@
           (else (append (walk (car x)) (walk (cdr x)))))))
 (define (symbols-in x)
   (cond ((symbol? x) (list x)) ((pair? x) (append (symbols-in (car x)) (symbols-in (cdr x)))) (else '())))
-(define outside-markers '("name-use" "defs-index" "keyword" "language" "derived" "view-read"))
+;; "locator" and "header": a code block's library is read from a text file's
+;; header (store.sc, file-header) through the language catalogue, and the
+;; locator reaches it.
+(define outside-markers '("name-use" "defs-index" "keyword" "language" "derived" "view-read" "locator" "header"))
 (define (reads-outside? arm)
   (exists (lambda (sym)
             (let ((t (symbol->string sym)))
@@ -355,12 +358,12 @@
       (in-order read-outside
                 (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
                            (map car (filter (lambda (f) (eq? (list-ref f 3) 'external)) fact-relations))))
-      '((def score uses-name) (def score uses-name)))
-(want "M CONTROL: every fact has a provider arm the census read, and the library's rules over them are external too"
+      '((def file-imports imports in-library score uses-name) (def file-imports imports in-library score uses-name)))
+(want "M CONTROL: every fact has a provider arm the census read, and the library's rules over them are external too (scope-name reads in-library)"
       (in-order (filter (lambda (name) (not (exists (lambda (a) (and (pair? (car a)) (memq name (car a)))) provider-arms)))
                         (map car fact-relations))
                 (map relation-external? '(def-for ambiguous scope-name depends title)))
-      '(() (#t #t #f #f #f)))
+      '(() (#t #t #t #f #f)))
 
 ;; ---- a store made from the project template holds no rule ---------------------------
 

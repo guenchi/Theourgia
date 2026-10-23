@@ -32,7 +32,7 @@
           batch-answer
           datum-mode-block? draft-on-datum-refusal
           store-check store-position store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
-          library-locator
+          library-locator located-library-name file-header
           derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
           request-verdict failure-text)
@@ -92,6 +92,14 @@
           ;; `state-read`. Deriving names is not what makes search cost
           ;; anything, so nothing is cached for that reason.
           (only (theourgia view) view-read)
+          ;; A TEXT FILE'S HEADER, read by our own bounded reader: the name and
+          ;; imports a text-mode library file holds in its first form. The
+          ;; reader imports (rnrs) alone, so this adds no cycle; the language
+          ;; catalogue says which languages have a header, and its generation
+          ;; is part of every key a header answer is kept under.
+          (only (theourgia reader) read-file-header header-byte-limit library-name-proper)
+          (only (theourgia languages) language-for-name language-catalogue-generation)
+          (only (theourgia markers) language-property)
           (theourgia reduce))
 
   ;; WHAT THE REDUCER ANSWERS AND WHAT THE LOAD ASKS ARE NOT THE SAME
@@ -1147,6 +1155,7 @@
   (define cached-index #f)
   (define cached-index-cut #f)
   (define cached-index-token #f)
+  (define cached-index-generation #f)
   ;; HOW MANY TIMES A CUT WAS COPIED TO ANSWER defs-index: once per question
   ;; that is not about the object the index was last asked for
   (define defs-index-cut-reads 0)
@@ -1164,18 +1173,25 @@
       ;; THE TOKEN FIRST (reduce-applied-token): the same applied state of
       ;; the same object, answered without copying the cut; any other is
       ;; compared by its cut, so a new object of an unchanged store still hits.
-      (if (and cached-index (eq? cached-index-token token))
-          cached-index
-          (let ((cut (begin (set! defs-index-cut-reads (+ defs-index-cut-reads 1))
-                            (reduce-applied-cut state))))
-            (set! cached-index-token token)
-            (if (and cached-index (equal? cached-index-cut cut))
-                cached-index
-                (let ((built (build-defs-index state)))
-                  (set! cached-index built)
-                  (set! cached-index-cut cut)
-                  (set! defs-index-builds (+ defs-index-builds 1))
-                  built))))))
+      ;; AND THE CATALOGUE'S GENERATION IS PART OF THE KEY: a definition is
+      ;; found by its language's def-heads and a text file's library by its
+      ;; header, both read through the catalogue, which can be replaced at
+      ;; run time with no write to the store. An index kept by the cut alone
+      ;; would go on answering the old catalogue's definitions.
+      (let ((generation (language-catalogue-generation)))
+        (if (and cached-index (eq? cached-index-token token) (eqv? cached-index-generation generation))
+            cached-index
+            (let ((cut (begin (set! defs-index-cut-reads (+ defs-index-cut-reads 1))
+                              (reduce-applied-cut state))))
+              (set! cached-index-token token)
+              (if (and cached-index (equal? cached-index-cut cut) (eqv? cached-index-generation generation))
+                  cached-index
+                  (let ((built (build-defs-index state)))
+                    (set! cached-index built)
+                    (set! cached-index-cut cut)
+                    (set! cached-index-generation generation)
+                    (set! defs-index-builds (+ defs-index-builds 1))
+                    built)))))))
 
   ;; THE LIBRARY A BLOCK BELONGS TO: the nearest enclosing block whose kind
   ;; is library, walking the outline's parents, or #f when there is none.
@@ -1191,15 +1207,151 @@
   ;; `whereis` rebuilds it per call, so the verb answered in 8.7. The same
   ;; walk done once, into a parent table, is the shape the markdown
   ;; projection already uses for the same reason.
+  ;;
+  ;; A TEXT FILE IS A LIBRARY WHEN ITS HEADER SAYS SO. A Scheme file stored in
+  ;; text mode has no `library` block: its pieces are code children of a
+  ;; `file` holder, and the library form is text inside them. So when a code
+  ;; block has no library ancestor and its nearest `file` ancestor has a
+  ;; header name (file-header), the answer is that holder's id. A library
+  ;; ancestor wins wherever it is, above the holder included. The id is all
+  ;; the locator answers; `located-library-name` names it.
   (define (library-locator state kind-of)
     (let ((parent (make-hashtable string-hash string=?)))
       (for-each (lambda (r) (hashtable-set! parent (caddr r) (car r))) (state-outline state))
       (lambda (id)
-        (let loop ((up (hashtable-ref parent id #f)))
-          (cond ((not up) #f)
-                ((eq? up (quote root)) #f)
+        (let loop ((up (hashtable-ref parent id #f)) (holder #f))
+          (cond ((or (not up) (eq? up (quote root)))
+                 (and holder (eq? (quote code) (kind-of id))
+                      (let ((h (file-header state holder))) (and h (eq? (car h) (quote library))))
+                      holder))
                 ((eq? (quote library) (kind-of up)) up)
-                (else (loop (hashtable-ref parent up #f))))))))
+                ((and (not holder) (eq? (quote file) (kind-of up))) (loop (hashtable-ref parent up #f) up))
+                (else (loop (hashtable-ref parent up #f) holder)))))))
+
+  ;; THE NAME OF A LOCATED ID, ONE READING FOR EVERY CONSUMER OF THE LOCATOR:
+  ;; a `library` block's name as it is stored (a version reference kept), a
+  ;; `file` holder's header name as library-name-proper gives it, or #f.
+  ;; The definitions index records it as it is; the query facts reduce it
+  ;; with library-name-proper and write it as a string.
+  (define (located-library-name state id)
+    (let ((row (and id (state-read state id))))
+      (and row (not (cdr (assq (quote deleted) row)))
+           (let* ((fields (cdr (assq (quote fields) row)))
+                  (kind (let ((e (assq (quote kind) fields))) (and e (cdr e)))))
+             (cond ((eq? kind (quote library))
+                    (let ((e (assq (quote name) fields))) (and e (cdr e))))
+                   ((eq? kind (quote file))
+                    (let ((h (file-header state id))) (and h (eq? (car h) (quote library)) (cadr h))))
+                   (else #f))))))
+
+  ;; ---- a text file's header ------------------------------------------------------
+  ;;
+  ;; (file-header state holder) -> (library <name parts> <import specs>),
+  ;; (script <import specs>) or #f: what the first form of the file HOLDER's
+  ;; text says (reader.sc, read-file-header). The text is the holder's code
+  ;; children's srcs in document order, joined until 65536 bytes are read, so
+  ;; a header that a marker line, a comment-only piece or a cut splits is
+  ;; still read whole; a child that is not a text-mode code block with a
+  ;; settled src ends the text there. A holder whose language's catalogue
+  ;; entry names no `header` has none.
+  ;; NOTHING HERE IS CAUGHT: the reader refuses by value, utf8->string
+  ;; replaces bytes that are not UTF-8, and every missing child, src or
+  ;; catalogue entry ends the read with #f, so a raise from read-header is a
+  ;; defect to be seen. A catch-all once stood around it and would have
+  ;; answered such a raise as "no header" (unreadable-census U11-ii; row C1i).
+  ;; KEPT AS THE DEFINITIONS INDEX IS KEPT, by the applied token, then the cut,
+  ;; and the catalogue's generation: one table of holders per key.
+  (define cached-headers #f)
+  (define cached-headers-cut #f)
+  (define cached-headers-token #f)
+  (define cached-headers-generation #f)
+  (define cached-children #f)
+  (define (header-table state)
+    (let ((token (reduce-applied-token state)) (generation (language-catalogue-generation)))
+      (unless (and cached-headers (eq? cached-headers-token token) (eqv? cached-headers-generation generation))
+        (let ((cut (reduce-applied-cut state)))
+          (set! cached-headers-token token)
+          (unless (and cached-headers (equal? cached-headers-cut cut) (eqv? cached-headers-generation generation))
+            (set! cached-headers (make-hashtable string-hash string=?))
+            (set! cached-children #f)
+            (set! cached-headers-cut cut)
+            (set! cached-headers-generation generation))))
+      cached-headers))
+  (define (children-table state)
+    (or cached-children
+        (let ((t (make-hashtable string-hash string=?)))
+          (for-each (lambda (r)
+                      (when (and (string? (car r)) (null? (cdddr r)))
+                        (hashtable-set! t (car r) (cons (caddr r) (hashtable-ref t (car r) (quote ()))))))
+                    (state-outline state))
+          (set! cached-children t)
+          t)))
+  (define (file-header state holder)
+    (let* ((table (header-table state))
+           (hit (hashtable-ref table holder (quote unread))))
+      (if (not (eq? hit (quote unread)))
+          hit
+          (let ((h (read-header state holder)))
+            (hashtable-set! table holder h)
+            h))))
+  (define (row-field row name)
+    (let ((e (assq name (cdr (assq (quote fields) row))))) (if e (cdr e) (quote missing))))
+  (define (read-header state holder)
+    (let* ((row (state-read state holder))
+           (lang (and row (row-field row (quote lang))))
+           (entry (and (or (symbol? lang) (string? lang)) (language-for-name lang))))
+      (and entry (language-property entry (quote header) #f)
+           (eq? (row-field row (quote kind)) (quote file))
+           ;; NOTHING PAST THE LIMIT IS COPIED OR ENCODED: each piece gives at
+           ;; most the bytes still wanted (header-bytes), so a header lookup
+           ;; costs the prefix, whatever size the pieces are.
+           (let loop ((ids (reverse (hashtable-ref (children-table state) holder (quote ())))) (parts (quote ())) (n 0) (cut? #f))
+             (let ((src (and (pair? ids) (< n header-byte-limit)
+                             (let ((r (state-read state (car ids))))
+                               (and r (not (cdr (assq (quote deleted) r)))
+                                    (eq? (row-field r (quote kind)) (quote code))
+                                    (eq? (row-field r (quote mode)) (quote text))
+                                    (let ((s (row-field r (quote src))))
+                                      (and (not (state-field-contested? state (car ids) (quote src) s))
+                                           (or (bytevector? s) (string? s))
+                                           s)))))))
+               (if src
+                   (let ((bv (header-bytes src (- header-byte-limit n))))
+                     (loop (cdr ids) (cons (car bv) parts) (+ n (bytevector-length (car bv))) (or cut? (cdr bv))))
+                   (read-file-header (utf8->string (header-prefix (reverse parts) cut?)))))))))
+  ;; -> (<at most ROOM bytes of SRC, a bytevector or a string> . <cut?>):
+  ;; a string is encoded from at most ROOM of its characters, a character
+  ;; being at least one byte
+  (define (header-bytes src room)
+    (let* ((full (if (bytevector? src) src (string->utf8 (substring src 0 (min room (string-length src))))))
+           (cut? (or (> (bytevector-length full) room)
+                     (and (string? src) (> (string-length src) room)))))
+      (if (<= (bytevector-length full) room)
+          (cons full cut?)
+          (let ((out (make-bytevector room)))
+            (bytevector-copy! full 0 out 0 room)
+            (cons out #t)))))
+  ;; the joined bytes, at most the limit; when a piece was cut, a character
+  ;; the cut split at the end is left out
+  (define (header-prefix parts cut?)
+    (let* ((total (fold-left + 0 (map bytevector-length parts)))
+           (all (make-bytevector total)))
+      (let loop ((ps parts) (at 0))
+        (unless (null? ps)
+          (bytevector-copy! (car ps) 0 all at (bytevector-length (car ps)))
+          (loop (cdr ps) (+ at (bytevector-length (car ps))))))
+      (if (not cut?)
+          all
+          (let* ((lead (let back ((i (- total 1)) (k 0))
+                         (cond ((or (< i 0) (= k 4)) #f)
+                               ((= (fxand (bytevector-u8-ref all i) #xC0) #x80) (back (- i 1) (+ k 1)))
+                               (else i))))
+                 (width (and lead (let ((b (bytevector-u8-ref all lead)))
+                                    (cond ((< b #x80) 1) ((= (fxand b #xE0) #xC0) 2) ((= (fxand b #xF0) #xE0) 3) (else 4)))))
+                 (end (if (and lead (> (+ lead width) total)) lead total))
+                 (out (make-bytevector end)))
+            (bytevector-copy! all 0 out 0 end)
+            out))))
 
   (define (build-defs-index state)
     (let ((by-name (make-hashtable string-hash string=?))
@@ -1299,7 +1451,7 @@
                  (for-each
                    (lambda (n)
                      (add! n (list (quote def) id
-                                   (list (quote library) (or (and lib (field lib (quote name))) (quote #f)))
+                                   (list (quote library) (or (and lib (located-library-name state lib)) (quote #f)))
                                    (list (quote name) n)
                                    (list (quote kind) (quote code)))))
                    found)))

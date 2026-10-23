@@ -43,23 +43,34 @@
 ;;; is reserved at its largest before anything is admitted, from the request
 ;;; and the hard set alone: the whole receipt, the notes, the budget clause
 ;;; at the budget's own digits, the insufficient clause at twenty of the
-;;; longest hard entries, the excluded counters at six digits. An entry is
-;;; admitted at a level only when the answer with it fits. Greedy, one
-;;; pass: stated, not optimal.
+;;; longest hard entries, the excluded counters at six digits, and with
+;;; --names the asked clause at its largest. An entry is admitted at a level
+;;; only when the answer with it fits. Greedy, one pass: stated, not
+;;; optimal. `--budget min+<t>` asks for the minimum the request would
+;;; report in budget-too-small plus t tokens, and the budget clause shows
+;;; the number it resolved to.
+;;;
+;;; AMBIGUITY IS FOLDED: when a name a hard code block uses has more than two
+;;; definitions left after the hard blocks and those already entered, the
+;;; first two are entered and the fold is said in `folded`; the others stay
+;;; free for a later step. A name the caller gives with --names is entered
+;;; whole, ahead of everything else preferred, and never folded; `asked`
+;;; says which given names are defined only in hard blocks and which have no
+;;; definition at all.
 ;;;
 ;;; It writes nothing, reads no log, runs no user code and keeps nothing
 ;;; between requests.
 (library (theourgia context)
   (export context-verb)
   (import (rnrs) (rnrs mutable-pairs)
-          (only (theourgia arguments) argument-option)
+          (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
           (only (theourgia store) search-state sealed-state? sealed-state-notes)
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire printed-entry)
-          (only (theourgia query) make-query-session session-answer query-budget-default fresh-query-session)
+          (only (theourgia query) make-query-session session-answer query-budget-default fresh-query-session session-note!)
           (prefix (theourgia lifecycle) lc:)
           (only (theourgia extensions) context-usage))
 
@@ -185,12 +196,22 @@
 
   ;; ---- the verb -------------------------------------------------------------------------
 
+  ;; THE BUDGET AS ASKED: tokens, or (min . <t>) for `min+<t>`, or #f.
+  (define (budget-request dispatch-helper text)
+    (and (string? text)
+         (if (and (> (string-length text) 4) (string=? (substring text 0 4) "min+"))
+             (let ((k ((dispatch-helper 'count-argument) (substring text 4 (string-length text)))))
+               (and k (cons 'min k)))
+             ((dispatch-helper 'count-argument) text))))
+
   (define (context-verb dispatch-helper store actor args req options state writer cwd)
     (let* ((t (argument-option options "--for"))
            (budget-text (argument-option options "--budget"))
-           (budget (and (string? budget-text) ((dispatch-helper 'count-argument) budget-text)))
+           (budget (budget-request dispatch-helper budget-text))
+           ;; THE NAMES THE EDIT WILL USE, each once, in the order given
+           (names (unique (argument-option-list options "--names")))
            (all? (argument-option options "--all-validity")))
-      (if (or (pair? args) (not (string? t)) (not budget))
+      (if (or (pair? args) (not (string? t)) (not budget) (exists (lambda (n) (= 0 (string-length n))) names))
           ((dispatch-helper 'usage) context-usage)
           ((dispatch-helper 'guarded)
            (lambda ()
@@ -201,7 +222,7 @@
                (if (or (not row) (cdr (assq 'deleted row)))
                    ((dispatch-helper 'read) store actor (list t) req '() state writer cwd)
                    (guard (e ((refusal? e) (refusal-answer e)))
-                     (assemble dispatch-helper store view t budget all? (appended-clause state view))))))))))
+                     (assemble dispatch-helper store view t budget names all? (appended-clause state view))))))))))
 
   ;; WHAT THE DISPATCHER WILL APPEND after this answer, or #f: the clause that
   ;; says which writers the state could not read. It is part of the bytes a
@@ -214,7 +235,7 @@
 
   (define role-order '(unit member unsettled supersedes cause implementer stale))
 
-  (define (assemble dispatch-helper store view t budget all? appended)
+  (define (assemble dispatch-helper store view t budget names all? appended)
     ;; THE SESSION IS THE DISPATCHER'S when it has one (the daemon's, kept
     ;; across requests), else a fresh one, as the query verb takes it
     (let* ((S (let ((p (dispatch-helper 'session)))
@@ -273,7 +294,7 @@
         ;; cannot be taken, so the state exists.
         (if (pair? unhashable)
             (list 'error 'unhashable-hard-block (cons 'id unhashable))
-            (budgeted dispatch-helper store view (record-reader dispatch-helper store view) S t budget all? order versions whys validity-clause place notes receipt
+            (budgeted dispatch-helper store view (record-reader dispatch-helper store view) S t budget names all? order versions whys validity-clause place notes receipt
                       (lambda (h) (hashtable-ref validity h 'valid)) appended)))))
 
   ;; AUTHORITY IS THE RECORD'S: its effective class, an absent one by kind.
@@ -369,7 +390,7 @@
   ;; the newline after it.
   (define (answer-bytes form) (+ 1 (wire-length form)))
 
-  (define (budgeted dispatch-helper store view records S t budget all? order versions whys validity-clause place notes receipt validity-of appended)
+  (define (budgeted dispatch-helper store view records S t budget names all? order versions whys validity-clause place notes receipt validity-of appended)
     (let* ((version (lambda (h) (let ((p (assoc h versions))) (and p (cdr p)))))
            (identity (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) 'identity)))
            (pair-of (lambda (h) (cons h (version h))))
@@ -389,22 +410,35 @@
                                   (list (list 'more (- n-others 20) (list 'bytes (fold-left + 0 costs))))
                                   '())))))
            (reserved-excluded (append (list 'excluded) (map (lambda (n) (list n counter-cap)) excluded-names) '((capped))))
+           ;; THE ASKED CLAUSE AT AN UPPER BOUND, from the request and the hard
+           ;; set alone: every given name as having no definition, and as
+           ;; defined in every hard block. What the clause does not use goes
+           ;; back to the preferred material once the hard blocks are in.
+           (reserved-asked
+             (if (null? names)
+                 '()
+                 (list (append (list 'asked (cons 'names names))
+                               (apply append (map (lambda (n) (map (lambda (h) (list 'in-hard n h)) order)) names))
+                               (list (cons 'no-definition names))))))
            (base (lambda (tokens)
                    (append (list 'ok (list 'for (identity t)))
                            (map (lambda (n) (list n '())) section-names)
                            (list (list 'notes notes))
                            reserved-insufficient
-                           (list reserved-excluded
-                                 (list 'budget (list 'tokens tokens) (list 'used tokens) (list 'reserve tokens))
+                           (list reserved-excluded)
+                           reserved-asked
+                           (list (list 'budget (list 'tokens tokens) (list 'used tokens) (list 'reserve tokens))
                                  receipt
                                  (list 'versions (list (pair-of t)))
                                  '(name-use syntactic)))))
            (tail (if appended (+ 1 (wire-length appended)) 0))
+           ;; `min+<t>`: the minimum this request reports, plus t
+           (budget (if (pair? budget) (+ (minimum-budget base tail) (cdr budget)) budget))
            (base-size (+ tail (answer-bytes (base budget)))))
       (if (not (fits? base-size budget))
           (list 'error 'budget-too-small (list 'minimum (minimum-budget base tail)))
-          (admit dispatch-helper store view records S t budget all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail))))
+          (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
+                 version identity pair-of cost base-size tail reserved-asked))))
 
   ;; THE SMALLEST BUDGET THE RESERVATION AND THE BLOCK ASKED FOR FIT IN. The
   ;; reservation holds the budget at its own digits, so it is found digit
@@ -416,8 +450,8 @@
              (need (max low (div (+ (* 10 size) 35) 36))))
         (if (< need (expt 10 digits)) need (loop (+ digits 1))))))
 
-  (define (admit dispatch-helper store view records S t budget all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail)
+  (define (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
+                 version identity pair-of cost base-size tail reserved-asked)
     (let ((size base-size)
           (levels (make-hashtable string-hash string=?))
           (counts (map (lambda (n) (cons n 0)) section-names))
@@ -454,38 +488,76 @@
       ;; B7: the preferred material in what room is left.
       (let* ((hard-entry (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) (hashtable-ref levels h 'identity))))
              (L (lc:lifecycle view))
-             (preferred (preferred-steps dispatch-helper store view S t all? order place L))
+             (preferred (preferred-steps dispatch-helper store view S t names all? order place L))
+             (steps (vector-ref preferred 0))
+             (groups (vector-ref preferred 2))
+             (asked (vector-ref preferred 3))
+             ;; each folded group's shown count, kept by the ids it entered
+             (group-of (make-hashtable string-hash string=?))
+             (fold-refused #f)
              (excluded (map (lambda (n) (cons n 0)) excluded-names))
+             (exclude! (lambda (counter) (set-cdr! (assq counter excluded) (+ 1 (cdr (assq counter excluded))))))
+             (tried '())
              (chosen '()))
+        (for-each (lambda (g) (for-each (lambda (id) (hashtable-set! group-of id g)) (vector-ref g 4))) groups)
+        ;; THE ASKED RESERVE GIVEN BACK: the clause as it is, against its
+        ;; upper bound.
+        (when asked
+          (set! size (+ size (- (wire-length asked) (wire-length (car reserved-asked))))))
         (for-each
           (lambda (step)
-            (let ((counter (car step)) (s (cadr step)) (allowed (caddr step)))
+            (let ((counter (car step)) (s (cadr step)) (allowed (caddr step)) (n 0))
+              ;; THE FOLDED CLAUSE IS CHARGED BEFORE THE STEP IT REPORTS ON, at
+              ;; its full size (a shown count is one digit whatever it is). When
+              ;; it does not fit, no fold is applied unsaid: every candidate of
+              ;; a folded group is excluded instead.
+              (when (and (memq 'fold step) (pair? groups))
+                (let ((d (+ 1 (wire-length (folded-clause groups)))))
+                  (if (fits? (+ size d) budget)
+                      (set! size (+ size d))
+                      (set! fold-refused #t))))
               (for-each
                 (lambda (c)
+                  (set! n (+ n 1))
                   (let* ((id (car c)) (cwhys (cdr c))
+                         (g (and (memq 'fold step) (hashtable-ref group-of id #f)))
                          (v (lc:validity-of L id))
                          (vclause (and (not (eq? (car v) 'valid)) (cons* 'validity (car v) (lc:validity-reasons v))))
                          (ver (version-of view id))
                          (pair (cons id ver)))
-                    (let try ((ls allowed))
-                      (if (null? ls)
-                          (set-cdr! (assq counter excluded) (+ 1 (cdr (assq counter excluded))))
-                          (let* ((e (entry view records id ver cwhys vclause (car ls))) (d (delta s e pair)))
-                            (if (fits? (+ size d) budget)
-                                (begin (set! size (+ size d)) (enter! s id e) (set! chosen (cons pair chosen)))
-                                (try (cdr ls))))))))
-                (cadddr step))))
-          (car preferred))
+                    (if (and g fold-refused)
+                        (exclude! counter)
+                        (let try ((ls allowed))
+                          (if (null? ls)
+                              (exclude! counter)
+                              (let* ((e (entry view records id ver cwhys vclause (car ls))) (d (delta s e pair)))
+                                (if (fits? (+ size d) budget)
+                                    (begin (set! size (+ size d)) (enter! s id e) (set! chosen (cons pair chosen))
+                                           (when g (vector-set! g 3 (+ 1 (vector-ref g 3)))))
+                                    (try (cdr ls)))))))))
+                (cadddr step))
+              (set! tried (cons (list (list-ref step 4) (length (cadddr step)) n) tried))))
+          steps)
+        ;; WHAT THE PREFERRED STEPS PRODUCED AND TRIED, for the session trace
+        (session-note! S 'preferred-candidates (reverse tried))
         (finish view t budget order hard-entry place notes receipt missing cost sections excluded
-                (reverse chosen) version (cdr preferred) tail))))
+                (reverse chosen) version (vector-ref preferred 1) tail
+                (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked))))
+
+  ;; (folded (<name> <block> (candidates <n>) (shown <m>)) ...), a group a
+  ;; vector #(<name> <block> <candidates> <shown> <entered ids>)
+  (define (folded-clause groups)
+    (cons 'folded (map (lambda (g) (list (vector-ref g 0) (vector-ref g 1)
+                                         (list 'candidates (vector-ref g 2)) (list 'shown (vector-ref g 3))))
+                       groups)))
 
   ;; ---- the preferred material ------------------------------------------------------------------
 
-  ;; -> (<steps> . <name use consulted>), each step (<counter> <section>
-  ;; <levels allowed> <candidates>), a candidate (<id> <why> ...). A candidate
-  ;; is never a hard block or the block asked for, and is in the earliest step
-  ;; that names it.
-  (define (preferred-steps dispatch-helper store view S t all? order place L)
+  ;; -> #(<steps> <name use consulted> <folded groups> <asked clause or #f>),
+  ;; each step (<counter> <section> <levels allowed> <candidates> <label>
+  ;; [fold]), a candidate (<id> <why> ...). A candidate is never a hard block
+  ;; or the block asked for, and is in the earliest step that names it.
+  (define (preferred-steps dispatch-helper store view S t names all? order place L)
     (let* ((seen (make-hashtable string-hash string=?))
            (rank (lambda (h) (or (index-of h order) 1000000)))
            (in-force? (lambda (id) (memq (car (lc:validity-of L id)) '(valid needs-review))))
@@ -498,23 +570,65 @@
                             (loop (cdr l) out))
                            (else (hashtable-set! seen (car (car l)) #t) (loop (cdr l) (cons (car l) out)))))))
            (by (lambda (key<? xs) (list-sort key<? xs)))
+           ;; 0: THE NAMES THE CALLER GAVE, each defined in T's scope
+           ;; (def-for-name). EXISTENCE IS DECIDED BEFORE THE HARD EXCLUSION: a
+           ;; name defined in a hard block, T itself included, is `in-hard`, and
+           ;; only a name with no definition at all is `no-definition`. Its
+           ;; entries are marked seen as any step's, so a given name's
+           ;; definitions are never folded below.
+           (named (map (lambda (n) (cons n (unique (map car (rows-of S `(def-for-name ,t ,n ?d)))))) names))
+           (step0 (take (apply append
+                               (map (lambda (p) (map (lambda (d) (list d (list 'why 'names (car p))))
+                                                     (list-sort string<? (filter (lambda (d) (not (member d order))) (cdr p)))))
+                                    named))
+                        admitted?))
+           (asked (and (pair? names)
+                       (append (list 'asked (cons 'names names))
+                               (apply append
+                                      (map (lambda (p) (map (lambda (d) (list 'in-hard (car p) d))
+                                                            (filter (lambda (d) (member d (cdr p))) order)))
+                                           named))
+                               (let ((none (map car (filter (lambda (p) (null? (cdr p))) named))))
+                                 (if (null? none) '() (list (cons 'no-definition none)))))))
            ;; 1: the definitions of the names each hard code block in force uses.
            (code (filter (lambda (h) (and (eq? (field-value (state-read view h) 'kind) 'code) (in-force? h))) order))
            (uses (if (null? code) '()
                      (filter (lambda (r) (member (car r) code)) (rows-of S `(and (hard ,t ?b _ _) (uses-name ?b ?n))))))
            (defs (if (null? uses) '()
                      (filter (lambda (r) (member (car r) code)) (rows-of S `(and (hard ,t ?b _ _) (def-for ?b ?name ?d))))))
-           (step1 (take (map (lambda (r)
-                               (let ((others (filter (lambda (x) (and (equal? (car x) (car r)) (equal? (cadr x) (cadr r)))) defs)))
-                                 (list (caddr r)
-                                       (append (list 'why 'defines (cadr r) (car r))
-                                               (if (> (length others) 1) '((ambiguous)) '())))))
-                             (by (lambda (a b) (or (< (rank (car a)) (rank (car b)))
-                                                   (and (= (rank (car a)) (rank (car b)))
-                                                        (or (string<? (format-about (cadr a)) (format-about (cadr b)))
-                                                            (and (equal? (cadr a) (cadr b)) (string<? (caddr a) (caddr b)))))))
-                                 defs))
-                         admitted?))
+           ;; THE FOLD, per (using block, name), over what is left after the
+           ;; hard blocks, the ids already seen and the validity filter: more
+           ;; than two left, and the first two in this order are entered and
+           ;; the group recorded; the rest are NOT marked seen, so a later step
+           ;; may still enter them for its own reason.
+           (fold-cap 2)
+           (folded '())
+           (step1 (let loop ((rs (by (lambda (a b) (or (< (rank (car a)) (rank (car b)))
+                                                       (and (= (rank (car a)) (rank (car b)))
+                                                            (or (string<? (format-about (cadr a)) (format-about (cadr b)))
+                                                                (and (equal? (cadr a) (cadr b)) (string<? (caddr a) (caddr b)))))))
+                                     defs))
+                             (out '()))
+                    (if (null? rs)
+                        (reverse out)
+                        (let* ((b (car (car rs))) (name (cadr (car rs)))
+                               (group (let g ((l rs) (acc '()))
+                                        (if (and (pair? l) (equal? (car (car l)) b) (equal? (cadr (car l)) name))
+                                            (g (cdr l) (cons (car l) acc))
+                                            (reverse acc))))
+                               (left (filter (lambda (r) (let ((d (caddr r)))
+                                                           (not (or (member d order) (hashtable-ref seen d #f) (not (admitted? d))))))
+                                             group))
+                               (over? (> (length left) fold-cap))
+                               (kept (if over? (list-head left fold-cap) left))
+                               (ambiguous (if (> (length group) 1) '((ambiguous)) '())))
+                          (for-each (lambda (r) (hashtable-set! seen (caddr r) #t)) kept)
+                          (when over?
+                            (set! folded (cons (vector name b (length left) 0 (map caddr kept)) folded)))
+                          (loop (list-tail rs (length group))
+                                (append (reverse (map (lambda (r) (list (caddr r) (append (list 'why 'defines name b) ambiguous)))
+                                                      kept))
+                                        out))))))
            ;; 2: the evidence of each constraint: what verifies it, what implements it.
            (evidence (lambda (rows why)
                        (map (lambda (r) (list (cadr r) (list 'why why (car r))))
@@ -552,13 +666,18 @@
                                (map (lambda (h) (map (lambda (a) (list a (list 'why 'contains h))) (ancestors view h)))
                                     order))
                         admitted?)))
-      (cons (list (list 'definitions 'background '(summary identity) step1)
-                  (list 'evidence 'background '(full summary identity) step2)
-                  (list 'counterexamples 'counterexamples '(full summary identity) step3)
-                  (list 'dependents 'background '(identity) step4)
-                  (list 'relevant 'background '(full summary identity) step5)
-                  (list 'ancestors 'background '(identity) step6))
-            (pair? uses))))
+      (vector (list (list 'definitions 'background '(summary identity) step0 'names)
+                    (list 'definitions 'background '(summary identity) step1 'definitions 'fold)
+                    (list 'evidence 'background '(full summary identity) step2 'evidence)
+                    (list 'counterexamples 'counterexamples '(full summary identity) step3 'counterexamples)
+                    (list 'dependents 'background '(identity) step4 'dependents)
+                    (list 'relevant 'background '(full summary identity) step5 'relevant)
+                    (list 'ancestors 'background '(identity) step6 'ancestors))
+              (pair? uses)
+              (reverse folded)
+              asked)))
+
+  (define (list-head l k) (if (or (= k 0) (null? l)) '() (cons (car l) (list-head (cdr l) (- k 1)))))
 
   ;; THE HITS OF SEARCH for the block's title, and for its text when it has
   ;; one: the best score of each block. Without --all-validity, search's own
@@ -594,7 +713,8 @@
 
   ;; ---- the answer ------------------------------------------------------------------------------
 
-  (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail)
+  (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail
+                  folded asked)
     (let* ((section-of
              (lambda (name)
                (append (map (lambda (h) (hard-entry h))
@@ -623,8 +743,10 @@
                            shown
                            (list (list 'notes notes))
                            insufficient
-                           (list excluded-clause
-                                 (list 'budget (list 'tokens budget) (list 'used used) (list 'reserve (div budget 10)))
+                           (list excluded-clause)
+                           (if folded (list folded) '())
+                           (if asked (list asked) '())
+                           (list (list 'budget (list 'tokens budget) (list 'used used) (list 'reserve (div budget 10)))
                                  receipt
                                  (list 'versions versions))
                            (if consulted '((name-use syntactic)) '()))))

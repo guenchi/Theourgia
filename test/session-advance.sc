@@ -158,9 +158,14 @@
 (derive! B 'ifv (identity 'ifv 'validity 2 '(ID (SYM valid needs-review refuted superseded))))
 (derive! B 'ifr (identity 'ifr 'validity-reason 3 '(ID SYM ID)))
 (derive! B 'ifu (identity 'ifu 'under 2 '(ID PARENT)))
-(derive! B 'ifl (identity 'ifl 'in-library 2 '(ID NAME-OR-NONE)))
+;; IN-LIBRARY IS EXTERNAL: a text file's library is read from its header
+;; through the language catalogue, so a derived relation over it is refused
+;; as one over def is (BASE-9). The block whose tuple moves without being
+;; named is asked of `holder` instead: a code block's file holder.
+(define b-ifl (derive! B 'ifl (identity 'ifl 'in-library 2 '(ID NAME-OR-NONE))))
+(derive! B 'ifh (identity 'ifh 'holder 2 '(ID ID)))
 (derive! B 'ifk (identity 'ifk 'edge-kind 3 '(ID SYM ID)))
-(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p) (ifl ?b ?n) (ifk ?a ?k ?b)))
+(define base-keys '((iff ?b ?n ?v) (ife ?a ?r ?b) (ifv ?b ?v) (ifr ?a ?w ?b) (ifu ?b ?p) (ifh ?b ?h) (ifk ?a ?k ?b)))
 (define b1 (state B))
 (define BS (make-query-session b1))
 (for-each (lambda (g) (hold! BS g)) base-keys)
@@ -172,7 +177,7 @@
 (on B 'set by "title" "y moved")
 (on B 'del bb)
 (define b-moved (on B 'move bz bs))
-(define b-renamed (field! B blib 'name '(my lib2)))
+(define b-renamed (field! B blib 'kind 'file))
 (define b-declared (on B 'relation "leans-on" "--as" "depends-on"))
 (define b2 (state B))
 (define BS2 (advance BS b2))
@@ -201,13 +206,16 @@
       (let ((t (inspected BS2 'ifu '?b '?p)))
         (list (head-of b-moved) (member-of? (list bz "root") t) (member-of? (list bz bs) t)))
       '(ok #f #t))
-(want "BASE-8 a library renamed: the code block under it changes library, no record of its own (a tuple of a block the write did not name)"
-      (let ((old (inspected BS 'ifl '?b '?n)) (new (inspected BS2 'ifl '?b '?n)))
+(want "BASE-8 the block above a code block made a file: the code block changes holder, no record of its own (a tuple of a block the write did not name)"
+      (let ((old (inspected BS 'ifh '?b '?h)) (new (inspected BS2 'ifh '?b '?h)))
         (list (head-of b-renamed)
               (and (pair? old) (pair? new) (length (filter (lambda (t) (equal? (car t) bcode)) (cadr old))))
-              (and (pair? new) (equal? (cadr new) (oracle b2 '(ifl ?b ?n))))
+              (and (pair? new) (equal? (cadr new) (oracle b2 '(ifh ?b ?h))))
               (and (pair? old) (pair? new) (equal? (cadr old) (cadr new)))))
       '(batch 1 #t #f))
+(want "BASE-9 a derived relation over in-library is refused: in-library is external"
+      b-ifl
+      '(error bad-request rule-relation-not-allowed (relation in-library)))
 (want "BASE-7 every identity table complete in the new session before any ask, then each the fresh session's, the asks expanding nothing"
       (let* ((kinds (map (lambda (g) (let ((t (apply inspected BS2 g))) (if (pair? t) (car t) t))) base-keys))
              (before (named-expansions BS2))

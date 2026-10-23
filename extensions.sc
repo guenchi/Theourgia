@@ -48,7 +48,7 @@
   (define query-usage '(query [<goal>] ["--relations"]))
 
   ;; The block to read for and the size of the answer, in tokens.
-  (define context-usage '(context "--for" <id> "--budget" <tokens> ["--all-validity"]))
+  (define context-usage '(context "--for" <id> "--budget" <tokens> ["--names" <name>] ... ["--all-validity"]))
 
   (define extension-verbs
     (list
@@ -87,7 +87,7 @@
             '() '("--relations")
             '((theourgia query) . query-verb))
       (list 'context context-usage
-            "The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back."
+            "The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back. A name with more than two definitions left shows two and says so in folded. --names <name>, repeated, enters the definitions of each given name in the block's scope first and says in asked which are defined only in hard blocks or nowhere; --budget min+<t> is the minimum the request needs plus t."
             #f 'daemon
-            '("--for" "--budget") '("--all-validity")
+            '("--for" "--budget" "--names") '("--all-validity")
             '((theourgia context) . context-verb)))))

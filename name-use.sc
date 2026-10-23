@@ -18,13 +18,20 @@
 ;;;
 ;;; KEY: SYNTACTIC, AND EVERY ANSWER SAYS SO. What a block uses is what its
 ;;; stored code shows, never what a compiler would resolve: a datum block's
-;;; body is walked as data, a text block's source is cut into the tokens its
-;;; language's identifier pattern matches. Every answer built on this says
-;;; `(name-use syntactic ...)`, or `(name-use none (reason <r>))` when a
-;;; block could not be read this way.
+;;; body is walked as data; a text block of a language whose catalogue entry
+;;; names a `reader` is read as a sequence of forms by our own reader
+;;; (reader.sc) and each form walked as a datum block's body is; any other
+;;; text block, and a text block whose source does not read whole, is cut
+;;; into the tokens its language's identifier pattern matches. Every answer
+;;; built on this says `(name-use syntactic ...)`, or `(name-use none
+;;; (reason <r>))` when a block could not be read this way.
 ;;;
-;;; NEVER: NOTHING IS EVALUATED, PRINTED OR READ. The walk takes the stored
-;;; value as it is; source text is never re-read and code never run.
+;;; NEVER: NOTHING IS EVALUATED OR PRINTED, AND THE SYSTEM READER IS NEVER
+;;; CALLED. The walk takes the stored value as it is; a text block's source
+;;; is read only by reader.sc's bounded reader, which builds forms and runs
+;;; nothing; code is never run. Under the reader comments and strings are
+;;; not names; the walk's syntactic limits stay (a macro's pattern variables
+;;; are uses, a name only an expansion introduces is not seen).
 ;;;
 ;;; THE DATUM WALK, ONE RULE. walk(form, E), E the names bound here:
 ;;;   - a symbol is a use unless it is in E;
@@ -57,11 +64,12 @@
   (import (rnrs)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-field-contested?)
-          (only (theourgia store) library-locator)
+          (only (theourgia store) library-locator file-header)
           (only (theourgia project) subtree-ids)
           (only (theourgia datum-code) datum-names record-definition-shape? formals? formals-names)
           (only (theourgia languages) language-for-name language-property)
           (only (theourgia regex) regex-compile regex-match-at)
+          (only (theourgia reader) read-forms read-library-piece reader-failure? reader-failure-reason library-name-proper)
           (only (theourgia extensions) names-usage uses-usage)
           (only (theourgia field-reading) field-of field-missing?))
 
@@ -241,18 +249,30 @@
   ;; walk their expression; a nested quasiquote raises the depth. Each of the
   ;; three is template syntax only where it is not bound: under
   ;; (let ((unquote list)) ...) an (unquote x) in a template is data.
+  (define (template-unquote? x env)
+    (and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x)))
+  (define (template-quasiquote? x env)
+    (and (pair? x) (eq? (car x) 'quasiquote) (not (bound? 'quasiquote env)) (pair? (cdr x)) (null? (cddr x))))
   (define (template x depth env)
     (cond
       ;; A bare (unquote) needs no arm of its own: walking its empty operand
       ;; list here answers (), as the pair arm below would.
-      ((and (pair? x) (memq (car x) '(unquote unquote-splicing)) (not (bound? (car x) env)) (list? x))
+      ((template-unquote? x env)
        (if (= depth 1) (walk-all (cdr x) env) (template (cdr x) (- depth 1) env)))
       ;; The quasiquote rule enters template only where quasiquote is unbound,
       ;; and template keeps env as it was; the check is still made here, so
       ;; that what template answers does not depend on who called it.
-      ((and (pair? x) (eq? (car x) 'quasiquote) (not (bound? 'quasiquote env)) (pair? (cdr x)) (null? (cddr x)))
+      ((template-quasiquote? x env)
        (template (cadr x) (+ depth 1) env))
-      ((pair? x) (append (template (car x) depth env) (template (cdr x) depth env)))
+      ;; A LIST'S SPINE IS WALKED BY A LOOP, its elements by recursion: a
+      ;; template's width costs no depth, only its nesting does, and the
+      ;; reader bounds the nesting. Each tail is asked the two arms above
+      ;; first, so `(a . ,b)`, whose tail is (unquote b), is read as before.
+      ((pair? x)
+       (let loop ((l (cdr x)) (out (template (car x) depth env)))
+         (cond ((or (template-unquote? l env) (template-quasiquote? l env) (not (pair? l)))
+                (append (template l depth env) out))
+               (else (loop (cdr l) (append (template (car l) depth env) out))))))
       ((vector? x) (apply append (map (lambda (e) (template e depth env)) (vector->list x))))
       (else '())))
 
@@ -280,7 +300,10 @@
         (and (list? t) (= (length t) 2) (memq (car t) '(* &)) (symbol? (cadr t)))))
 
   ;; -> the first K elements of the list L.
-  (define (first-n l k) (if (= k 0) '() (cons (car l) (first-n (cdr l) (- k 1)))))
+  ;; A loop, not a recursion: the conventions are a list's spine.
+  (define (first-n l k)
+    (let loop ((l l) (k k) (out '()))
+      (if (= k 0) (reverse out) (loop (cdr l) (- k 1) (cons (car l) out)))))
 
   (define (lists? xs) (and (list? xs) (for-all (lambda (c) (and (pair? c) (list? c))) xs)))
 
@@ -481,10 +504,13 @@
 
   ;; ---- text code: the identifier tokens -------------------------------------------
   ;;
+  ;; THE TOKEN CUT, for a language whose catalogue entry names no reader, and
+  ;; for a text that the reader could not read whole (block-answer).
   ;; NEVER: NOTHING IS STRIPPED. Every token of the text that matches the
   ;; language's identifier pattern is a use, in a comment or a string as much
   ;; as in code: a lexer that knows one language's comments and strings is
-  ;; that language's own item. The answer says (lexing whole-text).
+  ;; that language's own item. The answer says (lexing whole-text), and
+  ;; (reason <r>) when it stands in for a reading that failed.
   ;; A token is the longest match of the pattern starting where the scan is;
   ;; a character that starts no match is passed over, so in `9abc` the token
   ;; is `abc`. The match is anchored at the scan position and reads the text
@@ -526,11 +552,8 @@
        (and (= (length spec) 2) (library-name-proper (cadr spec))))
       (else (library-name-proper spec))))
 
-  (define (library-name-proper name)
-    (and (pair? name) (list? name)
-         (let* ((last (list-ref name (- (length name) 1)))
-                (parts (if (and (list? last) (> (length name) 1)) (reverse (cdr (reverse name))) name)))
-           (and (pair? parts) (for-all symbol? parts) parts))))
+  ;; library-name-proper is reader.sc's, the one spelling of a library name
+  ;; store and name use both read; it is exported from here as before.
 
   ;; ---- one block --------------------------------------------------------------------
 
@@ -541,7 +564,9 @@
   ;; here dropped such a body written once.
 
   ;; -> ((names <sym> ...) (imports <lib> ...) (import-unreadable <d> ...)
-  ;;     (contract syntactic [(lexing whole-text)] | none (reason <r>)))
+  ;;     (contract syntactic [(reading forms) | (lexing whole-text) [(reason <r>)]]
+  ;;               | none (reason <r>))
+  ;;     (mode . <the record's mode, text or datum, or #f for none>))
   ;; for the block ID of STATE, or #f when STATE has no such block.
   ;; NEVER: A BLOCK THAT CANNOT BE READ IS AN ANSWER, NOT A FAILURE OF THE
   ;; VERB, and the catch-all below is that rule. A stored row can hold what
@@ -566,7 +591,7 @@
                 (let ((body (field-of row 'body)))
                   (if (or (field-missing? body) (state-field-contested? state id 'body body))
                       (none 'unreadable-code)
-                      (answer (datum-uses body) '() '() '(syntactic)))))
+                      (answer (datum-uses body) '() '() '(syntactic) 'datum))))
                (else
                 (let* ((lang (field-of row 'lang))
                        (entry (and (or (symbol? lang) (string? lang)) (language-for-name lang)))
@@ -575,21 +600,56 @@
                   (cond
                     ((not entry) (none 'no-language))
                     ((not text) (none 'unreadable-code))
+                    ((language-property entry 'reader #f) (text-reading text entry (in-library-file? state id)))
                     (else
                      (answer (text-uses text (language-property entry 'identifier default-identifier-pattern))
-                             '() '() '(syntactic (lexing whole-text))))))))))
+                             '() '() '(syntactic (lexing whole-text)) 'text))))))))
 
-  (define (answer names imports unreadable contract)
+  ;; A TEXT READ AS FORMS (reader.sc): the names are the union of what each
+  ;; form uses, each walked as a datum block's body is, and the contract says
+  ;; (reading forms). WHEN ANY PART DOES NOT READ, THE WHOLE TEXT IS CUT INTO
+  ;; TOKENS, and the contract names the reader's reason: a piece cut inside a
+  ;; form (a marker line, an import cut, the splitter's cut inside a library
+  ;; form) does not read, and keeping the forms before the cut would keep
+  ;; their bindings while the names after it went unseen. A piece that reads
+  ;; is read by itself: a lambda body without its head reads, and its
+  ;; parameters are free there.
+  ;; THE LAST PIECE OF A LIBRARY FILE ends with the library form's closer:
+  ;; in a file whose header is a library form, closers with nothing open at
+  ;; the very end of a piece are that closer, and the piece reads
+  ;; (read-library-piece); anything after them still does not.
+  (define (text-reading text entry library-file?)
+    (let ((forms (if library-file? (read-library-piece text) (read-forms text))))
+      (if (reader-failure? forms)
+          (answer (text-uses text (language-property entry 'identifier default-identifier-pattern))
+                  '() '() (list 'syntactic '(lexing whole-text) (list 'reason (reader-failure-reason forms))) 'text)
+          (answer (symbol-set (apply append (map top-uses forms))) '() '() '(syntactic (reading forms)) 'text))))
+
+  ;; #t when the nearest file ancestor of block ID has a header that is a
+  ;; library form (store.sc, file-header)
+  (define (in-library-file? state id)
+    (let loop ((row (state-read state id)) (k 0))
+      (let* ((p (and row (cdr (assq 'position row))))
+             (up (and (pair? p) (string? (car p)) (car p)))
+             (r (and up (< k 10000) (state-read state up))))
+        (cond ((not r) #f)
+              ((eq? (field-of r 'kind) 'file)
+               (let ((h (file-header state up))) (and h (eq? (car h) 'library) #t)))
+              (else (loop r (+ k 1)))))))
+
+  ;; MODE, the record's (text or datum), is #f when it is not given: a block
+  ;; answered none has no mode to report.
+  (define (answer names imports unreadable contract . mode)
     (list (cons 'names names) (cons 'imports imports) (cons 'import-unreadable unreadable)
-          (cons 'contract contract)))
+          (cons 'contract contract) (cons 'mode (if (pair? mode) (car mode) #f))))
   (define (none reason) (answer '() '() '() (list 'none (list 'reason reason))))
 
   (define (library-answer imports)
     (if (not (list? imports))
-        (answer '() '() (if (field-missing? imports) '() (list imports)) '(syntactic))
+        (answer '() '() (if (field-missing? imports) '() (list imports)) '(syntactic) 'datum)
         (let loop ((specs imports) (names '()) (bad '()))
           (if (null? specs)
-              (answer '() (reverse names) (reverse bad) '(syntactic))
+              (answer '() (reverse names) (reverse bad) '(syntactic) 'datum)
               (let ((n (import-library-name (car specs))))
                 (if n
                     (loop (cdr specs) (if (member n names) names (cons n names)) bad)
@@ -617,7 +677,9 @@
                   (when (memq reason '(no-language unreadable-code))
                     (hashtable-set! skipped id reason)))
                 (begin
-                  (hashtable-set! modes id (if (member '(lexing whole-text) (cdr contract)) 'text 'datum))
+                  ;; THE MODE IS THE RECORD'S, whatever the contract: a text
+                  ;; block read as forms is still a text block.
+                  (hashtable-set! modes id (cdr (assq 'mode u)))
                   (for-each (lambda (n)
                               (let ((k (symbol->string n)))
                                 (hashtable-set! by-name k (cons id (hashtable-ref by-name k '())))))
