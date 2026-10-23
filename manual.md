@@ -248,6 +248,8 @@ Every agent and every person writes drafts under a writer id. Every record in th
 
 write puts a proposed next version of a block into a writer's own slot. It is not in the log, and a read sees it only when it asks for that writer's drafts. commit, in describe's own words, installs a writer's drafts into the store as one change; the process that owns the store carries commits out one at a time, so the outcome of a race is decided rather than interleaved. A draft records the version it was made against; if the block has moved on since, the commit is refused.
 
+A draft stands still while the store moves on. Every committed record moves the store's applied cut, whoever wrote it and whatever block it is on -- a review letter as much as a code change; a draft never moves it. When a commit changed the drafted block itself, the draft is behind: `drafts --writer W` reads it `(fresh #f)` and names it again after its items, `(behind <block> (based-on <v>) (committed <v>))`. A commit on other blocks only moves the cut, and leaves no draft behind.
+
 A draft can also create a file or delete one: a new file is a path and its bytes, named by a provisional id, `new-` and the first 56 hex digits of the sha256 of the path; a deleted file is its holder. `commit` takes them only when named, `--working-new <provisional>=<version>` and `--working-delete <holder>=<version>`, in the same write as the block drafts, and its answer maps each provisional id to the block it made, `(created ...)`, and each piece to its id, `(pieces ...)`.
 
 #### A refusal hands back the winner
@@ -319,7 +321,7 @@ $ theourgia insert --store store --under root --title "..."
 A change made in the store reaches a git repository, and commits made in git reach the store, through scripts rather than verbs, in `tools/`:
 
 - `edit-export` and `edit-sync` let an agent that edits files work on an export of its writer's working view: the sync turns each edited, added or removed file back into the writer's drafts, and refuses, writing nothing, when a hunk does not fall in exactly one block or a block it touches has moved since the export.
-- `drafts-dump` and `drafts-restore` keep a writer's drafts, which do not travel with a store's git; `landing-freeze` freezes them with the working view for a landing's review; `landing-commit` commits them only if the store is still at the freeze's cut, optionally tagging the landing's start.
+- `drafts-dump` and `drafts-restore` keep a writer's drafts, which do not travel with a store's git; `landing-freeze` first brings every draft onto the store's applied cut -- one that is not behind is written again at the new cut, one that is behind is merged with the committed change line by line, and when the two changes touch the same or adjacent lines nothing is written and the freeze stops, `drafts-behind-conflict`, naming the blocks -- then freezes them with the working view for a landing's review, and `landing-freeze --check <dir>` judges a freeze already made against the store as it is now (current, refreeze, or the conflict); `landing-commit` commits them only if the store is still at the freeze's cut, optionally tagging the landing's start, and a freeze made again rebases them.
 - `publish-landing` publishes the files a landing changed as one git commit, its message held in a landing block, after checking that the worktree's base equals the store's export at the start tag.
 - `import-git` absorbs a git range into the store as committed blocks and tags the result, the next landing's start.
 
