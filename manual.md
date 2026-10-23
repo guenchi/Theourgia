@@ -220,9 +220,13 @@ A plain `read` of a block that is not valid adds a `(validity ...)` clause, and 
 
 ### Queries and context
 
-`query <goal>` answers every binding of a goal's variables over the committed state at one cut. Its facts are 24 relations the store already answers -- a block's kind, class, validity, version, title and fields, edges, parents and text references, libraries, definitions, name use, the lifecycle's reasons and states, and search scores -- with 4 tests, and 19 relations defined by the library's 38 rules combine them; `query --relations` lists them, then the store's declared and stored relations. The language is Manteia (below). A query reads no log, runs no code and writes nothing, and one whose new work passes its budget is refused, never answered in part. An answer carries a digest of its rows, which a write can give back as a premise. Through the daemon, `query` and `context` are answered from the daemon's publication, made current first when the disk has moved past it, so a query after a write made outside the daemon sees that write.
+`query <goal>` answers every binding of a goal's variables over the committed state at one cut. Its facts are 26 relations the store already answers -- a block's kind, class, validity, version, title and fields, edges, parents and text references, libraries, a code block's file holder and a text file's header imports, definitions, name use, the lifecycle's reasons and states, and search scores -- with 4 tests, and 21 relations defined by the library's 43 rules combine them; `query --relations` lists them, then the store's declared and stored relations. The language is Manteia (below). A query reads no log, runs no code and writes nothing, and one whose new work passes its budget is refused, never answered in part. An answer carries a digest of its rows, which a write can give back as a premise. Through the daemon, `query` and `context` are answered from the daemon's publication, made current first when the disk has moved past it, so a query after a write made outside the daemon sees that write.
+
+A Scheme file stored in text mode takes its library and imports from its header, read by the store's own bounded reader from its pieces joined in order: a code block in no library block is `in-library` its file's library, and a script's pieces see the libraries it imports and no others. A definition in no library serves only the pieces of its own file, the code blocks with the same `holder`. Name use reads such a block as forms where its text reads, `(name-use syntactic (reading forms))`, and falls back to its tokens, `(lexing whole-text)` with a reason, where it does not.
 
 `context --for <id> --budget <tokens>` answers what to read before working on a block, within a budget counted as four bytes a token of the answer as the wire prints it, its cut left out: the blocks it must show, with their roles and validity, the decisions still unsettled for the block, implementations in review and contradictions in its scope, then definitions, evidence, dependents and ancestors as the budget allows. Its receipt holds a premise for every block it had to show and the digests of the five queries that chose them, so a commit given that receipt is refused if any of that has changed; what it adds as the budget allows is not in the receipt. A verification whose target has moved past it is named in the notes as `(stale-verification <m> verifies <c>)`, and its target is held by the receipt. The human output prints the receipt on one line, exactly as `--wire` writes it, ready for `commit --premises`.
+
+When a name the block uses has more than two definitions left, context shows the first two and counts the rest in `(folded ...)`. `--names <name>`, repeated, enters the definitions of each given name in the block's scope before anything else that is optional, and `(asked ...)` says which are defined only in a block that must be shown or nowhere; for a file block, or any block that is not code, the scope is that of every code block under it. `--budget min+<t>` asks for the smallest budget the request needs plus t tokens, and the budget clause shows the number it came to.
 
 ### Manteia, the rule language
 
@@ -424,10 +428,10 @@ query [<goal>] [--relations]
 Answer one goal of the query language over the committed state: every binding of its variables, one row each, sorted by their bytes, with a digest of the rows. A goal is a fact relation, a rule of the library, a test, or (and <goal> ...). --relations lists the fact relations and the rules. (daemon)
 
 ```
-context --for <id> --budget <tokens> [--all-validity]
+context --for <id> --budget <tokens> [--names <name>] ... [--all-validity]
 ```
 
-The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back. (daemon)
+The material to read before working on a block, within a budget of tokens. What must be shown is the answer of five queries, each block placed once: for, constraints, evidence or to-verify by its validity and class; what else fits follows in a stated order (counterexamples, background). The receipt covers every block that must be shown, whether it fitted or not, and commit --premises takes it back. A name with more than two definitions left shows two and says so in folded. --names <name>, repeated, enters the definitions of each given name in the block's scope first and says in asked which are defined only in hard blocks or nowhere; --budget min+<t> is the minimum the request needs plus t. (daemon)
 
 ```
 position
@@ -718,7 +722,7 @@ A request that reaches a server naming `--store`, `--actor`, `--wire` or `--sock
 | `THEOURGIA_RUNNER_RUST` | The operator's runner for `eval --lang rust`, a whole runner in place of the default |
 | `THEOURGIA_RUNNER_C` | The operator's runner for `eval --lang c`, a whole runner in place of the default |
 | `THEOURGIA_RUNNER_JAVA` | The operator's runner for `eval --lang java`, a whole runner in place of the default |
-| `THEOURGIA_TRACE` | `1` writes filesystem and dispatch events to stderr |
+| `THEOURGIA_TRACE` | `1` writes filesystem and dispatch events to stderr, and from a daemon each query session decision and what each `query` or `context` call built |
 
 Nine more variables are for tests only and are read only by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read them. Among them `THEOURGIA_PROBE=off` starts a daemon without its once-a-second probe for outside changes.
 

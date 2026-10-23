@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*317 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*318 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -12,6 +12,7 @@
 - `session-advance`: a session advanced to a later state, its positive strata maintained by delete-and-rederive, the auxiliary session's work charged to the advance; each callee collected once.
 - An `and` nested in an `and` is its goals in place; `supply` from any tool with its version.
 - The README's language chapter, construct by construct, its example answers measured.
+- A text-mode Scheme file's library and imports are read from its header through its file holder (`in-library`, `imports` and the new `file-imports`, all external), by a new bounded reader library, `(theourgia reader)`; a `holder` fact relates a code block to its file holder, and `def-for`'s no-library clause holds only within one holder, so a script's own definitions serve its own pieces and nothing else. `uses-name` for a text block of a language with a reader binds what its complete forms bind, `(syntactic (reading forms))`. `context` folds a name's definitions past the first two into a `folded` clause, takes `--names <n>` (repeatable, reported in `asked`), scopes a file holder or any non-code target to the code blocks under it, and takes `--budget min+<t>`; the session trace counts, per call, definitions-index builds, fact builds by relation, preferred candidates by step, and whether the session was reused or why it was dropped.
 
 ### Daemon
 
