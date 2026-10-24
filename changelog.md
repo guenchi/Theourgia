@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*321 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*322 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -48,6 +48,7 @@
 ### Reading and rendering
 
 - A text-mode code block's src and doc given as text; a src held as bytes renders and is measured as its text; a draft beginning with a UTF-8 byte-order mark commits as its bytes; `whereis` nearest finds a name in another case.
+- `search` over a long query, and the relevant step of `context --for`, cost what the hits cost: a scan drops a block at the first token none of its fields takes and compares characters where they stand, without a copy per position, and the relevant step asks with each token of the text once. On a development store of 17,000 blocks, the context of a 30 KB block went from 420 s to under 4 s, with the same hits, scores and snippets for every query.
 
 ### Log, ffi, platform
 
