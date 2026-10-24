@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*319 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*320 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -42,6 +42,7 @@
 - `changed-files`: the files whose exported bytes or presence differ between two cuts; `locate`: a file's byte or line range, or one diff hunk, to the blocks holding it; `position`: the local writer's last sequence; a named tag's answer carries the cut it bound.
 - Exports at a past cut (`export-code`, `export-md --cut`), judged against the daemon's publication as a read at a cut is.
 - A draft whose base fell behind says so: `drafts --writer W` names each after its items, `(behind <block> (based-on <v>) (committed <v>))`. `landing-freeze` brings every draft onto the applied cut before it dumps (a draft whose block did not change is moved, one whose block changed is merged by a line-based three-way merge, or the freeze stops with `drafts-behind-conflict` naming every conflicting block), so a record committed after the drafts, a review letter included, no longer leaves every draft to be rebased by hand; `landing-freeze --check <dir>` validates a frozen directory and answers current, refreeze or the conflict, so a landing script can stop before its start tag.
+- `landing-freeze` moves a structural draft behind an unrelated commit onto the applied cut: a new file whose path no live file holds there, or a delete whose file's baseline there is still the draft's `based-on`, is rewritten in place at the applied cut with the same bytes, path and language and a version recomputed for that cut, under one hold of the writer's draft lock and only while it is still the version the freeze judged (a draft written again since is refused `structural-changed`, not overwritten). Nothing is removed first: a refusal or a failure before the rename leaves the entry where it was, a failed directory flush after it leaves the whole new entry at the applied cut, and either way the freeze is refused `structural-move-refused`. `REBASED.sexp` records the move as `(moved <key> (from-cut <cut>) (to-cut <cut>))`. A new file whose path a live file holds at the applied cut, or a delete whose file is gone or has changed there, still stops the freeze with `drafts-behind-conflict`.
 
 ### Reading and rendering
 
