@@ -921,9 +921,16 @@
       (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
       "--wire > " out " 2> " out ".err < " (if in (quoted in) "/dev/null") " ) &"))
 (define (client-bg! env out . args) (apply client-bg-in! env out #f args))
-(define (daemon-store!)
+(include "serve-for.ss")
+;; A STORE WITH ITS DAEMON, started with ENV: a plain command starts none, so
+;; the daemon rows serve their store first, as an opener does, with the
+;; environment the daemon itself must carry (the trace, a fault, a hold). ENV
+;; #f leaves the start to the row: one whose daemon meets a hold in its own
+;; first fold spawns it, releases the hold, and awaits it.
+(define (daemon-store! env)
   (let ((c (fresh-store!)))
     (set! e-stores (cons (car c) e-stores))
+    (when env (serve-for! root (car c) #f env))
     c))
 (define (serve-log st) (text-of-file (serve-log-path st)))
 (define (trace-lines-with st op)
@@ -946,7 +953,7 @@
 ;; from the previous publication (it does not have the outside commit) and
 ;; says, from the probe's markers, that the mirror cannot be read.
 (define (u4b-trigger! label env chmod-target clause-path verb-args)
-  (let* ((c (daemon-store!)) (st (car c)))
+  (let* ((c (daemon-store! env)) (st (car c)))
     (client env "outline" "--store" st)
     (outside-commit! st)
     (chmod! "000" (chmod-target st))
@@ -977,7 +984,7 @@
               no-reload current-segment current-segment '("outline"))
 ;; U4b-trigger-writer (design review r2, finding 3; MR-16): a writer-local
 ;; verb is answered from the publication too, and probes first.
-(let* ((c (daemon-store!)) (st (car c)) (w (cadr c)))
+(let* ((c (daemon-store! no-reload)) (st (car c)) (w (cadr c)))
   (client no-reload "outline" "--store" st)
   (outside-commit! st)
   (chmod! "000" (mirror-dir st))
@@ -1003,7 +1010,7 @@
 ;; an earlier diagnostic it was absent after the reload, and the reason read
 ;; in the code is that it depends on the mirror's records and waits once they
 ;; are unavailable (available-through).
-(let* ((c (daemon-store!)) (st (car c)) (seg (older-segment st)) (traced "THEOURGIA_INJECT=on THEOURGIA_TRACE=1"))
+(let* ((c (daemon-store! "THEOURGIA_INJECT=on THEOURGIA_TRACE=1")) (st (car c)) (seg (older-segment st)) (traced "THEOURGIA_INJECT=on THEOURGIA_TRACE=1"))
   (client traced "outline" "--store" st)
   (outside-commit! st)
   (chmod! "000" seg)
@@ -1030,7 +1037,7 @@
 ;; The refresh guards (ruling 4; MR-6, MR-7): a failed fold keeps the
 ;; previous publication and says reload-failed; a failed probe says
 ;; probe-failed. The injected branch is shown to have run.
-(let* ((c (daemon-store!)) (st (car c)) (env "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_FAULT=reload-raise@conn"))
+(let* ((env "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_FAULT=reload-raise@conn") (c (daemon-store! env)) (st (car c)))
   (client env "outline" "--store" st)
   (outside-commit! st)
   (client env "outline" "--store" st)
@@ -1046,7 +1053,7 @@
                 (head-of (cadr r)) (mentions-outside? (cadr r))
                 (has-substring? (format "~s" (cadr r)) "Beta") (mentions-mirror-record? (cadr r)))
           '(#t ok #f #t #t))))
-(let* ((c (daemon-store!)) (st (car c)) (env "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_FAULT=probe-raise@conn"))
+(let* ((env "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_FAULT=probe-raise@conn") (c (daemon-store! env)) (st (car c)))
   (client env "outline" "--store" st)
   (outside-commit! st)
   (let ((r (client env "outline" "--store" st)))
@@ -1063,9 +1070,9 @@
 ;; to it, and the daemon would answer without "Second" for good. Sampled
 ;; before the fold, the next read's probe finds the change, asks for one more
 ;; fold, and a read after that publication answers with it.
-(let* ((c (daemon-store!)) (st (car c))
-       (rel (string-append root "/snap.release"))
-       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=reload-before-publish:" rel)))
+(let* ((rel (string-append root "/snap.release"))
+       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=reload-before-publish:" rel))
+       (c (daemon-store! env)) (st (car c)))
   (client env "outline" "--store" st)
   (outside-commit! st)
   (client env "outline" "--store" st)
@@ -1103,15 +1110,15 @@
 (define pub-n 0)
 (define (publish-run change! undo!)
   (set! pub-n (+ pub-n 1))
-  (let* ((c (daemon-store!)) (st (car c)) (B (caddr c))
+  (let* ((c (daemon-store! #f)) (st (car c)) (B (caddr c))
          (tag (string-append root "/pub-" (number->string pub-n)))
          (rel (string-append tag ".release"))
          (out (string-append tag ".out"))
-         (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=after-barrier:" rel)))
-    (client-bg! env (string-append tag "-start.out") "outline" "--store" st)
+         (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=after-barrier:" rel))
+         (start (serve-spawn! root st #f env)))
     (let* ((start-held (wait-until-file (string-append rel ".held") 20000))
            (_ (begin (sh "rm -f " (quoted (string-append rel ".held"))) (touch! rel)
-                     (wait-until-text (string-append tag "-start.out") 30000)
+                     (serve-await! start)
                      (sh "rm -f " (quoted rel))))
            (log-before (log-bytes st))
            (published-before (length (trace-lines-with st "published"))))
@@ -1176,18 +1183,18 @@
 ;; D-interleave (A2's condition 1; MR-29): an undeclared export and a declared
 ;; search on one store missing a writer, both parked after discovery at the
 ;; same time in one daemon, each judged by its own class.
-(let* ((c (daemon-store!)) (st (car c)) (x (cadddr c))
+(let* ((c (daemon-store! #f)) (st (car c)) (x (cadddr c))
        (rel (string-append root "/il.release"))
        (env (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=after-discovery:" rel))
        (eout (string-append root "/il-export.out"))
-       (sout (string-append root "/il-search.out")))
+       (sout (string-append root "/il-search.out"))
+       (start (serve-spawn! root st #f env)))
   ;; The daemon's own first fold passes the hold first; it is released, and
   ;; the hold is re-armed by removing the release (a hold waits while the
   ;; release file does not exist).
-  (client-bg! env (string-append root "/il-start.out") "outline" "--store" st)
   (let* ((start-held (wait-until-file (string-append rel ".held") 20000))
          (_ (begin (sh "rm -f " (quoted (string-append rel ".held"))) (touch! rel)
-                   (wait-until-text (string-append root "/il-start.out") 30000)
+                   (serve-await! start)
                    (sh "rm -f " (quoted rel))))
          (_ (chmod! "000" (mirror-dir st)))
          (_ (client-bg! env eout "export-code" (string-append x "/il-out") "--store" st))
@@ -1323,10 +1330,12 @@
 ;; THE DAEMON ROUTE, NOT THE LOCAL ONE: THEOURGIA_LOCAL sends every verb to
 ;; the in-process server, so it is removed from the client's environment,
 ;; and the row asserts a daemon for this store was running and wrote its
-;; serve log -- the local route starts neither.
+;; serve log -- the local route starts neither. A plain command starts no
+;; daemon, so the row serves the store first, as an opener does.
 (let* ((c (three-segment-store!)) (st (car c)))
   (set! e-stores (cons st e-stores))
   (damage! (mirror-seg st 2))
+  (serve-for! root st #f "env -u THEOURGIA_LOCAL")
   (let* ((r (client "env -u THEOURGIA_LOCAL" "outline" "--store" st))
          (served (list (pair? (daemon-pids st)) (file-exists? (serve-log-path st)))))
     (stop-daemon! st)

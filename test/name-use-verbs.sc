@@ -732,6 +732,11 @@
   (map (lambda (q) (sh-out "local" (string-append (env "THEOURGIA_LOCAL=1") "scheme --script ../core.sc " (cli-args q)
                                                   " --store '" store "' --wire")))
        route-questions))
+;; THE DAEMON IS ASKED FOR, here and before each daemon row below: a plain
+;; command starts none, so a row "through the daemon" serves the store first,
+;; with the environment the daemon must carry.
+(include "serve-for.ss")
+(define served-u25 (serve-for! root store #f (env "")))
 (define client-wires
   (map (lambda (q) (sh-out "client" (string-append (env "") "scheme --script ../theourgia.sc " (cli-args q)
                                                    " --store '" store "' --wire")))
@@ -791,7 +796,7 @@
 (want "U26 core.sc, the thin client and the MCP shell answering outline do not run the library; answering names does"
       (in-order (marked? "core.sc" "outline" "THEOURGIA_LOCAL=1")
                 (marked? "core.sc" (string-append "names " D1) "THEOURGIA_LOCAL=1")
-                (begin (stop-daemons!) (marked? "theourgia.sc" "outline" ""))
+                (begin (stop-daemons!) (serve-for! root store #f (env-marked "")) (marked? "theourgia.sc" "outline" ""))
                 (marked? "theourgia.sc" (string-append "uses car") "")
                 (begin (stop-daemons!) (mcp-marked? "theourgia_outline" '()))
                 (mcp-marked? "theourgia_names" (list D1)))
@@ -825,6 +830,7 @@
 
 (define (client-uses name)
   (first-datum (sh-out "k12" (string-append (env "") "scheme --script ../theourgia.sc uses '" name "' --store '" store "' --wire"))))
+(define served-k12 (serve-for! root store #f (env "")))
 (define yak-before (client-uses "yak"))
 ;; A commit by another writer, made outside the daemon: one record for a
 ;; mirror writer, published.
@@ -859,6 +865,7 @@
 (putenv "THEOURGIA_RUN" (string-append sock-root "/run"))
 (stop-daemons!)
 (define traced-env (env "THEOURGIA_TRACE=1"))
+(define served-u23 (serve-for! root store #f traced-env))
 (define (traced-uses name)
   (first-datum (sh-out "u23" (string-append traced-env "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc uses '"
                                             name "' --store '" store "' --wire"))))

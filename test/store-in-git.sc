@@ -181,9 +181,11 @@
 
 ;; ---- G1: a missing lock ---------------------------------------------------------
 ;; The lock is never recreated but by init. In process, a read answers
-;; `absent` on the lock's path. Through a daemon start the answer is
-;; serve-start-failed of kind store-busy, on a fresh run root and on a
-;; pre-created one alike (see the note at the top of the file).
+;; `absent` on the lock's path. A plain command starts no daemon, so the
+;; thin client's read answers the same, in process, and leaves no daemon. A
+;; daemon is started by an opener (serve-for.ss); its start refuses, on a
+;; fresh run root and on a pre-created one alike, with the refusal it writes
+;; to its log (see the note at the top of the file).
 (let* ((h (home! "g1")) (s (string-append root "/g1/store")))
   (sh "mkdir -p " (quoted s))
   (ask h s "init")
@@ -198,6 +200,12 @@
                   " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store "
                   (quoted store) " --wire > " (quoted out) " 2> /dev/null < /dev/null")))
       (list rc (guard (e (#t 'UNREADABLE)) (call-with-input-file out read))))))
+(include "serve-for.ss")
+(define (daemons-for store)
+  (let ((t (sh-out "pgrep -f " (quoted (string-append "[t]heourgiad.sc serve " store)) " || true")))
+    (if (> (string-length t) 0) 'running 'none)))
+(define (serve-start home store run)
+  (serve-for! root store #f (string-append "THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted run))))
 (define (key-dir-for store run)
   (putenv "THEOURGIA_RUN" run)
   (let ((p (socket-path store))) (substring p 0 (- (string-length p) (string-length "/socket")))))
@@ -205,10 +213,14 @@
   (sh "mkdir -p " (quoted s) " " (quoted run))
   (ask h s "init")
   (sh "rm -f " (quoted (string-append s "/lock")))
-  (let* ((r (client-read h s run)) (a (cadr r)) (failed (clause-of a 'failed)))
-    (want "G1 daemon, fresh run root: serve-start-failed kind store-busy AS MEASURED (a misnaming carried from the base); rc 75"
-          (list (car r) (head-of a) (clause-of a 'kind))
-          (list 75 '(error serve-start-failed) '(kind store-busy)))))
+  (let* ((r (client-read h s run)) (a (cadr r)))
+    (want "G1 no daemon, fresh run root: the thin client's read answers in process, absent on the lock's path, rc 1, and leaves no daemon"
+          (list (car r) (head-of a) (clause-of a 'path) (daemons-for s))
+          (list 1 '(error absent) (list 'path (string-append s "/lock")) 'none)))
+  (let ((d (serve-start h s run)))
+    (want "G1 an opener's start on a fresh run root refuses store-busy on the lock's path, AS MEASURED (a misnaming carried from the base)"
+          (list (head-of d) (clause-of d 'path))
+          (list '(error store-busy) (list 'path (string-append s "/lock"))))))
 (let* ((h (home! "g1p")) (s (string-append root "/g1p/store")) (run (string-append sock-base "/sg-p")))
   (sh "mkdir -p " (quoted s) " " (quoted run))
   (ask h s "init")
@@ -216,9 +228,13 @@
   (let ((kd (key-dir-for s run)))
     (sh "mkdir -p " (quoted kd) " && touch " (quoted (string-append kd "/.socket.lock"))))
   (let* ((r (client-read h s run)) (a (cadr r)))
-    (want "G1 daemon, startup directory and lock pre-created: serve-start-failed kind store-busy AS MEASURED (a misnaming carried from the base), on the lock's path; rc 75"
-          (list (car r) (head-of a) (clause-of a 'kind) (clause-of a 'path))
-          (list 75 '(error serve-start-failed) '(kind store-busy) (list 'path (string-append s "/lock"))))))
+    (want "G1 no daemon, startup directory and lock pre-created: the thin client's read answers in process, absent on the lock's path, rc 1, and leaves no daemon"
+          (list (car r) (head-of a) (clause-of a 'path) (daemons-for s))
+          (list 1 '(error absent) (list 'path (string-append s "/lock")) 'none)))
+  (let ((d (serve-start h s run)))
+    (want "G1 an opener's start with the startup directory and lock pre-created refuses store-busy on the lock's path, AS MEASURED (a misnaming carried from the base)"
+          (list (head-of d) (clause-of d 'path))
+          (list '(error store-busy) (list 'path (string-append s "/lock"))))))
 
 ;; ---- G2: what init keeps out, and what `git add <store>` stages --------------------
 (define gitignore-lines

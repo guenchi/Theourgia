@@ -70,9 +70,10 @@ install needs: `theourgia` for `theourgia/theourgia.so`, `theourgia-mcp` for
 `theourgia/mcp/server.so`, and `theourgiad` for `theourgia/theourgiad.so`. A tool runs from the same
 directory as a script: `scheme --script <output-root>/theourgia/tools/<name>.sc ...`.
 
-**The programs.** `theourgia.sc` is the command you run. It answers through a daemon, and starts
-`theourgiad.sc` beside itself when none is running; `init`, `eval` and any request under
-`THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc` starts `eval-worker.sc` for `eval` and
+**The programs.** `theourgia.sc` is the command you run. It answers through a daemon when one is
+listening, and otherwise starts `core.sc --frame` beside itself as a child that answers the request
+and exits; it never starts a daemon. `init`, `eval` and any request under `THEOURGIA_LOCAL=1` it
+hands to `core.sc` by exec. `core.sc` starts `eval-worker.sc` for `eval` and
 `eval-runner-exec.sc` for `eval --lang`. `mcp/server.sc` is the MCP shell and starts `theourgiad.sc`
 one level up, and runs `core.sc`, also one level up, as its own child for `eval`. `theourgiad.sc` takes only `serve`. The programs find each other by path, not through
 the library path, so keep the output directory as `build.ss` lays it out. A program starts a sibling
@@ -132,9 +133,23 @@ the store's lock in turn.
 `theourgiad.sc serve <store>`, holds the store open and
 answers over a unix socket. A client finds that socket by the same rule
 the daemon used to create it, so nothing needs to be told where it is.
-`theourgia.sc` sends an ordinary verb to the daemon when one is there,
-and starts one and asks again when none is; `core.sc` sends it to the
+`theourgia.sc` sends an ordinary verb to the daemon when one is there;
+when none is, it starts `core.sc --frame` as a child, writes it the request
+frame the daemon would have been sent, and reads the child's answer as it
+reads a daemon's (the same 32 MiB ceiling; no answer deadline, so the request
+waits for the store's lock as `core.sc` does). `core.sc` sends a verb to the
 daemon when one is there and answers it in its own process when none is.
+Both a daemon's connection and `core.sc --frame` read the frame, judge its
+1 MiB limit and its shapes, and dispatch it through `frame.sc`
+(`(theourgia frame)`), one reader for both routes.
+
+NEVER: **A plain command starts no daemon.** Nothing is left running after it;
+a daemon is started by `serve`, or by the MCP shell for the session it serves.
+Answered in a child, a request meets the in-process route's documented
+differences: `describe` adds no template clause, the store's lock is waited
+for rather than refused `store-busy` after five seconds, the store is read as
+it is rather than as last published, `--rev` is refused `no-published-state`
+and `subscribe` `needs-daemon`.
 
 NEVER: **The daemon's answer is the CLI's answer, byte for byte.** Both call
 the same dispatcher; no verb, answer or error shape exists in one and not
@@ -3287,10 +3302,12 @@ two machines is a separate design.
 
 The `lock` file is part of the store and is never recreated except by
 `init`. If a checkout lacks it, a read in the calling process answers
-`absent` on the lock's path; through a daemon, the start fails as
-`(error serve-start-failed (kind store-busy) ...)`, which is misleading --
-nobody holds the store, the lock file is missing. Either way,
-`touch <store>/lock` restores it.
+`absent` on the lock's path, and so does a plain command, which starts no
+daemon and answers in process. A daemon's start fails: `serve` itself
+answers `(error store-busy (path <store>/lock) ...)`, and the MCP shell's
+start relays it as `(error serve-start-failed (kind store-busy) ...)`. Both
+are misleading -- nobody holds the store, the lock file is missing. Either
+way, `touch <store>/lock` restores it.
 
 ## Publishing a landing
 
@@ -4656,8 +4673,8 @@ for every verb: `(error bad-request missing-option-value "<the option>")`
 or `(error bad-request duplicate-option "<the option>")`, followed by the
 usage on its own line, exit 1. A store whose name starts
 with `--` is given as `--store <store>` or after `--`; the clients that
-start a daemon pass a store that starts with `-` as `--store <store>`,
-and any other store as the positional.
+start a daemon (the MCP shell) pass a store that starts with `-` as
+`--store <store>`, and any other store as the positional.
 
 `--attempt <token>` is not for a person: it is the token a client passes
 for this one start, and the daemon echoes it as the last clause of every
@@ -4779,15 +4796,18 @@ In order: leave the session, replace the streams, then take the lock and
 open the socket. A `serve` without `--detach` does none of it. If
 leaving the session or opening the log fails, it writes `(error
 detach-failed (step setsid|log) (path <log>) (errno <e>))` on stderr and
-exits 71. The clients that start a daemon pass `--detach --log
+exits 71. The client that starts a daemon (the MCP shell) passes `--detach --log
 <run-root>/<key>/serve.log`.
 
 **A store that is not there.** A start for a path holding no store (no
 `meta.sexp`) creates nothing: no `<run-root>/<key>` directory, no log and no
-lock. The client asks, after its socket checks (a daemon already answering
-on the socket is used whatever the path holds) and before it makes the run
-directory, and answers `(error serve-start-failed (kind store-not-found)
-(store <path>))`. `serve` itself asks before `--detach` and before the lock,
+lock. The client that starts a daemon (the MCP shell) asks, after its socket
+checks (a daemon already answering on the socket is used whatever the path
+holds) and before it makes the run directory, and answers `(error
+serve-start-failed (kind store-not-found) (store <path>))`; that wrapping,
+`serve-start-failed` with the report's kind, is that start's, and a plain
+command, which starts no daemon, never answers it (it answers `no-store` in
+process). `serve` itself asks before `--detach` and before the lock,
 answers `(error store-not-found (store <path>) (attempt <T>))` and exits 75;
 under `--detach` that answer goes to stderr, as `detach-failed` does, since
 a daemon a client started writes to the client's own stdout, which carries
@@ -4889,8 +4909,9 @@ Code at the store -- see
 | `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes, `eval --working`'s view included. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry (`instances.sexp`) and its lock live. Empty is unset. Falls back to `$HOME/.theourgia` (`/tmp/.theourgia` with no `HOME`). When set, every process announces it on stderr at load as `(theourgia machine-home <value>)`, since it lets a process ignore a rollback the registry exists to catch |
 | `THEOURGIA_RUN` | `client.sc` (for `theourgia.sc`, `theourgiad.sc`, the daemon and `mcp/server.sc`) | the run root holding daemon sockets, their logs and the MCP shell's `eval` call directories. Empty is unset. Falls back to `$HOME/.theourgia/run`, or `/tmp/.theourgia/run` with no `HOME` |
-| `THEOURGIA_LOCAL` | `theourgia.sc`, `core.sc` | `1` answers in process even when a daemon's socket is there. The thin client hands the request to `core.sc` for any non-empty value, but `core.sc` stays in process only for `1`; for any other value it still forwards to a daemon whose socket is there |
+| `THEOURGIA_LOCAL` | `theourgia.sc`, `core.sc` | `1` answers in process even when a daemon's socket is there. The thin client hands the request to `core.sc` for any non-empty value, but `core.sc` stays in process only for `1`; for any other value it still forwards to a daemon whose socket is there. Unset, the thin client still answers in process when no daemon is listening, through a `core.sc --frame` child it starts with `THEOURGIA_LOCAL=1` |
 | `THEOURGIA_EVAL_SLOTS` | `eval-admission.sc` | how many evaluations one run root runs at once (the admission pool, `### eval`); a positive integer. Unset or empty, the number of online processors. Anything else answers `(error bad-request (reason eval-slots))` |
+| `THEOURGIA_TEST_ANSWER_LIMIT` | `client.sc` | a test seam: a positive integer of bytes read once, at load, in place of the 32 MiB ceiling on an answer, so a row can exceed it without building an answer that large. Anything else is refused at load |
 | `THEOURGIA_EVAL_SLOTS_DEFAULT` | `ffi.sc` | a test seam: a positive integer read in place of the online processors when `THEOURGIA_EVAL_SLOTS` is unset or empty, so a row can ask for a pool of a known size on any machine. Empty, it is unset; any other value that is not a positive integer answers `(error bad-request (reason eval-slots))` |
 | `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |

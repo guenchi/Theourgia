@@ -702,6 +702,14 @@
                            "THEOURGIA_RUN=" sock-root "/run THEOURGIA_TRACE=1 scheme --script ../theourgia.sc "
                            (apply string-append verb) " --store '" store "' --wire > '" out "' 2>/dev/null < /dev/null"))
     (let ((t (file-text out))) (guard (e (#t (list 'UNREADABLE t))) (read (open-string-input-port t))))))
+;; THE DAEMON IS ASKED FOR: a plain command starts none, so every row below
+;; that is about the daemon serves its store first, with the client's own
+;; environment (the trace the counts read).
+(include "serve-for.ss")
+(define (serve! store)
+  (serve-for! root store #f (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_HOME=" root "/home "
+                                            "THEOURGIA_RUN=" sock-root "/run THEOURGIA_TRACE=1")))
+(serve! s1)
 (client s1 "conflicts")
 (define acts-0 (daemon-acts))
 (define routed-0 (count-lines "routed describe connection"))
@@ -735,6 +743,7 @@
 ;; template (read from part of a store) nor an incomplete clause (it did not ask
 ;; about the store).
 (break-writer! s1)
+(serve! s1)
 (define via-daemon-broken (client s1 "describe"))
 (system (string-append "pkill -f 'serve " s1 "' 2>/dev/null; sleep 1"))
 (system (string-append "rm -rf '" s1 "/writers/zzbroken'"))
@@ -745,18 +754,23 @@
 ;; withheld, and describe answers the catalogue.
 (define incomplete (store-with))
 (run incomplete 'template "apply" "project")
+(serve! incomplete)
 (define incomplete-whole (client incomplete "describe"))
 (system (string-append "pkill -f 'serve " incomplete "' 2>/dev/null; sleep 1"))
 (break-writer! incomplete)
+(serve! incomplete)
 (define via-daemon-incomplete (client incomplete "describe"))
 (system (string-append "pkill -f 'serve " incomplete "' 2>/dev/null; sleep 1"))
 (want "D through the client, a templated store whose publication is incomplete: the clause is withheld and describe answers the catalogue"
       (list (and (clause-of incomplete-whole 'template) #t)
             (and (pair? via-daemon-incomplete) (car via-daemon-incomplete)) (equal? via-daemon-incomplete bare))
       '(#t ok #t))
-;; A FOLD THAT FAILS: no daemon starts, and describe is refused as every verb is.
+;; A FOLD THAT FAILS: an opener's start is refused and no daemon runs. A plain
+;; command starts none: describe, answered in process, does not open the store
+;; and answers the catalogue; outline, which opens it, is refused.
 (define unstartable (store-with))
 (system (string-append "chmod 000 '" unstartable "/meta.sexp'"))
+(define refused-start (serve! unstartable))
 (define refused-describe (client unstartable "describe"))
 (define refused-outline (client unstartable "outline"))
 ;; Read BEFORE anything is stopped: whether a daemon for this store is running.
@@ -766,12 +780,14 @@
     (string->number (let ((t (file-text f))) (substring t 0 (- (string-length t) 1))))))
 (system (string-append "chmod 644 '" unstartable "/meta.sexp'; pkill -f 'serve " unstartable "' 2>/dev/null"))
 (printf "   (fold failure: describe answered ~s)\n" refused-describe)
-(want "D a store whose fold fails: no daemon is running, and describe is refused with outline's error, not an internal one"
-      (list (and (pair? refused-describe) (car refused-describe)) (and (pair? refused-outline) (car refused-outline))
-            (and (pair? refused-describe) (pair? (cdr refused-describe)) (cadr refused-describe))
-            (and (pair? refused-describe) (pair? refused-outline) (equal? (cadr refused-describe) (cadr refused-outline)))
+(want "D a store whose fold fails: an opener's start is refused, AS MEASURED, and no daemon is running"
+      (list (and (pair? refused-start) (car refused-start)) (and (pair? refused-start) (pair? (cdr refused-start)) (cadr refused-start))
             unstartable-daemons)
-      '(error error serve-start-failed #t 0))
+      '(error incomplete 0))
+(want "D a store whose fold fails, no daemon: a plain describe answers the catalogue in process; outline is refused"
+      (list (and (pair? refused-describe) (car refused-describe)) (equal? refused-describe bare)
+            (and (pair? refused-outline) (car refused-outline)))
+      '(ok #t error))
 ;; WHY THE DAEMON'S DESCRIBE IS A READ OF THE PUBLICATION: a template applied
 ;; from outside the daemon -- in this process -- reaches its describe as it
 ;; reaches every read there. The probe that notices the outside write starts the
@@ -779,6 +795,7 @@
 ;; (measured: the first describe after the write is the old one, the next has
 ;; the clause), so the row asks within a few describes, not the next one.
 (define outside (store-with))
+(serve! outside)
 (define outside-before (client outside "describe"))
 (define outside-apply (run outside 'template "apply" "project"))
 (define outside-after

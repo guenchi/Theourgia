@@ -672,6 +672,10 @@
 ;; reduction, and cannot see the daemon's memory.
 (define (daemon-says tag . verb)
   (sh-out tag (string-append (env "") "scheme --script ../theourgia.sc " (apply string-append verb) " --store '" store "' --wire")))
+;; THE DAEMON IS ASKED FOR: a plain command starts none. Its environment is
+;; this file's, so its log carries the dispatch lines counted above.
+(include "serve-for.ss")
+(define served (serve-for! root store #f (env "")))
 (define daemon-before (list (daemon-says "d-outline-1" "outline") (daemon-says "d-read-1" "read " d1)))
 (define served-before-client (served-count))
 (define client-wire

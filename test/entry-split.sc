@@ -73,6 +73,10 @@
 ;; path are the same bytes on both sides. cwd is the row's directory and stdin
 ;; is /dev/null, as the oracle was recorded.
 (define row-n 0)
+;; THE CLIENT LIBRARY'S START, for the rows about it: ensure-daemon! driven
+;; as a program taking the thin client's command line (start-driver.ss).
+(include "start-driver.ss")
+(define start-driver (begin (system (string-append "mkdir -p " here)) (start-driver! here)))
 (define (row-dir!)
   (set! row-n (+ row-n 1))
   (let ((d (string-append here "/r" (number->string row-n))))
@@ -88,7 +92,7 @@
               " THEOURGIA_RUN=" sock-base "/es-" pid-text "-" (number->string row-n)
               " CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
               (if (pair? alarm) (string-append "perl -e 'alarm " (number->string (car alarm)) "; exec @ARGV' ") "")
-              "scheme --script " programs-root "/" program " " argv
+              "scheme --script " (if (char=? (string-ref program 0) #\/) program (string-append programs-root "/" program)) " " argv
               " < /dev/null > " out " 2> " err "; echo $? > " rc))
     (list (string->number (let ((t (file-text rc))) (substring t 0 (max 0 (- (string-length t) 1)))))
           (file-text out) (file-text err))))
@@ -274,10 +278,16 @@
        (store (string-append d "/cwd/s")))
   (system (string-append "mkdir -p " store))
   (run-in d "theourgia.sc" (string-append "init --store " store))
-  (let* ((forwarded (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30))
+  ;; THE TWIN FIRST: a plain command with no daemon answers in process and
+  ;; starts nothing. The start below is the client library's (start-driver.ss).
+  (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30)))
+    (want "START-0 the thin client with no daemon answers ok in process and starts no daemon"
+          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (daemon-lines store)))
+          '(0 "(ok " 0)))
+  (let* ((forwarded (run-in d start-driver (string-append "outline --store " store " --wire") 30))
          (lines (daemon-lines store))
          (pids (map pid-of lines)))
-    (want "CONTROL START the thin client's forwarded request answered ok and one daemon is up for the store"
+    (want "CONTROL START the client library's start answered ok and one daemon is up for the store"
           (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
           '(0 "(ok " 1))
     ;; (the request goes --wire on both sides, so the bytes compared below are
@@ -315,10 +325,14 @@
        (store (string-append "--dash-" pid-text)))
   (system (string-append "mkdir -p " d "/cwd/" store))
   (run-in d "theourgia.sc" (string-append "init --store " store))
-  (let* ((forwarded (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30))
+  (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30)))
+    (want "DSERVE-8 the thin client with a store spelled --dash-<pid> and no daemon answers ok in process and starts none"
+          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (daemon-lines store)))
+          '(0 "(ok " 0)))
+  (let* ((forwarded (run-in d start-driver (string-append "outline --store " store " --wire") 30))
          (lines (daemon-lines store))
          (pids (map pid-of lines)))
-    (want "DSERVE-8 TWIN: the thin client with a store spelled --dash-<pid> starts its daemon and is answered ok"
+    (want "DSERVE-8 TWIN: the client library's start with a store spelled --dash-<pid> starts its daemon and is answered ok"
           (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
           '(0 "(ok " 1))
     (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p) " 2>/dev/null"))) pids)
@@ -579,24 +593,25 @@
       #t)
 
 (printf "== SOCKDIR: the thin client refuses before starting a daemon ==\n")
-;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (the
-;; main session's ruling b). Before it, a --socket under a directory that
+;; THE CLIENT LIBRARY'S START SAYS THE SAME THING BEFORE STARTING ANYTHING
+;; (the main session's ruling b). Before it, a --socket under a directory that
 ;; does not exist started a daemon, which made the whole chain and served.
-;; Now the client refuses in ensure-daemon!, with the text the daemon uses,
-;; at once: well inside the 10 s start budget, no daemon for the store, and
-;; nothing created.
+;; ensure-daemon! refuses, with the text the daemon uses, at once: well inside
+;; the 10 s start budget, no daemon for the store, and nothing created. It is
+;; read through start-driver.ss; the thin client starts no daemon at all, and
+;; answers such a request in process (SOCKDIR-3).
 (let* ((d (row-dir!))
        (store (string-append d "/cwd/s"))
        (absent (string-append sock-base "/es-cabsent-" pid-text "-" (number->string row-n))))
   (system (string-append "mkdir -p " store))
   (run-in d "core.sc" (string-append "init --store " store))
   (let* ((t0 (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
-         (r (run-in d "theourgia.sc" (string-append "outline --store " store " --socket " absent "/deep/s.sock") 30))
+         (r (run-in d start-driver (string-append "outline --store " store " --socket " absent "/deep/s.sock") 30))
          (ms (- (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))) t0))
          (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read)))
          (lines (daemon-lines store)))
     (for-each (lambda (l) (system (string-append "kill -TERM " (number->string (pid-of l)) " 2>/dev/null"))) lines)
-    (want "SOCKDIR-2 the thin client with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
+    (want "SOCKDIR-2 the client library's start with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
           (list (rc-of r)
                 (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
                 (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'dir))) (cdr a))))) (and f (equal? (cadr f) (string-append absent "/deep"))))
@@ -604,7 +619,12 @@
                 (length lines)
                 (if (file-exists? absent) 'created 'nothing-created))
           (list 75 '(error socket-dir-missing) #t 'under-half-the-budget 0 'nothing-created))
-    (system (string-append "rm -rf " absent))))
+    (system (string-append "rm -rf " absent))
+    (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --socket " absent "/deep/s.sock --wire") 30)))
+      (want "SOCKDIR-3 the thin client with that --socket and no daemon answers ok in process, starts no daemon, and creates nothing"
+            (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4))
+                  (length (daemon-lines store)) (if (file-exists? absent) 'created 'nothing-created))
+            '(0 "(ok " 0 nothing-created)))))
 
 (system (string-append "rm -rf " here " " sock-base "/es-" pid-text "-*"))
 (printf "\n~a failures\nrows: ~a\nentry-split complete\n" bad rows)

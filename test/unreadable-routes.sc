@@ -252,6 +252,18 @@
 ;; kept. A daemon a row starts is stopped by its pid, found as the one line of
 ;; `ps -o pid=,command=` holding the exact string "theourgiad.sc serve
 ;; <store>" (ruling Q6); a count other than one fails the row that asked.
+;; THE START'S ROWS RUN THE CLIENT LIBRARY'S START, NOT THE THIN CLIENT: a
+;; plain command starts no daemon, and what ensure-daemon! answers -- the
+;; report's kind, the token, the exit status, the client's own entries, the
+;; detached start's log -- is read through start-driver.ss, which takes the
+;; thin client's command line (P6, TK, PID, AG-a, F's detach row).
+;; Each group's twin runs the thin client itself, which answers in process and
+;; starts nothing.
+(include "start-driver.ss")
+(define start-driver (start-driver! root))
+;; A ROW THAT MERELY NEEDS A DAEMON SERVES ITS STORE, as an opener does
+;; (serve-for.ss), and asks through the thin client.
+(include "serve-for.ss")
 (define m1-run-root (string-append sock-base "/m1r-" (number->string (get-process-id))))
 (system (string-append "mkdir -p " m1-run-root))
 (putenv "THEOURGIA_RUN" (string-append m1-run-root "/run"))
@@ -393,6 +405,7 @@
 ;; P1-a (rpc-dispatch, durable, empty record; PR-01).
 (let* ((s (m1-store!)) (w (string-append s "/writers")))
   (chmod! "500" w)
+  (serve-for! root s #f "")
   (let ((r (m1-run "" "../theourgia.sc" (list "publish" M "1" m1-seg "--store" s))))
     (chmod! "700" w)
     (stop-daemon! "P1-a" s)
@@ -412,6 +425,7 @@
            (and dash (digits? (substring rest 0 dash)) (digits? (substring rest (+ dash 1) (string-length rest))))))))
 (let* ((s (m1-store!)) (wd (string-append s "/writers/" M)))
   (system (string-append "mkdir -p " wd))
+  (serve-for! root s #f (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=" M))
   (let* ((r (m1-run (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=" M)
                     "../theourgia.sc" (list "publish" M "1" m1-seg "--store" s)))
          (a (cadr r))
@@ -432,7 +446,7 @@
 ;; P1-c (parity, errno clause; PR-03).
 (let* ((s (m1-store!)) (k (string-append m1-run-root "/k1")) (sock (string-append k "/s")))
   (system (string-append "mkdir -p " k))
-  (m1-run "" "../theourgia.sc" (list "read" "root" "--store" s "--socket" sock))
+  (serve-for! root s sock "")
   (chmod! "000" (parent-of s))
   (let ((r (m1-run "" "../theourgia.sc" (list "read" "root" "--store" s "--socket" sock))))
     (chmod! "755" (parent-of s))
@@ -454,7 +468,7 @@
 (let* ((s (m1-store!)) (k (string-append m1-run-root "/k2")) (sock (string-append k "/s"))
        (dot (string-append (parent-of s) "/./store")))
   (system (string-append "mkdir -p " k))
-  (m1-run "" "../theourgia.sc" (list "read" "root" "--store" s "--socket" sock))
+  (serve-for! root s sock "")
   (let ((control (origin-and-datum (raw-frame sock dot 'read "root")))
         ;; device-inode's absence (found in review): a spelling that
         ;; names no entry is another store, as on the base -- ENOTDIR
@@ -682,6 +696,7 @@
 ;; local insert, a commit of a draft, and a restore of a revoked version.
 (define (carries-a-record? a) (and (or (clause-of a 'written) (clause-of a 'client-written)) #t))
 (let* ((s (m1-store!)) (writer (m1-writer s))
+       (served (serve-for! root s #f ""))
        (answers
         (list (cadr (m1-run "" "../theourgia.sc" (list "publish" M "1" m1-seg "--store" s)))
               (cadr (m1-run "" "../core.sc" (list "read" "root" "--store" s)))
@@ -1049,7 +1064,7 @@
 ;; -> (rc stdout-datum stderr-text elapsed-ms)
 (define (client-read env s)
   (let ((out (string-append root "/cr.out")) (err (string-append root "/cr.err")) (t0 (real-time)))
-    (let ((rc (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store "
+    (let ((rc (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script " start-driver " read root --store "
                                      (quoted s) " > " out " 2> " err " < /dev/null"))))
       (list rc (guard (e (#t 'no-answer)) (call-with-input-file out read)) (text-of-file err) (- (real-time) t0)))))
 ;; The P6 setup (E13): meta.sexp at 000; the key directory and .socket.lock
@@ -1173,7 +1188,7 @@
 (let* ((st (p6-store! #t)) (s (car st))
        (ra (string-append root "/tk1-release")) (aout (string-append root "/tk1-a.out")))
   (system (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=client-scan:" ra
-                         " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store " (quoted s)
+                         " perl -e 'alarm 60; exec @ARGV' scheme --script " start-driver " read root --store " (quoted s)
                          " > " aout " 2> /dev/null < /dev/null &"))
   ;; THE ORDER IS ASSERTED, NOT HOPED FOR (found in review): A's marker
   ;; was seen before B started, and A had not answered when B had.
@@ -1217,8 +1232,11 @@
           (else (system "sleep 0.1") (loop (+ k 1))))))
 (define (touch! p) (call-with-output-file p (lambda (o) (write 'go o)) 'truncate))
 ;; A thin-client command in the background; its stdout goes to `out`.
-(define (client-bg! env args out)
-  (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc "
+(define (client-bg! env args out) (client-bg-with! "../theourgia.sc" env args out))
+;; The same through the client library's start, for a row about the start.
+(define (client-bg-start! env args out) (client-bg-with! start-driver env args out))
+(define (client-bg-with! program env args out)
+  (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script " program " "
                          (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
                          "> " out " 2> " out ".err < /dev/null &")))
 (define (first-datum-of p) (let ((ds (datums-of-text (text-of-file p)))) (and (pair? ds) (car ds))))
@@ -1268,7 +1286,7 @@
 ;; known to be at the hold when it is stopped.
 (let* ((st (p6-store! #t)) (s (car st))
        (never (string-append root "/pid3-never")) (out (string-append root "/pid3.out")))
-  (client-bg! (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=report-write:" never)
+  (client-bg-start! (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=report-write:" never)
               (list "read" "root" "--store" s) out)
   (let* ((held (wait-until-file (string-append never ".held") 10000))
          (pids (daemon-pids s)))
@@ -1332,8 +1350,9 @@
        (wout (string-append root "/arec-w.out")) (pout (string-append root "/arec-p.out"))
        (env (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=mirrora1 THEOURGIA_HOLD='write-after-create:"
                            r1 ";publish-after-link:" r2 "'")))
-  ;; The daemon starts with the holds and the flush failure armed.
-  (client-read env s)
+  ;; The daemon starts with the holds and the flush failure armed: an explicit
+  ;; serve, as an opener starts one (a plain command starts none).
+  (serve-for! root s #f env)
   (client-bg! "" (list "write" a "the text W wrote" "--writer" "draftw1" "--store" s) wout)
   (let* ((held1 (wait-until-file (string-append r1 ".held") 10000))
          (publish-sent (client-bg! "" (list "publish" "mirrora1" "1" m1-seg "--store" s) pout))
@@ -1356,7 +1375,7 @@
 ;; before the publish starts.
 (let* ((sa (a-record-store!)) (s (car sa)) (a (cadr sa))
        (wout (string-append root "/arect-w.out")) (pout (string-append root "/arect-p.out")))
-  (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=mirrora1" s)
+  (serve-for! root s #f "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=mirrora1")
   (client-bg! "" (list "write" a "the text W wrote" "--writer" "draftw1" "--store" s) wout)
   (let* ((w-answered (wait-until-text wout 10000))
          (publish-sent (client-bg! "" (list "publish" "mirrora1" "1" m1-seg "--store" s) pout))
@@ -1556,6 +1575,19 @@
 
 (want "the daemons M1's rows started were one process each, by the exact argv line"
       daemon-counts (map (lambda (c) (cons (car c) 1)) daemon-counts))
+;; THE TWINS: the thin client itself, against no daemon, answers in process
+;; and starts nothing -- on a plain store, and on one whose start would fail.
+(let* ((s (m1-store!)) (r (m1-run "" "../theourgia.sc" (list "outline" "--store" s "--wire"))))
+  (want "R1 TWIN the thin client with no daemon answers an outline in process, rc 0, and starts no daemon"
+        (list (car r) (and (pair? (cadr r)) (car (cadr r))) (daemon-pids s) (file-exists? (socket-path s)))
+        '(0 ok () #f)))
+(let* ((s (m1-store!))
+       (_ (chmod! "000" (writers-of s)))
+       (r (m1-run "" "../theourgia.sc" (list "outline" "--store" s "--wire"))))
+  (chmod! "700" (writers-of s))
+  (want "R1 TWIN where a start would fail (writers/ unreadable): the thin client answers in process with the store's refusal, rc 1, and starts no daemon"
+        (list (car r) (and (pair? (cadr r)) (list? (cadr r)) (list-head (cadr r) 2)) (daemon-pids s) (file-exists? (socket-path s)))
+        '(1 (error unreadable) () #f)))
 (want "no daemon of a store this section made is left running"
       (apply + (map (lambda (s) (length (daemon-pids s))) m1-stores))
       0)

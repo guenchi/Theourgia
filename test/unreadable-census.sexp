@@ -144,6 +144,21 @@
    unrelated a
    "socket close"
    (e ((fs-error? e) (trace-event! (quote close-failed) (fs-error-errno e) #f) #f)))
+  ("client.sc" (close-child-end) 1 guard
+   ((unreadable-entry? e))
+   unrelated a
+   "a pipe end to the local route's core.sc child, closed when done: fd-close raises unreadable-entry for a descriptor never written (the read end, or the write end when the first write failed); the failure is noted and the outcome kept, and the child is reaped after it; a pipe, not a store entry"
+   (e ((unreadable-entry? e) (trace-event! (quote close-failed) (unreadable-entry-reason e) #f) #f)))
+  ("client.sc" (call-child!) 1 guard
+   ((fs-error? e))
+   unrelated a
+   "the local route's write of the frame into a core.sc child: a failed write ends the writing and its errno is kept; EPIPE (the child refused the frame before reading all of it) leaves the answer read next to decide, any other failure is classified by the bytes sent as the socket's is; a pipe, not a store entry"
+   (e ((fs-error? e) (fs-error-errno e))))
+  ("client.sc" (call-child!) 2 guard
+   ((fs-error? e))
+   unrelated a
+   "the child's output could not be read: no whole answer came back, so lost-answer (the request may have run); the child is still waited for and reaped; a pipe, not a store entry"
+   (e ((fs-error? e) (list (quote transport-error) (quote lost-answer)))))
   ("client.sc" (exchange-on) 1 guard
    ((and (fs-error? e) (= sent 0)))
    unrelated a
@@ -369,7 +384,7 @@
    conservative a
    "a snapshot that cannot be taken counts as behind: the store process folds before answering a cut read, and that fold names an unreadable writer in its notes or as reload-failed; a failure gone by the time the fold reads leaves no trace"
    (e (#t #f)))
-  ("daemon.sc" (answer-for) 1 guard
+  ("frame.sc" (answer-for) 1 guard
    ((and (pair? e) (eq? (quote error) (car e))) (unreadable-entry? e) #t)
    refuse c
    "K1: the unreadable-entry branch answers (error unreadable (path p) (reason r)), added when unreadable entries got their own answer; it is not (error internal ...)"
@@ -384,12 +399,12 @@
    unrelated a
    "drain"
    (e (#t (if #f #f))))
-  ("daemon.sc" (request-shape-error) 1 guard
+  ("frame.sc" (request-shape-error) 1 guard
    (#t)
    unrelated a
    "request shape"
    (e (#t #f)))
-  ("daemon.sc" (parse-frame) 1 guard
+  ("frame.sc" (parse-frame) 1 guard
    (#t)
    unrelated a
    "frame parse"
@@ -624,6 +639,21 @@
    propagate a
    "process-environment's failure to read the environment (fs-error, op environment) is answered as the spawn that did not start, (values #f errno), which every caller already handles; nothing else is caught"
    (e ((fs-error? e) e)))
+  ("ffi.sc" (spawn-piped!) 1 guard
+   ((fs-error? e))
+   propagate a
+   "process-environment's failure to read the environment (fs-error, op environment) is answered as the spawn that did not start, (values #f errno), as spawn-captured! answers it; nothing else is caught"
+   (e ((fs-error? e) e)))
+  ("ffi.sc" (spawn-on-pipes!) 1 guard
+   (#t)
+   propagate a
+   "a close-on-exec flag that could not be set: every pipe end made here is closed and the condition re-raised as fd-close-on-exec! raised it"
+   (e (#t (close-all!) (raise e))))
+  ("ffi.sc" (spawn-on-pipes!) 2 guard
+   (#t)
+   propagate a
+   "a raise inside the spawn (its allocations are freed by its own unwind): every pipe end made here is closed and the condition re-raised, until the ends are handed over"
+   (e (#t (close-all!) (raise e))))
   ("ffi.sc" (unix-socket-connect) 1 guard
    (#t)
    propagate a
@@ -1414,6 +1444,11 @@
    refuse a
    "a filesystem failure before the scheduler answers by the one table with main's record (P3-a); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag)))))
+  ("core.sc" (frame-and-exit!) 1 guard
+   (#t)
+   refuse a
+   "the local route's frame: a raise outside the dispatch (answer-for guards the dispatch itself) -- reading standard input, writing the answer -- is answered as an envelope, (error internal (reason <text>)) from the transport, so the thin client reads an answer and never a bare condition"
+   (e (#t (answer-frame-and-exit! (list (quote error) (quote internal) (list (quote reason) (condition-text e))) (quote wire) (quote transport)))))
   ("core.sc" (eval-foreign-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
@@ -1738,6 +1773,9 @@
   ((read-process-environment) close-port 2 out-of-scope "the env child's output, closed in the unwind once read or on a raise: a process pipe, D1's scope exclusion")
   ((read-process-environment) close-port 3 out-of-scope "the env child's error output (sent to /dev/null), closed in the unwind: a process pipe, D1's scope exclusion")
   ((rss-linux) call-with-input-file 1 out-of-scope "the implicit close of /proc's statm, not a store entry; rss-linux is outside the door")
+  ((spawn-on-pipes! close-all!) c-close 1 out-of-scope "a pipe or the spawn failed: every pipe end made here is released before the answer or the raise; process pipes, D1's scope exclusion")
+  ((spawn-on-pipes!) c-close 1 out-of-scope "the child started: the parent's copy of the child's input read end is released, so the child alone holds it; a process pipe, D1's scope exclusion")
+  ((spawn-on-pipes!) c-close 2 out-of-scope "the child started: the parent's copy of the child's output write end is released, so the child's exit is the end of file read; a process pipe, D1's scope exclusion")
   ((unix-socket-connect) c-close 1 escape "setsockopt raised: the socket is released and the condition re-raised")
   ((unix-socket-connect) c-close 2 escape "connect failed: the socket is released before the raise")
   ((close-unwritten-port!) close-port 1 checked "the close of a port Chez opened to create and never wrote: its failure raises unreadable-entry")

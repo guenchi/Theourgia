@@ -583,6 +583,12 @@
   (let ((f (string-append root "/served.txt")))
     (system (string-append "cat '" sock-root "'/run/*/serve.log 2>/dev/null | grep -c 'daemon-dispatch' > '" f "' || true"))
     (let ((t (file-text f))) (if (> (string-length t) 0) (string->number (substring t 0 (- (string-length t) 1))) 0))))
+;; THE DAEMONS ARE ASKED FOR: a plain command starts none, so each store a
+;; row reaches "through its daemon" is served first, with the client's own
+;; environment (the trace the dispatch counts read).
+(include "serve-for.ss")
+(define (serve! store) (serve-for! root store #f (env "")))
+(serve! M)
 (cli "start-main" "author" "outline" "--store" M)
 (define served-0 (served-count))
 (define S3 (first-datum (cli "scope3" "author" "scope" X3 "--cut" "t1" "--roots" R1 "--for" "codex" "--store" M)))
@@ -608,6 +614,7 @@
 (call-with-port (open-file-output-port (string-append MT-dir "/scoped.js") (file-options no-fail))
   (lambda (p) (put-bytevector p MT-bytes)))
 (cli "init-mt" "author" "init" "--store" MT)
+(serve! MT)
 (cli "import-mt" "author" "import-code" MT-dir "--store" MT)
 (define MT-code (find (lambda (id) (equal? (field-of MT id 'src) MT-bytes)) (outline-order MT)))
 ;; THE FILE BLOCK IS SCOPED: it holds the path, and export-code writes a file
@@ -647,6 +654,7 @@
 (want "D core.sc answers a scope of the wrong shape with the catalogue's usage form"
       (first-datum (sh-out "scope-usage" (string-append (env "") "scheme --script ../core.sc scope '" root "/x8' --store '" M "' --wire")))
       (list 'usage (cadr (assq 'scope (verb-catalogue)))))
+(serve! X3)
 (cli "start-scoped" "codex" "outline" "--store" X3)
 (define LC3 (one S3 'letter-copy))
 (define V3 (new-id (car (cadr (first-datum (cli-batch "v3" "codex" X3

@@ -39,8 +39,14 @@
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
               verb-spelling-error)
         (only (theourgia extensions) extension-verbs)
-        (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record)
-        (only (theourgia answers) classify-failure combine-report)
+        (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record theourgia-fault)
+        (only (theourgia answers) classify-failure combine-report condition-text)
+        ;; THE FRAME'S READER AND THE DISPATCH A DAEMON'S CONNECTION USES, for
+        ;; `--frame`: a request handed here by the thin client is answered by
+        ;; the same procedures, not by a second reading of it.
+        (only (theourgia frame) frame-limit parse-frame frame-field request-shape-error
+              answer-for answer-envelope)
+        (only (theourgia trace) trace-event!)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce)
         (only (theourgia log) load-listener-add! load-declaration-set! load-refused?
@@ -708,6 +714,100 @@
                       (else (loop (- i 1)))))))
     (if cut (string-append (substring argv0 0 cut) "/" name) name)))
 
+;; ---- the local route's frame -----------------------------------------------
+;;
+;; KEY: THE THIN CLIENT'S HAND-OFF WHEN NO DAEMON IS LISTENING. It starts this
+;; program with the single argument `--frame` and writes to its standard
+;; input the request frame it would have sent a daemon. This reads that one
+;; frame and answers it as a daemon's connection answers one, through
+;; (theourgia frame): the frame's limit before anything is parsed, the
+;; reader, the shapes refused before a verb is looked at, the dispatch with
+;; its guard, the envelope. The envelope goes to standard output and its exit
+;; code is this process's.
+;;
+;; NEVER: NOTHING HERE FORWARDS. That nobody is listening was the client's
+;; decision, taken once; THEOURGIA_LOCAL=1 is in this environment, so a verb
+;; that would otherwise reach a daemon answers here too, and what it held is
+;; traced. A daemon appearing in between changes nothing.
+;;
+;; NOTE: NO STORE CHECK AND NO DRAINING STEP. Both are a daemon's judgements
+;; about frames arriving at a store it already serves; this process serves
+;; the one frame it was handed, for the store that frame names.
+;;
+;; NOTE: A REFUSAL BEFORE THE FRAME IS UNDERSTOOD IS THE TRANSPORT'S, as on a
+;; socket; an answer the dispatch made is the core's.
+(define (frame-and-exit!)
+  (guard (e (#t (answer-frame-and-exit!
+                  (list 'error 'internal (list 'reason (condition-text e))) 'wire 'transport)))
+    (let* ((bytes (read-frame-bytes (standard-input-port) (+ frame-limit 1)))
+           (cut (newline-index bytes))
+           (line (if cut (subbytes bytes 0 cut) bytes)))
+      ;; THE CLOSE WITH NO ANSWER, for the row that has the client read none.
+      ;; Armed only by THEOURGIA_FAULT=frame-unanswered@conn (the stage a
+      ;; connection's faults name; this child is the local route's
+      ;; connection); unarmed, one comparison against #f.
+      (when (eq? (theourgia-fault) 'frame-unanswered)
+        (exit 1))
+      (cond
+        ((> (bytevector-length line) frame-limit)
+         (answer-frame-and-exit! '(error bad-request (reason frame-limit)) 'wire 'transport))
+        ;; A FRAME THAT NEVER ENDED IS NOT A REQUEST: input ended before its
+        ;; newline, and a daemon closes such a connection without dispatching
+        ;; what it buffered. So does this, with no answer.
+        ((not cut) (exit 1))
+        (else
+          (let ((parsed (parse-frame line)))
+            (cond
+              ((symbol? parsed)
+               (answer-frame-and-exit! (list 'error 'bad-request (list 'reason parsed)) 'wire 'transport))
+              ((request-shape-error (frame-field 'request parsed))
+               => (lambda (err) (answer-frame-and-exit! err 'wire 'transport)))
+              (else
+               (let ((request (frame-field 'request parsed)))
+                 (trace-event! 'frame-local (car request) (getenv "THEOURGIA_LOCAL"))
+                 (answer-frame-and-exit!
+                   (answer-for (frame-field 'store parsed) request (frame-field 'actor parsed) #f
+                               (frame-field 'writer parsed) (frame-field 'stdin parsed)
+                               (frame-field 'cwd parsed))
+                   (frame-field 'mode parsed) 'core))))))))))
+
+(define (answer-frame-and-exit! result mode origin)
+  (let ((envelope (answer-envelope result mode origin)))
+    (put-string (current-output-port) (render-wire envelope))
+    (flush-output-port (current-output-port))
+    (exit (envelope-field envelope 'exit))))
+
+;; THE FRAME AND ITS NEWLINE, AND NO MORE THAN `most` BYTES: past the limit
+;; nothing more is read, as a daemon reads nothing more of an over-long frame.
+(define (read-frame-bytes port most)
+  (let loop ((chunks '()) (total 0))
+    (if (or (>= total most) (and (pair? chunks) (newline-index (car chunks))))
+        (bytevector-concat (reverse chunks))
+        (let ((bv (get-bytevector-some port)))
+          (if (eof-object? bv)
+              (bytevector-concat (reverse chunks))
+              (loop (cons bv chunks) (+ total (bytevector-length bv))))))))
+
+(define (newline-index bv)
+  (let loop ((i 0))
+    (cond ((= i (bytevector-length bv)) #f)
+          ((= (bytevector-u8-ref bv i) 10) i)
+          (else (loop (+ i 1))))))
+
+(define (subbytes bv from to)
+  (let ((out (make-bytevector (- to from))))
+    (bytevector-copy! bv from out 0 (- to from))
+    out))
+
+(define (bytevector-concat bvs)
+  (let ((out (make-bytevector (apply + (map bytevector-length bvs)))))
+    (let place ((bvs bvs) (at 0))
+      (if (null? bvs)
+          out
+          (begin
+            (bytevector-copy! (car bvs) 0 out at (bytevector-length (car bvs)))
+            (place (cdr bvs) (+ at (bytevector-length (car bvs)))))))))
+
 ;; ---- the verbs this program answers itself ------------------------------
 ;;
 ;; KEY: ONE TABLE, AND IT IS THE DISPATCH. `main` looks the first
@@ -731,6 +831,8 @@
   ;; -- local, forwarded, wire or human -- goes through `render-wire`,
   ;; and this is where its settings are decided.
   (answer-printing!)
+  (when (equal? argv '("--frame"))
+    (frame-and-exit!))
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))

@@ -469,8 +469,8 @@
             (and (member "../client.sc" scanned-files) (member "../rpc.sc" scanned-files)
                  (member "../mcp/server.sc" scanned-files) #t)
             (member "../platform-numbers.sc" scanned-files))
-      ;; 84 since reader.sc
-      (list 84 #t #f))
+      ;; 85 since frame.sc
+      (list 85 #t #f))
 (define sites (apply append (map walk-sites scanned-files)))
 (define (site-file s) (car s))
 (define (site-name s) (cadr s))
@@ -492,6 +492,7 @@
 (define expected-read-sites
   '(("../client.sc" ECONNREFUSED (platform-number (quote ECONNREFUSED)))
     ("../client.sc" ENOENT (platform-number (quote ENOENT)))
+    ("../client.sc" EPIPE (platform-number (quote EPIPE)))
     ("../client.sc" ENOTSOCK (platform-number (quote ENOTSOCK)))
     ("../daemon.sc" signal-term (platform-number (quote SIGTERM)))
     ("../eval-supervise.sc" sigkill (platform-number (quote SIGKILL)))
@@ -572,13 +573,17 @@
     ("../ffi.sc" sockaddr-un (row-uint-set! sa (quote sockaddr_un) (quote sun_len) SOCKADDR_UN_SIZE))
     ("../ffi.sc" environment-EINTR (platform-number (quote EINTR)))
     ("../ffi.sc" environment-EIO (platform-number (quote EIO)))
+    ("../ffi.sc" child-wait! (platform-type-size (quote int)))
     ("../ffi.sc" environment-child-status (platform-type-size (quote int)))
     ("../ffi.sc" environment-child-status (platform-type-size (quote int)))
+    ("../ffi.sc" ignore-sigpipe! (platform-number (quote SIGPIPE)))
     ("../ffi.sc" spawn-O_CREAT (platform-number (quote O_CREAT)))
     ("../ffi.sc" spawn-O_RDONLY (platform-number (quote O_RDONLY)))
     ("../ffi.sc" spawn-O_TRUNC (platform-number (quote O_TRUNC)))
     ("../ffi.sc" spawn-O_WRONLY (platform-number (quote O_WRONLY)))
     ("../ffi.sc" spawn-captured! (platform-struct-value (quote posix_spawn) (quote file-actions-size)))
+    ("../ffi.sc" spawn-on-pipes! (platform-type-size (quote int)))
+    ("../ffi.sc" spawn-with-stdio! (platform-struct-value (quote posix_spawn) (quote file-actions-size)))
     ("../ffi.sc" st-mode-of (row-uint-ref buf (quote stat) (quote st_mode)))
     ("../ffi.sc" stat-buffer-size (platform-struct-size (quote stat)))
     ("../ffi.sc" stat-fields (row-sint-ref buf (quote stat) (quote st_ctim_nsec)))
@@ -591,7 +596,7 @@
     ("../ffi.sc" timeval-bytes (platform-struct-size (quote timeval)))
     ("../ffi.sc" timeval-bytes (row-uint-set! tv (quote timeval) (quote tv_sec) (div ms 1000)))
     ("../ffi.sc" timeval-bytes (row-uint-set! tv (quote timeval) (quote tv_usec) (* 1000 (mod ms 1000))))
-    ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
+    ("../ffi.sc" wait-status-decoded (platform-type-size (quote int)))
     ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
     ("../mcp/server.sc" kill-at-deadline (platform-number (quote SIGKILL)))
     ("../stream-client.sc" EINVAL (platform-number (quote EINVAL)))))
@@ -650,7 +655,7 @@
       (list (length read-definitions)
             (and (member '("../client.sc" ENOENT) read-definitions) (member '("../ffi.sc" ENOENT) read-definitions) #t)
             (> (symbol-count 'spawn-O_RDONLY (file-forms "../ffi.sc")) 0))
-      (list 60 #t #t))
+      (list 61 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))
@@ -841,9 +846,13 @@
 
 ;; ---- the wait status: POSIX's decoding, checked by the rows' samples -------------
 
-(want "PN-W waitpid-status decodes the signal as the low seven bits and the exit code as bits 8-15"
-      (list (holds? (defined-form 'waitpid-status) '(fxand w #x7f))
-            (holds? (defined-form 'waitpid-status) '(fxand (fxsra w 8) #xff)))
+(want "PN-W the status word is decoded in one place: the signal as the low seven bits and the exit code as bits 8-15"
+      (list (holds? (defined-form 'wait-status-decoded) '(fxand w #x7f))
+            (holds? (defined-form 'wait-status-decoded) '(fxand (fxsra w 8) #xff)))
+      '(#t #t))
+(want "PN-W both waits decode through it: waitpid-status, which does not wait, and child-wait!, which does"
+      (list (holds? (defined-form 'waitpid-status) '(wait-status-decoded status))
+            (holds? (defined-form 'child-wait!) '(wait-status-decoded status)))
       '(#t #t))
 (want "PN-W that decoding gives each row's own macro samples: WEXITSTATUS(0x0300) and WTERMSIG(0x0009)"
       (map (lambda (r)

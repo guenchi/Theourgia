@@ -16,8 +16,9 @@
 ;; `theourgia` -- the client program.
 ;;
 ;; KEY: IT KNOWS TRANSPORT AND NOTHING ELSE, and these rows are about that
-;; boundary: it finds the daemon, starts one when there is none, writes
-;; back the bytes it was given and exits with the number it was handed.
+;; boundary: it finds the daemon, hands the request to a core.sc child of
+;; its own when there is none (it starts no daemon), writes back the bytes it
+;; was given and exits with the number it was handed.
 ;; Every row that could be satisfied by the client working something out
 ;; for itself has a twin that says it did not.
 
@@ -160,20 +161,29 @@
 (define first-call
   (client "" (string-append "insert --title PROGRAM-MARKER --store " store " --wire")))
 
-(want "P-2 the first call that needs a daemon starts one and is answered"
+(want "P-2 the first call, with no daemon, is answered in process"
       (if (contains? (out-of first-call) "(ok (events") 'answered
           (list 'said (out-of first-call)))
       'answered)
 
-(want "P-2 and exactly one daemon is running"
+(want "P-2 and no daemon was started for it"
       (daemons-alive)
-      "1")
+      "0")
 
-;; KEY: THE ANSWER IS THE WHOLE OF STDOUT. The daemon this call started
-;; inherits the client's streams until it redirects them, and it prints a
-;; line about its machine home on the way up -- measured, that line goes
-;; to STDERR. If it ever goes to stdout instead, every caller parsing the
-;; answer gets a datum it did not ask for, first.
+;; THE DAEMON IS STARTED BY AN OPENER: the rows below that are about the
+;; daemon route ask for one, as the README's `serve --detach` start.
+(include "serve-for.ss")
+(include "start-driver.ss")
+(define served (serve-for! here store #f (env-prefix "")))
+(want "P-2 an opener's start serves the store: one daemon is running"
+      (list (string? served) (daemons-alive))
+      '(#t "1"))
+
+;; KEY: THE ANSWER IS THE WHOLE OF STDOUT. The core.sc child this call
+;; started inherits the client's standard error, and it prints a line about
+;; its machine home on the way up -- measured, that line goes to STDERR. If
+;; it ever goes to stdout instead, every caller parsing the answer gets a
+;; datum it did not ask for, first.
 (want "P-2 TWIN: and nothing but the answer reached stdout"
       (let ((text (out-of first-call)))
         (if (and (> (string-length text) 0) (char=? #\( (string-ref text 0))
@@ -399,9 +409,16 @@
 ;; `(error store-load-failed (reason raised))` -- `raised` because the
 ;; condition carried no message, so the field meant to say why said only
 ;; that something had. The local path has always answered `no-store`.
-(want "P-8 a store that does not exist is named as that"
+(want "P-8 a store that does not exist is named as that: answered in process, no-store"
       (let ((r (client "" (string-append "outline --store " here "/no-such-store --wire"))))
-        ;; Relayed as serve-start-failed with the report's kind.
+        (if (contains? (out-of r) "(error no-store") 'named
+            (list 'said (out-of r))))
+      'named)
+;; THE CLIENT LIBRARY'S START, through start-driver.ss: ensure-daemon! relays
+;; the daemon's report for a path holding no store as serve-start-failed with
+;; the report's kind.
+(want "P-8 the client library's start for a store that does not exist relays serve-start-failed (kind store-not-found)"
+      (let ((r (run! (start-driver! here) "" (string-append "outline --store " here "/no-such-store --wire"))))
         (if (contains? (out-of r) "(kind store-not-found)") 'named
             (list 'said (out-of r))))
       'named)
@@ -1323,8 +1340,9 @@
 ;; KEY: A SOCKET FILE WITH NOBODY BEHIND IT IS "NO DAEMON". A daemon ended
 ;; by a signal it cannot handle leaves the socket it bound on disk; the next
 ;; request's connect is refused (ECONNREFUSED), and the client must read
-;; that as nobody listening and start a daemon -- not answer
-;; connect-failed. The errno is the running platform's (61 here, 111 on
+;; that as nobody listening -- not answer connect-failed. The thin client then
+;; answers in process and starts nothing; the client library's start
+;; (start-driver.ss) starts a daemon over the stale socket. The errno is the running platform's (61 here, 111 on
 ;; Linux); client.sc once held 61 as a literal, and on Linux every request
 ;; after such an exit then failed. `cli-forward.sc` asks the same of
 ;; core.sc's route, which falls back to the local store instead.
@@ -1337,6 +1355,7 @@
     (system (string-append "find " sock-here "/run -type s > " f " 2>/dev/null"))
     (file-text f)))
 (kill-daemons!)
+(serve-for! here store #f (env-prefix ""))
 (define before-kill (client "" (string-append "outline --store " store " --wire")))
 (define killed-pids (daemon-pids))
 (want "P-20 a daemon is up and answering before it is killed"
@@ -1351,12 +1370,22 @@
       (list (daemons-alive) (> (string-length (socket-files)) 0))
       (list "0" #t))
 (define dispatches-before-restart (dispatches))
-(define after-kill (client "" (string-append "outline --store " store " --wire")))
+(define after-kill-plain (client "" (string-append "outline --store " store " --wire")))
+(want "P-20 the next plain request is answered in process: the same outline, and no daemon started"
+      (list (rc-of after-kill-plain)
+            (if (and (contains? (out-of after-kill-plain) "PROGRAM-MARKER")
+                     (string=? (out-of after-kill-plain) (out-of before-kill)))
+                'the-same-outline
+                (list 'said (out-of after-kill-plain) 'before (out-of before-kill)))
+            (string=? (dispatches) dispatches-before-restart)
+            (daemons-alive))
+      (list 0 'the-same-outline #t "0"))
+(define after-kill (run! (start-driver! here) "" (string-append "outline --store " store " --wire")))
 ;; NEVER: "NOT connect-failed" IS NOT AN ANSWER. The request must come back
 ;; as the same outline the killed daemon gave -- carrying this store's
 ;; block -- and the new daemon's log must show it served a request, so a
 ;; client that exited 0 without sending anything does not pass.
-(want "P-20 the next request is answered, by a daemon started for it"
+(want "P-20 through the client library's start, the request is answered by a daemon started for it over the stale socket"
       (list (rc-of after-kill)
             (if (and (contains? (out-of after-kill) "PROGRAM-MARKER")
                      (string=? (out-of after-kill) (out-of before-kill)))

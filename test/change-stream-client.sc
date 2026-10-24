@@ -95,6 +95,14 @@
     (sh "mkdir -p " st)
     (client "" "init" "--store" st)
     st))
+;; A STORE WITH ITS DAEMON: a plain command starts none, so the rows about a
+;; stream ask for one, with the environment the daemon itself must carry (a
+;; fault, a send buffer) where a row arms one.
+(include "serve-for.ss")
+(define (fresh-served! env)
+  (let ((st (fresh-store!)))
+    (serve-for! root st #f env)
+    st))
 (define (lines-of-command cmd)
   (let* ((p (process cmd)) (t (get-string-all (car p))))
     (close-port (car p)) (close-port (cadr p))
@@ -180,7 +188,7 @@
 
 ;; =============================================================================
 (printf "== CLIENT: the client verb ==~%")
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (_ (insert! st "warm the daemon"))
        (s (subscribe-bg! "" st "0")))
   (await-sub-lines s 1 10000)
@@ -197,7 +205,7 @@
           (list 0 4 'ok '(changes changes error) '(error draining)))))
 
 ;; THE SAME FOUR LINES with every byte its own read.
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (_ (insert! st "warm"))
        (s (subscribe-bg! "THEOURGIA_INJECT=on THEOURGIA_READ_CHUNK=1" st "0")))
   (await-sub-lines s 1 10000)
@@ -221,7 +229,7 @@
 ;; one read holding two complete lines and a tail. Retried up to five
 ;; times; a run that never observes it is NOT a reading.
 (let loop ((try 1))
-  (let* ((st (fresh-store!))
+  (let* ((st (fresh-served! "THEOURGIA_INJECT=on THEOURGIA_FAULT=stream-coalesce-cut@conn"))
          (_ (client "THEOURGIA_INJECT=on THEOURGIA_FAULT=stream-coalesce-cut@conn" "insert" "--title" "warm" "--store" st))
          (s (subscribe-bg! "THEOURGIA_INJECT=on THEOURGIA_FAULT=stream-coalesce-cut@conn THEOURGIA_READ_CHUNK=65536" st "0")))
     (await-sub-lines s 1 10000)
@@ -243,7 +251,7 @@
         (else (want "CLIENT-05 under stream-coalesce-cut a read held two complete lines and a tail" 'NO-READING 'observed))))))
 
 ;; ---- the application rows ------------------------------------------------------
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (x (new-id (insert! st "x")))
        (s (subscribe-bg! "" st "0")))
   (await-sub-lines s 1 10000)
@@ -262,7 +270,7 @@
   (stop-daemon! st))
 
 ;; TWO OBJECTS READ AT DIFFERENT REVISIONS are two baselines.
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (a (new-id (insert! st "doc A")))
        (b (new-id (insert! st "doc B")))
        (s (subscribe-bg! "" st "0")))
@@ -281,7 +289,7 @@
 ;; A RESTART: a frame of the old incarnation is buffered; a read answered by
 ;; the new one carries another token, so the consumer discards the buffered
 ;; frame, subscribes afresh, and applies the new stream's next frame.
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (x (new-id (insert! st "x")))
        (s (subscribe-bg! "" st "0")))
   (let* ((ls (await-sub-lines s 1 10000))
@@ -290,6 +298,8 @@
     (client "" "set" x "src" "before the restart" "--store" st)
     (let* ((buffered (datum-of-line (cadr (await-sub-lines s 2 10000)))))
       (stop-daemon! st)
+      ;; THE RESTART IS ASKED FOR: a plain read starts no daemon.
+      (serve-for! root st #f "")
       (let* ((later (cadr (client "" "read" x "--rev" "--store" st)))
              (restarted? (and (string? sub-token) (string? (token-of later)) (not (equal? sub-token (token-of later)))))
              ;; the consumer's state after the read: the buffered frame is
@@ -309,7 +319,7 @@
 ;; A GAP: an object read BEFORE subscribing, with two publications between
 ;; the read and the subscription; the first frame is two past the held rev,
 ;; and the consumer reads again.
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (x (new-id (insert! st "x")))
        (held (list (cons x (rev-of (cadr (client "" "read" x "--rev" "--store" st)))))))
   (insert! st "between one") (insert! st "between two")
@@ -322,13 +332,13 @@
   (stop-daemon! st))
 
 ;; ---- the client's other ends -----------------------------------------------------
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (s (subscribe-bg! "" st "x")))
   (want "CLIENT-10 an invalid revision: exit 1, and the refusal printed"
         (list (await-sub-exit s 15000) (let ((ls (sub-lines s))) (and (pair? ls) (let ((d (datum-of-line (car ls)))) (and (pair? d) (list (car d) (cadr d) (caddr d)))))))
         (list 1 '(error bad-request invalid-revision)))
   (stop-daemon! st))
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (_ (insert! st "warm"))
        (s (subscribe-bg! "" st "0")))
   (await-sub-lines s 1 10000)
@@ -338,7 +348,7 @@
         (list 1 '(error transport-error lost-stream))))
 ;; OVERFLOW: the client stopped (SIGSTOP) while the daemon's queue fills
 ;; past its limit; continued, it prints the lagging terminal and exits 1.
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_SEND_BUFFER=16384"))
        (_ (client "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_SEND_BUFFER=16384" "insert" "--title" "warm" "--store" st))
        (s (subscribe-bg! "" st "0")))
   (await-sub-lines s 1 10000)
@@ -360,7 +370,7 @@
           (list rc (and (pair? last) (car last)) (clause 'reason last))
           (list 1 'error '(lagging))))
   (stop-daemon! st))
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (hit (new-id (client "" "insert" "--title" "carries --rev in its title" "--store" st)))
        (miss (new-id (insert! st "plain"))))
   (want "CLIENT-13 search --rev on a daemon still searches the text \"--rev\", as on the base: it finds the block that has it and not the other"
@@ -489,7 +499,7 @@
       (list fake-n #t #t))
 
 ;; ---- core.sc forwards it like any verb (the FORWARD row) --------------------------
-(let* ((st (fresh-store!))
+(let* ((st (fresh-served! ""))
        (_ (insert! st "warm"))
        (out (string-append root "/core-subscribe.out"))
        (rc (sh "perl -e 'alarm 60; exec @ARGV' scheme --script ../core.sc subscribe changes 0 --wire --store " (quoted st)

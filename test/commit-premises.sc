@@ -752,7 +752,9 @@
 ;; and by the daemon (theourgia.sc), each on a store of its own. A hook that
 ;; was never installed would read exactly as the defect it closes. Each row
 ;; also counts the daemons serving its store right after the send: none on
-;; the local route, one on the daemon route, so the route is a reading.
+;; the local route, one on the daemon route, so the route is a reading. A
+;; plain command starts no daemon, so the daemon route's row serves its store
+;; first, as an opener does (serve-for.ss).
 (define route-run (string-append (or (getenv "THEOURGIA_TEST_SOCK") "/tmp") "/cpr-" (number->string (get-process-id))))
 (define (route-send env program st . args)
   (let ((out (string-append root "/route.out")))
@@ -769,6 +771,10 @@
                                               (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
                                                     ((char=? (car cs) #\newline) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
                                                     (else (split (cdr cs) (cons (car cs) cur) acc)))))))))
+(include "serve-for.ss")
+(define (serve-route! program st)
+  (when (string=? program "../theourgia.sc")
+    (serve-for! root st #f (string-append "THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted route-run)))))
 (define (stop-daemons! st)
   (let ((pattern (quoted (string-append "[t]heourgiad.sc serve " st))))
     (system (string-append "pkill -TERM -f " pattern " ; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f " pattern
@@ -787,6 +793,7 @@
 (define (route-row env program name)
   (let* ((f (packet-fixture! name))
          (st (car f))
+         (served (serve-route! program st))
          (send (lambda () (route-send env program st "import-code" (cadr f) "--datum" "--req" (string-append name "-req")
                                       "--cursor" (cadddr f) "--premises" (caddr f)))))
     (dynamic-wind
@@ -816,6 +823,7 @@
 (define (dispatch-point-row env program name)
   (let ((st (string-append root "/" name)))
     (rpc-dispatch st '(init) "test")
+    (serve-route! program st)
     (dynamic-wind
       (lambda () #f)
       (lambda () (let ((a (route-send env program st "insert" "--premises" malformed))) (list (head3 a) (daemons-on st))))

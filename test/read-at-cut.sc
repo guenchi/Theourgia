@@ -382,14 +382,19 @@
 (define (count-lines st op) (length (trace-lines-with st op)))
 (define traced "THEOURGIA_INJECT=on THEOURGIA_TRACE=1")
 (define local "THEOURGIA_LOCAL=1")
-(define (daemon-store!)
+(include "serve-for.ss")
+;; A STORE WITH ITS DAEMON, started with ENV: a plain command starts none, so
+;; the daemon rows serve their store first, as an opener does, with the
+;; environment the daemon itself must carry (the trace, a fault).
+(define (daemon-store! env)
   (let ((s (two-writers! 50)))
     (set! d-stores (cons (car s) d-stores))
+    (serve-for! root (car s) #f env)
     s))
 
 ;; RC-6b: the two routes answer a cut read alike; the daemon's goes to the
 ;; store process and loads once.
-(let* ((s (daemon-store!)) (st (car s)) (w (cadr s)) (b1 (caddr s))
+(let* ((s (daemon-store! traced)) (st (car s)) (w (cadr s)) (b1 (caddr s))
        (cut12 (cut-text (entry-clause (entry-for st (cons w 2)) 'cut)))
        (_ (ask st 'tag "rc6b"))
        (_ (client traced "outline" "--store" st))
@@ -416,7 +421,7 @@
 
 ;; D1: a cut naming an event another process appended since the daemon's
 ;; last fold is answered: the store process folds and publishes first.
-(let* ((s (daemon-store!)) (st (car s)) (w (cadr s)) (b1 (caddr s))
+(let* ((s (daemon-store! traced)) (st (car s)) (w (cadr s)) (b1 (caddr s))
        (_ (client traced "outline" "--store" st))
        (published0 (count-lines st "published "))
        (late (new-id (ask st 'insert "--under" "root" "--title" "Late")))
@@ -430,8 +435,8 @@
 
 ;; D1, the limit: a fold that fails keeps the previous publication, and the
 ;; cut is judged against it; the failure is traced as `(reload)`'s is.
-(let* ((s (daemon-store!)) (st (car s)) (w (cadr s))
-       (env (string-append traced " THEOURGIA_FAULT=reload-raise@conn"))
+(let* ((env (string-append traced " THEOURGIA_FAULT=reload-raise@conn"))
+       (s (daemon-store! env)) (st (car s)) (w (cadr s))
        (_ (client env "outline" "--store" st))
        (late (new-id (ask st 'insert "--under" "root" "--title" "Late")))
        (late-cut (cut-text (entry-clause (entry-for st (cons w 3)) 'cut)))
@@ -443,8 +448,8 @@
 
 ;; D1, the limit, for an export at a cut: judged against the same publication
 ;; as the read, so it answers as the read does, not from a fresh fold.
-(let* ((s (daemon-store!)) (st (car s)) (w (cadr s))
-       (env (string-append traced " THEOURGIA_FAULT=reload-raise@conn"))
+(let* ((env (string-append traced " THEOURGIA_FAULT=reload-raise@conn"))
+       (s (daemon-store! env)) (st (car s)) (w (cadr s))
        (_ (client env "outline" "--store" st))
        (late (new-id (ask st 'insert "--under" "root" "--title" "Late")))
        (late-cut (cut-text (entry-clause (entry-for st (cons w 3)) 'cut)))
@@ -456,7 +461,7 @@
         '(error cut-unavailable (cut cut) (reason not-received))))
 
 ;; D4: a writer in the request's envelope is not the --writer option.
-(let* ((s (daemon-store!)) (st (car s)) (w (cadr s)) (b1 (caddr s))
+(let* ((s (daemon-store! traced)) (st (car s)) (w (cadr s)) (b1 (caddr s))
        (cut12 (cut-text (entry-clause (entry-for st (cons w 2)) 'cut)))
        (bare (client traced "read" b1 "--cut" cut12 "--store" st))
        (with (client (string-append traced " THEOURGIA_WRITER=" w) "read" b1 "--cut" cut12 "--store" st))
@@ -475,7 +480,7 @@
 ;; `connection` -- arguments that do not parse, another store's request, a
 ;; frame that is not a datum (its verb unknown). The draining path is the
 ;; fourth and has no row here.
-(let* ((s (daemon-store!)) (st (car s)) (b1 (caddr s))
+(let* ((s (daemon-store! traced)) (st (car s)) (b1 (caddr s))
        (_ (client traced "outline" "--store" st))
        ;; THE ANSWER ENVELOPE, (answer (stdout "...") (stderr ...) (exit ...)
        ;; (origin ...)), read from the bytes; the refusal is the datum its
@@ -523,7 +528,10 @@
          (cut (list (cons Q 3)))
          (release (string-append root "/hold-" (if fork? "moved" "still") "-" (symbol->string route)))
          (out (string-append release ".out")))
-    (when (eq? route 'daemon) (set! d-stores (cons st d-stores)))
+    (when (eq? route 'daemon)
+      (set! d-stores (cons st d-stores))
+      ;; THE HOLD IS IN THE DAEMON'S STORE PROCESS, so the daemon starts with it.
+      (serve-for! root st #f (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=read-cut-before-replay:" release)))
     (sh "( THEOURGIA_INJECT=on " (if (eq? route 'local) "THEOURGIA_LOCAL=1 " "")
         "THEOURGIA_HOLD=read-cut-before-replay:" release
         " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read " (quoted (block-id Q 1))

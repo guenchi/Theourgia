@@ -19,6 +19,11 @@
 ;;; number it was handed. It does not know what any verb means, which
 ;;; options any verb takes, or whether an answer is a success.
 ;;;
+;;; NEVER: IT STARTS NO DAEMON. With nobody listening it hands the same
+;;; request frame to a core.sc child of its own, on that child's standard
+;;; input, and reads the child's answer the way it reads a daemon's. A daemon
+;;; is started by whoever opens the store for a while, not by a command.
+;;;
 ;;; NEVER: AND THAT IS WHY IT IS FAST. `(theourgia client)` reaches five
 ;;; libraries -- itself, ffi, digest, render and trace -- and none of the
 ;;; core, the scheduler, the socket machinery or the daemon. A client
@@ -33,13 +38,13 @@
 ;;; ONE QUESTION IS ASKED OF THE PARSER: is this a request for help.
 ;;; It is answered with the program's own tables, the registered verbs'
 ;;; included, because a scan cannot tell `--title -h` from `-h`, and getting
-;;; it wrong either way is a help request that starts a daemon or an ordinary
+;;; it wrong either way is a help request sent as a request or an ordinary
 ;;; call sent down the wrong path. Nothing else here reads the parse.
 
 (import (chezscheme)
         (only (theourgia client)
-              socket-path serve-log-path request-frame
-              call! ensure-daemon! answer-field readable-shape? exit-code?
+              socket-path request-frame
+              call! call-child! answer-field readable-shape? exit-code?
               verb-spelling-error plain-datum program-launch)
         ;; NOTE: THE ARGUMENT TABLES, AND NOTHING ELSE. `(theourgia arguments)`
         ;; is a pure library with no dependencies of its own: it reaches
@@ -52,7 +57,7 @@
         ;; THE TABLE AND THE RECORD. (theourgia client)
         ;; already brings ffi into this program's closure; (theourgia
         ;; answers) is one small library that does no filesystem work.
-        (only (theourgia ffi) with-mutation-record mutation-record)
+        (only (theourgia ffi) with-mutation-record mutation-record hold-point! ignore-sigpipe!)
         (only (theourgia answers) classify-failure))
 
 ;; ---- what the client itself understands ---------------------------------
@@ -429,7 +434,7 @@
     ;; tables, over the arguments the program will read -- this argv with its
     ;; verb taken out -- so `--title -h`, `--title -- --help` and text after a
     ;; real `--` are decided here as there, and every other call keeps this
-    ;; path: its socket checks, its writer, its streaming, its daemon start.
+    ;; path: its socket checks, its writer, its streaming, its local hand-off.
     (when (help-requested? (parse-arguments verb (cdr (verb-first argv))))
       (run-server-here! (verb-first argv)))
     (when (or (local-by-name? verb) (env-value "THEOURGIA_LOCAL"))
@@ -453,15 +458,28 @@
            (ask-once (if (memq verb stream-verbs) stream-once send-once))
            (first (ask-once socket frame)))
       (settle first
-              ;; NEVER: NOBODY THERE IS A REASON TO START ONE; A LOST ANSWER IS
-              ;; NOT. Nothing was read, so the request reached nobody and
+              ;; NEVER: NOBODY THERE IS A REASON TO ANSWER HERE; A LOST ANSWER
+              ;; IS NOT. Nothing was read, so the request reached nobody and
               ;; doing it once now does it once. Once bytes have gone out,
               ;; the request MAY have been carried out.
+              ;; NEVER: AND HERE IS A CHILD, NOT A DAEMON. The same frame goes
+              ;; to core.sc on its standard input and is answered in that
+              ;; process, which then exits; nothing is left running. The
+              ;; decision that nobody is listening is this one, taken once: a
+              ;; daemon that appears meanwhile changes nothing.
               (lambda ()
-                (let ((started (ensure-daemon! (server-argv store socket) store socket)))
-                  (if (eq? started 'ready)
-                      (settle (ask-once socket frame) #f)
-                      (refuse started)))))))))))
+                (hold-point! 'frame-child-start)
+                ;; A CHILD THAT REFUSES THE FRAME MAY CLOSE ITS INPUT BEFORE
+                ;; READING ALL OF IT, and a write to that pipe would then kill
+                ;; this process with SIGPIPE before its refusal could be read.
+                ;; NOTE: TODAY THIS CALL CHANGES NOTHING, and is kept. Chez's
+                ;; runtime sets SIGPIPE to SIG_IGN when it starts (measured:
+                ;; signal() reports SIG_IGN as the previous handler in a fresh
+                ;; `scheme --script` started with SIGPIPE at its default). That
+                ;; is the runtime's startup choice, not a documented contract,
+                ;; and this client must not die by SIGPIPE on a closed pipe.
+                (ignore-sigpipe!)
+                (settle (call-child! (frame-child-argv) frame) #f)))))))))
 
 ;; KEY: ONE CLASSIFICATION, WHICHEVER SEND PRODUCED THE OUTCOME. The second
 ;; send used to fold every non-answer into `transport-unknown`, so a
@@ -491,25 +509,13 @@
     (else
      (refuse (list 'error 'transport-unknown (list 'reason (cadr outcome)))))))
 
-;; NOTE: THE SOCKET IS PASSED TO THE DAEMON THIS CLIENT STARTS, so a caller
-;; who named one gets a daemon on that one rather than on the computed
-;; path. And the LOG path is decided here too: the client has to read
-;; that file afterwards to say why a start failed, so it is the one that
-;; names it.
-;;
-;; NEVER: A STORE THAT STARTS WITH "-" GOES AS `--store <store>`. The daemon
-;; refuses a token spelled like an option that it does not read, and a
-;; store is passed verbatim, so a store named `--x` given as a positional was
-;; refused where the client meant a store; the value after `--store` is taken
-;; whatever its spelling. Every other store keeps the positional, so its
-;; daemon's command line is the one it always was (`serve <store> ...`),
-;; which is what anything that finds a daemon by its command line matches.
-(define (server-argv store socket)
-  (append (list (scheme-binary)) (program-launch (beside-this-program "theourgiad.sc")) (list "serve")
-          (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\-))
-              (list "--store" store)
-              (list store))
-          (list "--socket" socket
-                "--detach" "--log" (serve-log-path store))))
+;; THE LOCAL ROUTE'S PROGRAM: core.sc beside this one, with one argument.
+;; NEVER: THE REQUEST IS NOT IN ITS COMMAND LINE. It goes to the child as the
+;; frame a daemon would have been sent, on standard input, and core.sc reads
+;; it with the reader a daemon reads it with; a command line re-spelled for
+;; core.sc would be a second parser of the caller's arguments.
+(define (frame-child-argv)
+  (cons (scheme-binary)
+        (append (program-launch (beside-this-program "core.sc")) (list "--frame"))))
 
 (main (cdr (command-line)))

@@ -21,7 +21,7 @@
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
   (export socket-path run-root store-key resolved-name
-          call! answer-limit no-daemon-errno?
+          call! call-child! answer-limit no-daemon-errno?
           socket-path-fits? path-too-long close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape? plain-datum
@@ -41,7 +41,7 @@
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
-                spawn-detached! trace-event! fs-error? fs-error-errno
+                spawn-detached! spawn-piped! child-wait! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 entry-type read-entry
                 ;; The pid wait, the hold seam, the record.
@@ -272,7 +272,22 @@
   ;; passes it is not truncated and used -- it is refused, because a
   ;; truncated s-expression read back as a smaller one is a wrong answer
   ;; rather than a missing one.
-  (define (answer-limit) (* 32 1024 1024))
+  ;; THE ONE TEST SEAM ON IT: THEOURGIA_TEST_ANSWER_LIMIT, a positive integer
+  ;; of bytes, read once when this library loads. Its only reader is
+  ;; test/opener-route.sc's envelope row (W1j), which needs an answer past the
+  ;; ceiling without building one of 32 MiB for every case. Anything else in
+  ;; it is refused at load, as a hold's length is: a seam that read a typo as
+  ;; "no limit" would pass the row it exists for.
+  (define answer-limit-value
+    (let ((v (getenv "THEOURGIA_TEST_ANSWER_LIMIT")))
+      (if (not v)
+          (* 32 1024 1024)
+          (let ((n (string->number v 10)))
+            (unless (and n (exact? n) (integer? n) (> n 0))
+              (assertion-violation 'theourgia-client
+                "THEOURGIA_TEST_ANSWER_LIMIT must be a positive integer of bytes" v))
+            n))))
+  (define (answer-limit) answer-limit-value)
 
   ;; KEY: "NOBODY IS LISTENING" IS THREE libc ERRNO VALUES, and they are
   ;; the running platform's row in (theourgia platform-numbers): nothing at
@@ -288,6 +303,8 @@
   (define ENOENT (platform-number 'ENOENT))
   (define ECONNREFUSED (platform-number 'ECONNREFUSED))
   (define ENOTSOCK (platform-number 'ENOTSOCK))
+  ;; A WRITE TO A CHILD THAT CLOSED ITS INPUT (call-child!).
+  (define EPIPE (platform-number 'EPIPE))
 
   (define (no-daemon-errno? code)
     (or (equal? code ENOENT)
@@ -423,12 +440,22 @@
           (exchange-read fd timeout-ms))))
 
   (define (exchange-read fd timeout-ms)
-    (let ((deadline (+ (wall-clock-ms) timeout-ms)))
-      (let loop ((chunks '()) (total 0))
+    (read-answer fd (+ (wall-clock-ms) timeout-ms)))
+
+  ;; THE ANSWER'S BYTES, READ AS THEY COME AND COUNTED AGAINST THE CEILING
+  ;; CHUNK BY CHUNK, for both routes. A socket has a deadline and its answer
+  ;; ends at the newline that is its last byte; past the ceiling it is given
+  ;; up at once. A local child (`deadline` #f) has none -- its request waits
+  ;; for the store's lock as long as that takes -- and its answer ends at end
+  ;; of file, the child having exited; past the ceiling its output is read
+  ;; and discarded to that end, so the child never blocks on a full pipe, and
+  ;; what is held never exceeds the ceiling and one read.
+  (define (read-answer fd deadline)
+      (let loop ((chunks '()) (total 0) (held 0) (peak 0))
         (cond
-          ((> total (answer-limit))
+          ((and deadline (> total (answer-limit)))
            (list 'transport-error 'answer-too-large))
-          ((>= (wall-clock-ms) deadline)
+          ((and deadline (>= (wall-clock-ms) deadline))
            (list 'transport-error 'timeout))
           (else
            (let ((chunk (fd-read fd 65536)))
@@ -437,8 +464,16 @@
                ;; daemon may have taken the request and died after acting
                ;; on it, so what this reports is that the outcome is
                ;; UNKNOWN -- never that nothing happened.
-               ((zero? (bytevector-length chunk))
+               ((and deadline (zero? (bytevector-length chunk)))
                 (list 'transport-error 'lost-answer))
+               ((zero? (bytevector-length chunk))
+                (child-answer chunks total peak))
+               ((not deadline)
+                (let ((total (+ total (bytevector-length chunk))))
+                  (if (> total (answer-limit))
+                      (loop '() total 0 (max peak (+ held (bytevector-length chunk))))
+                      (loop (cons chunk chunks) total (+ held (bytevector-length chunk))
+                            (max peak (+ held (bytevector-length chunk)))))))
                (else
                 (let ((chunks (cons chunk chunks))
                       (total (+ total (bytevector-length chunk))))
@@ -460,7 +495,88 @@
                       (list 'transport-error 'answer-too-large)
                   (if (= 10 (bytevector-u8-ref chunk (- (bytevector-length chunk) 1)))
                       (list 'answer (join-bytes (reverse chunks) total))
-                      (loop chunks total)))))))))))) 
+                      (loop chunks total 0 0)))))))))))
+
+  ;; A CHILD'S OUTPUT, AT ITS END: past the ceiling it is the socket's
+  ;; refusal; nothing, or bytes that do not end with the terminator, is a lost
+  ;; answer (the request may have run); otherwise the answer. The total and
+  ;; the most ever held go to the trace, the second being what a row reads to
+  ;; know the output was not gathered whole.
+  (define (child-answer chunks total peak)
+    (trace-event! 'child-answer total peak)
+    (cond
+      ((> total (answer-limit)) (list 'transport-error 'answer-too-large))
+      ((or (null? chunks)
+           (not (= 10 (bytevector-u8-ref (car chunks) (- (bytevector-length (car chunks)) 1)))))
+       (list 'transport-error 'lost-answer))
+      (else (list 'answer (join-bytes (reverse chunks) total)))))
+
+  ;; ---- the local route: one call to a core.sc child -------------------------
+  ;;
+  ;; KEY: WHEN NOBODY IS LISTENING, THE SAME FRAME GOES TO A CHILD. `argv`
+  ;; starts core.sc with `--frame`; the frame the socket would have carried
+  ;; is written into the child's standard input, which is then closed, and
+  ;; the child's standard output is read by read-answer, the reader the
+  ;; socket's answer goes through. The child is waited for however long it
+  ;; takes, and reaped. Its environment binds THEOURGIA_LOCAL=1, and the
+  ;; binding is traced.
+  ;;
+  ;; NEVER: A WRITE THE CHILD STOPPED READING ENDS THE WRITING, NOT THE CALL.
+  ;; A child that refused the frame before reading all of it -- one past the
+  ;; frame's limit -- has closed its input and written its refusal, which is
+  ;; read below; the caller ignores SIGPIPE before calling this, so the
+  ;; failed write returns EPIPE rather than killing it. A write that fails
+  ;; for any other reason is classified by how much of the frame went out.
+  ;;
+  ;; -> what call! answers, so one rule settles both routes:
+  ;;   (answer <bytes>)          a whole answer
+  ;;   (not-sent <refusal>)      the child could not be started; nothing ran
+  ;;   (transport-error <what>)  answer-too-large, or lost-answer when no
+  ;;                             whole answer came back (the request may
+  ;;                             have run)
+  (define (call-child! argv frame)
+    (let-values (((pid in out) (spawn-piped! argv '(("THEOURGIA_LOCAL" . "1")))))
+      (if (not pid)
+          (list 'not-sent (list 'error 'child-start-failed
+                                (list 'program (car argv))
+                                (list 'errno in)))
+          ;; NOTE: THE STEP HAS THE SOCKET'S NAME, so `close-fail@client` arms
+          ;; the closes of the child's pipe ends as it arms the socket's.
+          (parameterize ((theourgia-stage 'client))
+          (let* ((sent 0)
+                 (_ (trace-event! 'frame-child pid "THEOURGIA_LOCAL=1"))
+                 (failed (guard (e ((fs-error? e) (fs-error-errno e)))
+                           (write-all! in frame "frame-child" (lambda (n) (set! sent n)))
+                           #f)))
+            (when failed (trace-event! 'frame-child-write-stopped failed sent))
+            (close-child-end in)
+            (let* ((answer (guard (e ((fs-error? e) (list 'transport-error 'lost-answer)))
+                             (read-answer out #f)))
+                   (outcome
+                     (cond
+                       ((or (not failed) (equal? failed EPIPE)) answer)
+                       ;; ANY OTHER FAILED WRITE IS CLASSIFIED AS THE SOCKET'S IS
+                       ;; (exchange-on): nothing went out, so nothing ran; once a
+                       ;; byte has gone, the outcome is unknown.
+                       ((= sent 0) (list 'not-sent (list 'error 'write-failed
+                                                         (list 'path "frame-child")
+                                                         (list 'errno failed))))
+                       (else (list 'transport-error failed)))))
+              (close-child-end out)
+              (trace-event! 'frame-child-exit pid (child-wait! pid))
+              outcome))))))
+
+
+  ;; A PIPE END TO THE CHILD WE ARE DONE WITH. fd-close raises fs-error for a
+  ;; descriptor it saw written and unreadable-entry for one it did not (the
+  ;; read end always, the write end when the first write failed); either
+  ;; failure is noted and leaves the outcome alone, and the child is reaped
+  ;; after it as after a clean close.
+  (define (close-child-end fd)
+    (guard (e ((unreadable-entry? e)
+               (trace-event! 'close-failed (unreadable-entry-reason e) #f)
+               #f))
+      (close-noting-failure fd)))
 
   (define (join-bytes chunks total)
     (let ((out (make-bytevector total)))

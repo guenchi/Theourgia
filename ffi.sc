@@ -395,7 +395,8 @@
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
           unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
-          redirect-stdio! spawn-detached! spawn-captured! process-environment reap-children! path-case-sensitive?
+          redirect-stdio! spawn-detached! spawn-captured! spawn-piped! child-wait! ignore-sigpipe!
+          process-environment reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
           process-id wall-clock-ms machine-home env-or libc-entry-name)
@@ -1519,6 +1520,18 @@
   (define spawn-O_CREAT (platform-number 'O_CREAT))
   (define spawn-O_TRUNC (platform-number 'O_TRUNC))
 
+  ;; THE ENVIRONMENT A CHILD IS STARTED WITH: this process's, each binding's
+  ;; name dropped from it and the binding appended, so a name is never
+  ;; there twice. One rule for every spawn that takes bindings.
+  (define (bound-environment environment bindings)
+    (let ((names (map (lambda (b) (string-append (car b) "=")) bindings)))
+      (append (filter (lambda (e)
+                        (not (exists (lambda (n) (and (>= (string-length e) (string-length n))
+                                                      (string=? (substring e 0 (string-length n)) n)))
+                                     names)))
+                      environment)
+              (map (lambda (b) (string-append (car b) "=" (cdr b))) bindings))))
+
   (define (spawn-captured! argv bindings stdin-path stdout-path stderr-path)
     (unless (and (pair? argv) (for-all string? argv))
       (assertion-violation 'spawn-captured! "argv must be a non-empty list of strings" argv))
@@ -1553,15 +1566,7 @@
                                                (void* int string int unsigned-int) int))
                  (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
                  (width (foreign-sizeof 'void*))
-                 (names (map (lambda (b) (string-append (car b) "=")) bindings))
-                 (kept (map (lambda (e) (own! (c-string e)))
-                            (filter (lambda (e)
-                                      (not (exists (lambda (n) (and (>= (string-length e) (string-length n))
-                                                                    (string=? (substring e 0 (string-length n)) n)))
-                                                   names)))
-                                    environment)))
-                 (added (map (lambda (b) (own! (c-string (string-append (car b) "=" (cdr b))))) bindings))
-                 (envp-list (append kept added))
+                 (envp-list (map (lambda (e) (own! (c-string e))) (bound-environment environment bindings)))
                  (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
                  (strings (map (lambda (a) (own! (c-string a))) argv))
                  (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
@@ -1595,6 +1600,147 @@
           (for-each foreign-free owned)
           (set! owned '())))))))
 
+
+  ;; A CHILD ON TWO PIPES: its standard input is the write end this answers,
+  ;; its standard output the read end, its standard error this process's.
+  ;; The thin client's local route writes one request frame into the first
+  ;; and reads the answer from the second, as it would over a socket.
+  ;;
+  ;; NOTE: ALL FOUR ENDS ARE CLOSE-ON-EXEC, and dup2 clears the flag on the
+  ;; descriptor it makes, so the child holds exactly its 0 and 1 and none of
+  ;; the parent's ends: a child holding its own input's write end would
+  ;; never see end of file there.
+  ;;
+  ;; NOTE: THE ENVIRONMENT IS BOUND BY THE SAME RULE AS spawn-captured!'s
+  ;; (bound-environment), and every allocation and both file actions are
+  ;; released on every path, as there.
+  ;;
+  ;; -> (values pid write-fd read-fd) when the child was started, or (values
+  ;; #f errno #f) when a pipe could not be made or posix_spawnp answered
+  ;; non-zero: three values either way, so a caller binds one shape. Nothing
+  ;; ran then, and every descriptor made here is closed.
+  (define (spawn-piped! argv bindings)
+    (unless (and (pair? argv) (for-all string? argv))
+      (assertion-violation 'spawn-piped! "argv must be a non-empty list of strings" argv))
+    (unless (and (list? bindings)
+                 (for-all (lambda (b) (and (pair? b) (string? (car b)) (string? (cdr b)))) bindings))
+      (assertion-violation 'spawn-piped! "bindings must be a list of (name . value) strings" bindings))
+    (unless (foreign-entry? "posix_spawnp")
+      (assertion-violation 'spawn-piped! "no posix_spawnp in libc" argv))
+    (let ((environment (guard (e ((fs-error? e) e)) (process-environment))))
+      (if (fs-error? environment)
+          (values #f (fs-error-errno environment) #f)
+          (spawn-on-pipes! argv (bound-environment environment bindings)))))
+
+  ;; THE PIPES: made, flagged close-on-exec, handed to the spawn; on any
+  ;; failure every end made here is closed before the answer or the raise,
+  ;; a raise from inside the spawn included, until the ends are handed over.
+  (define (spawn-on-pipes! argv environment)
+    (let ((c-pipe (foreign-procedure "pipe" (u8*) int))
+          (int-size (platform-type-size 'int))
+          (made '()))
+      (define (make-pipe)
+        (let ((fds (make-bytevector (* 2 int-size) 0)))
+          (if (< (c-pipe fds) 0)
+              (errno)
+              (let ((r (bytevector-sint-ref fds 0 (native-endianness) int-size))
+                    (w (bytevector-sint-ref fds int-size (native-endianness) int-size)))
+                (set! made (cons* r w made))
+                (cons r w)))))
+      (define (close-all!)
+        (for-each (lambda (fd) (c-close fd)) made)
+        (set! made '()))
+      (let* ((in (make-pipe))
+             (out (if (pair? in) (make-pipe) in)))
+        (cond
+          ((not (pair? out))
+           (close-all!)
+           (values #f out #f))
+          (else
+           ;; A FLAG THAT COULD NOT BE SET IS RAISED AS fd-close-on-exec!
+           ;; RAISES IT, after every end made here is closed.
+           (guard (e (#t (close-all!) (raise e)))
+             (for-each fd-close-on-exec! made))
+           (let-values (((pid code) (guard (e (#t (close-all!) (raise e)))
+                                      (spawn-with-stdio! argv environment (car in) (cdr out)))))
+             (if pid
+                 ;; THE CHILD'S ENDS ARE CLOSED HERE, so the child is the only
+                 ;; holder of its input's read end and its output's write end:
+                 ;; its exit is the end of file this reads.
+                 (begin
+                   (c-close (car in))
+                   (c-close (cdr out))
+                   (values pid (cdr in) (car out)))
+                 (begin
+                   (close-all!)
+                   (values #f code #f)))))))))
+
+  ;; THE SPAWN: `stdin-fd` and `stdout-fd` become the child's 0 and 1 by
+  ;; dup2 file actions. -> (values pid #f) or (values #f rc).
+  (define (spawn-with-stdio! argv environment stdin-fd stdout-fd)
+    (let ((owned '()) (destroy! #f))
+      (define (own! p) (set! owned (cons p owned)) p)
+      (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (let* ((c-spawn (foreign-procedure "posix_spawnp" (u8* string void* void* void* void*) int))
+                 (c-fa-init (foreign-procedure "posix_spawn_file_actions_init" (void*) int))
+                 (c-fa-dup2 (foreign-procedure "posix_spawn_file_actions_adddup2" (void* int int) int))
+                 (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
+                 (width (foreign-sizeof 'void*))
+                 (envp-list (map (lambda (e) (own! (c-string e))) environment))
+                 (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
+                 (strings (map (lambda (a) (own! (c-string a))) argv))
+                 (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
+                 (actions (own! (foreign-alloc
+                                  (max width 16 (platform-struct-value 'posix_spawn 'file-actions-size)))))
+                 (pid-out (make-pid-buffer)))
+            (do ((ps envp-list (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* envp (* i width) (car ps)))
+            (foreign-set! 'void* envp (* (length envp-list) width) 0)
+            (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* cells (* i width) (car ps)))
+            (foreign-set! 'void* cells (* (length argv) width) 0)
+            (let ((rc (let ((init (c-fa-init actions)))
+                        (if (not (zero? init))
+                            init
+                            (begin
+                              (set! destroy! (lambda () (c-fa-destroy actions)))
+                              (let* ((a (c-fa-dup2 actions stdin-fd 0))
+                                     (b (if (zero? a) (c-fa-dup2 actions stdout-fd 1) a)))
+                                (if (zero? b) (c-spawn pid-out (car argv) actions 0 cells envp) b)))))))
+              (if (zero? rc)
+                  (values (pid-buffer-ref pid-out) #f)
+                  (values #f rc)))))
+        (lambda ()
+          (when destroy! (destroy!) (set! destroy! #f))
+          (for-each foreign-free owned)
+          (set! owned '())))))
+
+  ;; ONE CHILD, BY ITS PID, WAITING FOR IT TO END. waitpid-status asks
+  ;; without waiting; this blocks until the child has exited, retrying a
+  ;; wait an interrupt cut short, and reaps it. -> `(exit n)` or `(signal
+  ;; n)`, decoded as waitpid-status decodes. A pid that is not a child is
+  ;; durable-error (op waitpid) with its errno, ECHILD.
+  (define (child-wait! pid)
+    (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+          (status (make-bytevector (platform-type-size 'int) 0)))
+      (let retry ()
+        (let ((r (c-waitpid pid status 0)))
+          (cond
+            ((and (< r 0) (= (errno) EINTR)) (retry))
+            ((< r 0) (raise (fs-err 'waitpid pid (errno))))
+            (else (wait-status-decoded status)))))))
+
+  ;; A WRITE TO A PIPE WHOSE READER HAS GONE IS AN ANSWER, NOT A DEATH. With
+  ;; SIGPIPE at its default the write kills this process before the write
+  ;; can return EPIPE, so a caller that writes to a child which may close
+  ;; its input early -- one that refused the request before reading all of
+  ;; it -- ignores the signal and reads EPIPE instead. SIG_IGN is
+  ;; ((void (*)(int)) 1) on every platform this ships on.
+  (define (ignore-sigpipe!)
+    ((foreign-procedure "signal" (int uptr) uptr) (platform-number 'SIGPIPE) 1)
+    (if #f #f))
 
   ;; NEVER: A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
   ;; THAT STARTED IT. `spawn-detached!` answers a pid and nothing ever
@@ -1644,12 +1790,17 @@
         (cond
           ((= r 0) #f)
           ((< r 0) (raise (fs-err 'waitpid pid (errno))))
-          (else
-           (let* ((w (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int)))
-                  (sig (fxand w #x7f)))
-             (if (= sig 0)
-                 (list 'exit (fxand (fxsra w 8) #xff))
-                 (list 'signal sig))))))))
+          (else (wait-status-decoded status))))))
+
+  ;; THE STATUS WORD, decoded as <sys/wait.h> does on both platforms: the low
+  ;; seven bits are the terminating signal, 0 for a normal exit, whose code
+  ;; is the next eight.
+  (define (wait-status-decoded status)
+    (let* ((w (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int)))
+           (sig (fxand w #x7f)))
+      (if (= sig 0)
+          (list 'exit (fxand (fxsra w 8) #xff))
+          (list 'signal sig))))
 
   ;; ---- does this filesystem distinguish Foo from foo -----------------------
   ;;
@@ -2586,7 +2737,8 @@
          lseek-fail mkdir-fail client-extra-child store-raise-early
          reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
          stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
-         writer-raise-second probe-slow refresh-snapshot-raise rotation-probe-fail))
+         writer-raise-second probe-slow refresh-snapshot-raise rotation-probe-fail
+         frame-unanswered))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2846,7 +2998,8 @@
          after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
          freeze-after-dump freeze-before-list landing-before-tag import-before-batch
-         freeze-before-move structural-move-before-write))
+         freeze-before-move structural-move-before-write
+         frame-child-start))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond

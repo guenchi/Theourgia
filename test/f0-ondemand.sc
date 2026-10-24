@@ -746,10 +746,12 @@
 (define f18-outline
   (product-client-forwarding (string-append "outline --store " f18-store " --wire")
                              (string-append scratch "/f18-outline.txt")))
-;; The daemon's pid, found by the output directory's own path, which carries
-;; this process's pid, so no other run's daemon can match it. Either form
-;; counts here and is stopped below (the object, or the source a broken
-;; launch would start); which form was started is the LAUNCH row's to say.
+;; A plain command starts no daemon: with none listening the thin client
+;; answers through a core.sc child it starts beside itself. Any daemon found
+;; by the output directory's own path, which carries this process's pid, so no
+;; other run's can match it, is counted (it should be none) and stopped below,
+;; in either form; which form the child was started in is the LAUNCH row's to
+;; say.
 (define f18-daemon-pids
   (let* ((out (string-append scratch "/f18-ps.txt")))
     (sh (string-append "ps -ax -o pid= -o command= | grep -F -e '" (product-file "theourgiad.so") " serve '"
@@ -761,12 +763,12 @@
           (if (eof-object? x) (reverse acc) (loop p (if (integer? x) (cons x acc) acc))))))))
 
 (define f18-outline-launches (argv-lines))
-(want "OUTDIR-6 a forwarding call from the output directory starts theourgiad.so from beside the thin client, and is answered"
+(want "OUTDIR-6 a call from the output directory with no daemon is answered, and starts no daemon"
       (list (if (contains? f18-outline "(ok ") 'answered (list 'said f18-outline))
             (length f18-daemon-pids))
-      '(answered 1))
-(want "LAUNCH-1 theourgia.sc's serve start (server-argv): the daemon was started as --program theourgiad.so"
-      (launched? f18-outline-launches (string-append "--program " (product-file "theourgiad.so") " serve"))
+      '(answered 0))
+(want "LAUNCH-1 theourgia.sc's local route (frame-child-argv): the child was started as --program core.so --frame, from beside the thin client"
+      (launched? f18-outline-launches (string-append "--program " (product-file "core.so") " --frame"))
       #t)
 
 ;; Stopped by the pid read above, and waited for.
