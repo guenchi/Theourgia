@@ -27,7 +27,8 @@
           incomplete-accepted incomplete-reduction? incomplete-reduction-notes
           defs-index defs-index-build-count defs-index-cut-read-count defs-index-skipped-count name-bearing-kinds
           text-decode-skipped-count prepared-generation-count prepared-token-now
-          prepared-hit-count prepared-miss-count
+          prepared-hit-count prepared-miss-count search-positions-judged-count
+          distinct-query-text token-tier substring-at?
           store-init! nearest-ids store-snapshot!
           batch-answer
           datum-mode-block? draft-on-datum-refusal
@@ -472,6 +473,30 @@
                        (cons ch (cons #\space out)))
                       (else (cons ch out)))))))))
 
+  ;; A QUERY'S DISTINCT TOKENS, AS A QUERY. The text is prepared and split
+  ;; exactly as search-state prepares and splits a query, a token is kept at
+  ;; its first occurrence, and the kept tokens are joined by single spaces.
+  ;; A repeated token cannot change which blocks every token hits nor any
+  ;; field's best tier, so the result answers the same hits as the text.
+  ;; It reads back as itself: a prepared token holds no whitespace and no
+  ;; CJK/ASCII seam, and NFKC is idempotent, so preparing and splitting the
+  ;; result gives the kept tokens again.
+  (define (distinct-query-text text)
+    (let ((seen (make-hashtable string-hash string=?)))
+      (let loop ((ts (tokens-of (prepare text))) (out (quote ())))
+        (cond
+          ((null? ts)
+           (let ((kept (reverse out)))
+             (if (null? kept)
+                 ""
+                 (apply string-append
+                        (car kept)
+                        (map (lambda (t) (string-append " " t)) (cdr kept))))))
+          ((hashtable-ref seen (car ts) #f) (loop (cdr ts) out))
+          (else
+           (hashtable-set! seen (car ts) #t)
+           (loop (cdr ts) (cons (car ts) out)))))))
+
   ;; A hit begins a word when nothing precedes it, when what precedes it is
   ;; not a word character -- a space, a `-`, a `_`, punctuation -- or when it
   ;; is the upper-case letter that starts the second half of `camelCase`.
@@ -640,6 +665,13 @@
   (define prepared-misses 0)
   (define (prepared-hit-count) prepared-hits)
   (define (prepared-miss-count) prepared-misses)
+  ;; THE SEARCH SAYS HOW MUCH OF THE QUERY IT JUDGED: one per (block, token)
+  ;; position the token loop of search-state reaches. A block leaves the loop
+  ;; at the first token no field takes, so this is what a row reads to tell
+  ;; a scan that stops there from one that judges every token of every block.
+  ;; The hook's row for an editor's keywords is not counted here.
+  (define positions-judged 0)
+  (define (search-positions-judged-count) positions-judged)
   (define (prepared-of text)
     (let ((found (hashtable-ref prepared-table text #f)))
       (if found
@@ -702,16 +734,29 @@
                (or best (and (substring-at? (prepared-raw-fold tv)
                                             (prepared-raw-fold qv))
                              'inside)))
-              ((string=? (substring folded i (+ i m)) q)
+              ((chars-at? folded i q m)
                (if (boundary-at? t i q) 'boundary (loop (+ i 1) 'inside)))
               (else (loop (+ i 1) best))))))))
+
+  ;; NEVER: A COMPARISON AT A POSITION ALLOCATES NOTHING. Both scans used to
+  ;; take `(substring text i (+ i m))` at every position and compare it with
+  ;; the needle: one new string per character of every field string of every
+  ;; block, per token. Measured on a 1,000,000-character text against an
+  ;; absent 32-character token: about 144 bytes allocated per character of
+  ;; the text. The characters are compared where they stand instead; the
+  ;; predicate is the same.
+  (define (chars-at? text i needle m)
+    (let loop ((j 0))
+      (cond ((= j m) #t)
+            ((char=? (string-ref text (+ i j)) (string-ref needle j)) (loop (+ j 1)))
+            (else #f))))
 
   (define (substring-at? text needle)
     (let ((n (string-length text)) (m (string-length needle)))
       (and (<= m n)
            (let loop ((i 0))
              (cond ((> (+ i m) n) #f)
-                   ((string=? (substring text i (+ i m)) needle) #t)
+                   ((chars-at? text i needle m) #t)
                    (else (loop (+ i 1))))))))
 
   ;; The best tier this token reaches anywhere in a field's strings.
@@ -730,15 +775,6 @@
             ((eq? (car l) 'exact) 'exact)
             ((eq? (car l) 'prefix) (loop (cdr l) 'prefix))
             (else (loop (cdr l) out)))))
-
-  ;; Walks the rows in step, one token position at a time: every position
-  ;; must have some field that took it. The rows are the same length by
-  ;; construction -- each is one entry per query token.
-  (define (every-token-hit? rows)
-    (let loop ((rs rows))
-      (cond ((null? (car rs)) #t)
-            ((exists car rs) (loop (map cdr rs)))
-            (else #f))))
 
   (define (field-tier strings token)
     (let loop ((l strings) (best #f))
@@ -1903,11 +1939,23 @@
                                ;; single-token query can never show the
                                ;; difference, which is why the row that
                                ;; does uses two tokens in two fields.
+                               ;;
+                               ;; NEVER: AND A BLOCK LEAVES AT THE FIRST TOKEN NO
+                               ;; FIELD TAKES. The selection is an AND over the
+                               ;; tokens, and the table used to be built whole for
+                               ;; every block before it was asked: measured, a
+                               ;; query of a 25 KB source (thousands of tokens)
+                               ;; took 423 s on the code store, nearly all of it
+                               ;; tables of blocks that missed within their first
+                               ;; few tokens. Every field is read first, so the
+                               ;; unreadable count is judged on the same reads as
+                               ;; before; then the table is built a token at a time
+                               ;; and dropped at the first token whose column is
+                               ;; empty. A hit's table is complete, so both
+                               ;; projections are taken from it as before; a miss's
+                               ;; partial table is discarded as the whole one was.
                                (row (lambda (f strings)
                                       (map (lambda (tk) (f strings tk)) tokens)))
-                               (title-row (row field-tier titles))
-                               (src-row (row field-tier srcs))
-                               (kw-row (row field-tier kws))
                                ;; AN EDITOR'S KEYWORDS, one call to the hook per
                                ;; live block, scored as this search scores a
                                ;; field; #f when the block has none to use.
@@ -1916,7 +1964,7 @@
                                                        (lambda (strings)
                                                          (let ((r (row field-tier strings)))
                                                            (values r (collapse-field-row r)))))))
-                               (dk-row (if dk (car dk) (row field-tier (quote ()))))
+                               (dk-row (if dk (car dk) (map (lambda (tk) #f) tokens)))
                                ;; NEVER: AND THE THINGS ONLY A CODE BLOCK HAS.
                                ;; `names` is derived from the source rather
                                ;; than stored, so it is read from the view;
@@ -1953,27 +2001,39 @@
                                (ignored-unreadable
                                  (when (and alive block-unreadable)
                                    (set! unreadable-here (+ unreadable-here 1))))
-                               (name-row (row name-tier names))
-                               (doc-row (row field-tier docs))
-                               (body-row (row field-tier bodies))
-                               ;; The collapses come after every row exists,
-                               ;; so the matrix is complete before either
-                               ;; projection is taken from it.
-                               (title-tier (collapse-field-row title-row))
-                               (src-tier (collapse-field-row src-row))
-                               (kw-tier (collapse-field-row kw-row))
-                               (dk-tier (and dk (cadr dk)))
-                               (doc-tier (collapse-field-row doc-row))
-                               (body-tier (collapse-field-row body-row))
-                               (nm-tier (collapse-name-row name-row))
+                               ;; THE TOKEN LOOP: one column per token -- title,
+                               ;; src, keywords, the hook's, names, doc, body --
+                               ;; the hook's entry taken from its own row, so a
+                               ;; token that only an editor's word takes still
+                               ;; keeps the block.
+                               (matrix
+                                 (let loop ((ts tokens) (dks dk-row) (cols (quote ())))
+                                   (if (null? ts)
+                                       (reverse cols)
+                                       (let* ((tk (car ts))
+                                              (ignored-count (set! positions-judged (+ positions-judged 1)))
+                                              (col (list (field-tier titles tk) (field-tier srcs tk)
+                                                         (field-tier kws tk) (car dks) (name-tier names tk)
+                                                         (field-tier docs tk) (field-tier bodies tk))))
+                                         (and (exists (lambda (x) x) col)
+                                              (loop (cdr ts) (cdr dks) (cons col cols)))))))
                                ;; NEVER: EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
                                ;; Keywords widen where a token may be
                                ;; found; they do not turn the query into
                                ;; an OR across tokens.
-                               (every-token
-                                 (every-token-hit?
-                                   (list title-row src-row kw-row dk-row
-                                         name-row doc-row body-row)))
+                               (every-token (and matrix #t))
+                               ;; A field's row is its place in every column.
+                               (field-row (lambda (k) (map (lambda (col) (list-ref col k)) matrix)))
+                               ;; The collapses come after every column exists,
+                               ;; so the matrix is complete before either
+                               ;; projection is taken from it.
+                               (title-tier (and matrix (collapse-field-row (field-row 0))))
+                               (src-tier (and matrix (collapse-field-row (field-row 1))))
+                               (kw-tier (and matrix (collapse-field-row (field-row 2))))
+                               (dk-tier (and dk (cadr dk)))
+                               (nm-tier (and matrix (collapse-name-row (field-row 4))))
+                               (doc-tier (and matrix (collapse-field-row (field-row 5))))
+                               (body-tier (and matrix (collapse-field-row (field-row 6))))
                                (ignored-derived
                                  (when (and alive every-token dk-tier)
                                    (hashtable-set! derived-used id (caddr dk)))))

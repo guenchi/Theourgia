@@ -435,6 +435,46 @@
                (filter (lambda (l) (starts-with? l "note census retried: ")) ls))
           '(#t))))
 
+(printf "== the anchor-gone note: which of the three it was ==\n")
+;; THE NOTE SAYS WHY THE ANCHOR WAS TAKEN AS GONE: W's setpgid failed (and
+;; with which errno), getpgrp disagreed, or the anchor died -- each on the
+;; same line as the sentence, with how the reap ended. No fixture can make a
+;; live child's setpgid fail, so the watcher-only --fault-setpgid takes it as
+;; failed with a named errno: the anchor is alive and waiting for its release
+;; byte, W closes the pipe instead, and the anchor exits 0 with no command
+;; started. Red on a launch.pl whose note is the bare sentence.
+(let ((d (case!)))
+  (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
+      (number->string n) " --fault-setpgid EPERM -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
+      d "/w.rc; }")
+  (let ((r (result-of d)))
+    (want "ANCHOR-1 --fault-setpgid EPERM: status 126, no command ran, and the one note names EPERM, the group, and reap exit 0"
+          (list (read-datum (string-append d "/w.rc")) (and r (car r)) (and r (caddr r))
+                (file-exists? (string-append d "/out"))
+                (and r (map (lambda (x)
+                              (and (starts-with? x "ANCHOR DIED before the release (setpgid EPERM, getpgrp ")
+                                   (contains? x ", reap exit 0)")))
+                            (list-ref r 5))))
+          '(126 #t 126 #f (#t)))))
+;; AN UNKNOWN NAME IS REFUSED BEFORE THE FORK: no anchor, no command, and the
+;; note says which name it was.
+(let ((d (case!)))
+  (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
+      (number->string n) " --fault-setpgid ENOSUCHNAME -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
+      d "/w.rc; }")
+  (let ((r (result-of d)))
+    (want "ANCHOR-2 --fault-setpgid with an unknown errno name: status 126, clean, no command ran, the note names it"
+          (list (read-datum (string-append d "/w.rc")) (and r (caddr r)) (and r (cadddr r))
+                (file-exists? (string-append d "/out")) (and r (list-ref r 5)))
+          '(126 126 "clean" #f ("unknown errno name for --fault-setpgid: ENOSUCHNAME")))))
+;; THE SUITE NEVER PASSES IT. The runner's text holds no fault-setpgid, and
+;; the same reading of launch.pl finds it, so the zero is a reading of a file
+;; that was looked at.
+(want "ANCHOR-3 the suite's runner never passes --fault-setpgid; the same reading finds it in launch.pl"
+      (list (contains? (slurp (string-append here "/run-fixtures.sh")) "fault-setpgid")
+            (contains? (slurp launcher-path) "--fault-setpgid"))
+      '(#f #t))
+
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
 (sh "rm -rf " root)

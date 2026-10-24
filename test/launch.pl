@@ -23,7 +23,14 @@
 # theourgos core/briefs/launcher-design.md, closed at v4.1):
 #
 #   perl launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID
-#                  [--census-pid PID] -- COMMAND ARGS...
+#                  [--census-pid PID] [--fault-setpgid ERRNO-NAME]
+#                  -- COMMAND ARGS...
+#
+# --fault-setpgid is a measuring injection for launch-self.sc and nothing
+# else: the watcher does not call setpgid on the anchor and takes it as
+# failed with that errno, so the anchor-gone branch runs. It is read by the
+# watcher only, never forwarded to the anchor or the command; the suite's
+# runner never passes it. An unknown name is refused before the fork.
 #
 # This process is the WATCHER, W. It stays in its caller's process group.
 # It forks the ANCHOR, A, which leads a new group G and forks the COMMAND,
@@ -68,14 +75,14 @@ my $QUIET_GAP = 0.1;
 sub now { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) }
 
 sub usage {
-  print STDERR "usage: launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID [--census-pid PID] -- COMMAND ARGS...\n";
+  print STDERR "usage: launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID [--census-pid PID] [--fault-setpgid ERRNO-NAME] -- COMMAND ARGS...\n";
   exit 2;
 }
 
 my %opt;
 while (@ARGV && $ARGV[0] ne '--') {
   my $k = shift @ARGV;
-  usage() unless $k =~ /^--(limit|out|result|id|census-pid)$/ && @ARGV;
+  usage() unless $k =~ /^--(limit|out|result|id|census-pid|fault-setpgid)$/ && @ARGV;
   $opt{$1} = shift @ARGV;
 }
 usage() unless @ARGV && $ARGV[0] eq '--';
@@ -86,6 +93,26 @@ usage() unless $opt{limit} =~ /^[0-9]+$/ && $opt{limit} > 0;
 usage() unless $opt{id} =~ /^[A-Za-z0-9._-]+$/;
 my $census_pid = defined $opt{'census-pid'} ? $opt{'census-pid'} : getppid();
 usage() unless $census_pid =~ /^[0-9]+$/;
+
+# ERRNO NAMES BY VALUE, from POSIX's own constants, so a note can say which
+# error it was; a value no name has is written "errno n". The candidate names
+# are Errno's list (POSIX fills its export tags only on import, and this file
+# imports nothing from it); a name POSIX has no constant for is left out.
+# Names are taken in sorted order and the first keeps a shared value
+# (EAGAIN, not EWOULDBLOCK).
+require Errno;
+my (%errno_value, %errno_name);
+my @errno_names = grep { /^E[A-Z0-9]+$/ } @Errno::EXPORT_OK;
+for my $n (sort @errno_names) {
+  my $v = eval { no strict 'refs'; &{"POSIX::$n"}() };
+  next unless defined $v;
+  $errno_value{$n} = $v;
+  $errno_name{$v} = $n unless exists $errno_name{$v};
+}
+sub errno_text { my ($v) = @_; exists $errno_name{$v} ? $errno_name{$v} : "errno $v" }
+my $fault_setpgid;
+my $fault_refused = defined $opt{'fault-setpgid'} && !exists $errno_value{$opt{'fault-setpgid'}};
+$fault_setpgid = $errno_value{$opt{'fault-setpgid'}} if defined $opt{'fault-setpgid'} && !$fault_refused;
 
 my $W = $$;
 my $start = now();
@@ -437,6 +464,10 @@ sub finish {
 # byte from W. W sets A's group too (the double call), checks it, and only
 # then unblocks and releases A. A stop that arrives before the release
 # means A is never released and no command starts.
+if ($fault_refused) {
+  push @notes, "unknown errno name for --fault-setpgid: $opt{'fault-setpgid'}";
+  finish(126, 'clean', []);
+}
 my $blocked = POSIX::SigSet->new(map { $signo{$_} } qw(INT TERM HUP));
 my $orig_mask = POSIX::SigSet->new;
 POSIX::sigprocmask(POSIX::SIG_BLOCK(), $blocked, $orig_mask) or push @notes, "watcher could not block its stop signals: $!";
@@ -504,7 +535,14 @@ close $go_r;
 close $note_w;
 $SIG{PIPE} = 'IGNORE';
 my $G = $A;
-my $set = POSIX::setpgid($A, $A);
+my ($set, $set_errno);
+if (defined $fault_setpgid) {
+  $set = 0;
+  $set_errno = $fault_setpgid;
+} else {
+  $set = POSIX::setpgid($A, $A);
+  $set_errno = $set ? undef : $! + 0;
+}
 my $pg = getpgrp($A);
 my $anchor_gone = !$set || !defined $pg || $pg != $A;
 POSIX::sigprocmask(POSIX::SIG_SETMASK(), $orig_mask);
@@ -520,12 +558,14 @@ sub read_anchor_notes {
   }
 }
 
+my $reap_errno;
 sub reap_anchor_bounded {
   my ($until) = @_;
+  $reap_errno = undef;
   while (now() < $until) {
     my $w = waitpid($A, POSIX::WNOHANG());
     return $? if $w == $A;
-    return undef if $w == -1 && !$!{EINTR};
+    if ($w == -1 && !$!{EINTR}) { $reap_errno = $! + 0; return undef; }
     Time::HiRes::sleep(0.02);
   }
   return undef;
@@ -542,11 +582,19 @@ if ($anchor_gone) {
   my @q = quiet_by($A, now() + $D2);
   my $cleanup = $q[0] eq 'empty' ? 'clean' : $q[0] eq 'unknown' ? 'unknown' : 'survivor';
   my $members = $q[0] eq 'occupied' ? $q[1] : [];
+  # THE NOTE SAYS WHICH OF THE THREE IT WAS, on the same line: the setpgid
+  # failed (and with which errno), getpgrp disagreed, or the anchor died. A
+  # reap that ended in a waitpid error says so, not "timeout".
+  my $facts = " (setpgid " . (defined $set_errno ? errno_text($set_errno) : 'ok')
+    . ", getpgrp " . (defined $pg ? $pg : 'undef')
+    . ", reap " . (defined $st ? (($st & 127) ? "signal " . ($st & 127) : "exit " . ($st >> 8))
+                   : defined $reap_errno ? "failed " . errno_text($reap_errno) : 'timeout')
+    . ")";
   if (defined $st && ($st & 127)) {
-    push @notes, "ANCHOR DIED by signal " . ($st & 127) . " before the release";
+    push @notes, "ANCHOR DIED by signal " . ($st & 127) . " before the release" . $facts;
     finish(128 + ($st & 127), $cleanup, $members);
   }
-  push @notes, "ANCHOR DIED before the release";
+  push @notes, "ANCHOR DIED before the release" . $facts;
   finish(126, $cleanup, $members);
 }
 

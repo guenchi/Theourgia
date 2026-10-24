@@ -2094,6 +2094,106 @@
         (> hits 0))
       #t)
 
+;; ---- SL: the scan costs what the hits cost --------------------------------
+(printf "\n== SL: a block leaves at the first token no field takes ==\n")
+;; THE SELECTION IS AN AND OVER THE TOKENS, so a block that misses one token
+;; is not a hit whatever the rest do, and judging the rest is work thrown
+;; away. Every block of this store holds the first token and none holds the
+;; second: a four-token query judges at most two positions per block. A scan
+;; that judges every token of every block judges four.
+(define dsl (fresh-store!))
+(init! dsl)
+(define sl-blocks
+  (map (lambda (k) (insert! dsl "--title" (string-append "kelvane block " (number->string k)))) '(1 2 3 4 5)))
+(want "SL-1 CONTROL: the first token alone finds every block"
+      (length (store-search dsl "kelvane"))
+      5)
+(want "SL-1 a four-token query whose second token no block holds judges at most two positions per live block, and finds nothing"
+      (let* ((b (length (state-outline (open-and-reduce dsl))))
+             (p0 (search-positions-judged-count))
+             (hits (store-search dsl "kelvane zorbix qwertle plimbo"))
+             (judged (- (search-positions-judged-count) p0)))
+        (list hits (<= judged (* 2 b)) (>= judged b)))
+      (list '() #t #t))
+
+;; NEVER: A REPEATED TOKEN CHANGES NOTHING BUT THE WORK. Every field's best
+;; tier and every token's hit are the same whether a token is asked once or
+;; three times, so the answers are equal.
+(want "SL-3 a token repeated three times answers the hits and scores of the token once"
+      (list (store-search dsl "kelvane kelvane kelvane") (length (store-search dsl "kelvane")))
+      (list (store-search dsl "kelvane") 5))
+
+;; THE KEY OF THE DEDUPLICATION IS THE PREPARED SPELLING: two tokens that
+;; share a prefix are two tokens, and both must hit. Only the second block
+;; holds both; the first holds `parsed` alone and is not a hit -- a key that
+;; kept only the first four characters would keep `parsed` and find it.
+(define dsl3 (fresh-store!))
+(init! dsl3)
+(define sl3-only (insert! dsl3 "--title" "parsed only"))
+(define sl3-both (insert! dsl3 "--title" "parser and parsed"))
+(want "SL-3c `parsed parser` finds the block holding both, not the block holding `parsed` alone; the text's distinct query keeps both"
+      (list (map car (store-search dsl3 "parsed parser"))
+            (map car (store-search dsl3 (distinct-query-text "parsed parser parsed parser")))
+            (distinct-query-text "parsed parser parsed parser"))
+      (list (list sl3-both) (list sl3-both) "parsed parser"))
+
+;; THE DISTINCT QUERY READS BACK AS ITSELF. A CJK/ASCII seam is spaced, a
+;; fullwidth letter is NFKC'd, a repeat is dropped at its first occurrence
+;; and any run of whitespace is one space; applying it again changes
+;; nothing. The tokens of the prepared result are the first occurrences of
+;; the tokens of the prepared text: the function is reached here, `prepare`
+;; and `tokens-of` are not, so the second half reads the same through
+;; search answers and the positions judged.
+(define sl5-text "\x4e2d;\x6587;abc  \xff21;BC\tabc\n\x4e2d;\x6587;  q\x4e2d;\x6587;")
+(want "SL-5 distinct-query-text spaces the seam, NFKCs the fullwidth form, drops repeats, collapses whitespace, and is idempotent"
+      (let ((once (distinct-query-text sl5-text)))
+        (list once (string=? once (distinct-query-text once))))
+      (list "\x4e2d;\x6587; abc ABC q" #t))
+;; The equivalence is read over a store where it can fail: one block holds
+;; every token of the text, the other its first ones and not `q`. The text
+;; has seven tokens and its distinct query four; the second block leaves at
+;; `q`, the sixth token of the text and the fourth of the query, so the
+;; text judges 7 + 6 positions and the query 4 + 4. A search that kept only
+;; the first token would find both blocks.
+(define dsl5 (fresh-store!))
+(init! dsl5)
+(define sl5-all (insert! dsl5 "--title" "\x4e2d;\x6587; abc ABC q"))
+(define sl5-first (insert! dsl5 "--title" "\x4e2d;\x6587; abc"))
+(want "SL-5 CONTROL: the text's first token alone finds both blocks"
+      (length (store-search dsl5 "\x4e2d;\x6587;"))
+      2)
+(want "SL-5 the text and its distinct query answer the same hits, the block holding every token only, and judge 13 and 8 positions"
+      (let* ((p0 (search-positions-judged-count))
+             (a (store-search dsl5 sl5-text))
+             (p1 (search-positions-judged-count))
+             (b (store-search dsl5 (distinct-query-text sl5-text)))
+             (p2 (search-positions-judged-count)))
+        (list (equal? a b) (map car a) (- p1 p0) (- p2 p1)))
+      (list #t (list sl5-all) 13 8))
+
+;; NEVER: A COMPARISON AT A POSITION ALLOCATES NOTHING. Against an absent
+;; 32-character token a 1,000,000-character text was measured at about 144
+;; bytes allocated per character, one new string per position; the bound is
+;; 64. The reading is cumulative (`sstats-bytes`), because the live-heap
+;; count a collection resets reads small whatever the scan does. token-tier
+;; is asked once first, so its prepared text is in the table and what is
+;; read is the scan.
+(define sl4-text (make-string 1000000 #\a))
+(define sl4-token (make-string 32 #\b))
+(define (allocated-by thunk)
+  (let ((b0 (sstats-bytes (statistics))))
+    (thunk)
+    (- (sstats-bytes (statistics)) b0)))
+(want "SL-4 substring-at? and token-tier over a 1,000,000-character text, against an absent 32-character token, allocate under 64 bytes per character"
+      (let* ((ignored (token-tier sl4-text sl4-token))
+             (sa (allocated-by (lambda () (substring-at? sl4-text sl4-token))))
+             (tt (allocated-by (lambda () (token-tier sl4-text sl4-token)))))
+        (printf "SL-4 reading: substring-at? ~a bytes, token-tier ~a bytes, per character ~a and ~a\n"
+                sa tt (exact->inexact (/ sa 1000000)) (exact->inexact (/ tt 1000000)))
+        (list (substring-at? sl4-text sl4-token) (token-tier sl4-text sl4-token)
+              (< sa (* 64 1000000)) (< tt (* 64 1000000))))
+      (list #f #f #t #t))
+
 ;; ---- N7: grep finds lines, where search finds blocks ---------------------
 (printf "\n== N7: grep answers with lines ==\n")
 ;; `search` ranks blocks; `grep` lists lines. The two answer different

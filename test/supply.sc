@@ -828,6 +828,42 @@
                 (let ((a (ask r2 'search "okapi"))) (list (hits a) (assq 'stale (cdr a)) (assq 'via (cdr a)))))
       (list 'ok (list '() '(stale 2) '(via))))
 
+;; ---- SL-3b, SL-2: the search's early exit keeps what an editor's word takes --------
+;; FOUR SPELLINGS OF ONE WORD IN FOUR PLACES: alpha's title, beta's source,
+;; gamma's keywords and delta's editor words. Every tier folds both sides, so
+;; `Parse parse` and `parse` are one question and answer the same hits,
+;; scores and snippets -- a deduplication by folded spelling would change
+;; nothing, and this row is what says so.
+(define r2c (make-store! "r2c"))
+(define r2c-alpha (id-in r2c "function alpha"))
+(define r2c-beta (id-in r2c "function beta"))
+(define r2c-gamma (id-in r2c "function gamma"))
+(define r2c-delta (id-in r2c "function delta"))
+(ask r2c 'set r2c-alpha "title" "Parse heading")
+(ask r2c 'set r2c-beta "src" "function beta() {\n  return parse;\n}\n")
+(ask r2c 'set r2c-gamma "keywords" "PARSE")
+(ask r2c 'set r2c-delta "title" "heading delta")
+(want "SL-3b setup: delta's editor words pArSe and ocelot (delta has no author keywords)"
+      (supply-now r2c "-" (list (kw r2c-delta '("pArSe" "ocelot"))) '("c.js"))
+      '(ok (supplied (facts 1) (files 1))))
+(define (items-of a) (cdr (assq 'items (cdr a))))
+(want "SL-3b CONTROL: parse finds all four blocks, delta by its editor's word"
+      (list-sort string<? (map (lambda (h) (list-ref h 1)) (items-of (ask r2c 'search "parse"))))
+      (list-sort string<? (list r2c-alpha r2c-beta r2c-gamma r2c-delta)))
+(want "SL-3b `Parse parse` and `parse` answer the same hits, scores and snippets, and the same via"
+      (let ((a (ask r2c 'search "Parse parse")) (b (ask r2c 'search "parse")))
+        (list (equal? (items-of a) (items-of b)) (equal? (assq 'via (cdr a)) (assq 'via (cdr b)))))
+      '(#t #t))
+;; A BLOCK WHOSE SECOND TOKEN ONLY AN EDITOR'S WORD TAKES. `heading` is in
+;; alpha's and delta's titles; `ocelot` is only one of delta's editor words.
+;; The token loop judges the hook's entry with the stored fields' entries, so
+;; delta is a hit in either order; a loop that left the hook out would drop
+;; it in both, which is why the row names the hit and not only the equality.
+(want "SL-2 `heading ocelot` and `ocelot heading` answer the same, and the one hit is delta"
+      (let ((a (ask r2c 'search "heading ocelot")) (b (ask r2c 'search "ocelot heading")))
+        (list (equal? (items-of a) (items-of b)) (map (lambda (h) (list-ref h 1)) (items-of a))))
+      (list #t (list r2c-delta)))
+
 ;; ---- D13: the writer's working view, pinned ----------------------------------------
 ;; w1 drafts beta; alpha is then changed and committed, so the latest
 ;; committed alpha is not the one w1's view shows.

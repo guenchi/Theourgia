@@ -66,7 +66,7 @@
           (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
-          (only (theourgia store) search-state sealed-state? sealed-state-notes)
+          (only (theourgia store) search-state distinct-query-text sealed-state? sealed-state-notes)
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire printed-entry)
@@ -682,9 +682,12 @@
   ;; THE HITS OF SEARCH for the block's title, and for its text when it has
   ;; one: the best score of each block. Without --all-validity, search's own
   ;; filter leaves out what is superseded or refuted, as `score` does.
+  ;; The text is asked by its DISTINCT tokens: a source repeats its words,
+  ;; and a repeated token changes no hit and no score, only the work.
   (define (relevant dispatch-helper store view t all? L)
     (let* ((row (state-read view t))
-           (texts (filter (lambda (s) (> (string-length s) 0)) (list (text-field row 'title) (text-field row 'src))))
+           (texts (filter (lambda (s) (> (string-length s) 0))
+                          (list (text-field row 'title) (distinct-query-text (text-field row 'src)))))
            (best (make-hashtable string-hash string=?)))
       (for-each
         (lambda (text)

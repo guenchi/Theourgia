@@ -33,7 +33,7 @@
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
-        (only (theourgia store) open-and-reduce with-store-write)
+        (only (theourgia store) open-and-reduce with-store-write search-positions-judged-count)
         (only (theourgia reduce) state-read state-block-ids state-outline block-id)
         (only (theourgia render) render-wire render-human)
         (only (theourgia wire) sexpr->string-extended)
@@ -665,6 +665,26 @@
       (list (length (defines-pairs (car c8c-1))) (length (defines-pairs (car c8c-2))))
       '(1 0))
 (query-session-provider! #f)
+
+;; THE RELEVANT STEP ASKS A SOURCE BY ITS DISTINCT TOKENS. T's source is one
+;; word eight times and every block's source holds that word, so asking the
+;; source as written judges eight positions in every block and asking its
+;; distinct tokens judges one. Context's searches are the title's and the
+;; source's: at most (title tokens + distinct source tokens) positions per
+;; block, here 2 per block.
+(define sl3 (fresh!))
+(define sl3-ids
+  (map (lambda (t) (new-id (run sl3 'insert "--title" t))) '("tee" "you" "vee" "dub")))
+(for-each (lambda (id src) (run sl3 'set id "src" src))
+          sl3-ids
+          (list "zeta zeta zeta zeta zeta zeta zeta zeta" "zeta here" "zeta there" "zeta again"))
+(want "SL-3 context on a block whose source repeats one word judges at most 2 positions per block, and the relevant step still names the three"
+      (let* ((b (length (state-outline (open-and-reduce sl3))))
+             (p0 (search-positions-judged-count))
+             (a (ctx sl3 "--for" (car sl3-ids) "--budget" "20000"))
+             (judged (- (search-positions-judged-count) p0)))
+        (list (ok? a) (<= judged (* 2 b)) (list-sort string<? (entries-by a 'relevant))))
+      (list #t #t (list-sort string<? (cdr sl3-ids))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-targeting complete\n" rows bad)
