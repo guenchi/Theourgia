@@ -2845,7 +2845,8 @@
        '(client-scan report-write bind write-after-create publish-after-link store-start
          after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
-         freeze-after-dump freeze-before-list landing-before-tag import-before-batch))
+         freeze-after-dump freeze-before-list landing-before-tag import-before-batch
+         freeze-before-move structural-move-before-write))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond

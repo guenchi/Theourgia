@@ -252,6 +252,7 @@
     ("working.sc" "working-commit!" "open-and-reduce" 1 request)
     ("working.sc" "working-delete!" "obtain-state" 1 unsealer)
     ("working.sc" "working-list" "obtain-state" 1 unsealer)
+    ("working.sc" "working-move-structural!" "obtain-state" 1 unsealer)
     ("working.sc" "working-new!" "obtain-state" 1 unsealer)
     ("working.sc" "working-read" "obtain-state" 1 unsealer)
     ("working.sc" "working-restore!" "obtain-state" 1 unsealer)

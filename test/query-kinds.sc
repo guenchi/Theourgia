@@ -16,14 +16,15 @@
 ;; the goals refused because two kinds that must share a value are
 ;; disjoint, each in a query and inside a rule value; the goals that must
 ;; keep answering, read statically and through the verb on a store; every
-;; query and rule example of the README; the library rules' inferred and
+;; query and rule example of the README, and the table sizes its counts
+;; paragraph names; the library rules' inferred and
 ;; declared kinds; a rule stored before the kinds, which a write must still
 ;; accept; and the two verbs' wiring.
 
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia query) query-kind-refusal rule-value-check rule-kinds declared-rule-kinds
-              rule-library rule-relations library-relation-kinds refusal? refusal-answer)
+              rule-library rule-relations library-relation-kinds refusal? refusal-answer fact-relations)
         (only (theourgia store) open-and-reduce)
         (only (theourgia reduce) reduce-applied-cut block-id)
         (only (theourgia wire) encode-record storable-encode)
@@ -184,6 +185,22 @@
       (in-order (filter (lambda (g) (kind-refusal? (rule-value-check (in-rule g)))) readme-rule-goals)
                 (>= (length readme-rule-goals) 3))
       '(() #t))
+;; THE COUNTS PARAGRAPH names the tables' sizes. Each number is read from the
+;; text in front of its phrase, a phrase that occurs once (the README's line
+;; breaks read as spaces), and compared with the table the phrase cites.
+(define readme-flat (list->string (map (lambda (c) (if (char=? c #\newline) #\space c)) (string->list readme))))
+(define (count-before phrase)
+  (let ((at (string-index-from readme-flat phrase 0)))
+    (and at (not (string-index-from readme-flat phrase (+ at 1)))
+         (let loop ((i (- at 1)) (digits '()))
+           (if (and (>= i 0) (char-numeric? (string-ref readme-flat i)))
+               (loop (- i 1) (cons (string-ref readme-flat i) digits))
+               (and (pair? digits) (string->number (list->string digits))))))))
+(want "README-3 the counts paragraph's fact relations, rule relations and library rules are the sizes of fact-relations, the library's rule relations and rule-library"
+      (list (count-before " fact relations (`query.sc`, `fact-relations`)")
+            (count-before " rule relations defined by the library's")
+            (count-before " rules (`query.sc`, `rule-library`"))
+      (list (length fact-relations) (length (rule-relations rule-library)) (length rule-library)))
 
 ;; ---- LIB: the library rules' kinds -----------------------------------------------------------
 (printf "== LIB: the library rules check against the kinds ==\n")

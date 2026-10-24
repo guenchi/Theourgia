@@ -15,8 +15,13 @@
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit! latest-parent-cut
           working-restore! working-snapshot working-baseline working-state
-          working-new! working-delete! working-structural provisional-id provisional-id?
+          working-new! working-delete! working-move-structural! working-structural provisional-id provisional-id?
           working-structural-outputs
+          ;; the two tests a structural draft is judged by, a new file's path
+          ;; (working-new!) and a deleted file's baseline (the commit's
+          ;; preflight), exported so that landing-freeze judges an off-cut
+          ;; draft by them and not by a copy
+          path-holder holder-baseline
           ;; NOTE: EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
           ;; the lock a write takes, and a seam holding a path spelled
@@ -770,6 +775,71 @@
                     (list 'working-delete 1 writer holder
                           (structural-version 'delete holder based-on cut)
                           based-on cut))))))))))))))
+  ;; A STRUCTURAL ENTRY MOVED ONTO ANOTHER CUT, IN PLACE: the live entry at
+  ;; KEY, while it is still EXPECTED-VERSION, written again at CUT-TEXT with
+  ;; its own path, language and bytes (a new file) or holder and based-on (a
+  ;; delete), its version recomputed for that cut. Refused: an entry absent,
+  ;; consumed or of another version (structural-changed, with the version
+  ;; found or #f), a new file's path held there (path-exists), a deleted
+  ;; file gone there (not-a-file) or changed (baseline-changed), an unusable
+  ;; cut. -> (ok (moved <key>) (version <v>) (cut <cut>))
+  ;; NEVER: ONE LOCK, ONE WRITE, NOTHING REMOVED. The check and the write are
+  ;; one hold of the writer's draft lock, so a draft written between them
+  ;; cannot exist to be overwritten; the new entry replaces the old one at
+  ;; the same key by one atomic write (atomic-write!: the temporary file
+  ;; flushed, renamed over the entry, then the directory flushed). A refusal,
+  ;; or a failure before the rename, leaves the old entry where it was; a
+  ;; failure of the directory flush after the rename leaves the whole new
+  ;; entry at the new cut. The answer is a refusal either way, so the caller
+  ;; reads the entry again rather than assume either one. A discard and a
+  ;; re-write were two acquisitions, and a discard that failed after its
+  ;; unlink lost the entry.
+  (define (working-move-structural! store supplied key expected-version cut-text)
+    (needing-writer supplied (lambda ()
+    (problem (lambda ()
+      (let ((writer (requested-writer store supplied)))
+        (cond
+          ((not writer) (invalid-writer))
+          ((not (and (structural-key? key) (string? expected-version) (string? cut-text)))
+           '(error bad-request invalid-structural-move))
+          (else
+           (with-draft-lock store writer
+             (lambda ()
+               (or (foreign-writer-refusal store writer)
+                   (let* ((state (obtain-state store #f #f))
+                          (old (structural-at store writer key))
+                          (live (and old (not (consumed? store state old)) old)))
+                     (if (not (and live (equal? (list-ref live 4) expected-version)))
+                         (list 'error 'structural-changed (list 'key key) (list 'expected expected-version)
+                               (list 'found (and live (list-ref live 4))))
+                         (let ((at (state-at-cut-text store state cut-text)))
+                           (if (not at)
+                               '(error invalid-working-baseline (reason cut-unusable))
+                               (let* ((cut (reduce-applied-cut at)) (entry (entry-at-cut live at cut)))
+                                 (if (eq? (car entry) 'error)
+                                     entry
+                                     (begin
+                                       ;; INJECTION ONLY: inside the lock, before the one write
+                                       (hold-point! 'structural-move-before-write)
+                                       (ensure-area! store writer "structural")
+                                       (atomic-write! (structural-path store writer key) (encode entry) 'working)
+                                       (list 'ok (list 'moved key) (list 'version (list-ref entry 4))
+                                             (list 'cut cut))))))))))))))))))))
+  ;; -> ENTRY written again at CUT, AT the state there, or the refusal: a new
+  ;; file's path free there (path-holder, as working-new! asks), a deleted
+  ;; file's baseline there still its based-on (holder-baseline)
+  (define (entry-at-cut e at cut)
+    (if (eq? (car e) 'working-new)
+        (let ((path (list-ref e 5)) (bytes (list-ref e 8)))
+          (if (path-holder at path)
+              (list 'error 'path-exists (list 'path path))
+              (list 'working-new 1 (list-ref e 2) (list-ref e 3)
+                    (structural-version 'new path (hex-digest bytes) cut) path (list-ref e 6) cut bytes)))
+        (let* ((holder (list-ref e 3)) (b (holder-baseline at holder)))
+          (cond ((not b) (list 'error 'not-a-file (list 'holder holder)))
+                ((not (equal? b (list-ref e 5))) (list 'error 'baseline-changed (list 'holder holder)))
+                (else (list 'working-delete 1 (list-ref e 2) holder
+                            (structural-version 'delete holder b cut) b cut))))))
   ;; -> (ok <writer> <items>): each live structural draft, (new (provisional
   ;; <id>) (path <p>) (version <v>) (cut <c>) (bytes <b>)) or (delete (holder
   ;; <h>) (version <v>) (based-on <b>) (cut <c>))

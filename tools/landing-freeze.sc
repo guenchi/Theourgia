@@ -30,15 +30,27 @@
 ;;   the committed one are merged line by line against the block's text at
 ;;   the draft's cut (merge3 below), and the merged text is written onto the
 ;;   committed version. Both go through `write --rebase --based-on
-;;   --working-cut` under the writer's name. When any draft's change and the
-;;   committed one touch the same or adjacent lines (and are not the same
-;;   edit), or lines repeat so that the alignment is in doubt, or a structural draft
-;;   (new, delete) stands on another cut, NOTHING is written and the freeze is
-;;   refused (error drafts-behind-conflict (blocks (<block> ...)) [(structural
-;;   (<key> ...))]), naming every one: the coder merges those by hand. Each
-;;   draft written is recorded in <dir>/REBASED.sexp as (rebased <block>
-;;   (from <hash>) (to <hash>)) or (moved <block> (from-cut <cut>) (to-cut
-;;   <cut>)), and the answer counts them;
+;;   --working-cut` under the writer's name. A STRUCTURAL DRAFT (new, delete)
+;;   at another cut is MOVED when it still applies there unchanged: a new
+;;   file whose path no live file holds at the applied cut, a delete whose
+;;   file's baseline there is still its based-on. Its entry is rewritten in
+;;   place at the applied cut (working-move-structural!, one draft lock: the
+;;   same bytes, path and language, the version recomputed), and only while
+;;   it is still the version judged. A refusal, or a failure before the
+;;   write's rename, leaves the entry as it was; a failure of the directory
+;;   flush after the rename leaves the whole new entry at the applied cut.
+;;   The freeze is refused either way, (error structural-move-refused (key
+;;   <k>) (answer ..)), and a second freeze reads the entry as it stands.
+;;   When any draft's change and the committed one touch the
+;;   same or adjacent lines (and are not the same edit), or lines repeat so
+;;   that the alignment is in doubt, or a new file's path is held at the
+;;   applied cut, or a deleted file is gone or changed there, NOTHING is
+;;   written and the freeze is refused (error drafts-behind-conflict (blocks
+;;   (<block> ...)) [(structural (<key> ...))]), naming every one: the coder
+;;   merges those by hand. Each draft written is recorded in
+;;   <dir>/REBASED.sexp as (rebased <block> (from <hash>) (to <hash>)) or
+;;   (moved <block or key> (from-cut <cut>) (to-cut <cut>)), and the answer
+;;   counts them;
 ;; - tools/drafts-dump.sc writes the draft list into <dir> (DRAFTS.sexp, with
 ;;   the pinned cut, the join of the drafts' cuts, and <n>.bytes);
 ;; - the working view is read ONCE, its own drafts are checked to be the
@@ -75,11 +87,12 @@
 ;; Each frozen item is first checked against its own record (bytes against
 ;; their sha256, the version against its fields, a draft's bytes as text):
 ;; (error frozen-damaged (block|structural <id>)). Then a frozen draft whose
-;; block was committed since is merged as above but only to judge it. Any
-;; conflicting one, or a structural item at another cut: (error
-;; drafts-behind-conflict (blocks ...) [(structural ...)]). Otherwise, any
-;; draft behind or only off the cut, or the applied cut no longer the pinned
-;; one: (error refreeze (behind (<block> ...)) (moved (<block> ...)) (pinned
+;; block was committed since is merged as above but only to judge it, and a
+;; structural item at another cut is judged as above. Any conflicting one:
+;; (error drafts-behind-conflict (blocks ...) [(structural ...)]). Otherwise,
+;; any draft behind or only off the cut (a structural one a freeze would
+;; move among them), or the applied cut no longer the pinned one: (error
+;; refreeze (behind (<block> ...)) (moved (<block or key> ...)) (pinned
 ;; <cut>) (now <cut>)), since what was gated is not what would land. Else
 ;; (ok (current (pinned <cut>))).
 (import (chezscheme)
@@ -87,7 +100,8 @@
         (only (theourgia store) store-state-at-cut open-and-reduce)
         (only (theourgia reduce) reduce-applied-cut reduction? state-read block-hash draft-version structural-version)
         (only (theourgia markers) src-text)
-        (only (theourgia working) working-state working-structural-outputs working-structural)
+        (only (theourgia working) working-state working-structural-outputs working-structural
+              working-move-structural! path-holder holder-baseline)
         (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
@@ -257,45 +271,85 @@
                                (merge3 (src-of past id) text (src-of now id)))))
              (if merged (list 'rebased merged committed) (list 'conflict)))))))
 
-;; THE STRUCTURAL DRAFTS STAND ON THEIR CUT: none is moved or rebased, so one
-;; at another cut than the applied one is named. -> (<key> ...)
-(define (structural-off-cut store writer now)
+;; THE JUDGEMENT OF ONE STRUCTURAL DRAFT I against NOW, the store as applied.
+;; I is a live item (working-structural) or a frozen one, (new (provisional
+;; ..) (path ..) (cut ..) ...) or (delete (holder ..) (based-on ..) (cut ..)
+;; ...). -> current when it stands at the applied cut; moved when it can be
+;; written again there unchanged: a new file whose path no live file holds
+;; there (path-holder, the test working-new! makes), a delete whose file's
+;; baseline there is still its based-on (holder-baseline, the test the
+;; commit's preflight makes); conflict otherwise, merged by hand.
+(define (judge-structural now i)
+  (cond ((equal? (cut-set (clause 'cut i)) (cut-set (reduce-applied-cut now))) 'current)
+        ((eq? (car i) 'new) (if (path-holder now (clause 'path i)) 'conflict 'moved))
+        (else (let ((b (holder-baseline now (clause 'holder i))))
+                (if (and b (equal? b (clause 'based-on i))) 'moved 'conflict)))))
+;; -> ((<item> . <verdict>) ...), the writer's live structural drafts judged
+(define (structural-judged store writer now)
   (let ((a (working-structural store #f writer)))
     (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'structural-refused a))
-    (map (lambda (i) (if (eq? (car i) 'new) (clause 'provisional i) (string-append "delete-" (clause 'holder i))))
-         (filter (lambda (i) (not (equal? (cut-set (clause 'cut i)) (cut-set (reduce-applied-cut now)))))
-                 (caddr a)))))
+    (map (lambda (i) (cons i (judge-structural now i))) (caddr a))))
+;; ONE STRUCTURAL DRAFT I MOVED ONTO THE APPLIED CUT AT, by working.sc's own
+;; move: its entry rewritten in place under one draft lock, and only while it
+;; is still the version judged here (I's), so a draft rewritten since the
+;; judgement is refused (structural-changed) and stands as it is.
+;; NEVER: NO DISCARD, NO RE-WRITE. One key holds one entry; a discard then a
+;; write is two lock acquisitions, and between them a draft re-created at the
+;; same path (its key is a function of the path) was overwritten, and a
+;; discard that failed after its unlink lost the only copy. The move removes
+;; nothing first; what a refused or failed move leaves is said in the header.
+;; -> (moved <key> (from-cut <cut>) (to-cut <cut>)), the to-cut the move's own
+(define (move-structural! store writer at i)
+  (let ((key (structural-key-of i)))
+    (hold-point! 'freeze-before-move)
+    (let ((a (working-move-structural! store writer key (clause 'version i) (format "~s" at))))
+      (unless (and (pair? a) (eq? (car a) 'ok))
+        (refuse 'structural-move-refused (list 'key key) (list 'answer a)))
+      (list 'moved key (list 'from-cut (clause 'cut i)) (list 'to-cut (clause 'cut a))))))
 
 (define (conflict-refusal blocks structural)
   (apply refuse 'drafts-behind-conflict (list 'blocks blocks)
          (if (null? structural) '() (list (list 'structural structural)))))
 
-;; EVERY DRAFT ONTO THE APPLIED CUT, or nothing written. -> the records,
-;; ((rebased <block> (from <hash>) (to <hash>)) | (moved <block> (from-cut <cut>) (to-cut <cut>)) ...)
+;; EVERY DRAFT ONTO THE APPLIED CUT, or nothing written: every block draft and
+;; every structural one is judged before the first write. -> the records,
+;; ((rebased <block> (from <hash>) (to <hash>)) | (moved <block or key> (from-cut <cut>) (to-cut <cut>)) ...),
+;; the block drafts' first
 (define (bring-onto-applied-cut! store writer)
   (let* ((now (open-and-reduce store))
          (at (reduce-applied-cut now))
          (drafts (map (lambda (d) (draft-info store writer (car d))) (block-drafts store writer)))
          (judged (map (lambda (d) (cons d (judge store now (car d) (caddr d) (cadddr d) (list-ref d 4)))) drafts))
          (conflicts (map caar (filter (lambda (j) (eq? (cadr j) 'conflict)) judged)))
-         (structural (structural-off-cut store writer now)))
+         (sjudged (structural-judged store writer now))
+         (structural (map (lambda (j) (structural-key-of (car j))) (filter (lambda (j) (eq? (cdr j) 'conflict)) sjudged)))
+         (smoves (map car (filter (lambda (j) (eq? (cdr j) 'moved)) sjudged))))
     (unless (and (null? conflicts) (null? structural)) (conflict-refusal conflicts structural))
-    (fold-right
-      (lambda (j records)
-        (let* ((d (car j)) (id (car d)) (verdict (cdr j)))
-          (if (eq? (car verdict) 'current)
-              records
-              (let* ((to (if (eq? (car verdict) 'rebased) (caddr verdict) (caddr d)))
-                     (a (rpc-dispatch store (list 'write id "-" "--writer" writer "--rebase"
-                                                  "--based-on" to "--working-cut" (format "~s" at))
-                                      actor #f #f (lambda () (cadr verdict)) #f)))
-                (unless (and (pair? a) (eq? (car a) 'ok))
-                  (refuse 'rebase-refused (list 'block id) (list 'answer a)))
-                (cons (if (eq? (car verdict) 'rebased)
-                          (list 'rebased id (list 'from (caddr d)) (list 'to to))
-                          (list 'moved id (list 'from-cut (cadddr d)) (list 'to-cut at)))
-                      records)))))
-      '() judged)))
+    (let ((block-records (bring-blocks! store writer at judged)))
+      ;; one at a time, in order: a refused move stops the rest
+      (let loop ((is smoves) (out '()))
+        (if (null? is)
+            (append block-records (reverse out))
+            (loop (cdr is) (cons (move-structural! store writer at (car is)) out)))))))
+
+;; the block drafts judged moved or rebased, written: -> their records
+(define (bring-blocks! store writer at judged)
+  (fold-right
+    (lambda (j records)
+      (let* ((d (car j)) (id (car d)) (verdict (cdr j)))
+        (if (eq? (car verdict) 'current)
+            records
+            (let* ((to (if (eq? (car verdict) 'rebased) (caddr verdict) (caddr d)))
+                   (a (rpc-dispatch store (list 'write id "-" "--writer" writer "--rebase"
+                                                "--based-on" to "--working-cut" (format "~s" at))
+                                    actor #f #f (lambda () (cadr verdict)) #f)))
+              (unless (and (pair? a) (eq? (car a) 'ok))
+                (refuse 'rebase-refused (list 'block id) (list 'answer a)))
+              (cons (if (eq? (car verdict) 'rebased)
+                        (list 'rebased id (list 'from (caddr d)) (list 'to to))
+                        (list 'moved id (list 'from-cut (cadddr d)) (list 'to-cut at)))
+                    records)))))
+    '() judged))
 
 ;; -> ((<block> . <version>) ...), the writer's live block drafts
 (define (block-drafts store writer)
@@ -335,9 +389,9 @@
 
 ;; --check: a freeze already made, judged against the store now; nothing
 ;; written. THE FROZEN BYTES ARE JUDGED, not the writer's live drafts: what
-;; was gated is what would land. A structural item stands on its cut: one at
-;; the applied cut is current (nothing was committed since, so a delete's
-;; file is as it was), one at another is named.
+;; was gated is what would land. A structural item at the applied cut is
+;; current (nothing was committed since, so a delete's file is as it was);
+;; one at another is judged by judge-structural, as a freeze judges it.
 (define (check store writer dir)
   (let ((m (frozen-manifest dir)))
     (unless (equal? (clause 'writer m) writer)
@@ -354,13 +408,15 @@
                                              (judge store now (clause 'block d) (clause 'based-on d) (clause 'cut d) (src-text b)))))
                                 items bytes)))
            (named (lambda (kind) (map car (filter (lambda (j) (eq? (cadr j) kind)) judged))))
-           (structural (map (lambda (d) (if (eq? (car d) 'new) (clause 'provisional d) (string-append "delete-" (clause 'holder d))))
-                            (filter (lambda (d) (and (memq (car d) '(new delete))
-                                                     (not (equal? (cut-set (clause 'cut d)) (cut-set at)))))
-                                    items))))
-      (cond ((not (and (null? (named 'conflict)) (null? structural))) (conflict-refusal (named 'conflict) structural))
-            ((or (pair? (named 'rebased)) (pair? (named 'moved)) (not (equal? (cut-set at) (cut-set pinned))))
-             (refuse 'refreeze (list 'behind (named 'rebased)) (list 'moved (named 'moved)) (list 'pinned pinned) (list 'now at)))
+           ;; the frozen structural items, judged as a freeze judges the live ones
+           (sjudged (map (lambda (d) (cons (structural-key-of d) (judge-structural now d)))
+                         (filter (lambda (d) (memq (car d) '(new delete))) items)))
+           (skeys (lambda (verdict) (map car (filter (lambda (j) (eq? (cdr j) verdict)) sjudged)))))
+      (cond ((not (and (null? (named 'conflict)) (null? (skeys 'conflict))))
+             (conflict-refusal (named 'conflict) (skeys 'conflict)))
+            ((or (pair? (named 'rebased)) (pair? (named 'moved)) (pair? (skeys 'moved)) (not (equal? (cut-set at) (cut-set pinned))))
+             (refuse 'refreeze (list 'behind (named 'rebased)) (list 'moved (append (named 'moved) (skeys 'moved)))
+                     (list 'pinned pinned) (list 'now at)))
             (else (list 'ok (list 'current (list 'pinned pinned))))))))
 
 (define (freeze store writer dir)

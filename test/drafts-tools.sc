@@ -61,6 +61,20 @@
 ;; naming the drafts behind and those only moved, drafts-behind-conflict,
 ;; frozen-damaged for bytes or fields that no longer match their record, and
 ;; manifest-unreadable for a manifest that is not one datum.
+;; MV: a structural draft behind an unrelated commit is moved onto the applied
+;; cut by the freeze (a new file, the path still free there; a delete, its
+;; file unchanged there), recorded, frozen and landed; a path another writer
+;; created, or a deleted file another writer edited, is named and nothing is
+;; moved; --check names the first as moved and the second as a conflict and
+;; writes nothing. The move rewrites the entry in place under one draft lock,
+;; and only while it is still the version judged: its write faulted inside the
+;; lock (the structural directory read-only at structural-move-before-write)
+;; leaves the entry at its old cut with its old bytes; the directory flush
+;; faulted after the write's rename leaves the whole new entry at the applied
+;; cut, and a second freeze reads it; a draft written again
+;; at freeze-before-move is refused structural-changed and stands; a write of
+;; the same draft begun inside the lock waits for the move; --check on a freeze
+;; whose draft was made again judges the frozen item and writes nothing.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -514,6 +528,7 @@
 (define (entry lib name) (guard (e (#t #f)) (eval name (environment lib))))
 (define working-new! (entry '(theourgia working) 'working-new!))
 (define working-delete! (entry '(theourgia working) 'working-delete!))
+(define working-structural (entry '(theourgia working) 'working-structural))
 (define structural-version (entry '(theourgia reduce) 'structural-version))
 (define provisional-id (entry '(theourgia reduce) 'provisional-id))
 (define file-new-intents (entry '(theourgia landing-files) 'file-new-intents))
@@ -1014,6 +1029,220 @@
 (want "BH-4 a commit while the freeze waits after its dump refuses it, cut-moved, which exits 1"
       (list held9 done9 (head-of (file-datum out9)) (and done9 (file-datum rc9)))
       '(#t #t (error cut-moved) 1))
+;; ---- MV: a structural draft off the applied cut, moved or named ----------------------
+(printf "== MV: a structural draft behind the applied cut is moved when it still applies, or named ==\n")
+;; a commit that moves the applied cut and no file a structural draft names
+(define (unrelated-commit! st) (checked "set" (ask st 'set (block-of st "a.txt") "title" "elsewhere")))
+(define (structural-of st key) (find (lambda (d) (equal? (structural-key d) key)) (structural-items st)))
+(define m-text "(define m 1)\n")
+(define m-pid (if provisional-id (provisional-id "m.sc") "none"))
+(define q-pid (if provisional-id (provisional-id "q.sc") "none"))
+;; ANOTHER WRITER CREATES PATH: its own new-file draft, committed
+(define (other-creates! st path)
+  (let ((a (checked "other new" (working-new! st #f O path (lang-fields (language-for-path path)) (string->utf8 "(define other 1)\n") #f))))
+    (checked "other commit" (ask st 'commit "--writer" O "--working-new"
+                                 (string-append (provisional-id path) "=" (clause1 'version a))))))
+(define (rebased-records dir) (let ((r (file-datum (string-append dir "/REBASED.sexp")))) (and (pair? r) (cdr r))))
+;; A NEW FILE BEHIND AN UNRELATED COMMIT: moved, frozen, checked, landed
+(define m1 (imported-store!))
+(new-draft! m1 "m.sc" m-text)
+(define m1-cut0 (let ((d (structural-of m1 m-pid))) (and d (clause1 'cut d))))
+(unrelated-commit! m1)
+(define m1-cut1 (cut-of m1))
+(define m1-freeze (string-append root "/m1-freeze"))
+(define m1-frozen (tool "landing-freeze" m1 "--writer" W m1-freeze))
+(want "ST-M1 a new file's draft behind an unrelated commit is moved: (moved 1), REBASED records it from its cut to the applied one, the tree holds its bytes, the pinned cut is the applied cut, --check is current, and the freeze lands"
+      (in-order (head-of m1-frozen) (clause1 'moved m1-frozen)
+                (rebased-records m1-freeze)
+                (text-of (string-append m1-freeze "/tree/m.sc"))
+                (equal? (clause1 'pinned-cut (file-datum (string-append m1-freeze "/DRAFTS.sexp"))) (cut-of m1))
+                (head-of (tool "landing-freeze" m1 "--writer" W "--check" m1-freeze))
+                (head-of (tool "landing-commit" m1 m1-freeze))
+                (live-paths m1))
+      (list 'ok 1 (list (list 'moved m-pid (list 'from-cut m1-cut0) (list 'to-cut m1-cut1))) m-text #t 'ok 'ok
+            '("a.txt" "b.txt" "m.sc")))
+;; THE PATH CREATED BY ANOTHER WRITER: that draft is named; a second new file
+;; that still applies is not, and neither is moved
+(define m2 (imported-store!))
+(new-draft! m2 "m.sc" m-text)
+(new-draft! m2 "q.sc" "(define q 1)\n")
+(define m2-before (structural-items m2))
+(other-creates! m2 "m.sc")
+(define m2-freeze (string-append root "/m2-freeze"))
+(want "ST-M2 a new file whose path another writer's commit created: drafts-behind-conflict naming it alone, nothing frozen, W's drafts untouched at their cut"
+      (in-order (tool "landing-freeze" m2 "--writer" W m2-freeze)
+                (file-exists? m2-freeze)
+                (equal? (structural-items m2) m2-before))
+      (list (list 'error 'drafts-behind-conflict (list 'blocks '()) (list 'structural (list m-pid))) #f #t))
+;; A DELETE: moved behind an unrelated commit; named when its file changed
+(define m3 (imported-store!))
+(delete-draft! m3 "b.txt")
+(define m3-key (string-append "delete-" (st-file m3 "b.txt")))
+(define m3-cut0 (let ((d (structural-of m3 m3-key))) (and d (clause1 'cut d))))
+(unrelated-commit! m3)
+(define m3-cut1 (cut-of m3))
+(define m3-freeze (string-append root "/m3-freeze"))
+(define m3-frozen (tool "landing-freeze" m3 "--writer" W m3-freeze))
+(want "ST-M3 a delete behind an unrelated commit is moved, recorded under delete-<holder>, the tree leaves the file out, and the freeze lands"
+      (in-order (head-of m3-frozen) (clause1 'moved m3-frozen)
+                (rebased-records m3-freeze)
+                (text-of (string-append m3-freeze "/tree/b.txt"))
+                (head-of (tool "landing-commit" m3 m3-freeze))
+                (live-paths m3))
+      (list 'ok 1 (list (list 'moved m3-key (list 'from-cut m3-cut0) (list 'to-cut m3-cut1))) 'ABSENT 'ok '("a.txt")))
+(define m3b (imported-store!))
+(delete-draft! m3b "b.txt")
+(define m3b-key (string-append "delete-" (st-file m3b "b.txt")))
+(changed-under! m3b "b.txt")
+(define m3b-freeze (string-append root "/m3b-freeze"))
+(want "ST-M3 a delete whose file another writer edited since: drafts-behind-conflict naming delete-<holder>, nothing frozen"
+      (in-order (tool "landing-freeze" m3b "--writer" W m3b-freeze) (file-exists? m3b-freeze))
+      (list (list 'error 'drafts-behind-conflict (list 'blocks '()) (list 'structural (list m3b-key))) #f))
+;; --check: a freeze whose new file is behind an unrelated commit would be
+;; moved; once another writer creates its path it conflicts. Nothing written.
+(define m4 (imported-store!))
+(new-draft! m4 "m.sc" m-text)
+(define m4-freeze (string-append root "/m4-freeze"))
+(checked "freeze" (tool "landing-freeze" m4 "--writer" W m4-freeze))
+(unrelated-commit! m4)
+(define m4-before (structural-items m4))
+(want "ST-M4 --check on a freeze whose new file is now behind: refreeze naming its key as moved, none behind; the check writes nothing"
+      (let ((a (tool "landing-freeze" m4 "--writer" W "--check" m4-freeze)))
+        (in-order (head-of a) (clause1 'behind a) (clause1 'moved a) (equal? (structural-items m4) m4-before)))
+      (list '(error refreeze) '() (list m-pid) #t))
+(other-creates! m4 "m.sc")
+(want "ST-M4 --check once another writer created the path: drafts-behind-conflict naming the key; nothing written"
+      (in-order (tool "landing-freeze" m4 "--writer" W "--check" m4-freeze) (equal? (structural-items m4) m4-before))
+      (list (list 'error 'drafts-behind-conflict (list 'blocks '()) (list 'structural (list m-pid))) #t))
+;; A MOVE HELD: the freeze waits at STAGE, freeze-before-move (between the
+;; judgement and the move) or structural-move-before-write (inside the move's
+;; draft lock, before its one write); ON-HELD runs there with the writer's
+;; structural directory and its answer is kept. The directory is made writable
+;; again on every way out of the row, so no later row meets it read-only.
+;; -> (held done <answer> <exit code> <on-held's answer>)
+(define (held-freeze st dir tag stage on-held)
+  (let ((rel (string-append root "/" tag "-release"))
+        (out (string-append root "/" tag ".out")) (rc (string-append root "/" tag ".rc"))
+        (sdir (string-append (writer-directory st W) "/structural")))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (sh "( THEOURGIA_INJECT=on THEOURGIA_HOLD=" (quoted (string-append stage ":" rel))
+            " scheme --script " (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted st) " --writer " (quoted W)
+            " " (quoted dir) " > " (quoted out) " 2> " (quoted (string-append root "/" tag ".err")) " < /dev/null; echo $? > "
+            (quoted (string-append rc ".part")) " && mv " (quoted (string-append rc ".part")) " " (quoted rc) " ) &")
+        (let* ((h (wait-for (string-append rel ".held") 60000))
+               (seen (and h (on-held sdir))))
+          (call-with-output-file rel (lambda (p) (display "go" p)))
+          (let ((done (wait-for rc 60000)))
+            (list h done (file-datum out) (and done (file-datum rc)) seen))))
+      (lambda () (sh "chmod u+w " (quoted sdir) " 2>/dev/null")))))
+(define (read-only! d) (sh "chmod a-w " (quoted d)) #t)
+;; -> (<version> <cut> <bytes>) of the live structural entry at KEY, or #f,
+;; read from working-structural, whose items carry the bytes (drafts' do not)
+(define (entry-of st key)
+  (let* ((a (and working-structural (working-structural st #f W)))
+         (d (and (pair? a) (eq? (car a) 'ok)
+                 (find (lambda (i) (equal? (structural-key i) key)) (caddr a)))))
+    (and d (list (clause1 'version d) (clause1 'cut d) (clause1 'bytes d)))))
+;; THE WRITE FAULTED INSIDE THE LOCK: the structural directory read-only at
+;; structural-move-before-write, so the move's one write fails; nothing was
+;; removed before it, so the entry stands at its old cut with its old bytes
+(define m5 (imported-store!))
+(new-draft! m5 "m.sc" m-text)
+(define m5-before (entry-of m5 m-pid))
+(unrelated-commit! m5)
+(define m5-freeze (string-append root "/m5-freeze"))
+(define m5-run (held-freeze m5 m5-freeze "m5" "structural-move-before-write" read-only!))
+(want "ST-M5 the move's write refused inside its lock: structural-move-refused naming the key and working-unavailable, the entry still at its old cut and version with its old bytes, nothing frozen"
+      (let ((a (list-ref m5-run 2)))
+        (list (list (car m5-run) (cadr m5-run)) (list-ref m5-run 3)
+              (head-of a) (clause1 'key a) (head-of (clause1 'answer a))
+              (entry-of m5 m-pid) (file-exists? m5-freeze)))
+      (list '(#t #t) 1 '(error structural-move-refused) m-pid '(error working-unavailable) m5-before #f))
+;; THE DIRECTORY FLUSH FAULTED AFTER THE RENAME (fsync-fail on the structural
+;; directory's flush, the last step of the move's one atomic write): the move
+;; is refused although the whole new entry is installed, at the applied cut
+;; with its old bytes and a version recomputed there; a second freeze reads it
+;; as it stands. A pin of what the write does, not a red-before row.
+(define m5c (imported-store!))
+(new-draft! m5c "m.sc" m-text)
+(define m5c-before (entry-of m5c m-pid))
+(unrelated-commit! m5c)
+(define m5c-out (string-append root "/m5c.out"))
+(sh "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@working:dir=structural scheme --script "
+    (quoted (string-append tools-dir "/landing-freeze.sc")) " " (quoted m5c) " --writer " (quoted W) " "
+    (quoted (string-append root "/m5c-freeze")) " > " (quoted m5c-out) " 2> " (quoted (string-append root "/m5c.err")) " < /dev/null")
+(define m5c-answer (file-datum m5c-out))
+(define m5c-after (entry-of m5c m-pid))
+(want "ST-M5c the directory flush faulted after the move's rename: structural-move-refused with working-unavailable, the whole new entry at the applied cut (old bytes, version recomputed there), and a second freeze answers ok"
+      (list (head-of m5c-answer) (head-of (clause1 'answer m5c-answer))
+            (and m5c-after (equal? (cadr m5c-after) (cut-of m5c)))
+            (and m5c-after (caddr m5c-after))
+            (and m5c-after m5c-before (not (equal? (car m5c-after) (car m5c-before)))
+                 (equal? (car m5c-after) (structural-version 'new "m.sc" (sha256-hex (caddr m5c-after)) (cadr m5c-after))))
+            (head-of (tool "landing-freeze" m5c "--writer" W (string-append root "/m5c-freeze2"))))
+      (list '(error structural-move-refused) '(error working-unavailable) #t (string->utf8 m-text) #t 'ok))
+;; A DRAFT WRITTEN AGAIN AFTER THE JUDGEMENT: at freeze-before-move the coder
+;; writes m.sc again (same key, its own version); the move finds another
+;; version than the one judged and is refused, and the new draft stands
+(define m6-text "(define m 2)\n")
+(define m6 (imported-store!))
+(new-draft! m6 "m.sc" m-text)
+(define m6-before (entry-of m6 m-pid))
+(unrelated-commit! m6)
+(define m6-run (held-freeze m6 (string-append root "/m6-freeze") "m6" "freeze-before-move"
+                            (lambda (d) (new-draft! m6 "m.sc" m6-text) (entry-of m6 m-pid))))
+(want "ST-M6 a draft written again at freeze-before-move: the move is refused structural-changed (expected the judged version, found the new one), and the new draft stands untouched at its cut"
+      (let ((a (list-ref m6-run 2)) (seen (list-ref m6-run 4)))
+        (list (list (car m6-run) (cadr m6-run)) (list-ref m6-run 3) (head-of a) (clause1 'key a)
+              (head-of (clause1 'answer a))
+              (equal? (clause1 'expected (clause1 'answer a)) (and m6-before (car m6-before)))
+              (equal? (clause1 'found (clause1 'answer a)) (and seen (car seen)))
+              (and seen (caddr seen)) (equal? (entry-of m6 m-pid) seen)))
+      (list '(#t #t) 1 '(error structural-move-refused) m-pid '(error structural-changed) #t #t
+            (string->utf8 m6-text) #t))
+;; THE STAGE IS INSIDE THE LOCK: a write of the same writer's draft begun at
+;; structural-move-before-write waits for the move, and lands after it
+(define m6b (imported-store!))
+(new-draft! m6b "m.sc" m-text)
+(unrelated-commit! m6b)
+(define m6b-script (string-append root "/m6b-write.sc"))
+(define m6b-rc (string-append root "/m6b-write.rc"))
+(call-with-output-file m6b-script
+  (lambda (p)
+    (write '(import (chezscheme) (only (theourgia working) working-new!)) p) (newline p)
+    (write `(let ((a (working-new! ,m6b #f ,W "m.sc" ',(lang-fields (language-for-path "m.sc")) (string->utf8 ,m6-text) #f)))
+              (write a) (newline))
+           p)
+    (newline p)))
+(define m6b-run
+  (held-freeze m6b (string-append root "/m6b-freeze") "m6b" "structural-move-before-write"
+               (lambda (d)
+                 (sh "( scheme --script " (quoted m6b-script) " > " (quoted (string-append root "/m6b-write.out")) " 2>&1 < /dev/null; echo $? > "
+                     (quoted (string-append m6b-rc ".part")) " && mv " (quoted (string-append m6b-rc ".part")) " " (quoted m6b-rc) " ) &")
+                 ;; still waiting after 1.5 s while the move holds its lock
+                 (not (wait-for m6b-rc 1500)))))
+(define m6b-done (wait-for m6b-rc 60000))
+(want "ST-M6 a write of the same draft begun while the move holds inside its lock waits for it, then lands: the draft holds the later bytes"
+      (list (list (car m6b-run) (cadr m6b-run)) (list-ref m6b-run 4) m6b-done (and m6b-done (file-datum m6b-rc))
+            (let ((e (entry-of m6b m-pid))) (and e (caddr e))))
+      (list '(#t #t) #t #t 0 (string->utf8 m6-text)))
+;; --check AFTER THE DRAFT WAS MADE AGAIN: a freeze whose new file is behind,
+;; its live draft discarded and laid again; the frozen item is judged, so the
+;; answer names it as moved, and nothing is written
+(define m7 (imported-store!))
+(new-draft! m7 "m.sc" m-text)
+(define m7-freeze (string-append root "/m7-freeze"))
+(checked "freeze" (tool "landing-freeze" m7 "--writer" W m7-freeze))
+(unrelated-commit! m7)
+(checked "discard" (ask m7 'discard m-pid "--writer" W))
+(new-draft! m7 "m.sc" m6-text)
+(define m7-before (entry-of m7 m-pid))
+(want "ST-M7 --check on a freeze whose new file is behind and whose draft was made again: refreeze naming the key as moved; the live draft untouched"
+      (let ((a (tool "landing-freeze" m7 "--writer" W "--check" m7-freeze)))
+        (list (head-of a) (clause1 'behind a) (clause1 'moved a) (equal? (entry-of m7 m-pid) m7-before)))
+      (list '(error refreeze) '() (list m-pid) #t))
 
 ;; ---- SEED: what a writable store starts from ---------------------------------------
 (printf "== SEED: a copy of a store is adopted, written and committed ==\n")

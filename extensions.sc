@@ -72,7 +72,7 @@
             '((theourgia template) . template-verb)
             '(refuse "apply"))
       (list 'names names-usage
-            "Which names a code block uses, as its stored code shows them, and which libraries a library block imports. A datum block's body is walked as data: a symbol is a use unless something in the form binds it, and an unknown macro's operands count as uses. A text block's uses are every token its language's identifier pattern matches, comments and strings included. No name is resolved."
+            "Which names a code block uses, as its stored code shows them, and which libraries a library block imports. A datum block's body is walked as data: a symbol is a use unless something in the form binds it, and an unknown macro's operands count as uses. A text block of a language with a reader (Scheme's) is read as forms first, each walked as a datum block's body is, so comments and strings are not names; when any part of it does not read, the whole block falls back to the tokens, as every other text block's uses are: every token its language's identifier pattern matches, comments and strings included. No name is resolved."
             #f 'daemon
             '() '()
             '((theourgia name-use) . names-verb))

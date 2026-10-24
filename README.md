@@ -1441,9 +1441,9 @@ small example each. The language itself is introduced under `query` and
 `rule`, and its relations are the two lists under `query`, which are
 generated from `query.sc`'s own tables and compared with them by a test:
 they are not copied here, so there is one list to keep right. The counts,
-read from `query.sc`'s tables: 24 fact relations (`query.sc`,
-`fact-relations`), 4 tests (`query.sc`, `tests`), and 19 rule relations
-defined by the library's 38 rules (`query.sc`, `rule-library`, one line each
+read from `query.sc`'s tables: 26 fact relations (`query.sc`,
+`fact-relations`), 4 tests (`query.sc`, `tests`), and 21 rule relations
+defined by the library's 43 rules (`query.sc`, `rule-library`, one line each
 in `rule-lines`); a rule of the store may also name the 7 facts only a rule
 check has (`query.sc`, `rule-only-facts`). A citation names the definition,
 not a line, so it stays true as the file changes.
@@ -3561,16 +3561,29 @@ bytes at the applied cut; one that is behind is rebased: its change and the
 committed one are merged line by line against the block's text at the
 draft's cut, and the result is written onto the committed version. Both go
 through `write --rebase --based-on <v> --working-cut <cut>` under W's name.
+A structural draft at another cut is moved too when it still applies there
+unchanged: a new file whose path no live file holds at the applied cut, or a
+delete whose file's baseline there is still the draft's `based-on`. Its
+entry is rewritten in place at the applied cut, with the same bytes, path and
+language and a version recomputed for the new cut, under one hold of W's
+draft lock and only while it is still the version the freeze judged: a draft
+written again since is refused `structural-changed`, not overwritten. Nothing
+is removed first: a refusal, or a failure before the write's rename, leaves
+the entry where it was, and a failure of the directory flush after the rename
+leaves the whole new entry at the applied cut. The freeze is refused either
+way, `(error structural-move-refused (key <k>) (answer ...))`, and a second
+freeze reads the entry as it stands.
 A draft whose change and the committed one touch the same or adjacent lines
 cannot be rebased unless the two are the same change, nor can one whose
 lines repeat so that which of them changed is in doubt (each side is
-aligned from both ends, and the merges must agree), nor a structural draft
-at another cut: then nothing
+aligned from both ends, and the merges must agree), nor a new file whose
+path a live file holds at the applied cut, nor a delete whose file is gone
+or has changed there: then nothing
 is written and the freeze is refused `(error drafts-behind-conflict (blocks
 (<block> ...)) (structural (<key> ...)))`, the second clause only when a
 structural draft is named. Each draft written is recorded in
 `<dir>/REBASED.sexp`, `(rebases (rebased <block> (from <v>) (to <v>)) ...
-(moved <block> (from-cut <cut>) (to-cut <cut>)) ...)`, and the answer ends
+(moved <block or key> (from-cut <cut>) (to-cut <cut>)) ...)`, and the answer ends
 `(rebased <r>) (moved <m>)`; a freeze that wrote no draft answers without
 them. Drafts written stay written if the freeze is then refused, and an
 `edit-export` taken of the old drafts is to be exported again. Then it
