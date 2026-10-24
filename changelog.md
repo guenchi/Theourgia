@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*323 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*324 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
