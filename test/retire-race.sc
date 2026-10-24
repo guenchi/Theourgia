@@ -111,6 +111,52 @@
 (define report (string-append root "/report.txt"))
 (define runner (string-append root "/run.sh"))
 
+;; EVERY WAIT ON A CHILD'S TRACE IS A CLOCK, NOT A COUNT.
+;;
+;; NOTE: THEY USED TO BE SHELL SPINS OF 300000 AND 400000 ITERATIONS. A
+;; spin measures the machine, not the time: on a slow runner the writer had
+;; not reached its `flock` when the spin ran out, the report read `no`
+;; while the retirer sat inside the lock, and the fixture alone was green.
+;; A poll greps the trace every 50 ms and writes `no` only once the bound
+;; has passed, so what discriminates is unchanged -- with the lock removed
+;; `lock-wait` never appears and the report still reads `no` -- and a slow
+;; machine only makes the `yes` arrive later.
+;;
+;; THE BOUND IS ON CLOCK_MONOTONIC, as every deadline in launch.pl is: the
+;; wall clock can be stepped (NTP, a manual set, a resume), and a step
+;; forward would end the poll early, which is the false `no` this replaces.
+;; The poll is one perl process: it looks for WORD in the trace file, and
+;; it answers `no` only from a look taken after BOUND monotonic seconds,
+;; never before. A poll that cannot run answers nothing, and the line it
+;; leaves matches no row's `yes` or the CONTROL's `no`.
+;;
+;; NOTE: AND IT CARRIES ITS OWN ALARM, BOUND + 10 SECONDS. It is a child of
+;; the runner's shell, and the runner's alarm reaches the shell, not its
+;; children -- the same reason the W6b replacement below has one. A poll
+;; that never ended would otherwise outlive the fixture; with the alarm
+;; it dies, prints nothing, and its row reads red.
+;;
+;; ONE PROCEDURE WRITES ALL THREE POLLS: the dance's wait for the retirer
+;; (`retire-locked`, "retirer-inside") and for the writer (`lock-wait`,
+;; "writer-waited-on-lock"), and W6b's wait for its retirer (`barrier
+;; before-retire`, "retirer-paused"). So the one CONTROL below, which runs
+;; the same text with a trace that never shows its word, pins the bound
+;; of all three.
+(define poll-bound 20)
+(define (trace-poll word trace-file report-file label bound)
+  (string-append
+    "w=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC,sleep -e '"
+    "my ($word, $file, $bound) = @ARGV; alarm($bound + 10); "
+    "my $end = clock_gettime(CLOCK_MONOTONIC) + $bound; "
+    "while (1) { "
+    "my $past = clock_gettime(CLOCK_MONOTONIC) >= $end; "
+    "if (open(my $f, \"<\", $file)) { local $/; my $t = <$f>; close($f); "
+    "if (defined($t) && index($t, $word) >= 0) { print \"yes\"; exit 0; } } "
+    "if ($past) { print \"no\"; exit 0; } "
+    "sleep(0.05); }' "
+    "'" word "' '" trace-file "' " (number->string bound) ")\n"
+    "echo \"" label " $w\" >> '" report-file "'\n"))
+
 ;; THE DANCE.
 ;;
 ;;   1. a child commits, which retires the draft; it is armed to stop
@@ -134,19 +180,13 @@
         "--working-version '" v1 "' --writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" trace "' &\n"
         "a=$!\n"
-        "i=0\n"
-        "while [ $i -lt 400000 ] && ! grep -q retire-locked '" trace "' 2>/dev/null; do i=$((i+1)); done\n"
-        "grep -q retire-locked '" trace "' 2>/dev/null && echo 'retirer-inside yes' >> '" report "' || echo 'retirer-inside no' >> '" report "'\n"
+        (trace-poll "retire-locked" trace report "retirer-inside" poll-bound)
         "THEOURGIA_HOME='" home "' THEOURGIA_TRACE=1 "
         "scheme --script '" cli "' write '" A "' 'v2 text' "
         "--writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" wtrace "' &\n"
         "b=$!\n"
-        "j=0\n"
-        "while [ $j -lt 300000 ]; do j=$((j+1)); done\n"
-        "if grep -q lock-wait '" wtrace "' 2>/dev/null; then "
-        "echo 'writer-waited-on-lock yes' >> '" report "'; "
-        "else echo 'writer-waited-on-lock no' >> '" report "'; fi\n"
+        (trace-poll "lock-wait" wtrace report "writer-waited-on-lock" poll-bound)
         "printf x > '" fifo "'\n"
         "wait $a 2>/dev/null; a=\n"
         "wait $b 2>/dev/null; b=\n"
@@ -179,6 +219,38 @@
 ;; fixture.
 (want "W6-retire-race TWIN: and the writing process waited ON THE LOCK"
       (and (member "writer-waited-on-lock yes" lines) #t) #t)
+
+;; CONTROL: THE POLL ENDS WHEN `lock-wait` NEVER APPEARS. The writer is
+;; replaced by `true`, so its trace is empty, and the bound is shortened to
+;; two seconds. The poll must stop by itself (the runner exits 0 under an
+;; alarm far above the bound), write `no`, take at least the bound, and
+;; end well before 20 s -- so a poll that ignored the bound it was given
+;; and kept a fixed 20 would read red here, not green twenty seconds late.
+;; Without this row the 20 s bound above is a promise in a comment. It is
+;; the one control for all three polls, since `trace-poll` writes each of
+;; them and only the word, the files and the label differ.
+(define control-bound 2)
+(define control-runner (string-append root "/poll-control.sh"))
+(define control-trace (string-append root "/poll-control.trace"))
+(define control-report (string-append root "/poll-control.txt"))
+(call-with-port (open-file-output-port control-runner (file-options no-fail) 'block (native-transcoder))
+  (lambda (p)
+    (put-string p
+      (string-append
+        "#!/bin/sh\n"
+        "rm -f '" control-trace "' '" control-report "'\n"
+        "true 2> '" control-trace "'\n"
+        (trace-poll "lock-wait" control-trace control-report "writer-waited-on-lock" control-bound)))))
+(define control-reading
+  (let* ((t0 (real-time))
+         (rc (system (string-append "perl -e 'alarm 60; exec @ARGV' sh '" control-runner "' > /dev/null 2>&1")))
+         (ms (- (real-time) t0))
+         (line (guard (e (#t #f)) (call-with-input-file control-report get-line))))
+    (printf "poll control: rc ~a, ~a ms, ~s\n" rc ms line)
+    (list rc line (>= ms (* 1000 control-bound)) (< ms (* 1000 (+ control-bound 8))))))
+(want "W6-retire-race CONTROL: with no lock-wait the poll ends by itself, reads no, after its own bound and not a fixed one"
+      control-reading
+      (list 0 "writer-waited-on-lock no" #t #t))
 
 ;; ---- and after both finish ------------------------------------------------
 
@@ -264,9 +336,7 @@
         "--writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" btrace "' &\n"
         "a=$!\n"
-        "i=0\n"
-        "while [ $i -lt 400000 ] && ! grep -q 'barrier before-retire' '" btrace "' 2>/dev/null; do i=$((i+1)); done\n"
-        "grep -q 'barrier before-retire' '" btrace "' 2>/dev/null && echo 'retirer-paused yes' >> '" breport "' || echo 'retirer-paused no' >> '" breport "'\n"
+        (trace-poll "barrier before-retire" btrace breport "retirer-paused" poll-bound)
         ;; THE REPLACEMENT, WHICH MUST FINISH WHILE THE OTHER IS STOPPED.
         ;; NOTE: UNDER ITS OWN ALARM. It is the one step that can block --
         ;; on the draft lock, if the build being measured takes the lock
