@@ -1449,6 +1449,126 @@
     "(with-store-write (cadr (command-line))\n"
     "  (lambda (st v)\n"
     "    '((insert root #f ((kind . section) (title . \"held\"))))))\n"))
+;; A BARRIER RELEASE THAT ENDS.
+;;
+;; A holder parked at a barrier (ffi.sc barrier!) writes its `barrier`
+;; trace line and then opens the gate fifo for reading. The open blocks
+;; until a writer opens the other end, and the byte written is the
+;; release. (release-text gate pid-var bound) is the shell text that
+;; writes that byte and sets the shell variable `released` to `yes` when
+;; the write completed and to `no` when it did not within BOUND seconds
+;; (or failed). A completed write is not proof that the holder has read
+;; the byte, only that a reader had the fifo open. On `no` it also kills
+;; the holder, whose pid is in the shell variable PID-VAR (set by
+;; `<var>=$!` right after the holder is started).
+;;
+;; NOTE: THE WRITE IS THE HANDSHAKE. An open for writing blocks until a
+;; reader opens the fifo, so the byte can only go to the holder. P4 used
+;; to start a `head -c 1` reader first, so that the write had somewhere
+;; to go. That reader could take the byte and close inside the window
+;; between the holder's trace line and its open; the holder then waited
+;; for a writer that never came, and the fixture's final `wait` with it.
+;;
+;; NOTE: THE BOUND KILLS THE HOLDER TOO. Killing only the write is not
+;; enough: a holder that opens after its writer is gone waits for good,
+;; and so does the final `wait`. With both ended, the release no longer
+;; holds the fixture: a holder that never opens is killed within the
+;; bound, and the caller's RELEASED row reads red. The other children a
+;; caller waits for (P4's reader, the second writer) are not bounded here.
+;; P4's write had no bound once: when a seeded defect stopped the holder
+;; from reaching its barrier, the shell waited forever, holding the pipe
+;; it had inherited, so the round that started it could not move on
+;; either. Measured at one hour fifty minutes. Two-writers and P9 wrote
+;; the same unbounded `printf x > gate` until this procedure.
+;;
+;; NOTE: THE WRITE IS ONE PERL PROCESS UNDER ITS OWN ALARM, in the
+;; foreground: SIGALRM's default action ends it inside the blocking open.
+;; The gate is opened write-only WITHOUT O_CREAT, so a gate that is not
+;; there fails and reads `no`, rather than becoming an ordinary file that
+;; any write completes into.
+;; There is no second process holding a pid to signal later, so nothing
+;; can be sent to a pid that has been reused. The holder's pid is the one
+;; numeric pid used: a kill after an expiry assumes it is still the
+;; holder, as every `kill $!` in the tree does; a reuse needs the holder
+;; to die early and the pid space to wrap within the bound.
+(define (release-text gate pid-var bound)
+  (unless (and (string? pid-var) (> (string-length pid-var) 0)
+               (for-all (lambda (c) (and (char<=? #\a c) (char<=? c #\z))) (string->list pid-var)))
+    (assertion-violation 'release-text "the pid variable must be a lower-case a-z shell name" pid-var))
+  (trace-poll-check! 'release-text '() gate bound)
+  (unless (positive? bound)
+    (assertion-violation 'release-text "the bound must be at least one second: alarm 0 is no alarm" bound))
+  (string-append
+    "if perl -MFcntl -e 'alarm shift; sysopen(my $f, shift, O_WRONLY) or exit 1; print $f \"x\"; close($f) or exit 1' "
+    (number->string bound) " '" gate "' 2>/dev/null; "
+    "then released=yes; else released=no; kill $" pid-var " 2>/dev/null; fi; "))
+;; -> the text after "<NAME> " on the first line of REPORT that starts
+;; with it, or #f when no line does
+(define (report-text report name)
+  (let ((key (string-append name " ")))
+    (let loop ((i 0) (start 0))
+      (cond
+        ((>= i (string-length report)) #f)
+        ((char=? (string-ref report i) #\newline)
+         (let ((line (substring report start i)))
+           (if (and (>= (string-length line) (string-length key))
+                    (string=? (substring line 0 (string-length key)) key))
+               (substring line (string-length key) (string-length line))
+               (loop (+ i 1) (+ i 1)))))
+        (else (loop (+ i 1) start))))))
+;; CONTROL: THE RELEASE ENDS WHEN THE HOLDER NEVER OPENS THE GATE. The
+;; holder is a stub that writes its `barrier` line and sleeps 600 s
+;; without opening the gate, and the bound is 2 s. The release must read
+;; `no`, take at least the bound and end well before 10 s, and leave the
+;; stub dead. The run has its own alarm of 30 s, so a release that does
+;; not end reads red here instead of hanging the fixture. Afterwards the
+;; gate is drained, whatever happened: its read end is opened without
+;; blocking for half a second, so a writer still blocked in its open
+;; completes and exits, and STRANDED says whether there was one. Only an
+;; end of file is `no`: no writer has the fifo open. A byte is `yes`, and
+;; so is EAGAIN, because a non-blocking read answers EAGAIN only while a
+;; writer has the fifo open and has not written yet -- a live writer. A
+;; drain that cannot open the gate, or any other error, is `unknown`;
+;; the want is `no`, so a drain that could not look reads red rather than
+;; certifying that nothing is left. A release that leaves a writer behind
+;; reads red, and the drain lets it finish.
+;; THE DUAL: a stub that opens the gate at once takes the byte, and the
+;; release reads `yes` well inside the bound.
+;; -> (<rc> <released> <alive> <stranded> <ms>), each text as the run printed it
+(define (release-control name opens?)
+  (let ((gate (string-append scratch "/release-" name ".gate"))
+        (trace (string-append scratch "/release-" name ".trace"))
+        (runner (string-append scratch "/release-" name ".sh"))
+        (pidf (string-append scratch "/release-" name ".pid")))
+    (write-file! runner
+      (string-append
+        "rm -f '" gate "'; mkfifo '" gate "'\n"
+        "sh -c 'echo \"(theourgia barrier stub)\" >&2; "
+        (if opens? (string-append "head -c 1 " gate " > /dev/null") "exec sleep 600")
+        "' 2> '" trace "' &\n"
+        "hp=$!; echo $hp > '" pidf "'\n"
+        (release-text gate "hp" 2) "\n"
+        "wait\n"
+        "echo RELEASED $released\n"))
+    (let* ((t0 (real-time))
+           (out (sh (string-append
+                      "perl -e 'alarm 30; exec @ARGV' sh '" runner "'; echo RC $?; "
+                      "hp=$(cat '" pidf "'); "
+                      "if kill -0 $hp 2>/dev/null; then echo ALIVE yes; kill $hp; else echo ALIVE no; fi; "
+                      "perl -MFcntl -e 'sysopen(my $f, $ARGV[0], O_RDONLY|O_NONBLOCK) or do { print \"STRANDED unknown\\n\"; exit 0 }; "
+                      "select(undef, undef, undef, 0.5); my $n = sysread($f, my $b, 1); "
+                      "print \"STRANDED \", (defined $n ? ($n > 0 ? \"yes\" : \"no\") : ($!{EAGAIN} ? \"yes\" : \"unknown\")), \"\\n\"' '" gate "'")))
+           (ms (- (real-time) t0)))
+      (printf "release control ~a: ~a ms ~s\n" name ms out)
+      (list (report-text out "RC") (report-text out "RELEASED") (report-text out "ALIVE") (report-text out "STRANDED") ms))))
+(want "CONTROL: a release whose holder never opens the gate ends after its bound, reads no, and leaves no holder and no writer"
+      (let ((r (release-control "never" #f)))
+        (list (car r) (cadr r) (caddr r) (cadddr r) (>= (list-ref r 4) 2000) (< (list-ref r 4) 10000)))
+      (list "0" "no" "no" "no" #t #t))
+(want "CONTROL: a release whose holder opens the gate at once reads yes well inside its bound"
+      (let ((r (release-control "opens" #t)))
+        (list (car r) (cadr r) (caddr r) (cadddr r) (< (list-ref r 4) 2000)))
+      (list "0" "yes" "no" "no" #t))
 (define barrier-report
   (let ((gate (string-append scratch "/gate"))
         (ht (string-append scratch "/holder.trace"))
@@ -1462,29 +1582,15 @@
           ;; still running -- which is how the reader's output came out
           ;; empty.
           "THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
-          "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & "
+          "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & hp=$!; "
           (trace-wait-text '("barrier") ht poll-bound)
           "env -u THEOURGIA_INJECT THEOURGIA_TRACE=1 scheme --script " cli
           "  outline --store " d4b " > " qo " 2> " qt " & "
           (trace-wait-text '("lock-wait" "enter-critical") qt poll-bound)
-          ;; THE RELEASE IS BOUNDED, BECAUSE THE WAIT ABOVE IS. Both waits
-          ;; give up at their bound; this write did not, and a write into a
-          ;; fifo blocks until somebody opens the other end. When a seeded
-          ;; defect stopped the holder from ever reaching its barrier, the
-          ;; wait expired, this line took over, and the shell waited
-          ;; forever -- holding the pipe it had inherited, so the round
-          ;; that started it could not move on either. Measured at one
-          ;; hour fifty minutes.
-          ;;
-          ;; A READER FIRST, SO THE WRITE HAS SOMEWHERE TO GO, and a bound
-          ;; on the whole release so that a fixture which cannot be
-          ;; released still ENDS and reports. Giving up is a row that
-          ;; fails; hanging is a row nobody ever reads.
-          "( head -c 1 " gate " > /dev/null 2>&1 & rp=$!; "
-          "  ( sleep 20; kill $rp 2>/dev/null ) 2>/dev/null & tp=$!; "
-          "  printf x > " gate " 2>/dev/null; "
-          "  wait $rp 2>/dev/null; kill $tp 2>/dev/null ) ; "
+          ;; P4'S WINDOW: a decoy reader once took the byte before the holder's open.
+          (release-text gate "hp" poll-bound)
           "wait; "
+          "echo RELEASED $released; "
           "echo READER-WAITED $(grep -c lock-wait " qt "); "
           "echo READER-ENTERED-EARLY $(grep -c enter-critical " qt "); "
           "echo LINES $(wc -l < " qo ")"))))
@@ -1503,6 +1609,9 @@
 (want "the reader was observed waiting for the lock, and never entered early"
       (list (report-field "READER-WAITED") (report-field "READER-ENTERED-EARLY"))
       (list 1 0))
+(want "and the release was written to the holder"
+      (report-text barrier-report "RELEASED")
+      "yes")
 (want "and what it read once released is two whole records"
       (report-field "LINES")
       2)
@@ -1527,14 +1636,16 @@
           "rm -f " gate " " ht " " qt "; mkfifo " gate "; "
           "THEOURGIA_INJECT=on " env
           "THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
-          "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & "
+          "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & hp=$!; "
           (trace-wait-text '("barrier") ht poll-bound)
           "THEOURGIA_INJECT=on " env "THEOURGIA_TRACE=1 scheme --script " hold-path
           "  " d4c " > /dev/null 2> " qt " & "
           (trace-wait-text '("lock-wait" "enter-critical") qt poll-bound)
           "echo EARLY $(grep -c enter-critical " qt "); "
           "echo WAITED $(grep -c lock-wait " qt "); "
-          "printf x > " gate "; wait"))))
+          ;; TWO-WRITERS' WINDOW: the write had no bound, so a holder that never opened hung here.
+          (release-text gate "hp" poll-bound)
+          "wait; echo RELEASED $released"))))
 (define (field-in report name)
   (let loop ((i 0) (start 0))
     (cond
@@ -1558,6 +1669,9 @@
 (want "with the lock removed the second writer gets in early and never waits (section-13 L6)"
       (list (field-in noflock-report "EARLY") (field-in noflock-report "WAITED"))
       (list 1 0))
+(want "and in both runs the release was written to the first writer"
+      (list (report-text locked-report "RELEASED") (report-text noflock-report "RELEASED"))
+      (list "yes" "yes"))
 
 (printf "== P8: a mirrored writer, through the command line ==\n")
 ;; THE fx2w LAYOUT: the local writer plus a second writer's segment with
@@ -1703,13 +1817,15 @@
         (so (string-append scratch "/second.out")))
     (sh (string-append
           "rm -f " gate " " fo " " so "; mkfifo " gate "; "
-          "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & "
+          "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & fp=$!; "
           (file-wait-text fo poll-bound)
           "env -u THEOURGIA_INJECT scheme --script " cli
           "  insert --under root --title Second --store " d9 " > " so " 2>/dev/null; "
           "echo SECOND $?; "
           "echo FAILER $(head -1 " fo "); "
-          "printf x > " gate "; wait"))))
+          ;; P9'S WINDOW: the write had no bound, so a failer that never opened hung here.
+          (release-text gate "fp" poll-bound)
+          "wait; echo RELEASED $released"))))
 (define (release-field name)
   (let loop ((i 0) (start 0))
     (cond
@@ -1735,6 +1851,9 @@
                       ((char=? (string-ref (out-of r) i) #\newline) (count (+ i 1) (+ n 1)))
                       (else (count (+ i 1) n))))))
       (list 0 2))
+(want "and the release was written to the failed process"
+      (report-text release-report "RELEASED")
+      "yes")
 
 (printf "== P9: a damaged local writer refuses to be written to ==\n")
 ;; A BAD LINE FOLLOWED BY A GOOD ONE. A torn tail at the very end is an
