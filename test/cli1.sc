@@ -197,6 +197,19 @@
               "core.sc is neither beside this fixture nor one level up"
               (list beside above))))))
 
+;; THE WAITS ON A CHILD ARE POLLS FROM trace-poll.ss, which lives beside
+;; this fixture in both layouts. It says why they are a clock and not a
+;; count; the bound below is the one every wait here passes.
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+(define poll-bound 20)
+(load (string-append script-dir "/trace-poll.ss"))
+
 ;; AND THE READING SAYS WHICH PROGRAM IT MEASURED. The locator is right
 ;; -- each layout has exactly one answer -- but the answer never appeared
 ;; in the output, so a copy of core.sc sitting beside this fixture was
@@ -1450,16 +1463,15 @@
           ;; empty.
           "THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
           "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & "
-          "i=0; while [ $i -lt 4000 ] && ! grep -q barrier " ht " 2>/dev/null; do i=$((i+1)); done; "
+          (trace-wait-text '("barrier") ht poll-bound)
           "env -u THEOURGIA_INJECT THEOURGIA_TRACE=1 scheme --script " cli
           "  outline --store " d4b " > " qo " 2> " qt " & "
-          "j=0; while [ $j -lt 4000 ] && ! grep -qE 'lock-wait|enter-critical' " qt
-          "  2>/dev/null; do j=$((j+1)); done; "
-          ;; THE RELEASE IS BOUNDED, BECAUSE THE WAIT ABOVE IS. Both spins
-          ;; give up after a while; this write did not, and a write into a
+          (trace-wait-text '("lock-wait" "enter-critical") qt poll-bound)
+          ;; THE RELEASE IS BOUNDED, BECAUSE THE WAIT ABOVE IS. Both waits
+          ;; give up at their bound; this write did not, and a write into a
           ;; fifo blocks until somebody opens the other end. When a seeded
           ;; defect stopped the holder from ever reaching its barrier, the
-          ;; spin expired, this line took over, and the shell waited
+          ;; wait expired, this line took over, and the shell waited
           ;; forever -- holding the pipe it had inherited, so the round
           ;; that started it could not move on either. Measured at one
           ;; hour fifty minutes.
@@ -1516,11 +1528,10 @@
           "THEOURGIA_INJECT=on " env
           "THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
           "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & "
-          "i=0; while [ $i -lt 4000 ] && ! grep -q barrier " ht " 2>/dev/null; do i=$((i+1)); done; "
+          (trace-wait-text '("barrier") ht poll-bound)
           "THEOURGIA_INJECT=on " env "THEOURGIA_TRACE=1 scheme --script " hold-path
           "  " d4c " > /dev/null 2> " qt " & "
-          "j=0; while [ $j -lt 4000 ] && ! grep -qE 'lock-wait|enter-critical' " qt
-          "  2>/dev/null; do j=$((j+1)); done; "
+          (trace-wait-text '("lock-wait" "enter-critical") qt poll-bound)
           "echo EARLY $(grep -c enter-critical " qt "); "
           "echo WAITED $(grep -c lock-wait " qt "); "
           "printf x > " gate "; wait"))))
@@ -1666,6 +1677,26 @@
     "(display (car (car answer))) (newline)\n"
     ";; still alive, and still holding whatever it did not release\n"
     "(let ((p (open-file-input-port (cadr a)))) (get-u8 p) (close-port p))\n"))
+;; CONTROL: THE FILE-WAIT FORM. The wait below is for the failing child's
+;; first output, so it uses the no-words form, which the one CONTROL in
+;; retire-race.sc does not run. With a bound of 2 s, an empty file must
+;; read `no` after the bound and before 10 s (empty is not "has output"),
+;; and a file with content must read `yes` at once.
+(define file-wait-control
+  (let ((empty (string-append scratch "/file-wait-empty"))
+        (full (string-append scratch "/file-wait-full")))
+    (write-file! empty "")
+    (write-file! full "x\n")
+    (let* ((t0 (real-time))
+           (a (sh (string-append (file-wait-text empty 2) "echo \"$w\"")))
+           (t1 (real-time))
+           (b (sh (string-append (file-wait-text full 2) "echo \"$w\"")))
+           (t2 (real-time)))
+      (printf "file-wait control: ~a ms ~s, ~a ms ~s\n" (- t1 t0) a (- t2 t1) b)
+      (list a (>= (- t1 t0) 2000) (< (- t1 t0) 10000) b (< (- t2 t1) 2000)))))
+(want "CONTROL: the file-wait reads no on an empty file only after its bound, and yes at once on a file with content"
+      file-wait-control
+      (list "no\n" #t #t "yes\n" #t))
 (define release-report
   (let ((gate (string-append scratch "/gate9"))
         (fo (string-append scratch "/failer.out"))
@@ -1673,7 +1704,7 @@
     (sh (string-append
           "rm -f " gate " " fo " " so "; mkfifo " gate "; "
           "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & "
-          "i=0; while [ $i -lt 8000 ] && [ ! -s " fo " ]; do i=$((i+1)); done; "
+          (file-wait-text fo poll-bound)
           "env -u THEOURGIA_INJECT scheme --script " cli
           "  insert --under root --title Second --store " d9 " > " so " 2>/dev/null; "
           "echo SECOND $?; "

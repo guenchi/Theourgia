@@ -111,51 +111,26 @@
 (define report (string-append root "/report.txt"))
 (define runner (string-append root "/run.sh"))
 
-;; EVERY WAIT ON A CHILD'S TRACE IS A CLOCK, NOT A COUNT.
+;; EVERY WAIT ON A CHILD'S TRACE IS A CLOCK, NOT A COUNT, written by
+;; `trace-poll` in trace-poll.ss, which says why (a monotonic bound, no
+;; `no` before it, an alarm of its own).
 ;;
-;; NOTE: THEY USED TO BE SHELL SPINS OF 300000 AND 400000 ITERATIONS. A
-;; spin measures the machine, not the time: on a slow runner the writer had
-;; not reached its `flock` when the spin ran out, the report read `no`
-;; while the retirer sat inside the lock, and the fixture alone was green.
-;; A poll greps the trace every 50 ms and writes `no` only once the bound
-;; has passed, so what discriminates is unchanged -- with the lock removed
-;; `lock-wait` never appears and the report still reads `no` -- and a slow
-;; machine only makes the `yes` arrive later.
+;; NOTE: THEY USED TO BE SHELL SPINS OF 300000 AND 400000 ITERATIONS. On a
+;; slow runner the writer had not reached its `flock` when the spin ran
+;; out, the report read `no` while the retirer sat inside the lock, and
+;; the fixture alone was green. With the poll, what discriminates is
+;; unchanged -- with the lock removed `lock-wait` never appears and the
+;; report still reads `no` -- and a slow machine only makes the `yes`
+;; arrive later.
 ;;
-;; THE BOUND IS ON CLOCK_MONOTONIC, as every deadline in launch.pl is: the
-;; wall clock can be stepped (NTP, a manual set, a resume), and a step
-;; forward would end the poll early, which is the false `no` this replaces.
-;; The poll is one perl process: it looks for WORD in the trace file, and
-;; it answers `no` only from a look taken after BOUND monotonic seconds,
-;; never before. A poll that cannot run answers nothing, and the line it
-;; leaves matches no row's `yes` or the CONTROL's `no`.
-;;
-;; NOTE: AND IT CARRIES ITS OWN ALARM, BOUND + 10 SECONDS. It is a child of
-;; the runner's shell, and the runner's alarm reaches the shell, not its
-;; children -- the same reason the W6b replacement below has one. A poll
-;; that never ended would otherwise outlive the fixture; with the alarm
-;; it dies, prints nothing, and its row reads red.
-;;
-;; ONE PROCEDURE WRITES ALL THREE POLLS: the dance's wait for the retirer
-;; (`retire-locked`, "retirer-inside") and for the writer (`lock-wait`,
+;; THREE POLLS HERE: the dance's wait for the retirer (`retire-locked`,
+;; "retirer-inside") and for the writer (`lock-wait`,
 ;; "writer-waited-on-lock"), and W6b's wait for its retirer (`barrier
-;; before-retire`, "retirer-paused"). So the one CONTROL below, which runs
-;; the same text with a trace that never shows its word, pins the bound
-;; of all three.
+;; before-retire`, "retirer-paused"). The one CONTROL below runs the same
+;; text with a trace that never shows its word, so it pins the helper's
+;; bound for all three, and for every other fixture that loads it.
 (define poll-bound 20)
-(define (trace-poll word trace-file report-file label bound)
-  (string-append
-    "w=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC,sleep -e '"
-    "my ($word, $file, $bound) = @ARGV; alarm($bound + 10); "
-    "my $end = clock_gettime(CLOCK_MONOTONIC) + $bound; "
-    "while (1) { "
-    "my $past = clock_gettime(CLOCK_MONOTONIC) >= $end; "
-    "if (open(my $f, \"<\", $file)) { local $/; my $t = <$f>; close($f); "
-    "if (defined($t) && index($t, $word) >= 0) { print \"yes\"; exit 0; } } "
-    "if ($past) { print \"no\"; exit 0; } "
-    "sleep(0.05); }' "
-    "'" word "' '" trace-file "' " (number->string bound) ")\n"
-    "echo \"" label " $w\" >> '" report-file "'\n"))
+(load (string-append script-dir "/trace-poll.ss"))
 
 ;; THE DANCE.
 ;;
@@ -227,8 +202,9 @@
 ;; end well before 20 s -- so a poll that ignored the bound it was given
 ;; and kept a fixed 20 would read red here, not green twenty seconds late.
 ;; Without this row the 20 s bound above is a promise in a comment. It is
-;; the one control for all three polls, since `trace-poll` writes each of
-;; them and only the word, the files and the label differ.
+;; the one control for the poll text in trace-poll.ss: every call site,
+;; here and in the other fixtures that load it, differs from this one only
+;; in its word, its files and its label.
 (define control-bound 2)
 (define control-runner (string-append root "/poll-control.sh"))
 (define control-trace (string-append root "/poll-control.trace"))
