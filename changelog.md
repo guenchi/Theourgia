@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*320 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*321 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -19,6 +19,7 @@
 - `query` and `context` are published reads of the store process: the publication made current first, no replay while the store has not changed; a query after an outside write sees it (the `theourgia` hooks rely on it).
 - One query session kept by the daemon across requests: reused on the same publication, advanced when the publication moves forward, replaced otherwise; `serve --session-size <entries>` (0 disables); `(name-use syntactic)` reported per answer; the one exception to byte-identity with the local route: a query the local route refuses for its budget may be answered by the daemon.
 - A store whose directory is removed is drained and the daemon exits `store-gone`; an absent store creates nothing.
+- A plain command starts no daemon. With nobody listening, the command line starts `core.sc --frame` as a child, writes it the request frame a daemon would have been sent and reads its answer as a daemon's (the same 32 MiB ceiling, no answer deadline, so the request waits for the store's lock), and nothing is left running; a daemon is started by `serve`, or by the MCP shell for the session it serves. A request answered in a child meets the in-process route's differences: `describe` adds no template clause, the lock is waited for rather than refused `store-busy`, the store is read as it is rather than as last published, `--rev` is refused `no-published-state` and `subscribe` `needs-daemon`. A daemon's connection and the child read, check and dispatch a frame through one library, `(theourgia frame)`. A store without its lock file answers `absent` on a plain command; `serve-start-failed` is only the MCP shell's start relaying `serve`'s answer.
 
 ### Reducer and admission
 
