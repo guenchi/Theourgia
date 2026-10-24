@@ -36,3 +36,4 @@ mcp-shell	^FAIL X1(5 |3 CONTROL: the descriptor instrument)
 eval-lang	^FAIL L15 
 facade-record	^FAIL H8 
 change-stream	^FAIL (F10-8|COST-[12]) three frames on the cost store
+change-stream-guard	^FAIL GUARD-4 .*not-a-reading WANT #t$
