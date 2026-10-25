@@ -6,8 +6,10 @@
 # is what the runner takes from the environment it was started with; NAMED,
 # NOT READ is every other name here (set by the runner itself, or only
 # mentioned). A new name nobody classified turns that TWIN red.
-# ENVIRONMENT READ: THEOURGIA_FIXTURE_LIMIT THEOURGIA_LIBDIR THEOURGIA_RUNNER_NORMALISED THEOURGIA_TEST_ROOT
-# ENVIRONMENT NAMED, NOT READ: THEOURGIA_INJECT THEOURGIA_RUN THEOURGIA_SUITE_TOKEN THEOURGIA_TEST_SOCK
+# HOME is read once, for the real run root, and then set to this run's test
+# home (below, after real_run_root); only THEOURGIA_* names are counted here.
+# ENVIRONMENT READ: HOME THEOURGIA_FIXTURE_LIMIT THEOURGIA_LIBDIR THEOURGIA_RUNNER_NORMALISED THEOURGIA_TEST_ROOT
+# ENVIRONMENT NAMED, NOT READ: THEOURGIA_HOME THEOURGIA_INJECT THEOURGIA_RUN THEOURGIA_SUITE_TOKEN THEOURGIA_TEST_SOCK
 # EVERY SCRIPT IN THE DIRECTORY IS RUN, AND EVERY OUTCOME IS PRINTED BY
 # NAME. A hand-written list is silent about the file it forgot, and this
 # directory's list had forgotten smoke-wire -- red for days, because it
@@ -700,6 +702,39 @@ run_root_before=$(count_run_root)
 # to look for.
 export THEOURGIA_RUN="$out/run-root"
 mkdir -p "$THEOURGIA_RUN"
+
+# KEY: AND A HOME OF ITS OWN, for the same reason one level up. With
+# THEOURGIA_HOME unset the product keeps its machine registry and machine
+# lock under `$HOME/.theourgia`, and every fixture that does not set its
+# own home wrote the water marks of its stores there: the user's real
+# registry had grown to tens of thousands of entries for about a dozen real
+# stores, and every write on the machine reads and rewrites it whole. With
+# HOME pointed at a directory under this run's scratch root, the default
+# path is the test home, which is removed with the scratch root.
+#
+# NOTE: AFTER `real_run_root` ABOVE, AND IT MUST STAY AFTER IT. That count
+# is of the user's real run root, read from the HOME this runner was
+# started with; moved below this line it would count the test home's.
+#
+# NOTE: THEOURGIA_HOME IS UNSET, NOT SET TO THE TEST HOME. A value makes
+# every process announce `(theourgia machine-home ...)` on its standard
+# error, and fixtures read a child's merged output as its first datum or
+# compare it as text; the default path announces nothing. A fixture that
+# sets its own home still wins, since it sets it after it starts.
+#
+# NOTE: AN ABSOLUTE PATH, WHATEVER THE SCRATCH ROOT WAS GIVEN AS. A relative
+# THEOURGIA_TEST_ROOT makes a relative run root, and a relative HOME would
+# name another directory in every child that changes directory. The path is
+# joined to this runner's directory (it never changes directory), not
+# found with cd, whose output an inherited CDPATH would add to.
+#
+# NEVER: A HOME THAT WAS NOT MADE IS NOT EXPORTED. An empty or missing one
+# would put the machine home at /.theourgia; the run is refused instead.
+run_home="$run_root/home"
+case "$run_home" in /*) ;; *) run_home="$(pwd)/$run_home" ;; esac
+mkdir -p "$run_home" && [ -d "$run_home" ] || early_refuse "the test home $run_home cannot be made" 1
+unset THEOURGIA_HOME
+export HOME="$run_home"
 
 # A FIXTURE MAY NOT SHARE A BASENAME WITH A LIBRARY, and this refuses
 # before the run rather than after the delivery.
