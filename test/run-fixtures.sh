@@ -734,6 +734,26 @@ run_home="$run_root/home"
 case "$run_home" in /*) ;; *) run_home="$(pwd)/$run_home" ;; esac
 mkdir -p "$run_home" && [ -d "$run_home" ] || early_refuse "the test home $run_home cannot be made" 1
 unset THEOURGIA_HOME
+#
+# NOTE: AND THE TOOLCHAINS THAT RESOLVE FROM HOME STAY REACHABLE. rustup's
+# proxies (rustc, cargo) find their toolchains under $HOME/.rustup and
+# $HOME/.cargo, and under the test home there are none: the proxy then
+# tries to install one, and eval-lang's real-rustc row read `(exit 1)`.
+# A variable such as RUSTUP_HOME would not help: an evaluation's child is
+# given PATH, HOME and LANG and nothing else (eval-runner.sc, pinned by
+# eval-lang's L6 row), so a toolchain that resolves from HOME can only be
+# reached through HOME itself. The test home therefore links the two
+# directories of the HOME this runner was started with, when they exist.
+# The cleanup removes the links and never follows them (chmod -R and
+# rm -rf do not descend through a link). A fixture's rustc reads, and may
+# update, the user's toolchains through them, as it did before the test
+# home existed. go, java and python need nothing here: go builds a fresh
+# cache under the test home, and the other two read nothing under HOME.
+for t in .rustup .cargo; do
+  if [ -d "$HOME/$t" ] && [ ! -e "$run_home/$t" ]; then
+    ln -s "$HOME/$t" "$run_home/$t" || early_refuse "the test home cannot link $HOME/$t" 1
+  fi
+done
 export HOME="$run_home"
 
 # A FIXTURE MAY NOT SHARE A BASENAME WITH A LIBRARY, and this refuses
