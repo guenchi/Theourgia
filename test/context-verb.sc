@@ -20,7 +20,8 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia reduce) reduce-empty reduce-apply! state-read state-block-ids block-hash block-id reduce-applied-cut)
+        (only (theourgia reduce) reduce-empty reduce-apply! state-read state-block-ids block-hash block-id reduce-applied-cut draft-version)
+        (only (theourgia log) writer-directory)
         (only (theourgia render) render-wire render-human)
         (only (theourgia wire) sexpr->string-extended string->sexpr-extended storable-encode))
 
@@ -1229,6 +1230,233 @@
       (map (lambda (id) (let* ((a (run rx-s 'read id)) (fs (and (ok? a) (assq 'fields (cadr a)))) (e (and fs (assq 'name (cdr fs))))) (and e (cdr e))))
            (list rx-p rx-m))
       '("plain" "marked"))
+
+;; ---- CW: context --working --------------------------------------------------------------------------------
+;;
+;; THE VIEW IS THE REQUEST WRITER'S WORKING VIEW: the committed state at the
+;; drafts' cut with that writer's drafts laid over it. The writer is the
+;; request's (rpc-dispatch's writer), as read --working takes it. A text code
+;; block's draft replaces its src, so a draft that adds a use of m brings m's
+;; definition: that comes from the query session over the view, not from the
+;; summary of the block. Drafts are not change events, and validity reads
+;; events (attest.sc moved?), so no draft changes a hard query's rows here:
+;; the five query premises are pinned equal instead.
+(define (run-as s w . args) (rpc-dispatch (st-path s) args "test" #f w))
+(define (ctx-as s w for budget . flags)
+  (apply run-as s w 'context "--for" for "--budget" (if (number? budget) (number->string budget) budget) flags))
+(define (has-text? x needle) (string-contains? (format "~s" x) needle))
+;; the answer without its working clause and without its budget clause (the
+;; working clause is counted, so `used` differs by its bytes)
+(define (without-view a) (filter (lambda (c) (not (and (pair? c) (memq (car c) '(working budget))))) a))
+(define (premise-of a id) (let ((p (find (lambda (p) (equal? (cadr p) id)) (receipt-premises a)))) (and p (caddr p))))
+(define (head2 a) (and (pair? a) (pair? (cdr a)) (list (car a) (cadr a))))
+(define (clause-value a name) (let ((c (clause a name))) (and c (cdr c))))
+(define (version-in a id) (let* ((v (clause-value a 'versions)) (p (and v (assoc id (car v))))) (and p (cdr p))))
+(define cw-s (fresh-store!))
+(define cw-file (make! cw-s "root" "a file" "kind" "file"))
+(run cw-s 'batch (format "((insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"u use\") (src . \"k()\")))
+                  (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"k def\") (name . k) (src . \"function k() { return 1 }\")))
+                  (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"m def\") (name . m) (src . \"function m() { return 2 }\")))
+                  (insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"v plain\") (src . \"var v = 0\"))))"
+                 cw-file cw-file cw-file cw-file))
+(define cwU (titled cw-s "u use"))
+(define cwK (titled cw-s "k def"))
+(define cwM (titled cw-s "m def"))
+(define cwV (titled cw-s "v plain"))
+(define cwK-before (ver cw-s cwK))
+(define cw-w1 (run cw-s 'write cwU "k(); m(); // zanzibar" "--writer" "cwone"))
+(define cw-w2 (run cw-s 'write cwU "k(); // xylophone" "--writer" "cwtwo"))
+(define cw-c (ctx cw-s cwU 100000))
+(define cw-a (ctx-as cw-s "cwone" cwU 100000 "--working"))
+(define cw-b (ctx-as cw-s "cwtwo" cwU 100000 "--working"))
+(want "CW-0 SETUP the two drafts were written, and the committed context of U is answered with k's definition and not m's"
+      (in-order (car cw-w1) (car cw-w2) (ok? cw-c) (places cw-c cwK) (places cw-c cwM))
+      '(ok ok #t (background) ()))
+(want "CW-1 --working answers over the writer's drafts: ok, (working \"cwone\") right after for, the drafted src in for, and the drafted use brings m's definition, which the committed answer lacks"
+      (in-order (ok? cw-a) (list-ref cw-a 2) (has-text? (section cw-a 'for) "zanzibar") (has-text? (section cw-c 'for) "zanzibar")
+                (places cw-a cwM) (places cw-a cwK))
+      '(#t (working "cwone") #t #f (background) (background)))
+(want "CW-1 and the drafted block's premise is the view's version, not the committed one, and is the version the answer shows; the five query premises are the committed answer's (a draft is not an event)"
+      (in-order (equal? (premise-of cw-a cwU) (premise-of cw-c cwU))
+                (equal? (premise-of cw-a cwU) (cdr (assoc cwU (car (clause-value cw-a 'versions)))))
+                (equal? (query-premises cw-a) (query-premises cw-c))
+                (length (query-premises cw-a)))
+      '(#f #t #t 5))
+(want "CW-1b two writers, two drafts on U: each --working answer has its own writer's draft and marker, not the other's"
+      (in-order (list-ref cw-b 2) (has-text? (section cw-b 'for) "xylophone") (has-text? (section cw-b 'for) "zanzibar")
+                (has-text? (section cw-a 'for) "xylophone") (places cw-b cwM))
+      '((working "cwtwo") #t #f #f ()))
+(want "CW-2 a block no draft touches: the --working answer has the marker with the exact writer, and is the committed answer but for it and the budget clause"
+      (let ((w (ctx-as cw-s "cwone" cwV 100000 "--working")) (c (ctx cw-s cwV 100000)))
+        (in-order (ok? w) (clause w 'working) (equal? (without-view w) (without-view c)) (clause c 'working)))
+      '(#t (working "cwone") #t #f))
+(want "CW-3 a writer with no drafts: answered over the committed state, marker present, the committed answer but for the marker and the budget clause"
+      (let ((w (ctx-as cw-s "cwnone" cwU 100000 "--working")))
+        (in-order (ok? w) (list-ref w 2) (equal? (without-view w) (without-view cw-c)) (has-text? w "zanzibar")))
+      '(#t (working "cwnone") #t #f))
+;; THE MARKER IS COUNTED: reserved before admission and rendered in the
+;; answer, so the minimum a --working request needs is above the committed
+;; one by the marker's bytes, and the answer at that minimum fits it.
+(define cw-long "cwwriterwithalongnameforthebudgetrow")
+(define (budget-tokens a) (let ((b (clause-value a 'budget))) (and b (cadr (assq 'tokens b)))))
+(define (used-tokens a) (let ((b (clause-value a 'budget))) (and b (cadr (assq 'used b)))))
+(let* ((c (run cw-s 'context "--for" cwV "--budget" "min+0")) (w (ctx-as cw-s cw-long cwV "min+0" "--working"))
+       (mc (budget-tokens c)) (mw (budget-tokens w))
+       (under (and mw (ctx-as cw-s cw-long cwV (- mw 1) "--working"))))
+  (want "CW-4 near the minimum budget: the --working minimum is above the committed one, the answer at it is ok and within it, its used counting the marker; one token less is budget-too-small"
+        (in-order (ok? c) (ok? w) (and mc mw (> mw mc)) (list-ref w 2)
+                  (and mw (<= (used-tokens w) mw)) (and (used-tokens w) (used-tokens c) (> (used-tokens w) (used-tokens c)))
+                  (head2 under))
+        (list #t #t #t (list 'working cw-long) #t #t '(error budget-too-small))))
+;; ONE ROW PER REFUSAL of the view, each the whole answer: no context, no marker.
+(define (forge-at-cut! store writer id text cut)
+  (let* ((state (open-and-reduce store))
+         (hash (block-hash state id))
+         (body (string->utf8 text))
+         (version (draft-version body hash cut))
+         (dir (string-append (writer-directory store writer) "/working")))
+    (system (string-append "mkdir -p '" dir "'"))
+    (call-with-port (open-file-output-port (string-append dir "/" id) (file-options no-fail))
+      (lambda (o)
+        (put-bytevector o (string->utf8 (sexpr->string-extended
+                                          (storable-encode (list 'working 1 writer id version hash cut body)))))))
+    version))
+(want "CW-5 no writer: --working answers writer-required, and nothing else"
+      (run cw-s 'context "--for" cwU "--budget" "100000" "--working")
+      '(error writer-required))
+(want "CW-5 a writer id that is not one (upper case): the answer is invalid-working-writer"
+      (ctx-as cw-s "CwBad" cwU 100000 "--working")
+      '(error bad-request invalid-working-writer))
+(forge-at-cut! (st-path cw-s) "cwgone" cwV "var v = 1" '(("zzzzzzzz" . 999)))
+(want "CW-5 a draft at a cut the store cannot open: working-unavailable, unavailable-cut, the cut named; no context"
+      (let ((a (ctx-as cw-s "cwgone" cwU 100000 "--working")))
+        (in-order (head2 a) (clause a 'reason) (clause a 'cut) (clause a 'for) (clause a 'working)))
+      '((error working-unavailable) (reason unavailable-cut) (cut (("zzzzzzzz" . 999))) #f #f))
+(include "forge-draft.ss")
+(define cw-d (lib-store! (list (cons "a.sc" lib-a))))
+(define cwFA (def-id cw-d "fa"))
+(define cwFZ (def-id cw-d "fz"))
+(forge-fresh-draft! (st-path cw-d) "cwdatum" cwFZ "(define (fz) 'broken")
+(want "CW-6 a datum draft that does not read, on ANOTHER block of the writer: the context of FA --working is working-draft-unreadable naming FZ, with the reader's reason; no context"
+      (let ((a (ctx-as cw-d "cwdatum" cwFA 100000 "--working")))
+        (in-order (head2 a) (clause a 'block) (and (clause a 'reason) #t) (clause a 'for)))
+      (list '(error working-draft-unreadable) (list 'block cwFZ) #t #f))
+(want "CW-6 TWIN the committed context of FA is answered: the draft is the writer's only"
+      (ok? (ctx cw-d cwFA 100000))
+      #t)
+;; THE VIEW IS AT THE DRAFTS' CUT. k's definition changes in the committed
+;; state after cwone's drafts were written, and a block is created after
+;; them: the --working answer shows k as it was at that cut, and the new
+;; block is unknown there, answered as read answers an unknown id over that
+;; same view, while the committed answer has both.
+(run cw-s 'set cwK "src" "function k() { return 99 }")
+(define cwN (make! cw-s "root" "made after the drafts"))
+(want "CW-7 a dependency advanced after the drafts' cut: the --working answer has k's version and src at that cut, the committed answer the new ones"
+      (let ((w (ctx-as cw-s "cwone" cwU 100000 "--working")) (c (ctx cw-s cwU 100000)))
+        (in-order (version-in w cwK) (has-text? (entry-of w cwK) "return 1") (has-text? (entry-of w cwK) "return 99")
+                  (equal? (version-in c cwK) cwK-before) (has-text? (entry-of c cwK) "return 99")))
+      (list cwK-before #t #f #f #t))
+(want "CW-7 a block created after the drafts' cut: --working answers unknown-id for it, the committed context answers it"
+      (in-order (head2 (ctx-as cw-s "cwone" cwN 100000 "--working")) (ok? (ctx cw-s cwN 100000)))
+      '((error unknown-id) #t))
+;; THE CACHES KEPT FOR COMMITTED STATES DO NOT ANSWER FOR A WORKING VIEW.
+;; The definitions index and the file-header table are kept per process by
+;; the applied cut, and a working view is a new state AT THE COMMITTED CUT:
+;; without the overlay's own tables (store.sc, reduce.sc reduction-overlay?)
+;; the one asked first answered for the other. Text-mode Scheme code, whose
+;; names come out of the src a draft replaces.
+(define (asked-of a) (clause a 'asked))
+(define (scheme-file! s title . parts)
+  (let ((F (make! s "root" title "kind" "file" "lang" "scheme")))
+    (for-each (lambda (p)
+                (run s 'batch (format "((insert ~s #f ((kind . code) (mode . text) (lang . \"scheme\") (title . ~s) (src . ~s))))"
+                                      F (car p) (cadr p))))
+              parts)
+    F))
+(define (defs-store!)
+  (let ((s (fresh-store!)))
+    (scheme-file! s "one file" '("u" "(define (u) (f))") '("d" "(define (f) 1)"))
+    (link! s (titled s "u") "depends-on" (titled s "d"))
+    s))
+(define cw9 (defs-store!))
+(define cw9U (titled cw9 "u")) (define cw9D (titled cw9 "d"))
+(define cw9-committed-f (asked-of (ctx cw9 cw9U 100000 "--names" "f")))
+(run cw9 'write cw9D "(define (g) 2)" "--writer" "cwdefs")
+(want "CW-9 the committed context asked first, then --working: the working view finds the drafted definition g in D and no longer finds f"
+      (in-order cw9-committed-f
+                (asked-of (ctx-as cw9 "cwdefs" cw9U 100000 "--names" "g" "--working"))
+                (asked-of (ctx-as cw9 "cwdefs" cw9U 100000 "--names" "f" "--working")))
+      (list (list 'asked '(names "f") (list 'in-hard "f" cw9D))
+            (list 'asked '(names "g") (list 'in-hard "g" cw9D))
+            '(asked (names "f") (no-definition "f"))))
+(define cw9b (defs-store!))
+(define cw9bU (titled cw9b "u")) (define cw9bD (titled cw9b "d"))
+(run cw9b 'write cw9bD "(define (g) 2)" "--writer" "cwdefs")
+(run cw9b 'write cw9bD "(define (h) 3)" "--writer" "cwother")
+(define cw9b-working-g (asked-of (ctx-as cw9b "cwdefs" cw9bU 100000 "--names" "g" "--working")))
+(want "CW-9 --working asked first, then the committed context: the committed answer has no g and still has f"
+      (in-order cw9b-working-g
+                (asked-of (ctx cw9b cw9bU 100000 "--names" "g"))
+                (asked-of (ctx cw9b cw9bU 100000 "--names" "f")))
+      (list (list 'asked '(names "g") (list 'in-hard "g" cw9bD))
+            '(asked (names "g") (no-definition "g"))
+            (list 'asked '(names "f") (list 'in-hard "f" cw9bD))))
+(want "CW-10 two writers at the same cut, one defining g and one h: each sees its own definition and not the other's, and the committed context sees neither"
+      (in-order (asked-of (ctx-as cw9b "cwdefs" cw9bU 100000 "--names" "h" "--working"))
+                (asked-of (ctx-as cw9b "cwother" cw9bU 100000 "--names" "h" "--working"))
+                (asked-of (ctx-as cw9b "cwother" cw9bU 100000 "--names" "g" "--working"))
+                (asked-of (ctx-as cw9b "cwdefs" cw9bU 100000 "--names" "g" "--working"))
+                (asked-of (ctx cw9b cw9bU 100000 "--names" "h")))
+      (list '(asked (names "h") (no-definition "h"))
+            (list 'asked '(names "h") (list 'in-hard "h" cw9bD))
+            '(asked (names "g") (no-definition "g"))
+            (list 'asked '(names "g") (list 'in-hard "g" cw9bD))
+            '(asked (names "h") (no-definition "h"))))
+;; A SECOND DRAFT BY THE SAME WRITER AT THE SAME CUT: cwdefs replaces its
+;; draft of D (g) by one defining j. The working view is asked about g right
+;; before the second write, with no other working request between, so an
+;; overlay table kept by writer and base cut would still hold the first
+;; draft's when it is asked about j. The next --working answer has j and no
+;; longer g, and the committed answer has neither and still f.
+(define cw12-warm (asked-of (ctx-as cw9 "cwdefs" cw9U 100000 "--names" "g" "--working")))
+(run cw9 'write cw9D "(define (j) 4)" "--writer" "cwdefs")
+(want "CW-12 the same writer's second draft at the same cut, asked right after the first was: --working finds j and no longer g; the committed context has neither and still f"
+      (in-order cw12-warm
+                (asked-of (ctx-as cw9 "cwdefs" cw9U 100000 "--names" "j" "--working"))
+                (asked-of (ctx-as cw9 "cwdefs" cw9U 100000 "--names" "g" "--working"))
+                (asked-of (ctx cw9 cw9U 100000 "--names" "j"))
+                (asked-of (ctx cw9 cw9U 100000 "--names" "g"))
+                (asked-of (ctx cw9 cw9U 100000 "--names" "f")))
+      (list (list 'asked '(names "g") (list 'in-hard "g" cw9D))
+            (list 'asked '(names "j") (list 'in-hard "j" cw9D))
+            '(asked (names "g") (no-definition "g"))
+            '(asked (names "j") (no-definition "j"))
+            '(asked (names "g") (no-definition "g"))
+            (list 'asked '(names "f") (list 'in-hard "f" cw9D))))
+;; THE FILE HEADER: a draft of A's header line imports (lc) in place of (lb),
+;; and the definition of f the context brings for A's use of it is lc's in
+;; the working view and lb's in the committed one, whichever is asked first.
+(define cw11 (fresh-store!))
+(scheme-file! cw11 "a.sls" '("ah" "(library (la) (export u) (import (rnrs) (lb))\n") '("au" "(define (u) (f))\n") '("az" ")\n"))
+(scheme-file! cw11 "b.sls" '("bh" "(library (lb) (export f) (import (rnrs))\n") '("bd" "(define (f) 1)\n") '("bz" ")\n"))
+(scheme-file! cw11 "c.sls" '("ch" "(library (lc) (export f) (import (rnrs))\n") '("cd" "(define (f) 2)\n") '("cz" ")\n"))
+(define cw11U (titled cw11 "au")) (define cw11B (titled cw11 "bd")) (define cw11C (titled cw11 "cd"))
+(define cw11-before (ctx cw11 cw11U 100000))
+(run cw11 'write (titled cw11 "ah") "(library (la) (export u) (import (rnrs) (lc))\n" "--writer" "cwheader")
+(define cw11-working (ctx-as cw11 "cwheader" cw11U 100000 "--working"))
+(define cw11-after (ctx cw11 cw11U 100000))
+(want "CW-11 a drafted header import: the working context brings lc's f and not lb's; the committed context, before and after it, lb's and not lc's"
+      (in-order (places cw11-before cw11B) (places cw11-before cw11C)
+                (places cw11-working cw11C) (places cw11-working cw11B)
+                (places cw11-after cw11B) (places cw11-after cw11C))
+      '((background) () (background) () (background) ()))
+
+;; NOTE CW-8, A READING, NOT A ROW: the draft committed, the block's
+;; committed version is not the premise --working gave it, although the two
+;; records read the same. Printed for the record.
+(define cw-commit (run cw-s 'commit cwU "--writer" "cwone"))
+(printf "NOTE CW-8 commit ~a; committed version of U ~a; --working premise ~a; equal ~a\n"
+        (car cw-commit) (ver cw-s cwU) (premise-of cw-a cwU) (equal? (ver cw-s cwU) (premise-of cw-a cwU)))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-verb complete\n" rows bad)

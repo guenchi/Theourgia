@@ -1257,19 +1257,24 @@
       (remember-unreadable-notes! overlay (unreadable-behind base))
       overlay))
 
+  ;; MARKED AS A WORKING VIEW (reduce.sc reduction-overlay?), so that no
+  ;; cache kept for committed states answers for it.
   (define (overlay-drafts-rows base replacements)
-    (rows->state
-      (map (lambda (row)
-             (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
-               (if (not r) row
-                   (list 'block (cadr row)
-                         (map (lambda (part)
-                                (if (eq? (car part) 'fields)
-                                    (cons 'fields (map (lambda (f) (if (and (pair? f) (eq? (car f) (cadr r))) (drafted-register f (cddr r)) f))
-                                                       (cdr part)))
-                                    part))
-                              (caddr row))))))
-           (state->rows base))))
+    (let ((overlay
+           (rows->state
+             (map (lambda (row)
+                    (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
+                      (if (not r) row
+                          (list 'block (cadr row)
+                                (map (lambda (part)
+                                       (if (eq? (car part) 'fields)
+                                           (cons 'fields (map (lambda (f) (if (and (pair? f) (eq? (car f) (cadr r))) (drafted-register f (cddr r)) f))
+                                                              (cdr part)))
+                                           part))
+                                     (caddr row))))))
+                  (state->rows base)))))
+      (reduction-overlay-set! overlay #t)
+      overlay))
 
   (define (working-list store state supplied)
     (needing-writer supplied (lambda ()

@@ -873,10 +873,12 @@
 
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
+  ;; `working-state` is the one way to a writer's working view, as
+  ;; `reduction-for` is the one way to the committed one.
   (define (dispatch-helper name)
     (case name
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
-      ((reduction-for) reduction-for) ((count-argument) count-argument)
+      ((reduction-for) reduction-for) ((working-state) working-state) ((count-argument) count-argument)
       ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
       ((session) query-session-provider)
       ((read) (cdr (assq 'read (verb-table))))
@@ -2178,10 +2180,16 @@
                              ;; reasoning for it in `store.sc` so that the
                              ;; verb names one value rather than a second
                              ;; copy of it.
+                             ;;
+                             ;; THE STATE IS THE ONE THE DISPATCHER HANDED
+                             ;; THIS VERB, taken through reduction-for as every
+                             ;; read verb takes it. On a resident daemon that
+                             ;; is the publication; this verb used to ignore it
+                             ;; and open and reduce the store on every search.
                              (let* ((held #f)
                                     (all-validity (argument-option options "--all-validity"))
-                                    (r (store-search-report
-                                         store (car args)
+                                    (r (search-state-report
+                                         (reduction-for store state) (car args)
                                          (if (argument-option options "--all")
                                              #f
                                              search-hit-limit)

@@ -15,7 +15,7 @@ changed-files 20 26 53bd05c23ac62cb2e3b6d11a7f4476d0
 cli-forward 22 25 45768e3f0e5456c8ece65f0616ce13c7
 cli1 105 131 8faddd9e62f10f84f8088aeedf13a479
 cli2 12 24 a1793e5477f6468a56d3e008dea2b18e
-cli3 318 430 73f76f31bcd8171f6ccbfb9a601370af
+cli3 319 431 dc9e7a9e56ae144332d76ea64bad955c
 client-program 69 72 e669b392c6326f967a097c267cef4c8c
 client-socket 39 42 2555d797b098e75ea2675da57504a312
 client-start 35 47 e21268144035f8da41f870fdef63bcbc
@@ -33,12 +33,12 @@ contested-fields 6 9 2e3835078fe6650d69aa1c4fff9e60bb
 context-human 6 10 354f50257e22195e2eab30ea577febac
 context-stale 8 12 4d95a532c7e2d0bb448b37e304d28bcb
 context-targeting 57 76 130e485048da0c25a59efaad4a922eb8
-context-verb 97 100 5a4cb8b9e70562ffd654abbf1a2b4fd5
+context-verb 116 120 138a8c495319964cca677dfc712d48a4
 crash 15 19 7dc2d98b549e4f3cbbef2f17820a2c6a
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 72 75 5f63dc4a3ef75b4dcb7d86919cd2aca5
 daemon-link-gate 38 41 cea34b20543f41532539d2f004f9967b
-daemon-session 22 32 90631cf8cc44bebeed9418375afebf07
+daemon-session 27 37 4792ae8b130ff43bfffe26bbb9c092c0
 daemon-socket 13 16 3de6da6574596a7bbe56f00bc1bd72d3
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
@@ -145,7 +145,7 @@ query-facts 34 37 453f6af6141b096d1e7aa4a0403f6ed9
 query-kinds 33 42 550d00de3179ba10b89e26583cfd3122
 query-strata 89 99 18b3dc32970ea602fa4eaaf0b2e7e882
 read-at-cut 40 51 98f63a7345936a652b958bb0207db989
-read-receipt 123 127 8d25e7c66e1a65ff125d563294f65509
+read-receipt 123 127 75553e392332749d1cb8f0e0e9975a3d
 read1 19 34 c975d77362bb4eafc60a961aa0e9d848
 reader-creates - 7 3a6df3454f8cb62607b914f88dd6a4ab
 record-envelope 137 179 286c27322f411d6d1145b7e9631109c1
@@ -186,7 +186,7 @@ subtree 15 19 d2124efd9468aef241da1e20468aea5e
 supply 198 202 660901441383a6e3d67854ad6309df1e
 tmp-paths 47 122 cadfdb0c07ef402e2629a3baae967e8b
 tree-round-trip 0 5 5dc3c4cd5e3ff6a04100051673b17262
-unreadable-acknowledge-routes 68 77 9daef3f0cc05b3aece74609aaeec6eb4
+unreadable-acknowledge-routes 68 77 8625f214650eebd3cd6980f7e1a8f6c6
 unreadable-adopt 34 47 6e1360b0c68e5776dea2e985fabc85c2
 unreadable-census 42 47 8903dba92289c92d904de8913366556b
 unreadable-drafts 16 24 a035f1bf4c6358cd9afc9b0207e9d6a2

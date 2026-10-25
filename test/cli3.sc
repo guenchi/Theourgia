@@ -2608,6 +2608,21 @@
             (car (caught (store-search-report d8 "quilvane" "10"))))
       (list 'RAISED 'RAISED 'RAISED))
 
+;; THE SAME REPORT OVER A STATE ALREADY HELD, which the search verb calls with
+;; the state its dispatcher hands it: the same keys and hits as
+;; store-search-report at that state, and the same limits refused, by the one
+;; rule both share.
+(want "N9 search-state-report over the store's state answers store-search-report's keys and hits, and refuses the same limits"
+      (let* ((st (open-and-reduce d8))
+             (a (search-state-report st "quilvane" 10))
+             (b (store-search-report d8 "quilvane" 10)))
+        (list (equal? (map car a) (map car b)) (equal? (cdr (assq 'items a)) (cdr (assq 'items b)))
+              (cdr (assq 'omitted-hits a))
+              (car (caught (search-state-report st "quilvane" #t)))
+              (car (caught (search-state-report st "quilvane" 0)))
+              (car (caught (search-state-report st "quilvane" "10")))))
+      (list #t #t 4 'RAISED 'RAISED 'RAISED))
+
 (printf "\n== N10: what this scan could not read, and how many names there are ==\n")
 ;; TWO CLAUSES, TWO FACTS THIS SECTION EXISTS TO SEPARATE.
 ;;

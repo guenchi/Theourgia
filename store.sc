@@ -32,7 +32,7 @@
           store-init! nearest-ids store-snapshot!
           batch-answer
           datum-mode-block? draft-on-datum-refusal
-          store-check store-position store-adopt! store-search search-state field-strings store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
+          store-check store-position store-adopt! store-search search-state field-strings store-search-report search-state-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator located-library-name file-header
           derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
@@ -1198,7 +1198,29 @@
   (define defs-index-cut-reads 0)
   (define (defs-index-cut-read-count) defs-index-cut-reads)
 
+  ;; A WORKING VIEW IS INDEXED BY ITS OWN IDENTITY, never through the cache
+  ;; above: an overlay (reduce.sc reduction-overlay?) is a new state every
+  ;; call at the committed cut, so a cut-keyed cache would hit across the two.
+  ;; One slot, the last overlay asked about with the catalogue's generation,
+  ;; compared by eq?; defs-index-builds counts the committed builds only.
+  ;; The slot keeps that overlay and its index until another overlay asks.
+  ;; With the header tables' slot below, which is independent of this one,
+  ;; up to two working views' memory stays resident per process: the cost
+  ;; taken for not rebuilding the tables on every ask of one context.
+  (define overlay-index-state #f)
+  (define overlay-index-generation #f)
+  (define overlay-index #f)
+  (define (overlay-state? state) (and (reduction? state) (reduction-overlay? state)))
   (define (defs-index state)
+    (if (overlay-state? state)
+        (let ((generation (language-catalogue-generation)))
+          (unless (and (eq? overlay-index-state state) (eqv? overlay-index-generation generation))
+            (set! overlay-index (build-defs-index state))
+            (set! overlay-index-state state)
+            (set! overlay-index-generation generation))
+          overlay-index)
+        (committed-defs-index state)))
+  (define (committed-defs-index state)
     (let ((token (reduce-applied-token state)))
       ;; NEVER: AND THE KEY CANNOT BE THE OBJECT ALONE, by the three readings
       ;; above: with the resident cache off every question is a new object,
@@ -1303,7 +1325,23 @@
   (define cached-headers-token #f)
   (define cached-headers-generation #f)
   (define cached-children #f)
+  ;; A WORKING VIEW HAS TABLES OF ITS OWN, by identity, as defs-index keeps
+  ;; its index: one slot, #(<overlay> <generation> <headers> <children or
+  ;; #f>) for the last overlay asked about, kept until another overlay asks.
+  ;; It is independent of the index's slot, so the two may hold two overlays.
+  (define overlay-tables-slot #f)
+  (define (overlay-tables state)
+    (let ((kept overlay-tables-slot) (generation (language-catalogue-generation)))
+      (if (and kept (eq? (vector-ref kept 0) state) (eqv? (vector-ref kept 1) generation))
+          kept
+          (let ((fresh (vector state generation (make-hashtable string-hash string=?) #f)))
+            (set! overlay-tables-slot fresh)
+            fresh))))
   (define (header-table state)
+    (if (overlay-state? state)
+        (vector-ref (overlay-tables state) 2)
+        (committed-header-table state)))
+  (define (committed-header-table state)
     (let ((token (reduce-applied-token state)) (generation (language-catalogue-generation)))
       (unless (and cached-headers (eq? cached-headers-token token) (eqv? cached-headers-generation generation))
         (let ((cut (reduce-applied-cut state)))
@@ -1315,14 +1353,23 @@
             (set! cached-headers-generation generation))))
       cached-headers))
   (define (children-table state)
-    (or cached-children
-        (let ((t (make-hashtable string-hash string=?)))
-          (for-each (lambda (r)
-                      (when (and (string? (car r)) (null? (cdddr r)))
-                        (hashtable-set! t (car r) (cons (caddr r) (hashtable-ref t (car r) (quote ()))))))
-                    (state-outline state))
-          (set! cached-children t)
-          t)))
+    (if (overlay-state? state)
+        (let ((kept (overlay-tables state)))
+          (or (vector-ref kept 3)
+              (let ((t (build-children-table state)))
+                (vector-set! kept 3 t)
+                t)))
+        (or cached-children
+            (let ((t (build-children-table state)))
+              (set! cached-children t)
+              t))))
+  (define (build-children-table state)
+    (let ((t (make-hashtable string-hash string=?)))
+      (for-each (lambda (r)
+                  (when (and (string? (car r)) (null? (cdddr r)))
+                    (hashtable-set! t (car r) (cons (caddr r) (hashtable-ref t (car r) (quote ()))))))
+                (state-outline state))
+      t))
   (define (file-header state holder)
     (let* ((table (header-table state))
            (hit (hashtable-ref table holder (quote unread))))
@@ -1802,12 +1849,24 @@
   ;; (<hook> <tables read> <stale>), the hook as store-search describes it.
   ;; This library does not read those tables itself; the caller does.
   (define (store-search-report store query limit . derived)
-    (if (not (or (eq? limit #f)
-                 (and (integer? limit) (exact? limit) (positive? limit))))
-        (assertion-violation 'store-search-report
-                             "the limit is #f for every hit, or a positive integer"
-                             limit)
-        (apply store-search store query limit derived)))
+    (check-search-limit 'store-search-report limit)
+    (apply store-search store query limit derived))
+
+  ;; THE SAME REPORT OVER A STATE THE CALLER ALREADY HOLDS. The search verb
+  ;; passes the state its dispatcher handed it, as every read verb does, so
+  ;; a resident daemon answers from its publication instead of opening and
+  ;; reducing the store again. Same state, same report: the answer's bytes
+  ;; do not depend on which of the two was asked.
+  (define (search-state-report state query limit . derived)
+    (check-search-limit 'search-state-report limit)
+    (apply search-state state query limit derived))
+
+  ;; THE ONE RULE FOR A LIMIT, for both reports: #f, or a positive exact
+  ;; integer. The refusal names the report that was asked.
+  (define (check-search-limit who limit)
+    (unless (or (eq? limit #f)
+                (and (integer? limit) (exact? limit) (positive? limit)))
+      (assertion-violation who "the limit is #f for every hit, or a positive integer" limit)))
 
   ;; THE SEARCH OF ONE STATE: what store-search answers, over a state the
   ;; caller already holds; store-search opens the store and asks it.

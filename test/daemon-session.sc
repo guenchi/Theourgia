@@ -118,6 +118,8 @@
 (define (start-session-daemon! suffix . options)
   (let* ((size (and (pair? options) (car options)))
          (fault (and (pair? options) (pair? (cdr options)) (cadr options)))
+         ;; more environment for the daemon, as `NAME=value ` text, or #f
+         (env (and (pair? options) (pair? (cdr options)) (pair? (cddr options)) (caddr options)))
          (tag (string-append pid-text "-" suffix))
          (st (string-append scratch-base "/dss-" tag))
          (sk (string-append socket-base "/dss-" tag ".sock"))
@@ -138,6 +140,7 @@
       'truncate)
     (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on "
                            (if fault (string-append "THEOURGIA_FAULT=" fault " ") "")
+                           (or env "")
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1' &"))
@@ -193,6 +196,44 @@
 (define (local d verb . args)
   (let ((a (rpc-dispatch (daemon-store d) (cons verb args) "tester")))
     (guard (e (#t a)) (read (open-string-input-port (render-wire a))))))
+;; THE ANSWER'S TEXT AS THE SOCKET CARRIES IT, not read back: the bytes a
+;; --wire client prints. The local route's text is render-wire of its answer,
+;; which is how the daemon writes one.
+(define (ask-text d verb . args)
+  (let* ((text (apply string-append (symbol->string verb) (map (lambda (a) (string-append " " (format "~s" a))) args)))
+         (frame (string-append "(request 1 \"" (daemon-store d) "\" \"tester\" #f wire #f #f " text ")\n"))
+         (r (exchange (daemon-socket d) (string->utf8 frame) line-complete? 20000)))
+    (if (and (pair? r) (eq? 'answer (car r)) (> (bytevector-length (cadr r)) 0))
+        (answer-text (cadr r))
+        'no-answer)))
+(define (local-text d verb . args)
+  (render-wire (rpc-dispatch (daemon-store d) (cons verb args) "tester")))
+;; a search answer's hit ids, in order, and a named clause's value
+(define (hit-ids a)
+  (if (and (pair? a) (eq? (car a) 'ok) (pair? (cdr a)) (pair? (cadr a)) (eq? (car (cadr a)) 'items))
+      (map cadr (filter (lambda (i) (and (pair? i) (eq? (car i) 'hit))) (cdr (cadr a))))
+      'NOT-A-SEARCH))
+(define (clause-of a name)
+  (and (pair? a) (list? a) (let ((c (find (lambda (c) (and (pair? c) (eq? (car c) name))) (cdr a)))) (and c (cdr c)))))
+;; WRITES FROM ANOTHER PROCESS, as an outside writer makes them: each request
+;; a list of strings after the verb, dispatched in one process in order
+(define (outside-requests! store requests tag)
+  (let ((rn (string-append scratch-base "/dss-req-" tag ".sc")) (lg (string-append scratch-base "/dss-req-" tag ".log")))
+    (system (string-append "rm -f " rn " " lg))
+    (call-with-output-file rn
+      (lambda (port)
+        (for-each (lambda (l) (display l port) (newline port))
+          (list "(import (chezscheme) (theourgia rpc))"
+                (format "(for-each (lambda (r) (write (rpc-dispatch ~s r \"outsider\")) (newline)) '~s)" store requests)))))
+    (system (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
+                           " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                           " scheme --script " rn " > " lg " 2>&1"))
+    (file-text lg)))
+(define (wait-for-file path ms)
+  (let wait ((k 0))
+    (cond ((file-exists? path) #t)
+          ((> k (div ms 50)) #f)
+          (else (sleep-ms 50) (wait (+ k 1))))))
 (define (new-id a)
   (let* ((ev (and (pair? a) (eq? (car a) 'ok) (assq 'events (cdr a))))
          (e (and ev (pair? (cadr ev)) (car (cadr ev)))))
@@ -424,6 +465,39 @@
   (call-with-output-file path (lambda (p) (display text p)) 'truncate))
 (define (sha-of path) (bytevector->hex (sha256 (call-with-port (open-file-input-port path) get-bytevector-all))))
 (define (name-use? a) (and (pair? a) (list? a) (member '(name-use syntactic) (cdr a)) #t))
+;; ---- a working view through the daemon does not touch the kept session ----
+;; THE KEPT SESSION IS KEYED ON THE VIEW'S IDENTITY (query.sc,
+;; make-session-provider, rule 1): a view that is not the publication gets a
+;; fresh session over itself, and the kept cell is neither read nor written.
+;; A working view is a new reduction every call, so every context --working
+;; is fresh, and the committed context after them is the kept session reused
+;; with nothing expanded: not evicted and rebuilt.
+(define (ask-as d writer verb . args)
+  (let* ((text (apply string-append (symbol->string verb) (map (lambda (a) (string-append " " (format "~s" a))) args)))
+         (frame (string-append "(request 1 \"" (daemon-store d) "\" \"tester\" " (format "~s" writer) " wire #f #f " text ")\n"))
+         (r (exchange (daemon-socket d) (string->utf8 frame) line-complete? 20000)))
+    (if (and (pair? r) (eq? 'answer (car r)) (> (bytevector-length (cadr r)) 0))
+        (let ((out (answer-text (cadr r))))
+          (guard (e (#t out)) (read (open-string-input-port out))))
+        'no-answer)))
+(define (working-session-rows)
+  (let* ((E (start-session-daemon! "w"))
+         (u (new-id (ask E 'insert "--title" "u use")))
+         (setup (list (ask E 'set u "kind" "code") (ask E 'set u "lang" "javascript") (ask E 'set u "src" "k()")))
+         (draft (ask E 'write u "k(); // zanzibar" "--writer" "sesswriter"))
+         (ctx (lambda () (traced-ask E 'context "--for" u "--budget" "4000")))
+         (c1 (ctx)) (c2 (ctx))
+         (w1 (traced E (lambda () (ask-as E "sesswriter" 'context "--for" u "--budget" "4000" "--working"))))
+         (w2 (traced E (lambda () (ask-as E "sesswriter" 'context "--for" u "--budget" "4000" "--working"))))
+         (c3 (ctx)))
+    (stop-session-daemon! E)
+    (want "SESS-W committed context, then two context --working calls, then committed again through the socket: the working calls are answered with the draft and the marker, each from a fresh session (fresh cut); the committed call after them reuses the kept session, expanding nothing, and answers what it answered before them"
+          (list (and (pair? draft) (car draft)) (words-of c1) (words-of c2)
+                (contains? (format "~s" (answer-of w1)) "zanzibar") (clause-of (answer-of w1) 'working)
+                (words-of w1) (words-of w2) (contains? (format "~s" (answer-of w2)) "zanzibar")
+                (words-of c3) (expanded-of c3) (equal? (answer-of c3) (answer-of c2)) (same-as-local? E c3)
+                (contains? (format "~s" (answer-of c3)) "zanzibar"))
+          '(ok ((fresh none)) ((reuse #f)) #t ("sesswriter") ((fresh cut)) ((fresh cut)) #t ((reuse #f)) 0 #t #t #f))))
 (define (code-rows)
   (let* ((F (start-session-daemon! "c"))
          (src (string-append scratch-base "/dss-src-" pid-text))
@@ -667,6 +741,36 @@
                     (equal? a (local D 'query q))))
             '(ok 1 #t))
 
+      ;; ---- search answers from the state the dispatcher hands it ----
+      ;; A connection's search is handed the publication, as read is. Before
+      ;; this change the verb ignored it and opened and reduced the store on
+      ;; every search, which the trace shows as one log-open per search.
+      (want "A-6 two searches through the socket in a row: both routed to the connection, neither opens the log, the two answers are equal, and each equals the local route's answer"
+            (let* ((c (routed-count D 'search 'connection)) (opens (log-opens D))
+                   (s1 (ask D 'search "alpha")) (s2 (ask D 'search "alpha")))
+              (list (- (routed-count D 'search 'connection) c) (- (log-opens D) opens)
+                    (hit-ids s1) (equal? s1 s2) (equal? s1 (local D 'search "alpha"))))
+            (list 2 0 (list a1) #t #t))
+      ;; THE BYTES, NOT THE DATUM: the socket's text of a populated, an empty
+      ;; and a capped search (more hits than search-hit-limit) equals the text
+      ;; of the local route's answer, which folds the store as the verb did
+      ;; before this change. The capped one shows the cap's ten hits and says
+      ;; how many it left out; --all shows every one.
+      (let ((ks (let loop ((i 0) (out '()))
+                  (if (= i 14) (reverse out)
+                      (loop (+ i 1) (cons (new-id (ask D 'insert "--title" (format "kappa ~a" i))) out))))))
+        (want "A-7 the socket's --wire text of a search equals the local route's text: populated, empty, capped, and capped with --all"
+              (map (lambda (q) (let ((s (apply ask-text D 'search q)))
+                                 (list (string? s) (equal? s (apply local-text D 'search q)))))
+                   '(("alpha") ("nosuchwordanywhere") ("kappa") ("kappa" "--all")))
+              '((#t #t) (#t #t) (#t #t) (#t #t)))
+        (want "A-7 and the capped search shows ten hits and (truncated (hits 4)), the --all one fourteen, and the empty one none"
+              (let ((capped (ask D 'search "kappa")) (all (ask D 'search "kappa" "--all")) (none (ask D 'search "nosuchwordanywhere")))
+                (list (length (hit-ids capped)) (clause-of capped 'truncated)
+                      (length (hit-ids all)) (equal? (list-sort string<? (hit-ids all)) (list-sort string<? ks))
+                      (hit-ids none)))
+              '(10 ((hits 4)) 14 #t ())))
+
       (let ((before (published-count D)))
         (outside-inserts! (daemon-store D) 300 pid-text)
         (ask D 'outline)
@@ -675,8 +779,44 @@
                   pub (median-ms (lambda () (ask D 'query "(edge ?a ?r ?b)")) 5) (median-ms (lambda () (ask D 'outline)) 5))))
 
       (stop-session-daemon! D)
+      ;; ---- search and read agree on the publication ----
+      ;; A CONNECTION ANSWERS THE PUBLICATION AS IT STANDS while a reload the
+      ;; probe asked for is still queued (daemon.sc, conn-local-read-verbs),
+      ;; and search is one of those reads. The reload is held between its fold
+      ;; and its publication (reload-before-publish) after an outside write
+      ;; renames X and adds a second hit: while it is held, search and read
+      ;; answer the same state, the one before the write; after it publishes,
+      ;; the one after. Before this change the held search folded the disk and
+      ;; answered the write that read did not show yet.
+      (let* ((rel (string-append scratch-base "/dss-" pid-text "-h.release"))
+             (H (begin (system (string-append "rm -f " rel " " rel ".held"))
+                       (start-session-daemon! "h" #f #f (string-append "THEOURGIA_HOLD=reload-before-publish:" rel " "))))
+             (X (new-id (ask H 'insert "--title" "omega")))
+             (warm (list (ask H 'search "omega") (ask H 'read X)))
+             (before (published-count H))
+             (out (outside-requests! (daemon-store H)
+                                     (list (list 'set X "title" "omega moved") (list 'insert "--title" "omega two"))
+                                     pid-text))
+             (probe (ask H 'read X))
+             (held (wait-for-file (string-append rel ".held") 20000))
+             (s (ask H 'search "omega")) (r (ask H 'read X))
+             (released (begin (call-with-output-file rel (lambda (p) (display "go" p)) 'truncate)
+                              (wait-for-more-publications H before 20000)))
+             (s2 (ask H 'search "omega")) (r2 (ask H 'read X)))
+        (stop-session-daemon! H)
+        (want "A-8 while the reload is held, search answers the publication read answers: X's version is read's, the new block is not a hit; after it publishes, both answer the write, as the local route does"
+              (list held
+                    (hit-ids s)
+                    (equal? (clause-of s 'versions) (clause-of r 'versions))
+                    released
+                    (length (hit-ids s2))
+                    (equal? (assoc X (car (clause-of s2 'versions))) (assoc X (car (clause-of r2 'versions))))
+                    (equal? s2 (local H 'search "omega")))
+              (list #t (list X) #t 'published 2 #t #t)))
+
       (printf "== B: the session the daemon keeps ==\n")
       (kept-session-rows)
+      (working-session-rows)
       (code-rows)
       (bound-rows)
       (two-client-rows)

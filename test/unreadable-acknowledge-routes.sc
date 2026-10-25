@@ -1183,6 +1183,14 @@
 ;; D-interleave (A2's condition 1; MR-29): an undeclared export and a declared
 ;; search on one store missing a writer, both parked after discovery at the
 ;; same time in one daemon, each judged by its own class.
+;;
+;; NOTE: THE SEARCH IS NOT HELD, since search takes the dispatcher's
+;; state. It answers the publication its connection holds, as read does: no
+;; discovery, so it never reaches the hold, and search-held is pinned #f. Its class is still judged -- ok, with
+;; the incomplete clause naming the mirror -- and the export is still
+;; refused. The interleave of two self-loads parked together in one daemon is
+;; not exercised by this row any more: a working read in the search's place
+;; goes to the writer route and its load starts after the export's ends.
 (let* ((c (daemon-store! #f)) (st (car c)) (x (cadddr c))
        (rel (string-append root "/il.release"))
        (env (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=after-discovery:" rel))
@@ -1208,9 +1216,9 @@
     (chmod! "700" (mirror-dir st))
     (stop-daemon! st)
     (let ((e (first-datum-of eout)) (s (first-datum-of sout)))
-      (want "D-interleave an undeclared export and a declared search held together are judged each by its own class"
+      (want "D-interleave an undeclared export held after discovery and a declared search on the publication are judged each by its own class; the search is not held"
             (list start-held export-held search-held (head-of e) (head-of s) (incomplete-paths s))
-            (list #t #t #t '(error incomplete-reduction) 'ok (list (mirror-dir st)))))))
+            (list #t #t #f '(error incomplete-reduction) 'ok (list (mirror-dir st)))))))
 
 ;; =============================================================================
 (printf "== K: damage that cuts a writer's history is said ==\n")

@@ -1308,18 +1308,33 @@ Rules of the library:
 
 ### `context`
 
-    (context "--for" <id> "--budget" <tokens> ("--names" <name>) ... ("--all-validity"))
+    (context "--for" <id> "--budget" <tokens> ("--names" <name>) ... ("--all-validity") ("--working"))
 
 `context --for <id> --budget <tokens>` answers the material to read before
 working on a block, within a budget, with the receipt a commit gives back.
 `--for` takes any live block T; its UNIT is T and everything under it, its
-SCOPE the unit and what the unit depends on, transitively. It writes
-nothing, reads no log and runs no user code. Under the daemon it runs in
-the query session `query` uses, kept across requests (see "The query
-session" under `serve`): what an earlier request derived may be reused,
-and the answer is the one a fresh session would give, with the budget
-exception described there. An unknown or deleted id is answered as `read`
-answers it.
+SCOPE the unit and what the unit depends on, transitively. It writes no
+record and runs no user code, and without `--working` it reads no log and
+writes nothing (under `--working` the writer's draft lock creates its
+working area, `draft.lock` and `working/`, when they do not exist).
+Under the daemon it runs in the query session `query` uses, kept across
+requests (see "The query session" under `serve`): what an earlier request
+derived may be reused, and the answer is the one a fresh session would
+give, with the budget exception described there. An unknown or deleted
+id is answered as `read` answers it.
+
+`--working` answers over the request writer's working view instead, the
+one `read --working` reads: the committed state at the drafts' cut with
+that writer's drafts laid over it, in a fresh query session, never the
+kept one. The answer carries `(working "<writer>")` after `for`, counted in
+the budget; a refusal of the view (`writer-required`,
+`invalid-working-writer`, `working-unavailable`,
+`working-draft-unreadable`) is the answer, and an id the view does not
+hold is answered as `read` answers it over that view. A working view
+changes block text and the names it uses, not validity: drafts are not
+changes, so the five queries answer the committed rows. Its premises for
+drafted blocks are the overlay's versions and are not handed to a
+commit; a committed answer's are.
 
 What MUST be shown is the answer of five queries of Manteia,
 run in one session with T's id written into each:

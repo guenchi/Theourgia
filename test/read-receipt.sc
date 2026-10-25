@@ -371,9 +371,10 @@
 ;; read from. After a link to X, a new hit and X's title changed again, each
 ;; call given `now` answers what it answered then, byte for byte -- rows and
 ;; receipt alike -- so a receipt or a row taken from a fold of its own
-;; differs. search and grep fold the store themselves whatever they are
-;; given (unchanged by this item): their rows and their receipt both come
-;; from that fold, which is the present one.
+;; differs. grep folds the store itself whatever it is given (unchanged
+;; by this item): its rows and its receipt both come from that fold, which
+;; is the present one. search takes the state it is given, as every read
+;; verb does, so it answers at `now` like the rest.
 (run 'link Z "cites" X)
 (insert! "Xray late" "xray body late")
 (run 'set X "title" "Xray renamed again")
@@ -385,7 +386,7 @@
 (for-each
   (lambda (e)
     (let ((given (rpc-dispatch store (list-ref e 4) "test" now)))
-      (if (memq (car e) '(search grep))
+      (if (memq (car e) '(grep))
           (want (format "C48a-1 ~a given an earlier state: its rows and its receipt come from its own fold, the present one" (car e))
                 (let ((fresh (apply run (list-ref e 4))))
                   (in-order (equal? given fresh)

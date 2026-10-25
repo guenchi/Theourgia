@@ -41,10 +41,11 @@
 ;;; it, the cut clause left out (it grows with any write anywhere). Nine
 ;;; tenths of it are usable, and an ok answer is never larger. The envelope
 ;;; is reserved at its largest before anything is admitted, from the request
-;;; and the hard set alone: the whole receipt, the notes, the budget clause
-;;; at the budget's own digits, the insufficient clause at twenty of the
-;;; longest hard entries, the excluded counters at six digits, and with
-;;; --names the asked clause at its largest. An entry is admitted at a level
+;;; and the hard set alone: the whole receipt, the notes, the working clause
+;;; with --working, the budget clause at the budget's own digits, the
+;;; insufficient clause at twenty of the longest hard entries, the excluded
+;;; counters at six digits, and with --names the asked clause at its
+;;; largest. An entry is admitted at a level
 ;;; only when the answer with it fits. Greedy, one pass: stated, not
 ;;; optimal. `--budget min+<t>` asks for the minimum the request would
 ;;; report in budget-too-small plus t tokens, and the budget clause shows
@@ -58,8 +59,20 @@
 ;;; says which given names are defined only in hard blocks and which have no
 ;;; definition at all.
 ;;;
-;;; It writes nothing, reads no log, runs no user code and keeps nothing
-;;; between requests.
+;;; WITH --working THE VIEW IS THE REQUEST WRITER'S WORKING VIEW, the one
+;;; `read --working` and `export-code --working` read: the committed state
+;;; at the drafts' cut with the writer's drafts laid over it. Everything
+;;; above is computed over that view, in a fresh query session, and the
+;;; answer says so in `(working <writer>)`, the clause after `for`, which
+;;; the budget counts as it counts every clause of the answer. A refusal
+;;; of the view (no writer, a writer that is not one, a cut that cannot be
+;;; opened, a draft that does not read) is the answer.
+;;;
+;;; It writes no record, runs no user code and keeps nothing between
+;;; requests. Without --working it reads no log and writes nothing; with
+;;; it, the view is folded from the log at the drafts' cut, as the working
+;;; view always is, under the writer's draft lock, which creates the
+;;; writer's working area (draft.lock, working/) when it does not exist.
 (library (theourgia context)
   (export context-verb)
   (import (rnrs) (rnrs mutable-pairs)
@@ -210,19 +223,32 @@
            (budget (budget-request dispatch-helper budget-text))
            ;; THE NAMES THE EDIT WILL USE, each once, in the order given
            (names (unique (argument-option-list options "--names")))
-           (all? (argument-option options "--all-validity")))
+           (all? (argument-option options "--all-validity"))
+           (working? (argument-option options "--working")))
       (if (or (pair? args) (not (string? t)) (not budget) (exists (lambda (n) (= 0 (string-length n))) names))
           ((dispatch-helper 'usage) context-usage)
           ((dispatch-helper 'guarded)
            (lambda ()
-             (let* ((view ((dispatch-helper 'reduction-for) store state))
-                    (row (state-read view t)))
-               ;; AN UNKNOWN OR DELETED BLOCK IS ANSWERED AS READ ANSWERS IT: one
-               ;; spelling per cause, so the read handler itself answers.
-               (if (or (not row) (cdr (assq 'deleted row)))
-                   ((dispatch-helper 'read) store actor (list t) req '() state writer cwd)
-                   (guard (e ((refusal? e) (refusal-answer e)))
-                     (assemble dispatch-helper store view t budget names all? (appended-clause state view))))))))))
+             ;; THE VIEW: the committed one, or with --working the request
+             ;; writer's working view, taken through the dispatcher as
+             ;; export-code --working takes it; its refusal is the answer.
+             (let ((w (and working? ((dispatch-helper 'working-state) store state writer))))
+               (if (and w (not (eq? (car w) 'ok)))
+                   w
+                   (let* ((view (if w (caddr w) ((dispatch-helper 'reduction-for) store state)))
+                          (marking (if w (list (list 'working (cadr w))) '()))
+                          (row (state-read view t)))
+                     ;; AN UNKNOWN OR DELETED BLOCK IS ANSWERED AS READ ANSWERS IT: one
+                     ;; spelling per cause, so the read handler itself answers, over
+                     ;; the same view: a block the working view does not hold is
+                     ;; unknown there even when the committed state has it now. A
+                     ;; working answer is one cut, the drafts' cut and the drafts;
+                     ;; answered from the present it would mix two in one receipt.
+                     (if (or (not row) (cdr (assq 'deleted row)))
+                         ((dispatch-helper 'read) store actor (list t) req '() (if w view state) writer cwd)
+                         (guard (e ((refusal? e) (refusal-answer e)))
+                           (assemble dispatch-helper store view t budget names all? marking
+                                     (appended-clause state view))))))))))))
 
   ;; WHAT THE DISPATCHER WILL APPEND after this answer, or #f: the clause that
   ;; says which writers the state could not read. It is part of the bytes a
@@ -235,7 +261,7 @@
 
   (define role-order '(unit member unsettled supersedes cause implementer stale))
 
-  (define (assemble dispatch-helper store view t budget names all? appended)
+  (define (assemble dispatch-helper store view t budget names all? marking appended)
     ;; THE SESSION IS THE DISPATCHER'S when it has one (the daemon's, kept
     ;; across requests), else a fresh one, as the query verb takes it
     (let* ((S (let ((p (dispatch-helper 'session)))
@@ -295,7 +321,7 @@
         (if (pair? unhashable)
             (list 'error 'unhashable-hard-block (cons 'id unhashable))
             (budgeted dispatch-helper store view (record-reader dispatch-helper store view) S t budget names all? order versions whys validity-clause place notes receipt
-                      (lambda (h) (hashtable-ref validity h 'valid)) appended)))))
+                      (lambda (h) (hashtable-ref validity h 'valid)) marking appended)))))
 
   ;; AUTHORITY IS THE RECORD'S: its effective class, an absent one by kind.
   (define (authoritative? view h)
@@ -390,7 +416,7 @@
   ;; the newline after it.
   (define (answer-bytes form) (+ 1 (wire-length form)))
 
-  (define (budgeted dispatch-helper store view records S t budget names all? order versions whys validity-clause place notes receipt validity-of appended)
+  (define (budgeted dispatch-helper store view records S t budget names all? order versions whys validity-clause place notes receipt validity-of marking appended)
     (let* ((version (lambda (h) (let ((p (assoc h versions))) (and p (cdr p)))))
            (identity (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) 'identity)))
            (pair-of (lambda (h) (cons h (version h))))
@@ -422,6 +448,8 @@
                                (list (cons 'no-definition names))))))
            (base (lambda (tokens)
                    (append (list 'ok (list 'for (identity t)))
+                           ;; the working clause, reserved as it is rendered
+                           marking
                            (map (lambda (n) (list n '())) section-names)
                            (list (list 'notes notes))
                            reserved-insufficient
@@ -438,7 +466,7 @@
       (if (not (fits? base-size budget))
           (list 'error 'budget-too-small (list 'minimum (minimum-budget base tail)))
           (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail reserved-asked))))
+                 version identity pair-of cost base-size tail reserved-asked marking))))
 
   ;; THE SMALLEST BUDGET THE RESERVATION AND THE BLOCK ASKED FOR FIT IN. The
   ;; reservation holds the budget at its own digits, so it is found digit
@@ -451,7 +479,7 @@
         (if (< need (expt 10 digits)) need (loop (+ digits 1))))))
 
   (define (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail reserved-asked)
+                 version identity pair-of cost base-size tail reserved-asked marking)
     (let ((size base-size)
           (levels (make-hashtable string-hash string=?))
           (counts (map (lambda (n) (cons n 0)) section-names))
@@ -542,7 +570,7 @@
         (session-note! S 'preferred-candidates (reverse tried))
         (finish view t budget order hard-entry place notes receipt missing cost sections excluded
                 (reverse chosen) version (vector-ref preferred 1) tail
-                (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked))))
+                (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked marking))))
 
   ;; (folded (<name> <block> (candidates <n>) (shown <m>)) ...), a group a
   ;; vector #(<name> <block> <candidates> <shown> <entered ids>)
@@ -717,7 +745,7 @@
   ;; ---- the answer ------------------------------------------------------------------------------
 
   (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail
-                  folded asked)
+                  folded asked marking)
     (let* ((section-of
              (lambda (name)
                (append (map (lambda (h) (hard-entry h))
@@ -743,6 +771,9 @@
                                     (if capped? '((capped)) '())))
            (form (lambda (used)
                    (append (list 'ok (list 'for (hard-entry t)))
+                           ;; `(working <writer>)` with --working, inside the
+                           ;; form, so `used` and the size check count it
+                           marking
                            shown
                            (list (list 'notes notes))
                            insufficient

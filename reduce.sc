@@ -59,7 +59,7 @@
           state-consumed-parent-cuts state-seen state-revoked draft-version structural-version structural-version? file-baseline provisional-id provisional-id?
           cut-join
           ord-between block-id
-          reduction? reduction-state)
+          reduction? reduction-state reduction-overlay? reduction-overlay-set!)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (only (chezscheme) make-parameter)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
@@ -164,7 +164,13 @@
             (mutable block-forward)
             (mutable pasts-index)
             ;; the block structure, maintained
-            (mutable structure)))
+            (mutable structure)
+            ;; A WORKING VIEW, and only that (working.sc overlay-drafts-rows):
+            ;; the committed state at the drafts' cut with a writer's drafts
+            ;; laid over it. It shares the committed cut, so the process-wide
+            ;; caches kept by cut for committed states (store.sc defs-index,
+            ;; header-table) never answer for one.
+            (mutable overlay reduction-overlay? reduction-overlay-set!)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
   ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
@@ -695,7 +701,7 @@
   (define (reduce-empty)
     (make-reduction '() '() '() '() '() (make-pending-queue) '() (empty-notes) '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
-                    (make-empty-structure)))
+                    (make-empty-structure) #f))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -726,7 +732,9 @@
                       (decls-copy (reduction-declared-derived r))
                       #t
                       index #f (hashtable-copy (reduction-pasts-index r) #t)
-                      (structure-copy (reduction-structure r)))))
+                      (structure-copy (reduction-structure r))
+                      ;; a copy of a working view is one too
+                      (reduction-overlay? r))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
