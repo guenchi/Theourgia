@@ -196,7 +196,7 @@ fixtures, `q8-cli.py` (driven on its own, not one of the nine),
 **`own-verbs.sc`**, which `options-gate.sc` and `docs-check.sc` `load` for
 the same reason --
 **`trace-poll.ss`**, the bounded wait on a child's trace or output that
-`retire-race.sc` and `cli1.sc` `load` --
+`retire-race.sc`, `cli1.sc` and `unreadable-acknowledge-routes.sc` `load` --
 **`evidence-cli1-hang/`**, which this file cites above, and
 **`vectors/`**, ten language files `code-text.sc` imports. The last of
 those were read from `../theourgos/`, a different and closed repository,

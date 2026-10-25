@@ -1186,14 +1186,60 @@
 ;;
 ;; NOTE: THE SEARCH IS NOT HELD, since search takes the dispatcher's
 ;; state. It answers the publication its connection holds, as read does: no
-;; discovery, so it never reaches the hold, and search-held is pinned #f. Its class is still judged -- ok, with
+;; discovery, so it never reaches the hold. Its class is still judged -- ok, with
 ;; the incomplete clause naming the mirror -- and the export is still
 ;; refused. The interleave of two self-loads parked together in one daemon is
 ;; not exercised by this row any more: a working read in the search's place
 ;; goes to the writer route and its load starts after the export's ends.
+;;
+;; KEY: THE RELEASE WAITS FOR THE SEARCH'S ANSWER, NOT FOR A TIME. The search
+;; answers while the export is still held, so the row waits for that answer on
+;; the monotonic clock (file-wait-text, trace-poll.ss), reads whether a hold is
+;; acknowledged at that instant, and only then releases the export. A search
+;; that was held would never answer before the release: the wait ends at its
+;; bound with no answer, and the row is red.
+;;
+;; NEVER: IT USED TO WAIT TWENTY SECONDS FOR A `.held` THAT NEVER CAME, counted
+;; as 200 shell sleeps. The count is not a clock: on a slow runner the 200 took
+;; about thirty seconds, the export's hold expired by itself (THEOURGIA_HOLD_MS,
+;; default 30000) and the client's 30 s read timeout ended the export with
+;; transport-unknown; the fold the daemon runs next then left its own `.held`
+;; inside the window, which read as a held search. Measured on the development
+;; machine with eleven seconds added before the search: exactly that answer.
+;;
+;; NOTE: SO THE HOLD CANNOT EXPIRE UNSEEN. The row's daemon holds for up to
+;; il-hold-ms, above every wait here, and the row asserts that the serve log
+;; has no `(theourgia hold-expired` line. The daemon traces, and on a red the
+;; serve log's tail and both clients' output and standard error are printed
+;; under the row.
+(define il-script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+(load (string-append il-script-dir "/trace-poll.ss"))
+(define il-hold-ms 120000)
+(define il-answer-bound 20)
+;; -> #t when FILE has content before BOUND seconds pass on the monotonic
+;; clock, #f when the bound passed first or the poll could not run.
+(define (il-answered? file bound)
+  (let ((report (string-append file ".poll")))
+    (sh (file-wait-text file bound) "echo \"$w\" > " (quoted report))
+    (string=? (text-of-file report) "yes\n")))
+(define (il-evidence! log files)
+  (let ((ls (lines-of-text log)))
+    (printf "     serve log, last ~a of ~a lines:\n" (min 40 (length ls)) (length ls))
+    (for-each (lambda (l) (printf "       ~a\n" l)) (list-tail ls (max 0 (- (length ls) 40)))))
+  (for-each (lambda (f)
+              (printf "     ~a:\n" f)
+              (for-each (lambda (l) (printf "       ~a\n" l)) (lines-of-text (text-of-file f))))
+            files))
 (let* ((c (daemon-store! #f)) (st (car c)) (x (cadddr c))
        (rel (string-append root "/il.release"))
-       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=after-discovery:" rel))
+       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD_MS=" (number->string il-hold-ms)
+                           " THEOURGIA_HOLD=after-discovery:" rel))
        (eout (string-append root "/il-export.out"))
        (sout (string-append root "/il-search.out"))
        (start (serve-spawn! root st #f env)))
@@ -1209,16 +1255,23 @@
          (export-held (wait-until-file (string-append rel ".held") 20000))
          (_ (sh "rm -f " (quoted (string-append rel ".held"))))
          (_ (client-bg! env sout "search" "needle" "--store" st))
-         (search-held (wait-until-file (string-append rel ".held") 20000)))
+         (search-answered (il-answered? sout il-answer-bound))
+         (search-held (file-exists? (string-append rel ".held"))))
     (touch! rel)
     (wait-until-text eout 30000)
     (wait-until-text sout 30000)
     (chmod! "700" (mirror-dir st))
     (stop-daemon! st)
-    (let ((e (first-datum-of eout)) (s (first-datum-of sout)))
-      (want "D-interleave an undeclared export held after discovery and a declared search on the publication are judged each by its own class; the search is not held"
-            (list start-held export-held search-held (head-of e) (head-of s) (incomplete-paths s))
-            (list #t #t #f '(error incomplete-reduction) 'ok (list (mirror-dir st)))))))
+    (let* ((e (first-datum-of eout)) (s (first-datum-of sout))
+           (log (serve-log st))
+           (expired (exists (lambda (l) (prefix? "(theourgia hold-expired" l)) (lines-of-text log)))
+           (got (list start-held export-held search-answered search-held expired
+                      (head-of e) (head-of s) (incomplete-paths s)))
+           (wanted (list #t #t #t #f #f '(error incomplete-reduction) 'ok (list (mirror-dir st)))))
+      (want "D-interleave an undeclared export held after discovery and a declared search on the publication are judged each by its own class; the search answers while the export is held, and no hold expired"
+            got wanted)
+      (unless (equal? got wanted)
+        (il-evidence! log (list eout (string-append eout ".err") sout (string-append sout ".err")))))))
 
 ;; =============================================================================
 (printf "== K: damage that cuts a writer's history is said ==\n")
