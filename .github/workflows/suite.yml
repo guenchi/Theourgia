@@ -174,6 +174,19 @@ jobs:
               [ -n "${BASE_LIBDIR:-}" ] && export THEOURGIA_BASE_LIBDIR="$BASE_LIBDIR"; . ./env.sh
               perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$W/rerun/$fx.out" 2>&1 < /dev/null; echo $? > "$W/rerun/$fx.rc" ) || true
             echo "rerun $fx rc=$(cat "$W/rerun/$fx.rc") fail=$(grep -c '^FAIL' "$W/rerun/$fx.out") mismatch=$(grep -c 'MISMATCH' "$W/rerun/$fx.out") exception=$(grep -c -i 'exception' "$W/rerun/$fx.out") sentinel=$(grep -c "^$fx complete" "$W/rerun/$fx.out")"
+            # THE EVIDENCE A RED ROW LEAVES BESIDE ITS ANSWER: the clients'
+            # stderr files and every daemon's serve.log under the rerun's
+            # roots (and the default run root, for a fixture that sets no
+            # socket root), kept with their paths relative to the root.
+            # Without them a red that is green on the development machine
+            # has nothing to read (2026-10-25, D-interleave).
+            for r in "$root" "$sock" "$HOME/.theourgia/run"; do
+              [ -d "$r" ] || continue
+              find "$r" -type f \( -name '*.err' -o -name 'serve.log' -o -name '*.held' \) -size -4000k 2>/dev/null | while IFS= read -r f; do
+                d="$W/rerun/$fx.evidence/$(basename "$r")/${f#$r/}"; mkdir -p "$(dirname "$d")"; cp "$f" "$d"
+              done
+            done
+            echo "rerun $fx evidence files: $(find "$W/rerun/$fx.evidence" -type f 2>/dev/null | wc -l | tr -d ' ')"
           done
           # THE SUITE MUST HAVE RUN TO ITS END: a run that stopped before its
           # summary has no RED lines to rerun and would otherwise read clean.
