@@ -1303,11 +1303,18 @@
 (let* ((c (run cw-s 'context "--for" cwV "--budget" "min+0")) (w (ctx-as cw-s cw-long cwV "min+0" "--working"))
        (mc (budget-tokens c)) (mw (budget-tokens w))
        (under (and mw (ctx-as cw-s cw-long cwV (- mw 1) "--working"))))
-  (want "CW-4 near the minimum budget: the --working minimum is above the committed one, the answer at it is ok and within it, its used counting the marker; one token less is budget-too-small"
+  ;; NEVER: THE ANSWER'S OWN NUMBERS ARE NOT EVIDENCE ABOUT THEMSELVES. The
+  ;; inequalities above hold for a working answer that reports any used
+  ;; between the committed one and its budget -- its budget, say -- so used is
+  ;; also compared with what was rendered: the bytes received without the cut,
+  ;; in tokens, as the incomplete-clause rows compare it for a committed one.
+  (want "CW-4 near the minimum budget: the --working minimum is above the committed one, the answer at it is ok and within it, its used counting the marker and equal to the rendered answer's size, as the committed one's is; one token less is budget-too-small"
         (in-order (ok? c) (ok? w) (and mc mw (> mw mc)) (list-ref w 2)
                   (and mw (<= (used-tokens w) mw)) (and (used-tokens w) (used-tokens c) (> (used-tokens w) (used-tokens c)))
+                  (equal? (used-tokens w) (div (+ (received-without-cut-bytes w) 3) 4))
+                  (equal? (used-tokens c) (div (+ (received-without-cut-bytes c) 3) 4))
                   (head2 under))
-        (list #t #t #t (list 'working cw-long) #t #t '(error budget-too-small))))
+        (list #t #t #t (list 'working cw-long) #t #t #t #t '(error budget-too-small))))
 ;; ONE ROW PER REFUSAL of the view, each the whole answer: no context, no marker.
 (define (forge-at-cut! store writer id text cut)
   (let* ((state (open-and-reduce store))
@@ -1450,6 +1457,27 @@
                 (places cw11-working cw11C) (places cw11-working cw11B)
                 (places cw11-after cw11B) (places cw11-after cw11C))
       '((background) () (background) () (background) ()))
+
+;; CW-13 HARD MATERIAL COMMITTED AFTER THE DRAFTS' CUT: the five queries of a
+;; working answer are asked at the drafts' cut, as its records are read. B is
+;; drafted; then a decision D is committed and B depends-on D. The committed
+;; context has D in its constraints; the working one, at the drafts' cut where
+;; neither D nor the edge exists, answers ok with no constraints. Hard queries
+;; asked of the latest state instead would name D while the records stop at
+;; the cut, and the answer could not be built.
+(define cw13 (fresh-store!))
+(define cw13-file (make! cw13 "root" "a file" "kind" "file"))
+(run cw13 'batch (format "((insert ~s #f ((kind . code) (lang . \"javascript\") (title . \"b\") (src . \"var b = 1\"))))" cw13-file))
+(define cw13B (titled cw13 "b"))
+(define cw13-w (run cw13 'write cw13B "var b = 2 // drafted" "--writer" "cwthirteen"))
+(define cw13D (make! cw13 "root" "a decision after the draft" "kind" "decision"))
+(define cw13-l (run cw13 'link cw13B "depends-on" cw13D))
+(define cw13-c (ctx cw13 cw13B 100000))
+(define cw13-a (ctx-as cw13 "cwthirteen" cw13B 100000 "--working"))
+(want "CW-13 a decision B depends on, committed after B's draft: the committed context has it in constraints; --working, at the drafts' cut, answers ok with no constraints"
+      (in-order (car cw13-w) (car cw13-l) (ok? cw13-c) (places cw13-c cw13D)
+                (ok? cw13-a) (list-ref cw13-a 2) (section cw13-a 'constraints) (has-text? (section cw13-a 'for) "drafted"))
+      '(ok ok #t (constraints) #t (working "cwthirteen") () #t))
 
 ;; NOTE CW-8, A READING, NOT A ROW: the draft committed, the block's
 ;; committed version is not the premise --working gave it, although the two
