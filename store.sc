@@ -57,7 +57,7 @@
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
                 session-snapshot! log-open load-writers load-prefix load-commit! local-writer-of
-                ownership-check-lines load-ownership
+                ownership-check-lines load-ownership instance-check-clause trailing-empty-segment
                 discovery-end-seq discovery-integrity discovery-torn discovery-origin
                 enumerate-segment-files discovery-quarantine discover-prefix
                 manifest-segments read-manifest
@@ -5581,14 +5581,18 @@
            (per-writer
              (map (lambda (e)
                     (let ((p (cdr e)))
-                      (list (car e)
-                            (list 'end (cond ((unreadable? p) 'unreadable)
-                                             (p (discovery-end-seq p))
-                                             (else 0)))
-                            (list 'torn (cond ((unreadable? p) 'unreadable)
-                                              (else (and p (discovery-torn p) #t))))
-                            (list 'integrity
-                                  (if p (map describe-error (discovery-integrity p)) '())))))
+                      (append
+                        (list (car e)
+                              (list 'end (cond ((unreadable? p) 'unreadable)
+                                               (p (discovery-end-seq p))
+                                               (else 0)))
+                              (list 'torn (cond ((unreadable? p) 'unreadable)
+                                                (else (and p (discovery-torn p) #t))))
+                              (list 'integrity
+                                    (if p (map describe-error (discovery-integrity p)) '())))
+                        ;; ONLY WHEN THERE IS ONE (see trailing-empty-segment).
+                        (let ((n (trailing-empty-segment store (car e) p)))
+                          (if n (list (list 'empty-segment n)) '())))))
                   prefixes))
            (snapshots (check-snapshots store coverage))
            ;; WHAT THE REDUCTION COULD NOT APPLY IS DAMAGE TOO. The rows
@@ -5698,6 +5702,9 @@
         ;; identity, when owners have none to be compared with or the
         ;; comparison could not read it (log.sc, ownership-check-lines).
         (ownership-check-lines (load-ownership ls))
+        ;; THE IDENTITY ITSELF, and the devices it has been remounted from
+        ;; (log.sc, instance-check-clause). Not a note: it decides nothing.
+        (instance-check-clause store)
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

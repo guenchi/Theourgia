@@ -64,6 +64,7 @@
           session-pending-count-set! note-written-for!
           session-write-started? session-written-events
           store-id-of adopt! continue-adopt! generation-chain-ok? adopt-needed? verify-instance
+          instance-check-clause trailing-empty-segment
           log-publish! segment-sha
           registry-inside-store?
           store-register!
@@ -3088,9 +3089,18 @@
         (else
          (call-with-values (lambda () (path-device-inode store))
            (lambda (dev ino)
+             ;; THE DEVICE IS ASKED LAST. It is the kernel's number for the
+             ;; volume, given when the volume is mounted, so a reboot can
+             ;; change it while the machine, the directory's inode and the
+             ;; owners are what they were. Asked first, it answered every
+             ;; copy on another volume as `device` and a remount the same
+             ;; way; asked last, `(mismatch device)` means the other three
+             ;; and the owners agree, which is the one answer a write may
+             ;; take for a remount (remount-held!). A copy keeps its
+             ;; original's device only on the same volume, where its inode
+             ;; differs and is answered first.
              (cond
                ((not (equal? (alist-ref d 'machine) (machine-id))) (list 'mismatch 'machine))
-               ((not (eqv? (alist-ref d 'device) dev)) (list 'mismatch 'device))
                ((not (eqv? (alist-ref d 'inode) ino)) (list 'mismatch 'inode))
                ((not (alist-ref d 'nonce)) (list 'mismatch 'nonce))
                ;; THE NONCE IS THE REGISTRY KEY, so "it is present" is
@@ -3110,6 +3120,7 @@
                     ((owner-divergent? owned) (list 'mismatch 'nonce))
                     ((and owned (not (equal? owned (alist-ref d 'nonce))))
                      (list 'mismatch 'nonce))
+                    ((not (eqv? (alist-ref d 'device) dev)) (list 'mismatch 'device))
                     (else 'ok)))))))))))
 
   ;; -> the owner's nonce, #f, or an owner-unreadable record. "Is this
@@ -3233,6 +3244,68 @@
                                           " (nonce \"" nonce "\"))\n"))
                          'registry)
           nonce))))
+
+  ;; A REMOUNT IS RECORDED, NOT ADOPTED. Called with the store lock held
+  ;; exclusive, after verify-instance-by answered (mismatch device), so the
+  ;; machine, the inode, the nonce and the owners all agree: instance.sexp
+  ;; is rewritten with the live device and every other field as it was,
+  ;; and the change is appended to its `remounts` history, the last eight
+  ;; kept, each `((from <device>) (to <device>) (at <wall-clock ms>))`.
+  ;; No writer is derived or retired, so the registry entry, keyed by the
+  ;; store's id and the nonce, still names this instance. Answers the two
+  ;; devices, (old . new); the trace line is the daemon log's record of it.
+  (define remounts-kept 8)
+  (define (remount-held! store)
+    (let ((d (read-instance store)))
+      (call-with-values (lambda () (path-device-inode store))
+        (lambda (dev ino)
+          (let* ((old (alist-ref d 'device))
+                 (history (let ((e (assq 'remounts d))) (if e (cdr e) '())))
+                 (entry (list (list 'from old) (list 'to dev) (list 'at (wall-clock-ms))))
+                 (kept (let ((all (append history (list entry))))
+                         (list-tail all (max 0 (- (length all) remounts-kept)))))
+                 (fields (filter (lambda (e) (not (and (pair? e) (eq? (car e) 'remounts)))) d))
+                 (new (append (map (lambda (e) (if (and (pair? e) (eq? (car e) 'device)) (list 'device dev) e))
+                                   fields)
+                              (list (cons 'remounts kept)))))
+            (atomic-write! (string-append store "/instance.sexp")
+                           (string->utf8 (format "~s\n" new))
+                           'registry)
+            (trace-event! 'instance (list 'remounted (list 'from old) (list 'to dev)) #f)
+            (cons old dev))))))
+
+  ;; WHAT check SAYS OF THE IDENTITY: `(instance (machine m) (device d)
+  ;; (inode i) (nonce n) [(remounts ...)])`, the fields instance.sexp records,
+  ;; the history only when there is one. Nothing here decides the verdict.
+  ;; A store with no instance.sexp, or one that does not parse, has no
+  ;; clause: ownership-check-lines says so, and an unreadable one is its
+  ;; instance-unavailable line. Read through the ownership table's own
+  ;; readers, so an unreadable file is classified as it is there and this
+  ;; adds no handler of its own.
+  (define (instance-check-clause store)
+    (let ((r (ownership-read (string-append store "/instance.sexp"))))
+      (if (or (eq? r 'absent) (ownership-unreadable? r))
+          '()
+          (let ((d (ownership-datum r)))
+            (if (list? d)
+                (list (cons 'instance
+                            (filter (lambda (e) (and (pair? e) (memq (car e) '(machine device inode nonce remounts))))
+                                    d)))
+                '())))))
+
+  ;; AN EMPTY SEGMENT AFTER THE LAST RECORD'S, by number, or #f. Rotation
+  ;; makes N+1 before any record reaches it, so a writer can stop with one;
+  ;; it is legal, and check names it so that the prefix adopt answers, the
+  ;; last record's segment, can be read against the files. P is the
+  ;; writer's discovery; a writer that could not be read has none to report.
+  (define (trailing-empty-segment store writer p)
+    (and p (not (eq? (discovery-origin p) 'unreadable))
+         (let* ((ns (enumerate-segment-files store writer))
+                (top (and (pair? ns) (apply max ns)))
+                (end (or (discovery-end-segment p) 1)))
+           (and top (> top end)
+                (zero? (file-size (string-append (writer-directory store writer) "/" (segment-file-name top))))
+                top))))
 
   (define (instance-nonce store)
     (let ((d (read-instance store)))
@@ -5644,9 +5717,17 @@
   ;; local writer is gone answers (identity ...) first, and its adopt minted a
   ;; new instance before failing on the same #f. There is nothing to retire and
   ;; nobody to succeed, so it is refused by name before any adoption step.
+  ;; A STORE WHOSE DEVICE ALONE CHANGED IS REMOUNTED, NOT ADOPTED: nothing
+  ;; about whose it is has changed, so no writer is derived and none retired.
+  ;; instance.sexp takes the live device (remount-held!, the same record a
+  ;; write makes) and the answer says so, `(adopted (reason remount) (device
+  ;; <old> <new>))`. Any other reason the store still has is the next adopt's.
   (define (adopt-decided! store t)
     (let ((why (adopt-needed-by? store t)))
       (cond
+        ((and (equal? why '(identity device)) (local-writer-name-by store t))
+         (let ((moved (remount-held! store)))
+           (list 'adopted (list 'reason 'remount) (list 'device (car moved) (cdr moved)))))
         ((not why)
          (list 'refused 'not-needed
                (list 'checked '(identity retired missing-generation registry-ahead damage))))
@@ -5657,9 +5738,13 @@
                  (old (local-writer-name-by store t))
                  (instance (adopt-nonce store why))
                  (p (discover-prefix store old 'held-exclusive))
-                 (seg (if (pair? (discovery-physical-current p))
-                          (car (discovery-physical-current p))
-                          1))
+                 ;; THE SEGMENT OF THE LAST RECORD, which the offset below is
+                 ;; an offset in. The writer's physical current segment is
+                 ;; another number when rotation made N+1 and stopped before
+                 ;; a record reached it -- a legal state -- and the prefix
+                 ;; then named N+1 at N's end offset: a point in no segment,
+                 ;; read back as damage.
+                 (seg (or (discovery-end-segment p) 1))
                  ;; WHERE THE VALID PREFIX ENDS, not where the file
                  ;; ends. The whole reason this adopt is happening is
                  ;; that there are bytes past the prefix; declaring the
@@ -6467,30 +6552,28 @@
           (list 'refused-before-reserve 'unframable)
           (maintain-and-write! s frame p line seq))))
 
-  ;; STEP 6: MAINTENANCE, and it touches this writer's current segment
-  ;; and nothing else. A torn tail is the one shape a crash can leave
-  ;; that is repaired rather than refused, and the repair is a truncation
-  ;; to the last complete frame -- never a rewrite, never a sealed
-  ;; segment.
-  ;; STEP 7 SITS BETWEEN MAINTENANCE AND THE WRITE, and it is the only
-  ;; step that touches anything outside the store. Its failure modes are
-  ;; deliberately different from the write's: a refused reservation means
-  ;; nothing was written and nothing will be, while a reservation that
-  ;; succeeds and is then followed by a failed write leaves the mark
-  ;; ahead of the log -- which the next load refuses and adopt repairs.
+  ;; STEP 6: ADMISSION, the instance and the reservation, and nothing on
+  ;; the disk has changed yet. It is the only step that touches anything
+  ;; outside the store. Its failure modes are deliberately different from
+  ;; the write's: a refusal means nothing was written and nothing will be,
+  ;; while a reservation that succeeds and is then followed by a failed
+  ;; write leaves the mark ahead of the log -- which the next load refuses
+  ;; and adopt repairs.
+  ;; NEVER: A WRITE THAT WILL BE REFUSED DOES NOT MAINTAIN. Admission used
+  ;; to come after maintenance, so a copy refused for its identity had
+  ;; already cut a torn tail back and, its segment full, made the next
+  ;; one: the refused write left an empty segment behind, and the adopt
+  ;; that followed read it as the writer's current one. What maintenance
+  ;; does is the admitted write's to do.
   ;; RETIREMENT IS NOT RE-DECIDED HERE. The binding refuses a retired
   ;; writer before this is reached -- session-view withholds the view and
   ;; binding-refusal names it -- and a second check of the same rule is a
   ;; second supplier that can disagree with the first.
-  ;; A REFUSAL AFTER A ROTATION drops the kept prefix: the next segment is on
-  ;; the disk and the session's prefix does not hold it.
-  (define (reserve-then-write! s frame p line seq target target-path fresh?)
-    (let ((outcome (reserve-then-write-checked! s frame p line seq target target-path fresh?)))
-      (when (and fresh? (pair? outcome) (eq? (car outcome) 'refused-before-reserve))
-        (session-own-prefix-set! s #f))
-      outcome))
+  ;; -> #f when the write is admitted, or the refusal it answers.
 
-  (define (reserve-then-write-checked! s frame p line seq target target-path fresh?)
+  ;; REMOUNTED is #t on the second asking, after a remount: a device that
+  ;; still differs then is refused rather than recorded again.
+  (define (admit-write! s seq . remounted)
     (let* ((store (session-store s))
            (writer (session-writer s))
            ;; VERIFIED WITH THE LOAD'S TABLE, the one that chose this
@@ -6511,13 +6594,26 @@
          (list 'refused-before-reserve 'no-instance))
         ((and (pair? identity) (eq? (car identity) 'refused))
          (cons 'refused-before-reserve (cdr identity)))
+        ;; THE DEVICE ALONE IS A REMOUNT (verify-instance-by asks it last),
+        ;; recorded under the lock this write already holds, and the write
+        ;; goes on. The session takes instance.sexp's new version as its
+        ;; own, so the request's next record does not read the rewrite as
+        ;; somebody else's change and reload.
+        ((and (equal? identity '(mismatch device)) (null? remounted))
+         (remount-held! store)
+         (session-versions-set! s (map (lambda (e)
+                                         (if (eq? (car e) 'instance)
+                                             (list 'instance (path-file-version (string-append store "/instance.sexp")))
+                                             e))
+                                       (session-versions s)))
+         (admit-write! s seq #t))
         ((pair? identity)
          (list 'refused-before-reserve (list 'instance (cadr identity))))
         ;; A SEQUENCE INSIDE THIS REQUEST'S AUTHORISATION IS ALREADY
         ;; RESERVED. Going to the registry again would read a mark this
         ;; session itself raised and refuse the writer its own
         ;; reservation.
-        ((authorised? s seq) (write-line! s frame line seq target target-path fresh?))
+        ((authorised? s seq) #f)
         (else
          ;; THE WHOLE REQUEST'S RANGE, TAKEN AT ITS FIRST APPEND AND NOT
          ;; BEFORE. Every check above this point -- the instance, the
@@ -6537,7 +6633,7 @@
            (cond
              ((eq? outcome 'reserved)
               (session-authorised-set! s (cons seq last))
-              (write-line! s frame line seq target target-path fresh?))
+              #f)
              ((and (pair? outcome) (eq? (car outcome) 'registry-ahead))
               (list 'refused-before-reserve 'registry-ahead))
              ;; A GENERATION THIS INSTANCE OWNS IS GONE FROM THE STORE.
@@ -6549,7 +6645,7 @@
               (list 'refused-before-reserve 'missing-generation))
              ((and (pair? outcome) (eq? (car outcome) 'registry-inside-store))
               (list 'refused-before-reserve 'registry-inside-store))
-             (else (write-line! s frame line seq target target-path fresh?))))))))
+             (else #f)))))))
 
   ;; THE STAGE COVERS MAINTENANCE AS WELL AS THE WRITE. Rotation's size
   ;; probe, its flushes and the torn-tail truncation are all part of
@@ -6566,8 +6662,11 @@
            (writer (session-writer s))
            (dir (writer-directory store writer))
            (phys (discovery-physical-current p)))
-      (if (not (pair? phys))
-          (list 'refused-before-reserve 'no-append-target)
+      (cond
+        ((not (pair? phys))
+         (list 'refused-before-reserve 'no-append-target))
+        ((admit-write! s seq))
+        (else
           (let* ((seg (car phys))
                  (path (string-append dir "/" (segment-file-name seg)))
                  (torn (discovery-torn p)))
@@ -6579,9 +6678,9 @@
             (when (and torn (eqv? (car torn) seg))
               ;; THE REPAIR IS THIS PROCESS'S OWN, AND IT IS SAID AT ONCE,
               ;; inside the thunk, right after the cut: a failure after it --
-              ;; the close in the unwind, the rotation's probe, the
-              ;; reservation -- would otherwise leave the shortened segment
-              ;; unnoted, and the next write would read it as replaced.
+              ;; the close in the unwind, the rotation's probe, the write --
+              ;; would otherwise leave the shortened segment unnoted, and the
+              ;; next write would read it as replaced.
               (let ((fd (fd-open path '(write))))
                 (dynamic-wind
                   (lambda () (if #f #f))
@@ -6599,8 +6698,8 @@
             (let* ((rotated (maybe-rotate! store writer seg path p line))
                    (target (car rotated))
                    (target-path (cdr rotated)))
-              (reserve-then-write! s frame p line seq target target-path
-                                   (not (eqv? target seg))))))))
+              (write-line! s frame line seq target target-path
+                           (not (eqv? target seg)))))))))
 
   ;; ROTATION IS A DIRECTORY-ENTRY TRANSACTION and its order is the
   ;; recoverable one: flush what is there, make the new entry, flush it,
@@ -6837,7 +6936,11 @@
   ;; - verify-instance answers ok. "This instance's nonce" is the key only
   ;;   when the instance really is this one: a copy that kept another
   ;;   store's instance.sexp carries that store's nonce, and counting under
-  ;;   it would write into the other instance's entries.
+  ;;   it would write into the other instance's entries. The device alone
+  ;;   differing is a remount, not a copy, and is recorded here as a write's
+  ;;   admission records it (remount-held!): a replay reaches this without
+  ;;   passing admission. Both callers hold the store lock exclusive (a
+  ;;   session's barrier, and a replay inside its request's session).
   ;; - this machine's registry holds a generation record for (store-id,
   ;;   nonce): the adopt that minted the instance recorded it here, which is
   ;;   the witness that the registry has not been lost since. A registry
@@ -6879,6 +6982,8 @@
                            (begin (write-registry! (registry-note-written reg id nonce writer seq))
                                   #t))))))))
         (unless raised?
+          (when (equal? (verify-instance store) '(mismatch device))
+            (remount-held! store))
           (unless (eq? (verify-instance store) 'ok)
             (assertion-violation
               'note-written-for!

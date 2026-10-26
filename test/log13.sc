@@ -427,9 +427,16 @@
 (want "a changed machine is refused, and named"
       (tamper-and-append! (tamper-one 'machine))
       (list 'refused-before-reserve (list 'instance 'machine)))
-(want "a changed device is refused, and named"
-      (tamper-and-append! (tamper-one 'device))
-      (list 'refused-before-reserve (list 'instance 'device)))
+;; THE DEVICE ALONE IS A REMOUNT, not a copy: the volume's number can
+;; change across a reboot while machine, inode and nonce stay. The write is
+;; admitted and instance.sexp takes the live device; a copy, whose inode
+;; differs, is refused for its inode (the row below, and adopt1's R0, R2).
+(want "a changed device alone is a remount: committed, and instance.sexp names the live device"
+      (let ((res (tamper-and-append! (tamper-one 'device))))
+        (list (car res)
+              (eqv? (field-of 'device)
+                    (call-with-values (lambda () (path-device-inode d)) (lambda (dev ino) dev)))))
+      (list 'committed #t))
 (want "a changed inode is refused, and named"
       (tamper-and-append! (tamper-one 'inode))
       (list 'refused-before-reserve (list 'instance 'inode)))
@@ -491,9 +498,14 @@
 ;; A PROBE THAT CANNOT ANSWER IS NOT AN ANSWER OF NO. Before this fault
 ;; existed, restoring the swallowed fallback behaved identically on every
 ;; input that could be built, so the rule had no witness.
+;; THE REGISTRY IS THERE: the reservation is taken at admission, before
+;; maintenance and so before the probe, and a reservation the write never
+;; used is authorised ahead of the log -- the documented state that is not
+;; a rollback, and the store writes on. What the row asks is that the
+;; append stops: raised, and the segment as it was.
 (want "a failed size probe stops the append instead of skipping rotation"
       (child-says "stat-fail@commit:file=000001.sexp")
-      (list 'raised (* 2 R) 'no-registry))
+      (list 'raised (* 2 R) 'registry))
 
 (printf "== L12: the registry fsync branch ==\n")
 ;; The registry is the commit's precondition, so a registry that cannot

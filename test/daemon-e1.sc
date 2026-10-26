@@ -411,13 +411,16 @@
 (define (answer-refused-replaced? a) (and (string? (cadr a)) (starts-with? (cadr a) "(error refused store-replaced")))
 ;; An answer of a write that failed after the cut: error incomplete, the
 ;; segment's path, the errno ERRNO, and the cut in what was written.
+;; THE CUT IS AMONG WHAT WAS WRITTEN, ONCE, NOT FIRST: the reservation is
+;; taken before maintenance, so the registry's own writes come ahead of it.
 (define (failed-after-cut? a seg errno)
   (let ((t (cadr a)))
     (and (string? t)
          (starts-with? t "(error incomplete")
          (contains? t seg)
          (contains? t (string-append "(errno " errno ")"))
-         (contains? t "(written ((truncate"))))
+         (contains? t "(written (")
+         (= 1 (count-in t (string-append "(truncate \"" seg "\")"))))))
 
 ;; RELEASES A PROCESS PARKED AT A BARRIER on FIFO, with a bound: opening a
 ;; fifo for writing blocks until a reader opens it, so a plain `echo >` with
@@ -1050,6 +1053,61 @@
                       (and seg (failed-after-cut? failed seg "EIO"))
                       (answer-ok? next))
                 '(#t #t #t #t))))
+
+      ;; ---- a remount under a daemon ----------------------------------
+      ;;
+      ;; NEVER: THE DAEMON'S START READS NO IDENTITY. Identity is a write's
+      ;; concern, so a daemon on a store whose recorded device no longer
+      ;; matches publishes and answers reads as before, and the first write
+      ;; through it rewrites instance.sexp with the live device, under the
+      ;; lock that write holds, and says so once in the daemon's log. The
+      ;; rows rewrite the recorded device to stand for the remount.
+      ;; NOTE: THE RESTART IS ARMED WITH A FAULT THAT NAMES NO FILE OF THE
+      ;; STORE, because restart-tagged-daemon! always passes one and an empty
+      ;; THEOURGIA_FAULT is refused at load; nothing in these rows can fire it.
+      (let* ((instance-of (lambda (st) (call-with-input-file (string-append st "/instance.sexp") read)))
+             (device-of (lambda (st) (cadr (assq 'device (instance-of st)))))
+             (remounts-of (lambda (st) (let ((e (assq 'remounts (instance-of st)))) (if e (length (cdr e)) 0))))
+             (drift! (lambda (st)
+                       (let ((inst (instance-of st)))
+                         (call-with-output-file (string-append st "/instance.sexp")
+                           (lambda (o)
+                             (write (map (lambda (e) (if (eq? (car e) 'device) (list 'device (+ 1000 (cadr e))) e)) inst) o)
+                             (newline o))
+                           'replace))))
+             (remount-line "(trace instance (remounted"))
+        (let* ((d0 (start-tagged-daemon! "remount-start" #f))
+               (st (tagged-store d0))
+               (first-write (ask-tagged d0 "insert \"--title\" \"BEFORE-REMOUNT\"" 8000))
+               (live (device-of st)))
+          (stop-tagged-daemon! d0)
+          (drift! st)
+          (let* ((again (restart-tagged-daemon! d0 "remount" "stat-fail@commit:file=no-such-segment.sexp"))
+                 (up? (not (eq? (car again) 'never-came-up)))
+                 (lg2 (cadr again))
+                 (read-before (if up? (ask-tagged d0 "outline" 8000) (list 0 'not-up)))
+                 (lines-before (count-in (file-text lg2) remount-line))
+                 (written (if up? (ask-tagged d0 "insert \"--title\" \"AFTER-REMOUNT\"" 8000) (list 0 'not-up)))
+                 (lines-after (count-in (file-text lg2) remount-line)))
+            (stop-tagged-daemon! d0)
+            (want "R1d a daemon started on a store whose device alone changed: reads answer with no remount; the first write remounts, says so once, and lands"
+                  (list (answer-ok? first-write) up? (answer-ok? read-before) lines-before
+                        (answer-ok? written) lines-after (eqv? (device-of st) live) (remounts-of st))
+                  '(#t #t #t 0 #t 1 #t 1))))
+        (let* ((d (start-tagged-daemon! "remount-live" #f))
+               (st (tagged-store d))
+               (first-write (ask-tagged d "insert \"--title\" \"BEFORE-REMOUNT\"" 8000))
+               (live (device-of st)))
+          (drift! st)
+          (let* ((written (ask-tagged d "insert \"--title\" \"AFTER-REMOUNT\"" 8000))
+                 (lines-one (count-in (tagged-log d) remount-line))
+                 (next (ask-tagged d "insert \"--title\" \"AFTER-REMOUNT-TWO\"" 8000))
+                 (lines-two (count-in (tagged-log d) remount-line)))
+            (stop-tagged-daemon! d)
+            (want "R1e the device changes under a live daemon: the next write remounts and lands, the one after adds nothing"
+                  (list (answer-ok? first-write) (answer-ok? written) lines-one (answer-ok? next) lines-two
+                        (eqv? (device-of st) live) (remounts-of st))
+                  '(#t #t 1 #t 1 #t 1)))))
 
       ;; ---- D-01 TWIN: the build said nothing ---------------------------
       ;;

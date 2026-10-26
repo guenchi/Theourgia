@@ -499,13 +499,15 @@
 (want "AP-10 PATH the session keeps no prefix after the raise, and its next append validates in full"
       (and (pair? ap-10) (cdr ap-10)) '(#f (validated-in-full)))
 
-(printf "== AP-9: a refusal after a rotation ==\n")
+(printf "== AP-9: a refusal where a rotation was due ==\n")
 (build!)
 ;; The first append does not rotate; the instance file is then made
 ;; unreadable as data. instance.sexp is metadata the session watches, so the
 ;; next append reloads and its frame, prepared before the reload, is refused
-;; for its epoch. The append after it, past segment 1's age, rotates and is
-;; refused at the instance check that follows the rotation.
+;; for its epoch. The append after it is past segment 1's age, so a rotation
+;; is due, and it is refused at admission, which comes before maintenance:
+;; no segment 2 is made. It used to rotate first and be refused after, leaving
+;; an empty segment 2 and a session whose prefix no longer held it.
 (define ap-9
   (parameterize ((log-clock (lambda () fixed-ts)))
     (let* ((s (log-begin d (lambda args 'applied)))
@@ -519,11 +521,13 @@
       (guard (e (#t (if #f #f))) (session-commit! s))
       (guard (e (#t (if #f #f))) (log-end! s))
       (list a r b (len-of (wpath 2)) k (paths-of text)))))
-(want "AP-9 ANSWER the append after the tamper reloads and is refused for its epoch; the rotating append after it is refused for the malformed instance; the new segment is there and empty"
+(want "AP-9 ANSWER the append after the tamper reloads and is refused for its epoch; the append after it, due to rotate, is refused for the malformed instance and no segment 2 is made"
       (list (car ap-9) (cadr ap-9) (caddr ap-9) (cadddr ap-9))
-      '((committed 3 1) (refused-before-reserve epoch) (refused-before-reserve instance-malformed) 0))
-(want "AP-9 PATH the session keeps no prefix after a refusal that follows a rotation, and its next append validates in full"
-      (list-tail ap-9 4) '(#f (validated-in-full)))
+      '((committed 3 1) (refused-before-reserve epoch) (refused-before-reserve instance-malformed) no-such-file))
+;; NOTHING ON THE DISK CHANGED, so what the session kept of its segment still
+;; holds and the next append uses it.
+(want "AP-9 PATH the refusal changed nothing on the disk: the session keeps its prefix and its next append consumes it"
+      (list-tail ap-9 4) '(#t (consumed-prefix)))
 
 (printf "== AP-7(b): a frame appended from outside inside the window ==\n")
 (build!)

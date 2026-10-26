@@ -5,4 +5,4 @@
 ;; every listed one to be observed, so an item that means to change a
 ;; scripted answer lists it here in the same commit, and the entry comes out
 ;; when that change is in the base.
-()
+((check "check carries the store's instance clause: the identity instance.sexp records and its remount history"))

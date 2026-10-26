@@ -3155,7 +3155,7 @@ readers of a writer's own facts -- `read --signature --working` and
 
     (check)
 
-Reads the store and reports what does not hold together, as `(check (store <id>) (local-writer <w>) (writers ...) (snapshots ...) (registry inside-store|outside-store) (notes ...) ... (verdict <v>))`. Each writer carries its `end`, `torn` and `integrity` notes (`unreadable` where a writer could not be read). Each snapshot is `usable` with its cut, or `unusable` with why, which does not change the verdict. `local-writer` is present only when the store has a writer this copy may write as. A path two alive
+Reads the store and reports what does not hold together, as `(check (store <id>) (local-writer <w>) (writers ...) (snapshots ...) (registry inside-store|outside-store) (notes ...) ... (verdict <v>))`. Each writer carries its `end`, `torn` and `integrity` notes (`unreadable` where a writer could not be read), and `(empty-segment <n>)` when its highest segment file is empty and comes after the segment of its last record -- the state rotation leaves when it made the next segment and stopped before a record reached it, which is legal and not damage. The store's identity is reported as `(instance (machine <m>) (device <d>) (inode <i>) (nonce <n>) [(remounts ...)])`, the fields `instance.sexp` records, with the history of remounts (below, under `adopt`) when there is one; it does not change the verdict, and it is absent when there is no `instance.sexp` to read. Each snapshot is `usable` with its cut, or `unusable` with why, which does not change the verdict. `local-writer` is present only when the store has a writer this copy may write as. A path two alive
 datum libraries, or two alive text files, both hold is reported under
 `(paths ((duplicate-path <path> (ids (<id> ...))) ...))`, a clause that is
 there only when there is such a path. It is not damage -- the log is whole;
@@ -3222,7 +3222,29 @@ is not. When the reason is the store's identity, the answer says which
 part of it: `(reason identity) (identity <field>)`, where `<field>` is
 `machine`, `device`, `inode`, `nonce`, or `instance-absent` for a checkout
 that has no `instance.sexp` yet.
-The answer is `(ok (from <old-writer>) (to <new-writer>) (prefix <segment> <offset> <seq>) (reason <r>))`. `<r>` is `identity`, or one of the recovery reasons: `retired` (an adopt left unfinished), `missing-generation`, `registry-ahead` (the log is behind what the registry saw written) or `damage` (the writer's log fails its integrity check). A store that needs none of these is refused `(error not-needed (checked (identity retired missing-generation registry-ahead damage)))`.
+The answer is `(ok (from <old-writer>) (to <new-writer>) (prefix <segment> <offset> <seq>) (reason <r>))`. `<r>` is `identity`, or one of the recovery reasons: `retired` (an adopt left unfinished), `missing-generation`, `registry-ahead` (the log is behind what the registry saw written) or `damage` (the writer's log fails its integrity check). A store that needs none of these is refused `(error not-needed (checked (identity retired missing-generation registry-ahead damage)))`. The prefix is where the old writer's last record ends: the segment that record is in and its end offset there, `(prefix 1 0 0)` for a writer with no record.
+
+**A remount is not a move.** The device number is the kernel's for the
+volume, given when it is mounted, and a reboot can change it while the
+machine, the directory's inode and the owners stay what they were. So the
+device is compared last, and when it is the only field that differs, a write
+takes it for a remount: under the store lock it already holds, it rewrites
+`instance.sexp` with the live device and every other field as it was,
+appends `((from <old>) (to <new>) (at <ms>))` to the file's `remounts`
+history (the last eight are kept), and is written. No writer is derived or
+retired. A daemon's log records it as `(trace instance (remounted (from <old>)
+(to <new>)) #f)` when tracing is on. `adopt` on such a store does the same and
+answers `(ok (reason remount) (device <old> <new>))`. A copy on another volume
+has another inode and is answered for it, `(instance inode)`, as a copy on the
+same volume is.
+
+The limit: a copy that keeps the original's inode number on another volume
+-- a block-level clone of the whole volume, a restore that preserves inode
+numbers -- differs only in its device, so it is taken for a remount and goes
+on as the same instance, and `adopt` remounts it rather than adopting it.
+Two such copies written at once are two instances nothing in the store tells
+apart. To keep the clone as a store of its own, copy it with a tool that makes
+new files (`cp -R`), whose inode then differs, and adopt that copy.
 
 A writer directory copied in from another instance is read, never extended,
 while a live writer of this instance is there. A writer is this instance's when

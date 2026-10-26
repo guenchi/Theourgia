@@ -461,6 +461,34 @@
                 (and (member (string-append d7 "/writers/" new7 "/000001.sexp") subjects) #t))))
       '(#t #f))
 
+;; AND AFTER AN IDENTITY ADOPT AND THEN A REMOUNT. The adopt gave this copy
+;; a new nonce, so the registry holds no entry for the retired writer under
+;; it, and the replay's acknowledgement is the one place that asks the
+;; identity before creating one. The device alone differs by then; that is
+;; a remount, recorded under the store lock the request holds, and the
+;; replay is answered -- not refused until some other write remounts.
+(define (instance-field-set! d k f)
+  (let ((inst (call-with-input-file (string-append d "/instance.sexp") read)))
+    (call-with-output-file (string-append d "/instance.sexp")
+      (lambda (o) (write (map (lambda (e) (if (eq? (car e) k) (list k (f (cadr e))) e)) inst) o) (newline o))
+      'replace)))
+(define (instance-device d) (cadr (assq 'device (call-with-input-file (string-append d "/instance.sexp") read))))
+(define d7r (fresh-store! '()))
+(define old7r (local-of d7r))
+(want "CONTROL: the request runs on the writer that is current then"
+      (car (send! d7r (req-of "r-1" (cons old7r 0) "One") "One"))
+      'ok)
+(instance-field-set! d7r 'machine (lambda (m) "m-another-machine"))
+(define d7r-adopt (store-adopt! d7r))
+(define d7r-live (instance-device d7r))
+(instance-field-set! d7r 'device (lambda (dev) (+ dev 1000)))
+(want "a replay after an identity adopt and then a remount is answered replay, and instance.sexp takes the live device"
+      (guard (e (#t (list 'raised)))
+        (let ((a (send! d7r (req-of "r-1" (cons old7r 0) "One") "One")))
+          (list (car d7r-adopt) (cadr (assq 'reason (cdr d7r-adopt)))
+                (car a) (cadr a) (eqv? (instance-device d7r) d7r-live))))
+      '(adopted identity ok (replay #t) #t))
+
 (printf "\n== a cursor on a writer that has since been succeeded ==\n")
 ;; A request written against a retired writer's cursor could have landed
 ;; anywhere on any writer that succeeded it -- it never held a cursor

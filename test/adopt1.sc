@@ -1127,6 +1127,222 @@
               (cadr (assq 'end (cdr w)))))
       '(absent writers-still-there 1 0))
 
+;; ---- the identity across a remount, and admission before maintenance -------------
+;;
+;; A STORE'S DEVICE NUMBER IS THE KERNEL'S, assigned when the volume is
+;; mounted, and a reboot can change it while the machine, the directory's
+;; inode and the owners stay the same. A write that finds only the device
+;; changed rewrites instance.sexp with the current device and a remounts
+;; entry, under the store lock it already holds, and is written; any other
+;; mismatch is refused as before. The rows rewrite the recorded device to
+;; stand for the remount.
+(define (instance-of d) (call-with-input-file (string-append d "/instance.sexp") read))
+(define (instance-field d k) (let ((e (assq k (instance-of d)))) (and e (cadr e))))
+(define (set-instance-field! d k v)
+  (let ((inst (instance-of d)))
+    (call-with-output-file (string-append d "/instance.sexp")
+      (lambda (o) (write (map (lambda (e) (if (eq? (car e) k) (list k v) e)) inst) o) (newline o))
+      'replace)))
+(define (live-device d) (call-with-values (lambda () (path-device-inode d)) (lambda (dev ino) dev)))
+(define (remounts-of d) (let ((e (assq 'remounts (instance-of d)))) (if e (cdr e) '())))
+(define (write-titled! d actor title)
+  (with-store-write d (lambda (st v) (list (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title title))))) actor))
+(define (head-of-write a) (and (pair? a) (pair? (car a)) (caar a)))
+(define (captured thunk)
+  (let ((p (open-output-string)) (result #f))
+    (parameterize ((current-error-port p))
+      (trace-enable! #t)
+      (guard (e (#t (trace-enable! #f) (raise e))) (set! result (thunk)))
+      (trace-enable! #f))
+    (cons result (get-output-string p))))
+(define (count-in text needle)
+  (let ((n (string-length needle)))
+    (let loop ((i 0) (k 0))
+      (cond ((> (+ i n) (string-length text)) k)
+            ((string=? (substring text i (+ i n)) needle) (loop (+ i n) (+ k 1)))
+            (else (loop (+ i 1) k))))))
+(define remount-line "(trace instance (remounted")
+(define (check-of d) (store-check d))
+(define (check-clause d k) (let ((c (assq k (cdr (check-of d))))) c))
+(define (segments-of d w)
+  (map (lambda (n) (list n (file-size (string-append d "/writers/" w "/" (segment-file-name n)))))
+       (enumerate-segment-files d w)))
+
+(printf "\n== R: a remount is not a copy ==\n")
+(define r1 (fresh-store! '("One")))
+(use-store! r1)
+(define r1-dev (live-device r1))
+(define r1-nonce (instance-field r1 'nonce))
+(set-instance-field! r1 'device (+ r1-dev 1000))
+(define r1-first (captured (lambda () (write-titled! r1 "t" "After the remount"))))
+(want "R1 a write after the device alone changed is accepted, instance.sexp carries the live device and one remounts entry, and one trace line says so"
+      (list (head-of-write (car r1-first)) (eqv? (instance-field r1 'device) r1-dev)
+            (length (remounts-of r1)) (count-in (cdr r1-first) remount-line))
+      '(ok #t 1 1))
+(define r1-second (captured (lambda () (write-titled! r1 "u" "A second writer"))))
+(want "R1b a second writer after the remount: accepted, no second entry, no second line"
+      (list (head-of-write (car r1-second)) (length (remounts-of r1)) (count-in (cdr r1-second) remount-line))
+      '(ok 1 0))
+(want "R1 the remounts entry names the old and the new device, and the nonce is unchanged"
+      (let ((e (car (remounts-of r1))))
+        (list (cadr (assq 'from e)) (cadr (assq 'to e)) (integer? (cadr (assq 'at e)))
+              (equal? (instance-field r1 'nonce) r1-nonce) (string? r1-nonce)))
+      (list (+ r1-dev 1000) r1-dev #t #t #t))
+(want "R1 check: ok, and its instance clause carries the history"
+      (list (cadr (check-clause r1 'verdict))
+            (let ((c (check-clause r1 'instance))) (and c (assq 'remounts (cdr c)) #t)))
+      '(ok #t))
+
+(define r0 (fresh-store! '("One")))
+(use-store! r0)
+(define r0-copy (string-append scratch "/r0-copy"))
+(system (string-append "rm -rf " r0-copy "; cp -R " r0 " " r0-copy))
+(set! homes (cons (cons r0-copy (home-of r0)) homes))
+(set-instance-field! r0-copy 'device (+ (live-device r0-copy) 1000))
+(want "R0 a copy whose device and inode both differ is refused for its inode, not taken for a remount"
+      (refusal-of-write r0-copy)
+      '((instance inode)))
+
+(define r1c (fresh-store! '("One")))
+(use-store! r1c)
+(set-instance-field! r1c 'machine "m-another-machine")
+(define r1c-adopt (store-adopt! r1c))
+(want "R1c an adoption with an identity reason, then a write: ok as the new instance, no remount entry"
+      (list (car r1c-adopt) (cadr (assq 'reason (cdr r1c-adopt)))
+            (head-of-write (write-titled! r1c "t" "After the adopt")) (remounts-of r1c))
+      '(adopted identity ok ()))
+
+(define r1f (fresh-store! '("One")))
+(use-store! r1f)
+(set-instance-field! r1f 'device (+ (live-device r1f) 1000))
+(define r1f-answer
+  (with-store-write r1f
+    (lambda (st v) (map (lambda (t) (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title t))))
+                        '("A" "B" "C")))
+    "t"))
+(want "R1f a request of three records whose first write remounts: all three written, one entry"
+      (list (head-of-write r1f-answer) (records-of r1f) (length (remounts-of r1f)))
+      '(ok 4 1))
+
+(define r1g (fresh-store! '("One")))
+(use-store! r1g)
+(define r1g-dev (live-device r1g))
+(define r1g-writers (store-writers r1g))
+(set-instance-field! r1g 'device (+ r1g-dev 1000))
+(define r1g-adopt (store-adopt! r1g))
+(want "R1g adopt on a store whose device alone changed remounts: no writer derived or retired"
+      (list r1g-adopt (equal? (store-writers r1g) r1g-writers)
+            (exists (lambda (w) (file-exists? (string-append r1g "/writers/" w "/retired.sexp"))) (store-writers r1g)))
+      (list (list 'adopted (list 'reason 'remount) (list 'device (+ r1g-dev 1000) r1g-dev)) #t #f))
+
+(printf "\n== R: a refused write leaves the writer's directory as it found it ==\n")
+;; ROTATION IS DUE when the next record would take the segment to 1 MiB.
+;; The text is sized so that the segment ends about 50 bytes short of
+;; the limit (214 bytes of the segment are the store's first record and
+;; this record's frame), so the next write of any block rotates.
+(define big-text (make-string 1048312 #\x))
+(define (rotation-due-store!)
+  (let ((d (fresh-store! '("One"))))
+    (use-store! d)
+    (with-store-write d (lambda (st v) (list (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title "Big") (cons 'text big-text))))) "t")
+    d))
+(define r2 (rotation-due-store!))
+(define r2-copy (string-append scratch "/r2-copy"))
+(system (string-append "rm -rf " r2-copy "; cp -R " r2 " " r2-copy))
+(set! homes (cons (cons r2-copy (home-of r2)) homes))
+(define r2-w (writer-of r2-copy))
+(define r2-before (segments-of r2-copy r2-w))
+(want "R2 a copy on the same volume, its next write due to rotate: refused for its inode, and the writer's segments unchanged"
+      (list (refusal-of-write r2-copy) (equal? (segments-of r2-copy r2-w) r2-before) (length r2-before))
+      '(((instance inode)) #t 1))
+
+(define r3 (rotation-due-store!))
+(define r3-w (writer-of r3))
+(set-instance-field! r3 'machine "m-another-machine")
+(define r3-before (segments-of r3 r3-w))
+(want "R3 the machine changed and the next write due to rotate: refused for the machine, no new segment"
+      (list (refusal-of-write r3) (equal? (segments-of r3 r3-w) r3-before))
+      '(((instance machine)) #t))
+(define r3-adopt (store-adopt! r3))
+(want "R3 then adopt: the prefix names the segment holding the last record at that segment's end, and check is ok"
+      (list (car r3-adopt) (cdr (assq 'prefix (cdr r3-adopt))) (cadr (check-clause r3 'verdict)))
+      (list 'adopted (list 1 (cadr (car r3-before)) (discovery-end-seq (discover-prefix r3 r3-w 'held-exclusive))) 'ok))
+
+;; A TORN TAIL IS CUT BACK ONLY BY A WRITE THAT IS ADMITTED. Twenty bytes
+;; with no newline end the segment; a registry ahead of the log refuses the
+;; write, and then the tail is still there, byte for byte. In order, the
+;; same tail is cut back, the cut is told to the repair hook, and the
+;; record is appended after the valid prefix.
+(define (torn-tail! d)
+  (let* ((w (writer-of d))
+         (path (string-append d "/writers/" w "/" (segment-file-name (apply max (enumerate-segment-files d w)))))
+         (valid (slurp path)))
+    (call-with-port (open-file-output-port path (file-options no-fail no-truncate append))
+      (lambda (o) (put-bytevector o (string->utf8 "(1 2 3 partial recor"))))
+    (cons path valid)))
+(define r3b (fresh-store! '("One" "Two")))
+(define r3b-torn (torn-tail! r3b))
+(raise-mark! r3b (writer-of r3b) 9)
+(define r3b-before (slurp (car r3b-torn)))
+(want "R3b a torn tail and a registry ahead of the log: refused registry-ahead, and the segment is byte for byte what it was, the tail not cut"
+      (list (let ((a (car (write-titled! r3b "t" "Three")))) (list (car a) (cadr a) (caddr a)))
+            (equal? (slurp (car r3b-torn)) r3b-before)
+            (> (string-length r3b-before) (string-length (cdr r3b-torn))))
+      '((error refused registry-ahead) #t #t))
+(define r3c (fresh-store! '("One" "Two")))
+(define r3c-torn (torn-tail! r3c))
+(define r3c-noted '())
+(log-append-guard! (lambda (store writer) #f)
+                   (lambda (store writer path n) (set! r3c-noted (cons (list path n) r3c-noted))))
+(define r3c-answer (write-titled! r3c "t" "Three"))
+(log-append-guard! (lambda (store writer) #f) (lambda (store writer path n) (if #f #f)))
+(define r3c-after (slurp (car r3c-torn)))
+(define r3c-valid (cdr r3c-torn))
+(want "R3c the same torn tail, the registry in order: admitted, the tail cut back to the valid prefix and told to the repair hook, the record appended after it"
+      (list (head-of-write r3c-answer)
+            r3c-noted
+            (and (> (string-length r3c-after) (string-length r3c-valid))
+                 (string=? (substring r3c-after 0 (string-length r3c-valid)) r3c-valid))
+            (records-of r3c))
+      (list 'ok (list (list (car r3c-torn) (string-length r3c-valid))) #t 3))
+
+(printf "\n== R: adopt's prefix names one segment ==\n")
+;; AN EMPTY NEXT SEGMENT IS LEGAL: rotation makes N+1 and may stop before a
+;; record reaches it. adopt's prefix is the discovery's end -- the segment of
+;; the last applied record and that record's end -- never the number of the
+;; highest segment file with the end offset of another. check names the empty
+;; segment in the old writer's entry, as (empty-segment N+1).
+(define (empty-next! d w)
+  (let ((ns (enumerate-segment-files d w)))
+    (put! (string-append d "/writers/" w "/" (segment-file-name (+ 1 (apply max ns)))) (make-bytevector 0))))
+(define (adopt-with-empty-next! d)
+  (let* ((w (writer-of d)) (before (segments-of d w)) (last (car (reverse before))))
+    (empty-next! d w)
+    (set-instance-field! d 'machine "m-another-machine")
+    (let ((a (store-adopt! d)))
+      (list (car a) (cdr (assq 'prefix (cdr a))) (list (car last) (cadr last)) (cadr (check-clause d 'verdict))
+            (let ((we (assoc w (cadr (check-clause d 'writers))))) (and we (assq 'empty-segment (cdr we))))))))
+(define r4a (fresh-store! '("One" "Two")))
+(use-store! r4a)
+(define r4a-seq (discovery-end-seq (discover-prefix r4a (writer-of r4a) 'held-exclusive)))
+(define r4a-read (adopt-with-empty-next! r4a))
+(want "R4a the last record ends at segment 1's end and an empty segment 2 is present: the prefix is (1 <its length> <seq>), check ok, the old writer's entry names segment 2"
+      (list (car r4a-read) (cadr r4a-read) (cadddr r4a-read) (list-ref r4a-read 4))
+      (list 'adopted (list 1 (cadr (caddr r4a-read)) r4a-seq) 'ok '(empty-segment 2)))
+(define r4b (rotation-due-store!))
+(write-titled! r4b "t" "In segment two")
+(define r4b-seq (discovery-end-seq (discover-prefix r4b (writer-of r4b) 'held-exclusive)))
+(define r4b-read (adopt-with-empty-next! r4b))
+(want "R4b the last record in segment 2 and an empty segment 3 present: the prefix is (2 <its length> <seq>), check ok, the old writer's entry names segment 3"
+      (list (car r4b-read) (cadr r4b-read) (car (caddr r4b-read)) (cadddr r4b-read) (list-ref r4b-read 4))
+      (list 'adopted (list 2 (cadr (caddr r4b-read)) r4b-seq) 2 'ok '(empty-segment 3)))
+(define r4c (fresh-store! '()))
+(use-store! r4c)
+(define r4c-read (adopt-with-empty-next! r4c))
+(want "R4c a writer with no applied record and an empty segment 2: the prefix is (1 0 0), check ok, the old writer's entry names segment 2"
+      (list (car r4c-read) (cadr r4c-read) (cadddr r4c-read) (list-ref r4c-read 4))
+      '(adopted (1 0 0) ok (empty-segment 2)))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "adopt1 complete\n")
