@@ -117,6 +117,87 @@
            (let ((l (list->string (reverse line))))
              (loop (cdr cs) '() (if (check? l) out (cons "\n" (cons l out))))))
           (else (loop (cdr cs) (cons (car cs) line) out)))))
+;; check's (instance (machine ...) (device <n>) (inode <n>) ...) clause names
+;; the store's identity, and its device and inode differ between any two
+;; store directories by construction: the base and the tree run on two
+;; copies. run-script hands check's raw answer here, before any text
+;; normalisation. It is read as a datum, its stdout read as the check
+;; datum, and in the instance clause directly under check each (device
+;; <integer>) and (inode <integer>) gets 0 for its integer, as the process
+;; id gets "#" in the machine and the nonce. 0 is an integer, so a value
+;; whose type changes still compares. Strings are data and are never
+;; looked into; every other field compares as it was.
+;; NEVER: NO OTHER BYTE IS REWRITTEN. The answer is written back only when
+;; its text is exactly what writing its datum gives -- the answer's own
+;; text up to its ending, and stdout's text as the check datum written and
+;; one newline -- so a change of spacing, of quoting or of the ending
+;; leaves the text as it is and the guard compares it whole. An answer
+;; that does not read, whose stdout is not exactly one check datum, or that
+;; has no such field, is likewise left byte for byte.
+(define (store-identity answer)
+  (define (read-all text)
+    (let ((p (open-string-input-port text)))
+      (let loop ((out '()))
+        (let ((d (read p))) (if (eof-object? d) (reverse out) (loop (cons d out)))))))
+  (define (mask-field c)
+    (if (and (list? c) (= (length c) 2) (memq (car c) '(device inode)) (integer? (cadr c)) (exact? (cadr c)))
+        (list (car c) 0)
+        c))
+  (define (mask-check d)
+    (cons 'check (map (lambda (c) (if (and (list? c) (pair? c) (eq? (car c) 'instance))
+                                      (cons 'instance (map mask-field (cdr c)))
+                                      c))
+                      (cdr d))))
+  (define (text-of d) (call-with-string-output-port (lambda (o) (write d o))))
+  (define (prefix? p t) (and (<= (string-length p) (string-length t)) (string=? p (substring t 0 (string-length p)))))
+  (guard (e (#t answer))
+    (let ((as (read-all answer)))
+      (if (not (and (= (length as) 1) (list? (car as)) (pair? (car as))))
+          answer
+          (let* ((a (car as))
+                 (written (text-of a))
+                 (ending (and (prefix? written answer) (substring answer (string-length written) (string-length answer))))
+                 (so (assq 'stdout (cdr a)))
+                 (ds (and so (list? so) (= (length so) 2) (string? (cadr so)) (read-all (cadr so)))))
+            (if (not (and ending (member ending '("" "\n"))
+                          ds (= (length ds) 1) (list? (car ds)) (pair? (car ds)) (eq? (car (car ds)) 'check)
+                          (string=? (cadr so) (string-append (text-of (car ds)) "\n"))
+                          (not (equal? (mask-check (car ds)) (car ds)))))
+                answer
+                (string-append
+                  (text-of (map (lambda (c) (if (eq? c so) (list 'stdout (string-append (text-of (mask-check (car ds))) "\n")) c))
+                                a))
+                  ending)))))))
+(define (check-answer text)
+  (call-with-string-output-port
+    (lambda (o) (write (list 'answer (list 'stdout (string-append text "\n")) '(stderr "") '(exit 0) '(origin core)) o))))
+(want "GUARD-0 the device and inode of check's instance clause are masked, and nothing else is"
+      (list
+        ;; the clause's two numbers become "#"; (end 11) and (inodes 3) stay
+        (store-identity (check-answer "(check (notes ()) (instance (machine \"m-1-#\") (device 16777234) (inode 122480277) (nonce \"n-1-#\")) (end 11) (inodes 3))"))
+        ;; a nonce whose text holds "(inode 7)" still differs from one holding "(inode 8)"
+        (equal? (store-identity (check-answer "(check (instance (machine \"m\") (device 1) (inode 2) (nonce \"(inode 7)\")))"))
+                (store-identity (check-answer "(check (instance (machine \"m\") (device 1) (inode 2) (nonce \"(inode 8)\")))")))
+        ;; a parenthesis in the machine string does not carry the clause into a sibling
+        (equal? (store-identity (check-answer "(check (instance (machine \"(\") (device 1) (inode 2)) (device 7))"))
+                (store-identity (check-answer "(check (instance (machine \"(\") (device 1) (inode 2)) (device 8))")))
+        ;; an instance clause in another verb's answer, a payload, a value that is
+        ;; not an integer, and an answer that does not read are left as they are
+        (let ((xs (list (check-answer "(ok (instance (machine \"m\") (device 1) (inode 2)))")
+                        (check-answer "(ok (text \"(check (instance (machine \\\"m\\\") (device 1)))\"))")
+                        (check-answer "(check (instance (machine \"m\") (device 12x) (inode 2.5)))")
+                        "(answer (stdout \"(check (instance (device 1)\"))")))
+          (equal? (map store-identity xs) xs)))
+      (list (check-answer "(check (notes ()) (instance (machine \"m-1-#\") (device 0) (inode 0) (nonce \"n-1-#\")) (end 11) (inodes 3))")
+            #f #f #t))
+(want "GUARD-0b a device that turned into a string, a clause that lost its inode, and a check printed with other spacing still differ from the base's; another inode does not"
+      (let ((base (store-identity (check-answer "(check (instance (machine \"m\") (device 5) (inode 7)))"))))
+        (list (equal? base (store-identity (check-answer "(check (instance (machine \"m\") (device \"#\") (inode 9)))")))
+              (equal? base (store-identity (check-answer "(check (instance (machine \"m\") (device 5)))")))
+              (equal? base (store-identity (string-append "(answer (stdout \"(check  (instance (machine \\\"m\\\") (device 5) (inode 9)))\\n\") "
+                                                          "(stderr \"\") (exit 0) (origin core))")))
+              (equal? base (store-identity (check-answer "(check (instance (machine \"m\") (device 6) (inode 9)))")))))
+      '(#f #f #f #t))
 (define (normalize-for d text)
   (normalize (session-pids (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME"))))
 (define (normalize text)
@@ -199,7 +280,8 @@
                                          (and ev (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e)))))))))
                              (if id (cons (cons (caddr req) id) ids) ids)))
                           (else ids))))
-          (loop (cdr ss) ids (cons (cons label (normalize-for d answer)) out))))))
+          (loop (cdr ss) ids (cons (cons label (normalize-for d (if (eq? verb 'check) (store-identity answer) answer)))
+                                   out))))))
 
 (start-scheduler
   (lambda ()
