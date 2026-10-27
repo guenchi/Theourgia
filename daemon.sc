@@ -41,13 +41,13 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports) (rnrs hashtables)
           (only (chezscheme) real-time getenv write newline read void let-values
-                char-whitespace? lookahead-char get-char
+                char-whitespace? lookahead-char get-char sleep make-time
                 register-signal-handler
                 irritants-condition? condition-irritants filter raise condition
                 make-message-condition make-irritants-condition
                 open-string-input-port call-with-string-output-port
                 condition? message-condition? condition-message guard exit
-                parameterize eval environment)
+                parameterize eval environment char-numeric? string-ci=?)
           ;; NEVER: NAMED ONE BY ONE, AND `link` IS NOT AMONG THEM. A linked
           ;; process that exits abnormally takes its peer down with it
           ;; without asking, which is the one shape this daemon must not
@@ -57,13 +57,15 @@
           ;; somebody remembered. `test/daemon-link-gate.sc` reads this
           ;; import as data and refuses a wholesale one.
           (only (theourgia sched)
-                start-scheduler spawn receive send self monitor sleep-ms)
-          (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
+                start-scheduler spawn receive send self monitor sleep-ms kill)
+          (only (theourgia net) listen! stop-listen! listener-open? accept-failure-counts
+                conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error query-session-provider!)
           (only (theourgia frame) frame-limit parse-frame frame-field request-shape-error
                 answer-for answer-envelope)
-          (only (theourgia client) socket-path envelope-version resolved-name store-here?)
+          (only (theourgia client) socket-path envelope-version resolved-name store-here?
+                socket-path-fits? path-too-long)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
@@ -81,6 +83,10 @@
           ;; not be handed is one fact, not two: it lives beside the packer
           ;; in `(theourgia client)` and is asked here rather than copied.
           (only (theourgia client) readable-shape?)
+          ;; THE WALK AND ITS SPELLING RULE are the client's, shared with the
+          ;; opener that judges its run directory the same way.
+          (only (theourgia client) directory-of base-of in-directory digits? folds-case? same-spelling?
+                backing-suffix? namespace-spelling namespace-candidate directory-to-make make-judged!)
           (only (theourgia trace) trace-event!)
           (only (theourgia ffi) theourgia-fault theourgia-probe-off? hold-point! hold-sleeper-set!
                 theourgia-send-buffer process-id wall-clock-ms)
@@ -90,7 +96,10 @@
                 current-lock-acquire current-lock-release
                 mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode path-stat
                 entry-type unreadable-entry? unreadable-entry-errno
-                write-one! with-mutation-record mutation-record theourgia-stage)
+                write-one! with-mutation-record mutation-record theourgia-stage
+                entry-name-type read-link symlink! directory-entries rmdir! mkdir-exclusive! read-entry
+                real-path path-case-sensitive? fd-open fd-close write-all! fs-error? fs-error-errno
+                file-create-exclusive! entry-identity)
           (only (theourgia answers) classify-failure combine-report condition-text))
 
   ;; ---- where a daemon lives ---------------------------------------------
@@ -155,6 +164,47 @@
   (define signal-term (platform-number 'SIGTERM))
   (define drain-poll-ms 25)
   (define drain-budget-ms 5000)
+
+  ;; ---- the idle exit ---------------------------------------------------------
+  ;;
+  ;; A DAEMON STARTED WITH `--idle-exit <seconds>` LEAVES BY ITSELF after that
+  ;; long with no connection registered and nothing running; 0 is never, and
+  ;; so is a daemon started without it. THE EXIT IS A DECISION THAT A LATE
+  ;; CONNECTION CANCELS. When the clock fires, main records the highest watch
+  ;; it has registered (the attempt's watermark) and sends the listener
+  ;; `(leave idle)`. The listener unlinks the public link (from then on a
+  ;; connect answers ENOENT, nothing sent), keeps taking the connections the
+  ;; kernel completed before the unlink for the grace, stops, and acknowledges
+  ;; once every adapter it spawned has reported, with the highest watch it
+  ;; sent. Main then exits when that is the watermark and nothing is open or
+  ;; running, and otherwise tells the listener to bind and publish again.
+  ;;
+  ;; A CONNECTION THAT ARRIVES DURING A LEAVE IS REGISTERED AT ONCE, so it
+  ;; cancels the exit, AND ADMITTED ONLY WHEN THE ATTEMPT IS DECIDED: served
+  ;; after the resume, refused `draining` when the resume fails or a drain
+  ;; supersedes. One decision in one place, after the attempt; admitted at
+  ;; once, its answer would depend on where in the leave it happened to run.
+  ;; THE WAIT IS BOUNDED: the rest of the grace, the adapters' reports
+  ;; (nothing in an adapter waits), one listen! and one symlink!. The grace is
+  ;; capped at 5000 ms where theourgiad reads it, because the late request's
+  ;; answer must arrive inside the thin client's receive timeout
+  ;; (theourgia.sc, send-once, 30 s).
+  (define idle-exit-seconds 0)
+  (define idle-grace-default-ms 200)
+  (define idle-grace-ms idle-grace-default-ms)
+  ;; THE IDLE OPTIONS AS GIVEN, echoed by the `serving` line so an opener can
+  ;; read what its daemon was started with; empty for a daemon started
+  ;; without them, whose line is the one it always was.
+  (define idle-options '())
+
+  ;; THE LISTENER'S CELL: what a resume bound, written by the listener as soon
+  ;; as listen! returns and before it runs anything else, completed with the
+  ;; link's identity after the publish: (private target private-ident
+  ;; link-ident-or-#f), or #f. Main and every exit path read it, so a forced
+  ;; exit after a rebind whose `bound` report main has not yet received still
+  ;; unlinks the new socket and link, each only while it is the entry made.
+  ;; One VM, one listener: a library variable is the cell.
+  (define listener-cell #f)
 
   ;; ---- the store's presence ----------------------------------------------
   ;;
@@ -244,7 +294,9 @@
   ;; that nothing in the CLI ever sets this.
   ;; The optional second argument is the start's attempt token,
   ;; echoed as the last clause of every startup report; #f when the
-  ;; daemon was started by hand without one.
+  ;; daemon was started by hand without one. The third is the query
+  ;; session's size, the fourth the idle window in seconds (0 or #f:
+  ;; never), the fifth the idle grace in milliseconds (#f: the default).
   ;; A STORE THAT IS NOT THERE IS REFUSED BY THE PROGRAMS, NOT HERE: the
   ;; client and theourgiad ask store-here? before anything under the run root
   ;; is made, and this procedure, reached only through theourgiad, makes the
@@ -262,8 +314,16 @@
     (set! daemon-token (string-append (number->string (process-id)) "-" (number->string (wall-clock-ms))))
     (let ((socket (if (and (pair? opts) (car opts)) (car opts) (socket-path store)))
           (attempt (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
-          (size (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)) (caddr opts) session-size-default)))
+          (size (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)) (caddr opts) session-size-default))
+          (idle (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts)) (cadddr opts)))
+          (grace (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts))
+                      (pair? (cddddr opts)) (car (cddddr opts)))))
       (set! session-size size)
+      (set! idle-exit-seconds (or idle 0))
+      (set! idle-grace-ms (or grace idle-grace-default-ms))
+      (set! idle-options
+            (append (if idle (list (list 'idle-exit idle)) '())
+                    (if grace (list (list 'idle-grace-ms grace)) '())))
       (start-scheduler (lambda () (main store socket attempt)))))
 
   ;; ---- the query session kept across requests -------------------------------
@@ -485,36 +545,90 @@
                  ;; report's write in its record.
                  (guard (e ((classify-failure e (mutation-record))
                             => (lambda (answer) (list 'refuse answer))))
-                   (mkdir-p! (directory-of socket))
-                   ;; NOTE: THE LOCK FILE HAS TO EXIST BEFORE IT CAN BE LOCKED: `flock`
-                   ;; wants an open descriptor, so the file is the lock's name, not its
-                   ;; content, and it is never removed -- removing it would let the next
-                   ;; caller create a NEW file and lock that one instead, which is two
-                   ;; daemons each holding "the" lock.
-                   (file-ensure! (lock-path-for socket))
-                   ;; NEVER: THE ATTEMPT THAT NEVER WAITS. A blocking flock here would park
-                   ;; this process on the scheduler's own thread -- and a second daemon
-                   ;; is supposed to answer `serve-busy` and leave, not queue for ever
-                   ;; behind the first one. Measured: with the blocking form, the second
-                   ;; daemon simply hung and its row never returned.
-                   ;; #f IS CONTENTION ONLY (D6): lock-try-acquire! answers #f
-                   ;; itself when another holds the lock; a lock file that cannot be
-                   ;; opened raises unreadable-entry, which goes to the table above
-                   ;; instead of reading as "somebody is serving".
-                   (let ((lock (lock-try-acquire! (lock-path-for socket) 'exclusive)))
-                     ;; THE TWO NAMED OUTCOMES CARRY MAIN'S RECORD (found
-                     ;; in review): the lock file this start created is named in them.
-                     ;; NEVER: A LOCK THAT IS HELD IS NOT RELEASED BEFORE THE EXIT. The
-                     ;; exit closes its descriptor, which releases the flock; a release
-                     ;; here could raise after the answer was decided.
-                     (cond
-                       ((or (not lock) (not (lock-held? lock)))
-                        (list 'refuse (combine-report `(error serve-busy (path ,socket)) (mutation-record))))
-                       ((occupied-by-a-non-socket? socket)
-                        (list 'refuse (combine-report `(error serve-path-occupied (path ,socket)) (mutation-record))))
-                       (else
-                        (clear-stale-socket! socket)
-                        (list 'ok lock (mutation-record)))))))))))
+                   (cond
+                     ;; THE PRIVATE PATH MUST FIT, BEFORE ANY EFFECT: the daemon binds
+                     ;; `<socket>.d/<pid>`, longer than the public path, so the length is
+                     ;; judged on that name here, before the directory, the lock file or
+                     ;; anything else exists. A starter (serve's argument check, the
+                     ;; shell) refuses earlier on the longest suffix, so this is reached
+                     ;; only by a caller that skipped it.
+                     ((not (socket-path-fits? (private-socket-path socket (process-id))))
+                      (list 'refuse (combine-report (path-too-long (private-socket-path socket (process-id)))
+                                                    (mutation-record))))
+                     (else
+                      ;; INJECTION ONLY: held before the reservation check, after the
+                      ;; starter's own check of the socket's directory.
+                      (hold-point! 'serve-before-reserve-check)
+                      (let ((judged (reserved-by-another socket)))
+                        (cond
+                          ;; A RESERVED NAMESPACE IS SERVED ONLY BY ITS OWN ENDPOINT, judged
+                          ;; before this start takes a lock of its own or clears anything: a
+                          ;; path inside another endpoint's marked directory would otherwise
+                          ;; take its own lock there and clear a live socket.
+                          ;; NEVER: BEFORE THE DIRECTORY IS MADE. A start inside a namespace
+                          ;; whose link its endpoint's reclaim has just unlinked would make a
+                          ;; real `<name>.d` there, and the endpoint's publish would collide
+                          ;; (found in review). So a missing directory is made here only when
+                          ;; none of the directories it would make is `..` or spelled
+                          ;; as a namespace, and the working directory a relative path
+                          ;; starts from is there (reserved-by-another, directory-to-make).
+                          ((eq? (car judged) 'error)
+                           (list 'refuse (combine-report judged (mutation-record))))
+                          ;; NEVER: NO IDENTITY WITHOUT A RESOLVED PARENT. Every
+                          ;; admission names the parent its one look resolved; one
+                          ;; that did not would be refused here, naming the
+                          ;; spelling, rather than marked by it.
+                          ((not (caddr judged))
+                           (list 'refuse (combine-report `(error socket-dir-missing (dir ,(directory-of socket)))
+                                                         (mutation-record))))
+                          ;; NEVER: MADE UNDER WHAT WAS JUDGED, NEVER BY THE SPELLING. What
+                          ;; is made is what the check above answered: the ancestor it
+                          ;; resolved and the names it judged, each made exclusively, or
+                          ;; nothing when the parent resolved at its one look. A name a peer
+                          ;; made meanwhile refuses serve-busy (make-judged!). Everything
+                          ;; after this is one level on the socket's spelling (the lock
+                          ;; file, the backing directory, the bind, the publish), so a prefix
+                          ;; that vanished in between -- an endpoint's link spelled into the
+                          ;; path, unlinked by its reclaim -- fails the start with ENOENT and
+                          ;; makes nothing (found in review).
+                          ((let ((dir (cadr judged)))
+                             ;; INJECTION ONLY: held after the reservation check, before
+                             ;; the socket's directory is made.
+                             (hold-point! 'serve-before-mkdir)
+                             (and dir (make-judged! (car dir) (cdr dir))))
+                           => (lambda (stale) (list 'refuse (combine-report stale (mutation-record)))))
+                          (else
+                           ;; NOTE: THE LOCK FILE HAS TO EXIST BEFORE IT CAN BE LOCKED: `flock`
+                           ;; wants an open descriptor, so the file is the lock's name, not its
+                           ;; content, and it is never removed -- removing it would let the next
+                           ;; caller create a NEW file and lock that one instead, which is two
+                           ;; daemons each holding "the" lock.
+                           (file-ensure! (lock-path-for socket))
+                           ;; NEVER: THE ATTEMPT THAT NEVER WAITS. A blocking flock here would park
+                           ;; this process on the scheduler's own thread -- and a second daemon
+                           ;; is supposed to answer `serve-busy` and leave, not queue for ever
+                           ;; behind the first one. Measured: with the blocking form, the second
+                           ;; daemon simply hung and its row never returned.
+                           ;; #f IS CONTENTION ONLY (D6): lock-try-acquire! answers #f
+                           ;; itself when another holds the lock; a lock file that cannot be
+                           ;; opened raises unreadable-entry, which goes to the table above
+                           ;; instead of reading as "somebody is serving".
+                           (let ((lock (lock-try-acquire! (lock-path-for socket) 'exclusive)))
+                             ;; THE TWO NAMED OUTCOMES CARRY MAIN'S RECORD (found
+                             ;; in review): the lock file this start created is named in them.
+                             ;; NEVER: A LOCK THAT IS HELD IS NOT RELEASED BEFORE THE EXIT. The
+                             ;; exit closes its descriptor, which releases the flock; a release
+                             ;; here could raise after the answer was decided.
+                             ;; UNDER THE LOCK, claim-endpoint! judges the public entry and the
+                             ;; namespace, reclaims what an earlier daemon of this endpoint left
+                             ;; and reserves this daemon's own directory: #f, or its refusal.
+                             (cond
+                               ((or (not lock) (not (lock-held? lock)))
+                                (list 'refuse (combine-report `(error serve-busy (path ,socket)) (mutation-record))))
+                               ((claim-endpoint! socket (caddr judged))
+                                => (lambda (refusal) (list 'refuse (combine-report refusal (mutation-record)))))
+                               (else
+                                (list 'ok lock (mutation-record))))))))))))))))
       (when (eq? (car started) 'refuse)
         (report-and-exit! attempt (cadr started)))
       (let ((lock (cadr started))
@@ -600,9 +714,13 @@
   ;; ENDS main in STARTING -- it never returns to the loop, so no ordinary
   ;; exit (drained 0 among them) can follow a reported failure -- and a
   ;; signal during STARTING is remembered, with its kind, until the outcome.
+  ;; 19 idle-since (the idle clock's start), 20 the leave (#f, (leaving <w>)
+  ;; or resuming), 21 the highest watch sequence registered, 22 whether the
+  ;; listener has acknowledged a stop, 23 the connections whose watch arrived
+  ;; during a leave and are not yet admitted (newest first).
   (define (make-main-state lock socket store store-pid listener main-record attempt)
     (vector lock socket store store-pid listener '() '() #f '() '() self #f '() '() main-record attempt
-            'starting #f #f))
+            'starting #f #f (real-time) #f 0 #f '()))
 
   (define (state-lock st) (vector-ref st 0))
   (define (state-socket st) (vector-ref st 1))
@@ -623,6 +741,16 @@
   (define (state-remembered-set! st v) (vector-set! st 17 v))
   (define (state-drain-reason st) (vector-ref st 18))
   (define (state-drain-reason-set! st v) (vector-set! st 18 v))
+  (define (state-idle-since st) (vector-ref st 19))
+  (define (state-idle-since-set! st v) (vector-set! st 19 v))
+  (define (state-leave st) (vector-ref st 20))
+  (define (state-leave-set! st v) (vector-set! st 20 v))
+  (define (state-watch-high st) (vector-ref st 21))
+  (define (state-watch-high-set! st v) (vector-set! st 21 v))
+  (define (state-listener-acked st) (vector-ref st 22))
+  (define (state-listener-acked-set! st v) (vector-set! st 22 v))
+  (define (state-deferred st) (vector-ref st 23))
+  (define (state-deferred-set! st v) (vector-set! st 23 v))
   (define (state-roles st) (vector-ref st roles-slot))
   (define (state-roles-set! st v) (vector-set! st roles-slot v))
   (define (state-handling st) (vector-ref st handling-slot))
@@ -656,7 +784,10 @@
                (when (> (- (real-time) (state-draining st)) drain-budget-ms)
                  (report-quietly `(exiting (reason drain-timeout)
                                            (in-flight ,(length (state-running st)))))
+                 (report-resume-failed! st)
                  (leave st 75)))
+             ;; THE IDLE CLOCK is read on the same tick.
+             (when (idle-due? st) (begin-leave! st))
              (watch-loop st))
       ;; The listener says what it bound, so the exit path can tell this
       ;; socket from one somebody else has since put in its place.
@@ -697,7 +828,71 @@
        (leave st 75))
       (`(bound ,ident)
        (state-bound-set! st ident)
-       (report-quietly `(serving (store ,(state-store st)) (socket ,(state-socket st))))
+       (cond
+         ;; A RESUME'S REPORT ends the attempt: the deferred connections are
+         ;; admitted (by the drain, when one has superseded it) and the clock
+         ;; starts again.
+         ((eq? (state-leave st) 'resuming)
+          (state-leave-set! st #f)
+          (state-listener-acked-set! st #f)
+          (report-quietly `(idle-resumed (socket ,(state-socket st))))
+          (admit-deferred! st (and (state-draining st) #t))
+          (state-idle-since-set! st (real-time)))
+         (else
+          (report-quietly `(serving (store ,(state-store st)) (socket ,(state-socket st)) ,@idle-options))))
+       (watch-loop st))
+      ;; THE LISTENER'S ACKNOWLEDGEMENT of a stop, sent once every adapter it
+      ;; spawned has reported. In a leave it decides the attempt: no watch after
+      ;; the watermark and nothing open or running is the exit; anything else
+      ;; cancels it, and the listener binds again. In a drain it is what
+      ;; finish-if-drained waits for.
+      (`(stopped (handed ,h) (refused-accepts ,ra) (callback-raised ,cr) (exhausted ,ex))
+       (state-listener-acked-set! st #t)
+       (let ((attempt (state-leave st)))
+         (cond
+           ((state-draining st)
+            (when (pair? attempt) (state-leave-set! st #f))
+            (finish-if-drained st))
+           ((and (pair? attempt) (eq? (car attempt) 'leaving))
+            ;; A LISTENER THE RUNTIME RETIRED DURING THE LEAVE IS NO IDLE EXIT,
+            ;; whatever the watermark says (R2 (iv)): it closed before the
+            ;; grace ended, resetting what the kernel still queued. It takes
+            ;; the resume branch, the exhausted listener answers the resume
+            ;; resume-failed listener-exhausted, and the daemon drains and
+            ;; leaves 75 with that reason (found in review: it left 0).
+            (if (and (= h (cadr attempt)) (nothing-open? st) (not ex))
+                (begin
+                  (report-quietly `(idle-exit (after ,idle-exit-seconds) (refused-accepts ,ra)
+                                              (callback-raised ,cr)))
+                  (leave st 0))
+                ;; RESUMING lasts until main has recorded the new identity: a
+                ;; drain meanwhile tells the listener to stop, which it takes
+                ;; after its resume, so the exit waits for both.
+                (begin
+                  (state-leave-set! st 'resuming)
+                  (state-listener-acked-set! st #f)
+                  (send (state-listener st) (list 'resume)))))
+           (else #f)))
+       (watch-loop st))
+      ;; THE UNLINK FAILED: our link is still there and the listener still
+      ;; listens. The attempt is over and the clock starts again.
+      (`(idle-cancelled ,reason)
+       (report-quietly `(idle-cancelled ,reason))
+       (state-leave-set! st #f)
+       (admit-deferred! st (and (state-draining st) #t))
+       (state-idle-since-set! st (real-time))
+       (watch-loop st))
+      ;; A RESUME THAT FAILED: the listener holds nothing and has unlinked what
+      ;; it bound. The daemon drains with its own reason and leaves 75; the
+      ;; deferred connections are admitted draining by the drain.
+      (`(resume-failed ,cause)
+       (state-leave-set! st #f)
+       (state-listener-acked-set! st #t)
+       (cond
+         ((state-draining st) (finish-if-drained st))
+         (else
+          (enter-drain! st (list 'resume-failed cause))
+          (finish-if-drained st)))
        (watch-loop st))
       ;; NEVER: THE DOOR OPENS HERE AND NOWHERE ELSE. Until the store has a
       ;; value to serve, a connection could only be told to wait or be
@@ -727,9 +922,18 @@
             (state-listener-set! st listener)
             (state-roles-set! st (cons (cons listener 'listener) (state-roles st))))
           (watch-loop st))))
-      (`(watch ,pid ,role)
+      ;; A CONNECTION IS REGISTERED AT ONCE AND ADMITTED BY THIS ANSWER: it
+      ;; reads nothing until told. Draining: admitted to be told so. During a
+      ;; leave: deferred until the attempt is decided (see the idle exit).
+      (`(watch ,pid ,role ,seq)
        (monitor pid)
        (state-roles-set! st (cons (cons pid role) (state-roles st)))
+       (when (> seq (state-watch-high st)) (state-watch-high-set! st seq))
+       (state-idle-since-set! st (real-time))
+       (cond
+         ((state-draining st) (send pid (list 'admitted #t)))
+         ((state-leave st) (state-deferred-set! st (cons pid (state-deferred st))))
+         (else (send pid (list 'admitted #f))))
        (watch-loop st))
       ;; What a conn is busy with, so a crash can name the request that
       ;; was in flight rather than only the process that was serving it.
@@ -835,12 +1039,14 @@
        ;; numbers is not something this may depend on.
        (state-running-set! st
          (filter (lambda (entry) (not (equal? ticket (car entry)))) (state-running st)))
+       (state-idle-since-set! st (real-time))
        (finish-if-drained st)
        (watch-loop st))
       ;; The conn processes report themselves gone; when the last one has
       ;; and nothing is running, the drain is over.
       (`(conn-done ,who)
        (state-roles-set! st (remove-key who (state-roles st)))
+       (state-idle-since-set! st (real-time))
        (finish-if-drained st)
        (watch-loop st))
       ;; THE STORE DIED WHILE STARTING WITHOUT SENDING `startup-failed` (a death
@@ -886,6 +1092,7 @@
            (else
             (state-roles-set! st (remove-key who (state-roles st)))
             (state-handling-set! st (remove-key who (state-handling st)))
+            (state-idle-since-set! st (real-time))
             ;; NOTE: A CONNECTION THAT DIED IS A CONNECTION THAT IS GONE. It
             ;; sends no `conn-done` -- a killed actor runs no unwinds --
             ;; so the drain's completion condition has to be re-asked
@@ -905,8 +1112,11 @@
   ;; closes the lock's descriptor, which releases the flock anyway.
   ;; TRIPWIRE, NOT A MEASUREMENT: no row makes an unlock or a close fail.
   (define (leave st code)
-    (guard (e (#t (trace-event! 'leave-tidy-failed #f #f)))
-      (unlink-own-socket! (state-socket st) (state-bound st)))
+    (unlink-own-socket! (state-socket st) (state-bound st))
+    ;; AND WHAT A RESUME BOUND, when main has not yet recorded it: the cell is
+    ;; written before the listener runs anything after the rebind.
+    (when (and listener-cell (not (equal? listener-cell (state-bound st))))
+      (unlink-own-socket! (state-socket st) listener-cell))
     (guard (e (#t (trace-event! 'leave-tidy-failed #f #f)))
       (lock-release! (state-lock st)))
     (exit code))
@@ -932,21 +1142,74 @@
 ;; The drain's entry, once: from a first signal while SERVING, or from a
   ;; drain remembered while STARTING when `ready` arrives. REASON is drained or
   ;; store-gone; it is kept from here to the exit line, never overwritten.
+  ;; A DRAIN THAT HAS A LISTENER TELLS IT TO STOP AND WAITS FOR ITS ACCOUNT of
+  ;; the adapters it spawned (finish-if-drained), so a connection accepted
+  ;; before the stop is admitted draining, never left behind. A listener in a
+  ;; leave takes the stop when its grace ends. The connections deferred by a
+  ;; leave are admitted now, draining, before any is told to drain.
   (define (enter-drain! st reason)
     (unless (state-drain-reason st) (state-drain-reason-set! st reason))
     (state-draining-set! st (real-time))
     (report-quietly `(draining (in-flight ,(length (state-running st)))))
-    (when (state-listener st) (send (state-listener st) (list 'stop)))
+    (when (and (state-listener st) (not (state-listener-acked st)))
+      (send (state-listener st) (list 'stop)))
+    (admit-deferred! st #t)
     (for-each (lambda (entry)
                 (when (eq? 'conn (cdr entry)) (send (car entry) (list 'drain))))
               (state-roles st)))
 
+  ;; THE LISTENER'S ACKNOWLEDGEMENT IS PART OF "DRAINED" when there is a
+  ;; listener: until it has accounted for its adapters, a connection may still
+  ;; be on its way to main. A drain entered before any listener existed (the
+  ;; startup drain) has nothing to wait for. A drain entered because a resume
+  ;; failed leaves 75, with its own line.
   (define (finish-if-drained st)
     (when (and (state-draining st)
                (null? (state-running st))
-               (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st))))
-      (report-quietly `(exiting (reason ,(or (state-drain-reason st) 'drained))))
-      (leave st 0)))
+               (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st)))
+               (or (not (state-listener st)) (state-listener-acked st)))
+      (let ((reason (state-drain-reason st)))
+        (if (and (pair? reason) (eq? (car reason) 'resume-failed))
+            (begin (report-resume-failed! st) (leave st 75))
+            (begin
+              (report-quietly `(exiting (reason ,(or reason 'drained))))
+              (leave st 0))))))
+
+  (define (report-resume-failed! st)
+    (let ((reason (state-drain-reason st)))
+      (when (and (pair? reason) (eq? (car reason) 'resume-failed))
+        (report-quietly `(idle-exit (reason resume-failed ,(cadr reason)))))))
+
+  ;; NOTHING OPEN: no connection registered and no request running. A
+  ;; subscription holds its connection, so it is covered.
+  (define (nothing-open? st)
+    (and (null? (state-running st))
+         (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st)))))
+
+  ;; THE CLOCK HAS RUN OUT: an idle window was asked for, the daemon serves
+  ;; through a bound listener, no drain or leave is under way, nothing is open
+  ;; or running, and the window has passed since the last thing that restarted
+  ;; it (a watch, a completion, a connection's end, a cancellation).
+  (define (idle-due? st)
+    (and (> idle-exit-seconds 0)
+         (eq? (state-phase st) 'serving)
+         (not (state-draining st))
+         (not (state-leave st))
+         (state-listener st)
+         (state-bound st)
+         (nothing-open? st)
+         (>= (- (real-time) (state-idle-since st)) (* 1000 idle-exit-seconds))))
+
+  ;; THE ATTEMPT BEGINS: its watermark is the highest watch registered.
+  (define (begin-leave! st)
+    (state-leave-set! st (list 'leaving (state-watch-high st)))
+    (state-listener-acked-set! st #f)
+    (send (state-listener st) (list 'leave 'idle)))
+
+  ;; The deferred connections are admitted, DRAINING? or not, once.
+  (define (admit-deferred! st draining?)
+    (for-each (lambda (pid) (send pid (list 'admitted draining?))) (reverse (state-deferred st)))
+    (state-deferred-set! st '()))
 
   (define (forget-pid who alist)
     (let loop ((rest alist) (kept '()))
@@ -955,17 +1218,39 @@
             (else (loop (cdr rest) (cons (car rest) kept))))))
 
   ;; NEVER: ONLY IF IT IS STILL OURS. A daemon that leaves without tidying up
-  ;; leaves a socket that answers nothing, and the next client waits on
-  ;; it before falling back -- but one that deletes whatever is at that
-  ;; path deletes the socket of whoever took over in the meantime. The
-  ;; dev/inode recorded at bind is what tells those two apart.
+  ;; leaves a path that answers nothing, and the next client waits on it
+  ;; before falling back -- but one that deletes whatever is at that path
+  ;; deletes the entry of whoever took over in the meantime.
   ;; NOTHING WAS BOUND, NOTHING IS PROBED (found in review): a start
   ;; that failed before the bind has no socket of its own to tidy.
+  ;; THE PRIVATE FILE IS UNLINKED BY EVERY CONTROLLED EXIT, here and
+  ;; synchronously, as well as the link: the
+  ;; listener may never have been closed, so the close's own unlink cannot be
+  ;; relied on, and when it did run the file is already gone. The two
+  ;; attempts are independent: a failure of either is logged
+  ;; `(cleanup-failed <path> <errno>)` and neither delays nor changes the
+  ;; exit.
+  ;; BOUND is (private link-text private-identity link-identity), the
+  ;; identities read by lstat when the listener bound and published: each is
+  ;; unlinked only while it is still the entry this daemon made (the
+  ;; identity primitives below), so a replacement at either name, or a
+  ;; namespace link since pointed elsewhere, is left (found in review).
   (define (unlink-own-socket! socket bound)
     (when bound
-      (let ((now (device-inode socket)))
-        (when (and now (equal? bound now))
-          (guard (e (#t #f)) (unlink! socket))))))
+      (cleanup-step! (car bound)
+        (lambda () (unlink-made! (car bound) (caddr bound))))
+      ;; A link not yet published has no identity, and nothing to unlink.
+      (when (cadddr bound)
+        (cleanup-step! socket
+          (lambda () (unlink-made! socket (cadddr bound)))))))
+
+  (define (cleanup-step! path thunk)
+    (guard (e (#t (report-quietly
+                    (list 'cleanup-failed path
+                          (cond ((fs-error? e) (fs-error-errno e))
+                                ((unreadable-entry? e) (unreadable-entry-errno e))
+                                (else 'unknown))))))
+      (thunk)))
 
   (define (lookup k alist)
     (let ((e (assq k alist))) (and e (cdr e))))
@@ -993,11 +1278,6 @@
         (let* ((a (device-inode asked)) (b (device-inode serving)))
           (and a b (equal? a b)))))
 
-  (define (directory-of p)
-    (let loop ((i (- (string-length p) 1)))
-      (cond ((< i 0) ".")
-            ((char=? (string-ref p i) #\/) (substring p 0 i))
-            (else (loop (- i 1))))))
 
   ;; NEVER: ONLY A SOCKET IS EVER UNLINKED. A regular file or a directory on
   ;; that path is somebody else's, and removing it to make room would be
@@ -1031,8 +1311,596 @@
   ;;
   ;; NEVER: MOVING THIS CALL BEFORE THE LOCK BREAKS IT. Two daemons starting
   ;; together would each delete the other's socket.
-  (define (clear-stale-socket! p)
-    (when (device-inode p) (guard (e (#t #f)) (unlink! p))))
+  ;; IDENT is the socket's identity as claim-public! judged it.
+  (define (clear-stale-socket! p ident)
+    (guard (e (#t #f)) (unlink-made! p ident)))
+
+  ;; ---- the socket's namespace ----------------------------------------------
+  ;;
+  ;; THE SOCKET IS A PRIVATE FILE BEHIND A PUBLIC LINK. The daemon binds
+  ;; `<socket>.d/<pid>` and publishes `<socket>` as a symbolic link to it,
+  ;; because closing a listener unlinks the name it was bound with,
+  ;; unconditionally: bound at the public path, a stop would delete a
+  ;; replacement created there after our own unlink. An unlink of ours at the
+  ;; public path is one of three: a start's reclaim of a link, judged by its
+  ;; text; exit's unlink of our own link, judged by the identity recorded when
+  ;; it was published; and a pre-link daemon's socket, cleared under the
+  ;; lifetime lock.
+  ;;
+  ;; THE NAMESPACE IS A DIRECTORY THE DAEMON MAKES ITSELF, RESERVED BY A MARKER.
+  ;; Its real name is `<socket>.d.<pid>` (or `-1`, `-2`, ... when that name is
+  ;; taken), made by exclusive creation, so nothing already there is ever
+  ;; replaced; `.endpoint` inside it holds the endpoint's identity, the pid and
+  ;; the directory's own name; and `<socket>.d` is published as a symbolic
+  ;; link to it, which fails on any existing entry. OWNERSHIP IS THE MARKER,
+  ;; NEVER THE NAME: a directory spelled like ours whose marker does not name
+  ;; this endpoint is somebody else's and is left as it is. A marker outlives
+  ;; its daemon: it is the reservation, and the next start of the same
+  ;; endpoint reclaims it.
+  ;;
+  ;; THE ENDPOINT'S IDENTITY is the canonical path of the public link's parent
+  ;; as the start's one look resolved it (realpath; the link itself is never
+  ;; resolved) joined with the link's base name, so `--socket run/s` from one directory and `--socket s` from
+  ;; `run` are one endpoint, as they are one lock. Two identities are compared
+  ;; parent by parent and base name by base name, the base name under the
+  ;; parent filesystem's own case rule.
+
+
+
+  (define (namespace-link socket) (string-append socket ".d"))
+  ;; NEVER: THE RESERVATION LOCK'S NAME IS NO LIFETIME LOCK'S. A lifetime lock
+  ;; is `.<base>.lock` (lock-path-for), so `<socket>.d.lock` made `.s`'s
+  ;; reservation lock `.s.d.lock`, the lifetime lock of the endpoint `s.d` in
+  ;; the same directory: while `s.d` served, every start of `.s` waited out
+  ;; the reservation budget and was refused serve-busy naming the other
+  ;; endpoint's lock (found in review). The names beside a socket end in
+  ;; four different characters, case folded or not: `k` (the lifetime lock),
+  ;; `e` (this one), `d` (the link) and a digit (a backing directory), so no
+  ;; two endpoints' derived names of different kinds are one file. That is
+  ;; about DERIVED names: the public name is the operator's spelling, and one
+  ;; spelled like another endpoint's derived name (`s.d.reserve` beside `s`,
+  ;; or `.s.lock`) is that file. A window, not refused (found in review).
+  (define (reservation-lock-path socket) (string-append socket ".d.reserve"))
+  (define (private-socket-path socket pid)
+    (string-append socket ".d/" (number->string pid)))
+  ;; RELATIVE TO THE LINK'S PARENT, as the link resolves it: a target spelled as
+  ;; the bind path would resolve to `run/run/s.d/<pid>` for `--socket run/s`.
+  (define (public-link-target socket pid)
+    (string-append (base-of socket) ".d/" (number->string pid)))
+
+  ;; FOLDING, ONE PLACE: same-spelling? and namespace-spelling, the rule's
+  ;; comparison and its one parser, are (theourgia client)'s, beside the walk
+  ;; that judges a run directory and a socket's directory alike; these two
+  ;; build on them.
+  (define (starts-with? text prefix fold?)
+    (let ((n (string-length prefix)))
+      (and (>= (string-length text) n)
+           (same-spelling? (substring text 0 n) prefix fold?))))
+
+  ;; -> #t when TEXT is `<prefix><digits>`.
+  (define (prefixed-digits? text prefix fold?)
+    (let ((n (string-length prefix)))
+      (and (> (string-length text) n)
+           (starts-with? text prefix fold?)
+           (digits? (substring text n (string-length text))))))
+
+
+
+  ;; A PARENT'S SPELLING, LEXICALLY TIDIED before its base name is parsed:
+  ;; `//` collapsed and a trailing `/` or `/.` dropped, so `s.d//7` and
+  ;; `s.d/./7` name `s.d` as `s.d/7` does (found in review); its base name
+  ;; then says which namespace it is in.
+  (define (tidy-spelling p)
+    (let loop ((p (let collapse ((p p))
+                    (let ((n (string-length p)))
+                      (let find ((i 0))
+                        (cond ((>= (+ i 1) n) p)
+                              ((and (char=? (string-ref p i) #\/) (char=? (string-ref p (+ i 1)) #\/))
+                               (collapse (string-append (substring p 0 i) (substring p (+ i 1) n))))
+                              (else (find (+ i 1)))))))))
+      (let ((n (string-length p)))
+        (cond ((and (> n 1) (char=? (string-ref p (- n 1)) #\/)) (loop (substring p 0 (- n 1))))
+              ((and (> n 2) (string=? (substring p (- n 2) n) "/.")) (loop (substring p 0 (- n 2))))
+              (else p)))))
+
+  ;; A backing directory's spelling for the endpoint whose base name is BASE.
+  (define (backing-spelling? name base fold?)
+    (let ((p (namespace-spelling name fold?)))
+      (and p (eq? (cdr p) 'backing) (same-spelling? (car p) base fold?))))
+
+
+  ;; NEVER: THE IDENTITY IS TAKEN FROM THE ONE LOOK, NOT RESOLVED AGAIN.
+  ;; PARENT is the socket's parent as the start's reservation check resolved
+  ;; it (reserved-by-another): its one real-path, or the directory the walk
+  ;; answered and main made. Resolved a second time here, a prefix through an
+  ;; endpoint's link that its reclaim had unlinked failed, the spelling stood
+  ;; in, and once the link was republished the start reserved and marked
+  ;; `<d>/s.d/../b`; parents compare as bytes, so every later start of
+  ;; `<d>/b` was refused (found in review).
+  (define (endpoint-identity parent socket)
+    (in-directory parent (base-of socket)))
+
+  ;; The parents compare as BYTES: each is real-path's canonical spelling
+  ;; (endpoint-identity), and the volume's case rule applies to the base name.
+  (define (same-endpoint? a b)
+    (let ((pa (directory-of a)) (pb (directory-of b)))
+      (and (string=? pa pb)
+           (same-spelling? (base-of a) (base-of b) (folds-case? pa)))))
+
+  (define (marker-path dir) (in-directory dir ".endpoint"))
+
+  ;; -> the identity a directory's marker names, or #f when it has none or its
+  ;; text is not a marker: a marker that does not name an endpoint is not
+  ;; ours. A marker that cannot be read at all raises, into main's table.
+  ;; NEVER: ONLY A REGULAR FILE IS READ. A FIFO named `.endpoint` would block
+  ;; the open with both locks held (found in review); it is not a marker.
+  (define (marker-identity dir)
+    (let ((bytes (and (eq? (entry-name-type (marker-path dir)) 'regular)
+                      (read-entry (marker-path dir)))))
+      (and (bytevector? bytes)
+           (let ((d (guard (e (#t #f)) (read (open-string-input-port (utf8->string bytes))))))
+             (and (pair? d) (eq? (car d) 'endpoint) (list? (cdr d))
+                  (let ((id (assq 'identity (filter pair? (cdr d)))))
+                    (and id (pair? (cdr id)) (string? (cadr id)) (cadr id))))))))
+
+  ;; A marker is a regular file: anything else named `.endpoint` reserves
+  ;; nothing (found in review).
+  (define (marker-present? dir)
+    (eq? (entry-name-type (marker-path dir)) 'regular))
+
+  (define (marked-for? dir identity)
+    (let ((id (marker-identity dir)))
+      (and id (same-endpoint? id identity))))
+
+  ;; ---- (1) IDENTITY, ONE PLACE -------------------------------------------------
+  ;;
+  ;; Every removal in the namespace goes through these two. IDENT is the
+  ;; entry's (device . inode) by lstat, recorded when this start made the
+  ;; entry or when it judged one an earlier daemon left; the entry is removed
+  ;; only while lstat still reads that identity, so a replacement is never
+  ;; removed for the entry it replaced. -> removed; kept (something else is
+  ;; there now); gone (nothing is). A removal that fails raises, and the
+  ;; caller's guard decides.
+  ;; THE MODEL: the namespace `<socket>.d*` is the daemon's own. What it
+  ;; defends against is its peers -- other daemons, under the reservation and
+  ;; lifetime locks -- and stale residue. A concurrent foreign writer inside
+  ;; it is outside the model, bounded by (a) and by the next start's reclaim.
+  ;; NOTE: THE ACCEPTED WINDOWS, ALL OF THEM, HERE (the README lists the same
+  ;; nine). Each is a path call where no *at call with an identity exists,
+  ;; or a step whose failure this code cannot observe; each says its effect
+  ;; and what bounds it.
+  ;;   (a) CHECK-THEN-ACT: made? and the removal are two calls on a path; an
+  ;;       entry swapped between them is removed. Only a writer inside this
+  ;;       endpoint's own, lock-protected names can do that. The same holds
+  ;;       between any two steps of one start: a directory swapped in after
+  ;;       the marker is written is published unmarked; a residue swapped in
+  ;;       after it was judged is swept; a public link replaced before its
+  ;;       identity is read is recorded and removed at exit; the directory a
+  ;;       start resolved and then makes its socket's directory under is
+  ;;       taken as it is at the mkdir, so only a foreign rename replaces it
+  ;;       in between (one inside a namespace was refused at the start's
+  ;;       look); a directory made by hand inside an endpoint's directory
+  ;;       admits a start under it. No peer and no residue produces these
+  ;;       states, so no re-check is added for them.
+  ;;   (b) THE LISTENER'S CLOSE unlinks the bound private name, as closing a
+  ;;       bound pipe does, whatever is at that name in the daemon's own
+  ;;       directory by then.
+  ;;   (c) `.endpoint` SWAPPED between its exclusive create and its open: the
+  ;;       marker's text goes into the swapped-in file. Only a writer inside
+  ;;       the directory this start has just made.
+  ;;   (d) A STALE PUBLICATION at the socket path is reclaimed first, at every
+  ;;       start, whatever the start then answers: it was this endpoint's,
+  ;;       behind the lifetime lock the start holds.
+  ;;   (e) THE MADE DIRECTORY'S IDENTITY is read by path just after its
+  ;;       exclusive mkdir: a directory renamed into its place in that
+  ;;       instant is recorded as this start's, and a rollback may remove it.
+  ;;       Only a writer in the socket's directory within that instant.
+  ;;   (f) A FAILURE RIGHT AFTER THE MARKER'S EXCLUSIVE CREATE (its lstat, or
+  ;;       the create's own close) leaves an empty marker no log step covers:
+  ;;       a directory nobody links stays reserved. A start inside it is
+  ;;       refused naming that marker, with the remedy to remove the directory.
+  ;;   (g) AN IDENTITY READ FAILING RIGHT AFTER THE PUBLISH leaves the public
+  ;;       link outside `bound`, as a kill after the publish would; the next
+  ;;       start reclaims it as a stale publication (d).
+  ;;   (h) A RESERVATION-LOCK RELEASE THAT FAILS after a completed reservation
+  ;;       leaves it published and marked and the start fails, as a daemon dead
+  ;;       after its publish; the next start reclaims it.
+  ;;   (i) AN IDENTITY READ THAT FAILS RIGHT AFTER THE EXCLUSIVE MKDIR of this
+  ;;       daemon's directory (entry-identity raising for an errno other than
+  ;;       ENOENT or ENOTDIR) rolls back a log with no made-dir step, so the
+  ;;       empty, unmarked, unlinked `<base>.d.<pid>` stays: never entered or
+  ;;       swept, the next start allocating a fresh suffix. Logging the
+  ;;       directory before its identity is read would hand the rollback a
+  ;;       directory without the identity it compares (found in review). The
+  ;;       reservation runs under main's `report` stage, so a stat fault aimed
+  ;;       at `<base>.d.<pid>` fires at that read; W5x21 pins this state.
+  ;; -> absent, kept or made: what lstat reads at PATH against IDENT.
+  (define (made? path ident)
+    (let ((now (entry-identity path)))
+      (cond ((not now) 'absent)
+            ((equal? now ident) 'made)
+            (else 'kept))))
+
+  (define (unlink-made! path ident)
+    (case (made? path ident)
+      ((absent) 'gone)
+      ((kept) 'kept)
+      (else (unlink! path) 'removed)))
+
+  (define (rmdir-made! path ident)
+    (case (made? path ident)
+      ((absent) 'gone)
+      ((kept) 'kept)
+      (else (rmdir! path) 'removed)))
+
+  ;; THE RESERVATION LOCK, `<socket>.d.reserve`, beside the lifetime lock: held by
+  ;; a reserving daemon from before its mkdir through its marker and its
+  ;; publication, and by a start that asks whether a namespace is reserved,
+  ;; for the time it takes to read the marker. It is waited for, within the
+  ;; start budget, since its holders keep it only for those few steps.
+  (define reservation-budget-ms 10000)
+  (define (reservation-lock! socket)
+    (let ((path (reservation-lock-path socket)))
+      (file-ensure! path)
+      (let ((deadline (+ (real-time) reservation-budget-ms)))
+        (let loop ()
+          (let ((lock (lock-try-acquire! path 'exclusive)))
+            (cond
+              ((and lock (lock-held? lock)) lock)
+              ((> (real-time) deadline) #f)
+              (else (sleep-ms 20) (loop))))))))
+
+
+
+  ;; BEFORE ANY LOCK OF ITS OWN: a requested path whose parent, resolved,
+  ;; is spelled `<name>.d` or `<name>.d.<digits>[-<n>]` lies in the candidate
+  ;; namespace of the endpoint `<name>`. Its reservation lock is taken and
+  ;; the marker read under it: a marker there means the namespace is
+  ;; reserved, its daemon running or not. -> (admit DIR PARENT), DIR what a
+  ;; start makes for the parent, (ANCESTOR . NAMES) from directory-to-make,
+  ;; or #f when the parent resolved, PARENT the parent as this one look
+  ;; resolved it (for DIR, the ancestor joined with the names),
+  ;; which the endpoint's identity is taken from (endpoint-identity); or the
+  ;; refusal.
+  ;; NEVER: THE MARKER IS READ ON A PATH RESOLVED BEFORE THE LOCK. The first
+  ;; resolution only names the lock; while this start waits on it, the
+  ;; endpoint's own daemon may reclaim the directory it named and publish
+  ;; another, and a marker read in the old one would be absent and admit a
+  ;; start whose takeover then clears that daemon's live private socket
+  ;; (found in review). So the parent is resolved again under the lock, and
+  ;; a resolution that now names another endpoint starts the check over.
+  ;; NEVER: A PARENT THAT DOES NOT RESOLVE IS NOT AN UNMARKED ONE. The
+  ;; endpoint's own reclaim unlinks `<name>.d` for a moment; a parent that
+  ;; does not resolve is judged by its spelling, and under the lock it
+  ;; refuses socket-dir-missing rather than admitting the start (found in
+  ;; review).
+  (define (reserved-by-another socket)
+    (let* ((parent (tidy-spelling (directory-of socket)))
+           (first (real-path parent))
+           (spelled (or first parent))
+           (fold? (folds-case? (directory-of spelled)))
+           (owner (namespace-candidate (base-of spelled) fold?)))
+      ;; INJECTION ONLY: held after the parent's one resolution, before it is
+      ;; judged.
+      (hold-point! 'reserve-after-first-resolve)
+      (cond
+        ;; NEVER: A PARENT THAT DOES NOT RESOLVE IS ADMITTED ONLY WHEN A START
+        ;; MAY MAKE IT. Four ways it may not (directory-to-make), each found
+        ;; in review. The walk looks at the parent by lstat only; the real-path
+        ;; above (`first`) was the one resolution of it.
+        ;; - it is something: an alias of a namespace (a link to `<name>.d`)
+        ;;   does not resolve while that endpoint's reclaim has the link
+        ;;   unlinked, and its own spelling names no namespace, so it would
+        ;;   pass with no lock; resolved a second time after that endpoint
+        ;;   republished, it would pass too;
+        ;; - making it would make a namespace-spelled directory, or one through
+        ;;   `..`: the absent names are made after this check, below the ancestor
+        ;;   the walk resolved, and `s.d/../b` or `s.d/x/b`, while the endpoint `s`'s
+        ;;   reclaim has its link unlinked, would make a real `s.d` there, and
+        ;;   that endpoint's publish would refuse from then on;
+        ;; - the first ancestor that is there is a namespace's directory (it
+        ;;   resolves to a name spelled `<name>.d` or `<name>.d.<digits>`): once
+        ;;   `s` republished, `s.d/x/b` would be made inside its new backing;
+        ;; - the walk's floor does not resolve: a working directory that was
+        ;;   removed.
+        ;; What is admitted is a parent with nothing at it that a start may
+        ;; make: the default socket's run directory, made after this check
+        ;; under the ancestor the walk resolved, by the names it judged.
+        ((and (not owner) (not first))
+         (let ((dir (directory-to-make parent)))
+           (if dir
+               `(admit ,dir ,(fold-left in-directory (car dir) (cdr dir)))
+               `(error socket-dir-missing (dir ,parent)))))
+        ((not owner) `(admit #f ,first))
+        (else
+           (let* ((candidate (in-directory (directory-of spelled) owner))
+                  (lock (begin (hold-point! 'reserve-after-resolve)
+                               (reservation-lock! candidate))))
+             (if (not lock)
+                 `(error serve-busy (path ,(reservation-lock-path candidate)))
+                 (let ((resolved (real-path parent)))
+                   (cond
+                     ((not resolved)
+                      (lock-release! lock)
+                      `(error socket-dir-missing (dir ,parent)))
+                     ;; BYTES: both parents are real-path's canonical spelling of
+                     ;; the same lookup, so they compare exactly.
+                     ((not (and (equal? (directory-of resolved) (directory-of spelled))
+                                (let ((again (namespace-candidate (base-of resolved) fold?)))
+                                  (and again (same-spelling? again owner fold?)))))
+                      (lock-release! lock)
+                      (reserved-by-another socket))
+                     (else
+                      (let ((marked (marker-present? resolved))
+                            (identity (marker-identity resolved)))
+                        (lock-release! lock)
+                        (if marked
+                            `(error serve-path-reserved (endpoint ,(or identity (marker-path resolved)))
+                                    (remedy serve-that-endpoint-or-remove-its-directory))
+                            `(admit #f ,resolved))))))))))))
+
+  ;; A RESIDUE DIRECTORY OF THIS ENDPOINT, judged as DIR-IDENT with the marker
+  ;; MARKER-IDENT: its stale sockets go (the lifetime lock is ours, so nobody
+  ;; listens on them), every other entry and the marker stay, and the
+  ;; directory is removed only when nothing but the marker is left, the
+  ;; marker first. -> swept; clean when there was nothing to remove and
+  ;; nothing failed; untouched when a step failed before anything was
+  ;; removed (a directory this daemon cannot write fails at its first
+  ;; unlink); partial when one failed after, which leaves the directory with
+  ;; what is in it -- unmarked, it never blocks a start.
+  (define (sweep-residue! dir dir-ident marker-ident)
+    (let ((removed #f)
+          (marker? (let ((fold? (folds-case? dir)))
+                     (lambda (name) (same-spelling? name ".endpoint" fold?)))))
+      (guard (e ((or (fs-error? e) (unreadable-entry? e)) (if removed 'partial 'untouched)))
+        (for-each (lambda (name)
+                    (let* ((p (in-directory dir name))
+                           (ident (entry-identity p)))
+                      ;; A SOCKET BY lstat: a link in the residue to a live
+                      ;; socket elsewhere is a non-socket entry and stays.
+                      (when (and (not (marker? name))
+                                 (eq? (entry-name-type p) 'other)
+                                 (file-is-socket? p)
+                                 (eq? (unlink-made! p ident) 'removed))
+                        (set! removed #t))))
+                  (directory-entries dir))
+        (hold-point! 'reclaim-after-sockets)
+        (when (let ((left (directory-entries dir)))
+                (and (= (length left) 1) (marker? (car left))))
+          (when (eq? (unlink-made! (marker-path dir) marker-ident) 'removed)
+            (set! removed #t))
+          (hold-point! 'reclaim-after-marker)
+          (rmdir-made! dir dir-ident))
+        (if removed 'swept 'clean))))
+
+  ;; THE PUBLIC ENTRY, judged by lstat: a link spelled `<base>.d/<digits>` is
+  ;; this endpoint's publication and is reclaimed whatever its target's state;
+  ;; a socket is a pre-link daemon's and is cleared as before; anything else
+  ;; is somebody's and refuses. -> #f, or the refusal.
+  (define (claim-public! socket)
+    (let ((ident (entry-identity socket)))
+      (case (entry-name-type socket)
+        ((absent) #f)
+        ((link)
+         (if (and (prefixed-digits? (read-link socket) (string-append (base-of socket) ".d/")
+                                    (folds-case? (directory-of socket)))
+                  (memq (unlink-made! socket ident) '(removed gone)))
+             #f
+             `(error serve-path-occupied (path ,socket))))
+        (else
+         (if (occupied-by-a-non-socket? socket)
+             `(error serve-path-occupied (path ,socket))
+             (begin (clear-stale-socket! socket ident) #f))))))
+
+  ;; THE NAMESPACE LINK, judged by its target's marker. THE ORDER OF A RECLAIM:
+  ;; the link is unlinked FIRST, after its target was seen to be a marked
+  ;; directory of this endpoint, and only then the residue swept (by
+  ;; sweep-siblings!, which the directory now is), so an interruption leaves
+  ;; either a link to a still-marked directory or no link, never an alias
+  ;; whose marker is gone. A link whose target is absent is reclaimed by its
+  ;; target's spelling. The unlink of a link to a marked directory goes in
+  ;; the undo log (DID!), so a later refusal puts it back. -> #f, or the
+  ;; refusal.
+  (define (claim-namespace! socket identity did!)
+    (let* ((ns (namespace-link socket))
+           (parent (directory-of socket))
+           (ident (entry-identity ns))
+           (occupied `(error serve-path-occupied (path ,ns))))
+      (case (entry-name-type ns)
+        ((absent) #f)
+        ((link)
+         (let ((target (read-link ns)))
+           (if (not (backing-spelling? target (base-of socket) (folds-case? parent)))
+               occupied
+               (let ((dir (in-directory parent target)))
+                 (case (entry-type dir)
+                   ((absent)
+                    (case (unlink-made! ns ident)
+                      ((removed)
+                       (did! (list 'unlinked-link ns target dir))
+                       (hold-point! 'reclaim-after-link)
+                       #f)
+                      ((gone) (hold-point! 'reclaim-after-link) #f)
+                      (else occupied)))
+                   ((directory)
+                    (if (marked-for? dir identity)
+                        (case (unlink-made! ns ident)
+                          ((removed)
+                           (did! (list 'unlinked-link ns target dir))
+                           (hold-point! 'reclaim-after-link)
+                           #f)
+                          ((gone) #f)
+                          (else occupied))
+                        occupied))
+                   (else occupied))))))
+        (else occupied))))
+
+  ;; The marked directories of this endpoint beside it (a start interrupted
+  ;; before its publication, and the one the namespace link named, NAMED,
+  ;; once claim-namespace! unlinked the link): swept; an unmarked or foreign
+  ;; one is left exactly as it is and does not block the start. A SIBLING
+  ;; THAT CANNOT BE SWEPT, or cannot even be asked about (one this daemon may
+  ;; not read), is left and does not block the start. The directory the link
+  ;; named is the exception when its sweep FAILED having removed nothing
+  ;; (untouched): the start is refused naming the link, and the rollback puts
+  ;; the link back. A sweep that had nothing to remove (clean) is no failure. It is
+  ;; tried FIRST, so that refusal comes before any other sibling is touched
+  ;; (found in review). A sweep of that directory that removed something
+  ;; goes in the undo log (DID!) as named-touched, so the rollback does not
+  ;; put the link back to it. -> #f, or the refusal.
+  (define (sweep-siblings! socket identity named did!)
+    (let* ((parent (directory-of socket)) (base (base-of socket)) (fold? (folds-case? parent))
+           (named? (lambda (n) (and named (same-spelling? n named fold?))))
+           (all (directory-entries parent)))
+      (let loop ((names (append (filter named? all) (remp named? all))))
+        (if (null? names)
+            #f
+            (let* ((name (car names))
+                   (dir (in-directory parent name))
+                   (outcome (if (backing-spelling? name base fold?)
+                                (guard (e ((or (fs-error? e) (unreadable-entry? e)) 'untouched))
+                                  (let ((dir-ident (entry-identity dir))
+                                        (marker-ident (entry-identity (marker-path dir))))
+                                    (if (and (eq? (entry-name-type dir) 'directory)
+                                             (marked-for? dir identity))
+                                        (sweep-residue! dir dir-ident marker-ident)
+                                        'not-ours)))
+                                'not-ours)))
+              (when (and (memq outcome '(swept partial)) (named? name))
+                (did! '(named-touched)))
+              (if (and (eq? outcome 'untouched) (named? name))
+                  `(error serve-path-occupied (path ,(namespace-link socket)))
+                  (loop (cdr names))))))))
+
+  ;; ALLOCATED BY EXCLUSIVE CREATION, with a fresh suffix on collision: an
+  ;; existing directory at the name -- a reused pid's markerless residue, or
+  ;; somebody else's -- is never entered. -> the directory's name.
+  (define (allocate-backing! socket)
+    (let ((parent (directory-of socket))
+          (stem (string-append (base-of socket) ".d." (number->string (process-id)))))
+      (let loop ((n 0))
+        (let ((name (if (= n 0) stem (string-append stem "-" (number->string n)))))
+          (if (eq? (mkdir-exclusive! (in-directory parent name)) 'created)
+              name
+              (loop (+ n 1)))))))
+
+  ;; THE MARKER'S TEXT, written into the file the reservation created
+  ;; exclusively: an entry placed at `.endpoint` after the directory was made
+  ;; is somebody's, and is never written over. An entry swapped in between
+  ;; the create and the open is not caught: fd-open has no O_NOFOLLOW.
+  (define (write-marker! dir identity name)
+    (let ((fd (fd-open (marker-path dir) '(write))))
+      (write-all! fd (string->utf8
+                       (call-with-string-output-port
+                         (lambda (p)
+                           (write `(endpoint (identity ,identity) (pid ,(process-id)) (directory ,name)) p)
+                           (newline p)))))
+      (fd-close fd)))
+
+  ;; ---- (2) ROLLBACK, ONE PLACE -------------------------------------------------
+  ;;
+  ;; UNDO is a reservation's log, newest first: (made-marker <path> <ident>),
+  ;; (made-dir <path> <ident>), (named-touched), (unlinked-link <link> <text>
+  ;; <dir>). Each step
+  ;; is undone through the identity primitives, best effort: a step that
+  ;; fails is not reported, since the start's own refusal or failure is what
+  ;; it says, and an unmarked directory left behind never blocks a start. A
+  ;; namespace link this start unlinked is put back, to the same text, unless
+  ;; the log says this start's sweep removed something from the directory it
+  ;; named (named-touched): decided from what this start did, never by asking
+  ;; the directory again, whose answer can be unreadable (found in review). A
+  ;; directory whose marker a sweep removed is no longer a reservation, and a
+  ;; link to it would refuse every later start.
+  ;; NOTE: A KILL BEFORE THE LINK IS PUT BACK leaves no link and a marked
+  ;; directory, the state an interrupted reclaim leaves; the next start finds
+  ;; the directory as a sibling it cannot sweep, leaves it, and serves from a
+  ;; directory of its own.
+  (define (roll-back! undo identity)
+    (for-each
+      (lambda (step)
+        (guard (e ((or (fs-error? e) (unreadable-entry? e)) #f))
+          (case (car step)
+            ((made-marker) (unlink-made! (cadr step) (caddr step)))
+            ((made-dir) (rmdir-made! (cadr step) (caddr step)))
+            ((unlinked-link)
+             (unless (assq 'named-touched undo)
+               (symlink! (caddr step) (cadr step)))))))
+      undo))
+
+  ;; UNDER THE LIFETIME LOCK: the public entry judged first, which needs that
+  ;; lock alone; then, under the reservation lock as well, the namespace link
+  ;; and the residue judged and reclaimed, and this daemon's own directory
+  ;; made, marked and published. PARENT is the socket's parent as the
+  ;; reservation check resolved it. -> #f, or the refusal; on a refusal after
+  ;; the directory was made it is removed again.
+  (define (claim-endpoint! socket parent)
+    (or (claim-public! socket)
+        (claim-namespace-and-reserve! socket parent)))
+
+  ;; ---- (3) THE RAISE PATH, ONE PLACE ----------------------------------------
+  ;;
+  ;; The reservation runs inside one guard: whatever raises in it -- a probe,
+  ;; a listing, a step -- rolls the log back and goes on to main's table, and
+  ;; a refusal rolls it back too. Nothing of the sequence sits outside it.
+  (define (claim-namespace-and-reserve! socket parent)
+    ;; INJECTION ONLY: held before the endpoint's identity is taken, after
+    ;; the lifetime lock and the public entry.
+    (hold-point! 'reserve-before-identity)
+    (let ((identity (endpoint-identity parent socket)))
+      ;; INJECTION ONLY: held after the identity, before the reservation lock.
+      (hold-point! 'reserve-after-identity)
+      (let ((lock (reservation-lock! socket)))
+        (if (not lock)
+            `(error serve-busy (path ,(reservation-lock-path socket)))
+            (let* ((undo '())
+                   (did! (lambda (step) (set! undo (cons step undo))))
+                   (answer
+                    (guard (e (#t (roll-back! undo identity) (lock-release! lock) (raise e)))
+                      (let ((refusal (reserve! socket identity did! (lambda () undo))))
+                        (when refusal (roll-back! undo identity))
+                        refusal))))
+              ;; NEVER: THE RELEASE IS AFTER THE GUARD. flock's unlock comes before
+              ;; the close, so a release that raises may already have let a peer
+              ;; in, and a rollback then would dismantle the reservation under
+              ;; that peer's eyes (found in review). A release that raises after a
+              ;; completed reservation leaves it published and marked, as a daemon
+              ;; dead after its publish would, and the next start reclaims it:
+              ;; window (h).
+              (lock-release! lock)
+              answer)))))
+
+  ;; THE STEPS, each logged as it succeeds: the namespace link, the siblings,
+  ;; then this daemon's own directory, its marker and its publication.
+  ;; NEVER: A DIRECTORY THAT IS NO LONGER THE ONE MADE is not marked: it is
+  ;; somebody's, and a marker of ours would make its sockets residue to the
+  ;; next start (found in review). Like a taken marker name, it refuses
+  ;; naming the directory.
+  (define (reserve! socket identity did! undo-now)
+    (or (claim-namespace! socket identity did!)
+        (sweep-siblings! socket identity
+                         (let ((step (assq 'unlinked-link (undo-now)))) (and step (caddr step)))
+                         did!)
+        (let* ((name (allocate-backing! socket))
+               (dir (in-directory (directory-of socket) name))
+               (made (entry-identity dir))
+               ;; BYTES: "." is the spelling directory-of gives a bare name.
+               (spelled (if (string=? (directory-of socket) ".") name dir)))
+          (did! (list 'made-dir dir made))
+          (hold-point! 'namespace-after-mkdir)
+          (cond
+            ((not (eq? (made? dir made) 'made))
+             `(error serve-path-occupied (path ,spelled)))
+            ((not (file-create-exclusive! (marker-path dir)))
+             `(error serve-path-occupied (path ,spelled)))
+            (else
+             (did! (list 'made-marker (marker-path dir) (entry-identity (marker-path dir))))
+             (write-marker! dir identity name)
+             (hold-point! 'namespace-before-publish)
+             (cond
+               ((eq? (symlink! name (namespace-link socket)) 'created)
+                #f)
+               (else
+                `(error serve-path-occupied (path ,(namespace-link socket))))))))))
 
   (define (report x) (write x) (newline))
 
@@ -1764,27 +2632,272 @@
           ;; answers a reference and `stop-listen!` is about that
           ;; reference, not about the path -- the path may by then be
           ;; somebody else's socket.
-          (lref (begin
+          (private (private-socket-path socket (process-id)))
+          (target (public-link-target socket (process-id)))
+          ;; THE WATCHES ARE NUMBERED from the daemon's start; an acknowledgement
+          ;; names the highest one sent, so main can tell whether a connection
+          ;; arrived after its watermark.
+          (seq 0)
+          ;; THE ADAPTERS SPAWNED AND NOT YET ACCOUNTED FOR: each is monitored
+          ;; when its spawn is announced, before it can report, and leaves this
+          ;; list when it reports `accepted` or dies.
+          (pending '()))
+     ;; A RESUMED LISTENER'S ADAPTERS HOLD AT A STAGE OF THEIR OWN, so a row
+     ;; can place a connection on the rebound socket after the late one that
+     ;; cancelled the exit has passed the first stage.
+     (define (open! stage)
+       (listen! private 64 adapter-idle-ms (theourgia-send-buffer) #t
+                (lambda () (adapter-before-report! stage))))
+     (define (spawned! a) (monitor a) (set! pending (cons a pending)))
+     (define (accepted! ref)
+       (set! pending (remq (conn-ref-pid ref) pending))
+       ;; NOTE: MAIN IS TOLD ABOUT EVERY CONN IT WILL HAVE TO EXPLAIN.
+       (let ((conn (spawn (lambda () (conn-loop ref store-pid store main-pid)))))
+         (set! seq (+ seq 1))
+         (send main-pid (list 'watch conn 'conn seq))))
+     (define (gone! who) (set! pending (remq who pending)))
+     (let ((lref (begin
                   ;; INJECTION ONLY (item 7): held before the bind (P6-timeout).
                   (hold-point! 'bind)
                   ;; The send buffer is a fixture's seam, #f outside the
                   ;; injection build: the system's own.
-                  (listen! socket 64 #f (theourgia-send-buffer)))))
-      (send main-pid (list 'bound (device-inode socket)))
-      (let loop ()
-        (receive
-          ;; NEVER: THE DOOR CLOSES FIRST. Everything else about a drain is
-          ;; about work already accepted; a listener still accepting
-          ;; would keep making more of it.
-          (`(stop)
-           (guard (e (#t (if #f #f))) (stop-listen! lref))
-           (loop))
-          (`(accepted ,ref)
-           ;; NOTE: MAIN IS TOLD ABOUT EVERY CONN IT WILL HAVE TO EXPLAIN.
-           (let ((conn (spawn (lambda () (conn-loop ref store-pid store main-pid)))))
-             (send main-pid (list 'watch conn 'conn)))
-           (loop))
-          (`#(DOWN ,who ,reason) (loop))))))
+                  ;; BOUND AT THE PRIVATE NAME, through the namespace link.
+                  (let ((bound (open! 'adapter-before-report)))
+                    ;; INJECTION ONLY: the first step of accept-exhaust-first.
+                    (arm-accept-fault! 'bind)
+                    bound))))
+      ;; THE PUBLIC LINK IS PUBLISHED AFTER THE BIND, so a client that finds it
+      ;; finds a socket behind it. symlink(2) never replaces: an entry made at
+      ;; the public path since the startup cleared it is left there, the
+      ;; private socket is unlinked again, and the listener dies, which main
+      ;; reports as listener-down.
+      ;; The refusal is traced here, so a reader of the trace can tell a
+      ;; publish collision from a bind failure; both exit as listener-down.
+      ;; A symlink! that raises (the directory not writable, say) is refused
+      ;; the same way, its errno the reason, and the private socket is
+      ;; unlinked through cleanup-step!, so a failure there is logged, and
+      ;; only while it is still the socket bound. Its identity is read before
+      ;; the publish, so a failure to read it leaves nothing published.
+      (let* ((bound-ident (entry-identity private))
+             (published (guard (e ((fs-error? e) (fs-error-errno e))) (symlink! target socket))))
+        (unless (eq? published 'created)
+          (trace-event! 'publish-refused `(path ,socket) `(reason ,published))
+          (cleanup-step! private (lambda () (unlink-made! private bound-ident)))
+          (raise `(error serve-path-occupied (path ,socket))))
+        ;; BOUND IS THE PRIVATE FILE'S NAME, THE LINK'S TEXT AND BOTH
+        ;; IDENTITIES: the exit unlinks each while it is still that entry.
+        (send main-pid (list 'bound (list private target bound-ident (entry-identity socket)))))
+      (let serving ((lref lref) (link-ident (entry-identity socket)))
+        ;; STOPPED: no handle; every adapter accounted for. A resume binds and
+        ;; publishes again; a stop asked of a stopped listener is acknowledged
+        ;; again, so a drain that follows a failed resume is not left waiting.
+        (define (stopped! base exhausted?)
+          (let ((now (accept-failure-counts)))
+            (send main-pid (list 'stopped (list 'handed seq)
+                                 (list 'refused-accepts (- (car now) (car base)))
+                                 (list 'callback-raised (- (cdr now) (cdr base)))
+                                 (list 'exhausted exhausted?))))
+          (let still ()
+            (receive
+              (`(resume)
+               (if exhausted?
+                   (begin (send main-pid (list 'resume-failed 'listener-exhausted)) (dead))
+                   (resume!)))
+              (`(stop) (stopped! (accept-failure-counts) exhausted?))
+              (`(spawned ,a) (spawned! a) (still))
+              (`(accepted ,ref) (accepted! ref) (still))
+              (`#(DOWN ,who ,reason) (gone! who) (still)))))
+        ;; NOTHING LEFT TO SERVE: a resume failed. Only a stop is answered.
+        (define (dead)
+          (receive
+            (`(stop)
+             (send main-pid (list 'stopped (list 'handed seq) '(refused-accepts 0) '(callback-raised 0)
+                                  '(exhausted #t)))
+             (dead))
+            (`(spawned ,a) (dead))
+            (`(accepted ,ref) (dead))
+            (`#(DOWN ,who ,reason) (dead))))
+        ;; THE STOP, THEN THE ACCOUNT: the handle is closed (libuv's close
+        ;; unlinks the private file), every announcement already in the mailbox
+        ;; is taken, and the acknowledgement waits until each adapter spawned has
+        ;; reported or died. A listener the runtime had already retired is
+        ;; listener-exhausted, which no resume can undo.
+        (define (stop-and-account! lref base)
+          (let ((exhausted? (not (guard (e (#t #f)) (listener-open? lref)))))
+            (guard (e (#t (if #f #f))) (stop-listen! lref))
+            (let drain-mailbox ()
+              (receive
+                (after 0 #f)
+                (`(spawned ,a) (spawned! a) (drain-mailbox))
+                (`(accepted ,ref) (accepted! ref) (drain-mailbox))
+                (`#(DOWN ,who ,reason) (gone! who) (drain-mailbox))))
+            (let account ()
+              (if (null? pending)
+                  (stopped! base exhausted?)
+                  (receive
+                    (`(spawned ,a) (spawned! a) (account))
+                    (`(accepted ,ref) (accepted! ref) (account))
+                    (`(stop) (account))
+                    (`#(DOWN ,who ,reason) (gone! who) (account)))))))
+        ;; A RESUME BINDS AND PUBLISHES AGAIN. The cell is written as soon as
+        ;; listen! returns, before anything else runs here, so an exit from
+        ;; now on unlinks what this resume bound; it is completed with the
+        ;; link's identity after the publish. A public path occupied by an
+        ;; entry that is not our link is left as it is. Each failure unlinks
+        ;; what this resume bound and is reported by its cause.
+        (define (resume!)
+          (let ((lref (guard (e (#t (send main-pid (list 'resume-failed (list 'bind (errno-of e))))
+                                    #f))
+                        (open! 'resumed-adapter-before-report))))
+            (if (not lref)
+                (dead)
+                (let ((ident (entry-identity private)))
+                  (set! listener-cell (list private target ident #f))
+                  (let ((published (guard (e (#t (errno-of e))) (symlink! target socket))))
+                    (if (eq? published 'created)
+                        (let ((link-ident (entry-identity socket)))
+                          (set! listener-cell (list private target ident link-ident))
+                          ;; INJECTION ONLY: held after the rebind and the
+                          ;; publish, before main is told.
+                          (hold-point! 'resume-before-bound)
+                          (send main-pid (list 'bound listener-cell))
+                          (serving lref link-ident))
+                        (begin
+                          (guard (e (#t (if #f #f))) (stop-listen! lref))
+                          (cleanup-step! private (lambda () (unlink-made! private ident)))
+                          (send main-pid (list 'resume-failed
+                                               (if (eq? published 'exists)
+                                                   'path-occupied
+                                                   (list 'link published))))
+                          (dead))))))))
+        (let loop ()
+          (receive
+            ;; NEVER: THE DOOR CLOSES FIRST. Everything else about a drain is
+            ;; about work already accepted; a listener still accepting
+            ;; would keep making more of it. The drain then waits for this
+            ;; listener's account of the adapters it spawned (rule (b)), so a
+            ;; connection accepted before the stop is admitted and answered,
+            ;; never left behind.
+            (`(stop)
+             ;; INJECTION ONLY: held on a stop, before the handle is closed.
+             (hold-point! 'listener-before-stop)
+             (stop-and-account! lref (accept-failure-counts)))
+            (`(leave idle)
+             (arm-accept-fault! 'leave)
+             (let ((base (accept-failure-counts)))
+               ;; INJECTION ONLY: held before the unlink; the blocking form
+               ;; stops the whole VM, so libuv delivers nothing meanwhile.
+               (hold-point! 'leave-before-unlink)
+               (blocking-hold! 'leave-block-before-unlink)
+               (let ((unlinked (guard (e (#t (list 'failed (errno-of e))))
+                                 (unlink-made! socket link-ident))))
+                 (if (and (pair? unlinked) (eq? (car unlinked) 'failed))
+                     ;; A FAILED UNLINK CANCELS THE ATTEMPT: our link is still
+                     ;; there, so the daemon keeps listening and main restarts
+                     ;; its clock. Kept or gone go on: our link is not there.
+                     (begin
+                       (send main-pid (list 'idle-cancelled (list 'reason 'unlink-failed (cadr unlinked))))
+                       (loop))
+                     (begin
+                       ;; THE GRACE: a connection the kernel completed before the
+                       ;; unlink is delivered by libuv's callbacks while the
+                       ;; handle stays open; one not delivered by the end of it is
+                       ;; reset at the stop. A stop asked meanwhile waits for the
+                       ;; grace's end, so it never resets more than the grace does.
+                       ;; It is counted from the unlink.
+                       (let ((deadline (+ (real-time) idle-grace-ms)))
+                         ;; INJECTION ONLY: held after the unlink, before the
+                         ;; grace's callbacks; the blocking form lets the grace
+                         ;; pass with nothing delivered.
+                         (hold-point! 'leave-after-unlink)
+                         (blocking-hold! 'leave-block-after-unlink)
+                         (let grace ()
+                           (if (>= (real-time) deadline)
+                               (stop-and-account! lref base)
+                               (receive
+                                 (after (max 0 (- deadline (real-time))) (grace))
+                                 (`(spawned ,a) (spawned! a) (grace))
+                                 (`(accepted ,ref) (accepted! ref) (grace))
+                                 (`(stop) (grace))
+                                 (`#(DOWN ,who ,reason) (gone! who) (grace)))))))))))
+            (`(spawned ,a) (spawned! a) (loop))
+            (`(accepted ,ref) (accepted! ref) (loop))
+            (`#(DOWN ,who ,reason) (gone! who) (loop))))))))
+
+  ;; HOW LONG AN ACCEPTED ADAPTER WAITS FOR ITS CONNECTION TO START READING.
+  ;; A connection waits for main's admission before it reads, and one that
+  ;; arrives during a leave waits for the attempt's decision: the rest of the
+  ;; grace (at most 5000 ms) and the rebind. Fifteen seconds covers that with
+  ;; room; the runtime's default, five, does not.
+  (define adapter-idle-ms 15000)
+
+  ;; INJECTION ONLY: an accepted adapter held before it reports, so a row can
+  ;; place a connection between the kernel's accept and the listener's account.
+  ;; With adapter-dies armed, every adapter after the first then dies, as an
+  ;; adapter that never reports: the first connection is served, so a row has
+  ;; a watermark above zero before the death it measures.
+  (define adapter-births 0)
+  (define (adapter-before-report! stage)
+    (hold-point! stage)
+    (set! adapter-births (+ adapter-births 1))
+    (when (and (eq? (theourgia-fault) 'adapter-dies) (> adapter-births 1)) (kill self 'injected)))
+
+  ;; INJECTION ONLY: THE RUNTIME'S ACCEPT FAILURES DURING A LEAVE, armed when the
+  ;; leave begins. accept-refused-once makes igropyr's next uv_accept answer
+  ;; negative (its refused-accept counter). accept-raise-once makes the next
+  ;; accept raise before the connection is published: igropyr owns the
+  ;; descriptor by then, so the raise costs that connection and not the
+  ;; listener (its callback-raised counter). accept-raise-second retires the
+  ;; listener on the second accept: the first accept's re-arm of the handle
+  ;; reserve fails, so the second allocates inside the accept window, and
+  ;; that allocation raises (igropyr's rung 3: callback-raised and exhausted). The arming library is the runtime's test side,
+  ;; which no production unit may import, so it is reached by eval, and only
+  ;; when one of these faults is armed; the process must run with
+  ;; IGROPYR_INJECT=on for the runtime's points to exist. The environment holds
+  ;; only what the forms use: they quote their symbols and one arms two points
+  ;; in sequence, so `quote` and `begin` are in it beside the arming library
+  ;; (without them the eval raised in the listener and the daemon left as
+  ;; listener-down).
+  ;; accept-exhaust-first retires the listener on the FIRST accept of a leave,
+  ;; so no late connection is served: armed in two steps, AT is where. At the
+  ;; first bind the reserve's re-arm is made to fail, so the first accept
+  ;; after it (a request before the window) leaves the reserve empty; at the
+  ;; leave the in-window allocation is made to raise (igropyr's rung 3). At
+  ;; the bind it is the only fault that arms anything; each step once.
+  (define accept-fault-armed '())
+  (define (arm-accept-fault! at)
+    (unless (memq at accept-fault-armed)
+      (let ((form (case (theourgia-fault)
+                    ((accept-refused-once) '(inject-arm-return! 'accept-refused -1 1))
+                    ((accept-raise-once) '(inject-arm-fault! 'accept-before-publish 1))
+                    ((accept-raise-second) '(begin (inject-arm-fault! 'accept-reserve-rearm 1)
+                                                   (inject-arm-fault! 'accept-reserve-inwindow 1)))
+                    ((accept-exhaust-first) (if (eq? at 'bind)
+                                                '(inject-arm-fault! 'accept-reserve-rearm 1)
+                                                '(inject-arm-fault! 'accept-reserve-inwindow 1)))
+                    (else #f))))
+        (when (and form (or (eq? at 'leave) (eq? (theourgia-fault) 'accept-exhaust-first)))
+          (set! accept-fault-armed (cons at accept-fault-armed))
+          (eval form (environment '(only (rnrs base) quote begin) '(igropyr inject-control)))))))
+
+  ;; INJECTION ONLY: a hold that BLOCKS THE OS THREAD instead of yielding, so
+  ;; no actor runs and libuv delivers nothing while it holds. The sleeper is
+  ;; set for this one hold and put back after it; nothing else can run in
+  ;; between, which is what makes the swap safe.
+  (define (blocking-hold! stage)
+    (hold-sleeper-set! (lambda (ms) (sleep (make-time 'time-duration (* ms 1000000) 0))))
+    (hold-point! stage)
+    (hold-sleeper-set! sleep-ms))
+
+  ;; -> the errno a filesystem failure carries; for the runtime's own socket
+  ;; failures, which raise with libuv's error text and no number (a failed
+  ;; bind: `(error 'uv-pipe-bind "permission denied")`), that text; otherwise
+  ;; unknown.
+  (define (errno-of e)
+    (cond ((fs-error? e) (fs-error-errno e))
+          ((unreadable-entry? e) (unreadable-entry-errno e))
+          ((and (condition? e) (message-condition? e)) (condition-message e))
+          (else 'unknown)))
 
   ;; ---- routing -----------------------------------------------------------
   ;;
@@ -1915,7 +3028,7 @@
   ;; procedures as another positional argument is how a call and a
   ;; definition drift apart.
   (define (make-ctx ref store-pid store main-pid)
-    (vector ref store-pid store main-pid (vector '()) (vector #f)))
+    (vector ref store-pid store main-pid (vector '()) (vector #f #f)))
   (define (ctx-ref c) (vector-ref c 0))
   (define (ctx-store-pid c) (vector-ref c 1))
   (define (ctx-store c) (vector-ref c 2))
@@ -1928,6 +3041,12 @@
   ;; places -- and what follows differs at each. A flag is the only shape
   ;; that lets all three say the same thing.
   (define (ctx-draining? c) (vector-ref (vector-ref c 5) 0))
+  ;; ADMITTED DRAINING: main answered this connection's watch while draining.
+  ;; It reads at most one frame, under the same limit and deadline, and
+  ;; answers it as a draining connection answers a whole frame; a `drain`
+  ;; arriving meanwhile changes nothing.
+  (define (ctx-admitted-draining? c) (vector-ref (vector-ref c 5) 1))
+  (define (ctx-admit-draining! c) (vector-set! (vector-ref c 5) 1 #t))
   (define (ctx-drain! c)
     (vector-set! (vector-ref c 5) 0 #t)
     (guard (e (#t (if #f #f))) (conn-read-stop! (ctx-ref c))))
@@ -1963,6 +3082,15 @@
       (dynamic-wind
         void
         (lambda ()
+          ;; NEVER: NOTHING IS READ BEFORE MAIN HAS ADMITTED THIS CONNECTION.
+          ;; The connection exists in the kernel and in its adapter before
+          ;; main knows of it, and a flag set later orders nothing: a drain
+          ;; that began meanwhile must still decide what this connection is
+          ;; told. Main answers the watch the listener sent: admitted, or
+          ;; admitted draining; during an idle leave the answer waits for the
+          ;; attempt's decision.
+          (receive
+            (`(admitted ,draining?) (when draining? (ctx-admit-draining! ctx))))
       ;; NOTE: THE FIRST FRAME'S CLOCK STARTS ONLY ONCE THE READ HAS STARTED,
       ;; and a read that will not start is a failed connection: it is
       ;; closed, NEVER: not retried and NEVER: not run locally by anyone.
@@ -2004,6 +3132,7 @@
         ;; small frames may arrive in one read, and their total says
         ;; nothing about any of them.
         ((and cut (> cut frame-limit))
+         (frame-refused! 'socket cut)
          (answer-and-close ref '(error bad-request (reason frame-limit))))
         ;; NEVER: AND DRAINING IS A PREMISE, SO IT IS JUDGED AFTER THE FRAME
         ;; IS UNDERSTOOD. Answered here, a malformed frame arriving during
@@ -2013,7 +3142,7 @@
         ;; whose store, then premises. The frame is parsed and then
         ;; refused, by `dispatch-frame`, which is told this connection is
         ;; draining.
-        ((and cut (ctx-draining? ctx))
+        ((and cut (or (ctx-draining? ctx) (ctx-admitted-draining? ctx)))
          (let ((line (subbytes buffered 0 cut))
                (rest (subbytes buffered (+ cut 1) (bytevector-length buffered))))
            (dispatch-frame ctx seq line rest #t)))
@@ -2028,6 +3157,7 @@
                    (rest (subbytes buffered (+ cut 1) (bytevector-length buffered))))
                (dispatch-frame ctx seq line rest #f)))
         ((> (bytevector-length buffered) frame-limit)
+         (frame-refused! 'socket (bytevector-length buffered))
          (answer-and-close ref '(error bad-request (reason frame-limit))))
         (else
          (receive
@@ -2038,7 +3168,10 @@
            ;; NEVER: NOTHING IN FLIGHT HERE, so there is nothing to wait for:
            ;; this connection is idle and closing it is the whole of the
            ;; drain for it.
-           (`(drain) (ctx-drain! ctx) (conn-close! ref))
+           (`(drain)
+            (if (ctx-admitted-draining? ctx)
+                (frames ctx seq buffered deadline)
+                (begin (ctx-drain! ctx) (conn-close! ref))))
            (`(written ,r ,tok ,status) (frames ctx seq buffered deadline))
            (`#(DOWN ,who ,reason)
             ;; NEVER: ONLY THE STORE'S DEATH ENDS THIS CONNECTION. A writer
@@ -2054,6 +3187,15 @@
               (else
                (forget-writer! ctx who)
                (frames ctx seq buffered deadline)))))))))
+
+  ;; A FRAME REFUSED FOR ITS SIZE IS TRACED, so a reader of the trace can tell
+  ;; a request the transport refused from one never sent: before, the refusal
+  ;; left no line, and a row could only infer it from the dispatch that did
+  ;; not happen. BYTES is the frame's length when its newline arrived, or what
+  ;; was buffered without one. The local route's child traces the same event
+  ;; with route child (core.sc, --frame).
+  (define (frame-refused! route bytes)
+    (trace-event! 'frame-refused (list 'route route) (list '(reason frame-limit) (list 'bytes bytes))))
 
   (define (newline-at bv)
     (let loop ((i 0))

@@ -60,10 +60,13 @@
  ;; writes and answers how many bytes libuv still holds for the connection
  ;; (a write the peer is not taking), the second says whether a connection
  ;; is still usable after a write failed, so a terminal line can be tried.
+ ;; accept-failure-counts IS THE RUNTIME'S ACCEPT ACCOUNT, read by the daemon's
+ ;; listener around an idle leave or a stop (refused accepts, a raise in the
+ ;; accept callback): a reading of igropyr's counters, not a handle on them.
  (net
    listen! stop-listen! listener-open? connect! conn-read-start! conn-read-stop!
    conn-write! conn-write-observed! conn-open? conn-close! exchange
-   conn-ref? conn-ref-conn conn-ref-pid listen-ref?)
+   conn-ref? conn-ref-conn conn-ref-pid listen-ref? accept-failure-counts)
  (proc
    spawn-worker! worker-write! worker-close-stdin! worker-kill!
    worker-close! worker-alive? worker-rss

@@ -191,15 +191,32 @@
 ;; REFUSED BEFORE IT. Written first against a REGULAR FILE, this row
 ;; stayed green under the old order -- an occupied path is refused before
 ;; any listener is spawned, so `serving` was never printed either way and
-;; the row measured nothing. The seed is what said so. A path LONGER THAN
-;; `sun_path` passes every check the daemon makes and then fails in the
-;; kernel, which is the shape this row needs.
-(define too-long
-  (string-append sock-here "/"
-                 (let build ((n 120) (out "")) (if (zero? n) out (build (- n 1) (string-append out "d"))))))
+;; the row measured nothing. The seed is what said so. A path longer than
+;; `sun_path` used to be the shape, and is no longer: a start now refuses a
+;; path with no room for its private name `<socket>.d/<pid>` before anything
+;; is made. So the bind is made to fail in the kernel instead: the daemon is
+;; held at the `bind` stage, after it made and published its own namespace
+;; directory, the directory is made unwritable, and the bind into it fails.
+(define (serve-failing-bind path)
+  (let ((out (string-append here "/serve.txt"))
+        (rel (string-append here "/bind-rel")))
+    (system (string-append "rm -f " out " " rel " " rel ".held"))
+    (system (string-append
+              "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+              "THEOURGIA_INJECT=on THEOURGIA_HOLD='bind:" rel "' "
+              "scheme --script ../theourgiad.sc serve " here "/store --socket " path
+              " > " out " 2>&1 & echo $! > " here "/pid )"))
+    (let wait ((i 0))
+      (unless (or (file-exists? (string-append rel ".held")) (>= i 300))
+        (system "sleep 0.05") (wait (+ i 1))))
+    (system (string-append "chmod 500 " path ".d/ && touch " rel))
+    (system "sleep 3")
+    (let ((said (file-text out)))
+      (system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1; chmod 700 " path ".d/"))
+      said)))
 
 (want "DS-3 a start that cannot bind never announces that it is serving"
-      (let ((said (serve-onto too-long)))
+      (let ((said (serve-failing-bind (string-append sock-here "/unbindable.sock"))))
         (list (if (contains? said "(serving") 'ANNOUNCED-IT-ANYWAY 'never-said-it)
               (if (contains? said "listener-down") 'and-said-why (list 'said said))))
       '(never-said-it and-said-why))

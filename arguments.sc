@@ -93,7 +93,8 @@
         ;; `--attempt` is the client's token for this start,
         ;; echoed in every startup report; a value, like the log.
         ;; `--session-size` bounds the query session the daemon keeps.
-        ((serve) '("--log" "--attempt" "--session-size"))
+        ;; `--idle-exit` and `--idle-grace-ms` time the daemon's exit when idle.
+        ((serve) '("--log" "--attempt" "--session-size" "--idle-exit" "--idle-grace-ms"))
         ;; A store can start from a template: a built-in by name, or a file.
         ((init) '("--template" "--template-file"))
         ;; NEVER: DECLARING AN OPTION IN THE USAGE FORM IS NOT DECLARING IT

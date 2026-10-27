@@ -47,7 +47,7 @@
 (import (chezscheme)
         (only (theourgia render) answer-printing! render-wire)
         (only (theourgia client)
-              socket-path serve-log-path request-frame call! ensure-daemon!
+              socket-path serve-log-path request-frame call! ensure-daemon! start-budget-ms
               answer-field readable-shape? plain-datum)
         ;; NOTE: THESE NAMES WIDEN NOTHING: `(theourgia ffi)` is already in
         ;; this shell's closure through `(theourgia client)`, which is what
@@ -57,7 +57,7 @@
         (only (theourgia ffi) reap-children! spawn-captured! waitpid-status signal-pid!
               mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
-              fs-error? fs-error-errno fd-open write-all! fd-close)
+              fs-error? fs-error-errno fd-open write-all! fd-close wall-clock-ms)
         (only (theourgia client) run-root store-key program-launch)
         ;; A refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
@@ -487,7 +487,7 @@
 ;; whatever its spelling. Every other store keeps the positional, so its
 ;; daemon's command line is the one it always was (`serve <store> ...`),
 ;; which is what anything that finds a daemon by its command line matches.
-(define (server-argv store socket)
+(define (server-argv store socket idle-exit)
   (append (list (or (getenv "THEOURGIA_SCHEME") "scheme"))
           (program-launch (beside-this-program "theourgiad.sc"))
           (list "serve")
@@ -495,7 +495,24 @@
               (list "--store" store)
               (list store))
           (list "--socket" socket
-                "--detach" "--log" (serve-log-path store))))
+                "--detach" "--log" (serve-log-path store)
+                "--idle-exit" idle-exit "--idle-grace-ms" "200")))
+
+;; A DAEMON THIS SHELL STARTS LEAVES BY ITSELF after THEOURGIA_IDLE_EXIT
+;; seconds with nothing open (default 1800; 0 is never), so it outlives no
+;; session by more than that, and two shells on one store share it with no
+;; reference counting. The value is CHECKED HERE, BEFORE ANY SPAWN: a daemon
+;; refusing it would print its refusal before it detaches, onto this shell's
+;; stdout, which carries only JSON-RPC frames. -> the digits to pass, or #f
+;; for a value that is not a non-negative integer.
+;; ASCII DIGITS ONLY, as the daemon's count parser reads them: char-numeric?
+;; holds for the digits of other scripts too, which the daemon refuses
+;; (found in review).
+(define (idle-exit-setting)
+  (let ((v (getenv "THEOURGIA_IDLE_EXIT")))
+    (cond ((not v) "1800")
+          ((and (> (string-length v) 0) (for-all (lambda (c) (char<=? #\0 c #\9)) (string->list v))) v)
+          (else #f))))
 
 ;; NOTE: `theourgiad.sc`, THE DAEMON THIS SHELL STARTS, SITS ONE LEVEL
 ;; UP: this program lives in `mcp/`.
@@ -539,10 +556,36 @@
          (first (call! socket frame answer-deadline-ms)))
     (settle first
             (lambda ()
-              (let ((started (ensure-daemon! (server-argv store socket) store socket)))
-                (if (eq? 'ready started)
-                    (settle (call! socket frame answer-deadline-ms) #f)
-                    (list 'start-failed started)))))))
+              ;; INJECTION ONLY: held after the request's first connect found
+              ;; nobody, before the first ensure attempt.
+              (hold-point! 'shell-before-ensure)
+              (let ((idle (idle-exit-setting)))
+                (if (not idle)
+                    (list 'start-failed (list 'error 'bad-environment '(reason not-a-count)
+                                              '(variable "THEOURGIA_IDLE_EXIT")
+                                              (list 'value (getenv "THEOURGIA_IDLE_EXIT"))))
+                    ;; ONE DEADLINE FOR THE REQUEST, opened here, at its first
+                    ;; start, and AT MOST TWO ENSURE ATTEMPTS: the second when,
+                    ;; after a ready probe, the request's own connect found no
+                    ;; daemon again (one that left or was resuming in between;
+                    ;; nothing was sent). After that, connect-failed as before.
+                    (let* ((deadline (+ (wall-clock-ms) (start-budget-ms)))
+                           (attempt (lambda (n)
+                                      (trace-event! 'ensure-attempt n #f)
+                                      (ensure-daemon! (server-argv store socket idle) store socket deadline)))
+                           (started (attempt 1)))
+                      (if (eq? 'ready started)
+                          ;; INJECTION ONLY: held after an ensure answered ready,
+                          ;; before the request's own connect (each attempt).
+                          (settle (begin (hold-point! 'shell-after-ready) (call! socket frame answer-deadline-ms))
+                                  (lambda ()
+                                    (let ((again (attempt 2)))
+                                      (if (eq? 'ready again)
+                                          (settle (begin (hold-point! 'shell-after-ready)
+                                                         (call! socket frame answer-deadline-ms))
+                                                  #f)
+                                          (list 'start-failed again)))))
+                          (list 'start-failed started)))))))))
 
 ;; KEY: ONE CLASSIFICATION, WHICHEVER SEND PRODUCED THE OUTCOME. The second
 ;; send used to fold every non-answer into `transport-lost` -- "execution

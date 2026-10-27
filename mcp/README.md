@@ -204,7 +204,30 @@ the same one the command line sends, from the same procedure.
 NOTE: **This shell no longer dispatches in its own process.** It used to, when it
 could not reach a daemon, which meant every shell loaded the whole core to
 serve its first call — the cost the client/server split exists to avoid. With
-nothing listening it now *starts* a daemon, exactly as the command line does.
+nothing listening it *starts* a daemon. The command line no longer does: it
+answers a request through a `core.sc` child when nobody listens, so this shell,
+which stays for the session, is the opener that starts one.
+
+**The daemon it starts leaves when idle.** The shell passes `--idle-exit
+<seconds>` and `--idle-grace-ms 200`; the seconds are `THEOURGIA_IDLE_EXIT`
+(default 1800, `0` never), checked by the shell before any start: a value that
+is not a non-negative integer is this call's refusal, `(error bad-environment
+(reason not-a-count) (variable "THEOURGIA_IDLE_EXIT") (value "<v>"))`, and no
+daemon is started. So a daemon this shell started outlives no session by more
+than the window, and two shells on one store share it with no counting. The
+shell that finds it gone starts it again on its next request.
+
+**One deadline per request, two attempts at most.** The start budget opens at
+the request's first start. Within it, a start whose daemon exits `serve-busy`
+met a daemon leaving or resuming: it is tried again after 100 ms, a connect
+first each time, so a daemon that resumed is found without starting another.
+If, after a daemon was found ready, the request's own connect finds nobody
+again (one that left in between; nothing was sent), the shell makes one
+second attempt inside the same deadline. After that it answers
+`connect-failed` with `(carried-out no)`. Neither ever resends a request that
+was written. Its run directory is made as a daemon makes its socket's: a
+`THEOURGIA_RUN` spelled as another daemon's namespace (`<name>.d`) is refused
+`socket-dir-missing` rather than made.
 
 Three outcomes, and they are deliberately different sentences:
 

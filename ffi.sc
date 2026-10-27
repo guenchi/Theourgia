@@ -384,7 +384,7 @@
           report-fault?
           trace-enabled? trace-enable! trace-event! trace-line-sink trace-line-sink-set!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
-          entry-type entry-name-type read-entry list-entries
+          entry-type entry-name-type entry-identity read-entry list-entries
           unreadable-entry? unreadable-entry-path unreadable-entry-reason
           unreadable-entry-errno make-unreadable-entry
           unlink! file-create-exclusive! mkdir-p! mkdir-exclusive!
@@ -393,7 +393,7 @@
           EIO ENOENT EACCES ENOTDIR EBADF ECHILD waitpid-status
           hold-point! hold-sleeper-set!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
-          source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
+          source-datum-print exec-argv! exec-argv-env! path-executable? rmdir! symlink! read-link
           unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
           redirect-stdio! spawn-detached! spawn-captured! spawn-piped! child-wait! ignore-sigpipe!
           process-environment reap-children! path-case-sensitive?
@@ -787,6 +787,40 @@
       (trace-event! 'unlink path #f)
       path))
 
+  ;; symlink(2): LINK-PATH is created as a symbolic link whose text is
+  ;; TARGET, exactly as given (a relative target resolves against the link's
+  ;; own directory). -> created, or exists when anything at all is already at
+  ;; LINK-PATH: symlink(2) never replaces, and a caller that publishes a name
+  ;; relies on that (mkdir-exclusive! answers the same way). Any other
+  ;; failure raises durable-error with the errno. Success is noted.
+  (define (symlink! target link-path)
+    (unless (and (string? target) (string? link-path))
+      (assertion-violation 'symlink! "target and link path must be strings" target link-path))
+    (let* ((rc (c-symlink target link-path))
+           (code (and (< rc 0) (errno))))
+      (cond
+        ((>= rc 0)
+         (note! (list 'symlink link-path))
+         (trace-event! 'create link-path #f)
+         'created)
+        ((eqv? code EEXIST) 'exists)
+        (else (raise (fs-err 'symlink link-path code))))))
+
+  ;; readlink(2): -> the text of the symbolic link PATH, as stored; it is
+  ;; never resolved. Asked only of a path entry-name-type has answered `link`
+  ;; for, so every failure raises unreadable-entry naming the path, absence
+  ;; (a link removed in between) included.
+  (define (read-link path)
+    (unless (string? path)
+      (assertion-violation 'read-link "path must be a string" path))
+    (let* ((size (max 4096 (platform-number 'PATH_MAX)))
+           (buf (make-bytevector size 0))
+           (n (c-readlink path buf size)))
+      (when (< n 0) (unreadable! path (errno)))
+      (let ((out (make-bytevector n)))
+        (bytevector-copy! buf 0 out 0 n)
+        (utf8->string out))))
+
   ;; rmdir(2) of an EMPTY directory. A failure raises durable-error with the
   ;; errno, as unlink! does; success is noted.
   (define (rmdir! path)
@@ -934,6 +968,8 @@
   (define c-rename (foreign-procedure "rename" (string string) int))
   (define c-unlink (foreign-procedure "unlink" (string) int))
   (define c-rmdir (foreign-procedure "rmdir" (string) int))
+  (define c-symlink (foreign-procedure "symlink" (string string) int))
+  (define c-readlink (foreign-procedure "readlink" (string u8* size_t) ssize_t))
   (define c-access (foreign-procedure "access" (string int) int))
   (define c-mkdir (foreign-procedure "mkdir" (string unsigned-16) int))
   (define c-stat  (foreign-procedure (libc-entry "stat")  (string u8*) int))
@@ -2289,6 +2325,24 @@
           ((absence-errno? code) 'absent)
           (else (unreadable! path code))))))
 
+  ;; -> (device . inode) of the directory ENTRY the path names, NOT following a
+  ;; symbolic link at its last component (lstat), or #f when it is absent
+  ;; (ENOENT, ENOTDIR). It is the identity a removal compares before it acts:
+  ;; a link's own, not its target's. Any other failure raises unreadable-entry
+  ;; naming the path; stat-fail reaches it.
+  (define (entry-identity path)
+    (unless (string? path)
+      (assertion-violation 'entry-identity "path must be a string" path))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let-values (((rc code)
+                    (if (stat-fault? path)
+                        (values -1 (stat-fault-errno))
+                        (let ((rc (c-lstat path buf))) (values rc (and (< rc 0) (errno)))))))
+        (cond
+          ((>= rc 0) (cons (row-uint-ref buf 'stat 'st_dev) (row-uint-ref buf 'stat 'st_ino)))
+          ((absence-errno? code) #f)
+          (else (unreadable! path code))))))
+
   ;; -> the size in bytes of what the path names, or absent. An R1 query
   ;; (the two-condition rule): a stat, so it needs no read permission on the file itself,
   ;; and it answers `absent` for ENOENT and ENOTDIR and raises
@@ -2738,7 +2792,8 @@
          reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail
          stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
          writer-raise-second probe-slow refresh-snapshot-raise rotation-probe-fail
-         frame-unanswered))
+         frame-unanswered adapter-dies accept-refused-once accept-raise-once
+         accept-raise-second accept-exhaust-first))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2999,7 +3054,15 @@
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
          freeze-after-dump freeze-before-list landing-before-tag import-before-batch
          freeze-before-move structural-move-before-write
-         frame-child-start))
+         frame-child-start
+         namespace-after-mkdir namespace-before-publish reserve-after-resolve serve-before-reserve-check
+         reserve-after-first-resolve serve-before-mkdir walk-after-resolve
+         reserve-before-identity reserve-after-identity
+         reclaim-after-link reclaim-after-sockets reclaim-after-marker
+         leave-before-unlink leave-after-unlink adapter-before-report resume-before-bound
+         listener-before-stop leave-block-before-unlink leave-block-after-unlink
+         resumed-adapter-before-report shell-before-ensure shell-after-ready
+         opener-after-probe))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond

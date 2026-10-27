@@ -35,6 +35,16 @@
 # fixture listed there is known not to finish on that machine, so its row
 # count is a reading, printed on its own line, and does not refuse.
 #
+# A COUNT THAT DEPENDS ON THE VOLUME IS THE STANDARD RUN'S. The table holds
+# one count per fixture, read on the standard run's volume; a row that does
+# not run there is refused, and its SKIP line says why. daemon-namespace's
+# 112 is a folding (case-insensitive) macOS volume's. Where the volume does
+# not fold, six SKIP lines (W5q10, W5r's case-insensitive half, W5w3,
+# W5x17, W5x20, W5z9) stand for seven rows and it reads 105. Where hdiutil
+# cannot attach a case-sensitive image, W5r's case-sensitive half is one
+# more SKIP line, a separate gate, and two rows fewer: 110 on a folding
+# volume, 103 on one that does not fold.
+#
 # EACH LINE SAYS WHICH COLUMN IT IS ABOUT. Both lines begin `row baseline,
 # hashes:` or `row baseline, counts:` so that neither can be read as
 # covering the other. The line that refuses is the one about hashes, and it

@@ -48,6 +48,15 @@
   ("tools/landing-freeze.sc" (freeze) entry-name-type 1 keep a "not writer layout: the freeze directory the caller names, asked with an lstat; anything present refuses dump-refused dir-exists before any draft is moved")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("daemon.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("daemon.sc" (marker-identity) entry-name-type 1 keep a "not writer layout: a namespace marker is read only when lstat says it is a regular file, so a FIFO named .endpoint never blocks the open")
+  ("client.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("client.sc" (directory-to-make) entry-name-type 2 keep a "not writer layout: a requested parent that did not resolve, asked with an lstat only (never resolved again), then each absent prefix of it; anything there (a dangling alias) refuses socket-dir-missing, and a failure other than absence raises into main's table")
+  ("daemon.sc" (marker-present?) entry-name-type 1 keep a "not writer layout: a socket namespace's marker, asked with an lstat; a failure other than absence raises into main's table")
+  ("daemon.sc" (claim-public!) entry-name-type 1 keep a "not writer layout: the public socket path, judged by lstat (a link by its own text); a failure other than absence raises into main's table")
+  ("daemon.sc" (claim-namespace!) entry-name-type 1 keep a "not writer layout: the socket namespace link, judged by lstat; a failure other than absence raises into main's table")
+  ("daemon.sc" (sweep-residue!) entry-name-type 1 keep a "not writer layout: an entry of a residue directory, asked with an lstat so that a link to a socket elsewhere is not taken for a socket of the residue")
+  ("daemon.sc" (sweep-siblings!) entry-name-type 1 keep a "not writer layout: a backing directory beside the socket, asked with an lstat before its marker is read")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" (table-names) file-is-directory? 1 keep a "not writer layout: the derived tables' directory, which may not exist yet")
   ("evidence-index.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -344,11 +353,41 @@
    conservative a
    "found in review: a combined startup report that cannot be written is traced, not reported again; the terminal startup-failed clause then writes the exiting line and leaves 75 itself (the startup-exit design)"
    (e (#t (trace-event! (quote startup-report-failed) #f #f))))
-  ("daemon.sc" (unlink-own-socket!) 1 guard
+  ("client.sc" (folds-case?) 1 guard
    (#t)
    unrelated a
-   "socket"
+   "socket namespace: a directory whose case rule cannot be asked folds nothing, the stricter reading (unknown)"
+   (e (#t (quote unknown))))
+  ("daemon.sc" (marker-identity) 1 guard
+   (#t)
+   unrelated a
+   "socket namespace: a marker whose text does not read as a datum names no endpoint, so the directory is not this daemon's; a marker that cannot be read at all raises from read-entry, outside this guard"
    (e (#t #f)))
+  ("daemon.sc" (cleanup-step!) 1 guard
+   (#t)
+   conservative a
+   "a controlled exit's two unlinks (the private socket, the public link) are attempted independently; a failure of either is logged (cleanup-failed <path> <errno>) and neither delays nor changes the exit"
+   (e (#t (report-quietly (list (quote cleanup-failed) path (cond ((fs-error? e) (fs-error-errno e)) ((unreadable-entry? e) (unreadable-entry-errno e)) (else (quote unknown))))))))
+  ("daemon.sc" (sweep-residue!) 1 guard
+   ((or (fs-error? e) (unreadable-entry? e)))
+   conservative a
+   "socket namespace: a residue sweep that fails answers untouched when it had removed nothing, partial when it had; the caller decides from that answer alone"
+   (e ((or (fs-error? e) (unreadable-entry? e)) (if removed (quote partial) (quote untouched)))))
+  ("daemon.sc" (claim-namespace-and-reserve!) 1 guard
+   (#t)
+   conservative a
+   "socket namespace, the raise path in one place: whatever raises in the reservation -- a probe, a listing, a step -- rolls the undo log back (roll-back!), releases the reservation lock and goes on to main's table; the release after a completed reservation is outside this guard (window h)"
+   (e (#t (roll-back! undo identity) (lock-release! lock) (raise e))))
+  ("daemon.sc" (roll-back!) 1 guard
+   ((or (fs-error? e) (unreadable-entry? e)))
+   conservative a
+   "socket namespace, the rollback in one place: each undo step is best effort; a step that fails is not reported, the start's own refusal or failure is what it says, and an unmarked directory left behind never blocks a start"
+   (e ((or (fs-error? e) (unreadable-entry? e)) #f)))
+  ("daemon.sc" (sweep-siblings!) 1 guard
+   ((or (fs-error? e) (unreadable-entry? e)))
+   conservative a
+   "socket namespace: a sibling that cannot even be asked about (unreadable) reads untouched: it is left, and when it is the directory the namespace link named, the link is put back and the start refused serve-path-occupied"
+   (e ((or (fs-error? e) (unreadable-entry? e)) (quote untouched))))
   ("daemon.sc" (clear-stale-socket!) 1 guard
    (#t)
    unrelated a
@@ -390,10 +429,40 @@
    "K1: the unreadable-entry branch answers (error unreadable (path p) (reason r)), added when unreadable entries got their own answer; it is not (error internal ...)"
    (e ((and (pair? e) (eq? (quote error) (car e))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) (#t (list (quote error) (quote internal) (list (quote reason) (condition-text e))))))
   ("daemon.sc" (listener-loop) 1 guard
+   ((fs-error? e))
+   conservative a
+   "socket namespace: a symlink(2) that fails outright at the publish is refused as one that found the name taken, its errno the traced reason; the private socket is unlinked and the listener dies (listener-down)"
+   (e ((fs-error? e) (fs-error-errno e))))
+  ("daemon.sc" (listener-loop stop-and-account!) 1 guard
    (#t)
    unrelated a
-   "listener"
+   "listener stop: a handle the runtime has already retired raises from listener-open?; read as not open, the stop is accounted as listener-exhausted"
+   (e (#t #f)))
+  ("daemon.sc" (listener-loop stop-and-account!) 2 guard
+   (#t)
+   unrelated a
+   "listener stop: closing a handle the runtime may already have retired; a failed close changes nothing the account reports"
    (e (#t (if #f #f))))
+  ("daemon.sc" (listener-loop resume!) 1 guard
+   (#t)
+   unrelated a
+   "listener resume: a bind that fails is reported to main as resume-failed (bind errno), and the listener dies"
+   (e (#t (send main-pid (list (quote resume-failed) (list (quote bind) (errno-of e)))) #f)))
+  ("daemon.sc" (listener-loop resume!) 2 guard
+   (#t)
+   unrelated a
+   "listener resume: a symlink(2) that fails at the republish answers its errno; anything but created unlinks what this resume bound and is reported as resume-failed (link errno)"
+   (e (#t (errno-of e))))
+  ("daemon.sc" (listener-loop resume!) 3 guard
+   (#t)
+   unrelated a
+   "listener resume: closing the rebound handle after a failed publish; a failed close changes nothing the resume-failed report says"
+   (e (#t (if #f #f))))
+  ("daemon.sc" (listener-loop) 2 guard
+   (#t)
+   unrelated a
+   "listener leave: an unlink of our public link that fails answers (failed errno); the attempt is cancelled (idle-cancelled unlink-failed) and the listener keeps listening"
+   (e (#t (list (quote failed) (errno-of e)))))
   ("daemon.sc" (ctx-drain!) 1 guard
    (#t)
    unrelated a
@@ -1530,11 +1599,6 @@
    "this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8), on fd 2 under --detach (a client-spawned daemon shares the client's stdout); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (answer) (guard (e2 (#t (exit 75))) ((later (quote (theourgia daemon)) (quote write-report-line!)) (if (argument-option nodes "--detach") 2 1) (append answer (list (list (quote attempt) attempt))))) (exit 75)))))
   ("daemon.sc" (leave) 1 guard
-   (#t)
-   conservative a
-   "found in review: the exit code is decided before the tidying; a failed unlink probe is traced and the exit goes ahead (a tripwire: no row makes it fail)"
-   (e (#t (trace-event! (quote leave-tidy-failed) #f #f))))
-  ("daemon.sc" (leave) 2 guard
    (#t)
    conservative a
    "found in review: a failed lock release at exit is traced and the exit goes ahead; the exit closes the descriptor (a tripwire: no row makes it fail)"

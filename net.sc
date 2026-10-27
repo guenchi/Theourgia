@@ -40,7 +40,7 @@
 ;;; order. Writing and closing are direct calls.
 
 (library (theourgia net)
-  (export listen! stop-listen! listener-open? connect!
+  (export listen! stop-listen! listener-open? connect! accept-failure-counts
           conn-read-start! conn-read-stop!
           conn-write! conn-write-observed! conn-open? conn-close! exchange
           conn-ref? conn-ref-conn conn-ref-pid listen-ref?)
@@ -50,7 +50,7 @@
           (only (igropyr tcp)
                 pipe-listen! pipe-connect! conn-set-owner! conn-owner conn-handle conn-state
                 conn-on-close! listener-token tcp-stop-listen!
-                tcp-read-start! tcp-read-stop! tcp-write!)
+                tcp-read-start! tcp-read-stop! tcp-write! uv-accept-failure-counts)
           (rename (only (igropyr tcp) listener-open?)
                   (listener-open? igropyr-listener-open?))
           (only (igropyr actor)
@@ -88,6 +88,23 @@
   ;; does not bound what libuv queues, so a row observes a pending write
   ;; rather than relying on a size.
   (define (send-buffer-of opts) (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
+  ;; THE THIRD OPTION ANNOUNCES EACH ADAPTER: with #t the accept callback sends
+  ;; the custodian `(spawned <adapter>)` right after the spawn and before the
+  ;; ownership is assigned, so a custodian that monitors it on receipt sees
+  ;; every adapter end, one that dies before it reports included (a monitor of
+  ;; a process already dead answers DOWN at once). Absent or #f, nothing is
+  ;; sent, as before. THE FOURTH is a procedure the adapter calls before it
+  ;; reports `accepted`, in its own process: a fixture's seam, #f for none.
+  (define (announce-of opts)
+    (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)))
+  (define (before-report-of opts)
+    (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts)) (cadddr opts)))
+  ;; THE RUNTIME'S ACCEPT FAILURES, as (refused . callback-raised): the counts
+  ;; are process-wide and only ever grow, so a caller reads them twice and
+  ;; takes the difference.
+  (define (accept-failure-counts)
+    (let ((cs (uv-accept-failure-counts)))
+      (cons (cdr (assq 'refused cs)) (cdr (assq 'connection-callback-raised cs)))))
   (define uv-send-buffer-size (foreign-procedure "uv_send_buffer_size" (void* u8*) int))
   (define (press-send-buffer! c n)
     (let ((cell (make-bytevector 4 0)))
@@ -111,11 +128,14 @@
   (define (listen! path backlog . opts)
     (let ((custodian self)
           (idle (idle-of opts))
-          (send-buffer (send-buffer-of opts)))
+          (send-buffer (send-buffer-of opts))
+          (announce? (announce-of opts))
+          (before-report (before-report-of opts)))
       (let ((h (pipe-listen! path backlog
                  (lambda (c)
                    (when send-buffer (press-send-buffer! c send-buffer))
-                   (let ((a (spawn (lambda () (accepted-adapter c custodian idle)))))
+                   (let ((a (spawn (lambda () (accepted-adapter c custodian idle before-report)))))
+                     (when announce? (send custodian (list 'spawned a)))
                      (conn-set-owner! c a)
                      (conn-on-close! c (lambda () (send a (list 'closed)))))))))
         (make-listen-ref h (listener-token h)))))
@@ -173,7 +193,7 @@
         (`#(tcp-connect-failed ,s) (kill me (list 'connect-failed s)))
         (`#(DOWN ,who ,r) (kill me (list 'target-down r))))))
 
-  (define (accepted-adapter c custodian idle)
+  (define (accepted-adapter c custodian idle before-report)
     (let ((me self))
       ;; NEVER: FIRST IT CHECKS THAT THIS CONNECTION IS ITS OWN. Ownership is
       ;; assigned in the accept frame AFTER the spawn; if indexing it
@@ -184,6 +204,7 @@
       (unless (eq? (conn-owner c) me) (kill me 'birth-failed))
       (let ((cmon (monitor custodian))
             (ref (make-conn-ref c me)))
+        (when before-report (before-report))
         (send custodian (list 'accepted ref))
         (before-start ref c custodian cmon (+ (real-time) idle)))))
 

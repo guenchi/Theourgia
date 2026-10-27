@@ -469,6 +469,23 @@
           '(kind serve-path-occupied))))
 
 ;; ---- CS-8 a run root that cannot be written to ----------------------------
+
+;; The canonical path of a directory that is there, asked of the shell rather
+;; than of the library whose answer this file is checking; and of a name in it.
+;; THE OPENER'S OWN RECORD NAMES WHAT IT MADE WHERE IT MADE IT: it makes the run
+;; directory under the walk's resolved ancestor, so a want that names the
+;; opener's mkdir names the resolved path.
+(define (resolved-by-the-shell dir)
+  (let* ((p (process (string-append "cd '" dir "' && pwd -P")))
+         (t (get-line (car p))))
+    (close-port (car p)) (close-port (cadr p))
+    (if (string? t) t dir)))
+(define (resolved-name path)
+  (let loop ((i (- (string-length path) 1)))
+    (cond ((< i 0) path)
+          ((char=? (string-ref path i) #\/)
+           (string-append (resolved-by-the-shell (substring path 0 i)) (substring path i (string-length path))))
+          (else (loop (- i 1))))))
 ;;
 ;; NEVER: MEASURED DEFECT: the log's directory was made OUTSIDE the guard, so
 ;; a run root that could not be written raised out of `call!` entirely --
@@ -497,7 +514,7 @@
                        (let ((k (assq 'kind (cddr answer)))) (and k (cadr k)))
                        (let ((p (assq 'path (cddr answer))))
                          (and p (string? (cadr p))
-                              (let ((under (string-append locked-run "/")))
+                              (let ((under (string-append (resolved-by-the-shell locked-run) "/")))
                                 (and (> (string-length (cadr p)) (string-length under))
                                      (string=? (substring (cadr p) 0 (string-length under)) under)))))))
                 (else (list 'said answer)))
@@ -539,14 +556,27 @@
 (kill-daemon!)
 (let ((run9b (string-append sock-here "/run9b")))
   (system (string-append "mkdir -p " run9b))
-  (want "CS-9 TWIN: a store that is there gets its run directory, with the lock, the log and the socket"
+  (want "CS-9 TWIN: a store that is there gets its run directory, with the lock, the log, the socket and its namespace"
         (with-run-root run9b
           (lambda ()
             (let ((a (ensure-daemon! (list "scheme" "--script" daemon "serve" store "--detach" "--log" (serve-log-path store))
                                      store (socket-path store))))
-              (list a (map (lambda (k) (entries-of (string-append run9b "/" k)))
+              ;; THE DAEMON'S NAMESPACE IS THERE TOO: the link `socket.d`, its
+              ;; directory `socket.d.<pid>` (named here without the pid) and
+              ;; the reservation lock beside it.
+              (list a (map (lambda (k)
+                             (let ((es (entries-of (string-append run9b "/" k))))
+                               (if (list? es)
+                                   (map (lambda (n)
+                                          (if (and (> (string-length n) 9)
+                                                   (string=? (substring n 0 9) "socket.d.")
+                                                   (for-all char-numeric? (string->list (substring n 9 (string-length n)))))
+                                              "socket.d.<pid>"
+                                              n))
+                                        es)
+                                   es)))
                            (let ((es (entries-of run9b))) (if (list? es) es '())))))))
-        '(ready ((".socket.lock" "serve.log" "socket"))))
+        '(ready ((".socket.lock" "serve.log" "socket" "socket.d" "socket.d.<pid>" "socket.d.reserve"))))
   (kill-daemon!))
 ;; THE CLIENT'S EARLIER BRANCHES COME FIRST, for an absent store too: a
 ;; reachable socket answers ready, an overlong path and a missing explicit

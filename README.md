@@ -132,7 +132,9 @@ the store's lock in turn.
 **With a daemon.** `theourgia serve <store>`, which runs the daemon program
 `theourgiad.sc serve <store>`, holds the store open and
 answers over a unix socket. A client finds that socket by the same rule
-the daemon used to create it, so nothing needs to be told where it is.
+the daemon used to create it, so nothing needs to be told where it is; the
+socket path is a link to the daemon's private socket file, and a client
+connects through it (see "The socket is a link" under `serve`).
 `theourgia.sc` sends an ordinary verb to the daemon when one is there;
 when none is, it starts `core.sc --frame` as a child, writes it the request
 frame the daemon would have been sent, and reads the child's answer as it
@@ -4694,14 +4696,15 @@ exported, and the claimed `eval-<token>/` is removed.
 
 ### `serve`
 
-    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>) ("--session-size" <entries>))
+    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>) ("--session-size" <entries>) ("--idle-exit" <seconds>) ("--idle-grace-ms" <milliseconds>))
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 The program is `theourgiad.sc`; it takes this verb and no other, and
 answers any other with `(error bad-request (reason not-a-daemon-verb)
 (usage ...))`, this usage inside the error, exit 1. It reads `--store`,
-`--socket`, `--detach`, `--log`, `--attempt` and `--session-size`, and refuses any other option,
+`--socket`, `--detach`, `--log`, `--attempt`, `--session-size`, `--idle-exit` and `--idle-grace-ms`,
+and refuses any other option,
 `--wire` and the other verbs' shared options included, with `(error
 bad-request (reason unknown-option) (option "<the option>") (usage ...))`,
 exit 1, before anything is opened or bound. A shared option given without
@@ -4737,7 +4740,13 @@ that many entries (table tuples, memo, builds and marks) it is dropped and the
 next request starts afresh; 0 keeps none, a fresh session per request; the
 default is 1000000. A value that is not a count is refused with `(error
 bad-request (reason not-a-count) (option "--session-size") (value "<v>")
-(usage ...))`, exit 1. The session is also dropped when the language catalogue
+(usage ...))`, exit 1. `--idle-exit <seconds>` and `--idle-grace-ms <milliseconds>` are
+counts as well, refused the same way with their own option named, before the lock is taken;
+`--idle-exit 0` and an absent `--idle-exit` mean never. A grace above 5000 is refused
+`(error bad-request (reason too-large) (option "--idle-grace-ms") (value "<v>") (max 5000))`,
+exit 1, before the lock: a request that arrives while the daemon is leaving waits for the rest
+of the grace, and its answer must come well inside a client's 30 s receive timeout. What the
+two options do is under **Leaving when idle**, below. The session is also dropped when the language catalogue
 changes in the daemon's process (an entry replaced, no store written), since
 `def`, `in-library`, `imports`, `file-imports` and `uses-name` read it.
 
@@ -4756,7 +4765,13 @@ A `--socket` given by hand is not given a directory. An empty one answers
 `(error bad-socket-path (reason empty))`. One whose directory does not
 exist answers `(error socket-dir-missing (dir <dir>))`. Both exit 2,
 before `--detach` and before anything is created. Only the default
-socket's directory is made by the daemon.
+socket's directory is made by the daemon. A socket path, given or derived,
+with no room after it for the daemon's private name (`.d/` and ten digits,
+see "The socket is a link") answers `(error socket-path-too-long (path <p>)
+(length <n>) (max <m>))`, `<m>` the longest public path a start accepts, exit
+2, before anything is created; the MCP shell refuses such a path before it
+spawns. A client CONNECTING checks only the public path against `sun_path`,
+so a daemon already listening there is reached whatever its private name.
 
 **A store replaced under it.** Stop the daemon before switching the git
 branch of a repository that holds its store, or restoring the store's files
@@ -4858,21 +4873,199 @@ process reports the unreadable entry as it always has. `--detach` without
 `--log` is a usage error and is answered before the store is asked.
 Nothing a start made is removed when it fails: the run directory, the log
 once `--detach` ran, and the lock file once the lock was taken stay where
-they are. The lock file is never removed (the lock on it, not the file, is
-what says a daemon holds the store; it ends with the process), and only a
-daemon's own socket is unlinked when it leaves.
+they are. The one exception is the start's own namespace directory and
+marker, removed again when its `<socket>.d` link cannot be published (see
+"The socket is a link"). The lock file is never removed (the lock on it,
+not the file, is what says a daemon holds the store; it ends with the
+process), and only a daemon's own socket and its own link are unlinked when
+it leaves.
+
+**Leaving when idle.** A daemon started with `--idle-exit <seconds>` (the
+MCP shell starts its daemons so) leaves by itself after that long with no
+connection open and no request running; an open subscription is an open
+connection. The window restarts at every connection accepted, every request
+completed and every connection closed. When it runs out, the daemon unlinks
+its public link first: from then on a connect answers ENOENT, which a
+client reads as no daemon, nothing sent. It keeps taking, for the grace
+(`--idle-grace-ms`, default 200), the connections the kernel completed
+before the unlink, then stops listening, and waits until each of those has
+been handed over or has gone. If none arrived, it exits 0 with `(idle-exit
+(after <seconds>) (refused-accepts <n>) (callback-raised <n>))`, the last
+two the runtime's own accept failures during the leave. If one did, the exit
+is CANCELLED: the daemon binds and publishes again, logs `(idle-resumed
+(socket <path>))`, and serves the late connections as any other; until the
+attempt is decided, a late connection is registered but reads nothing, so
+its request is answered only after the resume (or refused `draining`, below)
+-- the wait is the rest of the grace and the rebind. An unlink that fails
+cancels the attempt at once, `(idle-cancelled (reason unlink-failed
+<errno>))`, the link left and the daemon serving. A resume that cannot
+happen -- the socket path taken by something else meanwhile, which is left
+as it is, or the bind or the publish failing, or the runtime having retired
+the listener -- drains the daemon: the late requests are answered `(error
+draining)`, it exits 75 with `(idle-exit (reason resume-failed <cause>))`,
+`<cause>` one of `path-occupied`, `(bind <errno>)`, `(link <errno>)`,
+`listener-exhausted`; the field after `bind` or `link` is the errno when the
+failure carries one and otherwise the runtime's own message text (a failed
+bind is raised by the runtime with libuv's text, `(bind "permission
+denied")`), both by design. A signal during a leave drains as it would anyway; the
+late connections are then answered `draining`. Two losses remain and are
+named: a connection the kernel completed before the unlink and that the
+runtime has not delivered by the end of the grace is reset when the
+listener stops, and an accepted connection whose handler dies before it is
+handed over is closed; a client whose request was written there sees a
+transport error, and nothing is resent. A daemon started with the idle
+options reports them in its `serving` line, `(serving (store ..) (socket ..)
+(idle-exit <seconds>) (idle-grace-ms <milliseconds>))`; one started without
+them reports the line it always has.
+
+**Every drain waits for the listener.** A drain stops the listener and waits
+until each connection it had accepted has been handed over, so a connection
+accepted just before the drain is answered `draining` (or served, when its
+request was already running) rather than closed with nothing; the drain's
+budget still bounds the wait, and a second signal still leaves at once. A
+connection reads nothing until the daemon has admitted it: one admitted
+while the daemon is draining reads one frame and is answered that frame's
+refusal (a malformed frame, bad arguments or another store's request each
+its own) or `draining`.
 
 **Starting when one is already there.** The lock attempt never waits: a
 second daemon answers `(error serve-busy (path <socket>))` and exits 75.
-If the socket path is occupied by something that is not a socket it
-answers `(error serve-path-occupied (path <socket>))` and exits 75. Both
-are startup reports: a `(written ...)` clause follows when this start
-created the lock file, and `(attempt ...)` comes last. Any other
-filesystem failure while starting is reported the same way, also with
-exit 75. A
-LEFTOVER socket file whose daemon is gone is cleared and taken over --
-the lock, not the file, is what decides which of those two it is. When it
-is up it reports `(serving (store <path>) (socket <path>))`.
+If the socket path is occupied by something that is not a socket, or by a
+symbolic link that is not a daemon's publication, it answers `(error
+serve-path-occupied (path <socket>))` and exits 75. Both are startup
+reports: a `(written ...)` clause follows when this start created the lock
+file, and `(attempt ...)` comes last. Any other filesystem failure while
+starting is reported the same way, also with exit 75. A LEFTOVER socket file
+or publication link whose daemon is gone is cleared and taken over -- the
+lock, not the file, is what decides which of those two it is. When it is up
+it reports `(serving (store <path>) (socket <path>))`. A failure AFTER the
+store is ready -- the bind of the private socket, or the publish of the
+link when something has appeared at the socket path since the start
+cleared it -- is not a startup report: it is `(exiting (reason
+listener-down))`, exit 75, the entry found at the socket path left as it
+is. With `THEOURGIA_TRACE=1` a refused publish is traced first, as
+`(trace publish-refused (path <socket>) (reason <r>))`, `<r>` being
+`exists` or the errno of the failed `symlink`.
+
+**The socket is a link.** A daemon binds a PRIVATE socket file,
+`<socket>.d/<pid>`, and publishes the socket path as a symbolic link to it
+(`s.d/<pid>`, relative to the link's own directory, so a relative `--socket`
+or `THEOURGIA_RUN` works from anywhere). A client connects through the link
+as it always has. `<socket>.d` is itself a link to the daemon's own
+directory, `<socket>.d.<pid>` (`-1`, `-2`, ... appended when that name is
+taken), made by exclusive creation, which holds `.endpoint`: the endpoint's
+identity (the directory of the socket path as the start's one look
+resolved it, joined with its last name, compared under that filesystem's
+case rule), the daemon's pid and the
+directory's name. The marker is the reservation, and it outlives the daemon:
+a controlled exit unlinks only the private socket, while it is still the
+socket this daemon bound (by device and inode), and the public link (a
+failure of either is logged `(cleanup-failed <path> <errno>)` and the exit
+goes ahead; the listener's close on a drain also unlinks the private name,
+as closing a bound pipe does, whatever is at that name in the daemon's own
+directory by then), so `<socket>.d` and `<socket>.d.<pid>/.endpoint` stay until the
+endpoint's next start. That start, under the lock, judges each entry by
+lstat and reclaims what an earlier daemon of the SAME endpoint left: a
+publication link at the socket path whatever it points at, a `<socket>.d`
+link to a directory whose marker names this endpoint (or to a directory that
+is gone), and every marked directory of this endpoint beside it -- its
+sockets removed, any other file kept, the directory removed when only the
+marker is left. Ownership is the marker, never the name: an unmarked or
+foreign-marked directory spelled like one of these is left exactly as it is
+and does not block a start, while a `<socket>.d` that is a real directory,
+a link elsewhere, or a link to such a directory refuses the start
+`serve-path-occupied` naming it; the refusal deletes nothing of the
+namespace or its target. (A stale publication link at the socket path is
+this endpoint's own, behind the lock the start holds, and was reclaimed
+first, as at every start, whatever the start then answers.) So does a
+marked directory of this endpoint that the start cannot sweep (one it may
+not write) when the sweep removed nothing: its `<socket>.d` link is put
+back as it was. Any other marked directory beside it that cannot be swept,
+or cannot be read, is left and does not block the start, and a sweep that
+removed something before it failed is not undone. A `.endpoint` that is
+not a regular file is not a marker.
+`.endpoint` is created exclusively: a directory whose marker name was taken
+before the start wrote it refuses `serve-path-occupied` naming the
+directory, and is left with what is in it. A `<socket>.d.reserve` file
+beside the lock file serialises a reservation with the check below; it is
+not named like a lock file, so it is never another endpoint's (`.s.d.lock`
+is the lock file of the socket `s.d`). That is a statement about derived
+names: a public socket is spelled by whoever starts it, and one spelled
+like another endpoint's derived name (`s.d.reserve` beside `s`, or
+`.s.lock`) is that file; the namespace does not refuse such a spelling.
+
+**A reserved namespace.** A start whose socket's directory, resolved, is
+spelled `<name>.d` or `<name>.d.<digits>` (with an optional `-<n>`) is
+inside the namespace of the endpoint `<name>`: under that endpoint's
+`<name>.d.reserve` it reads the directory's marker, and a marker there,
+whether its daemon is running or not, refuses the start with `(error
+serve-path-reserved (endpoint <identity>) (remedy
+serve-that-endpoint-or-remove-its-directory))`, exit 75, before this start
+takes any lock of its own. A directory with no marker admits it. A
+socket's directory that is not there by then (the endpoint's own reclaim
+unlinks its `<name>.d` for a moment) is made only when nothing is at it,
+none of the directories it would make is `..` or spelled as a namespace, and
+the first directory above it that is there is not a namespace's directory;
+otherwise the start is refused `(error socket-dir-missing (dir <dir>))`,
+exit 75, so a start never makes a real `<name>.d` that the endpoint's
+publish would then meet, nor anything inside its directory. That directory
+is resolved once: a parent that did not resolve at the start's one look is
+judged by what lstat finds at it, so an alias of `<name>.d` that reaches the
+endpoint's directory again after its republish is still refused. A start whose working directory was removed, with
+a relative socket, is refused the same way: nothing can be made or bound
+there. What a start makes is made under the directory it resolved, by the
+names it judged, never by the socket's spelling: a parent that resolved at
+the start's one look makes nothing, and every later step makes one level on
+the spelling, so a prefix that vanished in between (an endpoint's link
+spelled into the path and unlinked by its reclaim) fails the start and
+makes nothing. The names are made as they will resolve (a `.` in the
+socket's path makes nothing and is not recorded), and each with an
+exclusive mkdir: a name another start made after the look (on a volume
+that folds case, `Run` for `run`) refuses the start with `serve-busy`
+naming that directory; nothing is removed, and the next start resolves
+what is there.
+
+**Windows the namespace accepts.** The namespace `<socket>.d*` is the
+daemon's own. What it defends against is its peers (other daemons, under
+the reservation and lifetime locks) and stale residue; a concurrent
+foreign writer inside it is outside the model, bounded by the first window
+below and by the next start's reclaim. Every removal compares the entry's
+device and inode, as read when this start made or judged it, with what is
+there now, and acts only when they match. Nine windows remain, each with
+its effect and what bounds it; the daemon's source names the same nine:
+
+- The comparison and the removal are two calls on a path: an entry swapped
+  between them is removed. Only a writer inside the endpoint's own,
+  lock-protected names can do that, and the same holds between any two
+  steps of one start (a directory swapped in after its marker is written
+  is published unmarked; a residue swapped in after it was judged is swept;
+  a public link replaced before its identity is read is removed at exit;
+  the directory a start resolved and then makes its socket's directory
+  under is taken as it is at the mkdir, so only a foreign rename replaces it
+  in between, one inside a namespace having been refused at the start's
+  look; a directory made by hand inside an endpoint's directory admits a
+  start under it).
+- The listener's close on a drain unlinks the private name, as closing a
+  bound pipe does, whatever is at that name by then.
+- A `.endpoint` swapped between its exclusive create and its open receives
+  the marker's text. Only a writer inside the directory just made.
+- A stale publication link at the socket path is reclaimed first, at every
+  start, whatever the start then answers: it is this endpoint's, behind the
+  lock the start holds.
+- The identity of the directory a start made is read by path just after
+  the mkdir: a directory renamed into its place in that instant is taken as
+  the start's own, and a rollback may remove it.
+- A failure right after the marker's exclusive create leaves an empty
+  marker, so a directory nobody links stays reserved: a start inside it is
+  refused naming the marker, and removing the directory is the remedy.
+- An identity read that fails right after the publish leaves the public
+  link as a kill after the publish would; the next start reclaims it.
+- A release of the reservation lock that fails after a completed
+  reservation leaves it published and marked, and the start fails, as a
+  daemon dead after its publish; the next start reclaims it.
+- An identity read that fails right after the exclusive mkdir of the
+  daemon's own directory leaves that directory empty, unmarked and unlinked:
+  it is never entered or swept, and the next start takes a fresh suffix.
 
 **`SIGTERM` drains; a second one stops.** The first signal lets work that
 has already begun run to its end, within a budget of five seconds, while
@@ -4946,6 +5139,7 @@ Code at the store -- see
 | `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes, `eval --working`'s view included. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry (`instances.sexp`) and its lock live. Empty is unset. Falls back to `$HOME/.theourgia` (`/tmp/.theourgia` with no `HOME`). When set, every process announces it on stderr at load as `(theourgia machine-home <value>)`, since it lets a process ignore a rollback the registry exists to catch |
 | `THEOURGIA_RUN` | `client.sc` (for `theourgia.sc`, `theourgiad.sc`, the daemon and `mcp/server.sc`) | the run root holding daemon sockets, their logs and the MCP shell's `eval` call directories. Empty is unset. Falls back to `$HOME/.theourgia/run`, or `/tmp/.theourgia/run` with no `HOME` |
+| `THEOURGIA_IDLE_EXIT` | `mcp/server.sc` | the idle window, in seconds, of a daemon the MCP shell starts (`--idle-exit`): 1800 when unset, 0 never; a value that is not a non-negative integer is the shell's refusal of the call that would start one |
 | `THEOURGIA_LOCAL` | `theourgia.sc`, `core.sc` | `1` answers in process even when a daemon's socket is there. The thin client hands the request to `core.sc` for any non-empty value, but `core.sc` stays in process only for `1`; for any other value it still forwards to a daemon whose socket is there. Unset, the thin client still answers in process when no daemon is listening, through a `core.sc --frame` child it starts with `THEOURGIA_LOCAL=1` |
 | `THEOURGIA_EVAL_SLOTS` | `eval-admission.sc` | how many evaluations one run root runs at once (the admission pool, `### eval`); a positive integer. Unset or empty, the number of online processors. Anything else answers `(error bad-request (reason eval-slots))` |
 | `THEOURGIA_TEST_ANSWER_LIMIT` | `client.sc` | a test seam: a positive integer of bytes read once, at load, in place of the 32 MiB ceiling on an answer, so a row can exceed it without building an answer that large. Anything else is refused at load |
@@ -4974,10 +5168,10 @@ them at all.**
 | variable | what it does |
 |---|---|
 | `THEOURGIA_INJECT` | `on` at EXPANSION time builds the fault-injection branches and says `theourgia: EXPANDING WITH FAULT INJECTION ON` on stderr. With it unset or `off` there is no fault code in the object at all -- not a disabled branch, none. Any other value is refused at expansion |
-| `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
+| `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The faults are the list `known-faults` in `ffi.sc`, and the stages the list `known-stages` beside it; a name in neither is refused when the library loads, so those lists, not this table, are the enumeration. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll), `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks) `reload-before-publish` (the daemon's store process, between a refold and its publication) and `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it) and `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read) and `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written), `import-before-batch` (tools/import-git.sc, after the batch's premises are computed and before the batch is sent). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists; once `<path>` exists, later passes through that stage do not wait. A hold yields to the daemon's other actors while it waits, except the two `leave-block-` stages, which block the whole process so that nothing is delivered meanwhile. The stages are the list `known-hold-stages` in `ffi.sc`, each placed as follows. A start and its client: `client-scan` (the client, before it reads the log of a start that exited), `report-write` (before a startup report's one write), `bind` (the listener, before its bind), `store-start` (the store process, before its first load), `frame-child-start` (the command line, after it found nobody listening and before it starts its `core.sc` child), `opener-after-probe` (the opener's ensure-daemon!, after its connect probe found nobody and before it starts a daemon). The socket's namespace (a start through `--socket` or the default socket): `serve-before-reserve-check` (after the starter's own check of the socket's directory, before the reservation check), `reserve-after-first-resolve` (the check, after its one resolution of the socket's parent), `walk-after-resolve` (the walk up an absent parent, after an ancestor's one resolution and before it is judged), `reserve-after-resolve` (the check, after the resolution repeated under the candidate's reservation lock), `serve-before-mkdir` (after the check, before the socket's directory is made), `reserve-before-identity` and `reserve-after-identity` (either side of the endpoint's identity), `namespace-after-mkdir` (after the backing directory is made, before its marker), `namespace-before-publish` (after the marker, before the namespace link is published), `reclaim-after-link`, `reclaim-after-sockets` and `reclaim-after-marker` (after each step of a reclaim of this endpoint's earlier namespace). The idle exit: `leave-before-unlink` and `leave-after-unlink` (the listener, either side of the public link's unlink), `leave-block-before-unlink` and `leave-block-after-unlink` (the same places, blocking), `adapter-before-report` (an accepted connection's adapter, before it reports to the listener), `resumed-adapter-before-report` (the same, for the listener bound again after a cancelled exit), `resume-before-bound` (that listener, after its rebind and publish, before it tells main), `listener-before-stop` (the listener, on a stop, before it closes). The store and its readers: `write-after-create`, `publish-after-link`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `reload-before-publish` (the daemon's store process, between a refold and its publication), `probe-before-ack` (the store process, after a change probe and before it acknowledges it), `stream-overflow` (a change stream, at its queue's overflow, before it latches lagging), `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it), `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `structural-move-before-write` (a structural draft's move, inside its lock, before its one write). The shell: `shell-before-ensure` (the MCP shell, after a request's first connect found nobody, before its first start), `shell-after-ready` (the MCP shell, after a start answered ready, before the request's own connect), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll). Evaluation: `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks). The tools: `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read), `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `freeze-before-move` (the same, before a structural draft is moved), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written), `import-before-batch` (tools/import-git.sc, after the batch's premises are computed and before the batch is sent). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |

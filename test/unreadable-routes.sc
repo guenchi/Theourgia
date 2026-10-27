@@ -219,9 +219,75 @@
 (define sock-base
   (let ((v (getenv "THEOURGIA_TEST_SOCK")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
-;; THE LOCK IS PRE-CREATED (brief G), so main records nothing and the
-;; store's failure is answered by the table alone: the exact datum, with its
-;; errno and the attempt clause of a start made by hand.
+;; MAIN'S RECORD IS NEVER EMPTY ON A --socket START. A start through --socket
+;; reserves its endpoint's namespace before the store's load
+;; (claim-namespace-and-reserve!, daemon.sc): it creates `<socket>.d.reserve`,
+;; makes `<socket>.d.<pid>`, creates and writes its `.endpoint`, and links
+;; `<socket>.d` to it. Those entries are the start's own, so pre-creating the
+;; lifetime lock no longer leaves main's record empty: a store that fails
+;; after the reservation is answered with main's record joined to its own
+;; (aggregation (a)), and an unreadable store reads incomplete. The
+;; reservation is left as a daemon dead after its publish leaves it (window
+;; (h) in daemon.sc), and the next start reclaims it.
+;; -> the reservation's entries for SOCKET, in the order main records them,
+;; the pid directory's digits spelled <pid>.
+(define (reservation-written sock)
+  (let ((dir (string-append sock ".d.<pid>")))
+    (list (list 'create (string-append sock ".d.reserve"))
+          (list 'mkdir dir)
+          (list 'create (string-append dir "/.endpoint"))
+          (list 'write (string-append dir "/.endpoint"))
+          (list 'symlink (string-append sock ".d")))))
+;; THE PID IS READ AS ITS SHAPE, as the 16-hex token is, AND IT IS ONE PID.
+;; A pid spelling is `.d.` followed by digits and then `/`, `"` or the end.
+;; The first one in an answer names the pid, and only that pid reads
+;; `.d.<pid>` wherever it recurs; a second, different pid reads as itself,
+;; so a marker written into another directory than the one made does not
+;; match the want (found in review). Nothing else in these answers is
+;; spelled so. The CONTROL row below is the mask's own red cell.
+;; -> the digits of a pid spelling at I in T, or #f.
+(define (pid-run t i)
+  (let ((n (string-length t)))
+    (and (<= (+ i 3) n) (string=? (substring t i (+ i 3)) ".d.")
+         (let scan ((j (+ i 3)))
+           (cond
+             ((and (< j n) (char-numeric? (string-ref t j))) (scan (+ j 1)))
+             ((and (> j (+ i 3)) (or (= j n) (memv (string-ref t j) '(#\/ #\"))))
+              (substring t (+ i 3) j))
+             (else #f))))))
+(define (first-pid x)
+  (cond ((string? x)
+         (let loop ((i 0))
+           (cond ((>= i (string-length x)) #f)
+                 ((pid-run x i) => values)
+                 (else (loop (+ i 1))))))
+        ((pair? x) (or (first-pid (car x)) (first-pid (cdr x))))
+        (else #f)))
+(define (mask-pid-string t pid)
+  (let ((n (string-length t)))
+    (let loop ((i 0) (acc '()))
+      (cond
+        ((>= i n) (list->string (reverse acc)))
+        ((let ((p (pid-run t i))) (and p (string=? p pid)))
+         (loop (+ i 3 (string-length pid)) (append (reverse (string->list ".d.<pid>")) acc)))
+        (else (loop (+ i 1) (cons (string-ref t i) acc)))))))
+(define (mask-pid x)
+  (let ((pid (first-pid x)))
+    (let walk ((x x))
+      (cond ((not pid) x)
+            ((string? x) (mask-pid-string x pid))
+            ((pair? x) (cons (walk (car x)) (walk (cdr x))))
+            (else x)))))
+(want "CONTROL mask-pid reads one pid: a second, different pid in the same answer is not masked"
+      (mask-pid '(written ((mkdir "/r/sock.d.101") (create "/r/sock.d.202/.endpoint")
+                           (write "/r/sock.d.101/.endpoint"))))
+      '(written ((mkdir "/r/sock.d.<pid>") (create "/r/sock.d.202/.endpoint")
+                 (write "/r/sock.d.<pid>/.endpoint"))))
+
+;; THE LIFETIME LOCK IS PRE-CREATED (brief G), so main's record is the
+;; reservation alone: the store's failure, with its errno, is promoted to
+;; incomplete with that record and the attempt clause of a start made by hand.
+;; The reservation is removed after the row, as the lock is.
 (let* ((s (fresh-store!))
        (sock (string-append sock-base "/ur-" (number->string (get-process-id)) ".sock"))
        (lock (string-append sock-base "/.ur-" (number->string (get-process-id)) ".sock.lock"))
@@ -236,12 +302,16 @@
                                  (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
     (chmod! "700" (writers-of s))
     (system (string-append "rm -f " lock))
-    (want "UNLISTED-2 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket"
-          (list (and (pair? said) (car said))
+    (system (string-append "rm -rf " sock ".d " sock ".d.[0-9]* " sock ".d.reserve"))
+    (want "UNLISTED-2 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket; incomplete with main's reservation"
+          (list (mask-pid (and (pair? said) (car said)))
                 (and (pair? said) (pair? (cdr said)) (cadr said))
                 rc
                 (file-exists? sock))
-          (list (list 'error 'unreadable (list 'path (writers-of s)) '(reason "Permission denied") '(errno EACCES) '(attempt #f))
+          (list (list 'error 'incomplete
+                      (list 'failed (list 'path (writers-of s)) '(reason "Permission denied") '(errno EACCES))
+                      (list 'written (reservation-written sock))
+                      '(attempt #f))
                 '(exiting (reason store-actor-down)) 75 #f))))
 
 ;; ---- the answers at the synchronous points ------------------------------------
@@ -790,30 +860,35 @@
     d))
 
 ;; P2-startup (store-loop's entry, point 2; PR-04): the store at 000; the
-;; socket directory and its lock PRE-CREATED, so main records nothing.
+;; socket directory and its lifetime lock PRE-CREATED, so main's record is the
+;; reservation alone (reservation-written, five entries) and the store's
+;; unreadable is promoted to incomplete with it.
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p2")) (sock (string-append d "/sock")))
   (system (string-append "touch " d "/.sock.lock"))
   (chmod! "000" s)
   (let ((r (serve-direct "" s (list "--socket" sock))))
     (chmod! "755" s)
-    (want "P2-startup a store at 000: the first datum is the table's unreadable with the attempt clause, then store-actor-down, rc 75, no socket"
-          (list (car r) (let ((ds (cadr r))) (and (pair? ds) (car ds)))
+    (want "P2-startup a store at 000: the first datum is the table's unreadable promoted to incomplete by the reservation alone, with the attempt clause, then store-actor-down, rc 75, no socket"
+          (list (car r) (mask-pid (let ((ds (cadr r))) (and (pair? ds) (car ds))))
                 (let ((ds (cadr r))) (and (pair? ds) (pair? (cdr ds)) (cadr ds)))
                 (file-exists? sock))
-          (list 75 (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES) '(attempt #f))
+          (list 75 (list 'error 'incomplete
+                         (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                         (list 'written (reservation-written sock))
+                         '(attempt #f))
                 '(exiting (reason store-actor-down)) #f))))
-;; The TWIN (aggregation (a) through the daemon): the same with the lock NOT
-;; pre-created -- main creates it, and main's record joins the store's
-;; answer, which becomes incomplete.
+;; The TWIN (aggregation (a) through the daemon): the same with the lifetime
+;; lock NOT pre-created -- main creates it first, so main's record is that
+;; creation and then the reservation: six entries against P2-startup's five.
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p2t")) (sock (string-append d "/sock")))
   (chmod! "000" s)
   (let ((r (serve-direct "" s (list "--socket" sock))))
     (chmod! "755" s)
-    (want "P2-startup TWIN main made the lock: the store's unreadable is promoted to incomplete, written naming the lock"
-          (list (car r) (let ((ds (cadr r))) (and (pair? ds) (car ds))))
+    (want "P2-startup TWIN main made the lock: the store's unreadable is promoted to incomplete, written naming the lock, then the reservation"
+          (list (car r) (mask-pid (let ((ds (cadr r))) (and (pair? ds) (car ds)))))
           (list 75 (list 'error 'incomplete
                          (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
-                         (list 'written (list (list 'create (string-append d "/.sock.lock"))))
+                         (list 'written (cons (list 'create (string-append d "/.sock.lock")) (reservation-written sock)))
                          '(attempt #f))))))
 
 ;; P8 (theourgiad serve-and-exit!, point 8; PR-13): no --socket, the store's
@@ -890,16 +965,18 @@
 ;; The store process's two non-table outcomes (found in review):
 ;; store-load-failed (a meta.sexp that does not parse) and an (error ...)
 ;; passthrough (store-busy: the store's lock held elsewhere past the 5 s
-;; budget). Both locks pre-created, so main records nothing.
+;; budget). Both lifetime locks pre-created, so main's record is the
+;; reservation alone, carried as their written clause.
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p2f")) (sock (string-append d "/sock")))
   (system (string-append "touch " d "/.sock.lock"))
   (call-with-output-file (string-append s "/meta.sexp") (lambda (o) (put-string o "(broken")) 'truncate)
 ;; The parse failure is a log-error, not a condition, so its reason is the
   ;; symbol `raised`, as on the base (PR-11 u).
   (let ((r (serve-direct "" s (list "--socket" sock))))
-    (want "P2-load-failed a meta.sexp that does not parse: store-load-failed (reason raised) with the attempt clause, then store-actor-down, rc 75"
-          (list (car r) (cadr r))
-          (list 75 (list '(error store-load-failed (reason raised) (attempt #f)) '(exiting (reason store-actor-down)))))))
+    (want "P2-load-failed a meta.sexp that does not parse: store-load-failed (reason raised) with the reservation's written and the attempt clause, then store-actor-down, rc 75"
+          (list (car r) (mask-pid (cadr r)))
+          (list 75 (list (list 'error 'store-load-failed '(reason raised) (list 'written (reservation-written sock)) '(attempt #f))
+                         '(exiting (reason store-actor-down)))))))
 (let* ((s (m1-store!)) (d (m2-sock-dir! "p2b")) (sock (string-append d "/sock"))
        (holder-pid (string-append root "/holder.pid")))
   (system (string-append "touch " d "/.sock.lock"))
@@ -908,9 +985,9 @@
   (system "sleep 0.5")
   (let ((r (serve-direct "" s (list "--socket" sock))))
     (system (string-append "kill -TERM $(cat " holder-pid ") 2>/dev/null"))
-    (want "P2-busy the store's lock held elsewhere past the budget: store-busy passed through with the attempt clause, then store-actor-down, rc 75"
-          (list (car r) (cadr r))
-          (list 75 (list (list 'error 'store-busy (list 'path (string-append s "/lock")) '(attempt #f))
+    (want "P2-busy the store's lock held elsewhere past the budget: store-busy passed through with the reservation's written and the attempt clause, then store-actor-down, rc 75"
+          (list (car r) (mask-pid (cadr r)))
+          (list 75 (list (list 'error 'store-busy (list 'path (string-append s "/lock")) (list 'written (reservation-written sock)) '(attempt #f))
                          '(exiting (reason store-actor-down)))))))
 ;; (d, D5, and the F row for these routes) a first start with no socket and
 ;; no lock serves; its first datum is `serving`, with no record clause.
@@ -997,10 +1074,12 @@
   (chmod! "000" s)
   (let ((r (serve-direct "" s (list "--socket" sock "--attempt" "0123456789abcdef"))))
     (chmod! "755" s)
-    (want "P2-startup with --attempt: stdout is exactly \\n + main's combined report ending with the token + \\n, then store-actor-down, rc 75"
-          (list (car r) (cadddr r))
-          (list 75 (string-append "\n" (framed (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied)
-                                                     '(errno EACCES) '(attempt "0123456789abcdef")))
+    (want "P2-startup with --attempt: stdout is exactly \\n + main's combined report (incomplete, the reservation written) ending with the token + \\n, then store-actor-down, rc 75"
+          (list (car r) (mask-pid (cadddr r)))
+          (list 75 (string-append "\n" (framed (list 'error 'incomplete
+                                                     (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                                                     (list 'written (reservation-written sock))
+                                                     '(attempt "0123456789abcdef")))
                                   "\n" (framed '(exiting (reason store-actor-down))) "\n")))))
 
 ;; NO4b (found in review): the log's directory writable and the log
@@ -1061,6 +1140,23 @@
     r))
 (define (restore-run!) (putenv "THEOURGIA_RUN" (string-append m1-run-root "/run")))
 (define (key-dir s) (let ((p (socket-path s))) (substring p 0 (- (string-length p) (string-length "/socket")))))
+;; The canonical path of a directory that is there, asked of the shell rather
+;; than of the library whose answer this file is checking; and of a name in it.
+;; THE OPENER'S OWN RECORD NAMES WHAT IT MADE WHERE IT MADE IT: it makes the run
+;; directory under the walk's resolved ancestor, so a want that names the
+;; opener's mkdir names the resolved path.
+(define (resolved-by-the-shell dir)
+  (let* ((p (process (string-append "cd '" dir "' && pwd -P")))
+         (t (get-line (car p))))
+    (close-port (car p)) (close-port (cadr p))
+    (if (string? t) t dir)))
+(define (resolved-name path)
+  (let loop ((i (- (string-length path) 1)))
+    (cond ((< i 0) path)
+          ((char=? (string-ref path i) #\/)
+           (string-append (resolved-by-the-shell (substring path 0 i)) (substring path i (string-length path))))
+          (else (loop (- i 1))))))
+
 ;; -> (rc stdout-datum stderr-text elapsed-ms)
 (define (client-read env s)
   (let ((out (string-append root "/cr.out")) (err (string-append root "/cr.err")) (t0 (real-time)))
@@ -1068,7 +1164,8 @@
                                      (quoted s) " > " out " 2> " err " < /dev/null"))))
       (list rc (guard (e (#t 'no-answer)) (call-with-input-file out read)) (text-of-file err) (- (real-time) t0)))))
 ;; The P6 setup (E13): meta.sexp at 000; the key directory and .socket.lock
-;; PRE-CREATED, so neither the client nor main records a creation.
+;; PRE-CREATED, so the client records no creation and main's record is the
+;; reservation of `<key>/socket` alone: the report's kind is incomplete.
 (define (p6-store! pre-create?)
   (let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)))
     (when pre-create?
@@ -1082,23 +1179,27 @@
        (r (client-read "" s)))
   (p6-done! s)
   (want "P6-unreadable the thin client answers serve-start-failed with the report's kind and clauses, its token, and (exit 75); rc 75"
-        (list (car r) (mask-attempt (cadr r)))
-        (list 75 (list 'error 'serve-start-failed '(kind unreadable) (list 'path (string-append s "/meta.sexp"))
-                       (list 'reason denied) '(errno EACCES) '(attempt <16-hex>) '(exit 75))))
+        (list (car r) (mask-pid (mask-attempt (cadr r))))
+        (list 75 (list 'error 'serve-start-failed '(kind incomplete)
+                       (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                       (list 'written (reservation-written (string-append kd "/socket")))
+                       '(attempt <16-hex>) '(exit 75))))
   (want "PID1 the P6-unreadable start is answered within 4 s of the client's launch (the pid wait, not the 10 s budget)"
         (< (cadddr r) 4000) #t))
 ;; P6-incomplete: the key directory absent -- the client makes it (its
-;; client-written), main creates the lock (the report's written).
+;; client-written), main creates the lock and then reserves (the report's
+;; written).
 (let* ((st (p6-store! #f)) (s (car st)) (kd (caddr st))
        (r (client-read "" s)))
   (p6-done! s)
-  (want "P6-incomplete the report's written names main's lock; the client's own mkdir is a separate client-written clause, last"
-        (list (car r) (mask-attempt (cadr r)))
+  (want "P6-incomplete the report's written names main's lock, then the reservation; the client's own mkdir is a separate client-written clause, last"
+        (list (car r) (mask-pid (mask-attempt (cadr r))))
         (list 75 (list 'error 'serve-start-failed '(kind incomplete)
                        (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
-                       (list 'written (list (list 'create (string-append kd "/.socket.lock"))))
+                       (list 'written (cons (list 'create (string-append kd "/.socket.lock"))
+                                            (reservation-written (string-append kd "/socket"))))
                        '(attempt <16-hex>) '(exit 75)
-                       (list 'client-written (list (list 'mkdir kd)))))))
+                       (list 'client-written (list (list 'mkdir (resolved-name kd))))))))
 ;; P6-unwritable (G2): the run root at 555, the key directory absent -- the
 ;; client's own mkdir fails; no daemon, no attempt clause, no client-written.
 (let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)) (t0 (real-time)))
@@ -1108,7 +1209,7 @@
     (restore-run!)
     (want "P6-unwritable a run root at 555: the client's own failure, unwritable (op mkdir) naming the key directory, errno 13, rc 75, under 1 s"
           (list (car r) (cadr r) (< (cadddr r) 1000))
-          (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path kd) (list 'reason denied) (list 'errno EACCES))
+          (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path (resolved-name kd)) (list 'reason denied) (list 'errno EACCES))
                 #t))))
 ;; P6-exited: the daemon's log open fails (open-fail@report); the client's
 ;; stdout is the exited answer, its stderr the daemon's inherited line.
@@ -1150,6 +1251,9 @@
                 (has-substring? log "(attempt \"")
                 (let ((d (datums-of-text log))) (and (pair? d) (pair? (car d)) (eq? 'error (car (car d))) (pair? (cdr d)) (cadr d))))
           '(#t #t (exiting (reason store-actor-down))))))
+;; TK2 (b) and TK1 below read the report's kind only: their subject is the
+;; token's selection. The written list on this start's shape is pinned entry
+;; by entry by the P2-startup and P6 rows.
 ;; TK2 (b): a planted unterminated line before the start; the client answers
 ;; its own report, and the planted text is terminated by the report's line break.
 (let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)) (lp (string-append kd "/serve.log")))
@@ -1171,9 +1275,9 @@
                     (and (string=? (substring log 0 n) planted) #t)
                     (and lines (length lines))
                     (and lines (= 3 (length lines)) (string=? (car lines) ""))
-                    (and lines (= 3 (length lines)) (has-substring? (cadr lines) "(error unreadable") (has-substring? (cadr lines) "(attempt \""))
+                    (and lines (= 3 (length lines)) (has-substring? (cadr lines) "(error incomplete") (has-substring? (cadr lines) "(attempt \""))
                     (and lines (= 3 (length lines)) (caddr lines))))
-            (list 'unreadable #t 3 #t #t "(exiting (reason store-actor-down))")))))
+            (list 'incomplete #t 3 #t #t "(exiting (reason store-actor-down))")))))
 ;; TK5 (D8): the client's log read fails under stage `client`.
 (let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)))
   (let ((r (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=read-fail-after@client:file=serve.log:errno=EIO" s)))
@@ -1207,11 +1311,11 @@
     (let* ((a (guard (e (#t 'no-answer)) (call-with-input-file aout read)))
            (ta (and (list? a) (assq 'attempt (filter pair? a))))
            (tb (and (list? (cadr b)) (assq 'attempt (filter pair? (cadr b))))))
-      (want "TK1 A held (its marker seen before B started, no answer when B had one), then A and B answer different tokens, each its own start's, both unreadable"
+      (want "TK1 A held (its marker seen before B started, no answer when B had one), then A and B answer different tokens, each its own start's, both incomplete (the P6 store, main's reservation)"
             (list held a-silent
                   (and ta (cadr ta) #t) (and tb (cadr tb) #t) (and ta tb (not (equal? ta tb)))
                   (and (list? a) (assq 'kind (filter pair? a))) (and (list? (cadr b)) (assq 'kind (filter pair? (cadr b)))))
-            '(#t #t #t #t #t (kind unreadable) (kind unreadable))))))
+            '(#t #t #t #t #t (kind incomplete) (kind incomplete))))))
 
 ;; ---- the daemon's holds, AG-a, A-record, the STARTING signals ---------------
 ;;
@@ -1484,10 +1588,13 @@
          (waiting (still-held? s h))
          (rc (finish-held! h)))
     (chmod! "755" s)
-    (want "S-c one TERM while a store at 000 is held: drain traced BEFORE the release and the daemon is still waiting then; after startup-failed: main's report, then store-actor-down, rc 75"
-          (list held seen waiting rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+    (want "S-c one TERM while a store at 000 is held: drain traced BEFORE the release and the daemon is still waiting then; after startup-failed: main's report (incomplete, the reservation written), then store-actor-down, rc 75"
+          (list held seen waiting rc (mask-pid (datums-of-text (text-of-file (cadr h)))) (file-exists? sock))
           (list #t #t #t 75
-                (list (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES) '(attempt #f))
+                (list (list 'error 'incomplete
+                            (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                            (list 'written (reservation-written sock))
+                            '(attempt #f))
                       '(exiting (reason store-actor-down)))
                 #f))))
 

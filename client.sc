@@ -22,28 +22,31 @@
 (library (theourgia client)
   (export socket-path run-root store-key resolved-name
           call! call-child! answer-limit no-daemon-errno?
-          socket-path-fits? path-too-long close-noting-failure join-bytes
+          socket-path-fits? path-too-long socket-path-fits-to-serve? serve-path-too-long
+          close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape? plain-datum
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
-          next-attempt-token select-report program-launch store-here? store-absent? exited-without-report)
+          next-attempt-token select-report program-launch store-here? store-absent? exited-without-report
+          directory-of base-of in-directory digits? folds-case? same-spelling? backing-suffix?
+          namespace-spelling namespace-candidate directory-to-make make-judged!)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode) (rnrs hashtables)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
           ;; prints as its own spelling, rather than carrying a second
           ;; model of when Chez escapes one.
-          (only (chezscheme) getenv guard raise sleep make-time
+          (only (chezscheme) getenv guard raise sleep make-time remp member exists for-all
                 write call-with-string-output-port
                 read open-string-input-port eof-object? eof-object with-exception-handler
                 parameterize char-whitespace? get-process-id
                 process close-port get-string-all)
           (only (theourgia ffi)
-                real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
+                real-path env-or wall-clock-ms file-size sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
                 spawn-detached! spawn-piped! child-wait! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
-                entry-type read-entry
+                entry-type read-entry entry-name-type mkdir-exclusive!
                 ;; The pid wait, the hold seam, the record.
                 waitpid-status hold-point! theourgia-fault
                 with-mutation-record mutation-record)
@@ -342,6 +345,27 @@
           (list 'length (bytevector-length (string->utf8 path)))
           (list 'max (sun-path-max))))
 
+  ;; THE STARTER'S PREDICATE. A daemon binds its private file `<socket>.d/<pid>`
+  ;; and publishes the public path as a link to it, so a start needs room for
+  ;; the suffix as well. Whoever starts one -- serve's argument check, the
+  ;; shell -- checks the public path plus the longest suffix (`.d/` and ten
+  ;; digits) BEFORE spawning, so the daemon's own refusal of its private path
+  ;; is never reached through a start. A client CONNECTING keeps
+  ;; socket-path-fits? on the public path: a daemon already listening there is
+  ;; reached whatever its private name.
+  (define private-suffix-max (string-length ".d/0000000000"))
+
+  (define (socket-path-fits-to-serve? path)
+    (< (+ (bytevector-length (string->utf8 path)) private-suffix-max) (sun-path-max)))
+
+  ;; The refusal, with the largest public length a start accepts: the
+  ;; predicate is strict, so that is one less than the room left.
+  (define (serve-path-too-long path)
+    (list 'error 'socket-path-too-long
+          (list 'path path)
+          (list 'length (bytevector-length (string->utf8 path)))
+          (list 'max (- (sun-path-max) private-suffix-max 1))))
+
   (define (call! path frame timeout-ms)
     (if (not (socket-path-fits? path))
         ;; NEVER: `not-sent`, NOT `transport-error`. Nothing went out, so the
@@ -631,7 +655,14 @@
   (define (log-length path)
     (if (eq? (entry-type path) 'absent) 0 (file-size path)))
 
-  (define (ensure-daemon! argv store socket)
+  ;; ONE DEADLINE PER REQUEST, opened at its first start (DEADLINE, a
+  ;; wall-clock instant, or absent: now plus the start budget). Inside it, a
+  ;; start whose child exits serve-busy met a daemon leaving or resuming: the
+  ;; start is tried again after 100 ms, as often as the deadline allows, with
+  ;; a connect before each try, so a daemon that resumed is found without a
+  ;; start. A caller that makes a second ensure attempt for the same request
+  ;; passes the deadline the first one used.
+  (define (ensure-daemon! argv store socket . deadline)
     ;; NEVER: ASK BEFORE STARTING ONE. Spawning unconditionally works -- the
     ;; second process loses the daemon's lock and exits, so there is
     ;; still exactly one -- but it costs a process start on every call
@@ -647,6 +678,9 @@
       ;; one fact that would fix it.
       ((not (socket-path-fits? socket)) (path-too-long socket))
       ((connects? socket) 'ready)
+      ;; AND ROOM FOR THE DAEMON'S PRIVATE NAME, before a start: a daemon
+      ;; already listening was reached above whatever its private name is.
+      ((not (socket-path-fits-to-serve? socket)) (serve-path-too-long socket))
       ;; AND A SOCKET WHOSE DIRECTORY IS NOT THERE, for the same reason: the
       ;; daemon refuses it (theourgiad.sc) and the start would be read back
       ;; out of the log only after the whole start budget. The default
@@ -655,7 +689,25 @@
       ((and (not (string=? socket (socket-path store)))
             (socket-dir-refusal socket))
        => (lambda (refusal) refusal))
-      (else (start-one! argv store socket))))
+      (else
+       ;; INJECTION ONLY: held after the connect probe above found nobody,
+       ;; before any start, so a row can bring two openers past the probe
+       ;; before either daemon listens (two openers starting at once).
+       (hold-point! 'opener-after-probe)
+       (let ((deadline (if (pair? deadline) (car deadline) (+ (wall-clock-ms) (start-budget-ms)))))
+         (let again ()
+           (let ((answer (start-one! argv store socket deadline)))
+             (cond
+               ((and (serve-busy-answer? answer) (< (wall-clock-ms) deadline))
+                (sleep (make-time 'time-duration 100000000 0))
+                (if (connects? socket) 'ready (again)))
+               (else answer))))))))
+
+  ;; -> whether a start's answer is its child's serve-busy report.
+  (define (serve-busy-answer? answer)
+    (and (pair? answer) (eq? (car answer) 'error)
+         (pair? (cdr answer)) (eq? (cadr answer) 'serve-start-failed)
+         (pair? (cddr answer)) (equal? (caddr answer) '(kind serve-busy))))
 
   ;; -> #f when the directory a socket goes in is a directory, otherwise
   ;; the refusal, as a datum. ONE TEXT FOR BOTH PLACES THAT REFUSE: the
@@ -729,7 +781,7 @@
   ;; - A failure of the client's own step (the run directory, the log's
   ;;   length, the spawn) is the table's answer over an EMPTY record, in the
   ;;   same `(kind K) <clauses>` shape, with client-written (M2 Q6).
-  (define (start-one! argv store socket)
+  (define (start-one! argv store socket deadline)
     (let* ((token (next-attempt-token))
            (argv (append argv (list "--attempt" token)))
            (log-path (serve-log-path store))
@@ -739,7 +791,7 @@
                 (let ((answer
                        (guard (e ((classify-failure e '())
                                   => (lambda (a) (own-start-failure a))))
-                         (start-watched! argv store socket log-path token))))
+                         (start-watched! argv store socket log-path token deadline))))
                   (cons answer (mutation-record)))))))
       (with-client-written (car outcome) (cdr outcome))))
 
@@ -760,12 +812,14 @@
   ;; status or attempt. Asked here, after ensure-daemon!'s socket branches
   ;; (a reachable daemon still answers ready), by store-absent?: a meta.sexp
   ;; that cannot be asked about is not absence, and the start goes on.
-  (define (start-watched! argv store socket log-path token)
+  (define (start-watched! argv store socket log-path token deadline)
     (if (store-absent? store)
         (list 'error 'serve-start-failed '(kind store-not-found) (list 'store store))
-        (start-spawned! argv store socket log-path token)))
+        (start-spawned! argv store socket log-path token deadline)))
 
-  (define (start-spawned! argv store socket log-path token)
+  ;; THE DEADLINE IS THE REQUEST'S, not this spawn's: a retry after serve-busy
+  ;; and a second ensure attempt spend what is left of it.
+  (define (start-spawned! argv store socket log-path token deadline)
     ;; THE LOG'S LENGTH IS TAKEN BEFORE THE SPAWN, and nothing before it is
     ;; read (see log-length). NOT under stage `client`: D8 puts the reads
     ;; AFTER the exit there (exited-answer), and a client-stage fault aimed
@@ -773,14 +827,22 @@
     ;; this length probe.
     (let ((before (log-length log-path)))
       ;; NEVER: MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE; its
-      ;; failure is the client's own (above).
-      (mkdir-p! (dirname-of log-path))
+      ;; failure is the client's own (above). It is made through the walk,
+      ;; as the daemon makes a socket's directory: a run root spelled as a
+      ;; namespace (`<name>.d`) is never made real by an opener while that
+      ;; endpoint's reclaim has its link unlinked.
+      (cond
+        ((make-run-directory! (dirname-of log-path)) => (lambda (refusal) refusal))
+        (else (spawn-and-wait! argv socket log-path token deadline before store)))))
+
+  (define (spawn-and-wait! argv socket log-path token deadline before store)
+    (begin
       (when (eq? (theourgia-fault) 'client-extra-child) (extra-child!))
       ;; KEY: ONE EVENT PER PROCESS ACTUALLY STARTED, so "did it start
       ;; one?" is a count and not a matter of looking soon enough.
       (let ((pid (spawn-detached! argv)))
         (trace-event! 'spawn pid #f)
-        (let ((deadline (+ (wall-clock-ms) (start-budget-ms))))
+        (begin
           (let wait ()
             (cond
               ((connects? socket) 'ready)
@@ -792,6 +854,29 @@
               (else
                (sleep (make-time 'time-duration 50000000 0))
                (wait))))))))
+
+  ;; THE RUN DIRECTORY, MADE AS THE DAEMON MAKES A SOCKET'S DIRECTORY: nothing
+  ;; when DIR resolves at its one look; otherwise what the walk judged, each
+  ;; name made exclusively. EEXIST from make-judged! is, at an opener, another
+  ;; opener making the same run directory (two shells starting at once), so
+  ;; the walk is taken again and a directory that now resolves is used. AT MOST
+  ;; ONCE PER NAME THE FIRST WALK JUDGED: each EEXIST is a peer having made one
+  ;; more of those names, so there are no more collisions than names; a single
+  ;; retry covered only the first level (found by the forced race, x19g4).
+  ;; -> #f when DIR is there, or the refusal: socket-dir-missing when the walk
+  ;; refuses, as the daemon's start refuses its socket's directory.
+  (define (make-run-directory! dir)
+    (let try ((left #f))
+      (if (real-path dir)
+          #f
+          (let ((judged (directory-to-make dir)))
+            (if (not judged)
+                (list 'error 'socket-dir-missing (list 'dir dir))
+                (let* ((left (or left (length (cdr judged))))
+                       (stale (make-judged! (car judged) (cdr judged))))
+                  (cond ((not stale) #f)
+                        ((> left 0) (try (- left 1)))
+                        (else stale))))))))
 
   ;; THE LOG IS READ ONLY HERE, AFTER THE EXIT WAS OBSERVED (item 4), under
   ;; stage `client` (D8), behind the client-scan hold (item 7). A reader
@@ -1275,4 +1360,175 @@
 
   (define (memq-1 x xs)
     (and (pair? xs) (or (eq? x (car xs)) (memq-1 x (cdr xs)))))
+
+  ;; ---- the walk: what a start may make for a directory -------------------------
+  ;;
+  ;; ONE WALK FOR BOTH STARTERS: the daemon judges its socket's directory with
+  ;; it before any lock (daemon.sc, reserved-by-another and main), and an
+  ;; opener judges its run directory with it before it spawns (start-spawned!).
+  ;; It lives here because the opener may not load the daemon's library and
+  ;; the daemon already imports this one. Neither makes a directory spelled
+  ;; `..`, a namespace's name or one inside a namespace's directory: with the
+  ;; endpoint's reclaim between its unlink and its republish, such a directory
+  ;; would be made real where that endpoint's link must go.
+
+  (define (directory-of p)
+    (let loop ((i (- (string-length p) 1)))
+      (cond ((< i 0) ".")
+            ((char=? (string-ref p i) #\/) (substring p 0 i))
+            (else (loop (- i 1))))))
+
+  (define (base-of p)
+    (let loop ((i (- (string-length p) 1)))
+      (cond ((< i 0) p)
+            ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p)))
+            (else (loop (- i 1))))))
+
+  ;; BYTES: "/" is the root's spelling, not a name.
+  (define (in-directory dir name)
+    (if (string=? dir "/") (string-append "/" name) (string-append dir "/" name)))
+
+  (define (digits? s)
+    (and (> (string-length s) 0) (for-all char-numeric? (string->list s))))
+
+  ;; A NAME IN A DIRECTORY IS COMPARED UNDER THAT FILESYSTEM'S CASE RULE: on a
+  ;; case-insensitive volume `S.d.7` is a name of the endpoint `s`, as `S`
+  ;; and `s` are one socket and one lock there. `unknown` folds nothing.
+  (define (folds-case? dir)
+    (eq? #f (guard (e (#t 'unknown)) (path-case-sensitive? dir))))
+
+  ;; ---- (4) FOLDING, ONE PLACE -------------------------------------------------
+  ;;
+  ;; Every comparison of a name in the namespace is same-spelling?, under the
+  ;; case rule FOLD? of the directory holding the entry, and every parse of a
+  ;; namespace spelling is namespace-spelling: on a folding volume `s.D.7` is
+  ;; the endpoint `s`'s, as its link still reaches it (found in review).
+  (define (same-spelling? a b fold?) ((if fold? string-ci=? string=?) a b))
+
+  ;; `<digits>` or `<digits>-<digits>`.
+  (define (backing-suffix? rest)
+    (let ((dash (let loop ((i 0))
+                  (cond ((= i (string-length rest)) #f)
+                        ((char=? (string-ref rest i) #\-) i)
+                        (else (loop (+ i 1)))))))
+      (if dash
+          (and (digits? (substring rest 0 dash))
+               (digits? (substring rest (+ dash 1) (string-length rest))))
+          (digits? rest))))
+
+  ;; -> (<base> . link) for `<base>.d`, (<base> . backing) for
+  ;; `<base>.d.<digits>` or `<base>.d.<digits>-<digits>`, otherwise #f.
+  (define (namespace-spelling name fold?)
+    (let ((n (string-length name)))
+      (if (and (> n 2) (same-spelling? (substring name (- n 2) n) ".d" fold?))
+          (cons (substring name 0 (- n 2)) 'link)
+          (let loop ((i (- n 1)))
+            (cond
+              ((< i 3) #f)
+              ((and (char=? (string-ref name i) #\.)
+                    (same-spelling? (substring name (- i 2) (+ i 1)) ".d." fold?)
+                    (backing-suffix? (substring name (+ i 1) n)))
+               (cons (substring name 0 (- i 2)) 'backing))
+              (else (loop (- i 1))))))))
+
+  ;; The base name of the endpoint a directory name belongs to, when it is
+  ;; spelled `<name>.d` or `<name>.d.<digits>[-<n>]`; otherwise #f.
+  (define (namespace-candidate dir-name fold?)
+    (let ((p (namespace-spelling dir-name fold?)))
+      (and p (car p))))
+
+  ;; -> (ANCESTOR . NAMES), what a start makes for DIR, which the caller's one
+  ;; real-path did not resolve: the first ancestor that is there, as it
+  ;; resolved, and the names below it that the walk judged, in order, each
+  ;; made exclusively (make-judged!). #f when DIR may not be
+  ;; made by a start: when DIR is something (lstat finds an entry), or when
+  ;; making it would make a directory spelled `..`, or spelled `<name>.d` or
+  ;; `<name>.d.<digits>[-<n>]` under the case rule of that ancestor, or would
+  ;; make it inside a namespace's directory (that ancestor, resolved, is
+  ;; spelled so), or would have to pass a prefix that is something but does
+  ;; not resolve, or when the walk's floor itself does not resolve. The floor
+  ;; is `.` for a relative DIR and the root for an absolute one, whose
+  ;; spelling here is "" (directory-of "/s"); DIR "" is the root, which is
+  ;; there, and answers ("/"), whose making makes nothing.
+  ;; NEVER: DIR IS NOT RESOLVED AGAIN. The walk looks at DIR by lstat only; the
+  ;; caller's real-path was the one resolution of DIR. A second one could
+  ;; answer what the first did not: an alias of a namespace, dangling at the
+  ;; first look while that endpoint's reclaim had its link unlinked, resolves
+  ;; at the second once it republished, and the start would be admitted with
+  ;; no reservation lock and clear that endpoint's live private socket (found
+  ;; in review). Each ancestor is resolved once, and that one look is judged
+  ;; by everything it shows.
+  ;; NEVER: THE ANSWER IS THE RESOLVED ANCESTOR, NOT THE SPELLING. The
+  ;; spelling's prefixes were looked at once, here; made later by the
+  ;; spelling, mkdir-p! would look at them again, and a prefix through an
+  ;; endpoint's link (`s.d/../new`) that its reclaim unlinked in between would
+  ;; be made as a real `s.d`, which that endpoint's publish would refuse from
+  ;; then on (found in review). The answer has no `..` and no
+  ;; namespace-spelled name: each name in it was judged.
+  ;; NEVER: THE ANSWER IS CANONICAL. It is the endpoint's identity (its
+  ;; parent, endpoint-identity), and the next start's identity is the
+  ;; real-path of what was made; parents compare as bytes. A `.` kept in the
+  ;; names recorded `<d>/new/./b` for a socket `<d>/new/./b`, and the restart,
+  ;; resolving `<d>/new/b`, refused its own residue (found in review). So `.`
+  ;; and an empty name are dropped: they make nothing.
+  (define (directory-to-make dir)
+    (cond
+      ((string=? dir "") (list "/"))
+      ((not (eq? (entry-name-type dir) 'absent)) #f)
+      (else
+       (let walk ((q (directory-of dir)) (made (list (base-of dir))))
+         (let ((at (if (string=? q "") "/" q)))
+           (cond
+             ((real-path at)
+              => (lambda (resolved)
+                   ;; INJECTION ONLY: held after the ancestor's one resolution,
+                   ;; before it is judged.
+                   (hold-point! 'walk-after-resolve)
+                   (let ((home (directory-of resolved))
+                         ;; NEVER: THE CASE RULE OF THE RESOLVED ANCESTOR, NOT OF
+                         ;; ITS SPELLING. Read through the spelling it is a second
+                         ;; look: a prefix through an endpoint's link that its
+                         ;; reclaim unlinked in between fails that look, a failed
+                         ;; look reads as not folding, and `t.D` would pass and be
+                         ;; made, on a folding volume the endpoint `t`'s namespace
+                         ;; (found in review).
+                         (fold? (folds-case? resolved)))
+                     (and (not (namespace-candidate (base-of resolved)
+                                                    (folds-case? (if (string=? home "") "/" home))))
+                          (not (exists (lambda (name)
+                                         (or (string=? name "..") (namespace-candidate name fold?)))
+                                       made))
+                          (cons resolved (remp (lambda (name) (member name '("." ""))) made))))))
+             ;; THE WALK'S TERMINATOR. It is reached only through a walked
+             ;; prefix: DIR itself was looked at by lstat above. `(directory-of
+             ;; ".")` is "." again, so without this clause a floor that lstat
+             ;; did not find would walk in place for ever. The floor that does
+             ;; not resolve is a working directory that was removed (realpath
+             ;; fails there while lstat still finds it, measured), and this
+             ;; refuses it as the clause after it would, a prefix that is
+             ;; something but does not resolve; "" is looked at as "/", which
+             ;; resolves.
+             ((member q '("" "." "/")) #f)
+             ((not (eq? (entry-name-type q) 'absent)) #f)
+             (else (walk (directory-of q) (cons (base-of q) made)))))))))
+
+  ;; NEVER: EACH JUDGED NAME IS MADE EXCLUSIVELY, ONE LEVEL AT A TIME. The walk
+  ;; judged these names absent; a mkdir that took a name as it found it would
+  ;; take what a peer made in between, and on a folding volume `Run` made by
+  ;; a peer answers for `run`: the start recorded `<d>/run/b`, the next one
+  ;; resolved `<d>/Run/b`, and it refused its own residue (found in review).
+  ;; EEXIST here says the judgement is stale, not that the name is wrong:
+  ;; nothing is removed (the names made before it are this start's, empty,
+  ;; and the next start resolves them), and a retry judges what is there. So
+  ;; the answer is serve-busy, which a retry clears, not serve-path-occupied,
+  ;; which tells the operator to remove something. -> #f when every name was
+  ;; made, or the refusal.
+  (define (make-judged! ancestor names)
+    (let loop ((at ancestor) (names names))
+      (if (null? names)
+          #f
+          (let ((next (in-directory at (car names))))
+            (if (eq? (mkdir-exclusive! next) 'created)
+                (loop next (cdr names))
+                `(error serve-busy (path ,next)))))))
 )

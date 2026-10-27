@@ -1282,7 +1282,67 @@
 (define (p7-parent s) (substring s 0 (- (string-length s) (string-length "/store"))))
 (define (p7-key-dir s) (let ((p (socket-path s))) (substring p 0 (- (string-length p) (string-length "/socket")))))
 ;; The P6 setup: meta.sexp at 000; with pre-create? the key directory and
-;; its lock are made first, so neither the client nor main records one.
+;; its lock are made first, so neither the client nor main records one of
+;; them. MAIN'S RECORD IS STILL NOT EMPTY: a start reserves its endpoint's
+;; namespace before the store's load (claim-namespace-and-reserve!,
+;; daemon.sc) -- `<key>/socket.d.reserve`, the directory `<key>/socket.d.<pid>`,
+;; its `.endpoint` created and written, and the link `<key>/socket.d` -- so
+;; the store's unreadable is promoted to incomplete with that record.
+;; -> the reservation's entries as the refusal renders them, the pid
+;; directory's digits spelled <pid>.
+(define (p7-reservation-written kd)
+  (let ((dir (string-append kd "/socket.d.<pid>")))
+    (list (vector "create" (string-append kd "/socket.d.reserve"))
+          (vector "mkdir" dir)
+          (vector "create" (string-append dir "/.endpoint"))
+          (vector "write" (string-append dir "/.endpoint"))
+          (vector "symlink" (string-append kd "/socket.d")))))
+;; THE PID IS READ AS ITS SHAPE, as the 16-hex token is, AND IT IS ONE PID.
+;; A pid spelling is `.d.` followed by digits and then `/` or the end. The
+;; first one in a refusal names the pid, and only that pid reads `.d.<pid>`
+;; wherever it recurs; a second, different pid reads as itself, so a marker
+;; written into another directory than the one made does not match the want
+;; (found in review). The CONTROL row below is the mask's own red cell.
+;; -> the digits of a pid spelling at I in T, or #f.
+(define (p7-pid-run t i)
+  (let ((n (string-length t)))
+    (and (<= (+ i 3) n) (string=? (substring t i (+ i 3)) ".d.")
+         (let scan ((j (+ i 3)))
+           (cond
+             ((and (< j n) (char-numeric? (string-ref t j))) (scan (+ j 1)))
+             ((and (> j (+ i 3)) (or (= j n) (char=? (string-ref t j) #\/)))
+              (substring t (+ i 3) j))
+             (else #f))))))
+(define (p7-first-pid x)
+  (cond ((string? x)
+         (let loop ((i 0))
+           (cond ((>= i (string-length x)) #f)
+                 ((p7-pid-run x i) => values)
+                 (else (loop (+ i 1))))))
+        ((pair? x) (or (p7-first-pid (car x)) (p7-first-pid (cdr x))))
+        ((vector? x) (p7-first-pid (vector->list x)))
+        (else #f)))
+(define (p7-mask-pid-string t pid)
+  (let ((n (string-length t)))
+    (let loop ((i 0) (acc '()))
+      (cond
+        ((>= i n) (list->string (reverse acc)))
+        ((let ((p (p7-pid-run t i))) (and p (string=? p pid)))
+         (loop (+ i 3 (string-length pid)) (append (reverse (string->list ".d.<pid>")) acc)))
+        (else (loop (+ i 1) (cons (string-ref t i) acc)))))))
+(define (p7-mask-pid x)
+  (let ((pid (p7-first-pid x)))
+    (let walk ((x x))
+      (cond ((not pid) x)
+            ((string? x) (p7-mask-pid-string x pid))
+            ((pair? x) (cons (walk (car x)) (walk (cdr x))))
+            ((vector? x) (vector-map walk x))
+            (else x)))))
+(want "CONTROL p7-mask-pid reads one pid: a second, different pid in the same refusal is not masked"
+      (p7-mask-pid (vector (vector "mkdir" "/r/socket.d.101") (vector "create" "/r/socket.d.202/.endpoint")
+                           (vector "write" "/r/socket.d.101/.endpoint")))
+      (vector (vector "mkdir" "/r/socket.d.<pid>") (vector "create" "/r/socket.d.202/.endpoint")
+              (vector "write" "/r/socket.d.<pid>/.endpoint")))
 (define (p7-unreadable! pre-create?)
   (let ((s (p7-store!)))
     (when pre-create?
@@ -1323,26 +1383,30 @@
         (list (field line "id") (field line "error" "code") (field line "error" "message")
               (field line "error" "data" "kind") (field line "error" "data" "path"))
         (list 52 -32000 "core did not start" "unreadable" s)))
-;; tools/list start-failed: the P6-unreadable store.
+;; tools/list start-failed: the P6 store, the key directory and its lock
+;; pre-created; main's record is the reservation alone.
 (let* ((s (p7-unreadable! #t))
        (out (talk (list hello ready (list-frame 53)) s))
        (line (and (pair? (cdr out)) (cadr out)))
        (data (and line (field line "error" "data"))))
   (p7-restore! s)
-  (want "P7 tools/list start-failed: ERROR -32000 with data {kind unreadable, path meta.sexp, reason, errno EACCES, a 16-hex attempt, exit 75}"
+  (want "P7 tools/list start-failed: ERROR -32000 with data {kind incomplete, path meta.sexp, reason, errno EACCES, written the reservation, a 16-hex attempt, exit 75}"
         (list (field line "error" "code") (field line "error" "message")
               (member-of* data "kind") (member-of* data "path") (member-of* data "reason")
-              (member-of* data "errno") (hex16? (member-of* data "attempt")) (member-of* data "exit"))
-        (list -32000 "core did not start" "unreadable" (string-append s "/meta.sexp") "Permission denied" "EACCES" #t 75)))
+              (member-of* data "errno") (p7-mask-pid (member-of* data "written"))
+              (hex16? (member-of* data "attempt")) (member-of* data "exit"))
+        (list -32000 "core did not start" "incomplete" (string-append s "/meta.sexp") "Permission denied" "EACCES"
+              (list->vector (p7-reservation-written (p7-key-dir s))) #t 75)))
 ;; tools/call, the catalogue site: the same store; the catalogue's own start fails.
 (let* ((s (p7-unreadable! #t))
        (out (talk (list hello ready (call-frame 54)) s))
        (line (and (pair? (cdr out)) (cadr out)))
        (r (and line (refusal-of line))))
   (p7-restore! s)
-  (want "P7 tools/call at the catalogue site: a RESULT, isError, _meta.refusal.kind unreadable with a 16-hex attempt"
-        (list (field line "result" "isError") (member-of* r "kind") (hex16? (member-of* r "attempt")))
-        (list #t "unreadable" #t)))
+  (want "P7 tools/call at the catalogue site: a RESULT, isError, _meta.refusal.kind incomplete, written the reservation, a 16-hex attempt"
+        (list (field line "result" "isError") (member-of* r "kind") (p7-mask-pid (member-of* r "written"))
+              (hex16? (member-of* r "attempt")))
+        (list #t "incomplete" (list->vector (p7-reservation-written (p7-key-dir s))) #t)))
 ;; two starts, one shell (E9): two tools/call on the P6-unreadable store.
 (let* ((s (p7-unreadable! #t))
        (out (talk (list hello ready (call-frame 55) (call-frame 56)) s))
@@ -1355,14 +1419,21 @@
         '(#t #t #t)))
 ;; client-written rendered: the P6-incomplete store (the key directory
 ;; absent, the run root present), so the client makes the key directory and
-;; main makes the lock.
+;; main makes the lock, then reserves.
 (let* ((s (p7-unreadable! #f)) (kd (p7-key-dir s))
        (out (talk (list hello ready (call-frame 57)) s))
        (r (and (pair? (cdr out)) (refusal-of (cadr out)))))
   (p7-restore! s)
-  (want "P7 client-written rendered: _meta.refusal client-written [[mkdir <key>]] and written [[create <key>/.socket.lock]]"
-        (list (member-of* r "kind") (member-of* r "client-written") (member-of* r "written"))
-        (list "incomplete" (vector (vector "mkdir" kd)) (vector (vector "create" (string-append kd "/.socket.lock"))))))
+  (want "P7 client-written rendered: _meta.refusal client-written [[mkdir <key>]] and written [[create <key>/.socket.lock]] then the reservation"
+        (list (member-of* r "kind") (member-of* r "client-written") (p7-mask-pid (member-of* r "written")))
+        ;; the opener's own mkdir, made under the run root's resolution
+        (list "incomplete" (vector (vector "mkdir" (let loop ((i (- (string-length kd) 1)))
+                                                     (if (char=? (string-ref kd i) #\/)
+                                                         (string-append (resolved-by-the-shell (substring kd 0 i))
+                                                                        (substring kd i (string-length kd)))
+                                                         (loop (- i 1))))))
+              (list->vector (cons (vector "create" (string-append kd "/.socket.lock"))
+                                  (p7-reservation-written kd))))))
 
 ;; ---- a stub daemon that answers `describe` once --------------------------
 ;;
@@ -1424,9 +1495,10 @@
        (line (and (pair? (cdr out)) (cadr out)))
        (r (and line (refusal-of line))))
   (p7-restore! s)
-  (want "P7 tools/call at the tool site: the stub answered the catalogue once, and the tool's start failure is a RESULT with kind unreadable and an attempt"
-        (list (log-lines log) (field line "result" "isError") (member-of* r "kind") (hex16? (member-of* r "attempt")))
-        (list 1 #t "unreadable" #t)))
+  (want "P7 tools/call at the tool site: the stub answered the catalogue once, and the tool's start failure is a RESULT with kind incomplete, written the reservation, and an attempt"
+        (list (log-lines log) (field line "result" "isError") (member-of* r "kind")
+              (p7-mask-pid (member-of* r "written")) (hex16? (member-of* r "attempt")))
+        (list 1 #t "incomplete" (list->vector (p7-reservation-written (p7-key-dir s))) #t)))
 ;; broken catalogue (PR-12 cat): exactly the unavailable object.
 (let* ((s (p7-store!))
        (log (start-stub! s "cat" "(ok (verbs (read (usage (read <id>))" #f))
@@ -1895,7 +1967,8 @@
             '(serve [<store>] ["--socket" <path>]
                     ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
                     ["--attempt" <token> (started-by-a-client-not-by-hand)]
-                    ["--session-size" <entries>])))
+                    ["--session-size" <entries>]
+                    ["--idle-exit" <seconds>] ["--idle-grace-ms" <milliseconds>])))
 
 ;; ---- X: eval, carried out as the shell's own child ----------------------------
 ;;

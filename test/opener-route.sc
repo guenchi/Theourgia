@@ -510,6 +510,10 @@
       (list (contains? dk-log "daemon-dispatch batch") (contains? dk-log "daemon-dispatch read")
             (rc-of w1k-socket-read))
       '(#f #t 0))
+;; Q6 (b): the refusal itself is traced now, with the route and the size.
+(want "W1k (the socket route) the daemon's log carries the refusal: frame-refused, route socket, frame-limit"
+      (contains? dk-log "(trace frame-refused (route socket) ((reason frame-limit) (bytes ")
+      #t)
 
 ;; ---- CLOSE-1: a close of the child's pipe ends that fails --------------------------------
 

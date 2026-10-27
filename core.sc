@@ -750,6 +750,10 @@
         (exit 1))
       (cond
         ((> (bytevector-length line) frame-limit)
+         ;; TRACED AS THE DAEMON TRACES ITS OWN (daemon.sc, frame-refused!), with
+         ;; route child and what was read.
+         (trace-event! 'frame-refused '(route child)
+                       (list '(reason frame-limit) (list 'bytes (bytevector-length line))))
          (answer-frame-and-exit! '(error bad-request (reason frame-limit)) 'wire 'transport))
         ;; A FRAME THAT NEVER ENDED IS NOT A REQUEST: input ended before its
         ;; newline, and a daemon closes such a connection without dispatching
