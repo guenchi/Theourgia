@@ -435,27 +435,103 @@
                (filter (lambda (l) (starts-with? l "note census retried: ")) ls))
           '(#t))))
 
-(printf "== the anchor-gone note: which of the three it was ==\n")
-;; THE NOTE SAYS WHY THE ANCHOR WAS TAKEN AS GONE: W's setpgid failed (and
-;; with which errno), getpgrp disagreed, or the anchor died -- each on the
-;; same line as the sentence, with how the reap ended. No fixture can make a
-;; live child's setpgid fail, so the watcher-only --fault-setpgid takes it as
-;; failed with a named errno: the anchor is alive and waiting for its release
-;; byte, W closes the pipe instead, and the anchor exits 0 with no command
-;; started. Red on a launch.pl whose note is the bare sentence.
+(printf "== the anchor's group: an error is not a state ==\n")
+;; W'S SETPGID ERRNO IS NOT THE ANCHOR'S STATE. Whatever setpgid answered, W
+;; reads the anchor's group back: its own group means the launch goes on,
+;; another group is ANCHOR GROUP NOT SET, and only a read that fails ESRCH is
+;; ANCHOR DIED. No fixture can make a live child's setpgid fail, so
+;; --fault-setpgid takes W's call as failed with a named errno; with no mode
+;; it reaches the watcher only, and the anchor still sets its own group. Red
+;; on a launch.pl that reads every errno as the anchor gone (status 126, no
+;; command).
+;; The number a note gives after `key ` (up to the next comma or closing
+;; parenthesis), or #f.
+(define (number-after s key)
+  (let ((k (string-length key)))
+    (let loop ((i 0))
+      (cond ((> (+ i k) (string-length s)) #f)
+            ((string=? key (substring s i (+ i k)))
+             (let end ((j (+ i k)))
+               (if (and (< j (string-length s)) (not (memv (string-ref s j) '(#\, #\)))))
+                   (end (+ j 1))
+                   (string->number (substring s (+ i k) j)))))
+            (else (loop (+ i 1)))))))
 (let ((d (case!)))
   (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
       (number->string n) " --fault-setpgid EPERM -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
       d "/w.rc; }")
-  (let ((r (result-of d)))
-    (want "ANCHOR-1 --fault-setpgid EPERM: status 126, no command ran, and the one note names EPERM, the group, and reap exit 0"
-          (list (read-datum (string-append d "/w.rc")) (and r (car r)) (and r (caddr r))
+  (let ((r (result-of d))
+        (p "watcher setpgid EPERM; the anchor's group was already "))
+    (want "ANCHOR-1 --fault-setpgid EPERM while the anchor set its group: status 7, the command ran, clean, and the one note names EPERM and the group"
+          (list (read-datum (string-append d "/w.rc")) (and r (car r)) (and r (caddr r)) (and r (cadddr r))
                 (file-exists? (string-append d "/out"))
                 (and r (map (lambda (x)
-                              (and (starts-with? x "ANCHOR DIED before the release (setpgid EPERM, getpgrp ")
-                                   (contains? x ", reap exit 0)")))
+                              (and (starts-with? x p)
+                                   (let ((g (string->number (substring x (string-length p) (string-length x)))))
+                                     (and g (> g 1)))))
                             (list-ref r 5))))
-          '(126 #t 126 #f (#t)))))
+          '(7 #t 7 "clean" #t (#t)))))
+;; THE GROUP NOT SET IS NOT A DEATH. With ":anchor-skips" the anchor takes
+;; its own setpgid(0,0) as failed with the same errno and does not make it,
+;; so W reads the group as W's own: no release, no command, 126. Two notes,
+;; in this order: the anchor's own failure, from the note pipe, and W's,
+;; naming the state, EPERM, the group read (W's own, not the anchor's pid),
+;; the anchor's pid and the reap. Red on a launch.pl that says ANCHOR DIED,
+;; that takes the mode as an errno name, or whose anchor does not report its
+;; own failure.
+(let ((d (case!)))
+  (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
+      (number->string n) " --fault-setpgid EPERM:anchor-skips -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
+      d "/w.rc; }")
+  (let* ((r (result-of d))
+         (ns (if r (list-ref r 5) '()))
+         (not-set? (lambda (x)
+                     (let ((g (number-after x ", getpgid "))
+                           (a (number-after x ", anchor "))
+                           (w (number-after x ", watcher group ")))
+                       (and (starts-with? x "ANCHOR GROUP NOT SET before the release (setpgid EPERM, getpgid ")
+                            (contains? x ", reap exit 0)")
+                            (not (contains? x "DIED"))
+                            g a w (= g w) (not (= g a)))))))
+    (want "ANCHOR-4 --fault-setpgid EPERM:anchor-skips: status 126, no command ran, clean, the anchor's own EPERM note, then GROUP NOT SET with the group read equal to W's group and not the anchor"
+          (list (read-datum (string-append d "/w.rc")) (and r (car r)) (and r (caddr r)) (and r (cadddr r))
+                (file-exists? (string-append d "/out"))
+                (length ns) (and (pair? ns) (car ns))
+                (and (= (length ns) 2) (not-set? (cadr ns))))
+          '(126 #t 126 "clean" #f 2 "anchor setpgid(0,0) failed: EPERM" #t))))
+;; THE SECOND READ IS WHAT FINDS A LATE GROUP. With ":anchor-late" the anchor
+;; makes its setpgid(0,0) only after W's first read of the group, so that
+;; read finds W's group, and only the read after the note pipe turns
+;; readable finds the anchor's own: the command runs, status 7, and the one
+;; note is W's EPERM with the group. Red on a launch.pl that classifies on
+;; the first read (126, GROUP NOT SET), whatever the scheduling.
+(let ((d (case!)))
+  (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
+      (number->string n) " --fault-setpgid EPERM:anchor-late -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
+      d "/w.rc; }")
+  (let ((r (result-of d))
+        (p "watcher setpgid EPERM; the anchor's group was already "))
+    (want "ANCHOR-6 --fault-setpgid EPERM:anchor-late: the group set after W's first read is found by the second, status 7, the command ran, clean, one note"
+          (list (read-datum (string-append d "/w.rc")) (and r (car r)) (and r (caddr r)) (and r (cadddr r))
+                (file-exists? (string-append d "/out"))
+                (and r (map (lambda (x)
+                              (and (starts-with? x p)
+                                   (let ((g (string->number (substring x (string-length p) (string-length x)))))
+                                     (and g (> g 1)))))
+                            (list-ref r 5))))
+          '(7 #t 7 "clean" #t (#t)))))
+;; AN UNKNOWN MODE IS REFUSED BEFORE THE FORK, as an unknown name is, and the
+;; note says it was the mode. Red on a launch.pl that reads the whole value
+;; as an errno name.
+(let ((d (case!)))
+  (sh "cd " d " && { perl " launcher-path " --limit 30 --out " d "/out --result " d "/result --id L"
+      (number->string n) " --fault-setpgid EPERM:no-such-mode -- sh -c 'exit 7' < /dev/null > " d "/w.log 2>&1; echo $? > "
+      d "/w.rc; }")
+  (let ((r (result-of d)))
+    (want "ANCHOR-5 --fault-setpgid with an unknown mode: status 126, clean, no command ran, the note names the mode"
+          (list (read-datum (string-append d "/w.rc")) (and r (caddr r)) (and r (cadddr r))
+                (file-exists? (string-append d "/out")) (and r (list-ref r 5)))
+          '(126 126 "clean" #f ("unknown mode for --fault-setpgid: EPERM:no-such-mode")))))
 ;; AN UNKNOWN NAME IS REFUSED BEFORE THE FORK: no anchor, no command, and the
 ;; note says which name it was.
 (let ((d (case!)))

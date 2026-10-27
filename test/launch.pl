@@ -23,14 +23,21 @@
 # theourgos core/briefs/launcher-design.md, closed at v4.1):
 #
 #   perl launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID
-#                  [--census-pid PID] [--fault-setpgid ERRNO-NAME]
+#                  [--census-pid PID] [--fault-setpgid ERRNO-NAME[:MODE]]
 #                  -- COMMAND ARGS...
 #
 # --fault-setpgid is a measuring injection for launch-self.sc and nothing
 # else: the watcher does not call setpgid on the anchor and takes it as
-# failed with that errno, so the anchor-gone branch runs. It is read by the
-# watcher only, never forwarded to the anchor or the command; the suite's
-# runner never passes it. An unknown name is refused before the fork.
+# failed with that errno, then reads the anchor's group as it always does.
+# Two modes reach the anchor too. ":anchor-skips": the anchor does not call
+# its own setpgid(0,0) either and takes it as failed with the same errno, so
+# the group is not set and the anchor's own note is written.
+# ":anchor-late": the anchor waits, before its setpgid(0,0), until the
+# watcher has made its first read of the group, so that read finds the group
+# not yet set and only the read after the anchor's setup finds it. The
+# option is read by the watcher and by the anchor, a fork of this process,
+# and never forwarded to the command; the suite's runner never passes it. An
+# unknown name or mode is refused before the fork.
 #
 # This process is the WATCHER, W. It stays in its caller's process group.
 # It forks the ANCHOR, A, which leads a new group G and forks the COMMAND,
@@ -75,7 +82,7 @@ my $QUIET_GAP = 0.1;
 sub now { Time::HiRes::clock_gettime(Time::HiRes::CLOCK_MONOTONIC()) }
 
 sub usage {
-  print STDERR "usage: launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID [--census-pid PID] [--fault-setpgid ERRNO-NAME] -- COMMAND ARGS...\n";
+  print STDERR "usage: launch.pl --limit SECONDS --out FILE --result FILE --id LAUNCH-ID [--census-pid PID] [--fault-setpgid ERRNO-NAME[:MODE]] -- COMMAND ARGS...\n";
   exit 2;
 }
 
@@ -111,8 +118,21 @@ for my $n (sort @errno_names) {
 }
 sub errno_text { my ($v) = @_; exists $errno_name{$v} ? $errno_name{$v} : "errno $v" }
 my $fault_setpgid;
-my $fault_refused = defined $opt{'fault-setpgid'} && !exists $errno_value{$opt{'fault-setpgid'}};
-$fault_setpgid = $errno_value{$opt{'fault-setpgid'}} if defined $opt{'fault-setpgid'} && !$fault_refused;
+my $fault_anchor_skips = 0;
+my $fault_anchor_late = 0;
+my $fault_refused;
+if (defined $opt{'fault-setpgid'}) {
+  my ($fname, $fmode) = split /:/, $opt{'fault-setpgid'}, 2;
+  if (!exists $errno_value{$fname}) {
+    $fault_refused = "unknown errno name for --fault-setpgid: $opt{'fault-setpgid'}";
+  } elsif (defined $fmode && $fmode ne 'anchor-skips' && $fmode ne 'anchor-late') {
+    $fault_refused = "unknown mode for --fault-setpgid: $opt{'fault-setpgid'}";
+  } else {
+    $fault_setpgid = $errno_value{$fname};
+    $fault_anchor_skips = (defined $fmode && $fmode eq 'anchor-skips') ? 1 : 0;
+    $fault_anchor_late = (defined $fmode && $fmode eq 'anchor-late') ? 1 : 0;
+  }
+}
 
 my $W = $$;
 my $start = now();
@@ -464,8 +484,8 @@ sub finish {
 # byte from W. W sets A's group too (the double call), checks it, and only
 # then unblocks and releases A. A stop that arrives before the release
 # means A is never released and no command starts.
-if ($fault_refused) {
-  push @notes, "unknown errno name for --fault-setpgid: $opt{'fault-setpgid'}";
+if (defined $fault_refused) {
+  push @notes, $fault_refused;
   finish(126, 'clean', []);
 }
 my $blocked = POSIX::SigSet->new(map { $signo{$_} } qw(INT TERM HUP));
@@ -474,6 +494,13 @@ POSIX::sigprocmask(POSIX::SIG_BLOCK(), $blocked, $orig_mask) or push @notes, "wa
 
 pipe(my $go_r, my $go_w) or finish(126, 'unknown', []);
 pipe(my $note_r, my $note_w) or finish(126, 'unknown', []);
+# The anchor-late injection's own pipe: W writes one byte on it after its
+# first read of the group, and the anchor waits for that byte (or the pipe's
+# end) before its setpgid(0,0). It exists only under that mode.
+my ($late_r, $late_w);
+if ($fault_anchor_late) {
+  pipe($late_r, $late_w) or finish(126, 'unknown', []);
+}
 my $A = fork;
 unless (defined $A) {
   push @notes, "fork of the anchor failed: $!";
@@ -484,7 +511,25 @@ if ($A == 0) {
   # ---- the anchor ----------------------------------------------------------
   close $go_w;
   close $note_r;
-  POSIX::setpgid(0, 0);
+  # A SETS ITS OWN GROUP, AND SAYS SO WHEN IT CANNOT. W makes the same call
+  # from its side; the two race, and W's errno alone cannot say which side
+  # failed. On this path nothing reaches the note pipe before A's call has
+  # been made, so the pipe turning readable means either that or that A
+  # died first; W reads the group again rather than trust the readiness.
+  if ($fault_anchor_late) {
+    close $late_w;
+    my $b;
+    my $g;
+    do { $g = sysread($late_r, $b, 1) } while (!defined $g && $!{EINTR});
+    close $late_r;
+  }
+  my ($own_set, $own_errno) = (1, undef);
+  if ($fault_anchor_skips) {
+    ($own_set, $own_errno) = (0, $fault_setpgid);
+  } else {
+    $own_set = POSIX::setpgid(0, 0);
+    $own_errno = $own_set ? undef : $! + 0;
+  }
   my $stopped = 0;
   my $term = $signo{TERM};
   my @failed;
@@ -493,6 +538,9 @@ if ($A == 0) {
     push @failed, $no unless install($no, $code);
   }
   POSIX::sigprocmask(POSIX::SIG_SETMASK(), $orig_mask);
+  unless ($own_set) {
+    syswrite($note_w, "anchor setpgid(0,0) failed: " . errno_text($own_errno) . "\n");
+  }
   if (@failed) {
     syswrite($note_w, "anchor could not handle signals @failed\n");
   }
@@ -533,6 +581,7 @@ if ($A == 0) {
 # ---- the watcher -------------------------------------------------------------
 close $go_r;
 close $note_w;
+close $late_r if $fault_anchor_late;
 $SIG{PIPE} = 'IGNORE';
 my $G = $A;
 my ($set, $set_errno);
@@ -543,8 +592,48 @@ if (defined $fault_setpgid) {
   $set = POSIX::setpgid($A, $A);
   $set_errno = $set ? undef : $! + 0;
 }
-my $pg = getpgrp($A);
-my $anchor_gone = !$set || !defined $pg || $pg != $A;
+# AN ERROR IS NOT A STATE. Whatever setpgid answered, the state is A's group
+# read back: perl's getpgrp(PID) is getpgid(2), and answers -1 with errno
+# set when it fails (ESRCH for a pid that is gone, a zombie included). After
+# a failed setpgid, a group that is not A's may have been read before A's
+# own setpgid(0,0) ran, so it is read once more when the note pipe turns
+# readable, within D1: A writes or closes it only after that call, or by
+# dying first, and the second read is what decides either way.
+sub anchor_group {
+  my $g = getpgrp($A);
+  return (defined $g && $g >= 0) ? ($g, undef) : (undef, $! + 0);
+}
+sub anchor_setup_by {
+  my ($until) = @_;
+  my $rin = '';
+  vec($rin, fileno($note_r), 1) = 1;
+  while (1) {
+    my $left = $until - now();
+    return 0 if $left <= 0;
+    my $rout;
+    my $n = select($rout = $rin, undef, undef, $left);
+    return 1 if $n > 0;
+    next if $n < 0 && $!{EINTR};
+    return 0;
+  }
+}
+my ($pg, $pg_errno) = anchor_group();
+if ($fault_anchor_late) {
+  syswrite($late_w, 'r');
+  close $late_w;
+}
+if (!$set && defined $pg && $pg != $A) {
+  ($pg, $pg_errno) = anchor_group() if anchor_setup_by(now() + $D1);
+}
+my $W_group = getpgrp(0);
+# set: A leads its own group, whatever setpgid answered. not-set: A is
+# alive in another group. gone: the read failed ESRCH. not-read: it failed
+# with any other errno.
+my $group_state = defined $pg ? ($pg == $A ? 'set' : 'not-set')
+                : $pg_errno == POSIX::ESRCH() ? 'gone' : 'not-read';
+push @notes, "watcher setpgid " . errno_text($set_errno) . "; the anchor's group was already $A"
+  if !$set && $group_state eq 'set';
+my $anchor_gone = $group_state ne 'set';
 POSIX::sigprocmask(POSIX::SIG_SETMASK(), $orig_mask);
 
 sub read_anchor_notes {
@@ -572,8 +661,10 @@ sub reap_anchor_bounded {
 }
 
 if ($anchor_gone) {
-  # NEVER: AN UNAVAILABLE PGID IS NEVER USED AS A GROUP TARGET. A is gone:
-  # no retry, no release byte, a bounded reap, and the anchor's death.
+  # NEVER: AN UNAVAILABLE PGID IS NEVER USED AS A GROUP TARGET. A is gone,
+  # or alive outside a group of its own, or its group could not be read: no
+  # retry, no release byte (A reads the closed pipe and exits 0), a bounded
+  # reap, and a note that says which.
   close $go_w;
   my $st = reap_anchor_bounded(now() + $D1);
   read_anchor_notes();
@@ -582,20 +673,24 @@ if ($anchor_gone) {
   my @q = quiet_by($A, now() + $D2);
   my $cleanup = $q[0] eq 'empty' ? 'clean' : $q[0] eq 'unknown' ? 'unknown' : 'survivor';
   my $members = $q[0] eq 'occupied' ? $q[1] : [];
-  # THE NOTE SAYS WHICH OF THE THREE IT WAS, on the same line: the setpgid
-  # failed (and with which errno), getpgrp disagreed, or the anchor died. A
-  # reap that ended in a waitpid error says so, not "timeout".
+  # THE NOTE NAMES THE STATE READ, NOT THE ERRNO: ANCHOR DIED only when the
+  # group read failed ESRCH; ANCHOR GROUP NOT SET when A was alive in another
+  # group; ANCHOR GROUP NOT READ for any other failure of the read. The same
+  # line carries setpgid's errno, the group read (or its errno), A's pid,
+  # W's own group, and how the reap ended; a reap that ended in a waitpid
+  # error says so, not "timeout".
+  my $signal = (defined $st && ($st & 127)) ? ($st & 127) : 0;
+  my $head = $group_state eq 'not-set' ? 'ANCHOR GROUP NOT SET'
+           : $group_state eq 'not-read' ? 'ANCHOR GROUP NOT READ'
+           : $signal ? "ANCHOR DIED by signal $signal" : 'ANCHOR DIED';
   my $facts = " (setpgid " . (defined $set_errno ? errno_text($set_errno) : 'ok')
-    . ", getpgrp " . (defined $pg ? $pg : 'undef')
-    . ", reap " . (defined $st ? (($st & 127) ? "signal " . ($st & 127) : "exit " . ($st >> 8))
+    . ", getpgid " . (defined $pg ? $pg : "failed " . errno_text($pg_errno))
+    . ", anchor $A, watcher group $W_group"
+    . ", reap " . (defined $st ? ($signal ? "signal $signal" : "exit " . ($st >> 8))
                    : defined $reap_errno ? "failed " . errno_text($reap_errno) : 'timeout')
     . ")";
-  if (defined $st && ($st & 127)) {
-    push @notes, "ANCHOR DIED by signal " . ($st & 127) . " before the release" . $facts;
-    finish(128 + ($st & 127), $cleanup, $members);
-  }
-  push @notes, "ANCHOR DIED before the release" . $facts;
-  finish(126, $cleanup, $members);
+  push @notes, "$head before the release" . $facts;
+  finish($signal ? 128 + $signal : 126, $cleanup, $members);
 }
 
 my $go_open = 1;
