@@ -37,3 +37,9 @@ eval-lang	^FAIL L15
 facade-record	^FAIL H8 
 change-stream	^FAIL (F10-8|COST-[12]) three frames on the cost store
 change-stream-guard	^FAIL GUARD-4 .*not-a-reading WANT #t$
+# daemon-idle W5c (2026-10-27, run 40428756362 on 2eae554): "at least three spawns" inside one ensure
+# attempt needs request 3's first spawn to meet serve-busy within a fixed 1.5 s hold; a daemon start on
+# the runner takes about 1.6 s (scaled from f0-ondemand), so the spawn lands after the release and the
+# count stays at two. Green alone and on the development machine. A want that releases on the shell's
+# trace instead of a sleep is a ledger item after the tag.
+daemon-idle	^FAIL W5c inside one ensure attempt the start was retried
