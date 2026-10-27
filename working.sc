@@ -249,6 +249,24 @@
       ;; area and lock file already recorded (A-record).
       (hold-point! 'write-after-create)
       (with-exclusive-lock path (lambda (fd) (thunk)))))
+  ;; A READER CREATES NOTHING FOR A WRITER THAT HAS NO DRAFT AREA. The working
+  ;; views read under the lock so that a listing and the reads of what it
+  ;; lists see one instant; but with-draft-lock first creates the writer's
+  ;; area and its lock file, so a view asked for a writer with no drafts --
+  ;; a misspelt --writer among them -- left writers/<w>/ behind, where read
+  ;; --working, which takes no lock, left nothing. A writer with neither a
+  ;; working/ nor a structural/ directory has no draft and no structural
+  ;; draft: the answer is NONE, taken without the lock, and nothing is
+  ;; created. An area made after this look is a write after the read, which
+  ;; the answer never claimed to include. When either directory is there
+  ;; the lock is taken as before.
+  ;; NEVER: NOT FOR THE TWO STEPS THE LOCK EXISTS FOR. Installing and retiring
+  ;; a draft create the area on purpose and keep with-draft-lock.
+  (define (with-draft-read store writer none thunk)
+    (if (or (eq? 'directory (entry-type (area store writer "working")))
+            (eq? 'directory (entry-type (area store writer "structural"))))
+        (with-draft-lock store writer thunk)
+        none))
   (define (entry? x)
     (and (list? x) (= (length x) 8) (eq? (car x) 'working) (equal? (cadr x) 1)
          (safe-id? (list-ref x 2)) (safe-id? (list-ref x 3))
@@ -1090,7 +1108,7 @@
           ((not writer) (invalid-writer))
           (else
             (list 'ok writer
-                  (with-draft-lock store writer
+                  (with-draft-read store writer '()
                     (lambda ()
                       (map entry-draft (active-entries store writer state)))))))))))))
 
@@ -1129,7 +1147,7 @@
           ((not writer) (invalid-writer))
           (else
             (list 'ok writer
-                  (with-draft-lock store writer
+                  (with-draft-read store writer '()
                     (lambda ()
                       (cut-join (entries-cut (active-entries store writer state))
                                 (structural-cut (active-structural store writer state))))))))))))))
@@ -1183,7 +1201,7 @@
         (cond
           ((not writer) (invalid-writer))
           (else
-            (let* ((both (with-draft-lock store writer
+            (let* ((both (with-draft-read store writer (cons '() '())
                            (lambda () (cons (active-entries store writer state)
                                             (active-structural store writer state)))))
                    (entries (car both))

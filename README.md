@@ -1317,8 +1317,8 @@ working on a block, within a budget, with the receipt a commit gives back.
 `--for` takes any live block T; its UNIT is T and everything under it, its
 SCOPE the unit and what the unit depends on, transitively. It writes no
 record and runs no user code, and without `--working` it reads no log and
-writes nothing (under `--working` the writer's draft lock creates its
-working area, `draft.lock` and `working/`, when they do not exist).
+writes nothing (under `--working` it reads the writer's drafts under its
+draft lock, and for a writer with no draft area it creates nothing).
 Under the daemon it runs in the query session `query` uses, kept across
 requests (see "The query session" under `serve`): what an earlier request
 derived may be reused, and the answer is the one a fresh session would

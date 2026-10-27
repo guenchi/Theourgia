@@ -71,8 +71,8 @@
 ;;; It writes no record, runs no user code and keeps nothing between
 ;;; requests. Without --working it reads no log and writes nothing; with
 ;;; it, the view is folded from the log at the drafts' cut, as the working
-;;; view always is, under the writer's draft lock, which creates the
-;;; writer's working area (draft.lock, working/) when it does not exist.
+;;; view always is, under the writer's draft lock when the writer has a
+;;; draft area; for a writer that has none it creates nothing.
 (library (theourgia context)
   (export context-verb)
   (import (rnrs) (rnrs mutable-pairs)

@@ -607,6 +607,15 @@
     (and (pair? ws) (car ws))))
 (define (m1-writer-dir store) (string-append store "/writers/" (m1-writer store)))
 (define denied "Permission denied")
+;; A WRITER WITH AN AREA, MADE BY HAND. A writer that has no draft area
+;; now leaves nothing behind when its working view is read (working.sc
+;; with-draft-read), so the rows below that read what the draft lock
+;; creates -- its refusal, or the written record of draft.lock and the
+;; mkdir of working/ -- give the writer an area first. structural/ alone
+;; sends the read under the lock, which then makes working/ and draft.lock
+;; as before; an empty working/ does the same without the mkdir.
+(define (m1-area! store dir)
+  (system (string-append "mkdir -p " (m1-writer-dir store) "/" dir)))
 
 (let ((s (m1-store!)))
   (system (string-append "chmod 000 " s "/meta.sexp"))
@@ -624,6 +633,8 @@
        (w (m1-writer s))
        (wd (m1-writer-dir s))
        (lock (string-append wd "/draft.lock")))
+  ;; working/ pre-made: a no-draft writer's eval now creates nothing.
+  (m1-area! s "working")
   (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))
   (let ((made (file-exists? lock)))
     (system (string-append "chmod 000 " lock))
@@ -640,6 +651,9 @@
 (let* ((s (m1-store!))
        (w (m1-writer s))
        (wd (m1-writer-dir s)))
+  ;; structural/ pre-made: a no-draft writer's eval now creates nothing,
+  ;; and the record read here is the lock's mkdir of working/ and draft.lock.
+  (m1-area! s "structural")
   (want "P3-d/AG-b-1 a fresh writer's eval --working of a raising source: eval-exception carrying the pre-scheduler creations handed to the boot, rc 1"
         (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(car '())"))
         (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
@@ -649,6 +663,8 @@
 (let* ((s (m1-store!))
        (w (m1-writer s))
        (wd (m1-writer-dir s)))
+  ;; structural/ pre-made, as for P3-d.
+  (m1-area! s "structural")
   (want "AG-b-2 the same with --latest: the creations happen inside the scheduler, the boot's own record carries them"
         (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))
         (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
@@ -664,6 +680,8 @@
        (wd (m1-writer-dir s))
        (fresh (string-append here "/fresh-run-root")))
   (system (string-append "rm -rf " fresh "; mkdir -p " fresh))
+  ;; structural/ pre-made, as for P3-d.
+  (m1-area! s "structural")
   (want "AG-slots on a run root with no pool yet: the pool is made, and the written clause names the draft's lock and directory only"
         (list (m1-run (string-append "THEOURGIA_LOCAL=1 THEOURGIA_RUN=" fresh " THEOURGIA_EVAL_SLOTS=1")
                       "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))
@@ -703,6 +721,9 @@
        (w (m1-writer s))
        (wd (m1-writer-dir s))
        (lock (string-append wd "/draft.lock")))
+  ;; structural/ pre-made, so the read goes under the lock and makes
+  ;; working/: a no-draft writer's eval now creates nothing.
+  (m1-area! s "structural")
   (system (string-append "touch " lock " && chmod 000 " lock))
   (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))))
     (system (string-append "chmod 644 " lock))
@@ -788,6 +809,10 @@
         '(0 ok #f)))
 (let* ((s (m1-store!))
        (w (m1-writer s)))
+  ;; structural/ pre-made, so the cut and the view still make working/
+  ;; and draft.lock and the record is not empty: a no-draft writer's eval
+  ;; now creates nothing.
+  (m1-area! s "structural")
   (want "F eval: a fresh writer's successful eval --working answers ok and carries no written or client-written clause"
         (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)")))
         '(0 ok #f))
@@ -797,6 +822,8 @@
 (let* ((s (m1-store!))
        (w (m1-writer s))
        (wd (m1-writer-dir s)))
+  ;; structural/ pre-made, as for the F rows above.
+  (m1-area! s "structural")
   (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)"))))
     (want "CONTROL F eval --latest fresh: the boot made working/ and draft.lock (its record was not empty)"
           (list (file-directory? (string-append wd "/working")) (file-exists? (string-append wd "/draft.lock")))
@@ -804,6 +831,17 @@
     (want "F eval --latest on a FRESH writer: the successful answer is ok and carries no record clause, though the boot's record is not empty"
           (success-reading r)
           '(0 ok #f))))
+
+;; THE OPPOSITE READING: a writer with no area, as init leaves it. Its
+;; eval --working answers and creates nothing under writers/<w>/.
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s)))
+  (want "NA-1 a fresh writer with no draft area: eval --working and eval --working --latest answer ok and make neither working/ nor draft.lock"
+        (list (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)")))
+              (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)")))
+              (file-exists? (string-append wd "/working")) (file-exists? (string-append wd "/draft.lock")))
+        '((0 ok #f) (0 ok #f) #f #f)))
 
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\neval-local complete\n" rows bad)
