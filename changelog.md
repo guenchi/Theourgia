@@ -2,7 +2,7 @@
 
 ## 1.3.0 — unreleased
 
-*335 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests, started by the MCP shell and leaving when idle; a store identity that survives a remount; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
+*336 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests, started by the MCP shell and leaving when idle; a store identity that survives a remount; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
 ### Manteia, the rule language
 
@@ -87,6 +87,7 @@
 - A batch of a few hundred inserts under a rule naming `field+` was refused `rule-unevaluable` (`query-budget`, `field+`) before a selector was asked: a write's facts (`kind+`, `field+`, `edge+`, `edge-kind+`) were read by scanning the whole relation and charged its full size on every dispatch. They are now read by their bound arguments and charged the rows matched each time the goal is dispatched; an over-budget join is still refused.
 - A writer directory copied in from another checkout that sorted first was taken as the local writer, so this copy's writes went into another instance's log. The local writer is now chosen by ownership: a live writer whose `owner.sexp` names the `(machine nonce)` of this copy's `instance.sexp` is preferred by every write, `position`, a commit's cursor and `adopt`, and name order decides only when none does; a request whose writer comes to be passed over while it runs is refused `writer-superseded` (remedy `reopen`). The verbs that change drafts refuse a `--writer` owned by another instance (`foreign-writer`, remedy `draft-writer`), and `check` reports `writer-owner-foreign`, `writer-owner-unverified`, `instance-absent` and `instance-unavailable` without changing its verdict.
 - A write refused for the store's identity left an empty next segment behind, and the `adopt` that followed named a prefix in no segment, which `check` then read as damage for ever. A write is now admitted before it cuts a torn tail or rotates, and `adopt`'s prefix names the segment of the last applied record.
+- A working view asked for a writer with no drafts, through `context`, `eval`, an export or the drafts listing, no longer creates the writer's area and lock file: the view looks first, without the lock, for the writer's `working/` or `structural/` directory, and with neither answers the committed state and creates nothing (`read --working` never created it).
 
 ### Tests
 
