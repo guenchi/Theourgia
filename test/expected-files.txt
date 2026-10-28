@@ -30,6 +30,7 @@ theourgia/datum-code.sc
 theourgia/datum-match.sc
 theourgia/datum-metadata.sc
 theourgia/datum-project.sc
+theourgia/degeneracy.sc
 theourgia/derived.sc
 theourgia/digest.sc
 theourgia/eval-admission.sc
@@ -42,8 +43,10 @@ theourgia/evidence-index.sc
 theourgia/extensions.sc
 theourgia/ffi.sc
 theourgia/field-reading.sc
+theourgia/frame.sc
 theourgia/incomplete.sc
 theourgia/json.sc
+theourgia/landing-files.sc
 theourgia/languages.sc
 theourgia/lifecycle.sc
 theourgia/log.sc
@@ -59,6 +62,7 @@ theourgia/premises.sc
 theourgia/proc.sc
 theourgia/project.sc
 theourgia/query.sc
+theourgia/reader.sc
 theourgia/reduce.sc
 theourgia/refusal.sc
 theourgia/regex.sc
@@ -78,6 +82,8 @@ theourgia/templates.sc
 theourgia/text-code.sc
 theourgia/theourgia.sc
 theourgia/theourgiad.sc
+theourgia/timing-wrappers.sc
+theourgia/timing.sc
 theourgia/trace.sc
 theourgia/view.sc
 theourgia/wire.sc
