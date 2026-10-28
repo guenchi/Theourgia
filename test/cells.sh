@@ -32,10 +32,12 @@ verdict() {
   if [ "$1" = 0 ]; then say "PASS $2"; else say "FAIL $2"; fails=$((fails + 1)); fi
 }
 mtime() { perl -e 'print((stat $ARGV[0])[9])' "$1"; }
+# A daemon runs theourgiad as a script (.sc) or, since 1.3.0, as a program
+# object (.so) started by the MCP shell; the pattern takes both.
 stop_daemons() {
-  pkill -f "theourgiad.sc serve $W" 2>/dev/null
+  pkill -f "theourgiad[.]s[co] serve $W" 2>/dev/null
   sleep 1
-  pkill -9 -f "theourgiad.sc serve $W" 2>/dev/null
+  pkill -9 -f "theourgiad[.]s[co] serve $W" 2>/dev/null
   true
 }
 # a directory holding node and the named links or shims, nothing else
@@ -374,23 +376,31 @@ if has N6; then
   stop_daemons
 fi
 
-# ---- N7 THEOURGIA_SCHEME wins over a scheme on PATH; the program, daemon and eval child all use it
+# ---- N7 THEOURGIA_SCHEME wins over a scheme on PATH; the program, its core
+# child, the eval child and the daemon all use it. Since 1.3.0 a plain command
+# starts no daemon (with nobody listening it answers through a core child) and
+# the siblings run as program objects (.so); the daemon is opened by the MCP
+# shell, so the cell drives one MCP session after the plain commands.
 if has N7; then
   scratch n7; P=$T/prefix; install_into "$P" --ignore-scripts
   B=$(bindir n7); shim "$T/named" "$T/named.log"; shim "$B/scheme" "$T/path.log"
   (export PATH=$P/bin:$B:$BASEPATH THEOURGIA_SCHEME=$T/named
    "$P/bin/theourgia" init --store "$T/s" > "$R/N7-init.out" 2> "$R/N7-init.err"
    "$P/bin/theourgia" insert --title N7 --store "$T/s" > "$R/N7-insert.out" 2> "$R/N7-insert.err"
-   "$P/bin/theourgia" eval --store "$T/s" '(+ 1 2)' > "$R/N7-eval.out" 2> "$R/N7-eval.err")
+   "$P/bin/theourgia" eval --store "$T/s" '(+ 1 2)' > "$R/N7-eval.out" 2> "$R/N7-eval.err"
+   node "$here/test/mcp-talk.js" "$P/bin/theourgia-mcp" "$T/s" > "$R/N7-mcp.json" 2> "$R/N7-mcp.err")
   cp "$T/named.log" "$R/N7-named.log"; cp "$T/path.log" "$R/N7-path.log" 2>/dev/null || : > "$R/N7-path.log"
-  main=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N7-named.log"); daemon=$(grep -c '^\[.*theourgia/theourgiad.sc\]$' "$R/N7-named.log")
-  worker=$(grep -c '^\[.*eval-worker.sc\]$' "$R/N7-named.log"); pathuse=$(wc -c < "$R/N7-path.log" | tr -d ' ')
-  [ "$main" -ge 1 ] && [ "$daemon" -ge 1 ] && [ "$worker" -ge 1 ] && [ "$pathuse" = 0 ] && grep -q '(ok' "$R/N7-eval.out"; v=$?
-  verdict $v "N7 THEOURGIA_SCHEME wins: in its shim's log the program $main, the daemon $daemon, the eval child $worker times; the PATH scheme shim's log $pathuse bytes; eval $(head -c 60 "$R/N7-eval.out" | tr '\n' ' ')"
+  main=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N7-named.log"); core=$(grep -c '^\[.*theourgia/core[.]s[co]\]$' "$R/N7-named.log")
+  daemon=$(grep -c '^\[.*/theourgiad[.]s[co]\]$' "$R/N7-named.log")
+  worker=$(grep -c '^\[.*eval-worker[.]s[co]\]$' "$R/N7-named.log"); pathuse=$(wc -c < "$R/N7-path.log" | tr -d ' ')
+  mcpeval=$(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(r.evalIsError === false && String(r.evalText).includes("3") ? "ok" : "bad")' "$R/N7-mcp.json" 2>/dev/null)
+  [ "$main" -ge 1 ] && [ "$core" -ge 1 ] && [ "$daemon" -ge 1 ] && [ "$worker" -ge 1 ] && [ "$pathuse" = 0 ] && grep -q '(ok' "$R/N7-eval.out" && [ "$mcpeval" = ok ]; v=$?
+  verdict $v "N7 THEOURGIA_SCHEME wins: in its shim's log the program $main, the core child $core, the daemon $daemon, the eval child $worker times; the PATH scheme shim's log $pathuse bytes; eval $(head -c 60 "$R/N7-eval.out" | tr '\n' ' '); MCP eval ${mcpeval:-none}"
   stop_daemons
 fi
 
-# ---- N7b discovery exports the absolute path: PATH holds only chezscheme
+# ---- N7b discovery exports the absolute path: PATH holds only chezscheme;
+# the sibling a plain command starts (its core child, since 1.3.0) carries it
 if has N7b; then
   scratch n7b; P=$T/prefix; install_into "$P" --ignore-scripts
   B=$(bindir n7b); shim "$B/chezscheme" "$T/cs.log"
@@ -398,9 +408,9 @@ if has N7b; then
    "$P/bin/theourgia" init --store "$T/s" > /dev/null 2> "$R/N7b-init.err"
    "$P/bin/theourgia" insert --title N7b --store "$T/s" > "$R/N7b-insert.out" 2> "$R/N7b-insert.err")
   cp "$T/cs.log" "$R/N7b-cs.log"
-  dline=$(grep -B2 '^\[.*theourgiad.sc\]$' "$R/N7b-cs.log" | grep '^===' | tail -1)
+  dline=$(grep -B2 '^\[.*theourgia/core[.]s[co]\]$' "$R/N7b-cs.log" | grep '^===' | tail -1)
   case "$dline" in *"THEOURGIA_SCHEME=$B/chezscheme") v=0;; *) v=1;; esac
-  verdict $v "N7b discovery exports the absolute path: the daemon's record: ${dline:-none}"
+  verdict $v "N7b discovery exports the absolute path: the core child's record: ${dline:-none}"
   stop_daemons
 fi
 
@@ -637,13 +647,15 @@ if has N15; then
     cshim "$T/chez" "$T/chez.log" 1
     (export PATH=$P/bin:$PKGBIN_DIR:$BASEPATH THEOURGIA_SCHEME=$T/chez
      "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15-replaced.out" 2> "$R/N15-replaced.err"; echo $? > "$R/N15-replaced.rc")
-    calls=$(grep -c '^===' "$R/N15-warm.log")
-    program=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N15-warm.log")
+    # since 1.3.0 the program starts one core child (no daemon listening):
+    # two starts, the program first, and no --version probe before it
+    calls=$(grep -c '^===' "$R/N15-warm.log"); probes=$(grep -c '^\[--version\]$' "$R/N15-warm.log")
+    program=$(grep -c '^\[.*theourgia/theourgia.sc\]$' "$R/N15-warm.log"); core=$(grep -c '^\[.*theourgia/core[.]s[co]\]$' "$R/N15-warm.log")
     dirs=$(ls "$XDG_CACHE_HOME/theourgia" | wc -l | tr -d ' ')
     records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
-    [ "$calls" = 1 ] && [ "$program" = 1 ] && [ "$(cat "$R/N15-warm.rc")" = 0 ] && grep -q '^(ok' "$R/N15-warm.out" &&
+    [ "$calls" = 2 ] && [ "$probes" = 0 ] && [ "$program" = 1 ] && [ "$core" = 1 ] && [ "$(cat "$R/N15-warm.rc")" = 0 ] && grep -q '^(ok' "$R/N15-warm.out" &&
       [ "$dirs" = 2 ] && [ "$(cat "$R/N15-replaced.rc")" = 0 ] && [ "$(grep -c 'compiling once' "$R/N15-replaced.err")" = 1 ]; v=$?
-    verdict $v "N15 the key remembered: a warm call started Chez $calls time(s), the program $program; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs); records $records"
+    verdict $v "N15 the key remembered: a warm call started Chez $calls time(s) ($probes --version probe), the program $program, its core child $core; a replaced binary built $(grep -c 'compiling once' "$R/N15-replaced.err") new cache (directories now $dirs); records $records"
     stop_daemons
   fi
 fi
@@ -737,14 +749,16 @@ if has N15; then
    : > "$T/chez.log"
    "$P/bin/theourgia" outline --wire --store "$T/s" > "$R/N15b.out" 2> "$R/N15b.err"; echo $? > "$R/N15b.rc"
    cp "$T/chez.log" "$R/N15b.log")
+  # the probe, the -q start, the program and (since 1.3.0) its core child
   calls=$(grep -c '^===' "$R/N15b.log"); probes=$(grep -c '^\[--version\]$' "$R/N15b.log")
+  core=$(grep -c '^\[.*theourgia/core[.]s[co]\]$' "$R/N15b.log")
   records=$(ls "$XDG_CACHE_HOME/theourgia/.chez" 2>/dev/null | grep -c '\.json$')
-  [ "$calls" = 3 ] && [ "$probes" = 1 ] && [ "$records" = 0 ] && [ "$(cat "$R/N15b.rc")" = 0 ]; v=$?
-  verdict $v "N15b a script is not remembered: a warm call started it $calls times ($probes --version probe), records $records"
+  [ "$calls" = 4 ] && [ "$probes" = 1 ] && [ "$core" = 1 ] && [ "$records" = 0 ] && [ "$(cat "$R/N15b.rc")" = 0 ]; v=$?
+  verdict $v "N15b a script is not remembered: a warm call started it $calls times ($probes --version probe, $core core child), records $records"
   stop_daemons
 fi
 
 stop_daemons
-say "cells end $(date '+%H:%M:%S'): $fails failed; daemons left $(pgrep -f "theourgiad.sc serve $W" | wc -l | tr -d ' ')"
+say "cells end $(date '+%H:%M:%S'): $fails failed; daemons left $(pgrep -f "theourgiad[.]s[co] serve $W" | wc -l | tr -d ' ')"
 rm -rf "$W"
 exit $(( fails > 0 ? 1 : 0 ))
