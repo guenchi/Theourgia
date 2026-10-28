@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.0 — unreleased
+## 1.3.0 — 2026-10-28
 
 *336 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests, started by the MCP shell and leaving when idle; a store identity that survives a remount; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
 
