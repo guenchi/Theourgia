@@ -833,13 +833,17 @@
           '(0 ok #f))))
 
 ;; THE OPPOSITE READING: a writer with no area, as init leaves it. Its
-;; eval --working answers and creates nothing under writers/<w>/.
+;; eval --working answers and creates nothing under writers/<w>/. The two
+;; runs are bound before the probes: the order in which an application's
+;; operands are evaluated is unspecified, so probes beside the runs in one
+;; list could look before either run and read #f on a run that creates.
 (let* ((s (m1-store!))
        (w (m1-writer s))
-       (wd (m1-writer-dir s)))
+       (wd (m1-writer-dir s))
+       (plain (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))))
+       (latest (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)")))))
   (want "NA-1 a fresh writer with no draft area: eval --working and eval --working --latest answer ok and make neither working/ nor draft.lock"
-        (list (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)")))
-              (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)")))
+        (list plain latest
               (file-exists? (string-append wd "/working")) (file-exists? (string-append wd "/draft.lock")))
         '((0 ok #f) (0 ok #f) #f #f)))
 
