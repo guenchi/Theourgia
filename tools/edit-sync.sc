@@ -70,6 +70,11 @@
 ;; is predicted -- structural-version, reduce.sc -- and skipped when the
 ;; store already holds it.
 ;;
+;; A REFUSED SYNC LEAVES THE WRITER'S DRAFTS AS THEY WERE, by the rule above:
+;; a freeze run now would freeze those older drafts, not the directory. A
+;; coder who tested the directory freezes with landing-freeze's --tree <dir>,
+;; which refuses a frozen tree other than the directory (tree-differs).
+;;
 ;; A RETRY WRITES NOTHING. A block whose slot already holds exactly the
 ;; version this sync would write -- sha256 of the new bytes, the based-on
 ;; and the cut, reduce.sc's draft-version -- is this tool's own earlier

@@ -18,6 +18,8 @@
 ;;
 ;;   scheme --script tools/landing-freeze.sc <store> --writer <W> <dir>
 ;;   scheme --script tools/landing-freeze.sc <store> --writer <W> --check <freeze-dir>
+;;   either one followed by --tree <edit-dir>: the frozen tree must be the
+;;   edit directory that was tested (see --tree below)
 ;;
 ;; <dir> must not exist. In order:
 ;; - EVERY DRAFT IS BROUGHT ONTO THE STORE'S APPLIED CUT first, since
@@ -110,8 +112,8 @@
         (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups file-scope-changes)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes entry-name-type unreadable-entry? overwrite-entry! hold-point!)
-        (only (theourgia log) load-declaration-set!)
+        (only (theourgia ffi) entry-bytes entry-name-type unreadable-entry? overwrite-entry! hold-point! directory-entries)
+        (only (theourgia log) load-declaration-set! store-id-of)
         (only (theourgia incomplete) incomplete-refused))
 
 (define actor "landing-freeze")
@@ -138,6 +140,79 @@
       (get-string-all err)
       (close-port from) (close-port err)
       (read (open-string-input-port (if (eof-object? text) "" text))))))
+
+;; ---- --tree: the frozen tree against the edit directory that was tested -----
+(define (without-trailing-slash p)
+  (if (and (> (string-length p) 1) (char=? #\/ (string-ref p (- (string-length p) 1))))
+      (without-trailing-slash (substring p 0 (- (string-length p) 1)))
+      p))
+;; A FREEZE HOLDS WHAT THE WRITER'S DRAFTS ARE, and nothing ties them to the
+;; directory a coder edited and tested: a refused edit-sync writes nothing,
+;; an edit made after the last sync was never synced, a sync can come from
+;; another export, and a write failure can leave a sync half done. In each
+;; case the freeze holds content other than the tested tree, and says
+;; nothing. Given --tree <edit-dir>, the freeze is that tree or it is
+;; refused:
+;; - first, before anything is written, the directory's sidecar
+;;   (<edit-dir>.edit/SIDECAR.sexp, edit-export's record) must name this
+;;   store and this writer: (error tree-foreign (sidecar <path>) (store <s>)
+;;   (writer <w>)), or (reason unreadable) when it does not read as one;
+;; - then, after the tree is written from the one view read (for --check,
+;;   before anything is judged), every file under <dir>/tree is compared
+;;   byte for byte with the edit directory, path by path. A dot-named name is
+;;   skipped at any depth on both sides, as edit-export writes none; an entry
+;;   that is neither a directory nor a regular file counts as different. Any
+;;   difference is (error tree-differs (tree <edit-dir>) (differs (<path>
+;;   ...)) (only-in-freeze (<path> ...)) (only-in-tree (<path> ...))), and a
+;;   freeze's directory is left for the coder to remove, as for
+;;   drafts-changed: sync the directory, or export again and re-apply.
+;; Every non-dot file of the edit directory counts, so a scratch file or a
+;; build product left in it reads as only-in-tree: readings and outputs go
+;; elsewhere. The limits of the equality: it is paths and bytes over
+;; non-dot files, not modes (edit-export writes 0644) and not empty
+;; directories; the edit directory's own root is not asked with an lstat, so
+;; a root that is a symbolic link is followed; the sidecar's first datum is
+;; read, not checked for trailing data as edit-sync checks it; and the walk
+;; is not a snapshot, so both directories are taken to stand still while it
+;; runs.
+(define (tree-sidecar-check! store writer tree)
+  (let* ((path (string-append tree ".edit/SIDECAR.sexp"))
+         (d (and (eq? (entry-name-type path) 'regular)
+                 (guard (e (#t #f)) (read (open-string-input-port (utf8->string (entry-bytes path))))))))
+    (unless (and (pair? d) (eq? (car d) 'edit-export))
+      (refuse 'tree-foreign (list 'sidecar path) '(reason unreadable)))
+    (let ((s (clause 'store d)) (w (clause 'writer d)))
+      (unless (and (equal? s (store-id-of store)) (equal? w writer))
+        (refuse 'tree-foreign (list 'sidecar path) (list 'store s) (list 'writer w))))))
+;; -> ((<relative path> . <kind>) ...) for every entry under ROOT that is not
+;; a directory, dot-named names skipped at any depth
+(define (tree-entries root)
+  (let walk ((rel "") (out '()))
+    (let ((dir (if (string=? rel "") root (string-append root "/" rel))))
+      (fold-left (lambda (acc name)
+                   (if (char=? (string-ref name 0) #\.)
+                       acc
+                       (let ((r (if (string=? rel "") name (string-append rel "/" name)))
+                             (kind (entry-name-type (string-append dir "/" name))))
+                         (if (eq? kind 'directory) (walk r acc) (cons (cons r kind) acc)))))
+                 out (filter (lambda (n) (not (member n '("." "..")))) (directory-entries dir))))))
+(define (tree-compare! frozen tree)
+  (let* ((a (tree-entries frozen)) (b (tree-entries tree))
+         (in-b (let ((t (make-hashtable string-hash string=?))) (for-each (lambda (e) (hashtable-set! t (car e) (cdr e))) b) t))
+         (in-a (let ((t (make-hashtable string-hash string=?))) (for-each (lambda (e) (hashtable-set! t (car e) (cdr e))) a) t))
+         (sorted (lambda (ps) (list-sort string<? ps)))
+         (differs (filter (lambda (e)
+                            (let ((kb (hashtable-ref in-b (car e) #f)))
+                              (and kb
+                                   (or (not (eq? (cdr e) 'regular)) (not (eq? kb 'regular))
+                                       (not (bytevector=? (entry-bytes (string-append frozen "/" (car e)))
+                                                          (entry-bytes (string-append tree "/" (car e)))))))))
+                          a))
+         (only-a (filter (lambda (e) (not (hashtable-ref in-b (car e) #f))) a))
+         (only-b (filter (lambda (e) (not (hashtable-ref in-a (car e) #f))) b)))
+    (unless (and (null? differs) (null? only-a) (null? only-b))
+      (refuse 'tree-differs (list 'tree tree) (list 'differs (sorted (map car differs)))
+              (list 'only-in-freeze (sorted (map car only-a))) (list 'only-in-tree (sorted (map car only-b)))))))
 
 ;; A STRUCTURAL DRAFT'S KEY in a frozen list: its provisional id, or delete-
 ;; and its holder (the names working.sc files them under)
@@ -397,10 +472,13 @@
 ;; was gated is what would land. A structural item at the applied cut is
 ;; current (nothing was committed since, so a delete's file is as it was);
 ;; one at another is judged by judge-structural, as a freeze judges it.
-(define (check store writer dir)
+(define (check store writer dir . tree)
   (let ((m (frozen-manifest dir)))
     (unless (equal? (clause 'writer m) writer)
       (refuse 'other-writer (list 'frozen (clause 'writer m)) (list 'given writer)))
+    (when (pair? tree)
+      (tree-sidecar-check! store writer (car tree))
+      (tree-compare! (string-append dir "/tree") (car tree)))
     (let* ((items (filter (lambda (d) (and (pair? d) (memq (car d) '(draft new delete)))) (cdr m)))
            (bytes (map (lambda (d) (frozen-bytes dir d)) items))
            (pinned (clause 'pinned-cut m))
@@ -433,10 +511,11 @@
               (else (list 'ok (cons 'current (cons (list 'pinned pinned)
                                                    (if (equal? (cut-set at) (cut-set pinned)) '() (list (list 'now at))))))))))))
 
-(define (freeze store writer dir)
+(define (freeze store writer dir . tree)
   ;; anything at the directory's name, asked with an lstat, refuses the freeze
   ;; before any draft is moved, in the words the dump refuses it with
   (unless (eq? 'absent (entry-name-type dir)) (refuse 'dump-refused (list 'error 'dir-exists (list 'dir dir))))
+  (when (pair? tree) (tree-sidecar-check! store writer (car tree)))
   (let* ((records (strictly store (lambda (key) (bring-onto-applied-cut! key writer))))
          (dumped (run-dump store writer dir)))
     (unless (and (pair? dumped) (eq? (car dumped) 'ok)) (refuse 'dump-refused dumped))
@@ -459,6 +538,8 @@
         (let ((now (reduce-applied-cut (open-and-reduce store))))
           (unless (equal? (cut-set now) (cut-set pinned))
             (refuse 'cut-moved (list 'pinned pinned) (list 'now now))))
+        ;; THE TREE WRITTEN IS THE TESTED ONE, when the freeze was told it
+        (when (pair? tree) (tree-compare! (string-append dir "/tree") (car tree)))
         ;; the counts follow the answer only when a draft was written: a freeze
         ;; of drafts already at the applied cut answers as it always has
         (append answer
@@ -556,17 +637,36 @@
               (list 'changed (length (let ((i (assq 'items (cdr changed)))) (if i (cdr i) '()))))
               (list 'dir dir))))))
 
-(define (main args)
-  ;; `--check` IS NEVER A DIRECTORY: a check whose directory was left off is
-  ;; refused, not run as a freeze into a directory of that name
-  (if (not (and (or (and (= 4 (length args)) (not (string=? (cadddr args) "--check")))
-                    (and (= 5 (length args)) (string=? (cadddr args) "--check")))
-                (string=? (cadr args) "--writer")))
-      (begin (write '(usage (landing-freeze <store> "--writer" <W> ["--check"] <dir>))) (newline) (exit 2))
+(define (main all)
+  ;; `--tree <edit-dir>`, when given, comes last. The directory is written
+  ;; without trailing slashes, as edit-export and edit-sync write theirs, so
+  ;; its sidecar is <dir>.edit beside it whatever the shell completed.
+  (define tree (let ((n (length all)))
+                 (and (>= n 2) (string=? (list-ref all (- n 2)) "--tree") (without-trailing-slash (list-ref all (- n 1))))))
+  (define args (if tree (reverse (cddr (reverse all))) all))
+  ;; A --tree WHOSE LAST COMPONENT IS . OR .. NAMES THE DIRECTORY BY A WAY
+  ;; edit-export and edit-sync do not fold either: its sidecar is found by
+  ;; appending .edit to the spelling, which "." turns into "..edit". It is
+  ;; refused as usage, so the tools agree: the edit directory is named
+  ;; itself. One lexical fold for all three is another item.
+  (define dotted (and tree (let* ((i (let loop ((i (- (string-length tree) 1)))
+                                       (cond ((< i 0) -1) ((char=? (string-ref tree i) #\/) i) (else (loop (- i 1))))))
+                                  (last (substring tree (+ i 1) (string-length tree))))
+                             (member last '("." "..")))))
+  ;; `--check` AND `--tree` ARE NEVER A DIRECTORY: a check whose directory
+  ;; was left off, and a --tree left without its directory, are refused as
+  ;; usage before anything runs, not run as a freeze into a directory of
+  ;; that name (which would bring the drafts onto the applied cut first)
+  (if (not (and (or (and (= 4 (length args)) (not (member (cadddr args) '("--check" "--tree"))))
+                    (and (= 5 (length args)) (string=? (cadddr args) "--check") (not (string=? (list-ref args 4) "--tree"))))
+                (string=? (cadr args) "--writer")
+                (not (member "--tree" args))
+                (not dotted)))
+      (begin (write '(usage (landing-freeze <store> "--writer" <W> ["--check"] <dir> ["--tree" <edit-dir>]))) (newline) (exit 2))
       (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
                  (if (= 5 (length args))
-                     (strictly (car args) (lambda (key) (check key (caddr args) (list-ref args 4))))
-                     (freeze (car args) (caddr args) (cadddr args))))))
+                     (strictly (car args) (lambda (key) (apply check key (caddr args) (list-ref args 4) (if tree (list tree) '()))))
+                     (apply freeze (car args) (caddr args) (cadddr args) (if tree (list tree) '()))))))
         (write a)
         (newline)
         (exit (if (eq? (car a) 'ok) 0 1)))))

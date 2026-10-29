@@ -3518,7 +3518,9 @@ hunk's old side to the blocks by `locate`'s rule: a range answers every block
 it intersects, an insertion the block that starts where it is (the last
 block at the file's end). Each hunk must answer exactly one block, and each
 touched block's new text is its old text with its hunks applied. Every check
-runs before any write, and a refusal writes nothing:
+runs before any write, and a refusal writes nothing, so after a refusal the
+writer's drafts are as they were and a freeze would freeze those, not the
+directory (`landing-freeze ... --tree <dir>` refuses that):
 
 - the sidecar: `missing-sidecar`, `bad-sidecar`, `foreign-store` (another
   store's, even with the same writer name), `foreign-writer`,
@@ -3704,6 +3706,26 @@ listing), `dump-refused`, `working-view-refused`, `export-refused` and
 pinned cut behind the applied one and refuses it, `(error cut-moved (pinned
 <cut>) (now <cut>))`, the directory left as for `drafts-changed`. It answers `(ok (frozen
 <n>) (changed <k>) (dir <dir>))`.
+
+`--tree <edit-dir>`, after either form, ties a freeze to the edit directory
+that was tested. Nothing else does: a refused `edit-sync` writes nothing, so
+the writer's drafts stay as they were, and an edit made after the last sync,
+a sync from another export or a sync that failed part-way leaves the drafts
+other than the directory too. Before anything is written the directory's
+sidecar (`<edit-dir>.edit/SIDECAR.sexp`) must name this store and this
+writer, `(error tree-foreign (sidecar <path>) (store <s>) (writer <w>))`
+otherwise. Then the frozen tree is compared with the directory byte for
+byte, path by path, dot-named names skipped on both sides: any difference is
+`(error tree-differs (tree <edit-dir>) (differs (<path> ...))
+(only-in-freeze (<path> ...)) (only-in-tree (<path> ...)))`, and a freeze's
+directory is left for the coder to remove, as for `drafts-changed`. With
+`--check` the comparison comes before anything is judged and writes nothing.
+Every non-dot file of the edit directory counts, so a scratch file or a
+build product left in it refuses the freeze as only-in-tree: keep readings
+and outputs elsewhere. The directory may be given with a trailing slash; its
+sidecar is `<edit-dir>.edit` beside it either way. A `--tree` without its
+directory, and one whose last component is `.` or `..`, is a usage error,
+before anything runs: name the edit directory itself.
 
 `landing-freeze --check <dir>` judges a freeze already made against the
 store as it is now and writes nothing, for a landing to run before it

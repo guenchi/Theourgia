@@ -649,6 +649,95 @@ n3
   (want "ET-30 two block entries with one id refuse bad-sidecar, duplicate-block, before any slice or write"
         (refused-why s1 dir "we30") '((error bad-sidecar) (reason duplicate-block) ())))
 
+;; ---- TR: a freeze given the edit directory that was tested -------------------------
+;; A refused sync writes nothing, so the writer's drafts stay as they were and
+;; a freeze holds those; an edit after the last sync was never synced.
+;; landing-freeze --tree <dir> refuses a frozen tree other than the directory.
+(define (freeze! s fdir w . extra) (apply tool! s "landing-freeze.sc" (next-out s) (st-of s) "--writer" w fdir extra))
+(define (check! s fdir w . extra) (apply tool! s "landing-freeze.sc" (next-out s) (st-of s) "--writer" w "--check" fdir extra))
+(define (tree-clause a name) (let ((c (clause-of a name))) (and c (cadr c))))
+(define s9 (store-of! '(("a.sc" "a1\n" "a2\n") ("b.sc" "b1\n")) '()))
+;; a first round synced: W holds a draft of b.sc
+(define tr-d1 (edit-dir s9 "tr-d1"))
+(export! s9 tr-d1 "wtr")
+(edit! (string-append tr-d1 "/b.sc") "b1\n" "B1\n")
+(checked "first sync" (sync! s9 tr-d1 "wtr"))
+;; the second round's sync is refused: another writer committed a.sc's block
+(define tr-d2 (edit-dir s9 "tr-d2"))
+(export! s9 tr-d2 "wtr")
+(edit! (string-append tr-d2 "/a.sc") "a1\n" "A1\n")
+(checked "other write" (ask (st-of s9) 'write (block-of (st-of s9) "a.sc" 0) "a1 other\n" "--writer" "w0"))
+(checked "other commit" (ask (st-of s9) 'commit "--writer" "w0"))
+(define tr-refused (sync! s9 tr-d2 "wtr"))
+(let ((a (freeze! s9 (edit-dir s9 "tr-f1") "wtr" "--tree" tr-d2)))
+  (want "TR-1 a refused sync, then a freeze given the tested directory: refused tree-differs naming the file the drafts lack, the freeze directory left"
+        (list (head-of tr-refused) (head-of a) (tree-clause a 'differs) (tree-clause a 'only-in-freeze) (tree-clause a 'only-in-tree)
+              (file-exists? (edit-dir s9 "tr-f1")))
+        '((error stale) (error tree-differs) ("a.sc") () () #t)))
+(want "TR-1 CONTROL the same freeze without --tree succeeds and freezes the older drafts"
+      (let ((a (freeze! s9 (edit-dir s9 "tr-f1b") "wtr")))
+        (list (head-of a) (file-text (string-append (edit-dir s9 "tr-f1b") "/tree/a.sc"))))
+      '(ok "a1 other\na2\n"))
+;; exported again and the edit applied again: the sync goes through
+(define tr-d3 (edit-dir s9 "tr-d3"))
+(export! s9 tr-d3 "wtr")
+(edit! (string-append tr-d3 "/a.sc") "a1 other\n" "A1\n")
+(checked "third sync" (sync! s9 tr-d3 "wtr"))
+(define tr-f2 (edit-dir s9 "tr-f2"))
+(want "TR-2 after a sync that went through, the freeze given that directory is ok"
+      (head-of (freeze! s9 tr-f2 "wtr" "--tree" tr-d3))
+      'ok)
+(want "TR-5 --check given the directory on that freeze: ok"
+      (head-of (check! s9 tr-f2 "wtr" "--tree" tr-d3))
+      'ok)
+;; an edit after the sync, never synced
+(edit! (string-append tr-d3 "/b.sc") "B1\n" "B2\n")
+(let ((a (freeze! s9 (edit-dir s9 "tr-f3") "wtr" "--tree" tr-d3)))
+  (want "TR-3 an edit made after the last sync: the freeze given the directory is refused tree-differs naming it"
+        (list (head-of a) (tree-clause a 'differs))
+        '((error tree-differs) ("b.sc"))))
+(let ((a (check! s9 tr-f2 "wtr" "--tree" tr-d3)))
+  (want "TR-5 --check given the directory after that edit: tree-differs naming the file, and nothing written"
+        (list (head-of a) (tree-clause a 'differs))
+        '((error tree-differs) ("b.sc"))))
+;; another writer's export
+(define tr-other (edit-dir s9 "tr-other"))
+(export! s9 tr-other "wother")
+(let ((a (freeze! s9 (edit-dir s9 "tr-f4") "wtr" "--tree" tr-other)))
+  (want "TR-4 --tree naming another writer's export: refused tree-foreign, naming the sidecar's writer, nothing written"
+        (list (head-of a) (tree-clause a 'writer) (file-exists? (edit-dir s9 "tr-f4")))
+        '((error tree-foreign) "wother" #f)))
+;; a fresh export, unedited: the same tree as the drafts
+(define tr-d5 (edit-dir s9 "tr-d5"))
+(export! s9 tr-d5 "wtr")
+(define tr-f5 (edit-dir s9 "tr-f5"))
+(want "TR-6 --tree given with a trailing slash: the freeze and --check are both ok (the sidecar is <dir>.edit beside it)"
+      (list (head-of (freeze! s9 tr-f5 "wtr" "--tree" (string-append tr-d5 "/")))
+            (head-of (check! s9 tr-f5 "wtr" "--tree" (string-append tr-d5 "//"))))
+      '(ok ok))
+;; A BARE --tree IS USAGE, before anything runs: here a commit on another
+;; block leaves W's drafts off the applied cut, so a freeze would move them
+(checked "other write 2" (ask (st-of s9) 'write (block-of (st-of s9) "a.sc" 1) "a2 other\n" "--writer" "w0"))
+(checked "other commit 2" (ask (st-of s9) 'commit "--writer" "w0"))
+(let* ((before (ask (st-of s9) 'drafts "--writer" "wtr"))
+       (a (tool! s9 "landing-freeze.sc" (next-out s9) (st-of s9) "--writer" "wtr" "--tree"))
+       (b (tool! s9 "landing-freeze.sc" (next-out s9) (st-of s9) "--writer" "wtr" (edit-dir s9 "tr-f7") "--tree"))
+       (after (ask (st-of s9) 'drafts "--writer" "wtr")))
+  (want "TR-7 a --tree without its directory, last or in the directory's place: usage, no directory made, and the drafts a freeze would move untouched"
+        (list (head-of a) (head-of b) (file-exists? "--tree") (file-exists? (edit-dir s9 "tr-f7")) (equal? before after))
+        '(usage usage #f #f #t)))
+;; A --tree WHOSE LAST COMPONENT IS . OR .. is usage, as edit-export and
+;; edit-sync do not fold it either: W's drafts are still off the applied cut
+(let* ((before (ask (st-of s9) 'drafts "--writer" "wtr"))
+       (a (freeze! s9 (edit-dir s9 "tr-f8a") "wtr" "--tree" "."))
+       (b (freeze! s9 (edit-dir s9 "tr-f8b") "wtr" "--tree" (string-append tr-d5 "/sub/..")))
+       (c (check! s9 tr-f5 "wtr" "--tree" (string-append tr-d5 "/.")))
+       (after (ask (st-of s9) 'drafts "--writer" "wtr")))
+  (want "TR-8 --tree ending in . or .. (freeze, and --check): usage before anything runs, no directory made, the drafts untouched"
+        (list (head-of a) (head-of b) (head-of c) (file-exists? (edit-dir s9 "tr-f8a")) (file-exists? (edit-dir s9 "tr-f8b"))
+              (equal? before after))
+        '(usage usage usage #f #f #t)))
+
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nedit-tools complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

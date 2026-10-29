@@ -45,6 +45,8 @@
   ("tools/edit-sync.sc" (files-under) entry-name-type 1 keep a "not writer layout: the edited export directory, walked without following a link; an entry that is neither a regular file nor a directory refuses unexpected-entry before any write")
   ("tools/edit-sync.sc" (sync) entry-name-type 1 keep a "not writer layout: the edited export directory itself; one that is not a directory refuses removed-file before any write")
   ("tools/landing-freeze.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("tools/landing-freeze.sc" (tree-sidecar-check!) entry-name-type 1 keep a "not writer layout: the edit directory's sidecar, a file the caller names with --tree, asked with an lstat; anything but a regular file is tree-foreign unreadable")
+  ("tools/landing-freeze.sc" (tree-entries) entry-name-type 1 keep a "not writer layout: the frozen tree and the edit directory the caller names, walked with an lstat so a link is a difference, never followed")
   ("tools/landing-freeze.sc" (freeze) entry-name-type 1 keep a "not writer layout: the freeze directory the caller names, asked with an lstat; anything present refuses dump-refused dir-exists before any draft is moved")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -298,6 +300,11 @@
    unrelated a
    "landing-commit's answer: a refusal raised as an error list is printed and the run exits 1; a condition is not caught"
    (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("tools/landing-freeze.sc" (tree-sidecar-check!) 1 guard
+   (#t)
+   unrelated a
+   "the edit directory's sidecar, a file the caller names with --tree, not a store entry: any failure to read it as one datum is the refusal tree-foreign unreadable"
+   (e (#t #f)))
   ("tools/landing-freeze.sc" (frozen-manifest) 1 guard
    (#t)
    unrelated a
