@@ -25,7 +25,7 @@
   (export locate-file locate-pieces changed-files-between raw-projection path-collision spelling-key
           ambiguous-groups volume-insensitivity landing-collision base-entry-judgement
           store-route-domain file-pieces file-new-intents file-delete-intents file-baseline
-          structural-outputs file-scope-changes)
+          structural-outputs file-scope-changes edit-dir-path)
   (import (rnrs)
           (only (theourgia code-project) code-field code-files code-children projection-outputs projected-file
                 export-code-view lang-fields code-safe-path?)
@@ -91,6 +91,30 @@
       (vector-for-each judge (hashtable-keys a))
       (vector-for-each judge (hashtable-keys b))
       (list-sort string<? (vector->list (hashtable-keys paths)))))
+
+  ;; ---- an edit directory's one name -------------------------------------------
+  ;; ONE SPELLING FOR AN EDIT DIRECTORY, shared by edit-export, edit-sync and
+  ;; landing-freeze, so each finds the directory's sidecar, "<dir>.edit"
+  ;; beside it, however the directory was typed. The fold is LEXICAL: a
+  ;; relative path is taken from CWD; empty and "." components are dropped;
+  ;; ".." removes the component before it (at the root it stays the root).
+  ;; Nothing on disk is asked and no link is resolved: a directory reached
+  ;; through a link keeps the link's name, so its sidecar is beside the link,
+  ;; where edit-export wrote it for that spelling, and "link/.." is the
+  ;; link's parent as a shell's logical `cd ..` reads it, not the target's.
+  ;; -> an absolute path with no trailing slash, "/" for the root.
+  (define (edit-dir-path p cwd)
+    (let* ((abs (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) p (string-append cwd "/" p)))
+           (parts (let loop ((i 0) (from 0) (out '()))
+                    (cond ((= i (string-length abs)) (reverse (cons (substring abs from i) out)))
+                          ((char=? (string-ref abs i) #\/) (loop (+ i 1) (+ i 1) (cons (substring abs from i) out)))
+                          (else (loop (+ i 1) from out)))))
+           (kept (fold-left (lambda (acc c)
+                              (cond ((or (string=? c "") (string=? c ".")) acc)
+                                    ((string=? c "..") (if (pair? acc) (cdr acc) acc))
+                                    (else (cons c acc))))
+                            '() parts)))
+      (if (null? kept) "/" (apply string-append (map (lambda (c) (string-append "/" c)) (reverse kept))))))
 
   ;; ---- what a base is compared over -------------------------------------------
   ;;

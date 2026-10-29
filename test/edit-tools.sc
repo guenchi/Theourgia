@@ -726,17 +726,78 @@ n3
   (want "TR-7 a --tree without its directory, last or in the directory's place: usage, no directory made, and the drafts a freeze would move untouched"
         (list (head-of a) (head-of b) (file-exists? "--tree") (file-exists? (edit-dir s9 "tr-f7")) (equal? before after))
         '(usage usage #f #f #t)))
-;; A --tree WHOSE LAST COMPONENT IS . OR .. is usage, as edit-export and
-;; edit-sync do not fold it either: W's drafts are still off the applied cut
-(let* ((before (ask (st-of s9) 'drafts "--writer" "wtr"))
-       (a (freeze! s9 (edit-dir s9 "tr-f8a") "wtr" "--tree" "."))
-       (b (freeze! s9 (edit-dir s9 "tr-f8b") "wtr" "--tree" (string-append tr-d5 "/sub/..")))
-       (c (check! s9 tr-f5 "wtr" "--tree" (string-append tr-d5 "/.")))
-       (after (ask (st-of s9) 'drafts "--writer" "wtr")))
-  (want "TR-8 --tree ending in . or .. (freeze, and --check): usage before anything runs, no directory made, the drafts untouched"
-        (list (head-of a) (head-of b) (head-of c) (file-exists? (edit-dir s9 "tr-f8a")) (file-exists? (edit-dir s9 "tr-f8b"))
-              (equal? before after))
-        '(usage usage usage #f #f #t)))
+;; A --tree SPELLED WITH . OR .. names the directory: it is folded to one
+;; name as edit-export and edit-sync fold theirs (landing-files.sc,
+;; edit-dir-path). "." is given from inside the directory.
+(define (tool-in! s dir name out . args)
+  (sh "cd " (quoted dir) " && scheme --script " (quoted (string-append tools name)) " "
+      (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+      "> " (quoted out) " 2> " (quoted (string-append out ".err")) " < /dev/null")
+  (guard (e (#t (list 'UNREADABLE (file-text out)))) (call-with-input-file out read)))
+;; W's drafts are behind TR-7's commit, and an export projects them at
+;; their own cut, so a freeze (which moves them onto the applied cut first)
+;; would hold another writer's change the export does not: a plain freeze
+;; moves them, then a fresh export is the tree a freeze writes
+(checked "move the drafts" (freeze! s9 (edit-dir s9 "tr-f8-move") "wtr"))
+(define tr-d8 (edit-dir s9 "tr-d8"))
+(export! s9 tr-d8 "wtr")
+(let* ((a (tool-in! s9 tr-d8 "landing-freeze.sc" (next-out s9) (st-of s9) "--writer" "wtr" (edit-dir s9 "tr-f8a") "--tree" "."))
+       (b (freeze! s9 (edit-dir s9 "tr-f8b") "wtr" "--tree" (string-append tr-d8 "/sub/..")))
+       (c (check! s9 (edit-dir s9 "tr-f8a") "wtr" "--tree" (string-append tr-d8 "/."))))
+  (want "TR-8 --tree spelled . (from inside), dir/sub/.. and dir/. (freeze, freeze, --check): each names the directory and is ok"
+        (list (head-of a) (head-of b) (head-of c))
+        '(ok ok ok)))
+
+;; ---- FD: one name for an edit directory, in all three tools ----------------------
+;; edit-export, edit-sync and landing-freeze fold <dir> lexically (absolute,
+;; "." and ".." folded, links not resolved), so every spelling of a
+;; directory finds the sidecar <dir>.edit beside it.
+(define s10 (store-of! '(("a.sc" "a1\n" "a2\n")) '()))
+(define fd-base (dir-of s10))
+(define fd-new (string-append fd-base "/new"))
+(define (fd-export! dir w)
+  (tool! s10 "edit-export.sc" (next-out s10) (st-of s10) dir "--writer" w "--git" (wt-of s10) "--base" (base-of s10)))
+(let* ((a (fd-export! (string-append fd-base "/new/sub/..") "wfd"))
+       (b (fd-export! (string-append fd-base "/new2/.") "wfd2")))
+  (want "FD-1 edit-export to new/sub/.. and to new2/.: the directories new and new2, each sidecar beside it, none inside and no sub made"
+        (list (head-of a) (head-of b)
+              (file-exists? (string-append fd-base "/new.edit/SIDECAR.sexp")) (file-exists? (string-append fd-base "/new2.edit/SIDECAR.sexp"))
+              (file-exists? (string-append fd-base "/new/..edit")) (file-exists? (string-append fd-base "/new2/..edit"))
+              (file-exists? (string-append fd-base "/new/sub")) (file-exists? (string-append fd-base "/new/sub/..edit")))
+        '(ok ok #t #t #f #f #f #f)))
+(edit! (string-append fd-new "/a.sc") "a1\n" "A1\n")
+(let* ((a (tool-in! s10 fd-new "edit-sync.sc" (next-out s10) (st-of s10) "." "--writer" "wfd"))
+       (b (tool-in! s10 fd-new "edit-sync.sc" (next-out s10) (st-of s10) "./" "--writer" "wfd"))
+       (c (sync! s10 (string-append fd-new "/.") "wfd"))
+       (d (sync! s10 (string-append fd-new "/x/..") "wfd")))
+  (want "FD-2 edit-sync of new spelled . and ./ (from inside), new/. and new/x/..: each finds new.edit; the first writes the edit, the rest write nothing"
+        (list (head-of a) (clause-of a 'writes) (head-of b) (clause-of b 'writes) (head-of c) (head-of d))
+        '(ok (writes 1) ok (writes 0) ok ok)))
+(let* ((a (tool-in! s10 fd-new "landing-freeze.sc" (next-out s10) (st-of s10) "--writer" "wfd" (string-append fd-base "/fd-f1") "--tree" "."))
+       (b (tool! s10 "landing-freeze.sc" (next-out s10) (st-of s10) "--writer" "wfd" "--check" (string-append fd-base "/fd-f1") "--tree" (string-append fd-new "/.")))
+       (c (tool! s10 "landing-freeze.sc" (next-out s10) (st-of s10) "--writer" "wfd" "--check" (string-append fd-base "/fd-f1") "--tree" (string-append fd-new "/x/.."))))
+  (want "FD-3 landing-freeze --tree . (from inside), and --check with new/. and new/x/..: all ok"
+        (list (head-of a) (head-of b) (head-of c))
+        '(ok ok ok)))
+;; LINKS ARE NOT RESOLVED: a link to the edit directory has a name of its own,
+;; and its sidecar would be beside it; a directory reached through a link to
+;; its parent keeps that spelling, and the sidecar written there is found by it
+(sh "ln -s " (quoted fd-new) " " (quoted (string-append fd-base "/lnk"))
+    " && mkdir -p " (quoted (string-append fd-base "/realp")) " && ln -s " (quoted (string-append fd-base "/realp"))
+    " " (quoted (string-append fd-base "/viap")))
+(let* ((a (sync! s10 (string-append fd-base "/lnk") "wfd"))
+       (b (fd-export! (string-append fd-base "/viap/e") "wfd3"))
+       (c (sync! s10 (string-append fd-base "/viap/e") "wfd3")))
+  (want "FD-4 a link to new is not new: edit-sync of lnk names lnk.edit as missing; an export through a link to its parent is synced through the same spelling"
+        (list (head-of a) (clause-of a 'path) (head-of b) (head-of c))
+        (list '(error missing-sidecar) (list 'path (string-append fd-base "/lnk.edit/SIDECAR.sexp")) 'ok 'ok)))
+;; ".." AFTER A LINK IS LOGICAL: lnk2 points at realp/inner, so lnk2/../new is
+;; new beside lnk2 lexically, and realp/new physically (which does not exist)
+(sh "mkdir -p " (quoted (string-append fd-base "/realp/inner")) " && ln -s " (quoted (string-append fd-base "/realp/inner"))
+    " " (quoted (string-append fd-base "/lnk2")))
+(want "FD-5 edit-sync of lnk2/../new folds lexically to new beside lnk2 (a physical fold would look under realp)"
+      (head-of (sync! s10 (string-append fd-base "/lnk2/../new") "wfd"))
+      'ok)
 
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\nedit-tools complete\n" rows bad)

@@ -28,7 +28,11 @@
 ;; THE SIDECAR IS BESIDE THE DIRECTORY, NOT IN IT: <dir>.edit/, holding
 ;; SIDECAR.sexp and a pristine copy of every exported file. Inside the
 ;; directory it would be one more file for the agent to edit and for
-;; edit-sync to read as an added one. SIDECAR.sexp is one datum:
+;; edit-sync to read as an added one. <dir> is first folded to its one name
+;; (landing-files.sc, edit-dir-path: absolute, "." and ".." folded
+;; lexically, links not resolved), as edit-sync and landing-freeze fold
+;; theirs, so "new/." makes new/ and new.edit/, not new/..edit inside it.
+;; SIDECAR.sexp is one datum:
 ;;
 ;;   (edit-export (format 1) (store "<id>") (writer "<W>") (cut <cut>)
 ;;                (base "<40-hex>")
@@ -78,7 +82,8 @@
         (only (theourgia code-project) projected-files)
         (only (theourgia log) store-id-of)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes entry-name-type mkdir-p! overwrite-entry! rename-over! unlink!))
+        (only (theourgia ffi) entry-bytes entry-name-type mkdir-p! overwrite-entry! rename-over! unlink!)
+        (only (theourgia landing-files) edit-dir-path))
 
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
 
@@ -263,7 +268,7 @@
                (newline) (exit 2))
         (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
                    (export (without-trailing-slash (absolute (car args)))
-                           (without-trailing-slash (absolute (cadr args)))
+                           (edit-dir-path (cadr args) (current-directory))
                            writer (absolute repo) rev))))
           (write a)
           (newline)

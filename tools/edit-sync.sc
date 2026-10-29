@@ -18,6 +18,10 @@
 ;;
 ;;   scheme --script tools/edit-sync.sc <store> <dir> --writer <W>
 ;;
+;; <dir> IS FOLDED TO ITS ONE NAME first (landing-files.sc, edit-dir-path),
+;; as edit-export folded it, so any spelling of the directory -- ".", "./",
+;; "dir/." or "dir/x/.." -- finds the sidecar beside it.
+;;
 ;; THE EDITS ARE READ AGAINST THE PRISTINE COPY in <dir>.edit/, never against
 ;; the store: each changed file is diffed by lines against the bytes the
 ;; export wrote, and each hunk's OLD side is mapped through the block spans
@@ -95,7 +99,7 @@
               structural-version provisional-id file-baseline)
         (only (theourgia working) working-read working-write! working-new! working-delete! working-discard!
               working-structural)
-        (only (theourgia landing-files) locate-pieces store-route-domain)
+        (only (theourgia landing-files) locate-pieces store-route-domain edit-dir-path)
         (only (theourgia code-project) lang-fields)
         (only (theourgia languages) language-for-path)
         (only (theourgia log) store-id-of)
@@ -617,7 +621,7 @@
                   (not (prefix? (car args) "--")) (not (prefix? (cadr args) "--"))))
         (begin (write '(usage (edit-sync <store> <dir> "--writer" <W>))) (newline) (exit 2))
         (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
-                   (sync (without-trailing-slash (absolute (car args))) (without-trailing-slash (absolute (cadr args)))
+                   (sync (without-trailing-slash (absolute (car args))) (edit-dir-path (cadr args) (current-directory))
                          (list-ref args 3)))))
           (write (if (and (eq? (car a) 'error) (pair? written)) (append a (list (cons 'written (reverse written)))) a))
           (newline)

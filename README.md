@@ -3494,7 +3494,13 @@ version, based-on and cut. The files, the spans and the drafts come from one
 working state. `<dir>` and `<dir>.edit` must not exist (`export-exists`):
 the export removes nothing, so a file left from an earlier export would be
 synced as if the store held it. The sidecar is written last, so an export
-that dies leaves none.
+that dies leaves none. `<dir>` is first folded to one name, in `edit-export`,
+`edit-sync` and `landing-freeze --tree` alike: made absolute, with `.` and
+`..` components folded lexically and links not resolved. So `.`, `./`,
+`dir/.` and `dir/x/..` all name the same directory and find `<dir>.edit`
+beside it; a directory reached through a link keeps the link's name, its
+sidecar beside the link, and `link/..` is the link's parent as a shell's
+logical `cd ..` reads it.
 
 The writer's structural drafts are in the export too: a new file is
 written from its draft, and recorded in the sidecar as `(new "<path>"
@@ -3724,8 +3730,9 @@ Every non-dot file of the edit directory counts, so a scratch file or a
 build product left in it refuses the freeze as only-in-tree: keep readings
 and outputs elsewhere. The directory may be given with a trailing slash; its
 sidecar is `<edit-dir>.edit` beside it either way. A `--tree` without its
-directory, and one whose last component is `.` or `..`, is a usage error,
-before anything runs: name the edit directory itself.
+directory is a usage error, before anything runs. The directory is folded
+as `edit-export` and `edit-sync` fold theirs (above), so `--tree .` from
+inside it names it.
 
 `landing-freeze --check <dir>` judges a freeze already made against the
 store as it is now and writes nothing, for a landing to run before it

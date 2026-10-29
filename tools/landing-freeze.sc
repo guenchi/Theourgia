@@ -109,7 +109,8 @@
         (only (theourgia markers) src-text)
         (only (theourgia working) working-state working-structural-outputs working-structural
               working-move-structural! path-holder holder-baseline)
-        (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups file-scope-changes)
+        (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups file-scope-changes
+              edit-dir-path)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia ffi) entry-bytes entry-name-type unreadable-entry? overwrite-entry! hold-point! directory-entries)
@@ -142,10 +143,6 @@
       (read (open-string-input-port (if (eof-object? text) "" text))))))
 
 ;; ---- --tree: the frozen tree against the edit directory that was tested -----
-(define (without-trailing-slash p)
-  (if (and (> (string-length p) 1) (char=? #\/ (string-ref p (- (string-length p) 1))))
-      (without-trailing-slash (substring p 0 (- (string-length p) 1)))
-      p))
 ;; A FREEZE HOLDS WHAT THE WRITER'S DRAFTS ARE, and nothing ties them to the
 ;; directory a coder edited and tested: a refused edit-sync writes nothing,
 ;; an edit made after the last sync was never synced, a sync can come from
@@ -638,21 +635,14 @@
               (list 'dir dir))))))
 
 (define (main all)
-  ;; `--tree <edit-dir>`, when given, comes last. The directory is written
-  ;; without trailing slashes, as edit-export and edit-sync write theirs, so
-  ;; its sidecar is <dir>.edit beside it whatever the shell completed.
+  ;; `--tree <edit-dir>`, when given, comes last. The directory is folded
+  ;; to its one name (landing-files.sc, edit-dir-path), as edit-export and
+  ;; edit-sync fold theirs, so its sidecar is <dir>.edit beside it however it
+  ;; was typed: a trailing slash, ".", "dir/." or "dir/x/..".
   (define tree (let ((n (length all)))
-                 (and (>= n 2) (string=? (list-ref all (- n 2)) "--tree") (without-trailing-slash (list-ref all (- n 1))))))
+                 (and (>= n 2) (string=? (list-ref all (- n 2)) "--tree")
+                      (edit-dir-path (list-ref all (- n 1)) (current-directory)))))
   (define args (if tree (reverse (cddr (reverse all))) all))
-  ;; A --tree WHOSE LAST COMPONENT IS . OR .. NAMES THE DIRECTORY BY A WAY
-  ;; edit-export and edit-sync do not fold either: its sidecar is found by
-  ;; appending .edit to the spelling, which "." turns into "..edit". It is
-  ;; refused as usage, so the tools agree: the edit directory is named
-  ;; itself. One lexical fold for all three is another item.
-  (define dotted (and tree (let* ((i (let loop ((i (- (string-length tree) 1)))
-                                       (cond ((< i 0) -1) ((char=? (string-ref tree i) #\/) i) (else (loop (- i 1))))))
-                                  (last (substring tree (+ i 1) (string-length tree))))
-                             (member last '("." "..")))))
   ;; `--check` AND `--tree` ARE NEVER A DIRECTORY: a check whose directory
   ;; was left off, and a --tree left without its directory, are refused as
   ;; usage before anything runs, not run as a freeze into a directory of
@@ -660,8 +650,7 @@
   (if (not (and (or (and (= 4 (length args)) (not (member (cadddr args) '("--check" "--tree"))))
                     (and (= 5 (length args)) (string=? (cadddr args) "--check") (not (string=? (list-ref args 4) "--tree"))))
                 (string=? (cadr args) "--writer")
-                (not (member "--tree" args))
-                (not dotted)))
+                (not (member "--tree" args))))
       (begin (write '(usage (landing-freeze <store> "--writer" <W> ["--check"] <dir> ["--tree" <edit-dir>]))) (newline) (exit 2))
       (let ((a (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
                  (if (= 5 (length args))
