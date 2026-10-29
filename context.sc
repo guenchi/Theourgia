@@ -68,11 +68,14 @@
 ;;; of the view (no writer, a writer that is not one, a cut that cannot be
 ;;; opened, a draft that does not read) is the answer.
 ;;;
-;;; It writes no record, runs no user code and keeps nothing between
-;;; requests. Without --working it reads no log and writes nothing; with
-;;; it, the view is folded from the log at the drafts' cut, as the working
-;;; view always is, under the writer's draft lock when the writer has a
-;;; draft area; for a writer that has none it creates nothing.
+;;; It writes no record and runs no user code. Between requests it keeps
+;;; nothing of its own; with --working, store.sc keeps the last working view
+;;; asked about in each of two slots (the definitions index and the tables),
+;;; so a process holds at most two views until another view asks. Without
+;;; --working it reads no log and writes nothing; with it, the view is
+;;; folded from the log at the drafts' cut, as the working view always is,
+;;; under the writer's draft lock when the writer has a draft area; for a
+;;; writer that has none it creates nothing.
 (library (theourgia context)
   (export context-verb)
   (import (rnrs) (rnrs mutable-pairs)
