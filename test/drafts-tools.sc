@@ -270,11 +270,11 @@
 (checked "freeze" (tool "drafts-dump" s2 "--writer" W freeze1))
 (define a2-before (hash-of s2 a2))
 (checked "set" (ask s2 'set b2 "title" "B elsewhere"))
-(want "LC-1 a commit on an unrelated block since the freeze: refused cut-moved, and nothing is committed"
+(want "LC-1 a commit on an unrelated root document since the freeze (no file changed): the drafts are committed at the cut it moved to"
       (in-order (head-of (tool "landing-commit" s2 freeze1))
                 (equal? (hash-of s2 a2) a2-before)
                 (drafts-of s2))
-      (list '(error cut-moved) #t (list a2)))
+      (list 'ok #f '()))
 (define s3 (store!))
 (define a3 (insert! s3 "A" "alpha\n"))
 (insert! s3 "B" "beta\n")
@@ -481,11 +481,12 @@
       '(ok #t () ("start-lc4" #t)))
 (define lc5 (frozen-store! "freeze-lc5" #f))
 (checked "set" (ask (car lc5) 'set (caddr lc5) "title" "B elsewhere"))
-(want "LC-5 with --start and a commit since the freeze: refused cut-moved, no tag made, nothing committed"
+(define lc5-moved (cut-of (car lc5)))
+(want "LC-5 with --start and a commit on a root document since the freeze (no file changed): committed, the tag bound at the cut it moved to"
       (in-order (head-of (tool "landing-commit" (car lc5) (cadddr lc5) "--start" "start-lc5"))
-                (tag-cut (car lc5) "start-lc5")
+                (let ((tc (tag-cut (car lc5) "start-lc5"))) (and tc (equal? (cut-set tc) (cut-set lc5-moved))))
                 (drafts-of (car lc5)))
-      (list '(error cut-moved) #f (list (cadr lc5))))
+      (list 'ok #t '()))
 ;; THE NAME IS BOUND BEFORE THE FREEZE, so the pinned cut holds the tag's own
 ;; record and the cut check alone would pass: only the name's check refuses.
 (define lc6 (frozen-store! "freeze-lc6" (lambda (st) (checked "tag" (ask st 'tag "start-lc6")))))
@@ -941,10 +942,10 @@
 (define bh6-freeze (string-append root "/bh6-freeze"))
 (checked "freeze" (tool "landing-freeze" bh6 "--writer" W bh6-freeze))
 (commit-other! bh6 (block-of bh6 "b.txt") "two committed\n")
-(want "BH-3 --check after a commit on another block: refreeze naming the draft as moved, none behind"
+(want "BH-3 --check after a commit on another file: refreeze naming the draft as moved, none behind, and the file that changed since the pin"
       (let ((a (tool "landing-freeze" bh6 "--writer" W "--check" bh6-freeze)))
-        (list (head-of a) (clause1 'behind a) (clause1 'moved a)))
-      (list '(error refreeze) '() (list bh6-a)))
+        (list (head-of a) (clause1 'behind a) (clause1 'moved a) (clause1 'changed-since-pin a)))
+      (list '(error refreeze) '() (list bh6-a) '("b.txt")))
 ;; A DELETE FROZEN AT THE APPLIED CUT is current, and the frozen items are
 ;; checked against their records
 (define bh7 (lines-store! five))
@@ -1280,6 +1281,97 @@
             (seed-check v)
             '(#t ok ok ok))
       (printf "SKIP SEED-2: set THEOURGIA_SEED_STORE to a split mirror to check the store a writable store is seeded from (an opt-in, not a failure)\n")))
+
+;; ---- FS: what the files are made of decides, not the cut ---------------------
+;; A cut moved only by records on other blocks (a root document, a tag)
+;; leaves the gated tree as it was: --check is current and landing-commit
+;; commits at the cut it moved to. A change to a file's holder or to any
+;; block under it, text or datum, is a refreeze naming the file.
+(printf "== FS: a cut moved only by records on other blocks is not a move ==\n")
+;; -> (store a-block freeze-dir pinned-cut), W's draft of a.txt frozen;
+;; SETUP, when given, runs on the store before the draft
+(define (fs-freeze! name . setup)
+  (let* ((st (lines-store! five)) (dir (string-append root "/" name)))
+    (when (pair? setup) ((car setup) st))
+    (let ((a (block-of st "a.txt")))
+      (draft! st a "l1 drafted\nl2\nl3\nl4\nl5\n")
+      (checked "freeze" (tool "landing-freeze" st "--writer" W dir))
+      (list st a dir (cut-of st)))))
+;; -> the clauses inside (ok (current ...)), or #f
+(define (current-of a) (and (eq? (head-of a) 'ok) (clause 'current a)))
+(define (in-current name cur) (and cur (clause1 name (cons 'current cur))))
+(let* ((f (fs-freeze! "fs1")) (st (car f)) (a (cadr f)) (dir (caddr f)) (pinned (cadddr f)))
+  (insert! st "a review letter" "not a file")
+  (let* ((moved-to (cut-of st)) (c (tool "landing-freeze" st "--writer" W "--check" dir)) (cur (current-of c)))
+    (want "FS-1 --check after a root document was inserted: current, naming the pinned cut and the cut it moved to"
+          (list (head-of c) (equal? (in-current 'pinned cur) pinned) (equal? (in-current 'now cur) moved-to)
+                (equal? pinned moved-to))
+          '(ok #t #t #f))
+    (let* ((before (hash-of st a)) (l (tool "landing-commit" st dir "--start" "fs1-start"))
+           (t (clause 'start-tag l)))
+      (want "FS-2 landing-commit after it: committed, the start tag bound at the cut the check judged, the draft gone"
+            (list (head-of l) (not (equal? (hash-of st a) before)) (drafts-of st)
+                  (and t (equal? (clause1 'cut (cons 'start-tag (cdr t))) moved-to)))
+            '(ok #t () #t)))))
+(let* ((f (fs-freeze! "fs3")) (st (car f)) (dir (caddr f)))
+  (checked "tag" (ask st 'tag "fs3-tag"))
+  (want "FS-3 --check after a tag only: current"
+        (head-of (tool "landing-freeze" st "--writer" W "--check" dir))
+        'ok))
+(let* ((f (fs-freeze! "fs4")) (st (car f)) (a (cadr f)) (dir (caddr f)))
+  (commit-other! st (block-of st "b.txt") "two committed\n")
+  (let* ((c (tool "landing-freeze" st "--writer" W "--check" dir)) (before (hash-of st a))
+         (l (tool "landing-commit" st dir)))
+    (want "FS-4 another writer's commit to another file: --check is refreeze and landing-commit cut-moved, both naming it, nothing committed"
+          (list (head-of c) (clause1 'changed-since-pin c) (head-of l) (clause1 'changed-since-pin l)
+                (equal? (hash-of st a) before) (drafts-of st))
+          (list '(error refreeze) '("b.txt") '(error cut-moved) '("b.txt") #t (list a)))
+    (want "FS-4 with --start after that commit: refused cut-moved before the tag, so no tag is made"
+          (in-order (head-of (tool "landing-commit" st dir "--start" "fs4-start"))
+                    (tag-cut st "fs4-start")
+                    (drafts-of st))
+          (list '(error cut-moved) #f (list a)))))
+(let* ((f (fs-freeze! "fs5")) (st (car f)) (dir (caddr f)))
+  (checked "title" (ask st 'set (block-of st "b.txt") "title" "a title only"))
+  (want "FS-5 a title on a block under a file holder: a refreeze naming the file (compared by version: it errs toward a refreeze)"
+        (let ((c (tool "landing-freeze" st "--writer" W "--check" dir)))
+          (list (head-of c) (clause1 'changed-since-pin c)))
+        (list '(error refreeze) '("b.txt"))))
+;; A BLOCK NESTED UNDER A FILE'S CHILD is under the file too: the scope is
+;; every block under a holder at any depth.
+(define fs7-nested #f)
+(let* ((f (fs-freeze! "fs7" (lambda (st)
+                              (let ((a (checked "nested" (ask st 'insert "--under" (block-of st "b.txt") "--title" "nested" "--text" "under b's block"))))
+                                (set! fs7-nested (car (car (clause1 'state a))))))))
+       (st (car f)) (dir (caddr f)))
+  (checked "nested set" (ask st 'set fs7-nested "title" "nested, changed"))
+  (want "FS-7 a block nested under a file's child, changed after the freeze: a refreeze naming that file"
+        (let ((c (tool "landing-freeze" st "--writer" W "--check" dir)))
+          (list (head-of c) (clause1 'changed-since-pin c)))
+        (list '(error refreeze) '("b.txt"))))
+;; A DATUM LIBRARY is not in the raw projection, so changed-files says nothing
+;; of a change to one; the version comparison sees it. Its holder is kind
+;; library, which code-files does not list, so the form is found by path.
+(define (datum-form-of st path)
+  (let* ((state (open-and-reduce st))
+         (lib (find (lambda (id) (and (eq? (code-field state id 'kind) 'library) (equal? (code-field state id 'path) path)))
+                    (state-block-ids state)))
+         (forms (if lib (code-children state lib) '())))
+    (unless (= 1 (length forms)) (assertion-violation 'drafts-tools "not one form" path forms))
+    (car forms)))
+(let* ((dsrc (string-append root "/fs6-datum"))
+       (f (fs-freeze! "fs6" (lambda (st)
+                              (sh "mkdir -p " (quoted dsrc))
+                              (call-with-output-file (string-append dsrc "/lib.sls")
+                                (lambda (p) (display "(library (lib a) (export f) (import (rnrs)) (define (f) 1))\n" p)))
+                              (checked "import datum" (ask st 'import-code dsrc "--datum")))))
+       (st (car f)) (dir (caddr f)) (pinned (cadddr f)))
+  (checked "datum set" (ask st 'set (datum-form-of st "lib.sls") "body" "(define (f) 2)"))
+  (let ((c (tool "landing-freeze" st "--writer" W "--check" dir))
+        (files (ask st 'changed-files (format "~s" pinned) (format "~s" (cut-of st)))))
+    (want "FS-6 a datum library's form changed after the freeze: changed-files answers nothing, and --check is a refreeze naming the library"
+          (list (clause 'items files) (head-of c) (clause1 'changed-since-pin c))
+          (list '() '(error refreeze) '("lib.sls")))))
 
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\ndrafts-tools complete\n" rows bad)

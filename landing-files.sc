@@ -25,14 +25,14 @@
   (export locate-file locate-pieces changed-files-between raw-projection path-collision spelling-key
           ambiguous-groups volume-insensitivity landing-collision base-entry-judgement
           store-route-domain file-pieces file-new-intents file-delete-intents file-baseline
-          structural-outputs)
+          structural-outputs file-scope-changes)
   (import (rnrs)
-          (only (theourgia code-project) code-field code-files projection-outputs projected-file export-code-view
-                lang-fields code-safe-path?)
+          (only (theourgia code-project) code-field code-files code-children projection-outputs projected-file
+                export-code-view lang-fields code-safe-path?)
           (only (theourgia code-suggest) suggest-boundaries)
           (only (theourgia languages) language-for-path)
           (rename (only (theourgia code-project) code-project-answer) (code-project-answer answer))
-          (only (theourgia reduce) reduce-applied-cut state-path-claimants file-baseline)
+          (only (theourgia reduce) reduce-applied-cut state-path-claimants file-baseline block-hash state-block-ids state-read state-outline)
           (only (theourgia ffi) directory-entries entry-bytes entry-name-type machine-home mkdir-exclusive!
                 mkdir-p! process-id rmdir! unlink!)
           (only (theourgia markers) bytes-append import-text? byte-slice)
@@ -40,6 +40,57 @@
 
   ;; ---- the raw projection: each file's bytes, its children's srcs run together --
   (define (raw-projection state) (projection-outputs #f state #t))
+
+  ;; ---- what a landing's files are made of, between two states ----------------
+  ;; A FREEZE IS STILL WHAT WAS GATED while nothing its files are made of has
+  ;; changed: every live block whose stored fields hold a path -- a text
+  ;; file's holder and a datum library's, which code-files does not list --
+  ;; and every block under it at any depth, by id and version. The holders
+  ;; are found by the path field, not by a list of kinds, and the fields are
+  ;; read as stored (state-read), with no name derived. The blocks under a
+  ;; holder come from one parent-to-children index per state, built from
+  ;; state-outline (the rows code-children filters), so the outline is read
+  ;; once and not once per file. A block's version covers its fields, its
+  ;; position (parent and place) and its edges, so a reorder, a move into or
+  ;; out of a file and a deletion each show. A record on any other block (a review letter, a
+  ;; landing's decision block, a title on a root document) or a tag changes
+  ;; none of them, and moves only the cut. They are compared by block
+  ;; version, not by exported bytes: a datum library is not in the raw
+  ;; projection, and changed-files answers nothing for a change to one
+  ;; (measured: a datum form's body set, changed-files between the two cuts
+  ;; answered (items)). So a title or a link on a file's block counts too,
+  ;; which errs toward a refreeze.
+  ;; -> the paths of the files whose holder or blocks differ between FROM and
+  ;;    TO, sorted, each once; () when none does.
+  (define (file-scope-changes from to)
+    (define (stored-path state id)
+      (let* ((b (state-read state id)) (fs (and b (assq 'fields b))) (p (and fs (assq 'path (cdr fs)))))
+        (and p (string? (cdr p)) (cdr p))))
+    (define (children-index state)
+      (let ((t (make-hashtable equal-hash equal?)))
+        (for-each (lambda (r) (hashtable-update! t (car r) (lambda (kids) (cons (caddr r) kids)) '()))
+                  (state-outline state))
+        t))
+    (define (scope state)
+      (let ((t (make-hashtable string-hash string=?)) (kids (children-index state)))
+        (for-each (lambda (f)
+                    (let ((path (stored-path state f)))
+                      (when path
+                        (let walk ((ids (list f)))
+                          (unless (null? ids)
+                            (hashtable-set! t (car ids) (cons (block-hash state (car ids)) path))
+                            (walk (append (hashtable-ref kids (car ids) '()) (cdr ids))))))))
+                  (state-block-ids state))
+        t))
+    (let* ((a (scope from)) (b (scope to)) (paths (make-hashtable string-hash string=?))
+           (judge (lambda (id)
+                    (let ((x (hashtable-ref a id #f)) (y (hashtable-ref b id #f)))
+                      (unless (and x y (equal? (car x) (car y)))
+                        (when x (hashtable-set! paths (cdr x) #t))
+                        (when y (hashtable-set! paths (cdr y) #t)))))))
+      (vector-for-each judge (hashtable-keys a))
+      (vector-for-each judge (hashtable-keys b))
+      (list-sort string<? (vector->list (hashtable-keys paths)))))
 
   ;; ---- what a base is compared over -------------------------------------------
   ;;

@@ -3710,22 +3710,30 @@ text, `(error frozen-damaged (block <id>))` or `(structural <key>)`
 otherwise. A frozen draft whose block was committed since is then merged as
 above, only to judge it: when any conflicts, or a structural item is at
 another cut than the applied one, `(error drafts-behind-conflict (blocks
-...))` as above; otherwise, when any draft is behind or only off the applied
-cut, or the applied cut is no longer the pinned one, `(error refreeze
-(behind (<block> ...)) (moved (<block> ...)) (pinned <cut>) (now <cut>))`,
-since what was gated is not what would land and a new freeze rebases it;
-else `(ok (current (pinned <cut>)))`. A structural item at the applied cut
+...))` as above; otherwise, when any draft is behind, or the applied cut has
+moved past the pinned one by a change to what the files are made of -- a
+file's holder or any block under it, text or datum, compared by version --
+`(error refreeze (behind (<block> ...)) (moved (<block> ...))
+(changed-since-pin (<path> ...)) (pinned <cut>) (now <cut>))`, since what
+was gated is not what would land and a new freeze rebases it; else `(ok
+(current (pinned <cut>)))`, with `(now <cut>)` after it when the applied cut
+is not the pinned one. A cut moved only by records on other blocks -- a
+review letter, a landing's decision block, a tag -- is not a move: the tree
+that was gated is the tree at the applied cut. The judgement reads the
+store at both cuts (7 to 9 s run from source on this tree's own store of some 17,000 blocks, against about 23 s for `changed-files`, which a datum library would also slip past). A structural item at the applied cut
 is current: nothing was committed since it was frozen. A freeze of another writer
 is `other-writer`, and a `DRAFTS.sexp` that is not one `drafts` datum
 `manifest-unreadable`.
 
 `landing-commit` reads a freeze's `DRAFTS.sexp` (a freeze's directory, or a
 dump's) and commits its drafts only
-if the store's applied cut is still the pinned cut: a commit on another
-block since the freeze leaves every draft's baseline as it was, so the store
-would accept the drafts, and what landed would not be what was gated. Then
-nothing is committed and the answer is `(error cut-moved (pinned <cut>) (now
-<cut>))`; the drafts are frozen again, which rebases them. At the pinned cut it commits the
+if nothing the files are made of has changed since the pinned cut, judged as
+`--check` judges it: a commit on another file since the freeze leaves every
+draft's baseline as it was, so the store would accept the drafts, and what
+landed would not be what was gated. Then nothing is committed and the answer
+is `(error cut-moved (pinned <cut>) (now <cut>) (changed-since-pin (<path>
+...)))`; the drafts are frozen again, which rebases them. A cut moved only by
+records on other blocks does not stop it. At the pinned cut, or the applied cut so judged, it commits the
 drafts by name, each with its frozen version (`--working-version
 <block>=<version>`), its structural drafts with them in the same commit
 (`--working-new` and `--working-delete`), and prints the commit's answer,
@@ -3736,9 +3744,10 @@ A freeze directory whose `DRAFTS.sexp` is not one `drafts` datum is
 `nothing-frozen`; and a start tag the store refuses to bind,
 `(error start-tag-refused (tag <name>) (answer ..))`.
 A commit refused after the start tag was written leaves the tag. The tag
-is a record, so the store's cut has moved past the drafts': they are
-rebased onto it (a structural draft is discarded and written again) and
-frozen again, and the next attempt takes a new start name.
+is a record that changes no file, so a retry with a new start name is judged
+at the cut it moved to and commits there when nothing else changed; after a
+change to the files the drafts are rebased (a structural draft is discarded
+and written again) and frozen again.
 
 With `--start <tag>` it also names the landing's start, the tag
 `publish-landing` publishes from (its export must be the git base). A name
@@ -3748,7 +3757,8 @@ landing's start. After the cut check the store is tagged; a tag binds the
 cut the store has applied when its record is written, and its answer
 carries that cut, so a commit made between the check and the tag shows
 there: nothing is committed and the answer is `(error start-tag-cut (tag
-<name>) (pinned <cut>) (bound <cut>))`. The tag stays, since it is a tag and
+<name>) (pinned <cut>) (bound <cut>))`. The cut the tag must bind is the one
+the check judged: the pinned cut, or the applied cut it accepted. The tag stays, since it is a tag and
 not a commit, and a retry takes another name. A landing that commits adds
 `(start-tag <name> (cut <cut>))` to the commit's answer.
 

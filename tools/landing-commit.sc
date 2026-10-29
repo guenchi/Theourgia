@@ -22,13 +22,18 @@
 ;; tools/drafts-dump.sc writes it: the store, the writer, the pinned cut (the
 ;; join of the drafts' cuts) and each draft's block and version.
 ;;
-;; THE CUT CHECK COMES FIRST. A commit on another block since the freeze moves
+;; THE CUT CHECK COMES FIRST. A commit on another file since the freeze moves
 ;; the store's applied cut while leaving every frozen draft's baseline and
 ;; version as they were, so the store itself would accept the commit -- and
 ;; what was gated, the export at the pinned cut, would not be what lands. So
-;; when the applied cut is not the pinned cut, nothing is committed and the
-;; answer is (error cut-moved (pinned <cut>) (now <cut>)): the coder rebases
-;; the drafts onto the new cut and freezes again.
+;; when the applied cut is not the pinned cut AND what the files are made of
+;; changed since (landing-files.sc, file-scope-changes: a file holder or a
+;; block under one, by version), nothing is committed and the answer is
+;; (error cut-moved (pinned <cut>) (now <cut>) (changed-since-pin (<path>
+;; ...))): the coder rebases the drafts onto the new cut and freezes again.
+;; A cut moved only by records on other blocks (a review letter, a decision
+;; block, a tag) leaves the gated tree as it was, and the drafts are
+;; committed at the applied cut. The judgement reads two reductions.
 ;;
 ;; THEN THE DRAFTS ARE COMMITTED BY NAME, each with its frozen version
 ;; (--working-version <block>=<version>), so a draft rewritten since the
@@ -39,11 +44,12 @@
 ;; review collected after the landing reads.
 ;;
 ;; A REFUSED COMMIT LEAVES THE START TAG it was preceded by: the tag binds the
-;; pinned cut and is harmless, but it is a record, so the store's cut has
-;; moved past the drafts' (a retry is cut-moved): the drafts are rebased onto
-;; it (a structural draft discarded and written again) and frozen again, and
-;; the next attempt takes a new start name (the old one is refused
-;; start-tag-exists).
+;; judged cut and is harmless. It is a record, so the store's cut moves past
+;; the drafts', but it changes no file: a retry is judged at the cut it moved
+;; to and commits there when nothing else changed. After a change to the
+;; files the drafts are rebased (a structural draft discarded and written
+;; again) and frozen again. Either way the next attempt takes a new start
+;; name (the old one is refused start-tag-exists).
 ;;
 ;; THE START TAG, with --start <tag>: publish-landing publishes from a start
 ;; tag whose export is the git base, so the landing names its start before it
@@ -53,7 +59,8 @@
 ;; binds the cut the store has applied when its record is written, and its
 ;; answer carries that cut, so a commit made between the check and the tag
 ;; shows there: nothing is committed, and the answer is (error start-tag-cut
-;; (tag <name>) (pinned <cut>) (bound <cut>)). The tag stays (it is a tag,
+;; (tag <name>) (pinned <cut>) (bound <cut>)). The cut the tag must bind is the
+;; one the check judged, the pinned cut or the applied cut it accepted. The tag stays (it is a tag,
 ;; not a commit), and a retry takes another name. A landing that commits
 ;; adds (start-tag <name> (cut <cut>)) to the commit's answer.
 ;;
@@ -66,7 +73,8 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia reduce) reduce-applied-cut)
-        (only (theourgia store) open-and-reduce store-tags)
+        (only (theourgia store) open-and-reduce store-tags store-state-at-cut)
+        (only (theourgia landing-files) file-scope-changes)
         (only (theourgia log) store-id-of)
         (only (theourgia ffi) entry-bytes hold-point!))
 
@@ -93,13 +101,13 @@
 
 ;; -> the cut the new start tag binds, when it is the pinned cut; else the
 ;; refusal, with the tag written
-(define (start-tag! store name pinned)
+(define (start-tag! store name pinned judged)
   (hold-point! 'landing-before-tag)
   (let ((a (rpc-dispatch store (list 'tag name) actor)))
     (unless (and (pair? a) (eq? (car a) 'ok))
       (refuse 'start-tag-refused (list 'tag name) (list 'answer a)))
     (let ((bound (clause 'cut a)))
-      (unless (equal? (cut-set bound) (cut-set pinned))
+      (unless (equal? (cut-set bound) (cut-set judged))
         (refuse 'start-tag-cut (list 'tag name) (list 'pinned pinned) (list 'bound bound)))
       bound)))
 
@@ -115,33 +123,38 @@
         (refuse 'other-store (list 'frozen (clause 'store m)) (list 'here here))))
     (when (and (null? drafts) (null? news) (null? deletes)) (refuse 'nothing-frozen (list 'dir dir)))
     (when (and start (tag-bound? store start)) (refuse 'start-tag-exists (list 'tag start)))
-    (let ((now (reduce-applied-cut (open-and-reduce store))))
+    (let* ((state (open-and-reduce store))
+           (now (reduce-applied-cut state)))
       (unless (equal? (cut-set now) (cut-set pinned))
-        (refuse 'cut-moved (list 'pinned pinned) (list 'now now))))
-    (let* ((bound (and start (start-tag! store start pinned)))
-           (a (rpc-dispatch store
-                            (append (list 'commit)
-                                    (map (lambda (d) (clause 'block d)) drafts)
-                                    (list "--writer" writer)
-                                    (apply append
-                                           (map (lambda (d)
-                                                  (list "--working-version"
-                                                        (string-append (clause 'block d) "=" (clause 'version d))))
-                                                drafts))
-                                    (apply append
-                                           (map (lambda (d)
-                                                  (list "--working-new"
-                                                        (string-append (clause 'provisional d) "=" (clause 'version d))))
-                                                news))
-                                    (apply append
-                                           (map (lambda (d)
-                                                  (list "--working-delete"
-                                                        (string-append (clause 'holder d) "=" (clause 'version d))))
-                                                deletes)))
-                            actor)))
-      (if (and bound (pair? a) (eq? (car a) 'ok))
-          (append a (list (list 'start-tag start (list 'cut bound))))
-          a))))
+        (let ((base (store-state-at-cut store #f (format "~s" pinned))))
+          (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
+          (let ((changes (file-scope-changes base state)))
+            (when (pair? changes)
+              (refuse 'cut-moved (list 'pinned pinned) (list 'now now) (list 'changed-since-pin changes))))))
+      (let* ((bound (and start (start-tag! store start pinned now)))
+             (a (rpc-dispatch store
+                              (append (list 'commit)
+                                      (map (lambda (d) (clause 'block d)) drafts)
+                                      (list "--writer" writer)
+                                      (apply append
+                                             (map (lambda (d)
+                                                    (list "--working-version"
+                                                          (string-append (clause 'block d) "=" (clause 'version d))))
+                                                  drafts))
+                                      (apply append
+                                             (map (lambda (d)
+                                                    (list "--working-new"
+                                                          (string-append (clause 'provisional d) "=" (clause 'version d))))
+                                                  news))
+                                      (apply append
+                                             (map (lambda (d)
+                                                    (list "--working-delete"
+                                                          (string-append (clause 'holder d) "=" (clause 'version d))))
+                                                  deletes)))
+                              actor)))
+        (if (and bound (pair? a) (eq? (car a) 'ok))
+            (append a (list (list 'start-tag start (list 'cut bound))))
+            a)))))
 
 (define (main args)
   (if (not (or (= 2 (length args))

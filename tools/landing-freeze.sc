@@ -89,12 +89,17 @@
 ;; (error frozen-damaged (block|structural <id>)). Then a frozen draft whose
 ;; block was committed since is merged as above but only to judge it, and a
 ;; structural item at another cut is judged as above. Any conflicting one:
-;; (error drafts-behind-conflict (blocks ...) [(structural ...)]). Otherwise,
-;; any draft behind or only off the cut (a structural one a freeze would
-;; move among them), or the applied cut no longer the pinned one: (error
-;; refreeze (behind (<block> ...)) (moved (<block or key> ...)) (pinned
-;; <cut>) (now <cut>)), since what was gated is not what would land. Else
-;; (ok (current (pinned <cut>))).
+;; (error drafts-behind-conflict (blocks ...) [(structural ...)]). Otherwise
+;; a draft behind is a refreeze. So is a cut moved past the pinned one by a
+;; change to what the files are made of (landing-files.sc,
+;; file-scope-changes: a file holder or a block under one, by version), since
+;; what was gated is not what would land: (error refreeze (behind (<block>
+;; ...)) (moved (<block or key> ...)) (changed-since-pin (<path> ...))
+;; (pinned <cut>) (now <cut>)). A cut moved only by records on other blocks
+;; (a review letter, a decision block, a tag) is NOT a move: the gated tree
+;; is the tree at the applied cut, and the freeze is (ok (current (pinned
+;; <cut>) (now <cut>))), (now) only when it differs. The judgement reads two
+;; reductions, the pinned cut's and the applied one's.
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) store-state-at-cut open-and-reduce)
@@ -102,7 +107,7 @@
         (only (theourgia markers) src-text)
         (only (theourgia working) working-state working-structural-outputs working-structural
               working-move-structural! path-holder holder-baseline)
-        (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups)
+        (only (theourgia landing-files) raw-projection changed-files-between ambiguous-groups file-scope-changes)
         (only (theourgia code-project) export-code-view)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia ffi) entry-bytes entry-name-type unreadable-entry? overwrite-entry! hold-point!)
@@ -412,12 +417,21 @@
            (sjudged (map (lambda (d) (cons (structural-key-of d) (judge-structural now d)))
                          (filter (lambda (d) (memq (car d) '(new delete))) items)))
            (skeys (lambda (verdict) (map car (filter (lambda (j) (eq? (cdr j) verdict)) sjudged)))))
-      (cond ((not (and (null? (named 'conflict)) (null? (skeys 'conflict))))
-             (conflict-refusal (named 'conflict) (skeys 'conflict)))
-            ((or (pair? (named 'rebased)) (pair? (named 'moved)) (pair? (skeys 'moved)) (not (equal? (cut-set at) (cut-set pinned))))
-             (refuse 'refreeze (list 'behind (named 'rebased)) (list 'moved (append (named 'moved) (skeys 'moved)))
-                     (list 'pinned pinned) (list 'now at)))
-            (else (list 'ok (list 'current (list 'pinned pinned))))))))
+      ;; ONLY THE CUT MOVED is not a move when nothing the files are made of
+      ;; changed since the pin: the drafts off the cut and the structural
+      ;; items that still apply are what was gated
+      (let ((changes (if (equal? (cut-set at) (cut-set pinned))
+                         '()
+                         (let ((base (store-state-at-cut store #f (format "~s" pinned))))
+                           (when (and (pair? base) (eq? (car base) 'error)) (refuse 'pinned-cut-unusable (list 'answer base)))
+                           (file-scope-changes base now)))))
+        (cond ((not (and (null? (named 'conflict)) (null? (skeys 'conflict))))
+               (conflict-refusal (named 'conflict) (skeys 'conflict)))
+              ((or (pair? (named 'rebased)) (pair? changes))
+               (refuse 'refreeze (list 'behind (named 'rebased)) (list 'moved (append (named 'moved) (skeys 'moved)))
+                       (list 'changed-since-pin changes) (list 'pinned pinned) (list 'now at)))
+              (else (list 'ok (cons 'current (cons (list 'pinned pinned)
+                                                   (if (equal? (cut-set at) (cut-set pinned)) '() (list (list 'now at))))))))))))
 
 (define (freeze store writer dir)
   ;; anything at the directory's name, asked with an lstat, refuses the freeze
