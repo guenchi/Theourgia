@@ -36,6 +36,13 @@
 ;; and an entry that no longer differs (its change is in the base now) is
 ;; red until it is removed.
 ;;
+;; EACH DAEMON IS THE ONE THAT SHIPS: its tree's own theourgiad.sc serve,
+;; which registers the verbs from outside the core table (extensions.sc)
+;; before it serves. A daemon started from (theourgia daemon) alone serves
+;; without them -- it answered describe with 49 verbs where the program
+;; answers 56, and context with unknown-verb -- so a guard built that way
+;; could not see a change to an extension verb.
+;;
 ;; THE TWO DAEMONS' OWN PATHS differ by construction (two copies, two
 ;; sockets); each answer and trace has its daemon's store and socket read
 ;; as one token before comparing.
@@ -74,8 +81,9 @@
   (printf "SKIP: THEOURGIA_BASE_LIBDIR is unset: set it to a library root holding the base tree's theourgia/ and igropyr/ to compare this tree's daemon with the base's (an opt-in, not a failure)~%")
   (printf "rows: 0~%0 failures~%change-stream-guard complete~%")
   (exit 0))
-(unless (file-exists? (string-append base-lib "/theourgia/daemon.sc"))
-  (printf "NOT A READING: THEOURGIA_BASE_LIBDIR must name a library root holding the base tree's theourgia/ and igropyr/ (it is ~s)~%" base-lib)
+(unless (and (file-exists? (string-append base-lib "/theourgia/daemon.sc"))
+             (file-exists? (string-append base-lib "/theourgia/theourgiad.sc")))
+  (printf "NOT A READING: THEOURGIA_BASE_LIBDIR must name a library root holding the base tree's theourgia/ (with daemon.sc and theourgiad.sc) and igropyr/ (it is ~s)~%" base-lib)
   (printf "change-stream-guard complete~%")
   (exit 2))
 (define this-lib (getenv "CHEZSCHEMELIBDIRS"))
@@ -97,15 +105,73 @@
 (define (contains? text needle) (not (equal? (replace-all text needle "") text)))
 ;; D's store and socket become STORE and SOCKET, a writer session's process
 ;; id (the digits after "w-", which each daemon's own pid makes) becomes "#",
-;; then every run of twelve or more digits becomes "#"
+;; then every run of twelve or more digits becomes "#". An atomic write's
+;; temporary is masked in traces only (mask-temporaries), never in answers.
+(define (digits-end text j)
+  (let run ((j j)) (if (and (< j (string-length text)) (char-numeric? (string-ref text j))) (run (+ j 1)) j)))
 (define (session-pids text)
   (let loop ((i 0) (out '()))
+    (define (at? prefix)
+      (let ((n (string-length prefix)))
+        (and (<= (+ i n 1) (string-length text)) (string=? (substring text i (+ i n)) prefix)
+             (char-numeric? (string-ref text (+ i n))))))
     (cond ((>= i (string-length text)) (list->string (reverse out)))
-          ((and (<= (+ i 3) (string-length text)) (string=? (substring text i (+ i 2)) "w-")
-                (char-numeric? (string-ref text (+ i 2))))
-           (let run ((j (+ i 2))) (if (and (< j (string-length text)) (char-numeric? (string-ref text j))) (run (+ j 1))
-                                      (loop j (append (list #\# #\- #\w) out)))))
+          ((at? "w-")
+           (loop (digits-end text (+ i 2)) (append (list #\# #\- #\w) out)))
           (else (loop (+ i 1) (cons (string-ref text i) out))))))
+;; A TRACE's atomic-write temporaries, <path>.tmp-<pid>-<n> (log.sc's
+;; names), have the daemon's pid in them, and two daemons cannot share it:
+;; that pid becomes "#". Only in a path the normalizer has already made the
+;; store's or its home's (a token starting STORE), only that form (the
+;; digits between ".tmp-" and "-<digits>", the counter ending the token),
+;; and only in a trace: answers are compared unmasked, so the same text in
+;; a payload still differs (GUARD-0c). The token is found textually, back
+;; to the last space, paren, quote or newline before ".tmp-", and must
+;; start STORE there: it is not a tokenizer. The store's own temporary
+;; paths in these traces hold no such character, so each is recognized
+;; whole; other text is judged only by that rule (a "(STORE/" inside a
+;; longer string is recognized at its paren, a path holding a delimiter
+;; before ".tmp-" is not).
+(define (mask-temporaries text)
+  (define (in-store-path? i)
+    (let back ((k i))
+      (cond ((< k 0) #f)
+            ((memv (string-ref text k) '(#\space #\( #\" #\newline))
+             (and (<= (+ k 6) (string-length text)) (string=? (substring text (+ k 1) (+ k 6)) "STORE")))
+            (else (back (- k 1))))))
+  (let loop ((i 0) (out '()))
+    (cond ((>= i (string-length text)) (list->string (reverse out)))
+          ((and (<= (+ i 6) (string-length text)) (string=? (substring text i (+ i 5)) ".tmp-")
+                (char-numeric? (string-ref text (+ i 5)))
+                (let ((j (digits-end text (+ i 5))))
+                  (and (< (+ j 1) (string-length text)) (char=? (string-ref text j) #\-)
+                       (char-numeric? (string-ref text (+ j 1)))
+                       (let ((k (digits-end text (+ j 1))))
+                         (or (= k (string-length text))
+                             (memv (string-ref text k) '(#\space #\) #\" #\newline))))))
+                (in-store-path? (- i 1)))
+           (loop (digits-end text (+ i 5)) (append (reverse (string->list ".tmp-#")) out)))
+          (else (loop (+ i 1) (cons (string-ref text i) out))))))
+;; WHETHER A DAEMON'S ANSWER IS AN ok: the text is exactly ONE datum, the
+;; envelope (answer (stdout "<datum>") (stderr ..) (exit <n>) ...); it has
+;; an exit, as every envelope the product accepts does (core.sc,
+;; answer-envelope?), and the exit is 0; and its stdout holds exactly one
+;; datum, (ok ...). A row that drives a write asserts it with this, so a
+;; refusal -- or an ok followed by a failure -- cannot be measured as the
+;; thing it was meant to do.
+(define (answered-ok? text)
+  (define (all-data s)
+    (let ((in (open-string-input-port s)))
+      (let next ((acc '()))
+        (let ((d (read in))) (if (eof-object? d) (reverse acc) (next (cons d acc)))))))
+  (guard (e (#t #f))
+    (let* ((outer (all-data text))
+           (a (and (= 1 (length outer)) (car outer)))
+           (out (and (pair? a) (eq? (car a) 'answer) (list? a) (assq 'stdout (cdr a))))
+           (exit (and out (assq 'exit (cdr a))))
+           (data (and out (string? (cadr out)) (all-data (cadr out)))))
+      (and data exit (eqv? (cadr exit) 0)
+           (= 1 (length data)) (pair? (car data)) (eq? (car (car data)) 'ok)))))
 ;; TEXT without its (trace store-check ...) lines, each with its newline.
 (define (without-store-checks text)
   (define (check? l) (and (>= (string-length l) 19) (string=? (substring l 0 19) "(trace store-check ")))
@@ -198,6 +264,37 @@
                                                           "(stderr \"\") (exit 0) (origin core))")))
               (equal? base (store-identity (check-answer "(check (instance (machine \"m\") (device 6) (inode 9)))")))))
       '(#f #f #f #t))
+;; GUARD-0c A TRACE'S TEMPORARY HAS ITS PID MASKED IN ITS ONE FORM AND NOWHERE
+;; ELSE. Every control is a trace line whose path starts STORE, so each one
+;; reaches the matcher: two daemons' pids read alike AND the mask is seen to
+;; fire (".tmp-#-26"); the same form outside a store path, a ".tmp-" with no
+;; "-<n>", a counter, and text running on past the counter are left as they
+;; are; and answers (session-pids) are not masked at all.
+(define (tr path) (string-append "(trace create " path " #f)"))
+(want "GUARD-0c only a STORE path's .tmp-<pid>-<n> has its pid masked: two pids read alike and the mask fires; a payload's, .tmp-12/.tmp-13, the counter, a longer name, and an answer still differ"
+      (list (string=? (mask-temporaries (tr "STORE-home/instances.sexp.tmp-3336-26"))
+                      (mask-temporaries (tr "STORE-home/instances.sexp.tmp-3348-26")))
+            (mask-temporaries (tr "STORE-home/instances.sexp.tmp-3336-26"))
+            (string=? (mask-temporaries "(trace create \"x.tmp-3336-26\" #f)") (mask-temporaries "(trace create \"x.tmp-3348-26\" #f)"))
+            (string=? (mask-temporaries (tr "STORE/x.tmp-12")) (mask-temporaries (tr "STORE/x.tmp-13")))
+            (string=? (mask-temporaries (tr "STORE/x.tmp-12-3")) (mask-temporaries (tr "STORE/x.tmp-12-4")))
+            (string=? (mask-temporaries (tr "STORE/x.tmp-12-3.bak")) (mask-temporaries (tr "STORE/x.tmp-13-3.bak")))
+            (string=? (session-pids (tr "STORE/x.tmp-3336-26")) (session-pids (tr "STORE/x.tmp-3348-26"))))
+      (list #t "(trace create STORE-home/instances.sexp.tmp-#-26 #f)" #f #f #f #f #f))
+;; answered-ok? reads the whole envelope: an ok alone with exit 0 is an ok; an
+;; ok followed by a second datum, an ok with a non-zero exit, an ok with no
+;; exit, an envelope followed by more text, a refusal, and something that
+;; is not an answer are not.
+(want "GUARD-0d answered-ok? is true only for one envelope with exit 0 whose stdout is one ok datum"
+      (map answered-ok?
+           (list "(answer (stdout \"(ok (x 1))\\n\") (stderr \"\") (exit 0) (origin core))"
+                 "(answer (stdout \"(ok (x 1))\\n(error late)\\n\") (stderr \"\") (exit 0) (origin core))"
+                 "(answer (stdout \"(ok (x 1))\\n\") (stderr \"\") (exit 1) (origin core))"
+                 "(answer (stdout \"(ok (x 1))\\n\") (stderr \"\") (origin core))"
+                 "(answer (stdout \"(ok (x 1))\\n\") (stderr \"\") (exit 0) (origin core)) (answer (stdout \"(error late)\") (exit 1))"
+                 "(answer (stdout \"(error unknown-id \\\"x\\\")\\n\") (stderr \"\") (exit 1) (origin core))"
+                 "(not-an-answer)"))
+      '(#t #f #f #f #f #f #f))
 (define (normalize-for d text)
   (normalize (session-pids (replace-all (replace-all (replace-all text (cadr d) "SOCKET") (car d) "STORE") (list-ref d 4) "HOME"))))
 (define (normalize text)
@@ -215,25 +312,36 @@
 (define (lib-env lib) (string-append "CHEZSCHEMELIBDIRS=" lib " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"))
 (system (string-append (lib-env this-lib) " scheme --script ../theourgia.sc init --store " prepared " > /dev/null 2>&1 < /dev/null"))
 (system (string-append (lib-env this-lib) " THEOURGIA_LOCAL=1 scheme --script ../theourgia.sc insert --title Seed --text seed --store " prepared " > /dev/null 2>&1 < /dev/null"))
+;; THE DAEMON PROGRAM OF A LIBRARY PATH: theourgia/theourgiad.sc in the
+;; first of its roots that holds one.
+(define (daemon-program lib)
+  (let loop ((roots (let split ((i 0) (start 0) (out '()))
+                      (cond ((= i (string-length lib)) (reverse (cons (substring lib start i) out)))
+                            ((char=? (string-ref lib i) #\:) (split (+ i 1) (+ i 1) (cons (substring lib start i) out)))
+                            (else (split (+ i 1) start out))))))
+    (cond ((null? roots)
+           (printf "NOT A READING: no theourgia/theourgiad.sc under ~s~%" lib) (exit 2))
+          ((file-exists? (string-append (car roots) "/theourgia/theourgiad.sc"))
+           (string-append (car roots) "/theourgia/theourgiad.sc"))
+          (else (loop (cdr roots))))))
 (define (start! name lib)
   (let ((st (string-append scratch "/" name)) (sk (string-append sockets "/" name ".sock"))
         (hm (string-append scratch "/" name "-home"))
-        (rn (string-append scratch "/" name ".sc")) (lg (string-append scratch "/" name ".log")))
+        (rn (daemon-program lib)) (lg (string-append scratch "/" name ".log")))
     (system (string-append "rm -rf " st " " hm "; cp -R " prepared " " st "; cp -R " prepared-home " " hm))
     ;; the copy's own device and inode, in the identity it carries
     (system (string-append "perl -e 'my ($f, $d) = @ARGV; my @s = stat $d; open my $h, q(<), $f or die; local $/; my $t = <$h>; "
                            "$t =~ s/\\(device \\d+\\)/(device $s[0])/; $t =~ s/\\(inode \\d+\\)/(inode $s[1])/; "
                            "open $h, q(>), $f or die; print $h $t' " st "/instance.sexp " st))
-    (call-with-output-file rn
-      (lambda (p) (for-each (lambda (l) (display l p) (newline p))
-                            (list "(import (chezscheme) (theourgia daemon))"
-                                  (string-append "(serve \"" st "\" \"" sk "\")")))))
-    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_HOME=" hm " " (lib-env lib) " sh -c 'scheme --script " rn " > " lg " 2>&1' &"))
+    ;; RN IS THE PROGRAM, theourgiad.sc in the first root of LIB that holds
+    ;; one; the socket path, unique to this daemon, is what stop! matches.
+    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_HOME=" hm " " (lib-env lib) " sh -c 'scheme --script " rn
+                           " serve " st " --socket " sk " > " lg " 2>&1' &"))
     (let up ((k 0))
       (cond ((file-exists? sk) (list st sk rn lg hm))
             ((> k 400) (printf "NOT A READING: the ~a daemon never created its socket~%~a~%" name (file-text lg)) (exit 2))
             (else (sleep-ms 50) (up (+ k 1)))))))
-(define (stop! d) (system (string-append "pkill -f " (caddr d) " 2>/dev/null")))
+(define (stop! d) (system (string-append "pkill -f " (cadr d) " 2>/dev/null")))
 (define (line-complete? bv)
   (let loop ((i 0)) (cond ((>= i (bytevector-length bv)) #f) ((= (bytevector-u8-ref bv i) 10) #t) (else (loop (+ i 1))))))
 (define (ask-raw d verb args)
@@ -256,6 +364,7 @@
     (restore "no-such-version" "--writer" "w2") (reach "A") (tag "named") (tag) (diff "named" "named")
     (batch "()") (snapshot) (check) (adopt) (log "A")
     (del "B") (read "B") (outline)
+    (query "--relations") (context "--for" "SEED" "--budget" "2000") (names "SEED")
     (describe) (no-such-verb) (read)))
 ;; (label reason) entries; label is the script's verb, or read-usage for read
 ;; with no arguments.
@@ -286,9 +395,21 @@
 (start-scheduler
   (lambda ()
     (let* ((seed (let ((a (system (string-append (lib-env this-lib) " THEOURGIA_LOCAL=1 scheme --script ../theourgia.sc outline --wire --store " prepared " > " scratch "/seed.out 2>&1 < /dev/null"))))
-                   (let* ((t (file-text (string-append scratch "/seed.out")))
-                          (i (let find ((k 0)) (cond ((>= (+ k 1) (string-length t)) #f) ((char=? (string-ref t k) #\") k) (else (find (+ k 1)))))))
-                     (and i (let close ((j (+ i 1))) (if (char=? (string-ref t j) #\") (substring t (+ i 1) j) (close (+ j 1))))))))
+                   ;; THE SEED'S ID, read from outline's answer: (ok (text "- <id>  Seed\n") ...),
+                   ;; the text's first line after "- " up to its first space. The first quoted
+                   ;; string of the output is the whole line, not the id, and every request
+                   ;; naming SEED was then refused unknown-id on both daemons alike.
+                   (let* ((in (open-string-input-port (file-text (string-append scratch "/seed.out"))))
+                          (ok (let next ((d (read in)))
+                                (cond ((eof-object? d) #f)
+                                      ((and (pair? d) (eq? (car d) 'ok) (assq 'text (cdr d))) d)
+                                      (else (next (read in))))))
+                          (line (and ok (cadr (assq 'text (cdr ok))))))
+                     (and (string? line) (>= (string-length line) 3) (string=? (substring line 0 2) "- ")
+                          (let stop ((j 2))
+                            (cond ((= j (string-length line)) (substring line 2 j))
+                                  ((char=? (string-ref line j) #\space) (substring line 2 j))
+                                  (else (stop (+ j 1)))))))))
            (_ (set! script (map (lambda (r) (map (lambda (a) (if (equal? a "SEED") seed a)) r)) script)))
            (b (start! "base" base-lib))
            (n (start! "new" this-lib))
@@ -312,21 +433,87 @@
                     (unless (memq l listed)
                       (printf "   unlisted difference ~s:~%   base ~a~%   tree ~a~%" l (cdr (assq l rb)) (cdr (assq l rn)))))
                   differing))
+      ;; GUARD-7 THE SEED IS AN ID THE STORE HAS: every request naming SEED
+      ;; names it, so a read of it answers ok on both daemons. While the seed
+      ;; was the outline's whole line, each of those requests was refused
+      ;; unknown-id on both sides alike, and GUARD-3 and GUARD-4 compared
+      ;; refusals, not a read and a commit.
+      (want "GUARD-7 the seed is an id the store has: read <seed> answers ok on both daemons"
+            (map (lambda (d)
+                   (guard (e (#t #f))
+                     (let* ((a (read (open-string-input-port (ask-raw d 'read (list seed)))))
+                            (o (and (pair? a) (eq? (car a) 'answer) (assq 'stdout (cdr a))
+                                    (read (open-string-input-port (cadr (assq 'stdout (cdr a))))))))
+                       (and (pair? o) (eq? (car o) 'ok)))))
+                 (list b n))
+            '(#t #t))
+      ;; GUARD-5, GUARD-6: EACH DAEMON KNOWS THE VERBS ITS PROGRAM SHIPS.
+      ;; describe through the daemon lists the verbs describe lists from the
+      ;; same tree's command line, the extension verbs among them, and each
+      ;; extension request of the script is ANSWERED by both daemons: an ok
+      ;; datum, the context one naming the block it was asked for. A refusal
+      ;; of any kind (usage, unknown-verb, unknown-id) is not an answer here,
+      ;; so GUARD-2 cannot be comparing two equal refusals.
+      (let* ((unwrap (lambda (text)
+                       (guard (e (#t #f))
+                         (let ((a (read (open-string-input-port text))))
+                           (if (and (pair? a) (eq? (car a) 'answer) (assq 'stdout (cdr a)))
+                               (read (open-string-input-port (cadr (assq 'stdout (cdr a)))))
+                               a)))))
+             (names-of (lambda (text)
+                         (let ((d (unwrap text)))
+                           (and (pair? d) (eq? (car d) 'ok) (assq 'verbs (cdr d))
+                                (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
+                                           (map car (cdr (assq 'verbs (cdr d)))))))))
+             (cli-describe (lambda (lib program)
+                             (system (string-append (lib-env lib) " THEOURGIA_LOCAL=1 scheme --script " program
+                                                    " describe --wire --store " prepared " > " scratch "/cli-describe.out 2>/dev/null < /dev/null"))
+                             (let ((t (file-text (string-append scratch "/cli-describe.out"))))
+                               ;; the CLI's line may follow a machine-home banner
+                               (let ((i (let find ((k 0)) (cond ((>= (+ k 3) (string-length t)) #f)
+                                                                ((string=? (substring t k (+ k 4)) "(ok ") k)
+                                                                (else (find (+ k 1)))))))
+                                 (if i (substring t i (string-length t)) t)))))
+             (new-cli (names-of (cli-describe this-lib "../theourgia.sc")))
+             (base-cli (names-of (cli-describe base-lib (string-append base-lib "/theourgia/theourgia.sc"))))
+             (new-d (names-of (ask-raw n 'describe '())))
+             (base-d (names-of (ask-raw b 'describe '()))))
+        (want "GUARD-5 each daemon's describe lists the verbs its tree's command line lists, context and query among them"
+              (list (and new-d (equal? new-d new-cli)) (and base-d (equal? base-d base-cli))
+                    (and new-d (memq 'context new-d) (memq 'query new-d) #t))
+              '(#t #t #t))
+        (want "GUARD-6 each extension request of the script is answered ok by both daemons, context for the block asked"
+              (map (lambda (d)
+                     (let ((c (unwrap (ask-raw d 'context (list "--for" seed "--budget" "2000"))))
+                           (q (unwrap (ask-raw d 'query (list "--relations"))))
+                           (m (unwrap (ask-raw d 'names (list seed)))))
+                       (list (and (pair? c) (eq? (car c) 'ok)
+                                  (let ((f (assq 'for (cdr c))))
+                                    (and f (pair? (cdr f)) (pair? (cadr f)) (equal? (car (cadr f)) seed))))
+                             (and (pair? q) (eq? (car q) 'ok))
+                             (and (pair? m) (eq? (car m) 'ok)))))
+                   (list b n))
+              '((#t #t #t) (#t #t #t))))
       ;; THE TRACE of one read and one commit, each daemon's lines between two markers.
       ;; NOTE: THE STORE CHECK'S LINES ARE LEFT OUT OF BOTH: the signal watcher
       ;; samples the store about once a second, on its own clock and not because
       ;; of the requests, so whether one falls in this window is chance, and the
       ;; base has none.
+      ;; -> (<read and set both answered ok> . <trace>): a refused set has no
+      ;; commit to trace, so the row asserts both answers before comparing.
       (let ((trace-of (lambda (d)
-                        (let* ((before (string-length (file-text (cadddr d)))))
-                          (ask-raw d 'read (list seed))
-                          (ask-raw d 'set (list seed "src" "traced"))
+                        (let* ((before (string-length (file-text (cadddr d))))
+                               (r (answered-ok? (ask-raw d 'read (list seed))))
+                               (w (answered-ok? (ask-raw d 'set (list seed "src" "traced")))))
                           (sleep-ms 300)
-                          (normalize-for d (without-store-checks
-                                             (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))))
-        (want "GUARD-3 the trace of a read and a commit is byte for byte the base's"
-              (let ((tb (trace-of b)) (tn (trace-of n))) (if (equal? tb tn) 'equal (list tb tn)))
-              'equal))
+                          (cons (and r w)
+                                (mask-temporaries
+                                  (normalize-for d (without-store-checks
+                                                     (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))))))
+        (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them is byte for byte the base's"
+              (let ((tb (trace-of b)) (tn (trace-of n)))
+                (list (car tb) (car tn) (if (equal? (cdr tb) (cdr tn)) 'equal (list (cdr tb) (cdr tn)))))
+              '(#t #t equal)))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by
@@ -341,9 +528,17 @@
       ;; number is printed. A BASE THAT MOVED BY MORE THAN HALF (e > 0.5) WAS
       ;; NOT A QUIET RUN: the row then says NOT A READING and is red, rather
       ;; than passing on a bound that widened to fit the noise.
-      (let* ((time-10 (lambda (d k)
-                        (let ((t0 (real-time)))
-                          (let loop ((i 0)) (when (< i 10) (ask-raw d 'set (list seed "title" (string-append "t" (number->string k) "-" (number->string i)))) (loop (+ i 1))))
+      ;; EVERY TIMED SET IS COUNTED BY ITS ANSWER (not-ok, per daemon): the time
+      ;; of refusals is not the time of commits, so GUARD-4b asserts there
+      ;; were none before GUARD-4's bound is believed.
+      (let* ((not-ok (list (cons 'base 0) (cons 'new 0)))
+             (time-10 (lambda (d k)
+                        (let ((t0 (real-time)) (arm (assq (if (eq? d b) 'base 'new) not-ok)))
+                          (let loop ((i 0))
+                            (when (< i 10)
+                              (unless (answered-ok? (ask-raw d 'set (list seed "title" (string-append "t" (number->string k) "-" (number->string i)))))
+                                (set-cdr! arm (+ (cdr arm) 1)))
+                              (loop (+ i 1))))
                           (- (real-time) t0))))
              (rounds (let loop ((k 0) (out '()))
                        (if (= k 40) (reverse out)
@@ -361,6 +556,9 @@
                 (p10 base-ms) (p10 new-ms) (inexact e) (inexact m) (inexact bound) base-ms new-ms)
         (when (> e 1/2)
           (printf "NOT A READING: the base's p10 moved by ~s between its halves (more than 0.5); the machine was not quiet~%" (inexact e)))
+        (want "GUARD-4b every one of the 400 timed sets on each daemon was answered ok: commits, not refusals, were timed"
+              not-ok
+              '((base . 0) (new . 0)))
         (want "GUARD-4 the commits' p10 over forty alternating rounds is within the base's p10 x (1 + max(0.15, 2e)), on a quiet run (e <= 0.5)"
               (if (> e 1/2) 'not-a-reading (<= (p10 new-ms) bound))
               #t))
