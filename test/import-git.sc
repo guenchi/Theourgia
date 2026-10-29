@@ -463,12 +463,42 @@
 (want "IG-5 a type change: paths-unsupported"
       (refused-run st5 wt5 c5-0 c5-type "t5")
       (list '(paths-unsupported (letter "T") (path "a.sc")) #t 1))
-(want "IG-5 a changed file holding a NUL byte: not-text"
-      (refused-run st5 wt5 c5-0 c5-nul "t5")
-      (list '(not-text (path "a.sc")) #t 1))
-(want "IG-5 a changed file that is not valid UTF-8: not-text"
-      (refused-run st5 wt5 c5-0 c5-utf "t5")
-      (list '(not-text (path "a.sc")) #t 1))
+;; THE EXPORT AT CUT AGAINST git archive REV OVER THE TEXT DOMAIN: as
+;; export-is?, with every archived link and every archived file whose bytes
+;; are not text removed first, since the importer's domain holds regular
+;; text files only.
+(define (export-text-is? st wt rev cut)
+  (let ((a (fresh-dir "export")) (b (fresh-dir "archive")))
+    (sh "mkdir -p " (quoted b))
+    (and cut
+         (eq? 'ok (head-of (ask st 'export-code a "--raw" "--cut" (format "~s" cut))))
+         (= 0 (sh "git -C " (quoted wt) " archive " rev " | tar -x -C " (quoted b)))
+         (= 0 (sh "find " (quoted b) " -type l -delete"))
+         (begin
+           (for-each (lambda (rel)
+                       (let* ((p (string-append b "/" rel))
+                              (bv (call-with-port (open-file-input-port p) get-bytevector-all)))
+                         (unless (import-text? (if (eof-object? bv) (bytevector) bv)) (delete-file p))))
+                     (filter (lambda (s) (> (string-length s) 0))
+                             (let ((s (out-of (string-append "cd " (quoted b) " && find . -type f | sed 's|^\\./||'"))))
+                               (let loop ((i 0) (from 0) (out '()))
+                                 (cond ((= i (string-length s)) (reverse (cons (substring s from i) out)))
+                                       ((char=? (string-ref s i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring s from i) out)))
+                                       (else (loop (+ i 1) from out)))))))
+           (= 0 (sh "diff -rq -x '.*' " (quoted a) " " (quoted b) " > /dev/null 2>&1"))))))
+;; A FILE THAT STOPS BEING TEXT IS REMOVED: its bytes are text at the old end
+;; only, so the range has it as a removal and its blocks go, as for a file git
+;; deleted. Each on a store of its own, since the run lands.
+(define st5n (store-from! wt5 c5-0 "s5n" #t))
+(define r5n (import! st5n wt5 c5-0 c5-nul "t5n"))
+(define st5u (store-from! wt5 c5-0 "s5u" #t))
+(define r5u (import! st5u wt5 c5-0 c5-utf "t5u"))
+(want "IG-5 a changed file that comes to hold a NUL byte, and one that comes to be invalid UTF-8: each removed, no file block left, the export at the tag is <to>'s text"
+      (map (lambda (st r rev tag)
+             (list (ran r) (clause-of (answer r) 'files) (file-at st "a.sc") (export-text-is? st wt5 rev (tag-cut st tag))))
+           (list st5n st5u) (list r5n r5u) (list c5-nul c5-utf) (list "t5n" "t5u"))
+      (list (list '(ok 0) '(files (modified 0) (added 0) (removed 1)) #f #t)
+            (list '(ok 0) '(files (modified 0) (added 0) (removed 1)) #f #t)))
 (want "IG-5 an added file at 100755: file-mode"
       (refused-run st5 wt5 c5-0 c5-add "t5")
       (list '(file-mode (path "y.sh") (from none) (to "100755")) #t 1))
@@ -484,8 +514,9 @@
       (in-order (ran (import! st5 wt5 c5-0 c5-exec "t5")) (export-is? st5 wt5 c5-exec (tag-cut st5 "t5")))
       (list '(ok 0) #t))
 
-;; THE OTHER ENDS OF THE TEXT AND MODE CHECKS: an added binary, a removed
-;; binary (the store never held it) and a removed link (git mode 120000)
+;; THE OTHER ENDS OF THE TEXT AND MODE CHECKS: an added binary and a removed
+;; binary (the store never held either) are skipped, a removed link (git
+;; mode 120000) is file-mode, and a binary that becomes text is added
 (define wt5b (repo! "r5b"))
 (define c5b-0 (commit! wt5b "base" (cons "a.sc" (defs 'a)) (cons "bin.dat" (bytevector 98 0 98 10)) '(link "l.sc" "a.sc")))
 (define c5b-add (begin (at! wt5b c5b-0) (commit! wt5b "add a binary" (cons "new.dat" (bytevector 110 0 10)))))
@@ -493,11 +524,43 @@
 (define c5b-rmlink (begin (at! wt5b c5b-0) (commit! wt5b "remove the link" (cons "l.sc" #f))))
 (define c5b-totext (begin (at! wt5b c5b-0) (commit! wt5b "the binary becomes text" (cons "bin.dat" "now text\n"))))
 (define st5b (store-from! wt5b c5b-0 "s5b" #t))
-(want "IG-5 an added binary, a removed binary and a binary that becomes text: not-text; a removed link: file-mode; nothing written"
+(want "IG-5 an added binary and a removed binary, each alone in its range: nothing-to-import naming it; a removed link: file-mode; nothing written"
       (in-order (refused-run st5b wt5b c5b-0 c5b-add "t5b") (refused-run st5b wt5b c5b-0 c5b-rmbin "t5b")
-                (refused-run st5b wt5b c5b-0 c5b-totext "t5b") (refused-run st5b wt5b c5b-0 c5b-rmlink "t5b"))
-      (list (list '(not-text (path "new.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1) (list '(not-text (path "bin.dat")) #t 1)
+                (refused-run st5b wt5b c5b-0 c5b-rmlink "t5b"))
+      (list (list (list 'nothing-to-import (list 'from c5b-0) (list 'to c5b-add) '(not-text "new.dat")) #t 1)
+            (list (list 'nothing-to-import (list 'from c5b-0) (list 'to c5b-rmbin) '(not-text "bin.dat")) #t 1)
             (list '(file-mode (path "l.sc") (from "120000") (to none)) #t 1)))
+(define st5t (store-from! wt5b c5b-0 "s5t" #t))
+(define r5t (import! st5t wt5b c5b-0 c5b-totext "t5t"))
+(want "IG-5 a binary that becomes text is added: a file block holding the new text, one added file and no not-text clause, the export at the tag is <to>'s text"
+      (list (ran r5t) (clause-of (answer r5t) 'files) (and (file-at st5t "bin.dat") #t) (texts st5t "bin.dat")
+            (export-text-is? st5t wt5b c5b-totext (tag-cut st5t "t5t")))
+      (list '(ok 0) '(files (modified 0) (added 1) (removed 0)) #t (pieces "bin.dat" "now text\n") #t))
+
+;; ---- IG-5b: a range with binary files in it ---------------------------------------------
+;; A CHANGED BINARY IS OUTSIDE THE DOMAIN AT BOTH ENDS, so the range skips
+;; it and the answer names it: alone, the range has nothing to import and
+;; the store is left as it was; beside a text change, the text change lands
+;; (the dry run and the run name the binary alike) and the export at the tag
+;; is <to>'s text. Red on an importer that refuses not-text for a binary the
+;; domain never held.
+(printf "== IG-5b: a range with binary files in it ==\n")
+(define wt5c (repo! "r5c"))
+(define c5c-0 (commit! wt5c "base" (cons "a.sc" (defs 'a)) (cons "bin.dat" (bytevector 98 0 98 10))))
+(define c5c-bin (begin (at! wt5c c5c-0) (commit! wt5c "the binary changes" (cons "bin.dat" (bytevector 99 0 99 10)))))
+(define c5c-both (begin (at! wt5c c5c-0) (commit! wt5c "text and binary" (cons "a.sc" (defs 'a 'b)) (cons "bin.dat" (bytevector 99 0 99 10)))))
+(define st5c (store-from! wt5c c5c-0 "s5c" #t))
+(want "IG-5b a range that changes only a binary: nothing-to-import naming it, nothing written, no import block, exit 1"
+      (in-order (refused-run st5c wt5c c5c-0 c5c-bin "t5c") (import-blocks st5c) (tag-count st5c "t5c"))
+      (list (list (list 'nothing-to-import (list 'from c5c-0) (list 'to c5c-bin) '(not-text "bin.dat")) #t 1) '() 0))
+(define d5c (import! st5c wt5c c5c-0 c5c-both "t5c" "" " --dry-run"))
+(define r5c (import! st5c wt5c c5c-0 c5c-both "t5c"))
+(want "IG-5b a binary and a text file changed: the text change lands, the binary is named in files (dry run and run alike), the export at the tag is <to>'s text"
+      (list (ran d5c) (clause-of (answer d5c) 'files) (ran r5c) (clause-of (answer r5c) 'files)
+            (texts st5c "a.sc") (file-at st5c "bin.dat") (export-text-is? st5c wt5c c5c-both (tag-cut st5c "t5c")))
+      (list '(ok 0) '(files (modified 1) (added 0) (removed 0) (not-text "bin.dat"))
+            '(ok 0) '(files (modified 1) (added 0) (removed 0) (not-text "bin.dat"))
+            (pieces "a.sc" (defs 'a 'b)) #f #t))
 
 ;; ---- IG-6: premises ------------------------------------------------------------------
 (printf "== IG-6: premises ==\n")

@@ -19,8 +19,11 @@
 ;;   scheme --script tools/import-git.sc <store> <repo> <from-rev> <to-rev> --tag <name> [--dry-run]
 ;;
 ;; THE DOMAIN is the seed importer's: regular files of mode 100644 or 100755
-;; whose bytes are text (import-text?), not dot-named. A changed path outside
-;; it is refused, a dot-named one is skipped.
+;; whose bytes are text (import-text?), not dot-named. A dot-named changed
+;; path is skipped. The range follows the domain: a changed regular path
+;; whose bytes are text at no end it exists at is skipped and named
+;; in the answer's not-text clause; one that is text at one end only is a
+;; removal (text, then not) or an addition (not, then text).
 ;;
 ;; THE RANGE comes from `git diff --name-status -M -z`: M is a content change
 ;; with the same mode at both ends (file-mode otherwise), A an added file at
@@ -28,7 +31,8 @@
 ;; path and the addition of the new (ids do not follow a rename), T and any
 ;; other letter paths-unsupported; an added path the store cannot hold is
 ;; unsafe-path, a listed path that is not its own UTF-8 path-not-utf8.
-;; Nothing left is nothing-to-import.
+;; Nothing left is nothing-to-import, naming the skipped paths that are not
+;; text, (not-text <path> ...), when there are any.
 ;;
 ;; THE PRECONDITION is read at the store's applied cut, THE READ CUT, by
 ;; literal blobs, and accepts one of three states:
@@ -95,10 +99,11 @@
 ;;
 ;; A refusal prints (error <kind> ...) and exits 1; success prints
 ;; (ok (tag <name> (cut <cut>)) (rerun <#t|#f>)
-;;     (files (modified <n>) (added <n>) (removed <n>))
+;;     (files (modified <n>) (added <n>) (removed <n>) [(not-text <path> ...)])
 ;;     (blocks (kept <n>) (set (<id> ...)) (inserted (<id> ...))
 ;;             (deleted (<id> ...)) (moved (<id> ...))))
-;; the lists in item order.
+;; the lists in item order, the not-text paths sorted and the clause present
+;; only when there is one.
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
         (only (theourgia store) open-and-reduce store-tags)
@@ -243,44 +248,58 @@
 
 ;; ---- the range -------------------------------------------------------------
 ;;
-;; -> ((<path> modified|added|removed) ...), sorted by path, every path in
-;; the domain at the ends it exists at; refused as the letters and modes
-;; demand.
+;; -> (<range> . <not-text>): <range> is ((<path> modified|added|removed)
+;; ...), sorted by path, every path in the domain at the ends it exists at;
+;; <not-text> the sorted changed paths skipped because their bytes are text
+;; at no end they exist at. Refused as the letters and modes demand.
+;;
+;; THE RANGE FOLLOWS THE DOMAIN. Which entry a path's change is depends on
+;; whether its bytes are text at each end: at both, modified; at the old end
+;; only, removed (its blocks go); at the new end only, added (so it must be
+;; a path the store can hold); at neither, skipped and named. A path absent
+;; at one end has no text there. The mode checks come first, as before: a
+;; path that is not a regular file of an allowed mode is refused whatever
+;; its bytes.
 (define (range-of repo from to from-tree to-tree)
   (let ((fields (filter (lambda (s) (> (string-length s) 0))
                         (split-on (git-paths repo "diff" "--no-ext-diff" "--name-status" "-M" "-z" from to) #\nul)))
-        (out '()))
+        (out '())
+        (not-text '()))
     (define (mode-of tree p) (let ((e (hashtable-ref tree p #f))) (if e (car e) 'none)))
-    (define (text! tree p)
+    (define (text? tree p)
       (let ((e (hashtable-ref tree p #f)))
         (read-blobs! repo (list (caddr e)))
-        (unless (import-text? (blob-of e)) (refuse 'not-text (list 'path p)))))
+        (import-text? (blob-of e))))
+    ;; a path the store cannot hold (a backslash, a NUL) is refused here,
+    ;; before anything is written, not by the export at the end
+    (define (holdable! p) (unless (code-safe-path? p) (refuse 'unsafe-path (list 'path p))))
+    (define (entry! p kind)
+      (if kind
+          (set! out (cons (list p kind) out))
+          (set! not-text (cons p not-text))))
     (define (removed! p)
       (unless (dot-named? p)
         (let ((m (mode-of from-tree p)))
           (unless (and (member m '("100644" "100755")) (regular? (hashtable-ref from-tree p #f)))
             (refuse 'file-mode (list 'path p) (list 'from m) '(to none)))
-          (text! from-tree p)
-          (set! out (cons (list p 'removed) out)))))
+          (entry! p (and (text? from-tree p) 'removed)))))
     (define (added! p)
       (unless (dot-named? p)
         (let ((m (mode-of to-tree p)))
           (unless (and (equal? m "100644") (regular? (hashtable-ref to-tree p #f)))
             (refuse 'file-mode (list 'path p) '(from none) (list 'to m)))
-          ;; a path the store cannot hold (a backslash, a NUL) is refused
-          ;; here, before anything is written, not by the export at the end
-          (unless (code-safe-path? p) (refuse 'unsafe-path (list 'path p)))
-          (text! to-tree p)
-          (set! out (cons (list p 'added) out)))))
+          (let ((t (text? to-tree p)))
+            (when t (holdable! p))
+            (entry! p (and t 'added))))))
     (define (modified! p)
       (unless (dot-named? p)
         (let ((a (mode-of from-tree p)) (b (mode-of to-tree p)))
           (unless (and (equal? a b) (member a '("100644" "100755"))
                        (regular? (hashtable-ref from-tree p #f)) (regular? (hashtable-ref to-tree p #f)))
             (refuse 'file-mode (list 'path p) (list 'from a) (list 'to b)))
-          (text! from-tree p)
-          (text! to-tree p)
-          (set! out (cons (list p 'modified) out)))))
+          (let ((ta (text? from-tree p)) (tb (text? to-tree p)))
+            (when (and tb (not ta)) (holdable! p))
+            (entry! p (cond ((and ta tb) 'modified) (ta 'removed) (tb 'added) (else #f)))))))
     (let loop ((fs fields))
       (unless (null? fs)
         (let ((letter (car fs)))
@@ -297,8 +316,11 @@
                  (loop (cddr fs)))
                 (else (refuse 'paths-unsupported (list 'letter letter)
                               (list 'path (if (pair? (cdr fs)) (cadr fs) ""))))))))
-    (when (null? out) (refuse 'nothing-to-import (list 'from from) (list 'to to)))
-    (list-sort (lambda (x y) (string<? (car x) (car y))) out)))
+    (let ((skipped (sorted-unique not-text)))
+      (when (null? out)
+        (apply refuse 'nothing-to-import (list 'from from) (list 'to to)
+               (if (null? skipped) '() (list (cons 'not-text skipped)))))
+      (cons (list-sort (lambda (x y) (string<? (car x) (car y))) out) skipped))))
 
 ;; ---- the store -------------------------------------------------------------
 
@@ -610,14 +632,17 @@
          (to (commit-id repo to-rev))
          (from-tree (tree-of repo from))
          (to-tree (tree-of repo to))
-         (range (range-of repo from to from-tree to-tree))
+         (range-and-skipped (range-of repo from to from-tree to-tree))
+         (range (car range-and-skipped))
+         (not-text (cdr range-and-skipped))
          (from-domain (domain-of repo from-tree))
          (to-domain (domain-of repo to-tree))
          (state (open-and-reduce store))
          (cut (reduce-applied-cut state))
          (export (export-of state))
          (count (lambda (kind) (length (filter (lambda (r) (eq? (cadr r) kind)) range))))
-         (files (list 'files (list 'modified (count 'modified)) (list 'added (count 'added)) (list 'removed (count 'removed)))))
+         (files (append (list 'files (list 'modified (count 'modified)) (list 'added (count 'added)) (list 'removed (count 'removed)))
+                        (if (null? not-text) '() (list (cons 'not-text not-text))))))
     (let-values (((how block) (precondition store state export from to name range from-domain to-domain)))
       (when (and (not (eq? how 'done-without-tag)) (tag-bound? store state name))
         (refuse 'tag-exists (list 'tag name)))

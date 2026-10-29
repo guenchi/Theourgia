@@ -3738,10 +3738,15 @@ is not a difference: the importer follows links. The range is
 `git diff --name-status -M`'s: a content change must keep its mode
 (`file-mode`), an added file must be 100644 (`file-mode`), a rename is the
 removal of the old path and the addition of the new (ids do not follow it),
-any other letter is `paths-unsupported`, a changed file that is not text is
-`not-text`, an added path the store cannot hold (a backslash in it) is
-`unsafe-path`, a path git lists that is not its own UTF-8 is `path-not-utf8`,
-and a range with nothing left is `nothing-to-import`. A repository git
+any other letter is `paths-unsupported`, an added path the store cannot hold
+(a backslash in it) is `unsafe-path`, a path git lists that is not its own
+UTF-8 is `path-not-utf8`, and a range with nothing left is
+`nothing-to-import`, naming in `(not-text <path> ...)` the paths it skipped
+for their bytes. The range follows the domain: a changed file whose bytes
+are text at both ends is modified, one that stops being text (a NUL, bytes
+that are not UTF-8) is removed, one that becomes text is added, and one
+that is text at no end it exists at -- a binary changed, added or removed
+-- is skipped and named in the answer's `files` clause. A repository git
 cannot read -- a revision that does not resolve, a git command that fails,
 an object it cannot give -- is `repo-unreadable`, naming the repository and
 what failed.
@@ -3781,12 +3786,13 @@ the tag is compared with `<to-rev>` and a difference is `(error
 import-diverged (differing <path> ...) ...)`, with the tag made. It answers
 
     (ok (tag <name> (cut <cut>)) (rerun <#t|#f>)
-        (files (modified <n>) (added <n>) (removed <n>))
+        (files (modified <n>) (added <n>) (removed <n>) [(not-text <path> ...)])
         (blocks (kept <n>) (set (<id> ...)) (inserted (<id> ...))
                 (deleted (<id> ...)) (moved (<id> ...))))
 
-and `--dry-run` reads, checks and plans the same way, prints the counts and
-writes nothing. Coders' drafts on blocks the import set, deleted or moved
+the `not-text` paths sorted, and that clause there only when a path was
+skipped for its bytes; `--dry-run` reads, checks and plans the same way,
+prints the counts and writes nothing. Coders' drafts on blocks the import set, deleted or moved
 meet it as any commit's change: stale at their next sync, refused at their
 landing.
 
