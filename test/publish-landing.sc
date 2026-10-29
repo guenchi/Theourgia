@@ -26,10 +26,10 @@
 
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia store) open-and-reduce)
+        (only (theourgia store) open-and-reduce store-state-at-cut)
         (only (theourgia reduce) block-id)
         (only (theourgia code-project) code-files code-field code-children)
-        (only (theourgia landing-files) landing-collision volume-insensitivity)
+        (only (theourgia landing-files) landing-collision volume-insensitivity file-scope-changes)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia ffi) path-stat))
@@ -548,9 +548,9 @@
   (import-library! r "m.sls" lib-v1)
   (landing! r "text and a new library") (freeze! r)
   (let ((a (publish! r)))
-    (want "PL-37 a text edit and a datum library added: refused datum-not-published naming m.sls; nothing staged or committed"
-          (list (head-of a) (clause-of a 'paths) (head-commit r) (git (wt-of r) "status" "--porcelain"))
-          (list '(error datum-not-published) '(paths "m.sls") (base-of r) ""))))
+    (want "PL-37 a text edit and a datum library added: refused datum-not-published naming m.sls, with no no-path clause; nothing staged or committed"
+          (list (head-of a) (clause-of a 'paths) (clause-of a 'no-path) (head-commit r) (git (wt-of r) "status" "--porcelain"))
+          (list '(error datum-not-published) '(paths "m.sls") #f (base-of r) ""))))
 (let ((r (car (with-libraries! (list (cons "m.sls" lib-v1))))))
   (set-text! (st-of r) "a.txt" "uno\n")
   (set-text! (st-of r) "b.txt" "dos\n")
@@ -603,8 +603,9 @@
           '((error datum-not-published) (paths "m.sls")))))
 
 ;; A LIBRARY WITH NO PATH is still a library: one whose path field was removed
-;; before start, a form added under it by def; and one whose path is removed
-;; between the cuts, named by its old path and by its id.
+;; before start, a form added under it by def, named by its id in a no-path
+;; clause beside an empty paths clause; and one whose path is removed between
+;; the cuts, named by its old path in paths and by its id in no-path.
 (let* ((made (with-libraries! (list (cons "m.sls" lib-v1))
                               (lambda (r ids) (checked "unpath" (ask (st-of r) 'set (car ids) "path")))))
        (r (car made)) (m (cadr made)))
@@ -612,17 +613,55 @@
   (set-text! (st-of r) "a.txt" "uno\n")
   (landing! r "text, and a form under a library with no path") (freeze! r)
   (let ((a (publish! r)))
-    (want "PL-43 a library with no path at either cut, a form added under it: datum-not-published naming (no path) <id>; nothing committed"
-          (list (head-of a) (clause-of a 'paths) (head-commit r))
-          (list '(error datum-not-published) (list 'paths (string-append "(no path) " m)) (base-of r)))))
+    (want "PL-43 a library with no path at either cut, a form added under it: datum-not-published with (paths) and (no-path <id>); nothing committed"
+          (list (head-of a) (clause-of a 'paths) (clause-of a 'no-path) (head-commit r))
+          (list '(error datum-not-published) '(paths) (list 'no-path m) (base-of r)))))
 (let* ((made (with-libraries! (list (cons "m.sls" lib-v1)))) (r (car made)) (m (cadr made)))
   (checked "unpath" (ask (st-of r) 'set m "path"))
   (set-text! (st-of r) "a.txt" "uno\n")
   (landing! r "text, and a library's path removed") (freeze! r)
   (let ((a (publish! r)))
-    (want "PL-43b a library's path removed between the cuts: datum-not-published naming (no path) <id> and m.sls; nothing committed"
-          (list (head-of a) (clause-of a 'paths) (head-commit r))
-          (list '(error datum-not-published) (list 'paths (string-append "(no path) " m) "m.sls") (base-of r)))))
+    (want "PL-43b a library's path removed between the cuts: datum-not-published naming m.sls in paths and its id in no-path; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (clause-of a 'no-path) (head-commit r))
+          (list '(error datum-not-published) '(paths "m.sls") (list 'no-path m) (base-of r)))))
+;; A STORED PATH THAT SPELLS ANOTHER LIBRARY'S OLD LABEL: n.sls is stored at
+;; "(no path) <m>", and m has no path; both gain a form. Each is named, n by
+;; its path and m by its id, not merged into one entry. Without a filter the
+;; comparison answers strings only: n's path and a.txt, and nothing for m.
+(define lib-n "(library (n lib)\n  (export g0)\n  (import (chezscheme))\n  (define (g0 x) (+ x 2)))\n")
+(let* ((made (with-libraries! (list (cons "m.sls" lib-v1) (cons "n.sls" lib-n))
+                              (lambda (r ids)
+                                (checked "unpath" (ask (st-of r) 'set (car ids) "path"))
+                                (checked "repath" (ask (st-of r) 'set (cadr ids) "path" (string-append "(no path) " (car ids)))))))
+       (r (car made)) (m (cadr made)) (n-id (caddr made)))
+  (checked "def under m" (ask (st-of r) 'def "g" "--under" m "(define (g) 2)"))
+  (checked "def under n" (ask (st-of r) 'def "h" "--under" n-id "(define (h) 3)"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, a library with no path and one stored at its old label") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-43c a library stored at the path \"(no path) <id>\" beside library <id> with no path, both changed: both named, one in paths and one in no-path; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (clause-of a 'no-path) (head-commit r))
+          (list '(error datum-not-published) (list 'paths (string-append "(no path) " m)) (list 'no-path m) (base-of r))))
+  (want "PL-43d CONTROL file-scope-changes with no filter over the same cuts answers strings only: n's stored path and a.txt"
+        (file-scope-changes (store-state-at-cut (st-of r) #f "start") (store-state-at-cut (st-of r) #f "freeze"))
+        (list (string-append "(no path) " m) "a.txt")))
+;; TWO LIBRARIES WITH NO PATH, both changed: an empty paths clause and both
+;; ids in no-path, in string order. The ids follow creation order here (the
+;; store numbers holders as it inserts them), so the row tells sorted from
+;; reversed; it cannot tell sorted from creation order.
+(define lib-p "(library (p lib)\n  (export g1)\n  (import (chezscheme))\n  (define (g1 x) (+ x 3)))\n")
+(let* ((made (with-libraries! (list (cons "m.sls" lib-v1) (cons "p.sls" lib-p))
+                              (lambda (r ids)
+                                (for-each (lambda (id) (checked "unpath" (ask (st-of r) 'set id "path"))) ids))))
+       (r (car made)) (ids (cdr made)))
+  (for-each (lambda (id name) (checked "def" (ask (st-of r) 'def name "--under" id (string-append "(define (" name ") 4)"))))
+            ids '("k1" "k2"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and two libraries with no path") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-43e two libraries with no path, both changed: (paths) and (no-path <lower id> <higher id>); nothing committed"
+          (list (head-of a) (clause-of a 'paths) (clause-of a 'no-path) (head-commit r))
+          (list '(error datum-not-published) '(paths) (cons 'no-path (list-sort string<? ids)) (base-of r)))))
 
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\npublish-landing complete\n" rows bad)

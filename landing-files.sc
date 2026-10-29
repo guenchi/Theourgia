@@ -63,12 +63,16 @@
   ;; KEEP?, when given, is asked (keep? state id) of each holder, and only the
   ;; holders it answers #t for are compared, with the blocks under them.
   ;; UNDER A FILTER THE FILTER DECIDES, not the path: a holder it keeps is
-  ;; compared whether or not it holds a path, and one without a path is
-  ;; named "(no path) <id>" (found in review: a datum library whose path field
-  ;; was removed fell outside the comparison with all its forms). Without a
-  ;; filter only holders with a path are files, as before.
+  ;; compared whether or not it holds a path (found in review: a datum
+  ;; library whose path field was removed fell outside the comparison with all
+  ;; its forms). One whose path field is absent or not a string is named by
+  ;; the list (no-path <id>), never by a string: a string label for it could
+  ;; be the stored path of another holder, and the two would be named as one.
+  ;; Without a filter only holders with a path are files, as before, so the
+  ;; answer holds strings only.
   ;; -> the paths of the files whose holder or blocks differ between FROM and
-  ;;    TO, sorted, each once; () when none does.
+  ;;    TO, sorted, each once, then one (no-path <id>) per such holder without
+  ;;    a path, sorted by id; () when none does.
   (define (file-scope-changes from to . keep)
     (define (stored-path state id)
       (let* ((b (state-read state id)) (fs (and b (assq 'fields b))) (p (and fs (assq 'path (cdr fs)))))
@@ -82,7 +86,7 @@
       (let ((t (make-hashtable string-hash string=?)) (kids (children-index state)))
         (for-each (lambda (f)
                     (let* ((stored (stored-path state f))
-                           (path (or stored (string-append "(no path) " f))))
+                           (path (or stored (list 'no-path f))))
                       (when (if (null? keep) stored ((car keep) state f))
                         (let walk ((ids (list f)))
                           (unless (null? ids)
@@ -90,7 +94,7 @@
                             (walk (append (hashtable-ref kids (car ids) '()) (cdr ids))))))))
                   (state-block-ids state))
         t))
-    (let* ((a (scope from)) (b (scope to)) (paths (make-hashtable string-hash string=?))
+    (let* ((a (scope from)) (b (scope to)) (paths (make-hashtable equal-hash equal?))
            (judge (lambda (id)
                     (let ((x (hashtable-ref a id #f)) (y (hashtable-ref b id #f)))
                       (unless (and x y (equal? (car x) (car y)))
@@ -98,7 +102,9 @@
                         (when y (hashtable-set! paths (cdr y) #t)))))))
       (vector-for-each judge (hashtable-keys a))
       (vector-for-each judge (hashtable-keys b))
-      (list-sort string<? (vector->list (hashtable-keys paths)))))
+      (let ((labels (vector->list (hashtable-keys paths))))
+        (append (list-sort string<? (filter string? labels))
+                (list-sort (lambda (x y) (string<? (cadr x) (cadr y))) (filter pair? labels))))))
 
   ;; THE SAME FOR DATUM LIBRARIES ONLY: the holders whose kind is library and
   ;; mode datum, and every block under them, by exact store path and version.

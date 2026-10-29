@@ -388,9 +388,15 @@
                 ;; spellings into one (found in review, twice). Any difference
                 ;; refuses, before nothing-to-publish, so a datum-only change is
                 ;; refused by name too; a library's title or link counts, the safe
-                ;; side.
+                ;; side. The refusal's paths clause is always there, empty when
+                ;; only libraries without a path changed; those are named by id
+                ;; in a no-path clause, there only when one did, so no stored
+                ;; path can be read as one of them.
                 (let ((changed (datum-scope-changes start-state freeze-state)))
-                  (when (pair? changed) (refuse 'datum-not-published (cons 'paths changed))))
+                  (when (pair? changed)
+                    (let ((pathless (map cadr (filter pair? changed))))
+                      (apply refuse 'datum-not-published (cons 'paths (filter string? changed))
+                             (if (null? pathless) '() (list (cons 'no-path pathless)))))))
                 ;; WHAT CHANGED
                 (let* ((items (cdr (cadr (answer-ok (ask store 'changed-files (cut-text start-cut) (cut-text freeze-cut))))))
                        (of (lambda (r) (map cadr (filter (lambda (i) (eq? (caddr i) r)) items))))

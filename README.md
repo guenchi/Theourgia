@@ -3460,9 +3460,12 @@ Everything is checked before the worktree changes, each as a refusal:
   (`datum-not-published` with the paths: a library added, removed, renamed,
   or changed in its forms). The states are read, not files written on a
   volume, so two libraries whose spellings a volume would merge are still
-  two. A library whose path field was removed is compared too, and named
-  `(no path) <id>`; one whose path is removed between the cuts is named by
-  both. A library's title or link changes its version too, and refuses the
+  two. A library whose path field was removed is compared too, and named by
+  its id in a separate `(no-path <id> ...)` clause, never in `paths`, so no
+  stored path can be read as it; `paths` is always there, empty when only
+  such libraries changed. One whose path is removed between the cuts is named
+  in both clauses: its old path in `paths` and its id in `no-path`. A
+  library's title or link changes its version too, and refuses the
   landing with the rest: the safe side, since none of it is published. It
   comes after the base check and
   before the next one, so a change to datum libraries only is refused by this
