@@ -821,9 +821,13 @@
 ;; streams close when the runner exits); the child first writes its own pid,
 ;; then would write the marker three seconds later. The runner waits a
 ;; moment, so the pid is written, and exits 0. Right after the answer the
-;; child is asked for by kill -0 and must be gone -- the group is signalled
-;; and waited for on this exit -- with no eval-group-survived trace; after
-;; four seconds there is still no marker.
+;; marker must not be there yet, since a runner that waited for the child
+;; would answer only after the child wrote it. The child is asked for by
+;; kill -0 and must be gone -- the group is signalled and waited for on this
+;; exit -- with no eval-group-survived trace; after four seconds there is
+;; still no marker. The answer's time is a reading in the row's text, not a
+;; bound: most of it is core.sc starting from source, about 1.5 s on the
+;; development machine and past 3 s on a slower one.
 ;; NOTE: END TO END THIS ROW CANNOT TELL A WAITED SIGNAL FROM ONE NOT WAITED
 ;; FOR: SIGKILL lands long before the kill -0 runs. L21 reads the wait itself.
 (define pid20 (string-append outside "/pid20"))
@@ -834,14 +838,16 @@
                               "sleep 0.3\nexit 0\n")
                "--lang" "shell"))
        (ms (- (real-time) t0))
+       (marker-at-answer (file-exists? marker20))
        (trace (err-of))
        (pid (let ((t (text-of-file pid20))) (and (> (string-length t) 1) (substring t 0 (- (string-length t) 1)))))
        (alive (and pid (= 0 (sh "kill -0 " pid " 2>/dev/null")))))
   (sh "sleep 4")
-  (want "L20 a background child of a runner that exited 0: the answer is ok at once, the child is gone at the answer (no eval-group-survived), and it never ran on"
-        (list (head-of a) (clause-of a 'exit) (< ms 3000) (and pid #t) alive
+  (want (string-append "L20 a background child of a runner that exited 0: the answer is ok and comes before the child's marker, the child is gone at the answer (no eval-group-survived), and it never ran on (answered in "
+                       (number->string ms) " ms)")
+        (list (head-of a) (clause-of a 'exit) marker-at-answer (and pid #t) alive
               (has-substring? trace "eval-group-survived") (file-exists? marker20))
-        (list 'ok '(exit 0) #t #t #f #f #f)))
+        (list 'ok '(exit 0) #f #t #f #f #f)))
 
 ;; ---- L21: the wait, read from its own text -----------------------------------------
 ;; group-wait-ms and stop-group-and-wait! are read out of eval-supervise.sc as

@@ -131,11 +131,14 @@
                   "--wire > " out " 2> " out ".err < /dev/null")))
       (list rc (let ((ls (lines-of-text (text-of-file out)))) (if (pair? ls) (datum-of-line (car ls)) 'nothing))))))
 ;; The streaming client in the background; -> (out-path rc-path err-path).
-(define (subscribe-bg! env st . args)
+;; Its alarm is 120 s from its start. subscribe-bg-alarm! takes the alarm in
+;; seconds, for a row that holds its client stopped longer than that.
+(define (subscribe-bg! env st . args) (apply subscribe-bg-alarm! 120 env st args))
+(define (subscribe-bg-alarm! secs env st . args)
   (set! c-n (+ c-n 1))
   (let* ((base (string-append root "/sub" (number->string c-n)))
          (out (string-append base ".out")) (rcf (string-append base ".rc")) (err (string-append base ".err")))
-    (sh "( " env " THEOURGIA_TRACE=1 perl -e 'alarm 120; exec @ARGV' scheme --script ../theourgia.sc subscribe changes "
+    (sh "( " env " THEOURGIA_TRACE=1 perl -e 'alarm " (number->string secs) "; exec @ARGV' scheme --script ../theourgia.sc subscribe changes "
         (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
         "--store " (quoted st) " > " out " 2> " err " < /dev/null; echo $? > " rcf " ) &")
     (list out rcf err)))
@@ -348,9 +351,20 @@
         (list 1 '(error transport-error lost-stream))))
 ;; OVERFLOW: the client stopped (SIGSTOP) while the daemon's queue fills
 ;; past its limit; continued, it prints the lagging terminal and exits 1.
+;; THE ROW'S BOUND COMES AFTER THE CONTINUE: await-sub-exit's nominal 20 s
+;; (it counts polls, not elapsed time). The flood before it is about 185
+;; publications (the two socket buffers and the 64-frame queue), one
+;; thin-client insert each, since a batch is one publication and one frame.
+;; That takes 60 to 70 s on the development machine and passed the 120 s
+;; alarm on a slower one, killing the client before it could read. So this
+;; client's alarm is a 900 s backstop, far above the floods measured, not a
+;; bound that no runner can reach. THE PIDS IT HOLDS ARE KILLED on the wait's
+;; timeout, before its output is read, and on a raise anywhere after the
+;; stop, so nothing it stopped outlives the file; a timeout with no complete
+;; line is a red row, not a raise.
 (let* ((st (fresh-served! "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_SEND_BUFFER=16384"))
        (_ (client "THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_SEND_BUFFER=16384" "insert" "--title" "warm" "--store" st))
-       (s (subscribe-bg! "" st "0")))
+       (s (subscribe-bg-alarm! 900 "" st "0")))
   (await-sub-lines s 1 10000)
   (let ((pids (map (lambda (l) (string->number (car (filter (lambda (w) (> (string-length w) 0))
                                                              (let split ((cs (string->list l)) (cur '()) (acc '()))
@@ -359,16 +373,20 @@
                                                                      (else (split (cdr cs) (cons (car cs) cur) acc))))))))
                    (filter (lambda (l) (and (has-substring? l "theourgia.sc subscribe changes") (has-substring? l st)))
                            (lines-of-command "ps -ax -o pid= -o command=")))))
+    (define (kill-held!) (for-each (lambda (p) (sh "kill -KILL " (number->string p) " 2>/dev/null")) pids))
     (for-each (lambda (p) (sh "kill -STOP " (number->string p))) pids)
-    (let loop ((k 0))
-      (when (and (< k 300) (not (has-substring? (text-of-file (serve-log-path st)) "(trace stream-closed lagging")))
-        (insert! st (string-append "q" (number->string k)))
-        (loop (+ k 1))))
-    (for-each (lambda (p) (sh "kill -CONT " (number->string p))) pids))
-  (let* ((rc (await-sub-exit s 20000)) (last (datum-of-line (car (reverse (sub-lines s))))))
-    (want "CLIENT-12 on overflow the client prints the lagging terminal and exits 1"
-          (list rc (and (pair? last) (car last)) (clause 'reason last))
-          (list 1 'error '(lagging))))
+    (guard (e (#t (kill-held!) (raise e)))
+      (let loop ((k 0))
+        (when (and (< k 300) (not (has-substring? (text-of-file (serve-log-path st)) "(trace stream-closed lagging")))
+          (insert! st (string-append "q" (number->string k)))
+          (loop (+ k 1))))
+      (for-each (lambda (p) (sh "kill -CONT " (number->string p))) pids)
+      (let ((rc (await-sub-exit s 20000)))
+        (unless rc (kill-held!))
+        (let* ((ls (sub-lines s)) (last (and (pair? ls) (datum-of-line (car (reverse ls))))))
+          (want "CLIENT-12 on overflow the client prints the lagging terminal and exits 1 once continued (a nominal 20 s wait)"
+                (list rc (and (pair? last) (car last)) (clause 'reason last))
+                (list 1 'error '(lagging)))))))
   (stop-daemon! st))
 (let* ((st (fresh-served! ""))
        (hit (new-id (client "" "insert" "--title" "carries --rev in its title" "--store" st)))
