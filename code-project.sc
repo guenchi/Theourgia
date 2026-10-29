@@ -101,14 +101,17 @@
   ;; AN EDITOR'S SYMBOLS SPLIT A FIRST IMPORT, AND ONLY THAT. `symbols` is #f,
   ;; or (read-sections . cuts-of): the reader of `--symbols`' sections by
   ;; path, and the procedure that turns a section and a file's bytes and
-  ;; language entry into the cuts, or raises the file's refusal
-  ;; (code-suggest.sc, read-import-symbols and import-symbol-cuts). The
+  ;; language entry into the cuts and each block's title or #f, or raises
+  ;; the file's refusal (code-suggest.sc, read-import-symbols and
+  ;; import-symbol-cuts). The
   ;; sections are read here, in the capture and before the directory, so a
   ;; symbols file that does not read refuses the request before anything
   ;; else is read, and a request already captured is replayed from its
   ;; packet whatever the symbols file holds now. A file a section names is split at those cuts
   ;; when it carries no marker line -- no file block holds it yet -- into
-  ;; the blocks a marked first import of the same cuts makes. A file that
+  ;; the blocks a marked first import of the same cuts makes, and a block
+  ;; cut at a symbol the language's definition patterns do not name carries
+  ;; the symbol's name as its title. A file that
   ;; carries markers follows them and nothing else, so identity is proved
   ;; by markers alone, and is listed as symbols-ignored. A file whose cuts
   ;; are refused is not imported at all, and is listed with its refusal as
@@ -127,10 +130,14 @@
                            (begin (set! ignored (cons rel ignored)) input)
                            (guard (e ((and (pair? e) (eq? (car e) 'error))
                                       (set! refused (cons (list rel e) refused)) #f))
-                             (let ((cuts ((cdr symbols) section b (cadr input))))
+                             (let* ((answer ((cdr symbols) section b (cadr input)))
+                                    (cuts (car answer)))
                                (list rel (cadr input)
-                                     (list #f (map (lambda (from to) (list "new" (byte-slice b from to)))
-                                                   (reverse (cdr (reverse cuts))) (cdr cuts)))
+                                     (list #f (map (lambda (from to title)
+                                                     (if title
+                                                         (list "new" (byte-slice b from to) title)
+                                                         (list "new" (byte-slice b from to))))
+                                                   (reverse (cdr (reverse cuts))) (cdr cuts) (cadr answer)))
                                      b)))))))))
            (files (map (lambda (rel)
                          (unless (relative-safe? rel) (projection-failure 'unsafe-path))
@@ -191,7 +198,8 @@
                   (let ((id (car e)) (src (cadr e)))
                     (if (string=? id "new")
                         (set! previous (list 'from (emit! (list 'insert parent previous
-                          (append (list '(kind . code) '(mode . text) (cons 'src src)) (lang-fields entry))))))
+                          (append (list '(kind . code) '(mode . text) (cons 'src src)) (lang-fields entry)
+                                  (if (pair? (cddr e)) (list (cons 'title (caddr e))) '()))))))
                         (begin
                           (unless (equal? src (code-field baseline id 'src)) (emit! (list 'set id 'src src)))
                           (unless (equal? (and entry (string->symbol (language-property entry 'lang #f))) (code-field baseline id 'lang))

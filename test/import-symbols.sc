@@ -581,6 +581,98 @@
           (store-daemons store)
           0)))
 
+;; ---- IS33-IS42: a symbol the language does not name gives its block a title ----------
+;; TS: a class, an interface, an arrow const and a function, a blank line
+;; between each. TypeScript's definition patterns name the interface and
+;; the function; the class and the const they do not. The blocks are Beta,
+;; a blank line, Gamma, a blank line, delta, a blank line and epsilon.
+(define ts "export class Beta {\n  x = 1;\n}\n\nexport interface Gamma {\n  y: number;\n}\n\nexport const delta = (n: number) => n + 1;\n\nexport function epsilon(): number {\n  return 2;\n}\n")
+(want "IS33 setup: TS's offsets (Beta, its brace, Gamma, its brace, delta, its semicolon, epsilon, its brace, the length)"
+      (list (offset-of ts "export class Beta") (offset-of ts "}\n\nexport interface") (offset-of ts "export interface Gamma")
+            (offset-of ts "}\n\nexport const") (offset-of ts "export const delta") (offset-of ts ";\n\nexport function")
+            (offset-of ts "export function epsilon") (- (bytes-of ts) 2) (bytes-of ts))
+      '(0 29 32 70 73 114 117 165 167))
+(define (ts-symbols beta-name)
+  (list (sym 0 30 'class beta-name) (sym 32 71 'interface "Gamma") (sym 73 115 'variable "delta")
+        (sym 117 166 'function "epsilon")))
+;; -> the outline's titles, one per row, the id and indent taken off.
+(define (titles-of store)
+  (let ((a (setup (local store "outline"))))
+    (if (not (and (pair? a) (eq? (car a) 'ok))) a
+        (let loop ((p (open-input-string (cadr (assq 'text (cdr a))))) (acc '()))
+          (let ((l (get-line p)))
+            (if (eof-object? l) (reverse acc)
+                ;; a row is <indent>- <id>  <title>: the title follows the
+                ;; first two spaces after the dash.
+                (let* ((dash (let find ((i 0)) (if (char=? (string-ref l i) #\-) i (find (+ i 1)))))
+                       (rest (substring l dash (string-length l)))
+                       (gap (offset-of rest "  ")))
+                  (loop p (cons (substring rest (+ gap 2) (string-length rest)) acc)))))))))
+;; -> each child's stored title, or #f, in order.
+(define (title-fields-of store path)
+  (let ((s (open-and-reduce store)) (cs (children-of store path)))
+    (and cs (map (lambda (id) (code-field s id 'title)) cs))))
+(define (ts-case! beta-name)
+  (case! (list (cons "a.ts" ts)) (apply section "a.ts" ts (ts-symbols beta-name))))
+
+(let* ((c (ts-case! "Beta"))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS34 a symbol-cut TS file: the outline reads Beta, Gamma (derived), delta, epsilon (derived), the gaps typescript:N"
+        (list (car a) (titles-of (car c)))
+        '(ok ("a.ts" "Beta" "typescript:2" "Gamma" "typescript:4" "delta" "typescript:6" "epsilon")))
+  (want "IS35 the title FIELD is stored on Beta and delta only: not where the name is derived, not on a gap"
+        (title-fields-of (car c) "a.ts")
+        '("Beta" #f #f #f "delta" #f #f))
+  (let* ((ids (setup (children-of (car c) "a.ts")))
+         (zeta (setup (rpc-dispatch (car c) (list 'set (list-ref ids 6) "src" "export function zeta(): number {\n  return 2;\n}\n") "test")))
+         (kappa (setup (rpc-dispatch (car c) (list 'set (list-ref ids 0) "src" "export class Kappa {\n  x = 1;\n}\n") "test"))))
+    (want "IS36 epsilon's block renamed to zeta and committed: the outline reads zeta, no stored title shadows it"
+          (list (car zeta) (list-ref (titles-of (car c)) 7))
+          '(ok "zeta"))
+    (want "IS37 Beta's block renamed to Kappa and committed: the outline still reads Beta, the first import's title (documented: a title does not follow src)"
+          (list (car kappa) (list-ref (titles-of (car c)) 1))
+          '(ok "Beta"))))
+
+(let* ((c (ts-case! ""))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS38 a class symbol named \"\": its block has no title and reads typescript:1; delta still has one"
+        (list (car a) (list-ref (titles-of (car c)) 1) (title-fields-of (car c) "a.ts"))
+        '(ok "typescript:1" (#f #f #f #f "delta" #f #f))))
+
+(let* ((c (case! (list (cons "a.ts" ts)) #f))
+       (a (local (car c) "import-code" (cadr c))))
+  (want "IS39 CONTROL a plain import of TS (no --symbols): one code block, no title, as before"
+        (list (car a) (titles-of (car c)) (title-fields-of (car c) "a.ts"))
+        '(ok ("a.ts" "typescript:1") (#f))))
+
+(define ts-review
+  (string-append "// @block new pad 0\n" (slice ts 0 31) "// @block new pad 0\n" (slice ts 31 167)))
+(let* ((c (case! (list (cons "r.ts" ts-review)) (apply section "r.ts" ts-review (list (sym 0 (bytes-of ts-review) 'module "whole")))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS40 CONTROL a marked TS file follows its markers: symbols-ignored, two blocks, no title"
+        (list (car a) (clause a 'symbols-ignored) (titles-of (car c)) (title-fields-of (car c) "r.ts"))
+        '(ok ("r.ts") ("r.ts" "typescript:1" "Gamma") (#f #f))))
+
+;; SHEBANG: the protected prefix is the shebang line, and Beta starts at its
+;; end. That cut is dropped, so the file is one block, the prefix with Beta.
+(define shebang-ts "#!/usr/bin/env node\nexport class Beta {\n  x = 1;\n}\n")
+(want "IS41 setup: SHEBANG's offsets (Beta, its brace, the length)"
+      (list (offset-of shebang-ts "export class Beta") (offset-of shebang-ts "}\n") (bytes-of shebang-ts))
+      '(20 49 51))
+(let* ((c (case! (list (cons "s.ts" shebang-ts)) (section "s.ts" shebang-ts (sym 20 50 'class "Beta"))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS41 a symbol starting at the prefix's end titles the first block: one block, titled Beta"
+        (list (car a) (titles-of (car c)) (title-fields-of (car c) "s.ts"))
+        '(ok ("s.ts" "Beta") ("Beta"))))
+;; A symbol inside the prefix names the header matter; the first block's
+;; title is the last symbol starting within the prefix or at its end.
+(let* ((c (case! (list (cons "s.ts" shebang-ts))
+                 (section "s.ts" shebang-ts (sym 0 20 'module "Header") (sym 20 50 'class "Beta"))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS42 a symbol at byte 0 inside the prefix and one at its end: the first block is titled Beta, the later one, not Header"
+        (list (car a) (titles-of (car c)) (title-fields-of (car c) "s.ts"))
+        '(ok ("s.ts" "Beta") ("Beta"))))
+
 (system (string-append "rm -rf '" root "'; rm -f '" socket "'"))
 (printf "\n~a failures\nrows: ~a\nimport-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

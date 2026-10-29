@@ -319,7 +319,7 @@
            (and (integer? start) (exact? start) (>= start 0)
                 (integer? end) (exact? end) (>= end 0)
                 (< start end)
-                (list start end (list-ref d 3))))))
+                (list start end (list-ref d 3) (list-ref d 4))))))
   ;; The symbols file's lines as data, `unread` for a line that does not read.
   (define (symbols-data path)
     (let ((raw (read-code-bytes path)))
@@ -435,7 +435,23 @@
   ;;     the file -- unbalanced, an unclosed quote, a token it cannot judge;
   ;;   symbols-not-top-level (at <byte>): the first cut inside a body, a
   ;;     string, a block comment or an open bracket.
-  ;; -> the cuts, 0 and the file's size included.
+  ;;
+  ;; A BLOCK CUT AT A SYMBOL THAT THE LANGUAGE DOES NOT NAME TAKES THE
+  ;; SYMBOL'S NAME AS ITS TITLE. A block's name is derived from its source
+  ;; (text-properties, as the view derives it), and where it is derived it
+  ;; stays in charge: a title stored there would outrank it and keep the
+  ;; first import's name after an edit renamed the definition. So the
+  ;; editor's name is the block's title only where the derivation answers
+  ;; nothing (a class, a const, an export default the definition patterns
+  ;; do not read). The first block holds the protected prefix, and its
+  ;; symbol is the LAST one that starts within the prefix or at its end: a
+  ;; symbol starting inside the prefix names the header matter there (a
+  ;; shebang, a header comment), and the definition the block carries is
+  ;; the one that starts where the prefix ends. Every other block holds at
+  ;; most one start, its own first byte. A block that does not start at a
+  ;; symbol, and a symbol named "", gets #f.
+  ;; -> (<cuts> <titles>): the cuts, 0 and the file's size included, and
+  ;;    for each block they make, in order, its title or #f.
   (define (import-symbol-cuts section bytes entry)
     (let* ((symbols (checked-symbols (cadr section) (cadddr section) bytes))
            (size (bytevector-length bytes))
@@ -461,7 +477,14 @@
           ((and (pair? said) (eq? (caar said) 'code))
            (symbols-refusal 'symbols-unscanned (list 'reason (cadr (car said))) (list 'at (cadddr (car said)))))
           ((pair? said) (symbols-refusal 'symbols-not-top-level (cadr (car said)))))
-        (append (list 0) cuts (list size)))))
+        (let* ((all (append (list 0) cuts (list size)))
+               (title (lambda (from to)
+                        (let* ((at (filter (lambda (s) (if (= from 0) (<= (car s) prefix) (= (car s) from))) symbols))
+                               (sym (and (pair? at) (car (reverse at)))))
+                          (and sym (not (string=? (cadddr sym) ""))
+                               (not (car (text-properties entry (byte-slice bytes from to))))
+                               (cadddr sym))))))
+          (list all (map title (reverse (cdr (reverse all))) (cdr all)))))))
 
   ;; WITHOUT A PROFILE THE SCANNER CAN FOLLOW -- no language entry, or an
   ;; entry with no suggest profile -- the editor's starts are the only

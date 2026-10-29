@@ -2835,14 +2835,22 @@ markers a text file is imported as one block; `split-suggest` writes a
 review copy with marker lines, and importing that copy splits it.
 `--symbols <symbols-file>` takes the manual step out of a FIRST import: a
 file the symbols file names, and that carries no marker line, is split at
-its symbols into code blocks under its file block, exactly the blocks a
-marked import of the same cuts makes. A file the symbols file does not name
+its symbols into code blocks under its file block: the same cuts as a
+marked import of those cuts, and a block cut at a symbol that the
+language's definition patterns do not name carries the symbol's name as its
+title. A file the symbols file does not name
 imports as before. A file that carries marker lines -- one `export-code`
 wrote, whose file block exists, or a review copy -- follows its markers and
 nothing else: identity is proved by markers alone, and names and order
 still only suggest. Such a file is listed in the answer's
 `(symbols-ignored (<path> ...))`. A code block's name is derived from its
-source, as for any text block; the symbol's name is not stored.
+source, as for any text block, and where the definition patterns derive
+one, nothing else is stored: the derived name follows later edits. Where
+they derive none (in TypeScript, a class, a const or an export default),
+the block's title is the editor's name for the symbol at the first import,
+and like any title it is not updated by later edits. A block that does
+not start at a symbol (what comes before the first, between two, or after
+the last), and one whose symbol is named `""`, gets no title.
 
 The symbols file is `split-suggest`'s, one section per file: each section
 is a header that names its file by its path under `<dir>`, as the walk
