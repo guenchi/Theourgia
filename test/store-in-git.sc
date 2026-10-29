@@ -948,6 +948,133 @@
       (list 'ok '() '(error unknown (replay-barrier-failed "no registry entry to raise the written frontier on"))
             #t (list (list idO n10 wO 12))))
 
+;; ---- G8: init over a directory that already has a .gitignore --------------------
+;; The file keeps every byte; only the store's lines it lacks are appended,
+;; in the store's order, after a newline when it does not end with one. A
+;; file that holds them all is not written. A .gitignore that is not a
+;; regular file is refused before anything is made.
+(define store-lines-text (apply string-append (map (lambda (l) (string-append l "\n")) gitignore-lines)))
+(define (bytes-of-file p)
+  (if (file-exists? p)
+      (let ((b (call-with-port (open-file-input-port p) get-bytevector-all))) (if (eof-object? b) #vu8() b))
+      'ABSENT))
+(define (bytes-join . parts)
+  (let-values (((out get) (open-bytevector-output-port)))
+    (for-each (lambda (p) (put-bytevector out (if (string? p) (string->utf8 p) p))) parts)
+    (get)))
+(define (lines-but skip) (apply string-append (map (lambda (l) (string-append l "\n")) (filter (lambda (l) (not (member l skip))) gitignore-lines))))
+(define (inode-of p) (sh-out "ls -i " (quoted p) " | awk '{print $1}'"))
+;; -> every entry under DIR, directories and links included, sorted.
+(define (entries-under dir)
+  (list-sort string<? (filter (lambda (l) (> (string-length l) 0))
+                              (lines-of (sh-out "cd " (quoted dir) " && find . -mindepth 1 | sed 's#^\\./##'")))))
+;; -> (init answer, the .gitignore's bytes after) for a directory whose
+;; .gitignore holds OLD (bytes or a string) before init.
+(define (init-over name old)
+  (let ((h (home! name)) (s (string-append root "/" name)))
+    (sh "mkdir -p " (quoted s))
+    (call-with-port (open-file-output-port (string-append s "/.gitignore"))
+                    (lambda (p) (put-bytevector p (if (string? old) (string->utf8 old) old))))
+    (let ((i (ask h s "init")))
+      (list (head-of i) (bytes-of-file (string-append s "/.gitignore"))))))
+
+(want "G8 an existing .gitignore keeps its lines and gets the seven store lines it lacks appended (it already held /snap/)"
+      (init-over "g8a" "# mine\n/keep-out/\n/snap/\n")
+      (list 'ok (bytes-join "# mine\n/keep-out/\n/snap/\n" (lines-but '("/snap/")))))
+(let* ((s (string-append root "/g8b")) (full (string-append store-lines-text "# extra\n")))
+  (sh "mkdir -p " (quoted s))
+  (call-with-output-file (string-append s "/.gitignore") (lambda (p) (put-string p full)))
+  (let* ((before (inode-of (string-append s "/.gitignore"))) (i (ask (home! "g8b") s "init")))
+    (want "G8b a .gitignore that already holds every store line is left byte for byte, and not rewritten (same inode)"
+          (list (head-of i) (bytes-of-file (string-append s "/.gitignore")) (string=? before (inode-of (string-append s "/.gitignore"))))
+          (list 'ok (string->utf8 full) #t))))
+(let* ((h (home! "g8c")) (s (string-append root "/g8c")))
+  (sh "mkdir -p " (quoted s))
+  (let ((i (ask h s "init")))
+    (want "G8c CONTROL no .gitignore: init writes the eight lines, as before"
+          (list (head-of i) (bytes-of-file (string-append s "/.gitignore")))
+          (list 'ok (string->utf8 store-lines-text)))))
+(want "G8d a .gitignore with no final newline gets one before the appended lines"
+      (init-over "g8d" "/snap/\n# no newline")
+      (list 'ok (bytes-join "/snap/\n# no newline" "\n" (lines-but '("/snap/")))))
+(want "G8e a .gitignore that is not UTF-8 keeps every byte"
+      (init-over "g8e" (bytevector 255 254 10 35 10))
+      (list 'ok (bytes-join (bytevector 255 254 10 35 10) store-lines-text)))
+(let* ((h (home! "g8f")) (s (string-append root "/g8f")) (target (string-append root "/g8f-target")))
+  (sh "mkdir -p " (quoted s) " && printf 'target\\n' > " (quoted target) " && ln -s " (quoted target) " " (quoted (string-append s "/.gitignore")))
+  (let ((i (ask h s "init")))
+    (want "G8f a symbolic link as .gitignore: refused by name with nothing made -- the link kept, its target unchanged, no store file, no registry entry"
+          (list i (= 0 (sh "test -L " (quoted (string-append s "/.gitignore")))) (text-of-file target)
+                (entries-under s) (marks-of h))
+          (list (list 'error 'gitignore-not-a-file (list 'path (string-append s "/.gitignore")) '(type link))
+                #t "target\n" '(".gitignore") '()))))
+(let* ((h (home! "g8g")) (s (string-append root "/g8g")))
+  (sh "mkdir -p " (quoted (string-append s "/.gitignore")))
+  (let ((i (ask h s "init")))
+    (want "G8g a directory as .gitignore: refused by name with nothing made"
+          (list i (entries-under s) (marks-of h))
+          (list (list 'error 'gitignore-not-a-file (list 'path (string-append s "/.gitignore")) '(type directory))
+                '(".gitignore") '()))))
+(want "G8i a CRLF .gitignore holding every store line (git reads a CRLF line without its CR) is left byte for byte, not rewritten"
+      (let* ((s (string-append root "/g8i"))
+             (crlf (apply string-append (map (lambda (l) (string-append l "\r\n")) gitignore-lines))))
+        (sh "mkdir -p " (quoted s))
+        (call-with-output-file (string-append s "/.gitignore") (lambda (p) (put-string p crlf)))
+        (let* ((before (inode-of (string-append s "/.gitignore"))) (i (ask (home! "g8i") s "init")))
+          (list (head-of i) (equal? (bytes-of-file (string-append s "/.gitignore")) (string->utf8 crlf))
+                (string=? before (inode-of (string-append s "/.gitignore"))))))
+      '(ok #t #t))
+(want "G8j an empty .gitignore gets the eight lines with no blank line before them"
+      (init-over "g8j" "")
+      (list 'ok (string->utf8 store-lines-text)))
+(let* ((h (home! "g8k")) (s (string-append root "/g8k")))
+  (sh "mkdir -p " (quoted s) " && mkfifo " (quoted (string-append s "/.gitignore")))
+  (let ((i (ask h s "init")))
+    (want "G8k a FIFO as .gitignore: refused as other, nothing made"
+          (list i (entries-under s) (marks-of h))
+          (list (list 'error 'gitignore-not-a-file (list 'path (string-append s "/.gitignore")) '(type other))
+                '(".gitignore") '()))))
+;; chmod 000 makes a file unreadable only to a process that cannot bypass
+;; the mode bits: under root the row would read a readable file, so it is
+;; skipped there, saying why.
+(if (string=? (sh-out "id -u") "0\n")
+    (printf "SKIP G8l: running as root (euid 0), which reads a mode-000 file; run as an unprivileged user to check an unreadable .gitignore\n")
+    (let* ((h (home! "g8l")) (s (string-append root "/g8l")))
+      (sh "mkdir -p " (quoted s) " && printf '# mine\\n' > " (quoted (string-append s "/.gitignore"))
+          " && chmod 000 " (quoted (string-append s "/.gitignore")))
+      (let ((i (ask h s "init")))
+        (sh "chmod 644 " (quoted (string-append s "/.gitignore")))
+        (want "G8l a .gitignore that cannot be read: the init is refused with nothing made and the file as it was"
+              (list (head-of i) (entries-under s) (marks-of h) (text-of-file (string-append s "/.gitignore")))
+              (list '(error unreadable) '(".gitignore") '() "# mine\n")))))
+(want "G8m a .gitignore holding every store line, the last ending in one CR at the end of the file with no newline: left byte for byte, not rewritten"
+      (let* ((s (string-append root "/g8m"))
+             (text (string-append (apply string-append (map (lambda (l) (string-append l "\n")) (reverse (cdr (reverse gitignore-lines)))))
+                                  (car (reverse gitignore-lines)) "\r")))
+        (sh "mkdir -p " (quoted s))
+        (call-with-output-file (string-append s "/.gitignore") (lambda (p) (put-string p text)))
+        (let* ((before (inode-of (string-append s "/.gitignore"))) (i (ask (home! "g8m") s "init")))
+          (list (head-of i) (equal? (bytes-of-file (string-append s "/.gitignore")) (string->utf8 text))
+                (string=? before (inode-of (string-append s "/.gitignore"))))))
+      '(ok #t #t))
+(want "G8n a line ending in two CRs does not hold the store line (git reads it with one CR left): /snap/ is appended"
+      (init-over "g8n" "/snap/\r\r\n")
+      (list 'ok (bytes-join "/snap/\r\r\n" store-lines-text)))
+;; -> the store's file names with its writer id written <w>, and the number
+;; of registry entries for it.
+(define (store-shape name)
+  (let* ((s (string-append root "/" name)) (h (string-append root "/home-" name))
+         (w (let ((ws (lines-of (sh-out "ls " (quoted (string-append s "/writers")))))) (and (pair? ws) (car ws)))))
+    (list (map (lambda (f) (if (and w (has-substring? f w))
+                               (let ((i (let find ((i 0)) (if (string=? (substring f i (+ i (string-length w))) w) i (find (+ i 1))))))
+                                 (string-append (substring f 0 i) "<w>" (substring f (+ i (string-length w)) (string-length f))))
+                               f))
+               (files-under s))
+          (length (marks-of h)))))
+(want "G8h init's other effects are those of an init with no .gitignore: the same store files and one registry entry"
+      (list (store-shape "g8a") (store-shape "g8d"))
+      (list (store-shape "g8c") (store-shape "g8c")))
+
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
 (printf "\n~a failures\nrows: ~a\nstore-in-git complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

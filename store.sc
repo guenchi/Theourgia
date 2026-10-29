@@ -79,7 +79,7 @@
           (only (theourgia timing-wrappers) timed intent-timed timing-call timing-quiet)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
-                hold-point!)
+                hold-point! entry-name-type entry-bytes)
           (only (theourgia digest) sha256 bytevector->hex)
           ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
           ;; `code-project.sc` says it outright: a code block's `name` is
@@ -5209,6 +5209,50 @@
       "*.tmp-*\n"
       "!/writers/*/incoming/*\n"))
 
+  ;; INIT KEEPS A .gitignore THAT IS ALREADY THERE, as supply does: every
+  ;; byte of it stays, and only the store's lines it lacks are appended,
+  ;; each on its own line, after a newline when the file does not end with
+  ;; one. A line is there when the file holds it exactly, as a whole line,
+  ;; ONE carriage return at its end set aside, before its newline or at the
+  ;; end of the file: that is how git reads it (measured with git 2.50.1,
+  ;; config isolated: "/snap/\r\n" and "/snap/\r" at the end of the file
+  ;; both ignore snap/x, "/snap/\r\r\n" does not, "/other/\r" does not), so
+  ;; a CRLF file that holds the lines is not given them twice. The CR is
+  ;; set aside only to compare; every byte of the file is written back as
+  ;; it was. The file is read and compared as bytes, so one that is not
+  ;; UTF-8 keeps them all. With no file, the file is the store's lines.
+  ;; -> the bytes to write, or #f when the file already holds every line.
+  (define (gitignore-after old)
+    (if (not old)
+        (string->utf8 store-gitignore)
+        (let* ((size (bytevector-length old))
+               (line (lambda (from to)
+                       (gitignore-slice old from (if (and (> to from) (= 13 (bytevector-u8-ref old (- to 1)))) (- to 1) to))))
+               (lines (let loop ((i 0) (from 0) (out '()))
+                        (cond ((= i size) (reverse (cons (line from size) out)))
+                              ((= 10 (bytevector-u8-ref old i)) (loop (+ i 1) (+ i 1) (cons (line from i) out)))
+                              (else (loop (+ i 1) from out)))))
+               (wanted (let loop ((i 0) (from 0) (out '()) (b (string->utf8 store-gitignore)))
+                         (cond ((= i (bytevector-length b)) (reverse out))
+                               ((= 10 (bytevector-u8-ref b i)) (loop (+ i 1) (+ i 1) (cons (gitignore-slice b from i) out) b))
+                               (else (loop (+ i 1) from out b)))))
+               (missing (filter (lambda (w) (not (find (lambda (l) (bytevector=? l w)) lines))) wanted)))
+          (and (pair? missing)
+               (let-values (((out get) (open-bytevector-output-port)))
+                 (put-bytevector out old)
+                 (when (and (> size 0) (not (= 10 (bytevector-u8-ref old (- size 1)))))
+                   (put-u8 out 10))
+                 (for-each (lambda (w) (put-bytevector out w) (put-u8 out 10)) missing)
+                 (get))))))
+  (define (gitignore-slice b from to)
+    (let ((out (make-bytevector (- to from))))
+      (bytevector-copy! b from out 0 (- to from))
+      out))
+
+  ;; NEVER: A .gitignore THAT IS NOT A REGULAR FILE IS REFUSED BEFORE INIT
+  ;; WRITES ANYTHING, named with what it is (link, directory, other). Its
+  ;; name, not what it points at, is asked (entry-name-type): writing a
+  ;; link would rewrite a file outside the store, or replace the link.
   (define (store-init! store)
     (cond
       ((not (eq? (entry-type (string-append store "/meta.sexp")) 'absent))
@@ -5217,42 +5261,57 @@
        => (lambda (w)
             (list 'error 'foreign-writer (list 'writer w) (list 'remedy 'adopt))))
       (else
-       (let ((sid (derive-id "store" store))
-             (writer (derive-id "writer" store)))
-         (mkdir-p! (string-append store "/writers/" writer))
-         (mkdir-p! (string-append store "/snap"))
-         (mkdir-p! (string-append store "/blobs"))
-         ;; THE LOCK FILE IS NEVER DELETED AND NEVER REPLACED, so it is
-         ;; created directly rather than written atomically: an atomic
-         ;; write renames a new inode over the name, and every process
-         ;; already holding the old one would be locking a file nobody
-         ;; else can see.
-         ;; overwrite-entry!, the door's truncating open: created
-         ;; empty, or emptied in place with its inode kept, as before.
-         (overwrite-entry! (string-append store "/lock") (make-bytevector 0))
-         ;; A STORE KEPT IN GIT: what this INSTANCE owns, or can rebuild,
-         ;; stays out of a checkout -- its identity, the evidence
-         ;; checkpoint, snapshots, the working areas and their locks, and
-         ;; the temporaries an atomic write keeps after a failure. The log
-         ;; itself, and everything else, travels with `git add <store>`.
-         ;; It is written BEFORE meta.sexp, so a store whose init failed
-         ;; part-way already keeps a retained temporary out of a commit.
-         (atomic-write! (string-append store "/.gitignore")
-                        (string->utf8 store-gitignore)
-                        'registry)
-         (atomic-write! (string-append store "/meta.sexp")
-                        (string->utf8 (string-append "((format 1) (store-id \"" sid "\"))\n"))
-                        'registry)
-         (let ((nonce (instance-install! store)))
-           (owner-install! store writer nonce))
-         (store-register! store)
-         ;; THE CURRENT SEGMENT EXISTS AND IS EMPTY. Without a segment
-         ;; file the writer has no append target, and the first write
-         ;; into a freshly initialised store is refused before it
-         ;; reserves -- correct about a store nobody finished making.
-         (overwrite-entry! (string-append store "/writers/" writer "/" (segment-file-name 1))
-                           (make-bytevector 0))
-         (list 'ok (list 'store sid) (list 'writer writer))))))
+       ;; ONE LOOK AT THE NAME decides: absent, a regular file to read, or a
+       ;; refusal. Asking it a second time before the read would let a link
+       ;; or a directory put there in between pass as "no file". It is not
+       ;; a locked install. Two windows stay open. The rename can still
+       ;; replace a name swapped in after the look, as the write-only init
+       ;; could. The read is new with this change: a link swapped in between
+       ;; the look and the open is followed, and a FIFO swapped in blocks the
+       ;; open.
+       (let* ((gitignore-path (string-append store "/.gitignore"))
+              (kind (entry-name-type gitignore-path)))
+         (if (not (memq kind '(absent regular)))
+             (list 'error 'gitignore-not-a-file (list 'path gitignore-path) (list 'type kind))
+             (let* ((sid (derive-id "store" store))
+                    (writer (derive-id "writer" store))
+                    ;; read before the first write, so a .gitignore that cannot
+                    ;; be read refuses the init with nothing made
+                    (gitignore (gitignore-after (and (eq? kind 'regular) (entry-bytes gitignore-path)))))
+               (mkdir-p! (string-append store "/writers/" writer))
+               (mkdir-p! (string-append store "/snap"))
+               (mkdir-p! (string-append store "/blobs"))
+               ;; THE LOCK FILE IS NEVER DELETED AND NEVER REPLACED, so it is
+               ;; created directly rather than written atomically: an atomic
+               ;; write renames a new inode over the name, and every process
+               ;; already holding the old one would be locking a file nobody
+               ;; else can see.
+               ;; overwrite-entry!, the door's truncating open: created
+               ;; empty, or emptied in place with its inode kept, as before.
+               (overwrite-entry! (string-append store "/lock") (make-bytevector 0))
+               ;; A STORE KEPT IN GIT: what this INSTANCE owns, or can rebuild,
+               ;; stays out of a checkout -- its identity, the evidence
+               ;; checkpoint, snapshots, the working areas and their locks, and
+               ;; the temporaries an atomic write keeps after a failure. The log
+               ;; itself, and everything else, travels with `git add <store>`.
+               ;; It is written BEFORE meta.sexp, so a store whose init failed
+               ;; part-way already keeps a retained temporary out of a commit.
+               ;; A file that already holds every line is not written at all.
+               (when gitignore
+                 (atomic-write! gitignore-path gitignore 'registry))
+               (atomic-write! (string-append store "/meta.sexp")
+                              (string->utf8 (string-append "((format 1) (store-id \"" sid "\"))\n"))
+                              'registry)
+               (let ((nonce (instance-install! store)))
+                 (owner-install! store writer nonce))
+               (store-register! store)
+               ;; THE CURRENT SEGMENT EXISTS AND IS EMPTY. Without a segment
+               ;; file the writer has no append target, and the first write
+               ;; into a freshly initialised store is refused before it
+               ;; reserves -- correct about a store nobody finished making.
+               (overwrite-entry! (string-append store "/writers/" writer "/" (segment-file-name 1))
+                                 (make-bytevector 0))
+               (list 'ok (list 'store sid) (list 'writer writer))))))))
 
   ;; ---- snapshots -----------------------------------------------------------
 

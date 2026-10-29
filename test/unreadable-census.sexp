@@ -85,6 +85,8 @@
   ("ffi.sc" (entry-name-type) entry-name-type 2 keep a "the predicate itself: the lstat door, a link answered as link and never followed")
   ("eval-runner.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("eval-runner.sc" (remove-tree!) entry-name-type 1 keep a "not writer layout: eval --lang's scratch directory, removed without entering a symbolic link")
+  ("store.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("store.sc" (store-init!) entry-name-type 1 keep a "not writer layout: init's .gitignore, asked of the name once with an lstat so a link is refused, never followed; a failure other than absence raises")
   )
 
 (handlers

@@ -2070,7 +2070,15 @@ store made without a template has only the six. A template that cannot be
 used is refused before any store is made. A filesystem failure while the template is applied is
 answered like any other, and the new store may exist; a refusal of the template's roots carries
 `(store-created)`. It also writes
-`<store>/.gitignore`; see [A store in git](#a-store-in-git).
+`<store>/.gitignore`; see [A store in git](#a-store-in-git). A `.gitignore`
+already in the directory keeps every byte it has: only the store's lines it
+does not hold, each as a whole line, are appended, each on its own line,
+after a newline when the file does not end with one, and a file that holds
+them all is not written. A line ending in one carriage return, before its
+newline or at the end of the file, holds the line without it, as git reads
+it; a line ending in two does not. A `.gitignore` that is not a regular file -- a
+symbolic link, a directory -- is refused before anything is written
+`(error gitignore-not-a-file (path <store>/.gitignore) (type link | directory | other))`.
 The answer is `(ok (store <id>) (writer <writer>))`. A directory that already holds a store is refused `(error already-initialised (store <dir>))`, and one holding another instance's writer is refused `(error foreign-writer (writer <w>) (remedy adopt))`.
 
 ### `template`
