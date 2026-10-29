@@ -728,6 +728,63 @@
         (list (car a) (titles-of (car c)) (title-fields-of (car c) "s.ts"))
         '(ok ("s.ts" "Beta") ("Beta"))))
 
+;; ---- IS43-IS46: a comment is not the line's last code (the table scan) ---------------
+;; A LINE CONTINUES WITH ITS LAST CODE BEFORE A COMMENT, block or line, and a
+;; line with no code leaves the statement as the line before it did: after
+;; `1 + /* note */`, or after `1 +` and a comment line, the next line is the
+;; operand (Go inserts no semicolon after "+"). Each refusing row is red on
+;; the scan that took a block comment's close, or a comment line, as the end
+;; of the statement.
+(define (refused-at-line name text needle . symbols)
+  (list (apply one-file name text symbols)
+        (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at (offset-of text needle))))) '())))
+(define (two-syms text first-name second-needle second-name)
+  (list (sym 0 (offset-of text "\n") 'variable first-name)
+        (sym (offset-of text second-needle) (bytes-of text) 'function second-name)))
+(let ((g "var z = 1 + /* note */\nfunc f() {\n}\n")
+      (r "const Z: i32 = 1 + /* note */\nfn f() {\n}\n")
+      (c "int z = 1 + /* note */\nint f(void) {\n}\n")
+      (j "int z = 1 + /* note */\nclass F {\n}\n"))
+  (let ((rows (list (apply refused-at-line "a.go" g "func f" (two-syms g "z" "func f" "f"))
+                    (apply refused-at-line "a.rs" r "fn f" (two-syms r "Z" "fn f" "f"))
+                    (apply refused-at-line "a.c" c "int f" (two-syms c "z" "int f" "f"))
+                    (apply refused-at-line "A.java" j "class F" (two-syms j "z" "class F" "F")))))
+    (want "IS43 a line ending in + and a block comment continues, in Go, Rust, C and Java: the cut at the next line is refused"
+          (map car rows) (map cadr rows))))
+(let* ((g "var z = 1 + /* a\n b */\nfunc f() {\n}\n")
+       (row (refused-at-line "b.go" g "func f" (sym 0 (offset-of g "\nfunc") 'variable "z")
+                             (sym (offset-of g "func f") (bytes-of g) 'function "f"))))
+  (want "IS44 a + then a block comment closing on the next line: the line after it continues the statement, the cut refused"
+        (car row) (cadr row)))
+(let ((g "var z = 1 +\n// note\nfunc f() {\n}\n")
+      (c "int z = 1 +\n/* note */\nint f(void) {\n}\n")
+      (h "ls |\n# note\nf() { :; }\n"))
+  (let ((rows (list (refused-at-line "c.go" g "func f" (sym 0 (offset-of g "\nfunc") 'variable "z")
+                                     (sym (offset-of g "func f") (bytes-of g) 'function "f"))
+                    (refused-at-line "c.c" c "int f" (sym 0 (offset-of c "\nint f") 'variable "z")
+                                     (sym (offset-of c "int f") (bytes-of c) 'function "f"))
+                    (refused-at-line "c.sh" h "f()" (sym 0 (offset-of h "\nf()") 'variable "ls")
+                                     (sym (offset-of h "f()") (bytes-of h) 'function "f")))))
+    (want "IS45 a line ending in + (Go, C) or | (shell), then a comment-only line: the definition after it is still the operand, the cut refused"
+          (map car rows) (map cadr rows))))
+;; CONTROLS: a complete statement before a comment, on its line or on the
+;; next, does not continue, and the cut after it is taken.
+(let ((g "var z = 1 /* done. */\nfunc f() {\n}\n")
+      (c "int z = 1; /* done. */\nint f(void) {\n}\n")
+      (e "var z = 1\n/* The end. */\nfunc f() {\n}\n")
+      (h "true\n# note\nf() { :; }\n"))
+  (want "IS46 CONTROL a complete statement then /* done. */ (Go, C), then /* The end. */ on its own line (Go), then a shell comment line: each cut taken"
+        (list (apply one-file "d.go" g (two-syms g "z" "func f" "f"))
+              (apply one-file "d.c" c (two-syms c "z" "int f" "f"))
+              (one-file "e.go" e (sym 0 (offset-of e "\n") 'variable "z") (sym (offset-of e "func f") (bytes-of e) 'function "f"))
+              (one-file "e.sh" h (sym 0 (offset-of h "\n") 'variable "t") (sym (offset-of h "f()") (bytes-of h) 'function "f")))
+        (list (list 'ok #f (list (list "d.go" (slice g 0 (offset-of g "func f")) (slice g (offset-of g "func f") (bytes-of g)))))
+              (list 'ok #f (list (list "d.c" (slice c 0 (offset-of c "int f")) (slice c (offset-of c "int f") (bytes-of c)))))
+              (list 'ok #f (list (list "e.go" (slice e 0 (+ 1 (offset-of e "\n"))) (slice e (+ 1 (offset-of e "\n")) (offset-of e "func f"))
+                                       (slice e (offset-of e "func f") (bytes-of e)))))
+              (list 'ok #f (list (list "e.sh" (slice h 0 (+ 1 (offset-of h "\n"))) (slice h (+ 1 (offset-of h "\n")) (offset-of h "f()"))
+                                       (slice h (offset-of h "f()") (bytes-of h))))))))
+
 (system (string-append "rm -rf '" root "'; rm -f '" socket "'"))
 (printf "\n~a failures\nrows: ~a\nimport-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

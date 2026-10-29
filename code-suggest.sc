@@ -342,10 +342,15 @@
   ;;     counts only as a whole operator: not a "+" or "-" that ends "++" or
   ;;     "--", not a "." that ends a number ("1."), not a character the
   ;;     escape makes literal ("\|").
-  ;;     The code is the line without its line comment, and a line that ends
-  ;;     in a string, or inside or at the close of a block comment, does not
-  ;;     continue: "// The end." or "x = 'a:'" before a definition is not
-  ;;     the middle of a statement. Not in a fence profile, which is prose.
+  ;;     The code is the line without its comments, line and block: what
+  ;;     a line continues with is its last code before a comment, so
+  ;;     "x = 1 + /* note */" continues, and "x = 1 /* done. */" does not.
+  ;;     A comment's text is never code: "// The end." or "x = 'a:'" (a
+  ;;     line ending in a string) before a definition is not the middle of
+  ;;     a statement. A line with no code -- blank, a comment only, or
+  ;;     wholly inside a block comment -- leaves the statement as the line
+  ;;     before it did, continuing or not. Not in a fence profile, which is
+  ;;     prose.
   ;;   - in an indent profile, a blank line whose next non-blank line is
   ;;     indented: a blank line inside a body has no indentation of its own,
   ;;     and is judged by what follows it. A blank line between two
@@ -391,8 +396,9 @@
                          (list escape)))
                (prefix (source-prefix-size bytes)))
           ;; WHAT A LINE'S CODE LAST WAS, for the strict test: `code` with the
-          ;; index after the last code character, `string`, `comment`, or
-          ;; `none` for a line with no code.
+          ;; index after the last code character, `string`, or `none` for a
+          ;; line with no code. A comment leaves it as the code before it
+          ;; left it: a comment's text is not code.
           (define (code! i) (set! last-kind 'code) (set! code-end (+ i 1)))
           ;; A WHOLE OPERATOR, NOT THE END OF A LONGER TOKEN: "x++", "1." and
           ;; Python's "..." end in a token's character and do not continue;
@@ -466,13 +472,12 @@
               (if (= i (string-length line))
                   (begin
                     (head-pause!)
-                    (when (> comment-depth 0) (set! last-kind 'comment))
                     (when (and quoted (not continued?) (not (member quoted multiline))) (fallback 'unclosed-quote (+ offset (bytevector-length (string->utf8 line))))))
                   (let ((c (string-ref line i)))
                     (cond
                       ((> comment-depth 0)
                        (cond ((string-prefix-at? line (cadr block) i)
-                              (set! comment-depth (- comment-depth 1)) (set! last-kind 'comment)
+                              (set! comment-depth (- comment-depth 1))
                               (loop (+ i (string-length (cadr block)))))
                              ((and (get 'nested-block-comment #f) (string-prefix-at? line (car block) i))
                               (set! comment-depth (+ comment-depth 1)) (loop (+ i (string-length (car block)))))
@@ -488,7 +493,7 @@
                       ((at-any line i (comment-prefixes entry)) (head-pause!))
                       ((and block (string-prefix-at? line (car block) i))
                        (head-pause!)
-                       (set! comment-depth 1) (set! last-kind 'comment) (loop (+ i (string-length (car block)))))
+                       (set! comment-depth 1) (loop (+ i (string-length (car block)))))
                       ((at-any line i uncertain) (fallback 'lexically-uncertain (+ offset (bytevector-length (string->utf8 (substring line 0 i))))))
                       ((at-any line i quotes) => (lambda (q) (head-end!) (set! quoted q) (set! last-kind 'string) (loop (+ i (string-length q)))))
                       ((exists (lambda (p) (char=? c (string-ref p 0))) pairs)
@@ -624,7 +629,9 @@
                     (begin
                       (decide-line! offset line trimmed top? continues?)
                       (scan-line line offset)
-                      (unless (string=? trimmed "")
+                      ;; a line with no code keeps the statement as the line
+                      ;; before it left it
+                      (unless (eq? last-kind 'none)
                         ;; a line that ends in a character the escape made
                         ;; literal ends in that character, not in an operator
                         (set! continues? (and (eq? last-kind 'code)
