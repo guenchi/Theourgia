@@ -36,7 +36,7 @@
           library-locator located-library-name file-header
           derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
-          request-verdict failure-text)
+          request-verdict failure-text gitignore-kind gitignore-refusal gitignore-merge)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
@@ -5209,8 +5209,9 @@
       "*.tmp-*\n"
       "!/writers/*/incoming/*\n"))
 
-  ;; INIT KEEPS A .gitignore THAT IS ALREADY THERE, as supply does: every
-  ;; byte of it stays, and only the store's lines it lacks are appended,
+  ;; A STORE'S .gitignore IS MERGED, NEVER REPLACED, by init (the store's
+  ;; lines) and by supply (/derived/), through this one procedure: every
+  ;; byte of it stays, and only the WANTED lines it lacks are appended,
   ;; each on its own line, after a newline when the file does not end with
   ;; one. A line is there when the file holds it exactly, as a whole line,
   ;; ONE carriage return at its end set aside, before its newline or at the
@@ -5220,11 +5221,12 @@
   ;; a CRLF file that holds the lines is not given them twice. The CR is
   ;; set aside only to compare; every byte of the file is written back as
   ;; it was. The file is read and compared as bytes, so one that is not
-  ;; UTF-8 keeps them all. With no file, the file is the store's lines.
+  ;; UTF-8 keeps them all. With no file, the file is the wanted lines.
+  ;; WANTED is the lines as text, each ending in a newline.
   ;; -> the bytes to write, or #f when the file already holds every line.
-  (define (gitignore-after old)
+  (define (gitignore-merge old wanted-text)
     (if (not old)
-        (string->utf8 store-gitignore)
+        (string->utf8 wanted-text)
         (let* ((size (bytevector-length old))
                (line (lambda (from to)
                        (gitignore-slice old from (if (and (> to from) (= 13 (bytevector-u8-ref old (- to 1)))) (- to 1) to))))
@@ -5232,7 +5234,7 @@
                         (cond ((= i size) (reverse (cons (line from size) out)))
                               ((= 10 (bytevector-u8-ref old i)) (loop (+ i 1) (+ i 1) (cons (line from i) out)))
                               (else (loop (+ i 1) from out)))))
-               (wanted (let loop ((i 0) (from 0) (out '()) (b (string->utf8 store-gitignore)))
+               (wanted (let loop ((i 0) (from 0) (out '()) (b (string->utf8 wanted-text)))
                          (cond ((= i (bytevector-length b)) (reverse out))
                                ((= 10 (bytevector-u8-ref b i)) (loop (+ i 1) (+ i 1) (cons (gitignore-slice b from i) out) b))
                                (else (loop (+ i 1) from out b)))))
@@ -5249,10 +5251,23 @@
       (bytevector-copy! b from out 0 (- to from))
       out))
 
+  ;; ONE LOOK AT THE NAME decides: absent, a regular file to read, or a
+  ;; refusal. Its name, not what it points at, is asked (entry-name-type):
+  ;; writing a link would rewrite a file outside the store, or replace the
+  ;; link. A caller asks it once and reads by the answer; asking a second
+  ;; time before the read would let a link or a directory put there in
+  ;; between pass as "no file".
+  ;; -> absent | regular | link | directory | other
+  (define (gitignore-kind store)
+    (entry-name-type (string-append store "/.gitignore")))
+  ;; -> (error gitignore-not-a-file (path <p>) (type <kind>)) for a kind that
+  ;;    is neither absent nor regular, else #f.
+  (define (gitignore-refusal store kind)
+    (and (not (memq kind '(absent regular)))
+         (list 'error 'gitignore-not-a-file (list 'path (string-append store "/.gitignore")) (list 'type kind))))
+
   ;; NEVER: A .gitignore THAT IS NOT A REGULAR FILE IS REFUSED BEFORE INIT
-  ;; WRITES ANYTHING, named with what it is (link, directory, other). Its
-  ;; name, not what it points at, is asked (entry-name-type): writing a
-  ;; link would rewrite a file outside the store, or replace the link.
+  ;; WRITES ANYTHING, named with what it is (link, directory, other).
   (define (store-init! store)
     (cond
       ((not (eq? (entry-type (string-append store "/meta.sexp")) 'absent))
@@ -5261,23 +5276,22 @@
        => (lambda (w)
             (list 'error 'foreign-writer (list 'writer w) (list 'remedy 'adopt))))
       (else
-       ;; ONE LOOK AT THE NAME decides: absent, a regular file to read, or a
-       ;; refusal. Asking it a second time before the read would let a link
-       ;; or a directory put there in between pass as "no file". It is not
-       ;; a locked install. Two windows stay open. The rename can still
+       ;; ONE LOOK AT THE NAME (gitignore-kind). It is not a locked install.
+       ;; Two windows stay open. The rename can still
        ;; replace a name swapped in after the look, as the write-only init
        ;; could. The read is new with this change: a link swapped in between
        ;; the look and the open is followed, and a FIFO swapped in blocks the
        ;; open.
        (let* ((gitignore-path (string-append store "/.gitignore"))
-              (kind (entry-name-type gitignore-path)))
-         (if (not (memq kind '(absent regular)))
-             (list 'error 'gitignore-not-a-file (list 'path gitignore-path) (list 'type kind))
+              (kind (gitignore-kind store))
+              (refusal (gitignore-refusal store kind)))
+         (if refusal
+             refusal
              (let* ((sid (derive-id "store" store))
                     (writer (derive-id "writer" store))
                     ;; read before the first write, so a .gitignore that cannot
                     ;; be read refuses the init with nothing made
-                    (gitignore (gitignore-after (and (eq? kind 'regular) (entry-bytes gitignore-path)))))
+                    (gitignore (gitignore-merge (and (eq? kind 'regular) (entry-bytes gitignore-path)) store-gitignore)))
                (mkdir-p! (string-append store "/writers/" writer))
                (mkdir-p! (string-append store "/snap"))
                (mkdir-p! (string-append store "/blobs"))

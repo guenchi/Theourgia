@@ -58,7 +58,8 @@
                 sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia working) working-state)
-          (only (theourgia arguments) argument-option))
+          (only (theourgia arguments) argument-option)
+          (only (theourgia store) gitignore-kind gitignore-refusal gitignore-merge))
 
   ;; ---- names ----------------------------------------------------------------
 
@@ -371,22 +372,16 @@
                      'derived)))
 
   ;; THE STORE'S .gitignore KEEPS THE TABLES OUT, including in a store made
-  ;; before the pattern was in init's list: the line is appended to a file
+  ;; before the pattern was in init's list: /derived/ is appended to a file
   ;; that lacks it, everything already there kept, and the file is made when
-  ;; there is none.
-  (define (ensure-ignored! store)
+  ;; there is none. The merge is init's own (store.sc, gitignore-merge):
+  ;; bytes kept as they are, one CR at a line's end set aside to compare.
+  ;; KIND is the one look supply-derived took before anything was written.
+  (define (ensure-ignored! store kind)
     (let* ((path (string-append store "/.gitignore"))
-           (old (if (eq? (entry-type path) 'absent) #f (entry-bytes path)))
-           (text (if old (utf8->string old) "")))
-      (unless (member "/derived/" (map (lambda (r) (utf8->string (byte-slice (string->utf8 text) (car r) (cadr r))))
-                                       (byte-lines (string->utf8 text))))
-        (atomic-write! path
-                       (string->utf8 (string-append text
-                                                    (if (and (> (string-length text) 0)
-                                                             (not (char=? #\newline (string-ref text (- (string-length text) 1)))))
-                                                        "\n" "")
-                                                    "/derived/\n"))
-                       'derived))))
+           (bytes (gitignore-merge (and (eq? kind 'regular) (entry-bytes path)) "/derived/\n")))
+      (when bytes
+        (atomic-write! path bytes 'derived))))
 
   ;; ONE TABLE CHANGES AT A TIME. A supply reads the table, keeps the facts
   ;; about files it does not replace and writes the rest back; two of those
@@ -492,14 +487,19 @@
                                                  (else (loop (cdr ids) (cons (file-of (car ids)) seen)))))
                                          via)))))
                       facts)))
+          ;; NEVER: A .gitignore THAT IS NOT A REGULAR FILE REFUSES THE SUPPLY
+          ;; before the table's directory, its lock or the table is written:
+          ;; one look at the name, the same refusal init gives.
+          (let ((ignore-kind (gitignore-kind store)))
+            (cond ((gitignore-refusal store ignore-kind) => raise))
           (with-table-lock store
             (lambda ()
               (let* ((old (read-table store (table-path store kind writer language) kind writer language))
                      (kept (if old
                                (filter (lambda (f) (not (member (fact-own-file f) replaces))) (cadddr old))
                                '())))
-                (ensure-ignored! store)
-                (write-table! store kind writer language (append kept made)))))
+                (ensure-ignored! store ignore-kind)
+                (write-table! store kind writer language (append kept made))))))
           (list 'ok (list 'supplied (list 'facts (length made)) (list 'files (length replaces))))))))
 
   ;; (clear-derived store kind path writer) -> (ok (cleared (kind <k>)

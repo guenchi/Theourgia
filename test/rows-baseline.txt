@@ -185,7 +185,7 @@ store1 51 66 398852d9d7946deefebd89552fff49fd
 structure-graph 4 8 0192ebc77ff6444e804f04d18e95a83f
 structure-strings 4 8 be9cf658972888feb876f0d983cf90b0
 subtree 15 19 d2124efd9468aef241da1e20468aea5e
-supply 198 202 660901441383a6e3d67854ad6309df1e
+supply 204 208 e2699c9f36a1c2bca2fccc7c8e7f5319
 tmp-paths 47 122 cadfdb0c07ef402e2629a3baae967e8b
 tree-round-trip 0 5 5dc3c4cd5e3ff6a04100051673b17262
 unreadable-acknowledge-routes 68 77 9899aa9e02e3eb320867a1514a7412cf

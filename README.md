@@ -3302,7 +3302,11 @@ checkpoint of the evidence index; it records this instance's files and is
 rebuilt from the log, and written again at the next `snapshot`. Snapshots
 are rebuilt the same way. `derived/` holds the facts an editor supplied;
 the next `supply` gives them back. `supply` adds the line to a store's
-`.gitignore` that lacks it, and creates the file when there is none. The working areas and draft locks are one
+`.gitignore` that lacks it, and creates the file when there is none, by
+init's rule (see [`init`](#init)): every byte already there is kept, one
+carriage return at a line's end counts as no difference, and a
+`.gitignore` that is not a regular file refuses the supply before anything
+is written, `(error gitignore-not-a-file (path <p>) (type <kind>))`. The working areas and draft locks are one
 machine's drafts. The `*.tmp-*` files are the temporaries an atomic write
 keeps after a failure, for a reader -- except under a writer's `incoming/`,
 which the last line brings back: a candidate staged there and kept after a

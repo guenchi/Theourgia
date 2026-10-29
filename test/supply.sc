@@ -430,6 +430,52 @@
 (delete-file ignore)
 (supply a1-text "signatures")
 (want "G3 with no .gitignore, supply makes one holding the line" (text-of ignore) "/derived/\n")
+;; BY INIT'S RULE: supply merges /derived/ through init's merge (store.sc,
+;; gitignore-merge): the bytes stay as they are, one CR at a line's end is
+;; no difference, and a .gitignore that is not a regular file refuses the
+;; supply before derived/ or its table is written. Each supply's own answer
+;; is read, so a supply refused for another reason cannot pass for a merge.
+(define (derived-entries)
+  (if (file-exists? derived)
+      (let ((out (string-append root "/derived-entries.txt")))
+        (system (string-append "cd '" derived "' && find . | sort > '" out "'"))
+        (text-of out))
+      'NO-DERIVED))
+(write-bytes! ignore (bytevector 255 254 10))
+(let ((a (supply a1-text "signatures")))
+  (want "G4 a .gitignore that is not UTF-8 keeps every byte and gains the line"
+        (list (head-of a) (bytes-of ignore))
+        (list 'ok (let-values (((out get) (open-bytevector-output-port)))
+                    (put-bytevector out (bytevector 255 254 10)) (put-bytevector out (string->utf8 "/derived/\n")) (get)))))
+(write! ignore "# mine\r\n/derived/\r\n")
+(let ((a (supply a1-text "signatures")))
+  (want "G5 a CRLF .gitignore that holds /derived/ is left byte for byte (git reads the line without its CR)"
+        (list (head-of a) (text-of ignore)) (list 'ok "# mine\r\n/derived/\r\n")))
+(write! ignore "# mine\n/derived/\r")
+(let ((a (supply a1-text "signatures")))
+  (want "G5b /derived/ ending in one CR at the end of the file, no newline, is held: the file is left byte for byte"
+        (list (head-of a) (text-of ignore)) (list 'ok "# mine\n/derived/\r")))
+(let ((target (string-append root "/ignore-target")))
+  (write! target "target\n")
+  (delete-file ignore)
+  (system (string-append "rm -rf '" derived "' && ln -s '" target "' '" ignore "'"))
+  (let ((a (supply a1-text "signatures")))
+    (want "G6 a symbolic link as .gitignore refuses the supply by name: the link kept, its target unchanged, no derived/ written"
+          (list a (= 0 (system (string-append "test -L '" ignore "'"))) (text-of target) (derived-entries))
+          (list (list 'error 'gitignore-not-a-file (list 'path ignore) '(type link)) #t "target\n" 'NO-DERIVED)))
+  (delete-file ignore))
+(system (string-append "rm -rf '" derived "' && mkdir '" ignore "'"))
+(let ((a (supply a1-text "signatures")))
+  (want "G7 a directory as .gitignore refuses the supply by name, with no derived/ written"
+        (list a (derived-entries))
+        (list (list 'error 'gitignore-not-a-file (list 'path ignore) '(type directory)) 'NO-DERIVED)))
+(system (string-append "rmdir '" ignore "'"))
+;; the store as G3 left it, so the rows after see their table again
+(write! ignore "/derived/\n")
+(let ((a (supply a1-text "signatures")))
+  (want "G8 CONTROL with a regular .gitignore again, the supply answers ok and the table is back"
+        (list (head-of a) (file-exists? js-table) (text-of ignore))
+        (list 'ok #t "/derived/\n")))
 ;; The directory the table measurably is in, relative to the store.
 (define table-dir
   (let* ((rel (substring js-table (+ 1 (string-length store)) (string-length js-table)))
