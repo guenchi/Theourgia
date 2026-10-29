@@ -501,6 +501,129 @@
               seen
               '(ok "M\ta.txt" ".git\na.txt\n")))))
 
+;; ---- PL-37..PL-42: a datum library is never left behind --------------------------
+;; A landing publishes the text projection. A datum library the store holds
+;; (import-code --datum) is not in it, and its file is not in the base here,
+;; so the base check passes; a landing whose cuts differ in a library -- its
+;; forms, its path, its title -- is refused datum-not-published naming it,
+;; with nothing staged, and one whose libraries are unchanged lands as before.
+;; The cuts' states are compared, not files on a volume, so no row depends on
+;; the volume. Each refusing row is red on the publisher that published the
+;; text part and dropped the library.
+(define lib-v1 "(library (m lib)\n  (export f)\n  (import (chezscheme))\n  (define (f x) (+ x 1)))\n")
+(define lib-v2 "(library (m lib)\n  (export f)\n  (import (chezscheme))\n  (define (f x) (+ x 100)))\n")
+(define libs 0)
+;; -> the library holder's id: the import's first insert
+(define (import-library! r file text)
+  (set! libs (+ libs 1))
+  (let ((src (string-append (dir-of r) "/lib" (number->string libs))))
+    (write-file! (string-append src "/" file) text)
+    (let* ((a (checked "import --datum" (ask (st-of r) 'import-code src "--datum")))
+           (first (cadr (assq 'items (cdr a))))
+           (ev (car (cadr (assq 'events (cdr first))))))
+      (block-id (car ev) (cdr ev)))))
+;; a repository of a.txt and b.txt whose store also holds LIBRARIES ((file .
+;; text) ...) at start: built as repo! builds one, the libraries imported
+;; before the start tag. It makes no text edit: a row makes its own.
+;; BEFORE, when given, is called (before r ids) just before the start tag.
+;; -> (r . ids), the libraries' holder ids in order.
+(define (with-libraries! libraries . before)
+  (set! n (+ n 1))
+  (let* ((d (string-append root "/r" (number->string n))) (wt (string-append d "/wt")) (st (string-append d "/store")))
+    (sh "mkdir -p " (quoted wt) " " (quoted st) " " (quoted (string-append d "/home")))
+    (putenv "THEOURGIA_HOME" (string-append d "/home"))
+    (sh "git init -q " (quoted wt) " && git -C " (quoted wt) " config user.name fixture && git -C " (quoted wt)
+        " config user.email fixture@example.invalid && git -C " (quoted wt) " config commit.gpgsign false")
+    (write-file! (string-append wt "/a.txt") "one\n")
+    (write-file! (string-append wt "/b.txt") "two\n")
+    (sh "git -C " (quoted wt) " add -A && git -C " (quoted wt) " commit -q -m base")
+    (ask st 'init)
+    (checked "import" (ask st 'import-code wt))
+    (let* ((r (list d wt st (git wt "rev-parse" "HEAD")))
+           (ids (map (lambda (l) (import-library! r (car l) (cdr l))) libraries)))
+      (when (pair? before) ((car before) r ids))
+      (ask st 'tag "start")
+      (cons r ids))))
+(let ((r (simple!)))
+  (import-library! r "m.sls" lib-v1)
+  (landing! r "text and a new library") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-37 a text edit and a datum library added: refused datum-not-published naming m.sls; nothing staged or committed"
+          (list (head-of a) (clause-of a 'paths) (head-commit r) (git (wt-of r) "status" "--porcelain"))
+          (list '(error datum-not-published) '(paths "m.sls") (base-of r) ""))))
+(let ((r (car (with-libraries! (list (cons "m.sls" lib-v1))))))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (set-text! (st-of r) "b.txt" "dos\n")
+  (landing! r "text only, the library unchanged") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-38 CONTROL a text-only landing on a store holding an unchanged datum library lands: its text, not the library"
+          (list (head-of a) (name-status r))
+          '(ok "M\ta.txt\nM\tb.txt"))))
+;; DATUM-ONLY: the text is the same at both cuts (changed-files answers no
+;; item), so the order is what is tested: this refusal before nothing-to-publish.
+(let ((r (car (with-libraries! (list (cons "m.sls" lib-v1))))))
+  (import-library! r "m.sls" lib-v2)
+  (landing! r "the library's form only") (freeze! r)
+  (let ((items (clause-of (ask (st-of r) 'changed-files "start" "freeze") 'items))
+        (a (publish! r)))
+    (want "PL-39 the library's form changed and the text the same at both cuts (no changed item): datum-not-published, not nothing-to-publish"
+          (list items (head-of a) (clause-of a 'paths) (head-commit r))
+          (list '(items) '(error datum-not-published) '(paths "m.sls") (base-of r)))))
+;; SPELLINGS A VOLUME WOULD MERGE are two libraries to the store: A.sls
+;; changed beside an unchanged a.sls; and a/y.sls renamed A/y.sls beside
+;; A/x.sls, a rename that a folding volume would show as no change.
+(let ((r (car (with-libraries! (list (cons "A.sls" "(library (m a)\n  (export f)\n  (import (chezscheme))\n  (define (f) 1))\n")
+                                     (cons "a.sls" "(library (m b)\n  (export g)\n  (import (chezscheme))\n  (define (g) 2))\n"))))))
+  (import-library! r "A.sls" "(library (m a)\n  (export f)\n  (import (chezscheme))\n  (define (f) 10))\n")
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and A.sls beside a.sls") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-40 A.sls changed beside an unchanged a.sls: datum-not-published naming A.sls only, on any volume; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (head-commit r))
+          (list '(error datum-not-published) '(paths "A.sls") (base-of r)))))
+(let* ((made (with-libraries! (list (cons "A/x.sls" "(library (m x)\n  (export f)\n  (import (chezscheme))\n  (define (f) 1))\n")
+                                    (cons "a/y.sls" "(library (m y)\n  (export g)\n  (import (chezscheme))\n  (define (g) 2))\n"))))
+       (r (car made)) (y (caddr made)))
+  (checked "rename" (ask (st-of r) 'set y "path" "A/y.sls"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and a/y.sls renamed A/y.sls") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-41 a/y.sls renamed A/y.sls beside A/x.sls: datum-not-published naming both spellings, on any volume; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (head-commit r))
+          (list '(error datum-not-published) '(paths "A/y.sls" "a/y.sls") (base-of r)))))
+;; THE STATED OVER-REFUSAL: a library's title changes its version, and the
+;; landing is refused although no exported byte changed.
+(let* ((made (with-libraries! (list (cons "m.sls" lib-v1)))) (r (car made)) (m (cadr made)))
+  (checked "title" (ask (st-of r) 'set m "title" "a title"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and a title on the library") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-42 a title set on an unchanged library: datum-not-published naming m.sls (the safe side, as the README says)"
+          (list (head-of a) (clause-of a 'paths))
+          '((error datum-not-published) (paths "m.sls")))))
+
+;; A LIBRARY WITH NO PATH is still a library: one whose path field was removed
+;; before start, a form added under it by def; and one whose path is removed
+;; between the cuts, named by its old path and by its id.
+(let* ((made (with-libraries! (list (cons "m.sls" lib-v1))
+                              (lambda (r ids) (checked "unpath" (ask (st-of r) 'set (car ids) "path")))))
+       (r (car made)) (m (cadr made)))
+  (checked "def" (ask (st-of r) 'def "g" "--under" m "(define (g) 2)"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and a form under a library with no path") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-43 a library with no path at either cut, a form added under it: datum-not-published naming (no path) <id>; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (head-commit r))
+          (list '(error datum-not-published) (list 'paths (string-append "(no path) " m)) (base-of r)))))
+(let* ((made (with-libraries! (list (cons "m.sls" lib-v1)))) (r (car made)) (m (cadr made)))
+  (checked "unpath" (ask (st-of r) 'set m "path"))
+  (set-text! (st-of r) "a.txt" "uno\n")
+  (landing! r "text, and a library's path removed") (freeze! r)
+  (let ((a (publish! r)))
+    (want "PL-43b a library's path removed between the cuts: datum-not-published naming (no path) <id> and m.sls; nothing committed"
+          (list (head-of a) (clause-of a 'paths) (head-commit r))
+          (list '(error datum-not-published) (list 'paths (string-append "(no path) " m) "m.sls") (base-of r)))))
+
 (sh "rm -rf " (quoted root))
 (printf "rows: ~a\n~a failures\npublish-landing complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

@@ -729,7 +729,11 @@ second, `removed` when it is only at the first. What is compared is what `export
 link or a language changes no file; two src edits that cancel across a block boundary
 answer nothing; a rename is the old path removed and the new one added (a file's mode
 cannot change once set, `set` refuses `mode-mismatch`, so a text file leaves the
-projection only by a path or a deletion); and an empty file is present, not missing. Each
+projection only by a path or a deletion); and an empty file is present, not missing. The
+projection is the TEXT one only: a datum library (`import-code --datum`) is not in it, so a
+change to one -- a form's body, an added or removed form -- answers no item, and an empty
+`(items)` over a datum store does not say nothing changed. To see such a change, write
+`export-code --datum --cut <cut>` at each of the two cuts and compare the files. Each
 side is a tag name or a cut written out, read as `read --cut` reads one, and `from` and
 `to` name the cuts served.
 
@@ -3403,7 +3407,10 @@ published to a git repository by a script, not a verb:
     scheme --script tools/publish-landing.sc <store> <start-tag> <freeze-tag> <worktree>
 
 `<start-tag>` names the store's state the worktree's HEAD holds, and
-`<freeze-tag>` the state to publish. The commit's message and the git id of
+`<freeze-tag>` the state to publish. What it publishes is the TEXT projection,
+what `export-code --raw` writes; a datum library is never published, and a
+landing whose cuts differ in one is refused rather than published without it
+(`datum-not-published`, below). The commit's message and the git id of
 the start tree are in a block, the LANDING, written and committed before the
 freeze tag is made (so the tag's cut holds it), and found by its fields: kind
 `decision`, status `done`, and the fields `slot` "landing", `freeze` "<the
@@ -3440,6 +3447,22 @@ Everything is checked before the worktree changes, each as a refusal:
   holds one (a store file at its path still differs); the skipped and the
   not-text paths are listed in the answer as `(skipped (<path> <why>) ...)`
   (`base-mismatch` with the paths that differ);
+- no datum library differs between the cuts: the two cuts' states are
+  compared, each datum library and every block under it, by its exact store
+  path and its version, as landing-freeze judges a freeze current
+  (`datum-not-published` with the paths: a library added, removed, renamed,
+  or changed in its forms). The states are read, not files written on a
+  volume, so two libraries whose spellings a volume would merge are still
+  two. A library whose path field was removed is compared too, and named
+  `(no path) <id>`; one whose path is removed between the cuts is named by
+  both. A library's title or link changes its version too, and refuses the
+  landing with the rest: the safe side, since none of it is published. It
+  comes after the base check and
+  before the next one, so a change to datum libraries only is refused by this
+  name, and a mixed one is not published as its text part alone. The base
+  check refuses first a compared base entry that the raw export lacks or holds
+  differently -- a datum library's file with no text file at that path, say:
+  `base-mismatch`;
 - `changed-files` between the cuts is not empty (`nothing-to-publish`: no
   empty commit is made);
 - a content path is a 0644 file at the base and a removed path a 0644 or

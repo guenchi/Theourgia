@@ -31,7 +31,10 @@
 ;; the start cut's raw export path by path (the literal blobs, over the
 ;; importer's domain, landing-files.sc's base-entry-judgement: dot-named paths,
 ;; symbolic links and submodules skipped and listed, a file that is not text
-;; neither compared nor exempt, and listed); changed-files between
+;; neither compared nor exempt, and listed); no datum library differs between
+;; the cuts (landing-files.sc's datum-scope-changes, on the two states: a
+;; landing publishes the text projection only, so a datum change is refused,
+;; not left behind); changed-files between
 ;; the cuts is not empty; every touched path is a plain file at the base;
 ;; every destination is outside the git directory, under real directories and
 ;; free, but for what the planned removals clear; and no two spellings the
@@ -61,7 +64,7 @@
         (only (theourgia query) make-query-session session-answer)
         (only (theourgia lifecycle) lifecycle decision-state-of)
         (only (theourgia landing-files) raw-projection volume-insensitivity landing-collision spelling-key
-              base-entry-judgement)
+              base-entry-judgement datum-scope-changes)
         (only (theourgia ffi) entry-bytes entry-name-type directory-entries mkdir-p! mkdir-exclusive!
               rmdir! unlink! overwrite-entry! path-stat process-id))
 
@@ -307,6 +310,8 @@
   (let* ((wt (worktree-root given))
          (start-cut (tag-cut store start))
          (freeze-cut (tag-cut store freeze))
+         (start-state (let ((s (store-state-at-cut store #f (cut-text start-cut))))
+                        (if (reduction? s) s (raise s))))
          (freeze-state (let ((s (store-state-at-cut store #f (cut-text freeze-cut))))
                          (if (reduction? s) s (raise s)))))
     (let-values (((id message base) (landing-at freeze-state freeze)))
@@ -373,6 +378,19 @@
                               exported))
                   (when (pair? differ) (refuse 'base-mismatch (cons 'paths (list-sort string<? differ)))))
                 (set! skipped (list-sort (lambda (x y) (string<? (car x) (car y))) (append unread skipped)))
+                ;; NEVER: A DATUM CHANGE IS NOT LEFT BEHIND IN SILENCE. A landing
+                ;; publishes the text projection; a datum library is not in it, so
+                ;; a landing whose cuts differ in one would publish its text part
+                ;; and drop the rest without a word (found in review). The two
+                ;; states are compared, every datum library holder and the blocks
+                ;; under it by exact store path and version (datum-scope-changes),
+                ;; not files written on the scratch volume, which can merge two
+                ;; spellings into one (found in review, twice). Any difference
+                ;; refuses, before nothing-to-publish, so a datum-only change is
+                ;; refused by name too; a library's title or link counts, the safe
+                ;; side.
+                (let ((changed (datum-scope-changes start-state freeze-state)))
+                  (when (pair? changed) (refuse 'datum-not-published (cons 'paths changed))))
                 ;; WHAT CHANGED
                 (let* ((items (cdr (cadr (answer-ok (ask store 'changed-files (cut-text start-cut) (cut-text freeze-cut))))))
                        (of (lambda (r) (map cadr (filter (lambda (i) (eq? (caddr i) r)) items))))

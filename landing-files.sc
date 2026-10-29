@@ -25,7 +25,7 @@
   (export locate-file locate-pieces changed-files-between raw-projection path-collision spelling-key
           ambiguous-groups volume-insensitivity landing-collision base-entry-judgement
           store-route-domain file-pieces file-new-intents file-delete-intents file-baseline
-          structural-outputs file-scope-changes edit-dir-path)
+          structural-outputs file-scope-changes datum-scope-changes edit-dir-path)
   (import (rnrs)
           (only (theourgia code-project) code-field code-files code-children projection-outputs projected-file
                 export-code-view lang-fields code-safe-path?)
@@ -60,9 +60,16 @@
   ;; (measured: a datum form's body set, changed-files between the two cuts
   ;; answered (items)). So a title or a link on a file's block counts too,
   ;; which errs toward a refreeze.
+  ;; KEEP?, when given, is asked (keep? state id) of each holder, and only the
+  ;; holders it answers #t for are compared, with the blocks under them.
+  ;; UNDER A FILTER THE FILTER DECIDES, not the path: a holder it keeps is
+  ;; compared whether or not it holds a path, and one without a path is
+  ;; named "(no path) <id>" (found in review: a datum library whose path field
+  ;; was removed fell outside the comparison with all its forms). Without a
+  ;; filter only holders with a path are files, as before.
   ;; -> the paths of the files whose holder or blocks differ between FROM and
   ;;    TO, sorted, each once; () when none does.
-  (define (file-scope-changes from to)
+  (define (file-scope-changes from to . keep)
     (define (stored-path state id)
       (let* ((b (state-read state id)) (fs (and b (assq 'fields b))) (p (and fs (assq 'path (cdr fs)))))
         (and p (string? (cdr p)) (cdr p))))
@@ -74,8 +81,9 @@
     (define (scope state)
       (let ((t (make-hashtable string-hash string=?)) (kids (children-index state)))
         (for-each (lambda (f)
-                    (let ((path (stored-path state f)))
-                      (when path
+                    (let* ((stored (stored-path state f))
+                           (path (or stored (string-append "(no path) " f))))
+                      (when (if (null? keep) stored ((car keep) state f))
                         (let walk ((ids (list f)))
                           (unless (null? ids)
                             (hashtable-set! t (car ids) (cons (block-hash state (car ids)) path))
@@ -91,6 +99,21 @@
       (vector-for-each judge (hashtable-keys a))
       (vector-for-each judge (hashtable-keys b))
       (list-sort string<? (vector->list (hashtable-keys paths)))))
+
+  ;; THE SAME FOR DATUM LIBRARIES ONLY: the holders whose kind is library and
+  ;; mode datum, and every block under them, by exact store path and version.
+  ;; A landing publishes the text projection, so a landing whose cuts differ
+  ;; here is refused (tools/publish-landing.sc). Read from the two states, not
+  ;; from files written on a volume: a volume that merges spellings would hide
+  ;; a library behind another, or a rename behind its parent's alias. A
+  ;; library's title or link changes its version too, and is refused with the
+  ;; rest: the safe side.
+  (define (datum-scope-changes from to)
+    (file-scope-changes from to
+      (lambda (state id)
+        (let* ((b (state-read state id)) (fs (and b (assq 'fields b)))
+               (field (lambda (k) (let ((p (and fs (assq k (cdr fs))))) (and p (cdr p))))))
+          (and (eq? (field 'kind) 'library) (eq? (field 'mode) 'datum))))))
 
   ;; ---- an edit directory's one name -------------------------------------------
   ;; ONE SPELLING FOR AN EDIT DIRECTORY, shared by edit-export, edit-sync and
