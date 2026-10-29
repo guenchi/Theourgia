@@ -573,6 +573,105 @@
 (want "the answer says the request's outcome is not known, not that it was refused"
       (list (car faulted-answer) (cadr faulted-answer) (caddr faulted-answer))
       (list 'error 'unknown (list 'commit-barrier-failed)))
+;; CB-1 WHAT FAILED IS SAID BESIDE IT: the fourth element is the flush's own
+;; failure, as the table says a filesystem failure (answers.sc,
+;; commit-failure): unwritable, the op, the segment's path, and EIO.
+(want "CB-1 the failed flush is named beside unknown: (failed unwritable (op fsync) (path ...000001.sexp) (reason ...) (errno EIO))"
+      (let ((f (and (pair? faulted-answer) (> (length faulted-answer) 3) (list-ref faulted-answer 3))))
+        (and (pair? f)
+             (list (car f) (cadr f) (assq 'op (cddr f)) (assq 'errno (cddr f))
+                   (let ((pa (assq 'path (cddr f))))
+                     (and pa (string? (cadr pa))
+                          (let ((t (cadr pa)) (sfx "000001.sexp"))
+                            (and (>= (string-length t) (string-length sfx))
+                                 (string=? (substring t (- (string-length t) (string-length sfx)) (string-length t)) sfx)))))
+                   (and (assq 'reason (cddr f)) #t))))
+      (list 'failed 'unwritable '(op fsync) (list 'errno EIO) #t #t))
+;; CB-2 THE MACHINE LOCK BUSY AT THE COMMIT. The commit raises the writer's
+;; written frontier under the machine lock AFTER the barriers, so a lock
+;; busy there fails a commit whose bytes are flushed. The daemon's lock
+;; strategy raises (error store-busy (path <home>/lock)) past its budget;
+;; here the same datum is raised by a lock procedure that does so for the
+;; first machine-lock acquisition once the request's segment is on the
+;; disk: the store is fresh, so that is the one the commit takes, and the
+;; one at the request's start (the registry read) comes before any segment.
+;; No clock is involved, so the row reads the one interleaving every time.
+;; A raise before the write would be a refusal with nothing written, and
+;; its answer would say so.
+(define cb2 (test-dir "store1cb2"))
+(fresh! cb2)
+(define cb2-child (string-append cb2 "/child.sc"))
+(define cb2-out (string-append cb2 "/child.out"))
+(put! cb2-child
+      (string->utf8
+        (string-append
+          "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+          "        (theourgia store) (theourgia reduce))\n"
+          "(putenv \"THEOURGIA_HOME\" \"" cb2 "-home\")\n"
+          "(define flushed #f)\n"
+          "(define (segment-written?) (= 0 (system \"test -n \\\"$(find '" cb2 "' -name 000001.sexp -size +0c)\\\"\")))\n"
+          "(define plain (current-lock-acquire))\n"
+          "(define res\n"
+          "  (parameterize ((current-lock-acquire\n"
+          "                   (lambda (path mode)\n"
+          "                     (when (and (string=? path (machine-lock-path)) (segment-written?)) (set! flushed #t))\n"
+          "                     (if (and flushed (string=? path (machine-lock-path)))\n"
+          "                         (raise (list 'error 'store-busy (list 'path path)))\n"
+          "                         (plain path mode)))))\n"
+          "    (guard (e (#t (list (list 'raised))))\n"
+          "      (with-store-write \"" cb2 "\"\n"
+          "        (lambda (st v) '((insert root #f ((kind . section) (title . \"cb2\")))))))))\n"
+          "(printf \"~s\\n\" (list flushed (car res) (machine-lock-path)))\n")))
+;; THE READING IS ASSERTED, NOT ASSUMED: the child's exit status and the
+;; shape of what it printed are part of the row, and the expected answer is
+;; built from the home the fixture chose, not from the child's output, so a
+;; child that printed nothing or something unreadable is a red row.
+(define cb2-status (system (string-append "scheme --script " cb2-child " > " cb2-out " 2>/dev/null")))
+(define (cb2-read text)
+  (guard (e (#t (list 'unreadable text)))
+    (let ((d (read (open-string-input-port text))))
+      (if (eof-object? d) (list 'no-output) d))))
+(define cb2-reading
+  (cb2-read (let ((b (slurp cb2-out))) (if (bytevector? b) (utf8->string b) ""))))
+(want "CB-2 the reading's reader names an empty output and an unreadable one, so neither can stand for a measurement"
+      (list (cb2-read "") (cb2-read "(unclosed"))
+      '((no-output) (unreadable "(unclosed")))
+(want "CB-2 the machine lock busy at the commit, after the flush: unknown, commit-barrier-failed, and (failed store-busy (path <home>/lock))"
+      (list cb2-status cb2-reading)
+      (list 0 (list #t (list 'error 'unknown '(commit-barrier-failed)
+                             (list 'failed 'store-busy (list 'path (string-append cb2 "-home/lock"))))
+                    (string-append cb2 "-home/lock"))))
+;; CB-3 WHAT A COMMIT'S FAILURE WAS (store.sc, commit-failure), one row per
+;; class in the order they are tried: a filesystem failure as the table has
+;; it, a raised refusal as raised, a log error as describe-log-error has it,
+;; anything else internal with its message.
+(want "CB-3 commit-failure: unreadable ENOENT is absent, a durable fsync EIO is unwritable, each with the table's clauses"
+      (list (commit-failure (make-unreadable-entry "/p" "No such file or directory" 'ENOENT))
+            (commit-failure (vector 'durable-error 'fsync (cons "/s/000001.sexp" EIO))))
+      (list '(failed absent (path "/p") (reason "No such file or directory") (errno ENOENT))
+            (list 'failed 'unwritable '(op fsync) '(path "/s/000001.sexp") '(reason "Input/output error") (list 'errno EIO))))
+(want "CB-3 commit-failure: a raised refusal keeps its kind and clauses as raised (the lock strategy's store-busy)"
+      (commit-failure '(error store-busy (path "/h/lock")))
+      '(failed store-busy (path "/h/lock")))
+(want "CB-3 commit-failure: a log error is describe-log-error's kind and clauses"
+      (let ((e (make-log-error 'writer-stopped "w1" 3 #f '((store . "/s")))))
+        (list (commit-failure e) (describe-log-error e)))
+      '((failed writer-stopped (writer "w1") (segment 3) (store "/s"))
+        (error writer-stopped (writer "w1") (segment 3) (store "/s"))))
+(want "CB-3 commit-failure: anything else is internal, its reason the message, or raised when there is none"
+      (list (commit-failure (make-message-condition "m")) (commit-failure 'boom))
+      '((failed internal (reason "m")) (failed internal (reason raised))))
+;; IT RUNS INSIDE A GUARD HANDLER, so it must answer for anything a raise can
+;; carry and raise nothing itself: a number, a record of another type, a
+;; vector of another shape, an improper list starting with error, and a
+;; list starting with error whose kind is not a symbol.
+(define-record-type cb3-other (fields x))
+(want "CB-3 commit-failure raises nothing for what no class names: 42, another record, another vector, (error . x), (error 1 2) are internal"
+      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
+        (map commit-failure
+             (list 42 (make-cb3-other 1) (vector 'durable-error 1) '(error . x) '(error 1 2))))
+      (list '(failed internal (reason raised)) '(failed internal (reason raised)) '(failed internal (reason raised))
+            '(failed internal (reason raised)) '(failed internal (reason raised))))
 ;; AND THE RECORD IS THERE. This is what makes the wording matter: had
 ;; the answer said refused, the caller would not have looked, and the
 ;; block below would be a block nobody believes was written.

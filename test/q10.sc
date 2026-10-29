@@ -200,7 +200,8 @@
 ;; same store: the first is never armed, the second may be.
 (string->file! probe
   (string-append
-    "(import (chezscheme) (theourgia store))\n"
+    "(import (chezscheme) (theourgia store)\n"
+    "        (only (theourgia log) machine-lock-path) (only (theourgia ffi) current-lock-acquire))\n"
     "(define d \"" scratch "/store\")\n"
     "(define phase (cadr (command-line)))\n"
     "(define a '(insert root #f ((kind . section) (title . \"A\"))))\n"
@@ -214,9 +215,22 @@
     "        (write ev) (newline)))\n"
     "    (let ((ev (cons (caddr (command-line))\n"
     "                    (string->number (cadddr (command-line))))))\n"
-    "      (write (with-store-write d (lambda (st v) (list a b)) \"t\"\n"
-    "               (make-write-request \"t\" 'insert (list \"root\" \"AB\") \"r-1\" ev)))\n"
-    "      (newline)))\n"))
+    ";; LOCK-AT, the fifth argument when given: the machine-lock acquisitions\n"
+    ";; are counted, the one with that number raises the daemon lock\n"
+    ";; strategy's own refusal, and the answer is printed with the count.\n"
+    "      (let* ((lock-at (and (> (length (command-line)) 4) (string->number (list-ref (command-line) 4))))\n"
+    "             (count 0)\n"
+    "             (plain (current-lock-acquire))\n"
+    "             (answer (parameterize ((current-lock-acquire\n"
+    "                                      (lambda (path mode)\n"
+    "                                        (when (string=? path (machine-lock-path))\n"
+    "                                          (set! count (+ count 1))\n"
+    "                                          (when (and lock-at (= count lock-at))\n"
+    "                                            (raise (list 'error 'store-busy (list 'path path)))))\n"
+    "                                        (plain path mode))))\n"
+    "                       (with-store-write d (lambda (st v) (list a b)) \"t\"\n"
+    "                         (make-write-request \"t\" 'insert (list \"root\" \"AB\") \"r-1\" ev)))))\n"
+    "        (write (if lock-at (list answer (list 'lock-count count)) answer)) (newline))))\n"))
 
 ;; THE READER SAYS WHAT IT IS LOOKING FOR. The library prints a
 ;; `(theourgia machine-home ...)` banner before anything else, and a
@@ -252,16 +266,23 @@
 ;; A twin that could only reach the scaffold would be comparing two
 ;; readings of one thing.
 (define (run-probe/dirs dirs . fault)
+  (run-probe/lock dirs (if (pair? fault) (car fault) #f) #f))
+;; THE BATCH WITH ITS MACHINE-LOCK ACQUISITIONS COUNTED (lock-at 0) or the
+;; LOCK-AT-th one refused: -> (<answers> (lock-count <n>)), one datum.
+(define (run-probe/lock dirs fault lock-at)
   (system (string-append "rm -rf " scratch "/store"))
   (let ((ev (run-child dirs "setup" "" #f
                        (lambda (d) (and (pair? d) (string? (car d))
                                         (integer? (cdr d)))))))
     (if (not (and (pair? ev) (string? (car ev))))
         (list (list 'setup-failed ev))
-        (run-child dirs "batch"
-                   (string-append (car ev) " " (number->string (cdr ev)))
-                   (if (pair? fault) (car fault) #f)
-                   (lambda (d) (and (pair? d) (pair? (car d))))))))
+        (let ((args (string-append (car ev) " " (number->string (cdr ev))
+                                   (if lock-at (string-append " " (number->string lock-at)) ""))))
+          (run-child dirs "batch" args fault
+                     (if lock-at
+                         (lambda (d) (and (list? d) (= 2 (length d)) (list? (car d))
+                                          (pair? (cadr d)) (eq? (car (cadr d)) 'lock-count)))
+                         (lambda (d) (and (pair? d) (pair? (car d))))))))))
 
 (define (run-probe . fault) (apply run-probe/dirs libdirs fault))
 
@@ -357,6 +378,31 @@
                        (pair? (caddr one))
                        (eq? 'commit-barrier-failed (car (caddr one)))))))
       #t)
+
+(printf "\n== the fallback's own commit, when it fails, says what failed ==\n")
+;; CB-4 THE FALLBACK IS REACHED when commit-then's commit succeeds and the
+;; enclosing guard's commit after the raise does not. The scaffold raises
+;; after the receipt is on the disk, so commit-then commits and passes the
+;; raise on, and with-store-write's guard commits again. A machine lock
+;; busy at that second commit -- free at the first -- is what the daemon's
+;; strategy turns into store-busy past its budget; here the lock procedure
+;; raises that datum at the last machine-lock acquisition, counted first
+;; on the same scaffold with nothing raised.
+(define counted (run-probe/lock libdirs #f 0))
+(define lock-total (and (list? counted) (= 2 (length counted)) (cadr (cadr counted))))
+(want "CB-4 counted, nothing refused: the scaffold's answer is the fallback's (execution-failed, no failed clause), after two or more machine-lock acquisitions"
+      (and lock-total
+           (let ((one (car (car counted))))
+             (list (car one) (cadr one) (car (caddr one)) (and (assq 'failed (cddr one)) #t) (>= lock-total 2))))
+      '(error unknown execution-failed #f #t))
+(define refused (and lock-total (run-probe/lock libdirs #f lock-total)))
+(want "CB-4 the last machine-lock acquisition refused: the fallback's answer gains (commit-barrier-failed) and (failed store-busy (path <home>/lock))"
+      (and (list? refused) (= 2 (length refused))
+           (let ((one (car (car refused))))
+             (list (car one) (cadr one) (car (caddr one))
+                   (let ((tail (list-tail one (- (length one) 2)))) tail))))
+      (list 'error 'unknown 'execution-failed
+            (list '(commit-barrier-failed) (list 'failed 'store-busy (list 'path (string-append home "/lock"))))))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

@@ -59,7 +59,7 @@
 ;;; own terms).
 
 (library (theourgia answers)
-  (export classify-failure combine-report with-written condition-text)
+  (export classify-failure combine-report with-written condition-text failure-kind failure-clauses)
   (import (chezscheme)
           (only (theourgia ffi)
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason

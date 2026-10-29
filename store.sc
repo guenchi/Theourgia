@@ -21,7 +21,7 @@
           judgement-refusal? structural-consumes-mismatch
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
-          state-incomplete-notes
+          state-incomplete-notes describe-log-error commit-failure
           ;; The interface pinned at dispatch (the cells look these up
           ;; in this library): re-exported from (theourgia incomplete).
           incomplete-accepted incomplete-reduction? incomplete-reduction-notes
@@ -62,7 +62,7 @@
                 enumerate-segment-files discovery-quarantine discover-prefix
                 manifest-segments read-manifest
                 snapshot-read snapshot-cut-supported? segment-file-number
-                log-error-kind log-error-segment log-error-offset log-error-detail
+                log-error? log-error-kind log-error-writer log-error-segment log-error-offset log-error-detail
                 store-id-of adopt! registry-inside-store?
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
@@ -72,7 +72,7 @@
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
-          (only (theourgia answers) with-written)
+          (only (theourgia answers) with-written failure-kind failure-clauses condition-text)
           (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
@@ -3533,12 +3533,52 @@
   ;; records a resend may not see, and not seeing them means doing the
   ;; work a second time. The barrier is not the tail of the happy path.
   ;; It is what every exit owes.
+  ;;
+  ;; A LOG ERROR AS AN ANSWER: (error <kind> [(writer <w>)] [(segment <n>)]
+  ;; <detail> ...), each detail pair a clause. The rpc backstop answers it
+  ;; this way (rpc.sc exports it from here), and so does commit-failure.
+  ;; It is here and not in (theourgia answers) because answers is in the
+  ;; client's closure and the log is the server's (closures.sc, C-1).
+  (define (describe-log-error e)
+    (let ((detail (log-error-detail e)))
+      (append (list 'error (log-error-kind e))
+              (if (log-error-writer e) (list (list 'writer (log-error-writer e))) '())
+              (if (log-error-segment e) (list (list 'segment (log-error-segment e))) '())
+              (if (and (pair? detail) (pair? (car detail)))
+                  (map (lambda (p) (list (car p) (cdr p))) detail)
+                  '()))))
+  ;; WHAT A COMMIT'S FAILURE WAS, as the clause answered beside `unknown`:
+  ;; (failed <kind> <clause> ...). The classes are tried in order and no
+  ;; condition is in two of them:
+  ;;   a filesystem failure     the table's kind and clauses (answers.sc:
+  ;;                            absent, unreadable, unwritable)
+  ;;   a raised refusal         its kind and clauses as raised, such as the
+  ;;                            daemon lock strategy's (error store-busy
+  ;;                            (path <home>/lock))
+  ;;   a log error              describe-log-error's kind and clauses
+  ;;   anything else            internal, with condition-text as its reason
+  (define (commit-failure e)
+    (cond
+      ((failure-kind e) => (lambda (kind) (cons* 'failed kind (failure-clauses e))))
+      ((and (pair? e) (list? e) (eq? (car e) 'error) (pair? (cdr e)) (symbol? (cadr e)))
+       (cons 'failed (cdr e)))
+      ((log-error? e) (cons 'failed (cdr (describe-log-error e))))
+      (else (list 'failed 'internal (list 'reason (condition-text e))))))
+  ;;
+  ;; WHAT FAILED IS SAID BESIDE IT. `commit-barrier-failed` names the step,
+  ;; and the clause after it names the condition (commit-failure, above): a
+  ;; flush's errno and path, the machine lock's store-busy, a log error, or
+  ;; internal with its message. The head stays unknown for every one: the
+  ;; barriers come before the frontier is raised under the machine lock, so
+  ;; whichever failed, bytes are on the disk. The clause goes to the trace
+  ;; too.
   (define (commit-then s thunk)
     (let* ((answers (guard (e (#t (vector 'raised e))) (thunk)))
-           (outcome (timed 'commit (guard (e (#t 'barrier-failed)) (session-commit! s)))))
+           (outcome (timed 'commit (guard (e (#t (vector 'commit-failed (commit-failure e)))) (session-commit! s)))))
       (cond
-        ((eq? outcome 'barrier-failed)
-         (list (list 'error 'unknown (list 'commit-barrier-failed))))
+        ((and (vector? outcome) (eq? (vector-ref outcome 0) 'commit-failed))
+         (trace-event! 'commit-failed (vector-ref outcome 1) #f)
+         (list (list 'error 'unknown (list 'commit-barrier-failed) (vector-ref outcome 1))))
         ;; THE RAISE IS PASSED ON, BECAUSE SOMEBODY ELSE ALREADY ASKS
         ;; THIS QUESTION. `with-store-write`'s own guard encloses this
         ;; call; it tests the same flag, answers the same word, and adds
@@ -3893,12 +3933,24 @@
             ;; that provably did nothing is how a word meaning "ask me
             ;; again" stops meaning anything. That request gets the
             ;; failure it actually had.
+            ;;
+            ;; AND A COMMIT THAT FAILS HERE SAYS SO, as commit-then's does:
+            ;; (commit-barrier-failed) and its failed clause after the
+            ;; events. Every write is inside commit-then's thunk, whose
+            ;; commit has already run when a raise gets here, so this one
+            ;; runs the same barriers again and raises the frontier again
+            ;; under the machine lock. It fails when that second commit
+            ;; meets what the first did not: a lock busy now and free then
+            ;; (q10, CB-4), or a flush that fails on its second call.
             (guard (e (#t (if (session-write-started? s)
-                              (begin
-                                (guard (inner (#t #f)) (session-commit! s))
-                                (list (list 'error 'unknown
-                                            (list 'execution-failed (failure-text e))
-                                            (list 'events (session-written-events s)))))
+                              (let ((failed (guard (inner (#t (commit-failure inner)))
+                                              (session-commit! s)
+                                              #f)))
+                                (when failed (trace-event! 'commit-failed failed #f))
+                                (list (append (list 'error 'unknown
+                                                    (list 'execution-failed (failure-text e))
+                                                    (list 'events (session-written-events s)))
+                                              (if failed (list (list 'commit-barrier-failed) failed) '()))))
                               (raise e))))
               ;; THE FRONTIER IS REPORTED ONCE DELIVERY IS OVER, not
               ;; inferred from the per-record answers. A record is

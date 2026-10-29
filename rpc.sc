@@ -63,15 +63,9 @@
   ;; backtrace is neither an answer nor readable, so a caller would get
   ;; nothing and no way to tell "the store does not exist" from "the tool
   ;; broke". Every failure reachable here is translated into a form with
-  ;; a name in it.
-  (define (describe-log-error e)
-    (let ((detail (log-error-detail e)))
-      (append (list 'error (log-error-kind e))
-              (if (log-error-writer e) (list (list 'writer (log-error-writer e))) '())
-              (if (log-error-segment e) (list (list 'segment (log-error-segment e))) '())
-              (if (and (pair? detail) (pair? (car detail)))
-                  (map (lambda (p) (list (car p) (cdr p))) detail)
-                  '()))))
+  ;; a name in it. A log-error's form is describe-log-error's, which lives
+  ;; in (theourgia store) beside the commit's failure clause that says it
+  ;; the same way (commit-failure); it is exported from here too.
 
 ;; ---- exporting a writer's working view -------------------------------------
   ;;

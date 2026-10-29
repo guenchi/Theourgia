@@ -1330,18 +1330,18 @@
   ("store.sc" (commit-then) 2 guard
    (#t)
    fact b
-   "commit-then: a failed commit barrier answers (error unknown (commit-barrier-failed))"
-   (e (#t (quote barrier-failed))))
+   "commit-then: a failed commit answers (error unknown (commit-barrier-failed) (failed ...)), the clause commit-failure's"
+   (e (#t (vector (quote commit-failed) (commit-failure e)))))
   ("store.sc" (with-store-write) 1 guard
    (#t)
    fact b
-   "with-store-write: after writing, answers (error unknown (execution-failed ...)); before, re-raises"
-   (e (#t (if (session-write-started? s) (begin (guard (inner (#t #f)) (session-commit! s)) (list (list (quote error) (quote unknown) (list (quote execution-failed) (failure-text e)) (list (quote events) (session-written-events s))))) (raise e)))))
+   "with-store-write: after writing, answers (error unknown (execution-failed ...)), with the failed clause when its commit failed; before, re-raises"
+   (e (#t (if (session-write-started? s) (let ((failed (guard (inner (#t (commit-failure inner))) (session-commit! s) #f))) (when failed (trace-event! (quote commit-failed) failed #f)) (list (append (list (quote error) (quote unknown) (list (quote execution-failed) (failure-text e)) (list (quote events) (session-written-events s))) (if failed (list (list (quote commit-barrier-failed)) failed) (quote ()))))) (raise e)))))
   ("store.sc" (with-store-write) 2 guard
    (#t)
    unrelated a
-   "commit cleanup inside"
-   (inner (#t #f)))
+   "commit cleanup inside; its failure is the answer's failed clause"
+   (inner (#t (commit-failure inner))))
   ("store.sc" (with-store-write) 3 guard
    (#t)
    fact b
