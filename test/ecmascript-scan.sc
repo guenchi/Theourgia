@@ -100,7 +100,9 @@
 ;; A fresh store and directory per import; the symbols file names the lines
 ;; NEEDLES start, each symbol ending at its line's end. -> (accepted <blocks>)
 ;; with the file's blocks' srcs, (refused <kind> <at>) for a file refused with
-;; (error <kind> (at <n>)), else what was answered.
+;; (error <kind> (at <n>)), (whole <kind> <reason> <blocks>) for a file
+;; imported whole because its symbols could not be checked (listed in
+;; symbols-imported-whole), else what was answered.
 (define imports 0)
 (define (import-with ext text needles)
   (set! imports (+ imports 1))
@@ -117,8 +119,19 @@
                         (map (lambda (n) (let ((o (off text n))) (format "~s\n" (list 'symbol o (line-end text o) 'function "s"))))
                              needles)))
     (let* ((a (rpc-dispatch st (list 'import-code src "--symbols" syms) "test"))
-           (refused (clause a 'symbols-refused)))
-      (cond ((and (pair? a) (eq? (car a) 'ok) (pair? refused))
+           (refused (clause a 'symbols-refused))
+           (whole (clause a 'symbols-imported-whole))
+           (srcs (lambda ()
+                   (let* ((s (open-and-reduce st))
+                          (f (find (lambda (f) (equal? (code-field s f 'path) name)) (code-files s))))
+                     (and f (map (lambda (c) (let ((v (code-field s c 'src))) (if (bytevector? v) (utf8->string v) v)))
+                                 (code-children s f)))))))
+      (cond ((and (pair? a) (eq? (car a) 'ok) (pair? whole))
+             (let ((e (cadr (car whole))))
+               (if (and (pair? e) (eq? (car e) 'error) (pair? (cddr e)) (pair? (caddr e)))
+                   (list 'whole (cadr e) (cadr (caddr e)) (srcs))
+                   (list 'whole-as e))))
+            ((and (pair? a) (eq? (car a) 'ok) (pair? refused))
              (let ((e (cadr (car refused))))
                (if (and (pair? e) (eq? (car e) 'error) (pair? (cddr e)) (pair? (caddr e)))
                    (list 'refused (cadr e) (cadr (caddr e)))
@@ -232,9 +245,9 @@
 ;; the scan that refused JSX only by its lexical state.
 (define (jsx-in head) (string-append head "<div>\nfunction fake() {}\n</div>; // end\nfunction real() {}\n"))
 (let ((t (jsx-in "if (ok) ")))
-  (want "JX1 JSX after an if's condition: lexically-uncertain at its </, and an import at fake is refused unscanned"
+  (want "JX1 JSX after an if's condition: lexically-uncertain at its </, and an import at fake is not cut there: the file is imported whole, listed symbols-unscanned"
         (list (split "js" t) (import-with "js" t '("function fake")))
-        (list (one 'lexically-uncertain (at t "</div>")) (list 'refused 'symbols-unscanned 'lexically-uncertain))))
+        (list (one 'lexically-uncertain (at t "</div>")) (list 'whole 'symbols-unscanned 'lexically-uncertain (list t)))))
 (let ((w (jsx-in "while (ok) ")) (f (jsx-in "for (;;) ")) (o (jsx-in "with (o) ")))
   (want "JX2 JSX after a while's, a for's and a with's condition: lexically-uncertain at its </ each"
         (list (split "js" w) (split "js" f) (split "js" o))
@@ -255,9 +268,9 @@
 ;; (`// </div>` is JSX text): the test reads text, not the scan's reading.
 (let ((d "debugger\n<div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n")
       (f "for await (const x of xs) <div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n"))
-  (want "JX6 JSX after debugger and an automatic semicolon, and after for await's condition, closed inside what the scan reads as a comment: lexically-uncertain at that </, and an import at fake is refused unscanned"
+  (want "JX6 JSX after debugger and an automatic semicolon, and after for await's condition, closed inside what the scan reads as a comment: lexically-uncertain at that </, and an import at fake is not cut there: the file is imported whole, listed symbols-unscanned"
         (list (split "js" d) (import-with "js" d '("function fake")) (split "js" f))
-        (list (one 'lexically-uncertain (at d "</div>")) (list 'refused 'symbols-unscanned 'lexically-uncertain)
+        (list (one 'lexically-uncertain (at d "</div>")) (list 'whole 'symbols-unscanned 'lexically-uncertain (list d))
               (one 'lexically-uncertain (at f "</div>")))))
 ;; WHITESPACE AND COMMENTS BETWEEN: a closing tag's "<" and "/" may be
 ;; separated by spaces, a line end or a comment (which starts with "/"); a

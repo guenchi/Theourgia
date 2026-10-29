@@ -117,9 +117,20 @@
   ;; are refused is not imported at all, and is listed with its refusal as
   ;; symbols-refused, as is a section that names no text file the walk
   ;; found; the rest of the import goes on.
+  ;;
+  ;; EXCEPT WHERE NO CUT COULD BE CHECKED: a file refused symbols-unchecked
+  ;; (no language entry or no suggest profile: no scanner can say what is top
+  ;; level) or symbols-unscanned (the scanner cannot follow it) is imported as
+  ;; a plain import would import it -- whole, one block, since it carries no
+  ;; marker -- and is listed with that refusal as symbols-imported-whole. Its
+  ;; symbols were not wrong; they could not be checked, and a file left out
+  ;; of the import would have to be imported again by hand. A refusal that
+  ;; checked a cut and found it wrong (stale, inside a body, not at a line
+  ;; start, in the prefix, the section's own checks) still leaves the file
+  ;; out: it names a fault the editor's side can fix.
   (define (capture-import store dir allow-delete? symbols)
     (let* ((sections (and symbols ((car symbols))))
-           (ignored '()) (refused '()) (used '())
+           (ignored '()) (refused '()) (whole '()) (used '())
            (by-symbols
              (lambda (rel b input)
                (let ((section (and symbols input (assoc rel sections))))
@@ -128,7 +139,10 @@
                        (set! used (cons rel used))
                        (if (or (car parsed) (not (= 1 (length (cadr parsed)))) (not (equal? (cadar (cadr parsed)) b)))
                            (begin (set! ignored (cons rel ignored)) input)
-                           (guard (e ((and (pair? e) (eq? (car e) 'error))
+                           (guard (e ((and (pair? e) (eq? (car e) 'error) (pair? (cdr e))
+                                           (memq (cadr e) '(symbols-unchecked symbols-unscanned)))
+                                      (set! whole (cons (list rel e) whole)) input)
+                                     ((and (pair? e) (eq? (car e) 'error))
                                       (set! refused (cons (list rel e) refused)) #f))
                              (let* ((answer ((cdr symbols) section b (cadr input)))
                                     (cuts (car answer)))
@@ -209,6 +223,7 @@
       (list intents baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs)
             (list 'skipped skipped)
             (list 'symbols-ignored (reverse ignored))
+            (list 'symbols-imported-whole (reverse whole))
             (list 'symbols-refused
                   (append (reverse refused)
                           (if symbols
@@ -256,7 +271,7 @@
                                                (caddr captured)))))
                                #t)))
                 ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED,
-                ;; and only on an answer that succeeded; so are the two
+                ;; and only on an answer that succeeded; so are the three
                 ;; clauses of `--symbols`, each only when it lists something.
                 (finish
                   (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
@@ -265,7 +280,7 @@
                                      (map (lambda (tag)
                                             (let ((listed (text-packet-extra captured tag)))
                                               (if (pair? listed) (list (list tag listed)) '())))
-                                          '(skipped symbols-ignored symbols-refused))))
+                                          '(skipped symbols-ignored symbols-imported-whole symbols-refused))))
                       (if (= (length results) 1) (car results) (batch-answer results)))))))))))
 ;; NOTE: THE VIEW IS A PARAMETER, as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's

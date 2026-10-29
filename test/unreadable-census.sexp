@@ -231,10 +231,13 @@
    "catches error lists only, never a condition"
    (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e)))
   ("code-project.sc" (capture-import) 1 guard
-   ((and (pair? e) (eq? (car e) (quote error))))
+   ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (memq (cadr e) (quote (symbols-unchecked symbols-unscanned))))
+    (and (pair? e) (eq? (car e) (quote error))))
    unrelated a
-   "error lists only: a file's refusal by its symbols, raised by the cutter from what is already in memory, listed as symbols-refused; a condition is not caught"
-   (e ((and (pair? e) (eq? (car e) (quote error))) (set! refused (cons (list rel e) refused)) #f)))
+   "error lists only: a file's refusal by its symbols, raised by the cutter from what is already in memory; one that could check no cut (unchecked, unscanned) imports the file whole, listed as symbols-imported-whole, any other is listed as symbols-refused; a condition is not caught"
+   (e ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (memq (cadr e) (quote (symbols-unchecked symbols-unscanned))))
+       (set! whole (cons (list rel e) whole)) input)
+      ((and (pair? e) (eq? (car e) (quote error))) (set! refused (cons (list rel e) refused)) #f)))
   ("code-project.sc" (capture-import) 2 guard
    (#t)
    propagate c

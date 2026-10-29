@@ -243,14 +243,65 @@
                                        (list 'digest-found (digest-of two)))))
               (list (cons "b.js" two-blocks)))))
 
-;; ---- IS4: a file the scanner cannot follow is refused with the byte ----------------
+;; ---- IS4: a file whose cuts cannot be checked is imported whole -------------------
+;; NO CUT COULD BE CHECKED in a file the scanner cannot follow (unscanned)
+;; or whose language has no scanner (unchecked): it is imported as a plain
+;; import would import it, whole, and listed with its refusal in
+;; symbols-imported-whole, not in symbols-refused, which keeps listing only
+;; the files that were not imported. Each row is red on the import that left
+;; such a file out.
 (let* ((c (case! (list (cons "o.js" open-text) (cons "b.js" two))
                  (string-append (section "o.js" open-text (sym 0 30 'function "alpha") (sym 32 63 'function "beta"))
                                 (apply section "b.js" two two-symbols))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS4 an unclosed brace: o.js is refused symbols-unscanned, unbalanced at its end (64), and not imported; b.js is"
-        (list (car a) (clause a 'symbols-refused) (map car (files-of (car c))))
-        (list 'ok '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64)))) '("b.js"))))
+  (want "IS4 an unclosed brace: o.js is unscanned, unbalanced at its end (64), and imported whole, listed in symbols-imported-whole; none is refused; b.js is cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64))))
+              (list (cons "b.js" two-blocks) (list "o.js" open-text)))))
+;; A .tsx FILE HAS NO LANGUAGE ENTRY (JSX is not lexed), so no scanner can say
+;; what is top level in it. (no-suggest-profile, the other reason, cannot be
+;; reached from this table: every language entry has a profile the scanner
+;; can follow.)
+(define tsx "export const A = () => <div/>;\nexport function B() {}\n")
+(let* ((c (case! (list (cons "x.tsx" tsx) (cons "b.js" two))
+                 (string-append (section "x.tsx" tsx (sym 0 (offset-of tsx "\nexport function") 'variable "A")
+                                         (sym (offset-of tsx "export function") (- (bytes-of tsx) 1) 'function "B"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4b a .tsx with symbols is unchecked (no language entry) and imported whole, listed in symbols-imported-whole; b.js is cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f '(("x.tsx" (error symbols-unchecked (reason no-language-entry))))
+              (list (cons "b.js" two-blocks) (list "x.tsx" tsx)))))
+;; JSX IN A .js FILE: the scanner falls the file back lexically-uncertain at
+;; its closing "</", so the symbols at fake and real cannot be checked.
+(define jsx "const x = <div>\nfunction fake() {}\n</div>;\nfunction real() {}\n")
+(let* ((c (case! (list (cons "j.js" jsx))
+                 (section "j.js" jsx (sym (offset-of jsx "function fake") (- (offset-of jsx "\n</div>") 0) 'function "fake")
+                          (sym (offset-of jsx "function real") (- (bytes-of jsx) 1) 'function "real"))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4c a .js with JSX is unscanned, lexically uncertain at its </, and imported whole, listed in symbols-imported-whole"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f (list (list "j.js" (list 'error 'symbols-unscanned '(reason lexically-uncertain) (list 'at (offset-of jsx "</div>")))))
+              (list (list "j.js" jsx)))))
+;; CONTROLS. A cut CHECKED AND FOUND WRONG still leaves its file out: n.js
+;; names alpha's body line (IS3's cut at 19), and is refused and not held,
+;; in the same answer that imports o.js whole and cuts b.js. A clean import
+;; carries neither clause.
+(let* ((c (case! (list (cons "n.js" two) (cons "o.js" open-text) (cons "b.js" two))
+                 (string-append (section "n.js" two (sym 19 30 'variable "inner") (sym 33 64 'function "beta"))
+                                (section "o.js" open-text (sym 0 30 'function "alpha") (sym 32 63 'function "beta"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4d CONTROL one answer: n.js refused symbols-not-top-level at 19 and not held; o.js imported whole; b.js cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok '(("n.js" (error symbols-not-top-level (at 19))))
+              '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64))))
+              (list (cons "b.js" two-blocks) (list "o.js" open-text)))))
+(let* ((c (case! (list (cons "b.js" two)) (apply section "b.js" two two-symbols)))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4e CONTROL a clean import: no symbols-imported-whole and no symbols-refused clause; b.js cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f #f (list (cons "b.js" two-blocks)))))
 
 ;; ---- IS5: a file the symbols file does not name imports as before ------------------
 (let* ((c (case! (list (cons "a.js" two) (cons "w.js" two)) (apply section "a.js" two two-symbols)))

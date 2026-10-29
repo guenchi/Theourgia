@@ -2911,8 +2911,25 @@ imported at all -- no block is written for it -- and the import of the
 other files goes on; the answer lists it with its refusal in
 `(symbols-refused ((<path> <refusal>) ...))`, with, after the walk's
 files, a section that names no text file the walk found, as `(<path>
-(error symbols-no-file))`. Both clauses are there only when they list
-something, and only on an answer that succeeded, as `skipped` is.
+(error symbols-no-file))`.
+
+Two refusals are not about a cut but about the file: `symbols-unchecked`,
+where no scanner can say what is top level (the file's language has no
+entry, as for `.tsx` and `.jsx`, or no suggest profile), and
+`symbols-unscanned`, where the scanner cannot follow the file (unbalanced,
+an unclosed quote, a token it cannot judge, JSX in a `.js` file). Such a
+file is imported as a plain import would import it -- whole, as one block,
+since it carries no marker -- and the answer lists it with its refusal in
+`(symbols-imported-whole ((<path> <refusal>) ...))`, not in
+`symbols-refused`. Its symbols were not used because they could not be
+checked; every other refusal found a cut wrong, and still leaves the file
+out. So `symbols-refused` lists exactly the files that were not imported.
+The VS Code extension (1.1.1) does not read the new clause yet: it reports
+such a file as imported, one block, without saying why its symbols were
+not used.
+
+The three clauses are there only when they list something, and only on an
+answer that succeeded, as `skipped` is.
 
 The symbols file itself is read before the directory, and a file that
 cannot be read as sections refuses the request: `(error symbols-malformed
