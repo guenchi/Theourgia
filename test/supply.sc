@@ -476,6 +476,51 @@
   (want "G8 CONTROL with a regular .gitignore again, the supply answers ok and the table is back"
         (list (head-of a) (file-exists? js-table) (text-of ignore))
         (list 'ok #t "/derived/\n")))
+;; THE .gitignore IS READ BEFORE ANYTHING IS WRITTEN: one that cannot be read
+;; refuses the supply with no derived/ made, as init's G8l does. chmod 000
+;; makes a file unreadable only to a process that cannot bypass the mode
+;; bits: under root the row would read a readable file, so it is skipped
+;; there, saying why.
+(if (= 0 (system "test \"$(id -u)\" = 0"))
+    (printf "SKIP G9: running as root (euid 0), which reads a mode-000 file; run as an unprivileged user to check an unreadable .gitignore\n")
+    (begin
+      (system (string-append "rm -rf '" derived "' && chmod 000 '" ignore "'"))
+      (let ((a (supply a1-text "signatures")))
+        (system (string-append "chmod 644 '" ignore "'"))
+        (want "G9 a .gitignore that cannot be read refuses the supply unreadable, with no derived/ (no lock, no table) made and the file as it was"
+              (list (head-of a) (derived-entries) (text-of ignore))
+              (list '(error unreadable) 'NO-DERIVED "/derived/\n")))))
+;; --clear WRITES NO .gitignore AND MAKES NO derived/: with none there is no
+;; table, so it answers as a clear of an absent table does, with nothing
+;; written; a derived that is not a directory refuses it by name.
+(system (string-append "rm -rf '" derived "'"))
+(let ((a (supply (header 'signatures "-" '() '() "javascript") "signatures" "--clear")))
+  (want "G10 --clear with no derived/ answers cleared and makes no derived/"
+        (list a (derived-entries))
+        (list '(ok (cleared (kind signatures) (writer "-") (language "javascript"))) 'NO-DERIVED)))
+(supply a1-text "signatures")
+(let ((target (string-append root "/ignore-target-g11")))
+  (write! target "target\n")
+  (delete-file ignore)
+  (system (string-append "ln -s '" target "' '" ignore "'"))
+  (let ((a (supply (header 'signatures "-" '() '() "javascript") "signatures" "--clear")))
+    (want "G11 CONTROL --clear with a symbolic link as .gitignore removes the table; the link and its target are untouched"
+          (list a (file-exists? js-table) (= 0 (system (string-append "test -L '" ignore "'"))) (text-of target))
+          (list '(ok (cleared (kind signatures) (writer "-") (language "javascript"))) #f #t "target\n")))
+  (delete-file ignore)
+  (write! ignore "/derived/\n"))
+(system (string-append "rm -rf '" derived "'"))
+(write! derived "not a directory\n")
+(let ((a (supply (header 'signatures "-" '() '() "javascript") "signatures" "--clear")))
+  (want "G12 --clear with derived as a regular file refuses derived-not-a-directory by name, and the file is as it was"
+        (list a (text-of derived))
+        (list (list 'error 'derived-not-a-directory (list 'path derived) '(type regular)) "not a directory\n")))
+(delete-file derived)
+;; the store as G8 left it, so the rows after see their table again
+(let ((a (supply a1-text "signatures")))
+  (want "G12b CONTROL after the refusals, a supply answers ok and the table is back"
+        (list (head-of a) (file-exists? js-table) (text-of ignore))
+        (list 'ok #t "/derived/\n")))
 ;; The directory the table measurably is in, relative to the store.
 (define table-dir
   (let* ((rel (substring js-table (+ 1 (string-length store)) (string-length js-table)))

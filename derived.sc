@@ -52,7 +52,7 @@
           (only (theourgia code-markers) projection-encode-map)
           (only (theourgia markers) byte-lines byte-slice safe-utf8)
           (only (theourgia log) store-id-of atomic-write!)
-          (only (theourgia ffi) entry-bytes entry-type mkdir-p! file-ensure! with-exclusive-lock
+          (only (theourgia ffi) entry-bytes entry-type entry-name-type mkdir-p! file-ensure! with-exclusive-lock
                 unlink! directory-entries file-is-directory?)
           (only (theourgia wire) storable-encode storable-decode string->sexpr-extended
                 sexpr->string-extended)
@@ -376,12 +376,20 @@
   ;; that lacks it, everything already there kept, and the file is made when
   ;; there is none. The merge is init's own (store.sc, gitignore-merge):
   ;; bytes kept as they are, one CR at a line's end set aside to compare.
-  ;; KIND is the one look supply-derived took before anything was written.
-  (define (ensure-ignored! store kind)
-    (let* ((path (string-append store "/.gitignore"))
-           (bytes (gitignore-merge (and (eq? kind 'regular) (entry-bytes path)) "/derived/\n")))
-      (when bytes
-        (atomic-write! path bytes 'derived))))
+  ;; The file is READ and merged before anything is written (ignored-bytes,
+  ;; by the one look supply-derived took), so one that cannot be read
+  ;; refuses the supply with no derived/, lock or table made, as init's read
+  ;; comes before its first write; inside the table lock ensure-ignored!
+  ;; only writes what was merged. Not a locked install: the lock covers the
+  ;; tables, not .gitignore, so an edit made to the file between the read
+  ;; and the rename is lost, and a name swapped in between is followed or
+  ;; replaced (store.sc says the same of init).
+  ;; -> the bytes to write, or #f when the file already holds the line.
+  (define (ignored-bytes store kind)
+    (gitignore-merge (and (eq? kind 'regular) (entry-bytes (string-append store "/.gitignore"))) "/derived/\n"))
+  (define (ensure-ignored! store bytes)
+    (when bytes
+      (atomic-write! (string-append store "/.gitignore") bytes 'derived)))
 
   ;; ONE TABLE CHANGES AT A TIME. A supply reads the table, keeps the facts
   ;; about files it does not replace and writes the rest back; two of those
@@ -490,30 +498,41 @@
           ;; NEVER: A .gitignore THAT IS NOT A REGULAR FILE REFUSES THE SUPPLY
           ;; before the table's directory, its lock or the table is written:
           ;; one look at the name, the same refusal init gives.
-          (let ((ignore-kind (gitignore-kind store)))
-            (cond ((gitignore-refusal store ignore-kind) => raise))
+          (let* ((ignore-kind (gitignore-kind store))
+                 (ignore-bytes (begin (cond ((gitignore-refusal store ignore-kind) => raise))
+                                      (ignored-bytes store ignore-kind))))
           (with-table-lock store
             (lambda ()
               (let* ((old (read-table store (table-path store kind writer language) kind writer language))
                      (kept (if old
                                (filter (lambda (f) (not (member (fact-own-file f) replaces))) (cadddr old))
                                '())))
-                (ensure-ignored! store ignore-kind)
+                (ensure-ignored! store ignore-bytes)
                 (write-table! store kind writer language (append kept made))))))
           (list 'ok (list 'supplied (list 'facts (length made)) (list 'files (length replaces))))))))
 
   ;; (clear-derived store kind path writer) -> (ok (cleared (kind <k>)
   ;; (writer <w>) (language <l>))). The table is named by the file's header
   ;; (checked against the command as a supply's is); the body is not read.
+  ;; A CLEAR WRITES NO .gitignore, so it has no gate on it, and it MAKES NO
+  ;; derived/: with no table directory there is no table, and the answer is
+  ;; the same with nothing written. The directory's name is asked once, not
+  ;; what it points at (entry-name-type): anything there but a directory
+  ;; refuses before anything is written, named with what it is.
   (define (clear-derived store kind path writer)
     (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
       (let* ((data (supply-lines (supply-bytes path)))
              (header (read-supply-header (header-datum data) kind writer))
-             (language (caddr header)))
-        (with-table-lock store
-          (lambda ()
-            (let ((p (table-path store kind writer language)))
-              (unless (eq? (entry-type p) 'absent) (unlink! p)))))
+             (language (caddr header))
+             (dir-kind (entry-name-type (derived-dir store))))
+        (case dir-kind
+          ((absent) #f)
+          ((directory)
+           (with-table-lock store
+             (lambda ()
+               (let ((p (table-path store kind writer language)))
+                 (unless (eq? (entry-type p) 'absent) (unlink! p))))))
+          (else (raise (list 'error 'derived-not-a-directory (list 'path (derived-dir store)) (list 'type dir-kind)))))
         (list 'ok (list 'cleared (list 'kind kind) (list 'writer writer) (list 'language language))))))
 
   ;; ---- reading --------------------------------------------------------------

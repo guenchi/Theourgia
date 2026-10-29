@@ -3158,7 +3158,11 @@ Facts are kept per kind, writer and language, in
 and the language outside `[A-Za-z0-9_.]` written `%XX` (so the committed
 store's `-` is `%2D`). A supply keeps the facts about the files it does
 not replace. `--clear` removes the table the header names and answers
-`(ok (cleared (kind <k>) (writer <w>) (language <l>)))`. A table that does
+`(ok (cleared (kind <k>) (writer <w>) (language <l>)))`. It reads and
+writes no `.gitignore` and makes no `derived/`: with none there is no table
+to remove, and the answer is the same with nothing written; a `derived`
+that is not a directory refuses it before anything is written, `(error
+derived-not-a-directory (path <p>) (type <kind>))`. A table that does
 not read, or whose checksum or identity is wrong, is absent as a whole.
 
 A fact is used only while what it was computed from is unchanged: the src
@@ -3326,7 +3330,10 @@ the next `supply` gives them back. `supply` adds the line to a store's
 init's rule (see [`init`](#init)): every byte already there is kept, one
 carriage return at a line's end counts as no difference, and a
 `.gitignore` that is not a regular file refuses the supply before anything
-is written, `(error gitignore-not-a-file (path <p>) (type <kind>))`. The working areas and draft locks are one
+is written, `(error gitignore-not-a-file (path <p>) (type <kind>))`. The
+file is read before anything is written too, so one that cannot be read
+refuses with no `derived/` made. As with init this is not a locked install:
+an edit made to `.gitignore` between that read and the write is lost. The working areas and draft locks are one
 machine's drafts. The `*.tmp-*` files are the temporaries an atomic write
 keeps after a failure, for a reader -- except under a writer's `incoming/`,
 which the last line brings back: a candidate staged there and kept after a

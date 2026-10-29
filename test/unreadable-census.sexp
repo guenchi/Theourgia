@@ -59,6 +59,8 @@
   ("daemon.sc" (claim-namespace!) entry-name-type 1 keep a "not writer layout: the socket namespace link, judged by lstat; a failure other than absence raises into main's table")
   ("daemon.sc" (sweep-residue!) entry-name-type 1 keep a "not writer layout: an entry of a residue directory, asked with an lstat so that a link to a socket elsewhere is not taken for a socket of the residue")
   ("daemon.sc" (sweep-siblings!) entry-name-type 1 keep a "not writer layout: a backing directory beside the socket, asked with an lstat before its marker is read")
+  ("derived.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("derived.sc" (clear-derived) entry-name-type 1 keep a "not writer layout: the derived tables' directory, its name asked with an lstat; absent clears nothing, anything but a directory refuses before anything is written")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" (table-names) file-is-directory? 1 keep a "not writer layout: the derived tables' directory, which may not exist yet")
   ("evidence-index.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
