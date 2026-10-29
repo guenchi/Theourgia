@@ -52,9 +52,11 @@
     (let* ((a (suggest (car row) (cadr row))))
       (want "CT-04 ambiguous or unbalanced syntax falls back to whole file" (boundaries a) '(0))
       (want "CT-04 fallback carries an explicit warning" (pair? (result-value a 'warnings)) #t)))
+  ;; THE REGEX AND THE TEMPLATE IN A JAVASCRIPT FUNCTION NO LONGER FALL BACK:
+  ;; they moved to ecmascript-scan.sc's E4, which cuts them. JavaScript keeps a
+  ;; fallback row here by a lone CR, which the ecmascript scan cannot follow.
   '(("js" "function a() {\nfunction b() {}\n")
-    ("js" "function a() { return /x/; }\nfunction b() {}\n")
-    ("js" "function a() { return `x`; }\nfunction b() {}\n")
+    ("js" "function a() {}\r function b() {}\n")
     ("py" "def a():\n  x = \"unterminated\ndef b():\n  pass\n")
     ("ss" "(define a #;ignored 1)\n(define b 2)\n")
     ("md" "# A\n```\n## B\n")

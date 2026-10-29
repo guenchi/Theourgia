@@ -507,9 +507,13 @@
 (want "IS26 a shell line ending in \\\\ ends in a literal backslash and does not continue: the cut after it is taken"
       (one-file "b.sh" "echo \\\\\nf() { :; }\n" (sym 0 7 'variable "e") (sym 8 19 'function "f"))
       (list 'ok #f (list (list "b.sh" "echo \\\\\n" "f() { :; }\n"))))
-(want "IS27 a line ending at a block comment's close does not continue, whatever the code before it: the cut after it is taken"
+;; THE OPERAND OWED SURVIVES A COMMENT: after `1 + /* note */` a parser reads
+;; `function f() {}` as the right operand of +, a function expression, so f is
+;; not a top-level declaration and its cut is refused. (ecmascript-scan.sc's S8
+;; and S8b are the full rows.)
+(want "IS27 a JavaScript line ending in + and a block comment continues: the cut at f, its operand, is refused"
       (one-file "z.js" "const z = 1 + /* note */\nfunction f() {\n}\n" (sym 0 24 'variable "z") (sym 25 42 'function "f"))
-      (list 'ok #f (list (list "z.js" "const z = 1 + /* note */\n" "function f() {\n}\n"))))
+      (list 'ok (list (list "z.js" '(error symbols-not-top-level (at 25)))) '()))
 ;; THE TOKENS THEMSELVES: each continues, and the cut after it is refused.
 (want "IS28 the shell's |, && and || continue"
       (list (one-file "l.sh" "ls |\nwc -l\nf() { :; }\n" (sym 0 4 'variable "ls") (sym 11 22 'function "f"))

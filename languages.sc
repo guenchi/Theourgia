@@ -159,7 +159,12 @@
            (suggest-only
              ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
                (escaped-character "\\") (nested-block-comment #f)
-               (uncertain-tokens ("/" "`"))
+               ;; the ecmascript scan (code-suggest.sc): every live reading of
+               ;; "/" is kept, templates are followed, and what it does not
+               ;; follow refuses the file: Annex B's HTML-like comments, and JSX
+               ;; (any "</" or "/>" in the file's text, whitespace between)
+               (lexer "ecmascript") (annex-b-comments #t)
+               (uncertain-tokens ())
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("function f() {}"
@@ -176,7 +181,11 @@
            (suggest-only
              ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
                (escaped-character "\\") (nested-block-comment #f)
-               (uncertain-tokens ("/" "`" "<"))
+               ;; the ecmascript scan with TypeScript's type syntax: a run of
+               ;; ">" and a postfix "!" can end an expression, and `void` is
+               ;; also a type; "<" and ">" are no pairs
+               (lexer "ecmascript") (type-syntax #t)
+               (uncertain-tokens ())
                (fallback "whole-file-with-warning") (prefix-lines ())))
            (name-vectors
              ("interface Shape {}"

@@ -43,6 +43,296 @@
            (member (language-property profile 'top-level #f) '("paren" "brace" "indent" "fence"))
            #t)))
 
+  ;; ---- the ecmascript scan ------------------------------------------------
+  ;;
+  ;; ALL LIVE READINGS. In JavaScript a "/" after a token that can end an
+  ;; expression is a division or the start of a regex, and which one is not
+  ;; decided by the token's spelling (automatic semicolons, contextual
+  ;; keywords, TypeScript's postfix "!" and type-argument ">"). So the scan
+  ;; keeps every reading that can still be right: a READING is the complete
+  ;; scanner state, and the scan holds a set of them, forking at such a "/"
+  ;; and letting each reading die where the text disproves it (a regex or a
+  ;; '...' / "..." open at a line end, a closer that does not match, anything
+  ;; open at the end of the file). A line start is at the top level only when
+  ;; every reading that SURVIVES the file says so.
+  ;;
+  ;; A STATE is (stack lex prev owed cont fresh), interned, so two equal states
+  ;; are eq? and a merge is a pointer comparison:
+  ;;   stack  frames, innermost first: paren, bracket, brace, tmpl (a
+  ;;          template's text), expr (a template's "${"), as an interned list
+  ;;   lex    code, sq, dq, regex, class (a regex's [...]), comment, tmpl
+  ;;   prev   what the last significant token was, for a "/": rx (it cannot
+  ;;          end an expression: a regex follows), fk (it can: fork), dot ("."
+  ;;          or "?.": a reserved word after it is a property name)
+  ;;   owed   the last significant token continues the statement (the table
+  ;;          scan's continuation rule, asked of the token): it survives
+  ;;          comments and line ends
+  ;;   cont   a quote's escape at its line's end continues it onto the next
+  ;;   fresh  no code token yet on this line (Annex B's line-start "-->")
+  ;;
+  ;; THE SCAN GOES BY CHARACTER INDEX IN LOCKSTEP: every reading at the lowest
+  ;; index takes one token (and may fork into two), then readings at the same
+  ;; index with the same state merge. Past 32 readings after a merge the file
+  ;; falls back lexically-uncertain at the "/" that forked. Each reading's
+  ;; judgments of the line starts it passed are a node in a shared history:
+  ;; a fork shares its parent, a merge makes an AND node of both, and the
+  ;; answer is read once, at the end, from the survivors' nodes.
+  ;;
+  ;; THE END STATES, as the table scan names the same ones: a reading open in
+  ;; '...' or "..." at a line end without a continuing escape dies
+  ;; unclosed-quote at that line end; a regex open at a line end dies
+  ;; lexically-uncertain there (the table scan has no such state); a closer
+  ;; that does not match dies unbalanced at the closer; any state still open at
+  ;; the end of the file -- a pair, a template, a continued string, a block
+  ;; comment -- dies unbalanced at the file's size. When no reading is left,
+  ;; the file falls back with the last death's reason and offset.
+  ;;
+  ;; LINES is the list of the file's lines (after the protected prefix) as
+  ;; strings without their line feeds. TYPES? is TypeScript's syntax (a run of
+  ;; ">" and a postfix "!" can end an expression, `void` is also a type);
+  ;; ANNEX-B? is plain JavaScript's: its HTML-like comments are refused for the
+  ;; whole file (JSX is refused before this scan, on the file's text).
+  ;; OWES? asks whether a token continues the statement. -> a vector with one
+  ;; (top? . owed?) per line, or (fallback <reason> <line> <char>), <line>
+  ;; being 'eof for the file's end.
+  (define (ecmascript-judgments lines types? annex-b? owes?)
+    (call/cc
+      (lambda (give-up)
+        (define stack-ids (make-eqv-hashtable))
+        (define state-ids (make-eqv-hashtable))
+        (define next-id 1)
+        ;; an interned stack node: #(id frame below); the empty stack is 0
+        (define (frame-code f) (case f ((paren) 1) ((bracket) 2) ((brace) 3) ((tmpl) 4) ((expr) 5) (else 0)))
+        (define (stack-id s) (if (eqv? s 0) 0 (vector-ref s 0)))
+        (define (push s f)
+          (let ((key (+ (* (stack-id s) 8) (frame-code f))))
+            (or (hashtable-ref stack-ids key #f)
+                (let ((n (vector next-id f s)))
+                  (set! next-id (+ next-id 1))
+                  (hashtable-set! stack-ids key n)
+                  n))))
+        (define (top s) (if (eqv? s 0) #f (vector-ref s 1)))
+        (define (pop s) (vector-ref s 2))
+        (define (lex-code l) (case l ((code) 0) ((sq) 1) ((dq) 2) ((regex) 3) ((class) 4) ((comment) 5) ((tmpl) 6)))
+        (define (prev-code p) (case p ((rx) 0) ((fk) 1) ((dot) 2)))
+        ;; an interned state: #(id stack lex prev owed cont fresh)
+        (define (state stack lex prev owed cont fresh)
+          (let ((key (+ (* (stack-id stack) 1024) (* (lex-code lex) 64) (* (prev-code prev) 8)
+                        (if owed 4 0) (if cont 2 0) (if fresh 1 0))))
+            (or (hashtable-ref state-ids key #f)
+                (let ((v (vector next-id stack lex prev owed cont fresh)))
+                  (set! next-id (+ next-id 1))
+                  (hashtable-set! state-ids key v)
+                  v))))
+        (define (s-stack s) (vector-ref s 1))
+        (define (s-lex s) (vector-ref s 2))
+        (define (s-prev s) (vector-ref s 3))
+        (define (s-owed s) (vector-ref s 4))
+        (define (s-cont s) (vector-ref s 5))
+        (define (s-fresh s) (vector-ref s 6))
+        (define (with s . kvs)
+          (let loop ((kvs kvs) (stack (s-stack s)) (lex (s-lex s)) (prev (s-prev s))
+                     (owed (s-owed s)) (cont (s-cont s)) (fresh (s-fresh s)))
+            (if (null? kvs)
+                (state stack lex prev owed cont fresh)
+                (let ((v (cadr kvs)))
+                  (case (car kvs)
+                    ((stack) (loop (cddr kvs) v lex prev owed cont fresh))
+                    ((lex) (loop (cddr kvs) stack v prev owed cont fresh))
+                    ((prev) (loop (cddr kvs) stack lex v owed cont fresh))
+                    ((owed) (loop (cddr kvs) stack lex prev v cont fresh))
+                    ((cont) (loop (cddr kvs) stack lex prev owed v fresh))
+                    ((fresh) (loop (cddr kvs) stack lex prev owed cont v)))))))
+        ;; A READING: #(state index history). A HISTORY NODE: #(line top-ok owed
+        ;; parent other), `line` #f and both parents set for an AND node.
+        (define (reading st i h) (vector st i h))
+        (define (r-state r) (vector-ref r 0))
+        (define (r-index r) (vector-ref r 1))
+        (define (r-history r) (vector-ref r 2))
+        (define (and-node a b) (if (eq? a b) a (vector #f #f #f a b)))
+        ;; THE LAST DEATH, for the fallback when no reading is left
+        (define last-death #f)
+        (define (die! reason line char) (set! last-death (list 'fallback reason line char)) '())
+        (define regex-keywords
+          (if types?
+              '("return" "typeof" "instanceof" "in" "new" "delete" "throw" "case" "do" "else" "default")
+              '("return" "typeof" "instanceof" "in" "new" "delete" "throw" "case" "do" "else" "default" "void")))
+        ;; longest first: the scan takes the longest that matches
+        (define operators
+          '(">>>=" "..." "===" "!==" "**=" "<<=" ">>=" ">>>" "&&=" "||=" "??="
+            "=>" "==" "!=" "<=" ">=" "&&" "||" "??" "?." "++" "--" "+=" "-=" "*=" "%=" "&=" "|=" "^=" "<<" ">>" "**"
+            "=" "+" "-" "*" "%" "&" "|" "^" "!" "~" "?" ":" ";" "," "." "<" ">" "@"))
+        ;; WHITESPACE, as an approximation that holds ECMAScript's: Unicode's
+        ;; White_Space (a little wider: U+0085 is not ECMAScript whitespace) and
+        ;; U+FEFF, which char-whitespace? does not hold. A FEFF inside a line is
+        ;; a space, not the start of a name (it would end the line's freshness
+        ;; before a line-start "-->").
+        (define (es-space? c) (or (char-whitespace? c) (char=? c #\xFEFF)))
+        (define (name-char? c)
+          (or (char-alphabetic? c) (memv c '(#\_ #\$ #\\)) (and (char>? c #\x7F) (not (es-space? c)))))
+        ;; A PRIVATE NAME, "#" and its name, is one name-like token: it can end
+        ;; an expression, and `#return` is not the reserved word.
+        (define (ident-start? c) (or (name-char? c) (char=? c #\#)))
+        (define (ident-char? c) (or (name-char? c) (char-numeric? c)))
+        (define (gt-run? t) (and (> (string-length t) 0) (for-all (lambda (c) (char=? c #\>)) (string->list t))))
+        ;; ONE TOKEN of reading R at its index on LINE (number LN) -> the
+        ;; readings it becomes: one, two at a fork, none at a death
+        (define (step r line ln)
+          (let* ((s (r-state r)) (i (r-index r)) (n (string-length line)) (c (string-ref line i)) (h (r-history r))
+                 (at (lambda (j) (and (< j n) (string-ref line j))))
+                 (go (lambda (st j) (list (reading st j h))))
+                 (code (lambda (prev owed) (with s 'lex 'code 'prev prev 'owed owed 'fresh #f)))
+                 ;; the index of the next character from J that is one of
+                 ;; CS, or the line's end: what lies between changes nothing
+                 (skip (lambda (j cs) (let loop ((j j)) (if (or (= j n) (memv (string-ref line j) cs)) j (loop (+ j 1)))))))
+            (case (s-lex s)
+              ((comment)
+               (cond ((and (char=? c #\*) (eqv? (at (+ i 1)) #\/)) (go (with s 'lex 'code) (+ i 2)))
+                     (else (go s (skip (+ i 1) '(#\*))))))
+              ((sq dq)
+               (cond ((char=? c #\\)
+                      (if (or (= (+ i 1) n) (and (= (+ i 2) n) (eqv? (at (+ i 1)) #\return)))
+                          (go (with s 'cont #t) n)
+                          (go s (+ i 2))))
+                     ((char=? c (if (eq? (s-lex s) 'sq) #\' #\")) (go (code 'fk #f) (+ i 1)))
+                     (else (go s (skip (+ i 1) (list #\\ (if (eq? (s-lex s) 'sq) #\' #\")))))))
+              ((regex)
+               (cond ((char=? c #\\) (if (< (+ i 1) n) (go s (+ i 2)) (go s n)))
+                     ((char=? c #\[) (go (with s 'lex 'class) (+ i 1)))
+                     ((char=? c #\/)
+                      (let flags ((j (+ i 1)))
+                        (if (and (< j n) (ident-char? (string-ref line j))) (flags (+ j 1)) (go (code 'fk #f) j))))
+                     (else (go s (skip (+ i 1) '(#\\ #\[ #\/))))))
+              ((class)
+               (cond ((char=? c #\\) (if (< (+ i 1) n) (go s (+ i 2)) (go s n)))
+                     ((char=? c #\]) (go (with s 'lex 'regex) (+ i 1)))
+                     (else (go s (skip (+ i 1) '(#\\ #\]))))))
+              ((tmpl)
+               (cond ((char=? c #\\) (go s (min n (+ i 2))))
+                     ((char=? c #\`) (go (with s 'stack (pop (s-stack s)) 'lex 'code 'prev 'fk 'owed #f 'fresh #f) (+ i 1)))
+                     ((and (char=? c #\$) (eqv? (at (+ i 1)) #\{))
+                      (go (with s 'stack (push (s-stack s) 'expr) 'lex 'code 'prev 'rx 'owed #f) (+ i 2)))
+                     (else (go s (skip (+ i 1) '(#\\ #\` #\$))))))
+              (else
+               (cond
+                 ((es-space? c) (go s (let ws ((j (+ i 1))) (if (and (< j n) (es-space? (string-ref line j))) (ws (+ j 1)) j))))
+                 ((and annex-b? (string-prefix-at? line "<!--" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
+                 ((and annex-b? (s-fresh s) (string-prefix-at? line "-->" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
+                 ((char=? c #\/)
+                  (cond ((eqv? (at (+ i 1)) #\/) (go s n))
+                        ((eqv? (at (+ i 1)) #\*) (go (with s 'lex 'comment) (+ i 2)))
+                        (else
+                         (let* ((assign? (eqv? (at (+ i 1)) #\=))
+                                (tok (if assign? "/=" "/"))
+                                (division (reading (code 'rx (owes? tok)) (+ i (string-length tok)) h))
+                                (regex (reading (with s 'lex 'regex 'fresh #f) (+ i 1) h)))
+                           (if (eq? (s-prev s) 'fk) (list regex division) (list regex))))))
+                 ((char=? c #\`) (go (with s 'stack (push (s-stack s) 'tmpl) 'lex 'tmpl 'fresh #f) (+ i 1)))
+                 ((char=? c #\') (go (with s 'lex 'sq 'fresh #f) (+ i 1)))
+                 ((char=? c #\") (go (with s 'lex 'dq 'fresh #f) (+ i 1)))
+                 ((memv c '(#\( #\[ #\{))
+                  (let ((f (case c ((#\() 'paren) ((#\[) 'bracket) (else 'brace))))
+                    (go (with (code 'rx (owes? (string c))) 'stack (push (s-stack s) f)) (+ i 1))))
+                 ((memv c '(#\) #\]))
+                  (if (eq? (top (s-stack s)) (if (char=? c #\)) 'paren 'bracket))
+                      (go (with (code 'fk #f) 'stack (pop (s-stack s))) (+ i 1))
+                      (die! 'unbalanced ln i)))
+                 ((char=? c #\})
+                  (case (top (s-stack s))
+                    ((expr) (go (with s 'stack (pop (s-stack s)) 'lex 'tmpl) (+ i 1)))
+                    ((brace) (go (with (code 'fk #f) 'stack (pop (s-stack s))) (+ i 1)))
+                    (else (die! 'unbalanced ln i))))
+                 ((or (char-numeric? c) (and (char=? c #\.) (let ((d (at (+ i 1)))) (and d (char-numeric? d)))))
+                  (let num ((j (+ i 1)))
+                    (let ((d (at j)))
+                      (cond ((and d (or (ident-char? d) (char=? d #\.))) (num (+ j 1)))
+                            ((and d (memv d '(#\+ #\-)) (memv (string-ref line (- j 1)) '(#\e #\E))
+                                  (not (string-prefix-at? line "0x" i)) (not (string-prefix-at? line "0X" i)))
+                             (num (+ j 1)))
+                            (else (go (code 'fk #f) j))))))
+                 ((ident-start? c)
+                  (let word ((j (+ i 1)))
+                    (if (and (< j n) (ident-char? (string-ref line j)))
+                        (word (+ j 1))
+                        (let ((w (substring line i j)))
+                          (go (code (if (and (not (eq? (s-prev s) 'dot)) (member w regex-keywords)) 'rx 'fk) #f) j)))))
+                 (else
+                  (let ((op (or (find (lambda (o) (string-prefix-at? line o i)) operators) (string c))))
+                    (go (code (cond ((member op '("." "?.")) 'dot)
+                                    ((member op '("++" "--")) 'fk)
+                                    ((and types? (or (gt-run? op) (string=? op "!"))) 'fk)
+                                    (else 'rx))
+                              (and (not (member op '("++" "--"))) (owes? op)))
+                        (+ i (string-length op))))))))))
+        ;; MERGE readings at the same index with the same state; -> the list
+        (define (merged rs)
+          (let loop ((rs rs) (out '()))
+            (if (null? rs)
+                (reverse out)
+                (let* ((r (car rs))
+                       (same (find (lambda (o) (and (eq? (r-state o) (r-state r)) (= (r-index o) (r-index r)))) out)))
+                  (if same
+                      (loop (cdr rs) (map (lambda (o) (if (eq? o same) (reading (r-state o) (r-index o) (and-node (r-history o) (r-history r))) o)) out))
+                      (loop (cdr rs) (cons r out)))))))
+        (define line-count (length lines))
+        (define (judge s) (and (eqv? (s-stack s) 0) (eq? (s-lex s) 'code) (not (s-cont s))))
+        (let line-loop ((ls lines) (ln 0) (live (list (reading (state 0 'code 'rx #f #f #t) 0 #f))))
+          (if (null? ls)
+              ;; THE END OF THE FILE: a reading with anything open dies
+              (let ((survivors (filter (lambda (r) (judge (r-state r))) live)))
+                (when (null? survivors)
+                  (give-up (if (null? live) (or last-death (list 'fallback 'lexically-uncertain 'eof 0))
+                               (list 'fallback 'unbalanced 'eof 0))))
+                ;; ONE TRAVERSAL of the survivors' histories: a line some
+                ;; reachable node judges not top-level is not, one some node
+                ;; judges owed continues
+                (let ((not-top (make-vector line-count #f)) (owed (make-vector line-count #f)) (seen (make-eq-hashtable)))
+                  (let walk ((todo (map r-history survivors)))
+                    (unless (null? todo)
+                      (let ((node (car todo)))
+                        (if (or (not node) (hashtable-ref seen node #f))
+                            (walk (cdr todo))
+                            (begin
+                              (hashtable-set! seen node #t)
+                              (when (vector-ref node 0)
+                                (unless (vector-ref node 1) (vector-set! not-top (vector-ref node 0) #t))
+                                (when (vector-ref node 2) (vector-set! owed (vector-ref node 0) #t)))
+                              (walk (cons* (vector-ref node 3) (vector-ref node 4) (cdr todo))))))))
+                  (let ((out (make-vector line-count #f)))
+                    (let fill ((k 0))
+                      (when (< k line-count)
+                        (vector-set! out k (cons (not (vector-ref not-top k)) (vector-ref owed k)))
+                        (fill (+ k 1))))
+                    out)))
+              (let* ((line (car ls)) (n (string-length line))
+                     ;; THE LINE START: a fresh line, and each reading's judgment
+                     ;; of it a node on its history
+                     (starts (merged (map (lambda (r)
+                                            (let ((s (with (r-state r) 'fresh #t 'cont #f)))
+                                              (reading s 0 (vector ln (judge (r-state r)) (s-owed (r-state r)) (r-history r) #f))))
+                                          live))))
+                (let scan ((live starts))
+                  (let ((pending (filter (lambda (r) (< (r-index r) n)) live)))
+                    (if (null? pending)
+                        ;; THE LINE END: a regex dies; a quote dies unless an
+                        ;; escape continues it
+                        (let ((next (apply append
+                                           (map (lambda (r)
+                                                  (let ((s (r-state r)))
+                                                    (case (s-lex s)
+                                                      ((regex class) (die! 'lexically-uncertain ln n))
+                                                      ((sq dq) (if (s-cont s) (list (reading s 0 (r-history r))) (die! 'unclosed-quote ln n)))
+                                                      (else (list (reading s 0 (r-history r)))))))
+                                                live))))
+                          (when (null? next) (give-up last-death))
+                          (line-loop (cdr ls) (+ ln 1) (merged next)))
+                        (let* ((i (apply min (map r-index pending)))
+                               (stepped (apply append (map (lambda (r) (if (= (r-index r) i) (step r line ln) (list r))) live)))
+                               (now (merged stepped)))
+                          (when (null? now) (give-up last-death))
+                          (when (> (length now) 32) (give-up (list 'fallback 'lexically-uncertain ln i)))
+                          (scan now)))))))))))
+
   ;; STRICT, the optional argument after `starts`, is the import's test of a
   ;; cut (import-symbol-cuts); split-suggest does not ask it. Two more lines
   ;; are then not at the top level, as the scanner's state reads them:
@@ -137,6 +427,37 @@
                    (let loop ((i 1))
                      (if (and (< i (string-length s)) (char=? (string-ref s i) (string-ref s 0))) (loop (+ i 1))
                          (and (>= i 3) (list (string-ref s 0) i (substring s i (string-length s)))))))))
+          ;; ONE LINE'S DECISION, given its judgment: TOP? (the line starts at
+          ;; the top level as the scanner's state reads it) and CONTINUES? (for
+          ;; strict, the line before it continues the statement). The table
+          ;; scan asks it line by line as it goes; the ecmascript scan asks it
+          ;; for every line after the file is read, with the judgments every
+          ;; surviving reading agrees on. So there is one rule for what a line
+          ;; is -- a cut, a comment line pending for the next definition, the
+          ;; end of such a run, a start the scanner does not see at the top
+          ;; level -- whichever scan judged it. A top-level line is outside
+          ;; every comment, so the comment depth is not asked here.
+          (define (decide-line! offset line trimmed top? continues?)
+            (unless top? (symbol-not-top-level! offset))
+            (when strict
+              (when continues? (symbol-not-top-level! offset))
+              (when (string=? kind "indent")
+                (cond ((string=? trimmed "")
+                       (when (and starts (memv offset starts)) (set! blank-starts (cons offset blank-starts))))
+                      (else
+                       (unless (string=? line trimmed) (for-each symbol-not-top-level! blank-starts))
+                       (set! blank-starts '())))))
+            (cond
+              ((and top? (definition? offset trimmed))
+               (let ((start (or pending offset)))
+                 (when (> start (car boundaries)) (set! boundaries (cons start boundaries))))
+               (set! pending #f))
+              ((and top? (or (at-any trimmed 0 (comment-prefixes entry))
+                             (and block (string-prefix-at? trimmed (car block) 0))
+                             (exists (lambda (p) (regex-match p trimmed)) prefix-patterns)))
+               (unless pending (set! pending offset)))
+              ((and top? (string=? trimmed "")) (set! pending #f))
+              (top? (set! pending #f))))
           (define (scan-line line offset)
             (set! continued? #f)
             (set! last-kind 'none)
@@ -193,6 +514,69 @@
                       (else (code! i)
                             (when head (set! head (string-append head (string c))))
                             (loop (+ i 1))))))))
+          ;; JSX, IN PLAIN JAVASCRIPT (the profile with annex-b-comments), as TEXT:
+          ;; every JSX element ends with a closing tag "</ name>" or a self-close
+          ;; "/>", so a file holding JSX holds one of the two, whatever a lexical
+          ;; reading would call comment, string or regex there. The whole file,
+          ;; after its byte-order mark, falls back lexically-uncertain at the
+          ;; first "<" whose next character other than whitespace (line ends
+          ;; included) is "/", and at the first "/" whose next such character is
+          ;; ">". So "</div>", "< /div>", "<" and "/div>" on two lines, and
+          ;; "< /*c*/ /div>" are caught: a comment starts with "/", so whatever
+          ;; separates a closing tag's "<" from its "/", the "<" is caught. A
+          ;; self-close is caught as "/ >" or "/ /*c*/ >" (the comment's last
+          ;; "/" then ">"); one whose "/" and ">" a line comment separates is
+          ;; not, and is the one JSX spelling this test misses. THE COST, in
+          ;; the safe direction: a JavaScript file with HTML in a string or a
+          ;; comment ("</p>", "<br/>"), a regex such as /a/>b or />/, a
+          ;; comparison such as x</re/, or a comment such as "// > quoted"
+          ;; falls back too. TypeScript is not tested.
+          (define (jsx-pass)
+            (let* ((s (safe-utf8 (after-mark bytes))) (n (string-length s)))
+              (define (space? c) (or (char-whitespace? c) (char=? c #\xFEFF)))
+              (define (next i) (if (and (< i n) (space? (string-ref s i))) (next (+ i 1)) i))
+              (let loop ((i 0))
+                (when (< i n)
+                  (let ((c (string-ref s i)))
+                    (if (and (memv c '(#\< #\/))
+                             (let ((j (next (+ i 1))))
+                               (and (< j n) (char=? (string-ref s j) (if (char=? c #\<) #\/ #\>)))))
+                        (fallback 'lexically-uncertain (+ (mark-length bytes) (bytevector-length (string->utf8 (substring s 0 i)))))
+                        (loop (+ i 1))))))))
+          ;; THE ECMASCRIPT PROFILES: every line is judged by the live readings
+          ;; (ecmascript-judgments) and then decided, line by line, by the same
+          ;; decide-line! the table scan asks. A lone CR (one not before a line
+          ;; feed), U+2028 or U+2029 anywhere in the file, the protected prefix
+          ;; included, is a line end the byte-line scan cannot follow: the whole
+          ;; file falls back at it, at its offset in the file. In plain
+          ;; JavaScript, jsx-pass then tests the text.
+          (define (ecmascript-pass)
+            (let ((size (bytevector-length bytes)))
+              (let loop ((i 0))
+                (when (< i size)
+                  (let ((b (bytevector-u8-ref bytes i)))
+                    (cond ((and (= b 13) (not (and (< (+ i 1) size) (= 10 (bytevector-u8-ref bytes (+ i 1))))))
+                           (fallback 'lexically-uncertain i))
+                          ((and (= b #xE2) (< (+ i 2) size) (= #x80 (bytevector-u8-ref bytes (+ i 1)))
+                                (memv (bytevector-u8-ref bytes (+ i 2)) '(#xA8 #xA9)))
+                           (fallback 'lexically-uncertain i))
+                          (else (loop (+ i 1))))))))
+            (when (get 'annex-b-comments #f) (jsx-pass))
+            (let* ((rows (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
+                   (offsets (map (lambda (row) (+ prefix (car row))) rows))
+                   (lines (map (lambda (row) (safe-utf8 (byte-slice bytes (+ prefix (car row)) (+ prefix (cadr row))))) rows))
+                   (judged (ecmascript-judgments lines (get 'type-syntax #f) (get 'annex-b-comments #f) continuation?)))
+              (when (and (pair? judged) (eq? (car judged) 'fallback))
+                (let ((ln (caddr judged)) (ch (cadddr judged)))
+                  (fallback (cadr judged)
+                            (if (eq? ln 'eof)
+                                (bytevector-length bytes)
+                                (+ (list-ref offsets ln) (bytevector-length (string->utf8 (substring (list-ref lines ln) 0 ch))))))))
+              (let loop ((os offsets) (ls lines) (k 0))
+                (unless (null? os)
+                  (let ((j (vector-ref judged k)))
+                    (decide-line! (car os) (car ls) (trim-left (car ls)) (car j) (cdr j)))
+                  (loop (cdr os) (cdr ls) (+ k 1))))))
           (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
           ;; NEVER: A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT. The whole
@@ -207,6 +591,11 @@
                   (when (< i (string-length s))
                     (if (string-prefix-at? s token i) (fallback 'lexically-uncertain (+ (mark-length bytes) (bytevector-length (string->utf8 (substring s 0 i)))))
                         (loop (+ i 1))))))) (get 'global-uncertain-tokens '()))
+          ;; the ecmascript profiles take their own scan; every other profile
+          ;; the table scan below, line by line, and its end-of-file check
+          (if (equal? (get 'lexer #f) "ecmascript")
+              (ecmascript-pass)
+              (begin
           (for-each
             (lambda (row)
               (let* ((offset (+ prefix (car row)))
@@ -233,26 +622,7 @@
                         ((definition? offset trimmed)
                          (when (> offset (car boundaries)) (set! boundaries (cons offset boundaries))))))
                     (begin
-                      (unless top? (symbol-not-top-level! offset))
-                      (when strict
-                        (when continues? (symbol-not-top-level! offset))
-                        (when (string=? kind "indent")
-                          (cond ((string=? trimmed "")
-                                 (when (and starts (memv offset starts)) (set! blank-starts (cons offset blank-starts))))
-                                (else
-                                 (unless (string=? line trimmed) (for-each symbol-not-top-level! blank-starts))
-                                 (set! blank-starts '())))))
-                      (cond
-                        ((and top? (definition? offset trimmed))
-                         (let ((start (or pending offset)))
-                           (when (> start (car boundaries)) (set! boundaries (cons start boundaries))))
-                         (set! pending #f))
-                        ((and top? (or (at-any trimmed 0 (comment-prefixes entry))
-                                       (and block (string-prefix-at? trimmed (car block) 0))
-                                       (exists (lambda (p) (regex-match p trimmed)) prefix-patterns)))
-                         (unless pending (set! pending offset)))
-                        ((and top? (string=? trimmed "")) (set! pending #f))
-                        ((and top? (not (> comment-depth 0))) (set! pending #f)))
+                      (decide-line! offset line trimmed top? continues?)
                       (scan-line line offset)
                       (unless (string=? trimmed "")
                         ;; a line that ends in a character the escape made
@@ -262,7 +632,7 @@
                                               (continuation? (substring line 0 code-end)))))))))
             (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
           (when (or (pair? stack) quoted (> comment-depth 0) continued? fence)
-            (fallback 'unbalanced (bytevector-length bytes)))
+            (fallback 'unbalanced (bytevector-length bytes)))))
           ;; A protected prefix belongs to the first actual block.
           ;; In file order: the strict blank-line test names a cut only when the
           ;; line after it is read.
