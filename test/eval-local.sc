@@ -682,14 +682,17 @@
   (system (string-append "rm -rf " fresh "; mkdir -p " fresh))
   ;; structural/ pre-made, as for P3-d.
   (m1-area! s "structural")
-  (want "AG-slots on a run root with no pool yet: the pool is made, and the written clause names the draft's lock and directory only"
-        (list (m1-run (string-append "THEOURGIA_LOCAL=1 THEOURGIA_RUN=" fresh " THEOURGIA_EVAL_SLOTS=1")
-                      "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))
-              (file-exists? (string-append fresh "/admission/0")))
-        (list (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
-                            (list 'written (list (list 'mkdir (string-append wd "/working"))
-                                                 (list 'create (string-append wd "/draft.lock"))))))
-              #t)))
+  ;; The run is bound before the pool is probed: the order in which an
+  ;; application's operands are evaluated is unspecified, so a probe beside
+  ;; the run in one list could look before the run made the pool.
+  (let ((answer (m1-run (string-append "THEOURGIA_LOCAL=1 THEOURGIA_RUN=" fresh " THEOURGIA_EVAL_SLOTS=1")
+                        "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))))
+    (want "AG-slots on a run root with no pool yet: the pool is made, and the written clause names the draft's lock and directory only"
+          (list answer (file-exists? (string-append fresh "/admission/0")))
+          (list (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
+                              (list 'written (list (list 'mkdir (string-append wd "/working"))
+                                                   (list 'create (string-append wd "/draft.lock"))))))
+                #t))))
 
 ;; An answer's clause of the given head, or #f (an answer may hold atoms,
 ;; so it is searched, not assq'd).
