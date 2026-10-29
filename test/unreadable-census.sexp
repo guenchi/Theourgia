@@ -1586,8 +1586,8 @@
   ("daemon.sc" (report-and-exit!) 1 guard
    (#t)
    conservative a
-   "found in review: a failure of the startup report's own write is not reported again -- the report channel is what failed -- and the exit is 75 either way"
-   (e (#t (exit 75))))
+   "found in review: a failure of the startup report's own write is not reported again -- the report channel is what failed -- and the exit is the same either way: 75, or the code given (1 for serve-name-derived)"
+   (e (#t (exit code))))
   ("daemon.sc" (watch-loop) 2 guard
    (#t)
    unrelated a

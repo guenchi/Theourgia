@@ -26,7 +26,8 @@
 
 (import (chezscheme)
         (only (theourgia ffi) entry-name-type list-entries sun-path-max real-path
-              path-case-sensitive?))
+              path-case-sensitive?)
+        (only (theourgia client) lock-spelling))
 
 (define bad 0)
 (define rows 0)
@@ -2087,6 +2088,43 @@
   (want "W5z11 a refusal after a dangling link's reclaim: the link is put back as it was"
         (list r (link (string-append d "/s.d")))
         '((#t 75) "s.d.12345")))
+
+;; ---- W5n: a public name is no endpoint's lock name -------------------------------------
+;; THE SHAPES, on the spelling alone: an endpoint s's lifetime lock and its
+;; reservation lock, under either case rule; the same spelled in capitals
+;; only under the folding one. Not a lock: s's link and backing directories
+;; (refused by occupancy, and a public s.d serves: W5x22), and names near a
+;; lock's shape (no base).
+(want "W5n1 lock-spelling names s's two lock shapes, under either case rule"
+      (map (lambda (n) (list (lock-spelling n #f) (lock-spelling n #t))) '(".s.lock" "s.d.reserve"))
+      '(((lifetime-lock "s") (lifetime-lock "s")) ((reservation-lock "s") (reservation-lock "s"))))
+(want "W5n2 .S.LOCK and S.D.RESERVE are S's under the folding rule and nobody's under the case-sensitive one"
+      (list (lock-spelling ".S.LOCK" #t) (lock-spelling ".S.LOCK" #f)
+            (lock-spelling "S.D.RESERVE" #t) (lock-spelling "S.D.RESERVE" #f))
+      '((lifetime-lock "S") #f (reservation-lock "S") #f))
+(want "W5n3 CONTROL no lock shape: s's link and backing names (s.d, s.d.12, s.d.12-3), and s, s.dx, s.d.reservex, .s.locks, ..lock, .lock, .d.reserve"
+      (map (lambda (n) (lock-spelling n #t))
+           '("s.d" "s.d.12" "s.d.12-3" "s" "s.dx" "s.d.reservex" ".s.locks" "..lock" ".lock" ".d.reserve"))
+      '(#f #f #f #f #f #f #f #f #f #f))
+;; THE START REFUSES such a public name before anything is made or locked,
+;; with exit 1; a plain name in the same directory serves.
+(let* ((d (fresh-dir "n"))
+       (_ (launch! "n1" d store ".s.lock" "" ""))
+       (_ (launch! "n2" d store "s.d.reserve" "" ""))
+       (_ (let loop ((i 0)) (if (and (< i 100) (not (and (rc-of "n1") (rc-of "n2")))) (begin (sh "sleep 0.05") (loop (+ i 1))))))
+       (said1 (await "n1"))
+       (said2 (await "n2"))
+       (left (names d)))
+  (want "W5n4 serve at .s.lock and at s.d.reserve: refused serve-name-derived naming s and the shape, exit 1, nothing made"
+        (list (head-of said1 5) (rc-of "n1") (head-of said2 5) (rc-of "n2") left)
+        (list '(error serve-name-derived (name ".s.lock") (of "s") (shape lifetime-lock)) 1
+              '(error serve-name-derived (name "s.d.reserve") (of "s") (shape reservation-lock)) 1
+              '()))
+  (let* ((pid (start! "n3" d "t" ""))
+         (said (await "n3")))
+    (want "W5n5 CONTROL a plain name in the same directory serves"
+          said 'serving)
+    (stop! pid)))
 
 (teardown!)
 (printf "rows: ~a\n~a failures\ndaemon-namespace complete\n" rows bad)

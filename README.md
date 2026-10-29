@@ -4991,7 +4991,15 @@ symbolic link that is not a daemon's publication, it answers `(error
 serve-path-occupied (path <socket>))` and exits 75. Both are startup
 reports: a `(written ...)` clause follows when this start created the lock
 file, and `(attempt ...)` comes last. Any other filesystem failure while
-starting is reported the same way, also with exit 75. A LEFTOVER socket file
+starting is reported the same way, also with exit 75. A socket whose base
+name is spelled as another endpoint's lock -- its lifetime lock
+`.<name>.lock` or its reservation lock `<name>.d.reserve`, under the case
+rule of the socket's directory (an unknown rule -- a directory not there
+yet, a system that does not say -- counts as folding) -- is refused before
+anything is made or locked, whether or not `<name>` serves, since that
+endpoint would open its lock through the socket: `(error
+serve-name-derived (name <base>) (of <name>) (shape lifetime-lock |
+reservation-lock))`, exit 1, since no retry clears it. A LEFTOVER socket file
 or publication link whose daemon is gone is cleared and taken over -- the
 lock, not the file, is what decides which of those two it is. When it is up
 it reports `(serving (store <path>) (socket <path>))`. A failure AFTER the
@@ -5045,10 +5053,14 @@ before the start wrote it refuses `serve-path-occupied` naming the
 directory, and is left with what is in it. A `<socket>.d.reserve` file
 beside the lock file serialises a reservation with the check below; it is
 not named like a lock file, so it is never another endpoint's (`.s.d.lock`
-is the lock file of the socket `s.d`). That is a statement about derived
-names: a public socket is spelled by whoever starts it, and one spelled
-like another endpoint's derived name (`s.d.reserve` beside `s`, or
-`.s.lock`) is that file; the namespace does not refuse such a spelling.
+is the lock file of the socket `s.d`). A public socket spelled like a lock
+is refused `serve-name-derived` (above). One spelled like a link or a
+backing directory is not. The link `s.d` is published by a create that
+fails on any entry, so whichever of `s` and a public `s.d` starts second is
+refused by occupancy, and a public `s.d` beside the socket `.s` serves. A
+backing directory is made exclusively under the next free name, so `s`
+steps around a public `s.d.7`, and a public start at a backing directory
+that exists is refused by occupancy.
 
 **A reserved namespace.** A start whose socket's directory, resolved, is
 spelled `<name>.d` or `<name>.d.<digits>` (with an optional `-<n>`) is

@@ -28,7 +28,7 @@
           request-frame envelope-version answer-field readable-shape? plain-datum
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
           next-attempt-token select-report program-launch store-here? store-absent? exited-without-report
-          directory-of base-of in-directory digits? folds-case? same-spelling? backing-suffix?
+          directory-of base-of in-directory digits? folds-case? same-spelling? backing-suffix? lock-spelling
           namespace-spelling namespace-candidate directory-to-make make-judged!)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode) (rnrs hashtables)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
@@ -1436,6 +1436,29 @@
   (define (namespace-candidate dir-name fold?)
     (let ((p (namespace-spelling dir-name fold?)))
       (and p (car p))))
+
+  ;; THE LOCK NAMES OF AN ENDPOINT whose public base name is <base>, beside it
+  ;; in its directory: its lifetime lock `.<base>.lock` and its reservation
+  ;; lock `<base>.d.reserve` (daemon.sc). Both are opened and locked through
+  ;; whatever entry is at the name, so a public socket spelled as one is met
+  ;; by <base>'s start as its own lock. (Its other derived names are not
+  ;; refused here: the link `<base>.d` is published by a create that fails on
+  ;; any entry, so of a public socket there and <base> the second is refused
+  ;; by occupancy; a backing directory is made exclusively under the next
+  ;; free name, so a public socket spelled as one only makes <base> take
+  ;; another. namespace-spelling.)
+  ;; -> (<shape> <base>), the shape lifetime-lock or reservation-lock, when
+  ;; NAME is spelled as one of them under the case rule FOLD?, with a <base>
+  ;; that is not empty; otherwise #f.
+  (define (lock-spelling name fold?)
+    (let ((n (string-length name)))
+      (cond
+        ((and (> n 6) (same-spelling? (substring name 0 1) "." fold?)
+              (same-spelling? (substring name (- n 5) n) ".lock" fold?))
+         (list 'lifetime-lock (substring name 1 (- n 5))))
+        ((and (> n 10) (same-spelling? (substring name (- n 10) n) ".d.reserve" fold?))
+         (list 'reservation-lock (substring name 0 (- n 10))))
+        (else #f))))
 
   ;; -> (ANCESTOR . NAMES), what a start makes for DIR, which the caller's one
   ;; real-path did not resolve: the first ancestor that is there, as it

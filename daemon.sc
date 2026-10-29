@@ -86,7 +86,8 @@
           ;; THE WALK AND ITS SPELLING RULE are the client's, shared with the
           ;; opener that judges its run directory the same way.
           (only (theourgia client) directory-of base-of in-directory digits? folds-case? same-spelling?
-                backing-suffix? namespace-spelling namespace-candidate directory-to-make make-judged!)
+                backing-suffix? namespace-spelling namespace-candidate directory-to-make make-judged!
+                lock-spelling)
           (only (theourgia trace) trace-event!)
           (only (theourgia ffi) theourgia-fault theourgia-probe-off? hold-point! hold-sleeper-set!
                 theourgia-send-buffer process-id wall-clock-ms)
@@ -395,15 +396,18 @@
   (define (startup-report! attempt answer)
     (write-report-line! 1 (append answer (list (list 'attempt attempt)))))
 
-  ;; A STARTUP THAT FAILED REPORTS ONCE AND LEAVES WITH 75 (point 9). A
-  ;; failure of the report's own write (a short write, say) is not answered
-  ;; again: the report channel is what failed, so there is nowhere left to
-  ;; say it, and a second report under the same attempt is what the client
-  ;; must never select (found in review). The exit is 75 either way.
-  (define (report-and-exit! attempt answer)
-    (guard (e (#t (exit 75)))
-      (startup-report! attempt answer))
-    (exit 75))
+  ;; A STARTUP THAT FAILED REPORTS ONCE AND LEAVES WITH 75 (point 9), or with
+  ;; CODE when one is given: a refusal no retry clears (a public name spelled
+  ;; as a derived name) leaves with 1, as a usage error does. A failure of
+  ;; the report's own write (a short write, say) is not answered again: the
+  ;; report channel is what failed, so there is nowhere left to say it, and a
+  ;; second report under the same attempt is what the client must never
+  ;; select (found in review). The exit is the same either way.
+  (define (report-and-exit! attempt answer . code)
+    (let ((code (if (pair? code) (car code) 75)))
+      (guard (e (#t (exit code)))
+        (startup-report! attempt answer))
+      (exit code)))
 
   ;; ---- the lock service ---------------------------------------------
   ;;
@@ -546,6 +550,25 @@
                  (guard (e ((classify-failure e (mutation-record))
                             => (lambda (answer) (list 'refuse answer))))
                    (cond
+                     ;; NEVER: A PUBLIC NAME IS NO ENDPOINT'S LOCK NAME, judged first, on
+                     ;; the spelling alone, before anything is made or locked: a public
+                     ;; `.s.lock` or `s.d.reserve` is the file the endpoint `s` locks, and
+                     ;; while it is published `s`'s start opens it through the link, onto
+                     ;; a socket (found in review). Refused whether or not that endpoint
+                     ;; exists. The other derived shapes are not: the link is published by
+                     ;; a create that fails on any entry, so occupancy refuses whichever
+                     ;; start comes second; a backing directory is allocated under the next
+                     ;; free name, so a public name spelled as one is stepped around. The
+                     ;; case rule is the socket directory's, and an unknown rule (a directory
+                     ;; not there yet, a system with no answer) is judged folding, so the
+                     ;; doubt refuses. Exit 1: no retry clears it.
+                     ((lock-spelling (base-of socket)
+                                        (not (eq? #t (path-case-sensitive? (directory-of socket)))))
+                      => (lambda (d)
+                           (list 'refuse (combine-report `(error serve-name-derived (name ,(base-of socket)) (of ,(cadr d))
+                                                                 (shape ,(car d)))
+                                                         (mutation-record))
+                                 1)))
                      ;; THE PRIVATE PATH MUST FIT, BEFORE ANY EFFECT: the daemon binds
                      ;; `<socket>.d/<pid>`, longer than the public path, so the length is
                      ;; judged on that name here, before the directory, the lock file or
@@ -630,7 +653,7 @@
                                (else
                                 (list 'ok lock (mutation-record))))))))))))))))
       (when (eq? (car started) 'refuse)
-        (report-and-exit! attempt (cadr started)))
+        (apply report-and-exit! attempt (cdr started)))
       (let ((lock (cadr started))
             (main-record (caddr started)))
          (let ((me self))
@@ -1356,10 +1379,17 @@
   ;; endpoint's lock (found in review). The names beside a socket end in
   ;; four different characters, case folded or not: `k` (the lifetime lock),
   ;; `e` (this one), `d` (the link) and a digit (a backing directory), so no
-  ;; two endpoints' derived names of different kinds are one file. That is
-  ;; about DERIVED names: the public name is the operator's spelling, and one
-  ;; spelled like another endpoint's derived name (`s.d.reserve` beside `s`,
-  ;; or `.s.lock`) is that file. A window, not refused (found in review).
+  ;; two endpoints' derived names of different kinds are one file. A PUBLIC
+  ;; name may still be spelled as a derived one. Where it has a LOCK's shape
+  ;; (`.s.lock`, `s.d.reserve`; lock-spelling) the start is refused
+  ;; serve-name-derived before anything is made, since a lock is opened
+  ;; through whatever is at its name. Where it has a link's (`s.d`), the
+  ;; link is published by a create that fails on any entry, so whichever
+  ;; comes second is refused by occupancy, and a public `s.d` beside `.s`
+  ;; serves (W5x22). Where it has a backing directory's (`s.d.7`), `s` makes
+  ;; its backing directory exclusively under the next free name
+  ;; (allocate-backing!), so it steps around a public `s.d.7`, and a public
+  ;; start at a backing directory that exists is refused by occupancy.
   (define (reservation-lock-path socket) (string-append socket ".d.reserve"))
   (define (private-socket-path socket pid)
     (string-append socket ".d/" (number->string pid)))
