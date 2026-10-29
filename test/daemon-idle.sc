@@ -383,6 +383,31 @@
     (printf "rows: ~a\n~a failures\n" rows bad)
     (exit 1)))
 
+;; ---- CONTROL: signal!'s identity guard -----------------------------------------
+;; THE GUARD HAS A ROW OF ITS OWN. A process is registered with its start
+;; instant; while the instant recorded for it differs from the one ps reads,
+;; signal! sends nothing, says the process was already gone, and the process
+;; is still there; under its true instant the signal is sent and the process
+;; goes. The process is a perl sleep whose command line names this run's
+;; scratch directory, so the teardown's census and sweep reach it, and it
+;; ends by itself after thirty seconds. Red on a signal! that checks only
+;; kill -0: its first signal would be sent and end the process.
+(let* ((pidf (string-append here "/g0.pid"))
+       (pid (begin
+              (sh (string-append "rm -f " pidf))
+              (sh (string-append "perl -e 'sleep 30' " here "/g0.sleep < /dev/null > /dev/null 2>&1 & echo $! > " pidf))
+              (started! (pid-in pidf))))
+       (true-id (let ((k (assv pid identities))) (and k (cdr k)))))
+  (set! identities (cons (cons pid (string-append (or true-id "") " (altered)")) identities))
+  (let* ((wrong (signal! pid "TERM"))
+         (still (alive? pid)))
+    (set! identities (cdr identities))
+    (let* ((right (signal! pid "TERM"))
+           (gone (gone-within? pid 15)))
+      (want "CONTROL signal! refuses a pid whose recorded start differs, then signals it under its true one"
+            (list (string? true-id) wrong still right gone)
+            '(#t already-gone #t sent #t)))))
+
 ;; ---- W3b: the grace's cap ----------------------------------------------------------
 ;;
 ;; A DEFERRED REQUEST WAITS FOR THE GRACE, so the grace is bounded where it is
@@ -1607,14 +1632,25 @@
 ;; and its exit (held): its starts meet serve-busy and are retried inside one
 ;; ensure attempt; the request is answered by the new daemon; the old one's
 ;; log shows its idle exit.
+;; THE RELEASE WAITS FOR THE RETRY, NOT FOR A TIME. The old daemon is released
+;; once the shell's trace shows a third spawn -- the second request's first
+;; start and its retry -- bounded at thirty seconds. A retry follows only a
+;; start that met serve-busy, and the old daemon holds the lock until the
+;; release, so the retry is a precondition of the release rather than a race
+;; against it: a fixed sleep let a machine whose daemon start outlasts the
+;; sleep reach the lock after the release, with no retry to count. A shell
+;; that does not retry leaves two spawns at the bound, and the row reads red.
 (let* ((run (string-append sock-here "/run-w5c"))
        (rel (string-append here "/w5c.rel"))
+       (trace-file (string-append here "/w5c.mcperr"))
        (lines (shell-run! "w5c"
                           (string-append "THEOURGIA_RUN=" run " THEOURGIA_IDLE_EXIT=2 " (hold-env (list "leave-after-unlink" rel)))
                           #f
                           (list (string-append "send " (outline-call 2)) "await 2"
                                 (string-append "wait " rel ".held")
-                                (string-append "send " (outline-call 3)) "sleep 1.5"
+                                (string-append "send " (outline-call 3))
+                                (string-append "run i=0; until [ \"$(/usr/bin/grep -c '^(trace spawn ' " trace-file
+                                               " 2>/dev/null)\" -ge 3 ] 2>/dev/null || [ $i -ge 1500 ]; do sleep 0.02; i=$((i+1)); done")
                                 (string-append "touch " rel) "await 3")))
        (log (serve-log-data run)))
   (want "W5c both requests answered; the second by a new daemon after the old one's idle exit"
