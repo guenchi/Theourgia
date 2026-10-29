@@ -162,7 +162,7 @@
                ;; the ecmascript scan (code-suggest.sc): every live reading of
                ;; "/" is kept, templates are followed, and what it does not
                ;; follow refuses the file: Annex B's HTML-like comments, and JSX
-               ;; (any "</" or "/>" in the file's text, whitespace between)
+               ;; (by its opener and its self-close: code-suggest.sc)
                (lexer "ecmascript") (annex-b-comments #t)
                (uncertain-tokens ())
                (fallback "whole-file-with-warning") (prefix-lines ())))

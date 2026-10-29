@@ -209,7 +209,7 @@
 (define (boundaries-of a) (let ((b (clause-value a 'boundaries))) (if (list? b) b '())))
 ;; A fallback warning has the product's one shape, (code <reason> byte-offset
 ;; <n>) (code-suggest.sc, fallback), with a reason the supplier can give.
-(define fallback-reasons '(lexically-uncertain unbalanced unclosed-quote unknown-profile invalid-utf8))
+(define fallback-reasons '(lexically-uncertain unbalanced unclosed-quote unknown-profile invalid-utf8 opener self-close))
 (define (fallback-of a)
   (let ((ws (clause-value a 'warnings)))
     (and (list? ws)

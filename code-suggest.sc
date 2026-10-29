@@ -78,6 +78,31 @@
   ;; a fork shares its parent, a merge makes an AND node of both, and the
   ;; answer is read once, at the end, from the survivors' nodes.
   ;;
+  ;; JSX, IN PLAIN JAVASCRIPT (ANNEX-B?), by its OPENER and its SELF-CLOSE, on
+  ;; every live reading. A "<" in code where an operand is expected (prev rx)
+  ;; falls the file back `opener`: no JavaScript expression starts with "<"
+  ;; (Annex B's "<!--" is refused before it). A "/" read as a division (prev
+  ;; fk, not "/=") whose next significant character -- past whitespace,
+  ;; comments and line ends -- is ">" falls it back `self-close`: ">" begins no
+  ;; divisor. Comments, strings, template text and regex bodies are not code,
+  ;; so markup in them refuses nothing.
+  ;; THE STATED LIMIT, in two parts. PASSING (a missed refusal): a file holding
+  ;; JSX passes when its outermost JSX opener sits at a position the scan
+  ;; classes fk (after ")", after a block's "}", after debugger, yield, await
+  ;; or of), no live reading meets either rule, no other whole-file fallback
+  ;; fires, and at least one reading reaches the end of the file. HARM (a
+  ;; mis-split): a file that passes may then get a boundary inside the JSX,
+  ;; which happens only when a candidate line start lies inside it. Every such
+  ;; file has its outermost opener at fk, so JSX where an operand is expected
+  ;; is always refused. Precision only, never bytes: the blocks still join to
+  ;; the file. Making fk exact needs the statement/expression distinction,
+  ;; which this scan does not make.
+  ;; THE STATED COST: a plain-JavaScript file is refused when SOME live
+  ;; reading, even one that would later die, meets either rule: a regex
+  ;; beginning with ">" where an operator is expected (`if (ok) />/.test(s)`),
+  ;; or a speculative regex reading that ends inside a string. TypeScript is
+  ;; not tested.
+  ;;
   ;; THE END STATES, as the table scan names the same ones: a reading open in
   ;; '...' or "..." at a line end without a continuing escape dies
   ;; unclosed-quote at that line end; a regex open at a line end dies
@@ -90,8 +115,8 @@
   ;; LINES is the list of the file's lines (after the protected prefix) as
   ;; strings without their line feeds. TYPES? is TypeScript's syntax (a run of
   ;; ">" and a postfix "!" can end an expression, `void` is also a type);
-  ;; ANNEX-B? is plain JavaScript's: its HTML-like comments are refused for the
-  ;; whole file (JSX is refused before this scan, on the file's text).
+  ;; ANNEX-B? is plain JavaScript's: its HTML-like comments, and JSX by its
+  ;; opener and its self-close (below), are refused for the whole file.
   ;; OWES? asks whether a token continues the statement. -> a vector with one
   ;; (top? . owed?) per line, or (fallback <reason> <line> <char>), <line>
   ;; being 'eof for the file's end.
@@ -218,6 +243,8 @@
                  ((es-space? c) (go s (let ws ((j (+ i 1))) (if (and (< j n) (es-space? (string-ref line j))) (ws (+ j 1)) j))))
                  ((and annex-b? (string-prefix-at? line "<!--" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
                  ((and annex-b? (s-fresh s) (string-prefix-at? line "-->" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
+                 ;; JSX'S OPENER (see the header): a "<" where an operand is expected
+                 ((and annex-b? (char=? c #\<) (eq? (s-prev s) 'rx)) (give-up (list 'fallback 'opener ln i)))
                  ((char=? c #\/)
                   (cond ((eqv? (at (+ i 1)) #\/) (go s n))
                         ((eqv? (at (+ i 1)) #\*) (go (with s 'lex 'comment) (+ i 2)))
@@ -226,7 +253,13 @@
                                 (tok (if assign? "/=" "/"))
                                 (division (reading (code 'rx (owes? tok)) (+ i (string-length tok)) h))
                                 (regex (reading (with s 'lex 'regex 'fresh #f) (+ i 1) h)))
-                           (if (eq? (s-prev s) 'fk) (list regex division) (list regex))))))
+                           ;; JSX'S SELF-CLOSE (see the header): on the division
+                           ;; reading, a ">" next refuses
+                           (if (eq? (s-prev s) 'fk)
+                               (if (and annex-b? (not assign?) (eqv? (next-sig ln (+ i 1)) #\>))
+                                   (give-up (list 'fallback 'self-close ln i))
+                                   (list regex division))
+                               (list regex))))))
                  ((char=? c #\`) (go (with s 'stack (push (s-stack s) 'tmpl) 'lex 'tmpl 'fresh #f) (+ i 1)))
                  ((char=? c #\') (go (with s 'lex 'sq 'fresh #f) (+ i 1)))
                  ((char=? c #\") (go (with s 'lex 'dq 'fresh #f) (+ i 1)))
@@ -275,6 +308,27 @@
                       (loop (cdr rs) (map (lambda (o) (if (eq? o same) (reading (r-state o) (r-index o) (and-node (r-history o) (r-history r))) o)) out))
                       (loop (cdr rs) (cons r out)))))))
         (define line-count (length lines))
+        ;; THE NEXT SIGNIFICANT CHARACTER from line LN, index I: whitespace,
+        ;; // and /* */ comments and line ends skipped; #f at the file's end.
+        ;; For the self-close rule, whose ">" may follow on another line.
+        (define line-vec (list->vector lines))
+        (define (next-sig ln i)
+          (let loop ((ln ln) (i i))
+            (cond ((>= ln line-count) #f)
+                  ((>= i (string-length (vector-ref line-vec ln))) (loop (+ ln 1) 0))
+                  (else
+                   (let* ((l (vector-ref line-vec ln)) (c (string-ref l i)))
+                     (cond ((es-space? c) (loop ln (+ i 1)))
+                           ((and (char=? c #\/) (< (+ i 1) (string-length l)) (char=? (string-ref l (+ i 1)) #\/)) (loop (+ ln 1) 0))
+                           ((and (char=? c #\/) (< (+ i 1) (string-length l)) (char=? (string-ref l (+ i 1)) #\*))
+                            (let skip ((ln ln) (j (+ i 2)))
+                              (cond ((>= ln line-count) #f)
+                                    ((>= (+ j 1) (string-length (vector-ref line-vec ln))) (skip (+ ln 1) 0))
+                                    ((and (char=? (string-ref (vector-ref line-vec ln) j) #\*)
+                                          (char=? (string-ref (vector-ref line-vec ln) (+ j 1)) #\/))
+                                     (loop ln (+ j 2)))
+                                    (else (skip ln (+ j 1))))))
+                           (else c)))))))
         (define (judge s) (and (eqv? (s-stack s) 0) (eq? (s-lex s) 'code) (not (s-cont s))))
         (let line-loop ((ls lines) (ln 0) (live (list (reading (state 0 'code 'rx #f #f #t) 0 #f))))
           (if (null? ls)
@@ -519,42 +573,12 @@
                       (else (code! i)
                             (when head (set! head (string-append head (string c))))
                             (loop (+ i 1))))))))
-          ;; JSX, IN PLAIN JAVASCRIPT (the profile with annex-b-comments), as TEXT:
-          ;; every JSX element ends with a closing tag "</ name>" or a self-close
-          ;; "/>", so a file holding JSX holds one of the two, whatever a lexical
-          ;; reading would call comment, string or regex there. The whole file,
-          ;; after its byte-order mark, falls back lexically-uncertain at the
-          ;; first "<" whose next character other than whitespace (line ends
-          ;; included) is "/", and at the first "/" whose next such character is
-          ;; ">". So "</div>", "< /div>", "<" and "/div>" on two lines, and
-          ;; "< /*c*/ /div>" are caught: a comment starts with "/", so whatever
-          ;; separates a closing tag's "<" from its "/", the "<" is caught. A
-          ;; self-close is caught as "/ >" or "/ /*c*/ >" (the comment's last
-          ;; "/" then ">"); one whose "/" and ">" a line comment separates is
-          ;; not, and is the one JSX spelling this test misses. THE COST, in
-          ;; the safe direction: a JavaScript file with HTML in a string or a
-          ;; comment ("</p>", "<br/>"), a regex such as /a/>b or />/, a
-          ;; comparison such as x</re/, or a comment such as "// > quoted"
-          ;; falls back too. TypeScript is not tested.
-          (define (jsx-pass)
-            (let* ((s (safe-utf8 (after-mark bytes))) (n (string-length s)))
-              (define (space? c) (or (char-whitespace? c) (char=? c #\xFEFF)))
-              (define (next i) (if (and (< i n) (space? (string-ref s i))) (next (+ i 1)) i))
-              (let loop ((i 0))
-                (when (< i n)
-                  (let ((c (string-ref s i)))
-                    (if (and (memv c '(#\< #\/))
-                             (let ((j (next (+ i 1))))
-                               (and (< j n) (char=? (string-ref s j) (if (char=? c #\<) #\/ #\>)))))
-                        (fallback 'lexically-uncertain (+ (mark-length bytes) (bytevector-length (string->utf8 (substring s 0 i)))))
-                        (loop (+ i 1))))))))
           ;; THE ECMASCRIPT PROFILES: every line is judged by the live readings
           ;; (ecmascript-judgments) and then decided, line by line, by the same
           ;; decide-line! the table scan asks. A lone CR (one not before a line
           ;; feed), U+2028 or U+2029 anywhere in the file, the protected prefix
           ;; included, is a line end the byte-line scan cannot follow: the whole
-          ;; file falls back at it, at its offset in the file. In plain
-          ;; JavaScript, jsx-pass then tests the text.
+          ;; file falls back at it, at its offset in the file.
           (define (ecmascript-pass)
             (let ((size (bytevector-length bytes)))
               (let loop ((i 0))
@@ -566,7 +590,6 @@
                                 (memv (bytevector-u8-ref bytes (+ i 2)) '(#xA8 #xA9)))
                            (fallback 'lexically-uncertain i))
                           (else (loop (+ i 1))))))))
-            (when (get 'annex-b-comments #f) (jsx-pass))
             (let* ((rows (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
                    (offsets (map (lambda (row) (+ prefix (car row))) rows))
                    (lines (map (lambda (row) (safe-utf8 (byte-slice bytes (+ prefix (car row)) (+ prefix (cadr row))))) rows))

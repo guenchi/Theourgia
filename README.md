@@ -2891,7 +2891,8 @@ scanner. The first failure, in this order, refuses that file:
 when no scanner can say what is top level in it; `(error symbols-in-prefix
 (at <n>))` for a cut inside the protected prefix; `(error
 symbols-unscanned (reason <r>) (at <n>))` when the scanner cannot follow
-the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`); and
+the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`, and in
+JavaScript `opener` and `self-close`); and
 `(error symbols-not-top-level (at <n>))` for the first cut inside a body,
 a string, a block comment or an open bracket. Two more cuts are inside: one
 after a line whose code ends in a continuation token (`=>`, `=`, `+`, `-`,
@@ -3019,7 +3020,13 @@ The definition patterns are looked for at the top level, outside strings,
 comments and brackets, as the language's profile reads them. A token the
 scanner cannot follow makes the whole file one block, with the warning
 `(code lexically-uncertain byte-offset <n>)`; an unbalanced file does the
-same with `unbalanced`. In Scheme a character literal -- `#\(`, `#\"`,
+same with `unbalanced`. JavaScript's JSX, which the scanner does not follow,
+does the same: `opener` at a `<` where an operand is expected, and
+`self-close` at a `/` read as a division whose next token is `>`. JSX whose
+outermost opener sits where an operator is expected (a statement start after
+`)` or `}`, after `debugger`, an operand of `yield` or `await`) can pass,
+and the file may then be cut inside it; a regex beginning with `>` there,
+`if (ok) />/.test(s)`, is refused. TypeScript is not tested. In Scheme a character literal -- `#\(`, `#\"`,
 `#\;`, `#\space`, `#\x41` -- is read as code, and a datum comment, `#;`,
 is still a token the scanner cannot follow. A Scheme file in which the
 first bracket opened at the top level, of any kind, begins `(library ...)`

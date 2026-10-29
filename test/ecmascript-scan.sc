@@ -199,15 +199,14 @@
               (two c1 "function f") (two c2 "function f") (two c3 "function f"))))
 ;; JSX IN A .js FILE: the scan does not follow JSX text. Without the refusal,
 ;; line 2 below (JSX text) is judged top level by every reading and `fake`
-;; becomes a cut. Every JSX element ends with "</" or "/>", so the file's text
-;; is tested for those, and the whole file falls back at the first. A "<" that
-;; compares is no closer.
+;; becomes a cut. The "<" of `<div>` stands where an operand is expected, so
+;; the whole file falls back `opener` there. A "<" that compares is no opener.
 (let ((j "const x = <div>\nfunction fake() {}\n</div>; // end\nfunction real() {}\n")
       (lt "const y = a < b;\nfunction f() {}\n")
       (lt2 "if (a <b) {}\nfunction f() {}\n"))
-  (want "J1 JSX in a .js file falls the whole file back lexically-uncertain at its closing </; a < after a and a < after a in a condition are comparisons: two blocks each"
+  (want "J1 JSX in a .js file falls the whole file back at its opener (opener); a < after a and a < after a in a condition are comparisons: two blocks each"
         (list (split "js" j) (split "js" lt) (split "js" lt2))
-        (list (one 'lexically-uncertain (at j "</div>")) (two lt "function f") (two lt2 "function f"))))
+        (list (one 'opener (at j "<div>")) (two lt "function f") (two lt2 "function f"))))
 ;; A PRIVATE NAME CAN END AN EXPRESSION: `this.#return / ...` divides (the
 ;; template after it hides fake), and its name is not the reserved word. Read
 ;; as "#" then `return`, the "/" would be a regex only, and fake a cut.
@@ -235,81 +234,146 @@
         (list (split "js" h1) (split "js" h2) (split "js" h3))
         (list (one 'lexically-uncertain 19) (one 'lexically-uncertain 19) (two h3 "function g"))))
 
-;; ---- JSX: the text test ---------------------------------------------------------
-;; A STATEMENT CAN START in more places than a lexical state names (after a
-;; condition, a "}", await, yield, of, `export default`, and by an automatic
-;; semicolon after any word such as `debugger`), and JSX text can look like a
-;; comment or a string to the scan. So JSX is refused on the file's text: the
-;; first "<" whose next character other than whitespace is "/", or "/" whose
-;; next such character is ">", falls the whole file back. Each row is red on
-;; the scan that refused JSX only by its lexical state.
-(define (jsx-in head) (string-append head "<div>\nfunction fake() {}\n</div>; // end\nfunction real() {}\n"))
-(let ((t (jsx-in "if (ok) ")))
-  (want "JX1 JSX after an if's condition: lexically-uncertain at its </, and an import at fake is not cut there: the file is imported whole, listed symbols-unscanned"
-        (list (split "js" t) (import-with "js" t '("function fake")))
-        (list (one 'lexically-uncertain (at t "</div>")) (list 'whole 'symbols-unscanned 'lexically-uncertain (list t)))))
-(let ((w (jsx-in "while (ok) ")) (f (jsx-in "for (;;) ")) (o (jsx-in "with (o) ")))
-  (want "JX2 JSX after a while's, a for's and a with's condition: lexically-uncertain at its </ each"
-        (list (split "js" w) (split "js" f) (split "js" o))
-        (list (one 'lexically-uncertain (at w "</div>")) (one 'lexically-uncertain (at f "</div>")) (one 'lexically-uncertain (at o "</div>")))))
-(let ((t (jsx-in "if (a) {}\n")))
-  (want "JX3 JSX on the line after a block's }: lexically-uncertain at its </"
-        (split "js" t) (one 'lexically-uncertain (at t "</div>"))))
-(let ((a "async function g() { await <div>\nfunction fake() {}\n</div>; }\nfunction real() {}\n")
-      (y "function* g() { yield <div>\nfunction fake() {}\n</div>; }\nfunction real() {}\n")
-      (o "for (a of <x/>) {}\nfunction f() {}\n"))
-  (want "JX4 JSX after await and after yield (g closed), and after of: lexically-uncertain at its </ or /> each"
-        (list (split "js" a) (split "js" y) (split "js" o))
-        (list (one 'lexically-uncertain (at a "</div>")) (one 'lexically-uncertain (at y "</div>")) (one 'lexically-uncertain (at o "/>")))))
-(let ((t "export default <x/>;\nfunction f() {}\n"))
-  (want "JX5 export default <x/>: lexically-uncertain at its />"
-        (split "js" t) (one 'lexically-uncertain (at t "/>"))))
-;; JSX AFTER AN AUTOMATIC SEMICOLON, and a closer the scan reads as a comment
-;; (`// </div>` is JSX text): the test reads text, not the scan's reading.
-(let ((d "debugger\n<div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n")
-      (f "for await (const x of xs) <div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n"))
-  (want "JX6 JSX after debugger and an automatic semicolon, and after for await's condition, closed inside what the scan reads as a comment: lexically-uncertain at that </, and an import at fake is not cut there: the file is imported whole, listed symbols-unscanned"
-        (list (split "js" d) (import-with "js" d '("function fake")) (split "js" f))
-        (list (one 'lexically-uncertain (at d "</div>")) (list 'whole 'symbols-unscanned 'lexically-uncertain (list d))
-              (one 'lexically-uncertain (at f "</div>")))))
-;; WHITESPACE AND COMMENTS BETWEEN: a closing tag's "<" and "/" may be
-;; separated by spaces, a line end or a comment (which starts with "/"); a
-;; self-close's "/" and ">" by spaces. A "// > quoted" comment is caught the
-;; same way, at its second "/".
-(let ((a "x = <div>\nfunction fake() {}\n< /div>;\nfunction real() {}\n")
-      (b "x = <div>\nfunction fake() {}\n<\n/div>;\nfunction real() {}\n")
-      (c "x = <div>\nfunction fake() {}\n< /*c*/ /div>;\nfunction real() {}\n")
-      (d "x = <br / >;\nfunction f() {}\n")
-      (e "x = 1; // > quoted\nfunction f() {}\n"))
-  (want "JX7 < /div>, < and /div> on two lines, < /*c*/ /div>, / > and // > quoted: lexically-uncertain at the < or the / each"
-        (list (split "js" a) (split "js" b) (split "js" c) (split "js" d) (split "js" e))
-        (list (one 'lexically-uncertain (at a "< /div>")) (one 'lexically-uncertain (at b "<\n/div>"))
-              (one 'lexically-uncertain (at c "< /*c*/")) (one 'lexically-uncertain (at d "/ >"))
-              (one 'lexically-uncertain (+ (at e "// >") 1)))))
-;; THE COST, ACCEPTED (the safe direction): valid JavaScript whose text holds
-;; "</" or "/>" falls back too.
-(let ((a "const small = x</re/.source.length;\nfunction real() {}\n")
-      (b "if (ok) />/.test(s);\nfunction real() {}\n")
-      (c "s = s.replace(/>/g, '&gt;');\nfunction f() {}\n")
-      (d "s = \"</p>\";\nfunction f() {}\n")
-      (e "/* a <br/> in a comment */\nfunction f() {}\n"))
-  (want "JX8 the accepted cost: x</re/, a regex statement />/, .replace(/>/g ...), \"</p>\" in a string and <br/> in a comment: lexically-uncertain at the first </ or /> each"
-        (list (split "js" a) (split "js" b) (split "js" c) (split "js" d) (split "js" e))
-        (list (one 'lexically-uncertain (at a "</re")) (one 'lexically-uncertain (at b "/>"))
-              (one 'lexically-uncertain (at c "/>")) (one 'lexically-uncertain (at d "</p"))
-              (one 'lexically-uncertain (at e "/>")))))
-(let ((c1 "if (f(x) <b) {}\nfunction g() {}\n") (c2 "x = a[i] <b;\nfunction f() {}\n") (c3 "x = (a) <b;\nfunction f() {}\n")
-      (c4 "for (let i=0;i<n;i++) {}\nfunction f() {}\n") (c5 "export default /re/;\nfunction f() {}\n")
-      (c6 "const r = a < b ? c / d : e / f;\nfunction g() {}\n") (c7 "x = a < b / c;\nfunction f() {}\n"))
-  (want "JX9 controls in .js: f(x) <b, a[i] <b, (a) <b, i<n in a for header, export default /re/, and comparisons with divisions: two blocks each"
-        (list (split "js" c1) (split "js" c2) (split "js" c3) (split "js" c4) (split "js" c5) (split "js" c6) (split "js" c7))
-        (list (two c1 "function g") (two c2 "function f") (two c3 "function f") (two c4 "function f") (two c5 "function f")
-              (two c6 "function g") (two c7 "function f"))))
-(let ((t1 "if (ok) <T>x;\nfunction f() {}\n") (t2 "const s = \"</p>\";\nfunction f() {}\n")
-      (t3 "x = a.replace(/>/g, '');\nfunction f() {}\n"))
-  (want "JX10 TypeScript is not tested: if (ok) <T>x, \"</p>\" in a string and /> in a regex: two blocks each"
-        (list (split "ts" t1) (split "ts" t2) (split "ts" t3))
-        (list (two t1 "function f") (two t2 "function f") (two t3 "function f"))))
+;; ---- JSX: the opener and the self-close (rules O and S) --------------------------
+;; THE OPENER: in plain JavaScript a "<" where an operand is expected (the
+;; scan's rx) opens JSX: the file falls back `opener`, on any live reading.
+;; THE SELF-CLOSE: a "/" read as division whose next significant character
+;; is ">" cannot be JavaScript (">" begins no divisor): `self-close`. Neither
+;; looks into comments, strings, template text or regex bodies, so markup there
+;; does not refuse. Each refusing row is red on the raw-text test it replaces;
+;; each splitting row with markup in text is red there too.
+(define (blocks text . needles) (list (cons 0 (map (lambda (n) (off text n)) needles)) '()))
+;; O1-O5: markup that is not code splits; so do comparisons.
+(let ((t "/* <script>x</script> */\nfunction f() {}\nfunction g() {}\n"))
+  (want "O1 <script>...</script> in a block comment: the file splits"
+        (split "js" t) (two t "function g")))
+(let ((t "x = 0; // >0\nfunction f() {}\n"))
+  (want "O2 a trailing // >0 comment: the file splits" (split "js" t) (two t "function f")))
+(let ((d "s = \"</p>\";\nfunction f() {}\n") (q "s = '<br/>';\nfunction f() {}\n") (b "s = `</p>`;\nfunction f() {}\n"))
+  (want "O3 markup in a double-quoted, a single-quoted and a template string: each splits"
+        (list (split "js" d) (split "js" q) (split "js" b))
+        (list (two d "function f") (two q "function f") (two b "function f"))))
+(let ((r "s = s.replace(/</g, \"&lt;\");\nfunction f() {}\n") (c "re = /[^>]*>([^<]*)</g;\nfunction f() {}\n"))
+  (want "O4 a regex /</g and a regex holding </: each splits"
+        (list (split "js" r) (split "js" c)) (list (two r "function f") (two c "function f"))))
+(let ((a "y = a<b;\nfunction f() {}\n") (b "y = f() < g;\nfunction f() {}\n") (c "y = x\n< y;\nfunction f() {}\n"))
+  (want "O5 comparisons a<b, f() < g, and x then a line end then < y: each splits"
+        (list (split "js" a) (split "js" b) (split "js" c))
+        (list (two a "function f") (two b "function f") (two c "function f"))))
+;; O6: the real JSX contexts are rx, refused at the opener.
+(for-each
+  (lambda (c)
+    (let ((t (string-append (cadr c) "\nfunction f() {}\n")))
+      (want (string-append "O6 " (car c) ": refused opener at its <") (split "js" t) (one 'opener (at t (caddr c))))))
+  '(("return" "function g() { return <a/>; }" "<a/>") ("=" "x = <a/>;" "<a/>") ("(" "h(<a/>);" "<a/>")
+    ("," "h(1, <a/>);" "<a/>") ("?" "y = c ? <a/> : 0;" "<a/>") (":" "y = c ? 0 : <a/>;" "<a/>")
+    ("=>" "const g = () => <a/>;" "<a/>") ("&&" "y = c && <a/>;" "<a/>") ("||" "y = c || <a/>;" "<a/>")
+    ("??" "y = c ?? <a/>;" "<a/>") ("[" "y = [<a/>];" "<a/>") ("default" "export default <a/>;" "<a/>")
+    ("an object's k:" "y = { k: <a/> };" "<a/>") ("case 1:" "switch (v) { case 1: <a/>; }" "<a/>")
+    ("${" "y = `${<a/>}`;" "<a/>") ("!" "y = !<a/>;" "<a/>") ("..." "y = [...<a/>];" "<a/>")
+    ("a URL in JSX text" "x = <a>see https://x.org</a>;" "<a>") ("an apostrophe in JSX text" "y = <p>don't stop</p>;" "<p>")
+    ("a fragment" "y = <>x</>;" "<>")))
+;; SC1-SC3: a self-closing element where the scan expects an operator.
+(for-each
+  (lambda (c)
+    (let ((t (cadr c)))
+      (want (string-append "SC1 " (car c) ": refused self-close at its /") (split "js" t) (one 'self-close (at t (caddr c))))))
+  '(("if (ok) <br/>" "if (ok) <br/>\nfunction fake() {}\n" "/>") ("a block's } then <br/>" "if (a) {}\n<br/>\nfunction fake() {}\n" "/>")
+    ("debugger then <br/>" "debugger\n<br/>\nfunction fake() {}\n" "/>") ("yield <br/>" "function* g() {\n  yield <br/>;\n}\nfunction f() {}\n" "/>")
+    ("if (ok) <img src={a}/>" "if (ok) <img src={a}/>\nfunction fake() {}\n" "/>") ("return await <a/>" "async function g() {\n  return await <a/>;\n}\nfunction f() {}\n" "/>")))
+(let ((c "x = a / /*c*/ >\nfunction f() {}\n") (n "if (ok) <br/\n>\nfunction fake() {}\n"))
+  (want "SC2 / /*c*/ > and / then a line end then >: refused self-close at the /"
+        (list (split "js" c) (split "js" n))
+        (list (one 'self-close (at c "/ /*")) (one 'self-close (at n "/\n>")))))
+;; SC6: S's lookahead skips a // comment and a /* */ comment across lines: the
+;; ">" after either still refuses, at the first "/".
+(let ((lc "x = a / //\n>\nfunction f() {}\n") (mb "x = a / /* c\n*/ >\nfunction f() {}\n"))
+  (want "SC6 / then a // comment then > on the next line, and / then a /* */ comment over two lines then >: refused self-close at the first /"
+        (list (split "js" lc) (split "js" mb))
+        (list (one 'self-close (at lc "/ //")) (one 'self-close (at mb "/ /*")))))
+;; SC7 CONTROLS for the lookahead: an unterminated /* (the lookahead ends at
+;; the file's end; the regex reading "/ /" survives), a // at the file's end,
+;; a lone "/" as the last character, and a ">" inside a skipped comment before
+;; an operand (the lookahead does not merely search for ">").
+(let ((ub "x = a / /* c\nfunction f() {}\n") (le "x = a / //") (lo "x = a /")
+      (gt "x = a / /* > */ b;\nfunction f() {}\n"))
+  (want "SC7 CONTROL an unterminated /*, a // at the end, a lone / at the end, and a > inside a skipped comment: none refused self-close"
+        (list (split "js" ub) (split "js" le) (split "js" lo) (split "js" gt))
+        (list (two ub "function f") '((0) ()) '((0) ()) (two gt "function f"))))
+(let ((a "y = a / b > c;\nfunction f() {}\n") (b "y = a/2>b;\nfunction f() {}\n") (c "y = a /= 2 > 1;\nfunction f() {}\n"))
+  (want "SC3 CONTROL a / b > c, a/2>b and a /= 2 > 1: each splits"
+        (list (split "js" a) (split "js" b) (split "js" c))
+        (list (two a "function f") (two b "function f") (two c "function f"))))
+;; O7: an earlier fk "/" forks the readings; on the regex reading the "<" is
+;; in a regex body, on the division reading it is at rx. A gate that asks
+;; only the first reading (the regex one) lets it split: the element does not
+;; self-close and its closer is in // text, so nothing but the opener refuses it.
+(let ((t "x = a / b; y = <p>\nfunction fake() {}\n// </p>;\nfunction real() {}\n"))
+  (want "O7 a fork before the opener: the second (division) reading meets <p> at rx, refused opener"
+        (split "js" t) (one 'opener (at t "<p>"))))
+;; L1-L3, THE STATED LIMIT: a non-self-closing element whose outermost opener
+;; is where the scan expects an operator (fk), its closers only in // text, is
+;; NOT refused. In L1 and L2 the file is mis-split (a cut inside JSX; the
+;; blocks still join to the file's bytes), and the comment line holding the
+;; closer is taken as the comment above `real`, so real's block starts there.
+;; L3's JSX is inside g, so it only passes. Making fk exact needs
+;; the statement/expression distinction, which the scan does not make; a scan
+;; that knows statement starts turns these red, and that is meant.
+(let ((t "debugger\n<div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n"))
+  (want "L1 THE LIMIT: debugger, <div>, closer in // text: split (mis-cut)"
+        (split "js" t) (blocks t "function fake" "// </div>")))
+(let ((t "if (ok) <div>\nfunction fake() {}\n// </div>;\nfunction real() {}\n"))
+  (want "L2 THE LIMIT: if (ok) <div>, closer in // text: split (mis-cut)"
+        (split "js" t) (blocks t "function fake" "// </div>")))
+(let ((t "function* g() {\n  yield <div>\nfunction fake() {}\n// </div>;\n}\nfunction real() {}\n"))
+  (want "L3 THE LIMIT: yield <div>, closer in // text: passes, its one cut at real outside g"
+        (split "js" t) (blocks t "function real")))
+;; L4, L5: the same limit with the closer in CODE: its "/" opens a regex at
+;; rx that a later "/" on the line closes, so the scan stays at the top level
+;; inside the JSX. The cut at fake lands between the opener and the closer.
+(let ((t "if (ok) <div>\nfunction fake() {}\ntext</div> / 2;\nfunction real() {}\n"))
+  (want "L4 THE LIMIT: if (ok) <div>, the closer swallowed by a regex a later / closes: split, the cut at fake inside the JSX"
+        (list (split "js" t) (< (at t "<div>") (at t "function fake") (at t "</div>")))
+        (list (blocks t "function fake" "function real") #t)))
+(let ((t "if (ok) <>\nfunction fake() {}\ntext</> / 2;\nfunction real() {}\n"))
+  (want "L5 THE LIMIT: the fragment form of L4: split"
+        (split "js" t) (blocks t "function fake" "function real")))
+;; SC4, S'S STATED COST: a regex beginning with ">" where the scan expects an
+;; operator keeps a division reading, whose "/" is followed by ">", so the file
+;; is refused though the program is a regex. The raw-text net refused it too.
+(let ((a "if (ok) />/.test(s);\nfunction f() {}\n") (d "debugger\n/>/.test(s);\nfunction f() {}\n"))
+  (want "SC4 THE COST: a regex />/ at an fk position (after if's condition, after debugger and a line end): refused self-close"
+        (list (split "js" a) (split "js" d))
+        (list (one 'self-close (at a "/>/")) (one 'self-close (at d "/>/")))))
+;; L6, THE LIMIT stated on readings: a live reading reaches the end of the
+;; file without meeting O or S. Here the self-close's "/>" is consumed inside a
+;; JS string (JSX attribute strings have no escape; JS strings do), so no
+;; reading meets S, and the file splits.
+(let ((t "if (ok) <a x=\"\\\"/>; /\"/;\nfunction f() {}\n"))
+  (want "L6 THE LIMIT: a self-close whose /> a reading consumes in a string: split"
+        (split "js" t) (two t "function f")))
+;; SC5, THE COST stated on readings: some live reading, speculative ones
+;; included, meets O or S. Here the regex reading of the first "/" ends inside
+;; the string, and on it the "/" before ">" is a division: refused, though the
+;; program is plain JavaScript.
+(let ((t "const z = a / \"x/y/>\" / b;\nfunction f() {}\n"))
+  (want "SC5 THE COST: a speculative regex reading ends inside a string and meets S: refused self-close"
+        (split "js" t) (one 'self-close (at t "/>"))))
+;; O8, THE IMPORT: a file refused opener is imported whole by import-code
+;; --symbols, its symbols unchecked and listed with the reason.
+(let ((t "const x = <div>\nfunction fake() {}\n</div>;\nfunction real() {}\n"))
+  (want "O8 import --symbols at fake in a file refused opener: imported whole, listed symbols-unscanned with reason opener"
+        (import-with "js" t '("function fake")) (list 'whole 'symbols-unscanned 'opener (list t))))
+;; I1-I4: iter's four shapes, minimal: a doc comment holding markup, a trailing
+;; // >0, regexes /</g and />/g with HTML strings, and a regex holding </ with a
+;; string holding markup. Each splits.
+(let ((p "/**\n * <script>x</script> is text\n */\nexport function parse(s) {\n  return s;\n}\nexport function g() {}\n")
+      (g "const o = { abortAfterBytes: 0 }   // >0\nfunction f() {}\n")
+      (a "function esc(s) {\n  return s.replace(/</g, \"&lt;\").replace(/>/g, \"&gt;\");\n}\nfunction row() {\n  return \"<label>\" + esc(1) + \"</label>\";\n}\n")
+      (m "const re = /data=\"([^\"]+)\"[^>]*>([^<]*)</g;\ncheck(\"<span>ID</span>\");\nfunction f() {}\n"))
+  (want "I1-I4 iter's shapes (doc comment, // >0, regexes with HTML strings, a regex holding </): each splits"
+        (list (split "js" p) (split "js" g) (split "js" a) (split "js" m))
+        (list (two p "export function g") (two g "function f") (two a "function row") (two m "function f"))))
 
 ;; ==== ambiguity rows: forks ===========================================================
 (printf "== ambiguity ==\n")

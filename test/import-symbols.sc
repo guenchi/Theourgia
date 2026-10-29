@@ -272,16 +272,17 @@
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
         (list 'ok #f '(("x.tsx" (error symbols-unchecked (reason no-language-entry))))
               (list (cons "b.js" two-blocks) (list "x.tsx" tsx)))))
-;; JSX IN A .js FILE: the scanner falls the file back lexically-uncertain at
-;; its closing "</", so the symbols at fake and real cannot be checked.
+;; JSX IN A .js FILE: the scanner falls the file back at its opener (a "<"
+;; where an operand is expected), so the symbols at fake and real cannot be
+;; checked.
 (define jsx "const x = <div>\nfunction fake() {}\n</div>;\nfunction real() {}\n")
 (let* ((c (case! (list (cons "j.js" jsx))
                  (section "j.js" jsx (sym (offset-of jsx "function fake") (- (offset-of jsx "\n</div>") 0) 'function "fake")
                           (sym (offset-of jsx "function real") (- (bytes-of jsx) 1) 'function "real"))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS4c a .js with JSX is unscanned, lexically uncertain at its </, and imported whole, listed in symbols-imported-whole"
+  (want "IS4c a .js with JSX is unscanned, refused opener at its <div>, and imported whole, listed in symbols-imported-whole"
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
-        (list 'ok #f (list (list "j.js" (list 'error 'symbols-unscanned '(reason lexically-uncertain) (list 'at (offset-of jsx "</div>")))))
+        (list 'ok #f (list (list "j.js" (list 'error 'symbols-unscanned '(reason opener) (list 'at (offset-of jsx "<div>")))))
               (list (list "j.js" jsx)))))
 ;; CONTROLS. A cut CHECKED AND FOUND WRONG still leaves its file out: n.js
 ;; names alpha's body line (IS3's cut at 19), and is refused and not held,
