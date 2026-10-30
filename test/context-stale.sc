@@ -146,10 +146,12 @@
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
 (define st2 (tolerant (store-with-verification "s2")))
 ;; The whole answer -- sections, notes, budget, receipt -- its versions
-;; clause left out on both sides. THIS TREE'S USERS CLAUSE AND ITS EXCLUDED
-;; COUNTER ARE LEFT OUT OF ITS SIDE, and the budget's used number out of
-;; both, which those bytes change: the rest, receipt included, is the
-;; base's, as before the clause came.
+;; clause left out on both sides. THE USERS CLAUSE AND THE EXCLUDED USERS
+;; COUNTER ARE LEFT OUT OF BOTH SIDES TOO (a base from before the clause
+;; came has none to leave out; one from after it has the same clause, and
+;; leaving it out of one side only read the two as different), and the
+;; budget's used number out of both, which those bytes change: the rest,
+;; receipt included, is the base's.
 (define (without-versions a) (if (pair? a) (cons (car a) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a))) a))
 (define (without-users a)
   (if (pair? a)
@@ -178,18 +180,22 @@
          (write '(import (chezscheme) (theourgia rpc) (only (theourgia extensions) extension-verbs)
                          (only (theourgia wire) sexpr->string-extended)) p)
          (write '(register-verbs! extension-verbs) p)
-         (write `(let ((a (rpc-dispatch ,(car st2) '(context "--for" ,(caddr st2) "--budget" "4000") "author")))
+         (write `(let* ((a (rpc-dispatch ,(car st2) '(context "--for" ,(caddr st2) "--budget" "4000") "author"))
+                        (kept (filter (lambda (c) (not (and (pair? c) (memq (car c) '(versions users))))) (cdr a))))
                    (display (sexpr->string-extended
                               (cons (car a)
-                                    (map (lambda (c) (if (and (pair? c) (eq? (car c) 'budget))
-                                                         (cons 'budget (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'used)))) (cdr c)))
-                                                         c))
-                                         (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a)))))))
+                                    (map (lambda (c)
+                                           (cond ((and (pair? c) (eq? (car c) 'budget))
+                                                  (cons 'budget (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'used)))) (cdr c))))
+                                                 ((and (pair? c) (eq? (car c) 'excluded))
+                                                  (cons 'excluded (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'users)))) (cdr c))))
+                                                 (else c)))
+                                         kept)))))
                 p))
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N a store with no moved verifies edge: the answer, receipt included, is the base tree's, byte for byte, but for this tree's users clause and counter and the used number"
+     (want "N a store with no moved verifies edge: the answer, receipt included, is the base tree's, byte for byte, but for the users clause and counter and the used number, left out of both sides"
            (let ((base (call-with-input-file out get-string-all)))
              (in-order (and (string? product-answer) (> (string-length product-answer) 2)
                             (string-contains? product-answer "(receipt"))

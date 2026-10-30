@@ -127,10 +127,12 @@
 ;; A TRAILING RECEIPT LINE IS LEFT OUT OF BOTH, whether or not the base prints
 ;; one, so the row does not say what the base lacks: it says the rest is the
 ;; same. That this tree prints one is its own element.
-;; THE USERS CLAUSE IS LEFT OUT OF THIS TREE'S SIDE (its line and the user
-;; lines under it, and the users counter of the excluded line), and the
-;; budget's used number out of both, which those bytes change: the row says
-;; the rest is the base's, as before the clause came.
+;; THE USERS CLAUSE IS LEFT OUT OF BOTH SIDES (its line and the user lines
+;; under it, and the users counter of the excluded line; a base from before
+;; the clause came has none to leave out, one from after it prints the same
+;; clause, and leaving it out of one side only read the two as different),
+;; and the budget's used number out of both, which those bytes change: the
+;; row says the rest is the base's.
 (define (without-users text)
   (let loop ((ls (lines text)) (out '()) (in-users #f))
     (cond ((null? ls) (join (reverse out)))
@@ -172,11 +174,11 @@
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N the human output is the base tree's, byte for byte, a trailing receipt line left out of both, this tree's users clause and its counter left out of it and the used number out of both; this tree's ends with one"
+     (want "N the human output is the base tree's, byte for byte, a trailing receipt line, the users clause and its counter and the used number left out of both; this tree's ends with one"
            (let ((base (call-with-input-file out get-string-all))
                  (now (render-human (ctx S T))))
              (in-order (> (string-length base) 0)
-                       (equal? (without-used (without-receipt-line base)) (without-used (without-users (without-receipt-line now))))
+                       (equal? (without-used (without-users (without-receipt-line base))) (without-used (without-users (without-receipt-line now))))
                        (receipt-line? (or (last-of (lines now)) ""))))
            '(#t #t #t)))))
 
