@@ -391,7 +391,7 @@
           size-entry overwrite-entry! entry-bytes read-entry-range
           with-mutation-record mutation-record mutation-set-self!
           EIO ENOENT EACCES ENOTDIR EBADF ECHILD waitpid-status
-          hold-point! hold-sleeper-set!
+          hold-point! hold-sleeper-set! io-yield! io-yield-set! with-no-yield io-yield-tally
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir! symlink! read-link
           unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
@@ -3051,6 +3051,7 @@
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
          after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
+         commit-before-publish
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
          freeze-after-dump freeze-before-list landing-before-tag import-before-batch
          freeze-before-move structural-move-before-write
@@ -3560,10 +3561,113 @@
        (trace-event! 'fsync subject #f)
        (void))))
 
+  ;; ---- the yield after blocking I/O -------------------------------------
+  ;;
+  ;; A BLOCKING FOREIGN CALL SPENDS WALL TIME AND ALMOST NO TICKS. igropyr
+  ;; preempts on Chez's tick timer, so a loop of flushes and renames (an
+  ;; export writing thousands of files) keeps one time slice for seconds,
+  ;; and every other actor in the VM -- the listener, a connection's read,
+  ;; a timer -- waits for the loop to end. Measured: a read on a new
+  ;; connection took 9.8 s during an export's write loop, 0.06 s outside it.
+  ;; So the blocking wrappers below end with io-yield!, which parks the
+  ;; calling actor for one millisecond when it has run 50 ms of wall time
+  ;; since its own last yield, and does nothing otherwise.
+  ;;
+  ;; THE SLEEPER IS INSTALLED BY (theourgia sched)'s START-SCHEDULER, from
+  ;; inside the boot process, as its first act: this library cannot import
+  ;; the actor library. Until then io-yield! is a no-op, so the command
+  ;; line's local route, a script, a process that loaded sched but never
+  ;; started it, and a start that failed before its boot never yield;
+  ;; (sleep-ms 1) outside a process would raise. Once it is installed every
+  ;; caller is in a process: the event loop's own process runs with
+  ;; interrupts disabled for good (igropyr actor.sc, event-loop), and libuv's
+  ;; callbacks run inside it, so the interrupt guard below covers both.
+  ;; The sleeper is never removed, because start-scheduler does not return:
+  ;; its own continuation becomes a sentinel that loops for good and leaves
+  ;; only by (exit 70) (igropyr 1ef294c actor.sc, start-scheduler's forever
+  ;; loop and panic), and every caller here ends its process inside it.
+  ;;
+  ;; NEVER: NO YIELD WHERE ONE WOULD CHANGE MEANING. Not with interrupts
+  ;; disabled (a region that must not be split by another actor), not while
+  ;; a fault is armed (every fault names a stage, and another actor running
+  ;; in the yield would see this actor's stage and could take its fault),
+  ;; and not inside a no-yield extent (with-no-yield, below). Nothing in the
+  ;; lock service calls these wrappers: main's handlers run to the end
+  ;; without yielding (daemon.sc).
+  ;;
+  ;; THE STAGE IS PUT BACK AFTER THE YIELD. A parameterize is one global
+  ;; cell under igropyr, so the actors that ran during the sleep can leave
+  ;; their stage in it; the caller resumes with its own. The other dynamic
+  ;; parameters (the store, the machine home) are not rebound: a daemon
+  ;; serves one store and one home, so every actor binds the same value.
+  ;;
+  ;; THE STATE IS KEYED BY THE ACTOR, never a parameter, and held weakly:
+  ;; an actor's last yield and its no-yield depth go when the actor does.
+  ;; The clock is monotonic. An actor's first call only starts its clock.
+  ;; NEVER: A TABLE OPERATION OUTSIDE AN INTERRUPT REGION. The tables and
+  ;; the counters are shared by every actor, and a lookup that a preemption
+  ;; splits while another actor grows the table can miss a key that is
+  ;; there (igropyr's actor.sc says so of its own name table, and guards it
+  ;; the same way). Each operation runs with interrupts disabled; the sleep
+  ;; itself runs outside, so the region never yields.
+  (define io-sleeper #f)
+  (define (io-yield-set! proc)
+    (unless (procedure? proc)
+      (assertion-violation 'io-yield-set! "not a procedure" proc))
+    (set! io-sleeper proc))
+  (define io-yield-ms 50)
+  (define io-last-yield (make-weak-eq-hashtable))
+  (define io-no-yield (make-weak-eq-hashtable))
+  ;; attempts that reached the clock, and yields taken, for this process:
+  ;; what a row reads to count yields without depending on the clock
+  (define io-attempts 0)
+  (define io-yields 0)
+  (define (io-yield-tally) (with-interrupts-disabled (list io-attempts io-yields)))
+  (define (monotonic-ms)
+    (let ((t (current-time 'time-monotonic)))
+      (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+  (define (interrupts-enabled?)
+    (let ((n (disable-interrupts)))
+      (enable-interrupts)
+      (= n 1)))
+  ;; THUNK runs with this actor's yields suppressed, nested calls included;
+  ;; -> what THUNK returns
+  (define (with-no-yield thunk)
+    (let ((key (mutation-self)))
+      (dynamic-wind
+        (lambda () (with-interrupts-disabled (hashtable-update! io-no-yield key (lambda (n) (+ n 1)) 0)))
+        thunk
+        (lambda ()
+          (with-interrupts-disabled
+            (let ((n (- (hashtable-ref io-no-yield key 1) 1)))
+              (if (> n 0) (hashtable-set! io-no-yield key n) (hashtable-delete! io-no-yield key))))))))
+  (define (io-yield!)
+    (when (and io-sleeper
+               (not (theourgia-fault-armed?))
+               (interrupts-enabled?))
+      (let* ((key (mutation-self))
+             (due (with-interrupts-disabled
+                    (and (not (hashtable-contains? io-no-yield key))
+                         (begin
+                           (set! io-attempts (+ io-attempts 1))
+                           (let ((now (monotonic-ms))
+                                 (last (hashtable-ref io-last-yield key #f)))
+                             (cond
+                               ((not last) (hashtable-set! io-last-yield key now) #f)
+                               (else (>= (- now last) io-yield-ms)))))))))
+        (when due
+          (let ((stage (theourgia-stage)))
+            (io-sleeper)
+            (theourgia-stage stage))
+          (with-interrupts-disabled
+            (set! io-yields (+ io-yields 1))
+            (hashtable-set! io-last-yield key (monotonic-ms)))))))
+
   (define (fsync! fd subject stage)
     (check-stage! 'fsync! stage)
     (parameterize ((theourgia-stage stage))
-      (flush! fd (subject-of fd (list subject)) 'fsync 'fullfsync 'file)))
+      (flush! fd (subject-of fd (list subject)) 'fsync 'fullfsync 'file))
+    (io-yield!))
 
   ;; A directory is opened read-only because opening one for writing
   ;; fails with EISDIR; fsync takes a descriptor for the file, not a
@@ -3581,7 +3685,8 @@
         ;; fd-close's descriptors, is not armed here.
         (read-closing subject (lambda () (c-close fd)) #f
           (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync 'dir))))
-      (void))))
+      (void)))
+    (io-yield!))
 
   ;; ---- size, position, truncation ---------------------------------------
 

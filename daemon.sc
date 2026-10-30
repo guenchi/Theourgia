@@ -1988,6 +1988,31 @@
   ;;     records are in both (sampling before them would make every write
   ;;     look like an outside change and cost a fold).
   (define published #f)
+  ;; NEVER: A PROBE DURING A PUBLICATION IN PROGRESS ASKS FOR NO FOLD. The
+  ;; store process is the only publisher, and while it handles a message --
+  ;; a commit that has written its records and not published, a fold that
+  ;; has not published -- the disk is ahead of the cell by its own work. A
+  ;; probe that read that as an outside change asked for a reload, and the
+  ;; store process then folded the same log again: a fold under the lock for
+  ;; nothing, and a revision with no change. The yields after blocking I/O
+  ;; are what let a probe run inside such a window. So the store process
+  ;; marks itself busy around the handling of EVERY message (busy!, in
+  ;; store-loop), whether that message can publish or not, and
+  ;; probe-for-outside-change! sends no reload while the mark is up.
+  ;; Written by the store process only, read by the connections and the
+  ;; writer processes in the same VM: one variable, no interrupt guard.
+  (define publication-pending #f)
+  ;; ONE MESSAGE IS HANDLED BUSY: store-loop runs each clause's body inside
+  ;; this, so the mark is up for the dynamic extent of that body and down on
+  ;; every exit, the answer, the draining branch and a raise alike. Each
+  ;; clause's (loop) stays outside, so the mark is down while the receive
+  ;; waits. The start-up publication needs no mark: nothing can read before
+  ;; `ready`.
+  (define (busy! thunk)
+    (dynamic-wind
+      (lambda () (set! publication-pending #t))
+      thunk
+      (lambda () (set! publication-pending #f))))
   (define publish-seq 0)
   (define daemon-token #f)
 
@@ -2350,9 +2375,19 @@
                        (store-state-snapshot store))))
             (if (equal? was now)
                 '()
-                (begin
-                  (when store-pid (send store-pid (list 'reload)))
-                  (snapshot-unreadable-notes now)))))))
+                ;; THE MARK IS READ AT THE DECISION, after the snapshot and
+                ;; the notes, with no yield between the read and the send.
+                ;; While the store process is busy the request is deferred,
+                ;; not lost: a commit in progress publishes a snapshot taken
+                ;; after its own records, and a fold whose snapshot predates
+                ;; a change leaves the next probe to find it (see
+                ;; publication-pending).
+                (let ((notes (snapshot-unreadable-notes now)))
+                  (when store-pid
+                    (if publication-pending
+                        (trace-event! 'reload-deferred 'publication-pending #f)
+                        (send store-pid (list 'reload))))
+                  notes))))))
 
   ;; ONE WAY TO ANSWER FROM THE PUBLISHED STATE (found in design review):
   ;; probe, then hand the publication SEALED with what the probe found. The
@@ -2457,76 +2492,82 @@
         ;; name (a ruling): the table's answer for the condition, or
         ;; its text. `reload-raise` makes it fail.
         (`(reload)
-         (reload-or-say-why! store)
+         (busy! (lambda () (reload-or-say-why! store)))
          (loop))
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
-         ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
-         ;; the daemon: without it nothing can be answered, so main is
-         ;; supposed to say so and leave with 75 rather than sit there
-         ;; accepting connections it cannot serve. That rule needs a row,
-         ;; and a row needs a seam. Armed by
-         ;; `THEOURGIA_FAULT=store-raise@conn`; unarmed it is one
-         ;; comparison against #f.
-         (when (eq? (theourgia-fault) 'store-raise)
-           (raise (condition (make-message-condition "injected store raise")
-                             (make-irritants-condition (list seq)))))
-         ;; NEVER: #f, NOT THE PUBLISHED VALUE. This process is the one
-         ;; that writes, and a write decides what to do from the
-         ;; store as it stands under the lock -- answering from a
-         ;; fold made before the lock was taken is how two writers
-         ;; come to disagree about what was there.
-         (if (may-execute? main-pid ticket)
-             (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
-                               ;; A READ AT A CUT IS JUDGED AGAINST THE
-                               ;; PUBLICATION, made current first when the
-                               ;; disk has moved past it, and reached the one
-                               ;; way the published state is read; so is a
-                               ;; published read (query, context).
-                               (begin
-                                 (refresh-if-behind! store)
-                                 ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
-                                 (when (published-read? parsed) (install-session-provider!))
-                                 (answer-published store self parsed actor writer piped cwd))
-                               (answer-for store parsed actor #f writer piped cwd))))
-               ;; A PUBLISHED READ TOLD THE KEPT SESSION'S WORK: the served line,
-               ;; after the verb has answered
-               (when (published-read? parsed) (session-served! (car parsed)))
-               ;; A DERIVED-TABLE WRITE moves the generation the kept session is judged by
-               (when (and (pair? parsed) (memq (car parsed) '(supply clear-derived)))
-                 (set! derived-generation (+ derived-generation 1)))
-               (executed! main-pid ticket)
-               (send from (list 'answer seq answer 'core)))
-             (send from (list 'answer seq draining-answer 'transport)))
+         (busy!
+          (lambda ()
+            ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
+            ;; the daemon: without it nothing can be answered, so main is
+            ;; supposed to say so and leave with 75 rather than sit there
+            ;; accepting connections it cannot serve. That rule needs a row,
+            ;; and a row needs a seam. Armed by
+            ;; `THEOURGIA_FAULT=store-raise@conn`; unarmed it is one
+            ;; comparison against #f.
+            (when (eq? (theourgia-fault) 'store-raise)
+              (raise (condition (make-message-condition "injected store raise")
+                                (make-irritants-condition (list seq)))))
+            ;; NEVER: #f, NOT THE PUBLISHED VALUE. This process is the one
+            ;; that writes, and a write decides what to do from the
+            ;; store as it stands under the lock -- answering from a
+            ;; fold made before the lock was taken is how two writers
+            ;; come to disagree about what was there.
+            (if (may-execute? main-pid ticket)
+                (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
+                                  ;; A READ AT A CUT IS JUDGED AGAINST THE
+                                  ;; PUBLICATION, made current first when the
+                                  ;; disk has moved past it, and reached the one
+                                  ;; way the published state is read; so is a
+                                  ;; published read (query, context).
+                                  (begin
+                                    (refresh-if-behind! store)
+                                    ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
+                                    (when (published-read? parsed) (install-session-provider!))
+                                    (answer-published store self parsed actor writer piped cwd))
+                                  (answer-for store parsed actor #f writer piped cwd))))
+                  ;; A PUBLISHED READ TOLD THE KEPT SESSION'S WORK: the served line,
+                  ;; after the verb has answered
+                  (when (published-read? parsed) (session-served! (car parsed)))
+                  ;; A DERIVED-TABLE WRITE moves the generation the kept session is judged by
+                  (when (and (pair? parsed) (memq (car parsed) '(supply clear-derived)))
+                    (set! derived-generation (+ derived-generation 1)))
+                  (executed! main-pid ticket)
+                  (send from (list 'answer seq answer 'core)))
+                (send from (list 'answer seq draining-answer 'transport)))))
          (loop))
         ;; A SUBSCRIPTION IS REGISTERED HERE, where the ring and the current
         ;; revision are, and its admission ticket is finished at once: a
         ;; stream lives as long as its connection, and holding the ticket
         ;; that long would hold a drain open for it.
         (`(subscribe ,from ,seq ,ticket ,main-pid ,args)
-         (if (may-execute? main-pid ticket)
-             (let ((answer (subscription-answer from args)))
-               (executed! main-pid ticket)
-               (send from (list 'subscription seq (car answer) (cdr answer))))
-             (send from (list 'subscription seq draining-answer '())))
+         (busy!
+          (lambda ()
+            (if (may-execute? main-pid ticket)
+                (let ((answer (subscription-answer from args)))
+                  (executed! main-pid ticket)
+                  (send from (list 'subscription seq (car answer) (cdr answer))))
+                (send from (list 'subscription seq draining-answer '())))))
          (loop))
-        (`(unsubscribe ,pid) (drop-subscriber! pid) (loop))
+        (`(unsubscribe ,pid) (busy! (lambda () (drop-subscriber! pid))) (loop))
         ;; THE TIMER'S PROBE, traced when it arrives, answered by the same
         ;; comparison a read at a cut makes, then acknowledged.
         (`(probe ,from)
-         (trace-event! 'probe (wall-clock-ms) #f)
-         (refresh-if-behind! store)
-         ;; INJECTION ONLY: a slow probe, and a probe held before its
-         ;; acknowledgement.
-         (when (eq? (theourgia-fault) 'probe-slow) (sleep-ms 300))
-         (hold-point! 'probe-before-ack)
-         (send from '(probe-done))
+         (busy!
+          (lambda ()
+            (trace-event! 'probe (wall-clock-ms) #f)
+            (refresh-if-behind! store)
+            ;; INJECTION ONLY: a slow probe, and a probe held before its
+            ;; acknowledgement.
+            (when (eq? (theourgia-fault) 'probe-slow) (sleep-ms 300))
+            (hold-point! 'probe-before-ack)
+            (send from '(probe-done))))
          (loop))
         ;; THE STREAM'S LAST WORD BEFORE A DRAIN ENDS IT: unregistered here,
         ;; and answered after every frame this process already sent it, since
         ;; it handles messages in order.
-        (`(stream-end ,pid) (drop-subscriber! pid) (send pid (list 'stream-end)) (loop))
-        (`#(DOWN ,who ,reason) (drop-subscriber! who) (loop))
-        (`(drain) (loop)))))
+        (`(stream-end ,pid) (busy! (lambda () (drop-subscriber! pid) (send pid (list 'stream-end)))) (loop))
+        (`#(DOWN ,who ,reason) (busy! (lambda () (drop-subscriber! who))) (loop))
+        (`(drain) (busy! (lambda () (void))) (loop)))))
 
   ;; ---- a writer's process -----------------------------------------------
   ;;

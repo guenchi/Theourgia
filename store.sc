@@ -3708,6 +3708,10 @@
       (if (session-delivered? s)
           (begin
             (remember-load-unreadable! state (session-load s))
+            ;; THE HOLD SEAM `commit-before-publish`: the records are written
+            ;; and the lock is still held, and nothing is published yet, so a
+            ;; row asks a read while the store process is inside a commit.
+            (hold-point! 'commit-before-publish)
             (publish-hook state))
           (begin
             (trace-event! 'publish-withheld

@@ -212,6 +212,9 @@
   ;; the injection had not fired. Hard-coding one stage inside would be
   ;; worse: this one sequence serves the snapshot, the manifest, the
   ;; registry and the repair, and they are different phases.
+  ;; ONE YIELD PER WRITE, AT ITS END (ffi.sc, io-yield!): the body runs with
+  ;; yields suppressed, so its own fsync! and fsync-dir! do not yield, and
+  ;; the write yields once, after the rename and the directory's flush.
   (define (atomic-write! path bytes stage)
     (unless (string? path)
       (assertion-violation 'atomic-write! "path must be a string" path))
@@ -225,6 +228,7 @@
       (assertion-violation 'atomic-write! "target must not end in a slash" path))
     (unless (bytevector? bytes)
       (assertion-violation 'atomic-write! "contents must be a bytevector" bytes))
+    (let ((written (with-no-yield (lambda ()
     (parameterize ((theourgia-stage stage))
     (let ((tmp (create-temp! path))
           (dir (parent-directory path)))
@@ -266,7 +270,9 @@
               (guard (e (#t (void))) (fd-close fd))))))
       (rename-over! tmp path)
       (fsync-dir! dir stage)
-      path)))
+      path))))))
+      (io-yield!)
+      written))
 
   ;; A NEWLY CREATED DIRECTORY'S OWN ENTRY IS NOT MADE DURABLE BY
   ;; FLUSHING WHAT IS INSIDE IT. atomic-write! flushes the target's

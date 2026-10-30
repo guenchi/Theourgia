@@ -51,13 +51,21 @@
   (export start-scheduler spawn spawn&link receive send self monitor demonitor
           link kill process-alive? process-count process-monitor-count sleep-ms)
   (import (only (chezscheme) define lambda)
-          (only (theourgia ffi) mutation-set-self!)
+          (only (theourgia ffi) mutation-set-self! io-yield-set!)
           (rename (only (igropyr actor) start-scheduler)
                   (start-scheduler igropyr-start-scheduler))
           (only (igropyr actor)
                 spawn spawn&link receive send self monitor demonitor
                 link kill process-alive? process-count process-monitor-count sleep-ms))
 
+  ;; THE YIELD'S SLEEPER IS INSTALLED BY THE BOOT PROCESS, as its first act:
+  ;; igropyr's start-scheduler sets up libuv and the current process before
+  ;; it spawns the boot, so installed any earlier the sleeper would exist
+  ;; for a moment with no process to sleep, and a start that fails before
+  ;; the boot leaves io-yield! the no-op it was.
   (define (start-scheduler boot-thunk)
     (mutation-set-self! (lambda () self))
-    (igropyr-start-scheduler boot-thunk)))
+    (igropyr-start-scheduler
+      (lambda ()
+        (io-yield-set! (lambda () (sleep-ms 1)))
+        (boot-thunk)))))

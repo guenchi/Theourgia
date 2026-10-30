@@ -386,17 +386,22 @@
   (let ((bytes (encode-record seq (+ 1789000000000 seq) actor deps (storable-encode payload))))
     (log-publish! (d-store d) writer seq bytes (segment-sha bytes))))
 ;; NEVER: A POKE IS A REQUEST, NOT A FOLD. The read probes and, ONLY when the
-;; disk differs from the published state, sends the store process a reload
-;; before it answers (none for an unchanged or absent snapshot, or a probe
-;; that fails); the answer is from the published state, and whether that
-;; reload has run by the time it arrives is not known. So when poke! returns
-;; a reload is queued, ahead of anything sent to the store process after it,
-;; if the disk differed. A row that needs the fold's result waits for it by a
+;; disk differs from the published state and the store process is not busy
+;; with a message, sends the store process a reload before it answers (none
+;; for an unchanged or absent snapshot, a probe that fails, or a busy store
+;; process); the answer is from the published state, and whether that reload
+;; has run by the time it arrives is not known. So when poke! returns a
+;; reload is queued, ahead of anything sent to the store process after it,
+;; if the disk differed and the store process was idle. A row that needs the fold's result waits for it by a
 ;; condition (frame!, frame-settled, said-frame-after, await-lines,
 ;; await-trace, a hold's file); a row that needs only the request queued may
-;; rely on the order. And a queued reload refolds whether or not the timer's
-;; probe got there first, so an EMPTY frame can follow a change's frame: a
-;; row reads a change's frame by what it says, not by its position.
+;; rely on the order. A reload queued behind another still refolds the same
+;; log, so an EMPTY frame can follow a change's frame: a row reads a change's
+;; frame by what it says, not by its position. But a read made while the
+;; store process is handling a message -- a publication may be in progress --
+;; queues nothing (daemon.sc, publication-pending): the next read, or the
+;; timer's next tick, asks again. So a row that needs a fold waits for the
+;; previous one before it pokes.
 (define (poke! d) (ask d 'outline))
 ;; One segment of WRITER holding N new blocks: one reload, one frame with N
 ;; (added ...) items, which is how a row makes a frame big enough to fill a
@@ -468,7 +473,10 @@
 ;; subscribed the daemon probes once a second, and a reload queued behind
 ;; another refolds the same log: such a reload publishes an EMPTY frame
 ;; (kept, sent, counted like any other), and it can land before the
-;; action's own. So of the frames past AFTER up to the covering one, the
+;; action's own. (A read during a publication in progress defers its
+;; request rather than queue one, so a read is no longer how such a reload
+;; is made; the timer's tick, or an outside change with no record, still
+;; makes one.) So of the frames past AFTER up to the covering one, the
 ;; one with items is the action's; none with items, the covering one; two
 ;; with items is not one action's frame, and says so.
 ;; NEVER: NOT "THE LAST REVISION HELD STILL FOR 300 MS". That was the rule,
@@ -870,32 +878,25 @@
               (let loop ((k seen) (out '())) (if (< k 2) out (loop (- k 1) (cons k out))))))
       (stop-daemon! d))
 
-    ;; A REFOLD OF THE SAME LOG IS A REVISION WITH NO ITEMS. The store process
-    ;; is held between a reload's fold and its publication; a second read
-    ;; meanwhile finds the published snapshot still old and queues a second
-    ;; reload; on release the first publishes the outside commit, and the
-    ;; second refolds the same log. Its frame is sent, empty, and the block
-    ;; deleted earlier is not named again.
-    (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-reload"))
-           (_ (system (string-append "rm -f " release " " release ".held")))
-           (d (start-daemon! "f2r" (string-append "THEOURGIA_HOLD='reload-before-publish:" release "'")))
+    ;; A REFOLD OF THE SAME LOG IS A REVISION WITH NO ITEMS. An outside commit
+    ;; and a read: the reload publishes it. Then an outside change that
+    ;; carries no record -- a touch of the writers directory, whose times
+    ;; are in the snapshot -- and a read: the store process reloads, folds
+    ;; the same log, and its frame is sent, empty. The block deleted earlier
+    ;; is named in neither. The touch waits for the first frame, since a
+    ;; read during a fold asks for nothing.
+    (let* ((d (start-daemon! "f2r" ""))
            (gone (insert! d "gone"))
            (_ (ask d 'del gone))
            (sub (spawn-subscriber! d '("changes" "0")))
            (_ (await-lines sub 1 5000))
            (outside (mirror! d "mirrorrf" 1 '() '(put ((kind . section) (title . "outside") (parent . root) (ord . 9))))))
       (poke! d)
-      (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
-      ;; THE SECOND RELOAD IS QUEUED WHEN THIS RETURNS: its read found the
-      ;; published state still old (the first is held before publishing) and
-      ;; sent the reload before answering, so no wait stands between it and
-      ;; the release.
+      (await-lines sub 2 8000)
+      (system (string-append "touch " (d-store d) "/writers"))
       (poke! d)
-      (system (string-append "touch " release))
       (let* ((ls (await-lines sub 3 8000)) (fs (frames-of ls)))
-        ;; AT LEAST ONE empty frame after it: the timer's probes may add
-        ;; another redundant reload, which is empty too.
-        (want "FRAME-09 a reload publishes the outside record, and the reload queued behind it publishes an EMPTY frame"
+        (want "FRAME-09 a reload publishes the outside record, and a reload of the same log publishes an EMPTY frame"
               (list (>= (length fs) 2) (and (pair? fs) (item-set (car fs)))
                     (and (> (length fs) 1) (for-all (lambda (f) (equal? (item-set f) '())) (cdr fs))))
               (list #t (expected-set (list 'added "mirrorrf.1")) #t))
@@ -1107,19 +1108,21 @@
     ;;
     ;; THE RACE, CONSTRUCTED BY SIZE. A reload refolds the whole log, so on a
     ;; big store every reload is slow, a redundant one too. Action 1 is one
-    ;; record and TWO reads: the second read finds the publication still old
-    ;; and queues a second reload, which refolds the same log and publishes an
-    ;; EMPTY frame about one reload after action 1's. Action 2 is one record
-    ;; and one read: its reload queues behind that redundant one, so the
-    ;; stale empty frame lands past action 1's revision and before action 2's
-    ;; own, which comes one slow reload later. A wait that takes "the last
+    ;; record and a read. Then an outside change with no record (a touch of
+    ;; the writers directory) and a read: a reload of the same log, which
+    ;; publishes an EMPTY frame after action 1's. Action 2 is one record and
+    ;; one read, made once that empty frame is out (a read during a fold
+    ;; asks for nothing), so the stale empty frame lies past action 1's
+    ;; revision and before action 2's own, which comes one slow reload
+    ;; later. A wait that takes "the last
     ;; revision, once it has held still for 300 ms" takes the empty frame for
     ;; action 2's whenever a reload takes longer than that -- which is what
     ;; load did in the suite, and what size does here on purpose.
     ;; NOTE: THE STORE GROWS UNTIL ONE RELOAD TAKES OVER 600 MS (twice that
-    ;; 300 ms), doubling the bulk up to five times. The reload's time and the
-    ;; frames between the two actions' are PRINTED, not asserted: how long a
-    ;; reload takes is the machine's, not this row's.
+    ;; 300 ms), doubling the bulk up to five times. The reload's time is
+    ;; PRINTED, not asserted: how long a reload takes is the machine's, not
+    ;; this row's. That the stale empty frame was made, and lies between the
+    ;; two actions' frames, IS asserted (FRAME-39).
     ;; NOTE: THE OLD WAIT'S RED IS NOT A ROW HERE. It is read by a fixture
     ;; mutant that puts the old rule back in frame-settled and runs this same
     ;; construction: action 2's row then reads (), the gates' red. A copy of
@@ -1129,8 +1132,18 @@
     ;; of thousands of blocks takes seconds to answer, so a second outline
     ;; came only after the first reload had published, and queued nothing
     ;; (measured: the second read was routed two seconds after the first).
+    ;; NOTE: AND ACTION 2'S FOLD IS HELD (reload-before-publish) for a second
+    ;; before it publishes, so the stale empty frame stays the last revision
+    ;; for that long whatever the machine: the size alone made the old wait's
+    ;; red depend on one reload outlasting the wait's own polls (it survived
+    ;; one run in three). The release exists from the start, so every other
+    ;; fold passes the hold; it is removed just before action 2. The waits are
+    ;; on the stream's lines: a read during the held fold asks for nothing.
     (printf "~%== FRAME: a slow reload behind a stale empty frame ==~%")
-    (let* ((d (start-daemon! "f2s" ""))
+    (let* ((release (string-append scratch-base "/cs-" pid-text "-hold-slow"))
+           (_ (begin (system (string-append "rm -f " release " " release ".held"))
+                     (system (string-append "touch " release))))
+           (d (start-daemon! "f2s" (string-append "THEOURGIA_HOLD='reload-before-publish:" release "'")))
            (nudge! (lambda () (ask d 'read "mirrorb1.1")))
            (timed-reload
              (lambda ()
@@ -1150,26 +1163,49 @@
            (seen (current-of (acceptance-of (await-lines sub 1 (scaled 5000 (load-factor))))))
            (f1 (begin (mirror! d "mirrorsa" 1 '() '(put ((kind . section) (title . "first") (parent . root) (ord . 1))))
                       (nudge!)
-                      (nudge!)
                       (frame-settled d sub seen (cons "mirrorsa" 1))))
            (r1 (frame-rev f1))
-           (f2 (begin (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
+           ;; THE STALE EMPTY FRAME IS OBSERVED, NOT ASSUMED: a frame past r1
+           ;; with no items, on the stream's lines, before action 2 starts.
+           ;; Without it the rows below would read action 2 against nothing
+           ;; and pass; so its absence is bound and FRAME-39 reads it.
+           (empty-seen
+             (begin (system (string-append "touch " (d-store d) "/writers"))
+                    (nudge!)
+                    (let ((bound (scaled 60000 (load-factor))) (t0 (real-time)))
+                      (let wait ()
+                        (cond ((and r1 (exists (lambda (f) (let ((r (frame-rev f)))
+                                                             (and r (> r r1) (equal? (clause 'items f) '()))))
+                                               (frames-of (sub-lines sub))))
+                               #t)
+                              ((> (- (real-time) t0) bound)
+                               (printf "PREREQUISITE NOT MET: no empty frame past revision ~s within ~s ms after the touch and its read; the stale frame FRAME-39 to FRAME-41 need was not constructed, so their reading is not one of frame-settled~%" r1 bound)
+                               #f)
+                              (else (sleep-ms 20) (wait)))))))
+           (f2 (begin (system (string-append "rm -f " release " " release ".held"))
+                      (mirror! d "mirrorsb" 1 '() '(put ((kind . section) (title . "second") (parent . root) (ord . 2))))
                       (nudge!)
+                      (spawn (lambda ()
+                               (let wait ((k 0))
+                                 (unless (or (file-exists? (string-append release ".held")) (> k 400))
+                                   (sleep-ms 50) (wait (+ k 1))))
+                               (sleep-ms 1000)
+                               (system (string-append "touch " release))))
                       (frame-settled d sub (or r1 seen) (cons "mirrorsb" 1))))
            (r2 (frame-rev f2))
            (between (filter (lambda (f) (let ((r (frame-rev f))) (and r r1 r2 (> r r1) (< r r2))))
                             (frames-of (sub-lines sub)))))
       (printf "the slow reload: a reload took ~s ms; frames between the two actions' frames: ~s, of them empty: ~s~%"
               reload-ms (length between) (length (filter (lambda (f) (equal? (clause 'items f) '())) between)))
-      (want "FRAME-39 SLOW: every frame between the two actions' frames is empty"
-            (for-all (lambda (f) (equal? (clause 'items f) '())) between)
-            #t)
+      (want "FRAME-39 SLOW: the stale empty frame was seen before action 2, and between the two actions' frames there is at least one frame, every one empty"
+            (list empty-seen (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between))
+            '(#t #t #t))
       (want "FRAME-40 action 1's frame is its own: (added mirrorsa.1)"
             (item-set f1) (expected-set (list 'added "mirrorsa.1")))
       (want "FRAME-41 action 2's frame is its own, not the stale empty one before it: (added mirrorsb.1)"
             (item-set f2) (expected-set (list 'added "mirrorsb.1")))
       (unless (and (number? reload-ms) (> reload-ms 600))
-        (printf "NOTE: the reload took ~s ms; the race above was not constructed~%" reload-ms))
+        (printf "NOTE: the reload took ~s ms, not over 600 ms; the hold on action 2's fold constructs the race whatever the reload took~%" reload-ms))
       (stop-daemon! d))
 
     ;; A RETRACTION: two writers' records claim one single identity, the
