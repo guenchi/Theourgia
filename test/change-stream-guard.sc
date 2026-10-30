@@ -312,30 +312,34 @@
 (define (lib-env lib) (string-append "CHEZSCHEMELIBDIRS=" lib " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"))
 (system (string-append (lib-env this-lib) " scheme --script ../theourgia.sc init --store " prepared " > /dev/null 2>&1 < /dev/null"))
 (system (string-append (lib-env this-lib) " THEOURGIA_LOCAL=1 scheme --script ../theourgia.sc insert --title Seed --text seed --store " prepared " > /dev/null 2>&1 < /dev/null"))
-;; THE DAEMON PROGRAM OF A LIBRARY PATH: theourgia/theourgiad.sc in the
-;; first of its roots that holds one.
-(define (daemon-program lib)
+;; THE DAEMON PROGRAM, relative to a library root. The spawn in start! names
+;; it by this define, so a reading of this file's source (entry-split's
+;; SPAWNS) sees which program the spawn starts.
+(define daemon-file "theourgia/theourgiad.sc")
+;; THE ROOT OF A LIBRARY PATH that holds daemon-file: the first of its roots
+;; that does.
+(define (daemon-root lib)
   (let loop ((roots (let split ((i 0) (start 0) (out '()))
                       (cond ((= i (string-length lib)) (reverse (cons (substring lib start i) out)))
                             ((char=? (string-ref lib i) #\:) (split (+ i 1) (+ i 1) (cons (substring lib start i) out)))
                             (else (split (+ i 1) start out))))))
     (cond ((null? roots)
-           (printf "NOT A READING: no theourgia/theourgiad.sc under ~s~%" lib) (exit 2))
-          ((file-exists? (string-append (car roots) "/theourgia/theourgiad.sc"))
-           (string-append (car roots) "/theourgia/theourgiad.sc"))
+           (printf "NOT A READING: no ~a under ~s~%" daemon-file lib) (exit 2))
+          ((file-exists? (string-append (car roots) "/" daemon-file)) (car roots))
           (else (loop (cdr roots))))))
 (define (start! name lib)
-  (let ((st (string-append scratch "/" name)) (sk (string-append sockets "/" name ".sock"))
-        (hm (string-append scratch "/" name "-home"))
-        (rn (daemon-program lib)) (lg (string-append scratch "/" name ".log")))
+  (let* ((st (string-append scratch "/" name)) (sk (string-append sockets "/" name ".sock"))
+         (hm (string-append scratch "/" name "-home"))
+         (rt (daemon-root lib)) (rn (string-append rt "/" daemon-file)) (lg (string-append scratch "/" name ".log")))
     (system (string-append "rm -rf " st " " hm "; cp -R " prepared " " st "; cp -R " prepared-home " " hm))
     ;; the copy's own device and inode, in the identity it carries
     (system (string-append "perl -e 'my ($f, $d) = @ARGV; my @s = stat $d; open my $h, q(<), $f or die; local $/; my $t = <$h>; "
                            "$t =~ s/\\(device \\d+\\)/(device $s[0])/; $t =~ s/\\(inode \\d+\\)/(inode $s[1])/; "
                            "open $h, q(>), $f or die; print $h $t' " st "/instance.sexp " st))
-    ;; RN IS THE PROGRAM, theourgiad.sc in the first root of LIB that holds
-    ;; one; the socket path, unique to this daemon, is what stop! matches.
-    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_HOME=" hm " " (lib-env lib) " sh -c 'scheme --script " rn
+    ;; THE PROGRAM IS daemon-file under RT, the first root of LIB that holds
+    ;; it (RN, the same path); the socket path, unique to this daemon, is what
+    ;; stop! matches.
+    (system (string-append "THEOURGIA_TRACE=1 THEOURGIA_HOME=" hm " " (lib-env lib) " sh -c 'scheme --script " rt "/" daemon-file
                            " serve " st " --socket " sk " > " lg " 2>&1' &"))
     (let up ((k 0))
       (cond ((file-exists? sk) (list st sk rn lg hm))
