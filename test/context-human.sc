@@ -102,9 +102,9 @@
 (define (head-word l)
   (let loop ((i 0))
     (if (or (= i (string-length l)) (char=? (string-ref l i) #\space)) (substring l 0 i) (loop (+ i 1)))))
-(want "H the lines that are not entries: for, the five sections, notes, excluded, budget, then the receipt"
+(want "H the lines that are not entries: for, the five sections, users, notes, excluded, budget, then the receipt"
       (map head-word (filter (lambda (l) (and (> (string-length l) 0) (not (char=? (string-ref l 0) #\space)))) (lines human)))
-      '("for" "constraints" "evidence" "to-verify" "counterexamples" "background" "notes" "(excluded" "(budget" "(receipt"))
+      '("for" "constraints" "evidence" "to-verify" "counterexamples" "background" "users" "notes" "(excluded" "(budget" "(receipt"))
 
 ;; An incomplete clause follows the receipt, as it does on the wire.
 (define constructed
@@ -127,6 +127,30 @@
 ;; A TRAILING RECEIPT LINE IS LEFT OUT OF BOTH, whether or not the base prints
 ;; one, so the row does not say what the base lacks: it says the rest is the
 ;; same. That this tree prints one is its own element.
+;; THE USERS CLAUSE IS LEFT OUT OF THIS TREE'S SIDE (its line and the user
+;; lines under it, and the users counter of the excluded line), and the
+;; budget's used number out of both, which those bytes change: the row says
+;; the rest is the base's, as before the clause came.
+(define (without-users text)
+  (let loop ((ls (lines text)) (out '()) (in-users #f))
+    (cond ((null? ls) (join (reverse out)))
+          ((and (>= (string-length (car ls)) 5) (string=? (substring (car ls) 0 5) "users")) (loop (cdr ls) out #t))
+          ((and in-users (>= (string-length (car ls)) 2) (string=? (substring (car ls) 0 2) "  ")) (loop (cdr ls) out #t))
+          (else (loop (cdr ls) (cons (without-users-counter (car ls)) out) #f)))))
+(define (without-users-counter l)
+  (let ((at (let find ((i 0)) (cond ((> (+ i 8) (string-length l)) #f) ((string=? (substring l i (+ i 8)) " (users ") i) (else (find (+ i 1)))))))
+    (if (not at)
+        l
+        (let ((close (let find ((i (+ at 8))) (if (char=? (string-ref l i) #\)) i (find (+ i 1))))))
+          (string-append (substring l 0 at) (substring l (+ close 1) (string-length l)))))))
+(define (without-used text)
+  (join (map (lambda (l)
+               (let ((at (let find ((i 0)) (cond ((> (+ i 6) (string-length l)) #f) ((string=? (substring l i (+ i 6)) "(used ") i) (else (find (+ i 1)))))))
+                 (if (not at)
+                     l
+                     (let ((close (let find ((i (+ at 6))) (if (char=? (string-ref l i) #\)) i (find (+ i 1))))))
+                       (string-append (substring l 0 at) "(used _)" (substring l (+ close 1) (string-length l)))))))
+             (lines text))))
 (define (receipt-line? l) (and (>= (string-length l) 8) (string=? (substring l 0 8) "(receipt")))
 (define (without-receipt-line text)
   (let ((ls (lines text)))
@@ -148,11 +172,11 @@
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N the human output is the base tree's, byte for byte, a trailing receipt line left out of both; this tree's ends with one"
+     (want "N the human output is the base tree's, byte for byte, a trailing receipt line left out of both, this tree's users clause and its counter left out of it and the used number out of both; this tree's ends with one"
            (let ((base (call-with-input-file out get-string-all))
                  (now (render-human (ctx S T))))
              (in-order (> (string-length base) 0)
-                       (equal? (without-receipt-line base) (without-receipt-line now))
+                       (equal? (without-used (without-receipt-line base)) (without-used (without-users (without-receipt-line now))))
                        (receipt-line? (or (last-of (lines now)) ""))))
            '(#t #t #t)))))
 

@@ -1372,6 +1372,24 @@ conflicts-with)` once for each pair that contradicts in the scope, and
 lifecycle's word: past every name of the edge): `c` is a hard block, about `m`,
 so the receipt holds it and a verification going stale refuses an older one.
 
+THE USERS OF THE UNIT'S NAMES are a soft clause of their own, always after
+`background`: `(users (listed <k>) (of <n>) [(skipped (no-language <a>)
+(unreadable-code <b>))] (user <id> (name "<n>") (library <lib-id>|none)
+(mode datum|text)) ...)`. For each name a block of T's unit defines -- the
+`def` rows of `(and (hard T ?u unit _) (def ?u ?lib ?name))`, T's own
+definitions included, since T is in its own unit -- it lists the live code
+blocks outside the unit (`(hard T ?u unit _)`) that use the name, by the
+same name-use table `uses` reads: syntactic, and the view's own, the
+committed one without `--working` and the working view with it. They are
+ordered by name, then id; a block that uses two of the names is listed
+under each; `library` and `mode` are as `uses` gives them. `of` is how many
+there are, `listed` how many the budget admitted, so `(listed 0) (of 0)`
+says there are none and `(listed 0) (of <n>)` that the budget cut them;
+`skipped` counts the blocks of the view the table could not read, as
+`uses` counts them, when there are some. Neither goal is in the receipt,
+and a user is listed whatever else the answer shows of it, without a
+version: the clause names blocks it does not show.
+
 What else fits follows, never in a hard section and never in the receipt,
 each candidate once, an earlier step winning: first, with `--names <name>`
 (repeated, one name each), the definitions of each given name in T's scope,
@@ -1380,9 +1398,9 @@ definitions of the names a hard code block in force uses, one step, each
 of several candidates for one name marked `(ambiguous)`; in `background`,
 the blocks that verify or implement a constraint; in `counterexamples`, the
 blocks a constraint superseded or refuted that are not in force; in
-`background`, the blocks that rest on a hard block, the blocks relevant to
-T's title and text by score, and the ancestors of hard blocks, nearest
-first. Without `--all-validity` only candidates in force are taken;
+`background`, the blocks that rest on a hard block; in `users`, the users
+of the unit's names; in `background`, the blocks relevant to T's title and
+text by score, and the ancestors of hard blocks, nearest first. Without `--all-validity` only candidates in force are taken;
 with it the others are taken too, marked with their validity.
 
 AMBIGUITY IS FOLDED. When one using block's name has more than two
@@ -1420,8 +1438,9 @@ as their bytes. Nine tenths of it are usable, and an
 `ok` answer without its cut is never larger. The envelope is reserved at
 its largest first, from the request and the hard set alone: the whole
 receipt, the notes, the budget clause at the budget's own digits,
-`insufficient` at twenty of the longest hard entries, the six excluded
-counters at six digits, with `--names` the `asked` clause at its largest,
+`insufficient` at twenty of the longest hard entries, the seven excluded
+counters at six digits, the `users` clause and its skipped counts reserved
+at the counters' digits, with `--names` the `asked` clause at its largest,
 and the `(incomplete ...)` clause the
 dispatcher appends when a writer could not be read, which a caller
 receives too. A budget that cannot hold that and T is refused with
@@ -1437,16 +1456,24 @@ cause, implementer, stale), by id -- one that does not fit named in
 `(insufficient (missing ((<id> <bytes>) ...)) [(more <n> (bytes <b>))])`,
 at most twenty named, every later one still tried; then one pass of
 upgrades in hard order, to full when it fits, else to summary; then the
-preferred material in what room is left, one that does not fit at identity
-counted in `(excluded (definitions <n>) (evidence <n>) (counterexamples
-<n>) (dependents <n>) (relevant <n>) (ancestors <n>))`. Which hard blocks
+preferred material in what room is left, in the order above -- the users
+between the dependents and the relevant blocks, so a large relevant step
+cannot crowd them out -- one that does not fit at identity counted in
+`(excluded (definitions <n>) (evidence <n>) (counterexamples <n>)
+(dependents <n>) (users <n>) (relevant <n>) (ancestors <n>))`; a user is
+entered whole or counted there. Which hard blocks
 are shown, and at which level, depends on nothing but the rows of the five
-queries, the hard blocks' records and the request.
+queries, the hard blocks' records and the request: the users clause and its
+skipped counts are reserved at the counters' digits, so a use or an
+unreadable block elsewhere does not move it. A count above 999999 is shown
+as 999999 and its clause ends with `(capped)`: the excluded counters, and
+the users clause's `listed`, `of` and skipped counts.
 
     (ok (for <entry>)
         (constraints (<entry> ...)) (evidence (<entry> ...))
         (to-verify (<entry> ...)) (counterexamples (<entry> ...))
-        (background (<entry> ...)) (notes (<note> ...))
+        (background (<entry> ...)) (users (listed <k>) (of <n>) ...)
+        (notes (<note> ...))
         [(insufficient ...)] (excluded ...) [(folded ...)] [(asked ...)]
         (budget (tokens <t>) (used <u>) (reserve <r>))
         (receipt <premise> ...) (cut <cut>) (versions (...))
@@ -1462,8 +1489,9 @@ preferred entries are not in it; their versions are in `(versions ...)`,
 as on every read. `(name-use syntactic)` says the definitions step
 consulted name use.
 
-The human output prints each section's name and one line per entry, the
-notes one per line, the `insufficient`, `excluded`, `folded`, `asked` and
+The human output prints each section's name and one line per entry, `users`
+with its counts and then one line per user (its id, name, library and
+mode), the notes one per line, the `insufficient`, `excluded`, `folded`, `asked` and
 `budget` clauses as `--wire` writes them, and then the receipt on one line, the clause exactly as
 `--wire` writes it, ready for `commit --premises`; `(incomplete ...)`, when a
 writer could not be read, follows it. The cut and the versions are `--wire`'s
@@ -2658,7 +2686,14 @@ by their parent, ordered by the intent index. A draft of a block named by a prov
 trees built from the working view (`export-code --working`,
 `tools/edit-export.sc`, `tools/landing-freeze.sc`) show a new file and hide
 a deleted one; `outline`, `context`, `read --working` and `eval --working`
-read the committed blocks under the drafts and show neither.
+read the committed blocks under the drafts and show neither. A new file's
+provisional id asked as a block, by any verb that resolves an id over a
+view, is answered `(error provisional-id (id "<id>") (reason
+not-committed))`, whoever asks: without `--working`, and with it once the
+writer's view opens (a refusal of the view is the answer first, as for any
+id). It names no block until a commit makes one, and no committed block is
+near it. An id of another shape (another length, an uppercase digit) stays
+`unknown-id`.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is

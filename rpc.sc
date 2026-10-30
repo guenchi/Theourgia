@@ -753,8 +753,11 @@
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
              ("--keywords" <text>) ("--premises" <datum>)))
 
+  ;; An id of a provisional id's exact shape is answered as one (reduce.sc).
   (define (unknown-id state id)
-    (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
+    (if (provisional-id? id)
+        (provisional-id-refusal id)
+        (list 'error 'unknown-id id (list 'nearest (nearest-ids state id)))))
 
   ;; ---- the facts an editor supplied: loaded on first use -----------------------
   ;;

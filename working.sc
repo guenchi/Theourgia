@@ -607,7 +607,8 @@
                    (active (and e (not (consumed? store state e))))
                    (body (if active (list-ref e 7) (or (field state id 'src) ""))))
               (cond
-                ((not (state-read state id)) (list 'error 'unknown-id id))
+                ((not (state-read state id))
+                 (if (provisional-id? id) (provisional-id-refusal id) (list 'error 'unknown-id id)))
                 (else
                   (let* ((b (if (string? body) (string->utf8 body) body))
                          (text (src-text b)))

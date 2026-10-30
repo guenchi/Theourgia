@@ -37,6 +37,29 @@
 ;;; hard blocks are entered and upgraded before the first preferred
 ;;; candidate is read.
 ;;;
+;;; THE USERS OF THE UNIT'S NAMES are a soft clause of their own, after
+;;; `background`: (users (listed <k>) (of <n>) [(skipped ...)] <user> ...),
+;;; a user (user <id> (name <n>) (library <lib>|none) (mode datum|text)).
+;;; For each name a block of T's unit defines, the live code blocks outside
+;;; the unit that use it by the name-use table `uses` reads, ordered by
+;;; name then id. The names are the def rows of the soft goal
+;;; (and (hard T ?u unit _) (def ?u ?lib ?name)), and the unit set is that
+;;; goal's (hard T ?u unit _), not the hard rows, which are joined with
+;;; validity; the unit holds T itself (query.sc, (unit ?t ?t)), so T's own
+;;; definitions are covered. Neither goal is in the receipt, and the notes
+;;; stay the five queries'. The table is the view's own, the working view's
+;;; with --working, syntactic as `uses` says, its skipped counts those of
+;;; the whole view as `uses` counts them. A user is listed whatever else the
+;;; answer shows of it, and is not in the versions: the clause names blocks
+;;; it does not show. Users are admitted after the dependents and before
+;;; the relevant blocks, so never ahead of a hard entry; the clause is
+;;; always there, and `listed` against `of` says when the budget cut it or
+;;; that there are none. It is reserved at the counters' digits whatever its
+;;; counts are (listed, of and both skipped counts at 999999, and capped), so
+;;; which hard blocks are shown, and at which level, never depends on a use
+;;; or an unreadable block elsewhere; a count above the cap is shown as the
+;;; excluded counters show theirs.
+;;;
 ;;; THE BUDGET is tokens of four bytes over the answer as the wire renders
 ;;; it, the cut clause left out (it grows with any write anywhere). Nine
 ;;; tenths of it are usable, and an ok answer is never larger. The envelope
@@ -44,8 +67,9 @@
 ;;; and the hard set alone: the whole receipt, the notes, the working clause
 ;;; with --working, the budget clause at the budget's own digits, the
 ;;; insufficient clause at twenty of the longest hard entries, the excluded
-;;; counters at six digits, and with --names the asked clause at its
-;;; largest. An entry is admitted at a level
+;;; counters at six digits, the users clause and its skipped counts reserved
+;;; at the counters' digits, and with
+;;; --names the asked clause at its largest. An entry is admitted at a level
 ;;; only when the answer with it fits. Greedy, one pass: stated, not
 ;;; optimal. `--budget min+<t>` asks for the minimum the request would
 ;;; report in budget-too-small plus t tokens, and the budget clause shows
@@ -77,12 +101,17 @@
 ;;; under the writer's draft lock when the writer has a draft area; for a
 ;;; writer that has none it creates nothing.
 (library (theourgia context)
-  (export context-verb)
+  (export context-verb
+          ;; users-clause and reserved-users are exported for the fixture's
+          ;; rows on the counter cap (test/context-users.sc), not as an
+          ;; interface.
+          users-clause reserved-users)
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
-          (only (theourgia store) search-state distinct-query-text sealed-state? sealed-state-notes)
+          (only (theourgia store) search-state distinct-query-text sealed-state? sealed-state-notes library-locator)
+          (only (theourgia name-use) name-use-table live-kind)
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire printed-entry)
@@ -324,7 +353,54 @@
         (if (pair? unhashable)
             (list 'error 'unhashable-hard-block (cons 'id unhashable))
             (budgeted dispatch-helper store view (record-reader dispatch-helper store view) S t budget names all? order versions whys validity-clause place notes receipt
-                      (lambda (h) (hashtable-ref validity h 'valid)) marking appended)))))
+                      (lambda (h) (hashtable-ref validity h 'valid)) marking appended (unit-users S view t))))))
+
+  ;; ---- the users of the unit's names ----------------------------------------------------------
+
+  ;; THE USERS OF WHAT T'S UNIT DEFINES, from the name-use table `uses` reads,
+  ;; over the request's own view. The names are the def rows of the unit's
+  ;; blocks and the unit is the hard rule's (T and what is inside it), both
+  ;; asked of the session as soft goals, outside the receipt. A block using
+  ;; two of the names is listed under each. The table is built only when the
+  ;; unit defines a name. -> #(<entries> <skipped clause or #f>), the
+  ;; skipped clause counted over the whole view, as `uses` counts it.
+  (define (unit-users S view t)
+    (let ((names (list-sort string<? (unique (map caddr (rows-of S `(and (hard ,t ?u unit _) (def ?u ?lib ?name))))))))
+      (if (null? names)
+          (vector '() #f)
+          (let* ((unit (map car (rows-of S `(hard ,t ?u unit _))))
+                 (table (name-use-table view))
+                 (library-of (library-locator view (live-kind view)))
+                 (reasons (let-values (((ks vs) (hashtable-entries (vector-ref table 2)))) (vector->list vs)))
+                 (count (lambda (r) (length (filter (lambda (x) (eq? x r)) reasons))))
+                 (counts (filter (lambda (c) (> (cadr c) 0))
+                                 (list (list 'no-language (count 'no-language))
+                                       (list 'unreadable-code (count 'unreadable-code))))))
+            (vector
+              (apply append
+                     (map (lambda (n)
+                            (map (lambda (id)
+                                   (list 'user id (list 'name n) (list 'library (or (library-of id) 'none))
+                                         (list 'mode (hashtable-ref (vector-ref table 1) id 'text))))
+                                 (list-sort string<? (filter (lambda (id) (not (member id unit)))
+                                                             (unique (hashtable-ref (vector-ref table 0) n '()))))))
+                          names))
+              (and (pair? counts) (cons 'skipped counts)))))))
+
+  ;; THE USERS CLAUSE: how many users it lists of how many there are, the
+  ;; table's skipped counts when it has some, then the users listed.
+  ;; A count above the cap is shown at it, and the clause then says (capped),
+  ;; as the excluded clause does.
+  (define (users-clause listed n skipped)
+    (let* ((k (length listed))
+           (counts (if skipped (map cadr (cdr skipped)) '()))
+           (capped? (exists (lambda (x) (> x counter-cap)) (cons* k n counts))))
+      (append (list 'users (list 'listed (min counter-cap k)) (list 'of (min counter-cap n)))
+              (if skipped
+                  (list (cons 'skipped (map (lambda (c) (list (car c) (min counter-cap (cadr c)))) (cdr skipped))))
+                  '())
+              (if capped? '((capped)) '())
+              listed)))
 
   ;; AUTHORITY IS THE RECORD'S: its effective class, an absent one by kind.
   (define (authoritative? view h)
@@ -408,8 +484,13 @@
   ;; ---- the budget ----------------------------------------------------------------------------
 
   (define section-names '(constraints evidence to-verify counterexamples background))
-  (define excluded-names '(definitions evidence counterexamples dependents relevant ancestors))
+  (define excluded-names '(definitions evidence counterexamples dependents users relevant ancestors))
   (define counter-cap 999999)
+  ;; THE USERS CLAUSE AS RESERVED, whatever its counts: every count at the
+  ;; cap, both skipped counts, and capped.
+  (define reserved-users
+    (list 'users (list 'listed counter-cap) (list 'of counter-cap)
+          (list 'skipped (list 'no-language counter-cap) (list 'unreadable-code counter-cap)) '(capped)))
 
   ;; An ok answer without its cut fits when ten times its bytes are at most
   ;; thirty-six times the budget: four bytes a token, nine tenths usable.
@@ -419,7 +500,7 @@
   ;; the newline after it.
   (define (answer-bytes form) (+ 1 (wire-length form)))
 
-  (define (budgeted dispatch-helper store view records S t budget names all? order versions whys validity-clause place notes receipt validity-of marking appended)
+  (define (budgeted dispatch-helper store view records S t budget names all? order versions whys validity-clause place notes receipt validity-of marking appended users)
     (let* ((version (lambda (h) (let ((p (assoc h versions))) (and p (cdr p)))))
            (identity (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) 'identity)))
            (pair-of (lambda (h) (cons h (version h))))
@@ -454,6 +535,8 @@
                            ;; the working clause, reserved as it is rendered
                            marking
                            (map (lambda (n) (list n '())) section-names)
+                           ;; the users clause with none listed, at the counters' digits
+                           (list reserved-users)
                            (list (list 'notes notes))
                            reserved-insufficient
                            (list reserved-excluded)
@@ -469,7 +552,7 @@
       (if (not (fits? base-size budget))
           (list 'error 'budget-too-small (list 'minimum (minimum-budget base tail)))
           (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail reserved-asked marking))))
+                 version identity pair-of cost base-size tail reserved-asked marking users))))
 
   ;; THE SMALLEST BUDGET THE RESERVATION AND THE BLOCK ASKED FOR FIT IN. The
   ;; reservation holds the budget at its own digits, so it is found digit
@@ -482,7 +565,7 @@
         (if (< need (expt 10 digits)) need (loop (+ digits 1))))))
 
   (define (admit dispatch-helper store view records S t budget names all? order whys validity-clause place notes receipt validity-of
-                 version identity pair-of cost base-size tail reserved-asked marking)
+                 version identity pair-of cost base-size tail reserved-asked marking users)
     (let ((size base-size)
           (levels (make-hashtable string-hash string=?))
           (counts (map (lambda (n) (cons n 0)) section-names))
@@ -520,7 +603,14 @@
       (let* ((hard-entry (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) (hashtable-ref levels h 'identity))))
              (L (lc:lifecycle view))
              (preferred (preferred-steps dispatch-helper store view S t names all? order place L))
-             (steps (vector-ref preferred 0))
+             ;; THE USERS ARE A STEP OF THEIR OWN, after the dependents and
+             ;; before the relevant blocks; each candidate is its entry.
+             (steps (let split ((l (vector-ref preferred 0)))
+                      (cond ((null? l) '())
+                            ((eq? (list-ref (car l) 4) 'dependents)
+                             (cons* (car l) (list 'users 'users '() (vector-ref users 0) 'users) (cdr l)))
+                            (else (cons (car l) (split (cdr l)))))))
+             (listed '())
              (groups (vector-ref preferred 2))
              (asked (vector-ref preferred 3))
              ;; each folded group's shown count, kept by the ids it entered
@@ -550,22 +640,29 @@
               (for-each
                 (lambda (c)
                   (set! n (+ n 1))
-                  (let* ((id (car c)) (cwhys (cdr c))
-                         (g (and (memq 'fold step) (hashtable-ref group-of id #f)))
-                         (v (lc:validity-of L id))
-                         (vclause (and (not (eq? (car v) 'valid)) (cons* 'validity (car v) (lc:validity-reasons v))))
-                         (ver (version-of view id))
-                         (pair (cons id ver)))
-                    (if (and g fold-refused)
-                        (exclude! counter)
-                        (let try ((ls allowed))
-                          (if (null? ls)
-                              (exclude! counter)
-                              (let* ((e (entry view records id ver cwhys vclause (car ls))) (d (delta s e pair)))
-                                (if (fits? (+ size d) budget)
-                                    (begin (set! size (+ size d)) (enter! s id e) (set! chosen (cons pair chosen))
-                                           (when g (vector-set! g 3 (+ 1 (vector-ref g 3)))))
-                                    (try (cdr ls)))))))))
+                  (if (eq? s 'users)
+                      ;; A USER IS ENTERED WHOLE OR NOT AT ALL, at its own wire
+                      ;; length; it has no level and no version.
+                      (let ((d (+ 1 (wire-length c))))
+                        (if (fits? (+ size d) budget)
+                            (begin (set! size (+ size d)) (set! listed (cons c listed)))
+                            (exclude! counter)))
+                      (let* ((id (car c)) (cwhys (cdr c))
+                             (g (and (memq 'fold step) (hashtable-ref group-of id #f)))
+                             (v (lc:validity-of L id))
+                             (vclause (and (not (eq? (car v) 'valid)) (cons* 'validity (car v) (lc:validity-reasons v))))
+                             (ver (version-of view id))
+                             (pair (cons id ver)))
+                        (if (and g fold-refused)
+                            (exclude! counter)
+                            (let try ((ls allowed))
+                              (if (null? ls)
+                                  (exclude! counter)
+                                  (let* ((e (entry view records id ver cwhys vclause (car ls))) (d (delta s e pair)))
+                                    (if (fits? (+ size d) budget)
+                                        (begin (set! size (+ size d)) (enter! s id e) (set! chosen (cons pair chosen))
+                                               (when g (vector-set! g 3 (+ 1 (vector-ref g 3)))))
+                                        (try (cdr ls))))))))))
                 (cadddr step))
               (set! tried (cons (list (list-ref step 4) (length (cadddr step)) n) tried))))
           steps)
@@ -573,7 +670,7 @@
         (session-note! S 'preferred-candidates (reverse tried))
         (finish view t budget order hard-entry place notes receipt missing cost sections excluded
                 (reverse chosen) version (vector-ref preferred 1) tail
-                (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked marking))))
+                (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked marking (reverse listed) users))))
 
   ;; (folded (<name> <block> (candidates <n>) (shown <m>)) ...), a group a
   ;; vector #(<name> <block> <candidates> <shown> <entered ids>)
@@ -748,7 +845,7 @@
   ;; ---- the answer ------------------------------------------------------------------------------
 
   (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail
-                  folded asked marking)
+                  folded asked marking listed users)
     (let* ((section-of
              (lambda (name)
                (append (map (lambda (h) (hard-entry h))
@@ -778,6 +875,7 @@
                            ;; form, so `used` and the size check count it
                            marking
                            shown
+                           (list (users-clause listed (length (vector-ref users 0)) (vector-ref users 1)))
                            (list (list 'notes notes))
                            insufficient
                            (list excluded-clause)

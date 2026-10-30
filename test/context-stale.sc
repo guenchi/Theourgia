@@ -146,9 +146,27 @@
 (define base-lib (getenv "THEOURGIA_BASE_LIBDIR"))
 (define st2 (tolerant (store-with-verification "s2")))
 ;; The whole answer -- sections, notes, budget, receipt -- its versions
-;; clause left out on both sides.
+;; clause left out on both sides. THIS TREE'S USERS CLAUSE AND ITS EXCLUDED
+;; COUNTER ARE LEFT OUT OF ITS SIDE, and the budget's used number out of
+;; both, which those bytes change: the rest, receipt included, is the
+;; base's, as before the clause came.
 (define (without-versions a) (if (pair? a) (cons (car a) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a))) a))
-(define product-answer (tolerant (sexpr->string-extended (without-versions (ctx (car st2) (caddr st2))))))
+(define (without-users a)
+  (if (pair? a)
+      (cons (car a)
+            (map (lambda (c) (if (and (pair? c) (eq? (car c) 'excluded))
+                                 (cons 'excluded (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'users)))) (cdr c)))
+                                 c))
+                 (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'users)))) (cdr a))))
+      a))
+(define (without-used a)
+  (if (pair? a)
+      (cons (car a) (map (lambda (c) (if (and (pair? c) (eq? (car c) 'budget))
+                                         (cons 'budget (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'used)))) (cdr c)))
+                                         c))
+                         (cdr a)))
+      a))
+(define product-answer (tolerant (sexpr->string-extended (without-used (without-users (without-versions (ctx (car st2) (caddr st2))))))))
 (cond
   ((not (and base-lib (> (string-length base-lib) 0)))
    (printf "SKIP: THEOURGIA_BASE_LIBDIR is unset: set it to a library root holding the base tree's theourgia/ and igropyr/ to compare a receipt with the base's (an opt-in, not a failure)~%"))
@@ -162,12 +180,16 @@
          (write '(register-verbs! extension-verbs) p)
          (write `(let ((a (rpc-dispatch ,(car st2) '(context "--for" ,(caddr st2) "--budget" "4000") "author")))
                    (display (sexpr->string-extended
-                              (cons (car a) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a))))))
+                              (cons (car a)
+                                    (map (lambda (c) (if (and (pair? c) (eq? (car c) 'budget))
+                                                         (cons 'budget (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'used)))) (cdr c)))
+                                                         c))
+                                         (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'versions)))) (cdr a)))))))
                 p))
        'truncate)
      (system (string-append "THEOURGIA_HOME='" root "/home' CHEZSCHEMELIBDIRS='" base-lib "' CHEZSCHEMELIBEXTS='"
                             (getenv "CHEZSCHEMELIBEXTS") "' scheme --script '" child "' < /dev/null > '" out "' 2>/dev/null"))
-     (want "N a store with no moved verifies edge: the answer, receipt included, is the base tree's, byte for byte"
+     (want "N a store with no moved verifies edge: the answer, receipt included, is the base tree's, byte for byte, but for this tree's users clause and counter and the used number"
            (let ((base (call-with-input-file out get-string-all)))
              (in-order (and (string? product-answer) (> (string-length product-answer) 2)
                             (string-contains? product-answer "(receipt"))

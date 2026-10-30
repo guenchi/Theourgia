@@ -57,6 +57,7 @@
           state->rows rows->state declaration-lookup-counter
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version structural-version structural-version? file-baseline provisional-id provisional-id?
+          provisional-id-refusal
           cut-join
           ord-between block-id
           reduction? reduction-state reduction-overlay? reduction-overlay-set!)
@@ -266,6 +267,13 @@
   (define (provisional-id? x)
     (and (string? x) (= (string-length x) 60) (string=? (substring x 0 4) "new-")
          (for-all draft-hex-digit? (string->list (substring x 4 60)))))
+  ;; THE ANSWER FOR A PROVISIONAL ID ASKED AS A BLOCK. It names no block until
+  ;; a commit makes one from its draft, whoever asks and over whatever view,
+  ;; and no committed block is near it: not unknown-id with its nearest ids.
+  ;; The drafts are not consulted. Every verb that resolves an id over a view
+  ;; answers it from here (rpc.sc's unknown-id, working-read).
+  (define (provisional-id-refusal id)
+    (list 'error 'provisional-id (list 'id id) (list 'reason 'not-committed)))
   ;; THE BASELINE OF A FILE a delete draft stands on: its exported bytes and
   ;; its children's ids in order, since the holder's block hash covers its own
   ;; fields and edges and none of its children's src. -> 64 hex

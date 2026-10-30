@@ -174,7 +174,9 @@
     (and (pair? answer) (list? answer)
          (exists (lambda (x) (and (pair? x) (eq? (car x) 'rev))) (cdr answer))))
   ;; A CONTEXT ANSWER IS PRINTED BY SECTION, for a person: each section's
-  ;; name, then one line per entry, its id, level and title; the notes one
+  ;; name, then one line per entry, its id, level and title; `users` with
+  ;; its counts on its line, then one line per user, the block, the name,
+  ;; its library and mode; the notes one
   ;; per line; the insufficient, excluded, folded, asked and budget clauses
   ;; as the wire writes them; then THE RECEIPT ON ONE LINE, the clause exactly as the wire
   ;; writes it, so a person who reads the human form can hand it to commit
@@ -199,6 +201,20 @@
           (put-char p #\space)
           (display (or (part 'title) "") p)
           (newline p)))))
+  ;; A clause as the wire writes it, without the newline after it.
+  (define (wire-text x)
+    (let ((w (render-wire x))) (substring w 0 (- (string-length w) 1))))
+  (define (context-user-line u)
+    (let ((part (lambda (name)
+                  (let ((c (and (list? u) (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr u)))))
+                    (and c (pair? (cdr c)) (cadr c))))))
+      (call-with-string-output-port
+        (lambda (p)
+          (put-string p "  ")
+          (display (if (and (pair? u) (pair? (cdr u))) (cadr u) "") p)
+          (for-each (lambda (name) (put-char p #\space) (display (or (part name) "") p))
+                    '(name library mode))
+          (newline p)))))
   (define (render-context answer kept)
     (apply string-append
            (append
@@ -207,6 +223,13 @@
                       ((not (and (pair? c) (pair? (cdr c)))) "")
                       ((eq? (car c) 'for)
                        (string-append "for\n" (context-entry-line (cadr c))))
+                      ((eq? (car c) 'users)
+                       (let ((user? (lambda (x) (and (pair? x) (eq? (car x) 'user)))))
+                         (apply string-append "users"
+                                (apply string-append (map (lambda (x) (string-append " " (wire-text x)))
+                                                          (filter (lambda (x) (not (user? x))) (cdr c))))
+                                "\n"
+                                (map context-user-line (filter user? (cdr c))))))
                       ((eq? (car c) 'notes)
                        (apply string-append "notes\n"
                               (map (lambda (n) (string-append "  " (render-wire n))) (cadr c))))
