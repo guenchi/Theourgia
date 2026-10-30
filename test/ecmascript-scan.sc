@@ -419,6 +419,12 @@
                 (and (= 1 (length w)) (let ((o (cadddr (car w)))) (and (memv o (cdr slashes)) #t)))))
         '((0) #t #t)))
 ;; LINEAR: the 4N file costs at most six times the N file, both cut at f.
+;; THE BOUND IS A GUARD, NOT A MEASUREMENT: a linear scan reads 4 and a
+;; quadratic one 16, so 6 leaves half again for noise and still tells the
+;; two apart. THE MEDIAN OF THREE ALTERNATING PAIRS decides it, so one
+;; stalled window (a collection, the process descheduled) cannot: on a
+;; loaded three-core runner a single pair read 14 and 94 ms, where this
+;; scan's pairs read about 8 and 31 alone and under load.
 (let* ((n 2000)
        (body (lambda (k) (apply string-append (let loop ((i 0) (out '())) (if (= i k) out (loop (+ i 1) (cons "x = (a) / b / c;\n" out)))))))
        (t1 (string-append (body n) "function f() {}\n"))
@@ -428,11 +434,18 @@
                 (let ((b (string->utf8 t)))
                   (let* ((t0 (real-time)) (r (suggest-boundaries entry b)) (t1 (real-time)))
                     (list r (- t1 t0))))))
-       (r1 (timed t1)) (r4 (timed t4)))
-  (printf "  A8 times: N ~a ms, 4N ~a ms\n" (cadr r1) (cadr r4))
-  (want "A8 N and 4N lines of `x = (a) / b / c;`: both two blocks at f, the 4N scan at most 6 times the N scan"
-        (list (car r1) (car r4) (<= (cadr r4) (* 6 (max 1 (cadr r1)))))
-        (list (list (list 0 (off t1 "function f")) '()) (list (list 0 (off t4 "function f")) '()) #t)))
+       (pairs (let loop ((k 0) (out '()))
+                (if (= k 3) (reverse out) (let* ((r1 (timed t1)) (r4 (timed t4))) (loop (+ k 1) (cons (cons r1 r4) out))))))
+       (median (lambda (xs) (list-ref (list-sort < xs) 1)))
+       (m1 (median (map (lambda (p) (cadr (car p))) pairs)))
+       (m4 (median (map (lambda (p) (cadr (cdr p))) pairs))))
+  (for-each (lambda (p) (printf "  A8 times: N ~a ms, 4N ~a ms\n" (cadr (car p)) (cadr (cdr p)))) pairs)
+  (printf "  A8 medians: N ~a ms, 4N ~a ms\n" m1 m4)
+  (want "A8 N and 4N lines of `x = (a) / b / c;`: every pair two blocks at f, the 4N scan's median at most 6 times the N scan's"
+        (list (map (lambda (p) (list (car (car p)) (car (cdr p)))) pairs) (<= m4 (* 6 (max 1 m1))))
+        (list (let ((one (list (list (list 0 (off t1 "function f")) '()) (list (list 0 (off t4 "function f")) '()))))
+                (list one one one))
+              #t)))
 (let ((t "const r = (a) / 2;\nfunction f() {}\nconst q = /x/;\nfunction g() {}\n"))
   (want "A9 the regex reading of `(a) / 2;` dies at its line end: f and g are cuts; an import at f and g is accepted"
         (list (bounds "js" t) ((accepted-in 4 t) (import-with "js" t '("function f" "function g"))))

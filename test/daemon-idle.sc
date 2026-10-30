@@ -1345,8 +1345,15 @@
 ;; between its reclaim's unlink and its republish: the opener refuses
 ;; socket-dir-missing and makes nothing there. Two openers starting at once on
 ;; a fresh run root, both held after their connect probe found nobody, so both
-;; start a daemon: one serves, the other's child is refused serve-busy, and
-;; that opener retries and reaches the one daemon.
+;; start a daemon: one serves, the other's child is refused serve-busy.
+;; THE LOSER'S OPENER CAN ANSWER READY BEFORE ITS CHILD REPORTS: spawn-and-wait!
+;; asks connects? before its child's exit, so it reaches the winner while its
+;; own child, still loading on a slow machine, has not reached the lock. A
+;; count of the log right after both answered ready was too strong: a loaded
+;; runner read 0 twice, and its log held the loser's line afterwards. So each
+;; opener also holds its daemon's report (report-write, which a startup
+;; refusal reaches and `(serving ...)` does not): the loser waits there while
+;; both openers answer ready, and its line is counted after it has exited.
 (define (opener-driver! tag run argv-text)
   (let ((drv (string-append here "/" tag "-drive.sc")))
     (call-with-output-file drv
@@ -1392,10 +1399,38 @@
        (cmd (opener-driver! "q19r" run argv))
        (r1 (string-append here "/q19r1.rel"))
        (r2 (string-append here "/q19r2.rel"))
+       (w1 (string-append here "/q19w1.rel"))
+       (w2 (string-append here "/q19w2.rel"))
        (o1 (string-append here "/q19r1.out"))
-       (o2 (string-append here "/q19r2.out")))
-  (sh (string-append "( " (hold-env (list "opener-after-probe" r1)) cmd " > " o1 " ) & ( "
-                     (hold-env (list "opener-after-probe" r2)) cmd " > " o2 " ) &"))
+       (o2 (string-append here "/q19r2.out"))
+       (busy-count (lambda ()
+                     (let ((t (sh-out (string-append "cat " run "/*/serve.log 2>/dev/null | grep -c '^(error serve-busy'"))))
+                       (guard (e (#t t)) (read (open-input-string t))))))
+       (held-markers (lambda () (filter (lambda (w) (file-exists? (string-append w ".held"))) (list w1 w2))))
+       ;; THE DAEMONS BY PID, NOT BY COUNT: a count of one is also a dead
+       ;; winner beside a loser that has not exited yet.
+       (pids (lambda ()
+               (let ((p (open-input-string (sh-out (string-append "pgrep -f 'theourgiad.sc serve " store " --socket " run "/'")))))
+                 (let loop ((out '()))
+                   (let ((x (guard (e (#t (eof-object))) (read p))))
+                     (if (eof-object? x) (list-sort < out) (loop (if (integer? x) (cons x out) out))))))))
+       (alive? (lambda (pid) (zero? (sh (string-append "kill -0 " (number->string pid) " 2>/dev/null")))))
+       (endpoint (lambda ()
+                   (let* ((t (sh-out (string-append "ls -d " run "/*/socket 2>/dev/null")))
+                          (n (let loop ((i 0)) (if (or (= i (string-length t)) (char=? (string-ref t i) #\newline)) i (loop (+ i 1))))))
+                     (substring t 0 n))))
+       ;; -> the pid the public socket's link names (`<socket>.d/<pid>`), the
+       ;; daemon that published it, or #f.
+       (link-pid (lambda ()
+                   (let* ((t (sh-out (string-append "readlink " (endpoint))))
+                          (digits (let loop ((i (string-length t)) (out '()))
+                                    (cond ((= i 0) out)
+                                          ((char-numeric? (string-ref t (- i 1))) (loop (- i 1) (cons (string-ref t (- i 1)) out)))
+                                          ((null? out) (loop (- i 1) out))
+                                          (else out)))))
+                     (and (pair? digits) (string->number (list->string digits)))))))
+  (sh (string-append "( " (hold-env (list "opener-after-probe" r1) (list "report-write" w1)) cmd " > " o1 " ) & ( "
+                     (hold-env (list "opener-after-probe" r2) (list "report-write" w2)) cmd " > " o2 " ) &"))
   (want "Q19 two openers at once: both held after their connect probe found nobody"
         (list (held? r1) (held? r2))
         '(#t #t))
@@ -1405,17 +1440,35 @@
     (unless (or (>= i 600) (and (driven? o1) (driven? o2)))
       (pause 0.05)
       (loop (+ i 1))))
-  (want "Q19 two openers at once on a fresh run root: both ready"
-        (list (driver-result (file-text o1)) (driver-result (file-text o2)))
-        '(ready ready))
-  (want "Q19 both started a daemon: the log has exactly one serve-busy refusal, the loser's"
-        (let ((t (sh-out (string-append "cat " run "/*/serve.log 2>/dev/null | grep -c '^(error serve-busy'"))))
-          (guard (e (#t t)) (read (open-input-string t))))
-        1)
-  (want "Q19 and one daemon serves the store there"
-        (let ((t (sh-out (string-append "pgrep -f 'theourgiad.sc serve " store " --socket " run "/' | wc -l"))))
-          (guard (e (#t t)) (read (open-input-string t))))
-        1)
+  (let loop ((i 0))
+    (unless (or (>= i 400) (pair? (held-markers)))
+      (pause 0.05)
+      (loop (+ i 1))))
+  (pause 1)
+  (let* ((ps (pids))
+         (winner (link-pid))
+         (loser (and winner (= 2 (length ps)) (memv winner ps) (car (remv winner ps)))))
+    (want "Q19 two openers at once on a fresh run root: both ready while the loser's daemon is held before its report: one report hold reached, no serve-busy line yet, two daemons, one of them the endpoint's publisher"
+          (list (driver-result (file-text o1)) (driver-result (file-text o2))
+                (length (held-markers)) (busy-count) (length ps) (and loser #t))
+          '(ready ready 1 0 2 #t))
+    (release! w1)
+    (release! w2)
+    (let loop ((i 0))
+      (unless (or (>= i 600) (not loser) (not (alive? loser)))
+        (pause 0.05)
+        (loop (+ i 1))))
+    (want "Q19 released, the loser exits and the winner lives: the log has exactly one serve-busy refusal, the loser's, carrying its attempt token"
+          (list (and loser (not (alive? loser))) (and winner (alive? winner)) (busy-count)
+                (let ((ds (filter (lambda (x) (and (pair? x) (eq? (car x) 'error) (pair? (cdr x)) (eq? (cadr x) 'serve-busy)))
+                                  (datums (sh-out (string-append "cat " run "/*/serve.log 2>/dev/null"))))))
+                  (and (= 1 (length ds))
+                       (let ((a (assq 'attempt (filter pair? (cddr (car ds))))))
+                         (and a (string? (cadr a)) (= 16 (string-length (cadr a))))))))
+          '(#t #t 1 #t))
+    (want "Q19 and one daemon serves the store there: the winner, still the endpoint's publisher, accepting a connection"
+          (list (equal? (pids) (if winner (list winner) '())) (and winner (eqv? (link-pid) winner)) (listening? (endpoint)))
+          '(#t #t #t)))
   (sh (string-append "pkill -TERM -f 'theourgiad.sc serve " store " --socket " run "/' 2>/dev/null"))
   (pause 1))
 
