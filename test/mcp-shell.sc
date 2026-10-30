@@ -1441,7 +1441,10 @@
 ;; newline), and answers with an envelope whose stdout is the given text. With
 ;; unlink-first (the J2 tool-site row) it closes its listener and unlinks the
 ;; socket BEFORE writing the answer, so no second connection can be accepted
-;; and lost. It appends one line to its log per answer and exits.
+;; and lost. It appends one line to its log per answer, BEFORE it sends the
+;; answer: a row counts the log as soon as the shell has answered, so an
+;; append after the send can be read as no answer on a slow runner. Then it
+;; exits.
 (define stub-py (string-append here "/stub.py"))
 (call-with-output-file stub-py
   (lambda (o)
@@ -1462,10 +1465,10 @@
       "    buf += chunk\n"
       "if unlink_first:\n"
       "    s.close(); os.unlink(path)\n"
+      "with open(log, 'a') as f: f.write('answered\\n')\n"
       "c.sendall(env.encode()); c.close()\n"
       "if not unlink_first:\n"
-      "    s.close(); os.unlink(path)\n"
-      "open(log, 'a').write('answered\\n')\n")))
+      "    s.close(); os.unlink(path)\n")))
   'truncate)
 (define (start-stub! s name text unlink-first?)
   (let ((tf (string-append here "/" name ".stdout")) (log (string-append here "/" name ".log")))
