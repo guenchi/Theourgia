@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.3.1 — 2026-10-30
+
+*31 commits.* Splitting and import with symbols on real TypeScript and JavaScript: the ECMAScript scan no longer falls back to one block at a division, a regular expression, a template or a generic, a file the scan cannot check is imported whole instead of being left out, a symbol-cut block carries the symbol's name where the language derives none, and JSX-looking text in strings, comments and regular expressions no longer makes plain JavaScript fall back. Beside it: the daemon yields during blocking file I/O, `context` lists the users of a unit's names, the review channel keeps every text of a packet section, a failed commit says why, and the store tools refuse a few wrong landings by name.
+
+### Import with symbols
+
+- Splitting and `import --symbols`: the ECMAScript scan keeps every reading the text has not disproved (a `/` read both as a division and as a regular expression, template and interpolation frames, TypeScript's postfix `!` and type-argument `>`) and takes a line as top level only when every surviving reading does, so divisions, regular expressions, templates and generics no longer make a file fall back with `lexically-uncertain`; past 32 readings the file falls back as before.
+- A file the scan cannot check (no language entry, or text the scanner does not follow) is imported whole and listed under `symbols-imported-whole`; a file whose cut was checked and found wrong is still left out, under `symbols-refused`.
+- A symbol-cut block the language does not name is titled by the symbol the editor gave.
+- JSX in plain JavaScript is refused by position, not by text: a `<` where an operand is expected is an `opener`, and a `/` read as a division whose next token is `>` is a `self-close`; markup in strings, comments, templates and regular expressions passes.
+- In the table scan of the other languages, a comment no longer ends the statement it follows.
+
+### Daemon
+
+- Blocking file I/O yields to the scheduler; a probe defers while a publication is in progress.
+- A public name spelled like another endpoint's lock is refused.
+
+### Context and working views
+
+- `context` gains a `users` clause after `background`: the live code blocks outside the unit that use a name it defines, each listed whole or counted under the excluded counter `users`; the clause is reserved at the counters' digits, so which hard blocks are shown still depends on the hard material only.
+- A draft new file's provisional id is answered `(error provisional-id (id ..) (reason not-committed))` by every verb that resolves an id over a view; with `--working`, a refusal of the view still comes first.
+- A fold that fails at a named cut is answered in its own class (a busy lock as `store-busy`), not as an unusable cut; `context`'s description says that under `--working` a drafted block's premises are the working view's versions.
+
+### Store and store tools
+
+- A failed commit's answer carries a `(failed ...)` clause naming its cause, where it said only `commit-barrier-failed`.
+- `publish-landing` refuses a landing whose datum libraries changed and names a library with no path by its id; a freeze stays current when nothing that lands has changed; `landing-freeze --tree` compares the freeze with the tested edit directory.
+- `import-git` follows the domain for a range instead of refusing a binary.
+- `supply` and `init` keep an existing `.gitignore` and refuse one that is not a file; `supply --clear` writes nothing it need not; the edit tools find the edit directory's sidecar by one lexical fold.
+
+### Review channel
+
+- A packet section may carry several `(text ...)` entries: joined in packet order with one empty line; `(text)` and `(text #f)` carry none; a non-string text refuses the packet as `packet-malformed`.
+
+### Tests
+
+- The change-stream guard runs real daemons on a real seed and reads answers whole; the guard names the daemon program by a define the spawn reading sees; two timing rows wait for the event, not a clock; the scan-cost row reads medians over three pairs; the two-opener daemon rows read the held loser by pid; the two context base rows leave the users clause out of both sides; eval-local binds its runs before their probes; signal!'s identity guard has its own rows; the mcp-shell stub appends its log line before it answers.
+
 ## 1.3.0 — 2026-10-28
 
 *336 commits.* Manteia, the rule language, completed (kinds, stored derived relations, aggregation and stratified negation, incremental advance); structural drafts; a review channel that carries a frozen candidate; the daemon answering from its publication with one session kept across requests, started by the MCP shell and leaving when idle; a store identity that survives a remount; the reducer's pending queue and gates made linear; and the store's git bridge (import-git, publish-landing, the edit tools).
