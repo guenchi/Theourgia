@@ -100,7 +100,7 @@ if has N1; then
     const files = require("fs").readFileSync(process.argv[2], "utf8").split("\n");
     const want = (c, m) => { if (!c) { console.log("package.json: " + m); process.exitCode = 1; } };
     want(p.name === "theourgia", "name");
-    want(p.version === "1.3.0", "version");
+    want(p.version === "1.3.1", "version");
     want(JSON.stringify(p.os) === JSON.stringify(["darwin", "linux"]), "os");
     want(JSON.stringify(p.cpu) === JSON.stringify(["arm64", "x64"]), "cpu");
     want(p.engines && p.engines.node === ">=18", "engines");
