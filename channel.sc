@@ -278,14 +278,27 @@
                (for-all string? deletes))
           (vector cut drafts news deletes fdir)
           (freeze-refusal fdir))))
-  ;; THE PACKET: (packet <section> ...), a section (section (title <t>) (text
-  ;; <x>) [(children <section> ...)]); sections, since a doc may not be nested.
+  ;; A SECTION'S TEXT: every (text <x>) entry of the section X, in packet
+  ;; order, each read as entry-part reads one (an entry with no value, or #f,
+  ;; carries none), joined with one empty line between two.
+  ;; -> the string, #f when no entry carries one, or malformed when a value
+  ;; is not a string
+  (define (section-text x)
+    (let ((ts (filter (lambda (t) t)
+                      (map (lambda (e) (and (pair? (cdr e)) (cadr e)))
+                           (filter (lambda (e) (eq? (car e) 'text)) (cdr x))))))
+      (cond ((null? ts) #f)
+            ((not (for-all string? ts)) 'malformed)
+            (else (apply string-append (car ts) (map (lambda (t) (string-append "\n\n" t)) (cdr ts)))))))
+  ;; THE PACKET: (packet <section> ...), a section (section (title <t>)
+  ;; (text <x>) ... [(children <section> ...)]), any number of texts, each a
+  ;; string; sections, since a doc may not be nested.
   ;; -> the sections, or the refusal
   (define (read-packet path)
     (let ((d (file-datum path)))
       (define (section? x)
         (and (list? x) (pair? x) (eq? (car x) 'section) (for-all pair? (cdr x)) (string? (entry-part x 'title))
-             (let ((t (entry-part x 'text))) (or (not t) (string? t)))
+             (not (eq? (section-text x) 'malformed))
              (let ((c (assq 'children (cdr x)))) (or (not c) (and (list? c) (for-all section? (cdr c)))))))
       (if (and (list? d) (pair? d) (eq? (car d) 'packet) (for-all section? (cdr d)))
           (cdr d)
@@ -469,7 +482,7 @@
                       (set! n (+ n 1))
                       (set! out (cons (cons parent
                                             (append (list '(kind . section) (cons 'title (entry-part x 'title)) '(packet . #t))
-                                                    (let ((t (entry-part x 'text))) (if t (list (cons 'text t)) '()))))
+                                                    (let ((t (section-text x))) (if t (list (cons 'text t)) '()))))
                                       out))
                       (walk (let ((c (assq 'children (cdr x)))) (if c (cdr c) '())) k)))
                   xs))

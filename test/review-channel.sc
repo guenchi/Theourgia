@@ -978,6 +978,64 @@
                   (map (lambda (id) (car (run XF "codex" 'read id "--cut" base))) secs)
                   (map (lambda (id) (field-of XF id 'text)) secs) (map (lambda (id) (field-of XF id 'packet)) secs)))
       (list '("What changed" "Why") LCF #t '(ok ok) '("a.txt's first line" "the reader asked") '(#t #t)))
+;; A SECTION WITH SEVERAL TEXTS keeps every one: the section block's text is
+;; their concatenation in packet order, one empty line between two; one text
+;; is as before, and no text is still no text. A (text) or (text #f) entry
+;; carries no text, as before, wherever it stands; an empty string is a text.
+;; Each is read back through the scoped store at the letter copy's baseline.
+(define PKT (string-append root "/packet-texts.sexp"))
+(call-with-output-file PKT
+  (lambda (p) (write '(packet (section (title "Two") (text "a") (text "b"))
+                              (section (title "Three") (text "x") (text "y") (text "z"))
+                              (section (title "One") (text "only"))
+                              (section (title "None"))
+                              (section (title "Mixed") (text) (text "a") (text #f) (text "") (text "b") (text #f)
+                                       (children (section (title "Child") (text #f) (text "c") (text "d"))))
+                              (section (title "Absent") (text) (text #f)))
+                     p)))
+(define XPT (string-append root "/scoped-texts"))
+(define SPT (scope-run MF "author" XPT "--freeze" FZ "--roots" HA "--for" "codex" "--packet" PKT))
+(define (section-titled store t)
+  (find (lambda (id) (and (equal? (field-of store id 'kind) 'section) (equal? (field-of store id 'title) t))) (outline-order store)))
+(define (text-read store id cut)
+  (let* ((a (run store "codex" 'read id "--cut" cut))
+         (rec (and (pair? a) (eq? (car a) 'ok) (pair? (cdr a)) (cadr a)))
+         (fs (and (list? rec) (assq 'fields rec)))
+         (t (and fs (assq 'text (cdr fs)))))
+    (and t (cdr t))))
+(define (texts-at title)
+  (let ((id (section-titled XPT title)) (base (field-of XPT (one SPT 'letter-copy) 'baseline)))
+    (and id base (text-read XPT id base))))
+(want "CR-2b a section with two texts arrives whole: its block's text is the first, an empty line, the second, byte for byte"
+      (in-order (car SPT) (one SPT 'packet) (texts-at "Two")
+                (let ((t (texts-at "Two"))) (and (string? t) (equal? (string->utf8 t) (string->utf8 "a\n\nb")))))
+      (list 'ok 7 "a\n\nb" #t))
+(want "CR-2c a section with three texts keeps their packet order"
+      (texts-at "Three")
+      "x\n\ny\n\nz")
+(want "CR-2d a section with one text holds it as before, and a section with none has no text"
+      (in-order (texts-at "One") (texts-at "None") (and (section-titled XPT "None") #t))
+      (list "only" #f #t))
+(want "CR-2f entries carrying no text drop out before, between and after the texts, an empty string stays, a section of such entries only has no text, and a child section joins its own"
+      (in-order (texts-at "Mixed") (texts-at "Absent") (and (section-titled XPT "Absent") #t) (texts-at "Child")
+                (let ((c (section-titled XPT "Child"))) (and c (equal? (parent-of XPT c) (section-titled XPT "Mixed")))))
+      (list "a\n\n\n\nb" #f #t "c\n\nd" #t))
+;; A text that is not a string refuses the packet, wherever it stands in its
+;; section, before anything is made.
+(define PKX (string-append root "/packet-text-bad.sexp"))
+(call-with-output-file PKX (lambda (p) (write '(packet (section (title "Bad") (text "a") (text 5))) p)))
+(define PKY (string-append root "/packet-text-bad-child.sexp"))
+(call-with-output-file PKY
+  (lambda (p) (write '(packet (section (title "Top") (text "a")
+                                       (children (section (title "Deep") (text "x") (text "y") (text 5)))))
+                     p)))
+(want "CR-2e a section whose second text, or a child's third, is not a string refuses packet-malformed naming the file, and makes nothing"
+      (in-order (scope-run MF "author" (string-append root "/x-badtext") "--freeze" FZ "--roots" HA "--for" "codex" "--packet" PKX)
+                (dir-exists? (string-append root "/x-badtext"))
+                (scope-run MF "author" (string-append root "/x-badtext2") "--freeze" FZ "--roots" HA "--for" "codex" "--packet" PKY)
+                (dir-exists? (string-append root "/x-badtext2")))
+      (list (list 'error 'bad-request '(reason packet-malformed) (list 'file PKX)) #f
+            (list 'error 'bad-request '(reason packet-malformed) (list 'file PKY)) #f))
 (want "CR-3 the main store is not written by the scope: its applied cut is the one before, and no letter names the scope"
       (in-order (equal? (reduce-applied-cut (state MF)) cut-before)
                 (find (lambda (id) (equal? (field-of MF id 'scope) XF)) (outline-order MF)))

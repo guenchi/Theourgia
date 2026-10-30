@@ -1829,9 +1829,12 @@ this store: its cut stays the freeze's pinned cut, so the landing is not
 refused, and `collect-into --letter new` writes the letter after it. The
 answer has `(letter new)`, and `(before <n>)` and `(packet <n>)` after the
 block count. `--packet <file>` holds one datum, `(packet <section> ...)`,
-each `(section (title <t>) [(text <x>)] [(children <section> ...)])`,
-written as sections under the letter copy before the baseline is taken; a
-packet section has no `origin`, so it is not a copy. A file that is not one
+each `(section (title <t>) [(text <x>) ...] [(children <section> ...)])`,
+written as sections under the letter copy before the baseline is taken. A
+section may carry any number of texts, each a string; its block's text is
+them all in packet order, one empty line between two. A `(text)` or
+`(text #f)` entry carries no text and is passed over; `(text "")` is a
+text. A packet section has no `origin`, so it is not a copy. A file that is not one
 such datum is `(error bad-request (reason packet-malformed) (file ..))`.
 
 A SCOPED STORE UNDER ITS OWN HOME. `--home <h>` makes the new store under
