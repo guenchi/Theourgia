@@ -2,7 +2,7 @@
 
 ## 1.3.1 — 2026-10-30
 
-*31 commits.* Splitting and import with symbols on real TypeScript and JavaScript: the ECMAScript scan no longer falls back to one block at a division, a regular expression, a template or a generic, a file the scan cannot check is imported whole instead of being left out, a symbol-cut block carries the symbol's name where the language derives none, and JSX-looking text in strings, comments and regular expressions no longer makes plain JavaScript fall back. Beside it: the daemon yields during blocking file I/O, `context` lists the users of a unit's names, the review channel keeps every text of a packet section, a failed commit says why, and the store tools refuse a few wrong landings by name.
+*31 commits.* Splitting and import with symbols on real TypeScript and JavaScript: the ECMAScript scan no longer falls back to one block at a division, a regular expression, a template or a generic (on a real TypeScript tree of 132 files, 28 were split by symbol before and all 132 after), a file the scan cannot check is imported whole instead of being left out, a symbol-cut block carries the symbol's name where the language derives none, and JSX-looking text in strings, comments and regular expressions no longer makes plain JavaScript fall back. Beside it: the daemon yields during blocking file I/O, `context` lists the users of a unit's names, the review channel keeps every text of a packet section, a failed commit says why, and the store tools refuse a few wrong landings by name.
 
 ### Import with symbols
 
