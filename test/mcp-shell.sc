@@ -878,11 +878,31 @@
   ;; genuinely different envelope -- measured, the two differed in that
   ;; one field and in nothing else -- and comparing them would be asking
   ;; two callers who want different things to say the same thing.
-  (want "MC-envelope-shared the shell and the command line put the same bytes on the wire"
-        (let ((a (file-text seen-cli)) (b (file-text seen-mcp)))
+  ;; NOTE: ALL BUT THE VERSION, UNTIL 2b. The shell asks for version 2 (a
+  ;; client that understands keepalives); the command line here is core.sc's
+  ;; forwarding, which stays at version 1 until Landing 2b moves it to 2.
+  ;; The bytes are compared whole but for that one digit: the command line's
+  ;; must be "(request 1 " and the shell's "(request 2 ", and everything
+  ;; after those eleven characters, the terminator included, must be the
+  ;; same. The tag is in the compared prefix, so a datum under another tag
+  ;; fails, and so does one cut short; the two forged cases are run through
+  ;; the same comparison here and must fail. When 2b lands, core = 1 goes
+  ;; red: that is this row's reminder to compare the bytes whole again.
+  (want "MC-envelope-shared the shell and the command line put the same envelope on the wire, but for the version: the shell's 2, the command line's (core forwarding's) 1 until 2b"
+        (let* ((a (file-text seen-cli)) (b (file-text seen-mcp))
+               (n 11)
+               (same-but-version?
+                 (lambda (cli shell)
+                   (and (>= (string-length cli) n) (>= (string-length shell) n)
+                        (string=? (substring cli 0 n) "(request 1 ")
+                        (string=? (substring shell 0 n) "(request 2 ")
+                        (string=? (substring cli n (string-length cli)) (substring shell n (string-length shell))))))
+               (tail (if (>= (string-length b) n) (substring b n (string-length b)) "")))
           (list (if (> (string-length a) 0) 'the-cli-sent-something (list 'cli a))
-                (if (string=? a b) 'and-the-shell-sent-the-same (list 'differ a b))))
-        '(the-cli-sent-something and-the-shell-sent-the-same))
+                (if (same-but-version? a b) 'and-the-rest-is-the-same (list 'differ a b))
+                (same-but-version? (string-append "(wrong 1 " tail) b)
+                (same-but-version? (string-append "(request 1 " (if (> (string-length tail) 0) (substring tail 0 (- (string-length tail) 1)) "")) b)))
+        '(the-cli-sent-something and-the-rest-is-the-same #f #f))
 
   ;; NEVER: AND IT IS THE ENVELOPE THE DAEMON PARSES, spelled out here once so
   ;; that "both sent the same thing" cannot be satisfied by both sending
@@ -903,7 +923,7 @@
   ;; resolved by the shell rather than by the library under test.
   (want "MC-envelope-shared and the bytes are the request envelope, terminator and all"
         (file-text seen-mcp)
-        (string-append "(request 1 \"" (resolved-by-the-shell cstore) "\" \""
+        (string-append "(request 2 \"" (resolved-by-the-shell cstore) "\" \""
                        (or (getenv "THEOURGIA_ACTOR") (getenv "USER") "cli")
                        "\" \"w\" wire \"" (resolved-by-the-shell ".") "\" #f read \"x.1\" \"--writer\" \"w\")\n")))
 

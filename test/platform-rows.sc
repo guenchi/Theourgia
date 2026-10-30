@@ -502,6 +502,7 @@
     ("../ffi.sc" ECHILD (platform-number (quote ECHILD)))
     ("../ffi.sc" EEXIST (platform-number (quote EEXIST)))
     ("../ffi.sc" EINTR (platform-number (quote EINTR)))
+    ("../ffi.sc" EINVAL (platform-number (quote EINVAL)))
     ("../ffi.sc" EIO (platform-number (quote EIO)))
     ("../ffi.sc" EISDIR (platform-number (quote EISDIR)))
     ("../ffi.sc" ELOOP (platform-number (quote ELOOP)))
@@ -658,7 +659,7 @@
       (list (length read-definitions)
             (and (member '("../client.sc" ENOENT) read-definitions) (member '("../ffi.sc" ENOENT) read-definitions) #t)
             (> (symbol-count 'spawn-O_RDONLY (file-forms "../ffi.sc")) 0))
-      (list 61 #t #t))
+      (list 62 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))

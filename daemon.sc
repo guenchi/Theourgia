@@ -47,7 +47,8 @@
                 make-message-condition make-irritants-condition
                 open-string-input-port call-with-string-output-port
                 condition? message-condition? condition-message guard exit
-                parameterize eval environment char-numeric? string-ci=?)
+                parameterize eval environment char-numeric? string-ci=?
+                with-interrupts-disabled make-weak-eq-hashtable)
           ;; NEVER: NAMED ONE BY ONE, AND `link` IS NOT AMONG THEM. A linked
           ;; process that exits abnormally takes its peer down with it
           ;; without asking, which is the one shape this daemon must not
@@ -62,10 +63,10 @@
                 conn-read-start! conn-read-stop!
                 conn-write! conn-write-observed! conn-open? conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch rpc-ok? subscribe-shape-error query-session-provider!)
-          (only (theourgia frame) frame-limit parse-frame frame-field request-shape-error
+          (only (theourgia frame) frame-limit parse-frame frame-refusal frame-field request-shape-error
                 answer-for answer-envelope)
           (only (theourgia client) socket-path envelope-version resolved-name store-here?
-                socket-path-fits? path-too-long)
+                socket-path-fits? path-too-long silence-window-ms)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
@@ -90,7 +91,7 @@
                 lock-spelling)
           (only (theourgia trace) trace-event!)
           (only (theourgia ffi) theourgia-fault theourgia-probe-off? hold-point! hold-sleeper-set!
-                theourgia-send-buffer process-id wall-clock-ms)
+                theourgia-send-buffer process-id wall-clock-ms theourgia-keepalive-ms progress-sink-set!)
           (only (theourgia platform-numbers) platform-number)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
@@ -187,9 +188,10 @@
   ;; once, its answer would depend on where in the leave it happened to run.
   ;; THE WAIT IS BOUNDED: the rest of the grace, the adapters' reports
   ;; (nothing in an adapter waits), one listen! and one symlink!. The grace is
-  ;; capped at 5000 ms where theourgiad reads it, because the late request's
-  ;; answer must arrive inside the thin client's receive timeout
-  ;; (theourgia.sc, send-once, 30 s).
+  ;; capped at 5000 ms where theourgiad reads it, because nothing reaches the
+  ;; late request's client meanwhile: grace + rebind + start-up must fit both
+  ;; the client's silence window (client.sc, silence-window-ms, 30 s) and
+  ;; adapter-idle-ms, the bound before a connection reads.
   (define idle-exit-seconds 0)
   (define idle-grace-default-ms 200)
   (define idle-grace-ms idle-grace-default-ms)
@@ -454,6 +456,105 @@
     (set! ticket-seq (+ ticket-seq 1))
     ticket-seq)
 
+  ;; ---- progress, per request ---------------------------------------------
+  ;;
+  ;; NEVER: A REQUEST'S PROGRESS IS ITS OWN. The work below the executor
+  ;; carries no ticket, so the executor records which ticket it is running
+  ;; (process -> ticket) and the ffi's progress! sink advances that ticket's
+  ;; count; the connection reads only its own ticket's count. A request
+  ;; queued behind another borrows nothing and goes silent after the window,
+  ;; as the work it waits behind would have it.
+  ;; THE CONNECTION OWNS THE COUNT: it registers its ticket at zero before the
+  ;; request is published and removes it on every way out of its wait. A bump
+  ;; advances only a registered ticket, so an executor that bumps after its
+  ;; connection left changes nothing, and nothing is kept for a connection
+  ;; that has gone.
+  ;; NEVER: A TABLE OPERATION OUTSIDE AN INTERRUPT REGION: every actor reads
+  ;; and writes these two tables, and a lookup a preemption splits while
+  ;; another actor grows the table can miss a key that is there (the rule of
+  ;; the ffi's yield tables).
+  ;; THE COUNT IS THE CONNECTION'S, and so is its removal: progress-owners
+  ;; names, for each connection waiting on a version-2 request, the ticket
+  ;; it registered. The wind's after-thunk drops both on every way out it
+  ;; sees; a killed connection runs no unwinds, so main reclaims what a dead
+  ;; one left (progress-reclaim!, from its DOWN clause), and the executor
+  ;; goes on undisturbed.
+  (define progress-counts (make-eqv-hashtable))
+  (define progress-tickets (make-weak-eq-hashtable))
+  (define progress-owners (make-eq-hashtable))
+  (define (progress-register! ticket)
+    (let ((me self))
+      (with-interrupts-disabled
+        (hashtable-set! progress-counts ticket 0)
+        (hashtable-set! progress-owners me ticket))))
+  (define (progress-drop! ticket)
+    (let ((me self))
+      (with-interrupts-disabled
+        (hashtable-delete! progress-counts ticket)
+        (when (eqv? (hashtable-ref progress-owners me #f) ticket)
+          (hashtable-delete! progress-owners me)))))
+  ;; WHO, a process that died: the count its connection registered, if any
+  ;; is left, is removed and traced; anything else is untouched.
+  (define (progress-reclaim! who)
+    (let ((ticket (with-interrupts-disabled
+                    (let ((t (hashtable-ref progress-owners who #f)))
+                      (when t
+                        (hashtable-delete! progress-owners who)
+                        (hashtable-delete! progress-counts t))
+                      t))))
+      (when ticket (trace-event! 'progress-reclaimed ticket #f))))
+  (define (progress-count ticket)
+    (with-interrupts-disabled (hashtable-ref progress-counts ticket #f)))
+  (define (progress-bump!)
+    (let ((me self))
+      (with-interrupts-disabled
+        (let ((ticket (hashtable-ref progress-tickets me #f)))
+          (when (and ticket (hashtable-contains? progress-counts ticket))
+            (hashtable-update! progress-counts ticket (lambda (n) (+ n 1)) 0))))))
+  ;; THUNK runs as this executor's work for TICKET: the association is made
+  ;; before anything is asked and undone on every way out -- the refusal, the
+  ;; answer, a raise.
+  ;; NOTE: THE UNDOING IS READ BACK, IN THE SAME REGION AS THE DELETE, and
+  ;; traced after it (association-cleared, #t when this executor holds no
+  ;; ticket any more). Nothing else can see the removal: a stale entry
+  ;; bumps a count already dropped, and the next with-ticket overwrites it.
+  ;; ME is held by this closure, so the weak table cannot lose the key
+  ;; between the delete and the read.
+  (define (with-ticket ticket thunk)
+    (let ((me self))
+      (dynamic-wind
+        (lambda ()
+          (with-interrupts-disabled (hashtable-set! progress-tickets me ticket))
+          (trace-event! 'executing ticket #f))
+        thunk
+        (lambda ()
+          (let ((cleared (with-interrupts-disabled
+                           (hashtable-delete! progress-tickets me)
+                           (not (hashtable-contains? progress-tickets me)))))
+            (trace-event! 'executing-done ticket #f)
+            (trace-event! 'association-cleared ticket cleared))))))
+  ;; MAY THIS EXECUTOR BEGIN? may-execute?, and when it may, the two seams a
+  ;; row holds an executing request at (INJECTION ONLY): held with the actor
+  ;; alive and making no progress, and the whole process blocked.
+  (define (executing? main-pid ticket)
+    (let ((yes (may-execute? main-pid ticket)))
+      (when yes
+        (hold-point! 'executor-before-verb)
+        (blocking-hold! 'executor-block-before-verb))
+      yes))
+
+  ;; THE KEEPALIVE INTERVAL, K: a version-2 connection whose request has
+  ;; progressed since its last keepalive writes one more, this often. Shorter
+  ;; than the client's window, or a client would give up between two of them;
+  ;; a build with injection on may shorten both (THEOURGIA_KEEPALIVE_MS), and
+  ;; a K that is not below the window is refused when this library loads.
+  (define keepalive-ms
+    (let ((k (or (theourgia-keepalive-ms) 5000)))
+      (unless (< k silence-window-ms)
+        (assertion-violation 'theourgia-daemon
+          "THEOURGIA_KEEPALIVE_MS must be below the silence window" k silence-window-ms))
+      k))
+
   ;; NEVER: ASKED BY WHOEVER IS ABOUT TO EXECUTE, IMMEDIATELY BEFORE DOING SO,
   ;; and answered by main. NEVER: Not decided by the connection: a request
   ;; gets exactly one answer, and two deciders is how it comes to get two
@@ -684,6 +785,8 @@
            ;; The write path's snapshot is sampled here, inside the store's
            ;; lock (see publish!).
            (store-publish-hook! (lambda (state) (publish! store state (store-state-snapshot store))))
+           ;; THE WORK'S PROGRESS GOES TO THE TICKET ITS EXECUTOR IS RUNNING.
+           (progress-sink-set! progress-bump!)
            ;; NOTE: INSTALLED BEFORE ANYTHING CAN BE ACCEPTED, so a signal
            ;; that arrives during the store's first load is not lost --
            ;; the count is read by a process, and the process is here.
@@ -1094,6 +1197,8 @@
          ;; would otherwise keep the store locked for as long as this
          ;; daemon lives.
          (state-locks-set! st (release-all-of who (state-locks st)))
+         ;; and a connection's progress count, which only it would drop
+         (progress-reclaim! who)
          ;; Whatever it had begun is no longer being worked on by anyone.
          (state-running-set! st
            (filter (lambda (entry) (not (eq? who (cdr entry)))) (state-running st)))
@@ -2497,43 +2602,45 @@
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          (busy!
           (lambda ()
-            ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
-            ;; the daemon: without it nothing can be answered, so main is
-            ;; supposed to say so and leave with 75 rather than sit there
-            ;; accepting connections it cannot serve. That rule needs a row,
-            ;; and a row needs a seam. Armed by
-            ;; `THEOURGIA_FAULT=store-raise@conn`; unarmed it is one
-            ;; comparison against #f.
-            (when (eq? (theourgia-fault) 'store-raise)
-              (raise (condition (make-message-condition "injected store raise")
-                                (make-irritants-condition (list seq)))))
-            ;; NEVER: #f, NOT THE PUBLISHED VALUE. This process is the one
-            ;; that writes, and a write decides what to do from the
-            ;; store as it stands under the lock -- answering from a
-            ;; fold made before the lock was taken is how two writers
-            ;; come to disagree about what was there.
-            (if (may-execute? main-pid ticket)
-                (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
-                                  ;; A READ AT A CUT IS JUDGED AGAINST THE
-                                  ;; PUBLICATION, made current first when the
-                                  ;; disk has moved past it, and reached the one
-                                  ;; way the published state is read; so is a
-                                  ;; published read (query, context).
-                                  (begin
-                                    (refresh-if-behind! store)
-                                    ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
-                                    (when (published-read? parsed) (install-session-provider!))
-                                    (answer-published store self parsed actor writer piped cwd))
-                                  (answer-for store parsed actor #f writer piped cwd))))
-                  ;; A PUBLISHED READ TOLD THE KEPT SESSION'S WORK: the served line,
-                  ;; after the verb has answered
-                  (when (published-read? parsed) (session-served! (car parsed)))
-                  ;; A DERIVED-TABLE WRITE moves the generation the kept session is judged by
-                  (when (and (pair? parsed) (memq (car parsed) '(supply clear-derived)))
-                    (set! derived-generation (+ derived-generation 1)))
-                  (executed! main-pid ticket)
-                  (send from (list 'answer seq answer 'core)))
-                (send from (list 'answer seq draining-answer 'transport)))))
+            (with-ticket ticket
+             (lambda ()
+              ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
+              ;; the daemon: without it nothing can be answered, so main is
+              ;; supposed to say so and leave with 75 rather than sit there
+              ;; accepting connections it cannot serve. That rule needs a row,
+              ;; and a row needs a seam. Armed by
+              ;; `THEOURGIA_FAULT=store-raise@conn`; unarmed it is one
+              ;; comparison against #f.
+              (when (eq? (theourgia-fault) 'store-raise)
+                (raise (condition (make-message-condition "injected store raise")
+                                  (make-irritants-condition (list seq)))))
+              ;; NEVER: #f, NOT THE PUBLISHED VALUE. This process is the one
+              ;; that writes, and a write decides what to do from the
+              ;; store as it stands under the lock -- answering from a
+              ;; fold made before the lock was taken is how two writers
+              ;; come to disagree about what was there.
+              (if (executing? main-pid ticket)
+                  (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
+                                    ;; A READ AT A CUT IS JUDGED AGAINST THE
+                                    ;; PUBLICATION, made current first when the
+                                    ;; disk has moved past it, and reached the one
+                                    ;; way the published state is read; so is a
+                                    ;; published read (query, context).
+                                    (begin
+                                      (refresh-if-behind! store)
+                                      ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
+                                      (when (published-read? parsed) (install-session-provider!))
+                                      (answer-published store self parsed actor writer piped cwd))
+                                    (answer-for store parsed actor #f writer piped cwd))))
+                    ;; A PUBLISHED READ TOLD THE KEPT SESSION'S WORK: the served line,
+                    ;; after the verb has answered
+                    (when (published-read? parsed) (session-served! (car parsed)))
+                    ;; A DERIVED-TABLE WRITE moves the generation the kept session is judged by
+                    (when (and (pair? parsed) (memq (car parsed) '(supply clear-derived)))
+                      (set! derived-generation (+ derived-generation 1)))
+                    (executed! main-pid ticket)
+                    (send from (list 'answer seq answer 'core)))
+                  (send from (list 'answer seq draining-answer 'transport)))))))
          (loop))
         ;; A SUBSCRIPTION IS REGISTERED HERE, where the ring and the current
         ;; revision are, and its admission ticket is finished at once: a
@@ -2656,31 +2763,33 @@
          ;; Being one commit behind is the documented behaviour here,
          ;; and the consequences of acting on a stale premise are caught
          ;; where they have to be caught -- by the commit, under the lock.
-         (if (may-execute? main-pid ticket)
-             (begin
-               ;; NEVER: THE PARK IS INSIDE THE EXECUTED REGION, AFTER MAIN HAS
-               ;; SAID YES. NOTE: Measured with it OUTSIDE: a request that
-               ;; parked before asking had, from main's point of view,
-               ;; never begun -- so a drain that started during the park
-               ;; refused it, and the row that wanted "what has begun
-               ;; finishes" read `(error draining)` for the very request
-               ;; it was about. KEY: `may-execute?` returning IS what "begun"
-               ;; means here; whatever a process does before asking is
-               ;; invisible to the only process that decides.
-               ;;
-               ;; NOTE: TWO LENGTHS, BECAUSE TWO ROWS NEED OPPOSITE THINGS:
-               ;; the short park has to end while another writer is being
-               ;; tidied up; the long one has to outlast the whole drain
-               ;; budget, so the only way out is the clock.
-               (when (and (memq (theourgia-fault) '(writer-hold writer-hold-long))
-                          (not writer-hold-name))
-                 (set! writer-hold-name name)
-                 (park-in-draft-lock store name
-                                     (if (eq? (theourgia-fault) 'writer-hold-long) 12000 1500)))
-               (let ((answer (answer-published store store-pid parsed actor writer piped cwd)))
-                 (executed! main-pid ticket)
-                 (send from (list 'answer seq answer 'core))))
-             (send from (list 'answer seq draining-answer 'transport)))
+         (with-ticket ticket
+          (lambda ()
+           (if (executing? main-pid ticket)
+               (begin
+                 ;; NEVER: THE PARK IS INSIDE THE EXECUTED REGION, AFTER MAIN HAS
+                 ;; SAID YES. NOTE: Measured with it OUTSIDE: a request that
+                 ;; parked before asking had, from main's point of view,
+                 ;; never begun -- so a drain that started during the park
+                 ;; refused it, and the row that wanted "what has begun
+                 ;; finishes" read `(error draining)` for the very request
+                 ;; it was about. KEY: `may-execute?` returning IS what "begun"
+                 ;; means here; whatever a process does before asking is
+                 ;; invisible to the only process that decides.
+                 ;;
+                 ;; NOTE: TWO LENGTHS, BECAUSE TWO ROWS NEED OPPOSITE THINGS:
+                 ;; the short park has to end while another writer is being
+                 ;; tidied up; the long one has to outlast the whole drain
+                 ;; budget, so the only way out is the clock.
+                 (when (and (memq (theourgia-fault) '(writer-hold writer-hold-long))
+                            (not writer-hold-name))
+                   (set! writer-hold-name name)
+                   (park-in-draft-lock store name
+                                       (if (eq? (theourgia-fault) 'writer-hold-long) 12000 1500)))
+                 (let ((answer (answer-published store store-pid parsed actor writer piped cwd)))
+                   (executed! main-pid ticket)
+                   (send from (list 'answer seq answer 'core))))
+               (send from (list 'answer seq draining-answer 'transport)))))
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise-late))
            (set! writer-fault-pending #f)
            (raise (condition (make-message-condition "injected writer raise late")
@@ -3139,6 +3248,20 @@
 
   (define (forget-writer! ctx who)
     (ctx-writers-set! ctx (forget-pid who (ctx-writers ctx))))
+  ;; THIS CONNECTION CONSUMED A CACHED WRITER'S DOWN ON A PATH THAT IS NOT A
+  ;; TERMINAL -- a pending request's wait, an answer already on the wire, or
+  ;; idle time between requests -- and says so, by the name the writer was
+  ;; cached under or by its pid when the cache has no entry, then forgets it.
+  ;; The line means that and nothing more. Every such path comes here, so the
+  ;; line does not depend on which wait the DOWN found; the store's death and
+  ;; a request's own writer stay each wait's own, and forget-writer! itself
+  ;; is not traced, since a terminal branch calls it too.
+  (define (unrelated-writer-down! ctx who)
+    (let ((e (find (lambda (e) (eq? who (cdr e))) (ctx-writers ctx))))
+      (trace-event! 'writer-down-unrelated
+                    (if e (car e) (call-with-string-output-port (lambda (p) (write who p))))
+                    #f))
+    (forget-writer! ctx who))
 
   ;; ---- a connection ------------------------------------------------------
 
@@ -3256,7 +3379,7 @@
               ((eq? who (ctx-store-pid ctx))
                (answer-and-close ref '(error transport-unknown (reason store-actor-down))))
               (else
-               (forget-writer! ctx who)
+               (unrelated-writer-down! ctx who)
                (frames ctx seq buffered deadline)))))))))
 
   ;; A FRAME REFUSED FOR ITS SIZE IS TRACED, so a reader of the trace can tell
@@ -3305,9 +3428,8 @@
     (let ((ref (ctx-ref ctx))
           (parsed (parse-frame line)))
       (cond
-        ((symbol? parsed)
-         (routed! parsed 'connection)
-         (answer-and-close ref (list 'error 'bad-request (list 'reason parsed))))
+        ((frame-refusal parsed)
+         => (lambda (refusal) (routed! parsed 'connection) (answer-and-close ref refusal)))
         ;; NEVER: WELL-FORMED FIRST, AND THAT INCLUDES THE VERB'S ARGUMENTS
         ;; (§7.6.50's four layers: well-formed, then whose store, then
         ;; premises, then execution). Judged after the store, a request
@@ -3404,47 +3526,188 @@
                                            (frame-field 'stdin parsed)
                                            (frame-field 'cwd parsed))
                                rest mode 'core))
-           (let ((target (target-for ctx request (frame-field 'writer parsed)))
-                 (ticket (fresh-ticket)))
+           (let* ((target (target-for ctx request (frame-field 'writer parsed)))
+                  (ticket (fresh-ticket))
+                  ;; KEEPALIVES ONLY FOR A CLIENT THAT READS THEM, which says so
+                  ;; by sending version 2; version 1 gets today's bytes.
+                  (keepalive? (eqv? 2 (frame-field 'version parsed))))
              (routed! parsed (if (eqv? target (ctx-store-pid ctx)) 'store 'writer))
-             (send target (list 'request self seq ticket (ctx-main ctx) request actor
-                                (frame-field 'writer parsed)
-                                (frame-field 'stdin parsed)
-                                (frame-field 'cwd parsed)))
-             (let await ()
-               (receive
-                 ;; NEVER: AN IN-FLIGHT REQUEST IS FINISHED, NOT ABANDONED. It
-                 ;; may already have changed the store; the drain is
-                 ;; remembered and acted on once this one has its answer.
-                 (`(drain) (ctx-drain! ctx) (await))
-                 ;; NEVER: THE EXECUTOR SAYS WHICH SIDE SPOKE, because it is
-                 ;; the only process that knows. A refusal it made before
-                 ;; the request began is the transport declining; an
-                 ;; answer it computed is the core's. Deciding here
-                 ;; instead meant looking at the answer and guessing.
-                 (`(answer ,@seq ,result ,origin)
-                  (write-answer ctx seq result rest mode origin))
-                 (`#(DOWN ,who ,reason)
-                  ;; NEVER: THREE DIFFERENT DEATHS, THREE DIFFERENT ANSWERS.
-                  ;; Losing the store is fatal to the daemon; losing the
-                  ;; writer that was serving this request costs this
-                  ;; request and no other; losing some other writer this
-                  ;; connection had cached costs nothing at all and NEVER:
-                  ;; must not be answered as a failure.
-                  ;;
-                  ;; NOTE: AND IT IS `transport-unknown`, not `failed`: the
-                  ;; request may have been carried out before the process
-                  ;; died. NEVER: Something that may have happened must never
-                  ;; be reported as not having happened.
-                  (cond
-                    ((eq? who (ctx-store-pid ctx))
-                     (answer-and-close ref '(error transport-unknown (reason store-actor-down))))
-                    ((eq? who target)
-                     (forget-writer! ctx who)
-                     (answer-and-close ref '(error transport-unknown (reason writer-actor-down))))
-                    (else
-                     (forget-writer! ctx who)
-                     (await))))))))))))))
+             ;; NEVER: THE COUNT EXISTS BEFORE THE REQUEST DOES. It is registered
+             ;; before the request is published to the executor, so no bump can
+             ;; come before it, and dropped on every way out of THIS wait -- not
+             ;; of the connection, which goes on to later frames after the
+             ;; answer.
+             (let ((terminal
+                     (dynamic-wind
+                       (lambda () (when keepalive? (progress-register! ticket)))
+                       (lambda ()
+                         (send target (list 'request self seq ticket (ctx-main ctx) request actor
+                                            (frame-field 'writer parsed)
+                                            (frame-field 'stdin parsed)
+                                            (frame-field 'cwd parsed)))
+                         (await-terminal ctx seq target ticket keepalive?))
+                       (lambda () (when keepalive? (progress-drop! ticket))))))
+               (case (car terminal)
+                 ((answer) (write-answer ctx seq (cadr terminal) rest mode (caddr terminal)))
+                 ((refuse) (answer-and-close ref (cadr terminal)))
+                 (else (void))))))))))))
+
+  ;; THE WAIT FOR A REQUEST'S TERMINAL, keepalives included.
+  ;; -> (answer <result> <origin>), (refuse <datum>), or (closed) when a
+  ;; keepalive still pending at the terminal never completed.
+  ;; THE KEEPALIVE, on a version-2 connection: every K, if this request's
+  ;; count moved since the last one and none is pending, one byte 32 with a
+  ;; fresh token. One write is pending at most, and its completion is matched
+  ;; by this connection's ref and that token; a stale completion (another
+  ;; connection's, an older write's) is ignored.
+  ;; NEVER: THE TERMINAL IS LATCHED ON ARRIVAL. The answer, the store's
+  ;; death, or the death of the writer serving this request stops the
+  ;; keepalives at once; a keepalive still pending gets terminal-write-ms,
+  ;; and when it does not complete in that the connection closes, the worker
+  ;; untouched, and nothing more is written.
+  ;; NEVER: A KEEPALIVE THAT FAILS -- its write raises, or completes with an
+  ;; error -- STOPS THE KEEPALIVES AND NOTHING ELSE. The request runs to its
+  ;; end; one trace line says so; the answer's own write then fails as it
+  ;; does for a client that left.
+  ;; NEVER: THE THREE DEATHS STAY THREE ANSWERS. Losing the store is fatal to
+  ;; the daemon; losing the writer serving this request costs this request
+  ;; and no other; losing some other writer this connection had cached costs
+  ;; nothing at all and must not end the wait. Each is transport-unknown, not
+  ;; failed: the request may have been carried out before the process died.
+  ;; INJECTION ONLY: conn-killed-pending ends one connection actor, once,
+  ;; while its version-2 request is being worked on: igropyr's kill, from
+  ;; another actor, so none of the connection's unwinds run. It fires at the
+  ;; first keepalive tick that sees this request's count moved, in place of
+  ;; that keepalive: a count that moved is the executor's own bump for this
+  ;; ticket, so the work has begun; a kill before it could land before the
+  ;; executor started.
+  (define conn-kill-armed #t)
+  (define (await-terminal ctx seq target ticket keepalive?)
+    (let ((ref (ctx-ref ctx))
+          (me self)
+          (live keepalive?)
+          (pending #f)
+          (issued 0)
+          (seen 0)
+          ;; INJECTION ONLY: keepalive-late's withheld completion, the token
+          ;; it was issued under; finish sends it, once.
+          (late-token #f)
+          ;; INJECTION ONLY: one keepalive's completion is withheld for a while
+          ;; or for ever, reported failed, or shadowed by stale completions;
+          ;; or its write raises.
+          (fault-once (and (memq (theourgia-fault) '(keepalive-late keepalive-never keepalive-error
+                                                     keepalive-stale keepalive-raise))
+                           (theourgia-fault))))
+      (define (keepalive-failed! why)
+        (set! live #f)
+        (set! pending #f)
+        (trace-event! 'keepalive-failed why #f))
+      (define (issue!)
+        (set! issued (+ issued 1))
+        (let* ((tok (list 'keepalive issued))
+               (fault (let ((f fault-once)) (set! fault-once #f) f))
+               ;; a completion the fault replaces is written under a token no
+               ;; one waits for
+               (write-tok (if (memq fault '(keepalive-late keepalive-never keepalive-error))
+                              (list 'keepalive-shadowed issued)
+                              tok)))
+          (when fault (trace-event! 'fault fault #f))
+          (if (guard (e (#t #f))
+                (when (eq? fault 'keepalive-raise)
+                  (raise (make-message-condition "injected keepalive raise")))
+                (conn-write! ref (make-bytevector 1 32) write-tok)
+                #t)
+              (begin
+                (set! pending tok)
+                (trace-event! 'keepalive issued #f)
+                (case fault
+                  ((keepalive-late) (set! late-token tok))
+                  ((keepalive-error) (send me (list 'written ref tok 1)))
+                  ((keepalive-stale)
+                   (send me (list 'written (list 'another-connection) tok 0))
+                   (send me (list 'written ref (list 'keepalive 0) 0)))
+                  (else (void))))
+              (keepalive-failed! 'raised))))
+      (define (tick!)
+        (when (and live (not pending))
+          (let ((c (progress-count ticket)))
+            (when (and c (> c seen))
+              (set! seen c)
+              (if (and conn-kill-armed (eq? (theourgia-fault) 'conn-killed-pending))
+                  (begin
+                    (set! conn-kill-armed #f)
+                    (trace-event! 'fault 'conn-killed-pending #f)
+                    (spawn (lambda () (kill me 'injected-kill))))
+                  (issue!))))))
+      (define (completes? r tok) (and pending (eq? r ref) (equal? tok pending)))
+      ;; THE TERMINAL WITH A KEEPALIVE PENDING waits for that keepalive's
+      ;; completion, under one absolute bound; terminal-pending says the wait
+      ;; began and keepalive-completed that the matching completion ended it.
+      ;; INJECTION ONLY: keepalive-late's withheld completion is sent here,
+      ;; once, 300 ms into the wait, so the terminal always arrives while it
+      ;; is pending; no message restarts either clock.
+      (define (finish terminal)
+        (set! live #f)
+        (if (not pending)
+            terminal
+            (let ((deadline (+ (real-time) terminal-write-ms))
+                  (late-at (and late-token (+ (real-time) 300))))
+              (trace-event! 'terminal-pending ticket issued)
+              (let wait ()
+                (receive
+                  (after (max 0 (- (if late-at (min late-at deadline) deadline) (real-time)))
+                    (if (and late-at (< (real-time) deadline))
+                        (let ((tok late-token))
+                          (set! late-at #f)
+                          (set! late-token #f)
+                          (send me (list 'written ref tok 0))
+                          (wait))
+                        (begin
+                          (trace-event! 'keepalive-timeout issued #f)
+                          (conn-close! ref)
+                          '(closed))))
+                  (`(written ,r ,tok ,status)
+                   (if (completes? r tok)
+                       (begin (set! pending #f)
+                              (trace-event! 'keepalive-completed ticket issued)
+                              (unless (= status 0) (trace-event! 'keepalive-failed 'status #f))
+                              terminal)
+                       (wait)))
+                  (`(drain) (ctx-drain! ctx) (wait))
+                  (`#(DOWN ,who ,reason)
+                   (cond
+                     ((eq? who (ctx-store-pid ctx)) (void))
+                     ((eq? who target) (forget-writer! ctx who))
+                     (else (unrelated-writer-down! ctx who)))
+                   (wait)))))))
+      (let await ((due (+ (real-time) keepalive-ms)))
+        (receive
+          (after (if live (max 0 (- due (real-time))) 600000)
+            (when live (tick!))
+            (await (+ due keepalive-ms)))
+          ;; NEVER: AN IN-FLIGHT REQUEST IS FINISHED, NOT ABANDONED. It may
+          ;; already have changed the store; the drain is remembered and acted
+          ;; on once this one has its answer.
+          (`(drain) (ctx-drain! ctx) (await due))
+          ;; NEVER: THE EXECUTOR SAYS WHICH SIDE SPOKE, because it is the only
+          ;; process that knows: a refusal it made before the request began is
+          ;; the transport declining, an answer it computed is the core's.
+          (`(answer ,@seq ,result ,origin) (finish (list 'answer result origin)))
+          (`(written ,r ,tok ,status)
+           (when (completes? r tok)
+             (set! pending #f)
+             (unless (= status 0) (keepalive-failed! 'status)))
+           (await due))
+          (`#(DOWN ,who ,reason)
+           (cond
+             ((eq? who (ctx-store-pid ctx))
+              (finish '(refuse (error transport-unknown (reason store-actor-down)))))
+             ((eq? who target)
+              (forget-writer! ctx who)
+              (finish '(refuse (error transport-unknown (reason writer-actor-down)))))
+             (else
+              (unrelated-writer-down! ctx who)
+              (await due))))))))
 
   ;; ---- a subscribed connection: the change stream -----------------------
   ;;
@@ -3455,11 +3718,18 @@
   (define stream-queue-limit 64)
   (define terminal-write-ms 2000)
 
+  ;; NEVER: NO KEEPALIVE ON A SUBSCRIPTION, before its acceptance or after.
+  ;; A subscription makes no progress of its own -- the store judges it at
+  ;; once when it reaches it, and before that it is only queued -- so a
+  ;; keepalive could report nothing but another request's work. Version 2
+  ;; buys a subscriber the window on the silence before acceptance, kept by
+  ;; the client.
   (define (subscribe-stream ctx seq parsed rest mode)
-    (let ((ref (ctx-ref ctx)))
+    (let ((ref (ctx-ref ctx))
+          (ticket (fresh-ticket)))
       (routed! parsed 'store)
       (send (ctx-store-pid ctx)
-            (list 'subscribe self seq (fresh-ticket) (ctx-main ctx) (cdr (frame-field 'request parsed))))
+            (list 'subscribe self seq ticket (ctx-main ctx) (cdr (frame-field 'request parsed))))
       (let await ()
         (receive
           ;; A DRAIN WHILE THE STORE IS JUDGING: remembered; an acceptance
@@ -3474,7 +3744,7 @@
            (cond
              ((eq? who (ctx-store-pid ctx))
               (answer-and-close ref '(error transport-unknown (reason store-actor-down))))
-             (else (forget-writer! ctx who) (await))))))))
+             (else (unrelated-writer-down! ctx who) (await))))))))
 
   ;; THE STREAM STATE. One write in flight at a time, each with a fresh
   ;; token; only a `(written ...)` naming this connection and that token
@@ -3691,7 +3961,7 @@
                ((eq? who store-pid)
                 (latch! 'store-down '(error transport-unknown (reason store-actor-down))))
                ((eq? who adapter) (latch! 'connection-down #f))
-               (else (forget-writer! ctx who)))))
+               (else (unrelated-writer-down! ctx who)))))
           (loop)))))
 
   ;; NOTE: THE CONNECTION'S OWN PROCESS WRITES THE ANSWER, so a client that
@@ -3719,12 +3989,16 @@
           (bytes (string->utf8 (datum->string (answer-envelope result mode origin)))))
       (conn-read-stop! ref)
       (conn-write! ref bytes seq)
+      ;; NEVER: ITS OWN COMPLETION ONLY, by this connection's ref and the
+      ;; answer's token: a keepalive's late completion is not the answer's.
+      (let ((deadline (+ (real-time) 5000)))
       (let await ()
         (receive
-          (after 5000 (conn-close! ref))
+          (after (max 0 (- deadline (real-time))) (conn-close! ref))
           (`(drain) (ctx-drain! ctx) (await))
           (`(written ,r ,tok ,status)
            (cond
+             ((not (and (eq? r ref) (equal? tok seq))) (await))
              ((not (= status 0)) (conn-close! ref))
              ;; NEVER: THE LEFTOVER BYTES ARE STILL DEALT WITH, EVEN NOW.
              ;; NOTE: Measured with this branch closing here instead: a
@@ -3750,7 +4024,7 @@
           (`#(DOWN ,who ,reason)
            (cond
              ((eq? who (ctx-store-pid ctx)) (void))
-             (else (forget-writer! ctx who) (await))))))))
+             (else (unrelated-writer-down! ctx who) (await)))))))))
 
   ;; NOTE: A REFUSAL IS AN ANSWER AND WEARS THE SAME ENVELOPE. The client
   ;; unpacks one shape and only one; a refusal that arrived bare would be
@@ -3762,12 +4036,16 @@
   ;; asked for human form and gets a wire-rendered refusal can still read
   ;; it; the alternative is guessing a mode out of a frame that did not
   ;; parse.
+  ;; NEVER: ITS OWN COMPLETION ONLY, as write-answer's.
   (define (answer-and-close ref result)
     (conn-write! ref (string->utf8 (datum->string (answer-envelope result 'wire 'transport))) 'last)
-    (receive
-      (after 2000 (conn-close! ref))
-      (`(written ,r ,tok ,status) (conn-close! ref))
-      (`#(DOWN ,who ,reason) (void))))
+    (let ((deadline (+ (real-time) terminal-write-ms)))
+      (let wait ()
+        (receive
+          (after (max 0 (- deadline (real-time))) (conn-close! ref))
+          (`(written ,r ,tok ,status)
+           (if (and (eq? r ref) (eq? tok 'last)) (conn-close! ref) (wait)))
+          (`#(DOWN ,who ,reason) (void))))))
 
   ;; NEVER: THE SAME PRINTER THE CLI USES. This was a bare `write` that set
   ;; nothing, so the daemon's answers were already spelled differently

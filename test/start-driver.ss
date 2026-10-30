@@ -92,8 +92,8 @@
               "                         (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\\-))\n"
               "                             (list \"--store\" store) (list store))\n"
               "                         (list \"--socket\" socket \"--detach\" \"--log\" (serve-log-path store))))))\n"
-              "      (settle (call! socket frame 30000)\n"
+              "      (settle (call! socket frame)\n"
               "              (lambda ()\n"
               "                (let ((started (ensure-daemon! (argv) store socket)))\n"
-              "                  (if (eq? started 'ready) (settle (call! socket frame 30000) #f) (refuse started)))))))))\n")))))
+              "                  (if (eq? started 'ready) (settle (call! socket frame) #f) (refuse started)))))))))\n")))))
     program))

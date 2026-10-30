@@ -101,7 +101,7 @@
 ;; that read only the outer datum would make every row below about the
 ;; envelope's shape and none of them about the answer.
 (define (raw-answer frame)
-  (let ((r (call! sock frame 5000)))
+  (let ((r (call! sock frame)))
     (if (and (pair? r) (eq? 'answer (car r)))
         (guard (e (#t 'unreadable))
           (read (open-string-input-port (utf8->string (cadr r)))))
@@ -211,7 +211,7 @@
 ;; would otherwise read as more than it is.
 
 (define (answer-for-verb verb args w)
-  (let ((r (call! sock (request-frame store verb args (list (cons 'writer w))) 5000)))
+  (let ((r (call! sock (request-frame store verb args (list (cons 'writer w))))))
     (if (and (pair? r) (eq? 'answer (car r)))
         (utf8->string (cadr r))
         (list 'transport r))))
@@ -322,9 +322,9 @@
 ;; complaint -- the difference between "I did not understand you" and "I
 ;; understood you and the answer is no".
 
-(want "EV-2 an envelope from a later version is not read as this one"
+(want "EV-2 an envelope from a later version (3; this daemon serves 1 and 2) is not read as this one"
       (kind (ask (raw-frame (string-append
-                              "(request 2 \"" store "\" \"tester\" #f wire #f #f outline)"))))
+                              "(request 3 \"" store "\" \"tester\" #f wire #f #f outline)"))))
       '(error bad-request))
 
 (want "EV-2 TWIN: and version 1 of the same frame is served"

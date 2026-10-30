@@ -21,7 +21,8 @@
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
   (export socket-path run-root store-key resolved-name
-          call! call-child! answer-limit no-daemon-errno?
+          call! call-child! answer-limit no-daemon-errno? silence-window-ms unknown-outcome
+          old-version-refusal-of? frame-at-version-1
           socket-path-fits? path-too-long socket-path-fits-to-serve? serve-path-too-long
           close-noting-failure join-bytes
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
@@ -44,6 +45,7 @@
                 real-path env-or wall-clock-ms file-size sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
+                monotonic-ms socket-send-within! socket-read-within socket-expired? theourgia-silence-ms
                 spawn-detached! spawn-piped! child-wait! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 entry-type read-entry entry-name-type mkdir-exclusive!
@@ -366,7 +368,80 @@
           (list 'length (bytevector-length (string->utf8 path)))
           (list 'max (- (sun-path-max) private-suffix-max 1))))
 
-  (define (call! path frame timeout-ms)
+  ;; THE SILENCE WINDOW, W: a socket client gives up when nothing has moved
+  ;; for this long -- no byte read and, while sending, no byte written. There
+  ;; is no total bound: a request whose work keeps reporting progress, and
+  ;; whose daemon keeps the connection alive with keepalive bytes, is waited
+  ;; for. ONE DEFINITION; every product caller uses it. A build with
+  ;; injection on can shorten it for rows (THEOURGIA_SILENCE_MS); nothing
+  ;; else can.
+  (define silence-window-ms (or (theourgia-silence-ms) 30000))
+
+  ;; THE OUTCOMES A CALLER RENDERS AS UNKNOWN, rendered in one place: the
+  ;; request may have been carried out. A silent one keeps its window and
+  ;; how long it had run, so a caller can tell a silent daemon from a lost
+  ;; connection. -> (error transport-unknown (reason <why>) ...)
+  (define (unknown-outcome outcome)
+    (if (and (pair? outcome) (pair? (cdr outcome)) (eq? 'silent (cadr outcome)))
+        (append (list 'error 'transport-unknown '(reason silent)) (cddr outcome))
+        (list 'error 'transport-unknown (list 'reason (cadr outcome)))))
+
+  ;; -> (answer <bytes>), (not-sent <error>), (no-daemon <errno>) or
+  ;; (transport-error <reason> ...), as it always answered; what the reading
+  ;; found besides the answer stays here.
+  (define (call! path frame)
+    (let* ((first (call-once path frame))
+           (final (if (old-version-refusal? first frame)
+                      (begin
+                        (trace-event! 'version-retry 1 #f)
+                        (call-once path (frame-at-version-1 frame)))
+                      first)))
+      (if (and (pair? final) (eq? 'answer (car final)))
+          (list 'answer (cadr final))
+          final)))
+
+  ;; A DAEMON THAT PREDATES VERSION 2 REFUSES THE FRAME BEFORE DISPATCH, and
+  ;; the request is sent once more at version 1, on a new connection,
+  ;; differing in nothing else. ONLY ON THAT REFUSAL, recognised exactly: an
+  ;; answer that is one complete envelope, origin transport, exit 1, empty
+  ;; stderr, its stdout the wire refusal (error bad-request (reason
+  ;; malformed-envelope)), no keepalive byte before it and no byte after it
+  ;; (the daemon closes after a refusal, so end of file follows under the
+  ;; window). NEVER on silence, a lost transport, an origin-core lookalike, a
+  ;; generic bad-request, or a new daemon's refusal of a version-2 frame,
+  ;; which names the version and so is never these bytes.
+  (define (old-version-refusal? outcome frame)
+    (and (pair? outcome) (eq? 'answer (car outcome))
+         (pair? (cddr outcome)) (eq? 'refusal-then-eof (caddr outcome))))
+  ;; The refusal's bytes, judged by the reader and then held to the exact
+  ;; rendering of what it read, so no byte more or less passes.
+  (define (old-refusal-bytes? bytes)
+    (let* ((text (guard (e (#t #f)) (utf8->string bytes)))
+           (datum (and text (readable-shape? text)
+                       (guard (e (#t #f)) (read (open-string-input-port text))))))
+      (and (equal? datum
+                   (list 'answer
+                         (list 'stdout (render-wire '(error bad-request (reason malformed-envelope))))
+                         '(stderr "") '(exit 1) '(origin transport)))
+           (string=? text (render-wire datum)))))
+  ;; THE ONE RECOGNISER, for every client: BYTES, one complete answer line,
+  ;; are exactly the old refusal, and FRAME, the one they answered, was a
+  ;; version-2 frame. Each transport adds what only it can see: no keepalive
+  ;; byte before the line, and the end of the connection after it, read
+  ;; under the window.
+  (define (old-version-refusal-of? bytes frame)
+    (and (old-refusal-bytes? bytes) (eqv? 2 (frame-version frame))))
+  ;; The version a frame this client built carries, read from its own bytes
+  ;; by the reader; #f for bytes that are not such a frame.
+  (define (frame-version frame)
+    (guard (e (#t #f))
+      (let ((d (read (open-string-input-port (utf8->string frame)))))
+        (and (list? d) (>= (length d) 2) (eq? 'request (car d)) (cadr d)))))
+  (define (frame-at-version-1 frame)
+    (let ((d (read (open-string-input-port (utf8->string frame)))))
+      (string->utf8 (render-wire (cons 'request (cons 1 (cddr d)))))))
+
+  (define (call-once path frame)
     (if (not (socket-path-fits? path))
         ;; NEVER: `not-sent`, NOT `transport-error`. Nothing went out, so the
         ;; outcome is not unknown -- it is known, and it is that this
@@ -375,7 +450,7 @@
         ;; untrue sentence the MCP shell used to produce for a server that
         ;; would not start.
         (list 'not-sent (path-too-long path))
-        (call-on-socket path frame timeout-ms)))
+        (call-on-socket path frame)))
 
   ;; NEVER: ONLY A FAILURE TO CONNECT MAY BE CALLED `no-daemon`. The guard
   ;; used to enclose the exchange as well, so an error raised AFTER the
@@ -387,7 +462,7 @@
   ;; successful connect is beside the point: the classification must be
   ;; scoped to the step it describes, not to whatever the guard happens to
   ;; enclose.
-  (define (call-on-socket path frame timeout-ms)
+  (define (call-on-socket path frame)
     ;; NEVER: EVERYTHING THAT FAILS HERE FAILED BEFORE ANYTHING WAS SENT, and
     ;; that is decided by WHERE the failure happened, not by which errno
     ;; it carried. Classified by errno, a connect failure outside the
@@ -407,7 +482,7 @@
                                      (list 'error 'connect-failed
                                            (list 'path path)
                                            (list 'errno code)))))))
-                (unix-socket-connect path timeout-ms))))
+                (unix-socket-connect path silence-window-ms))))
       (if (pair? fd)
           fd
           ;; NOTE: THE STEP HAS A NAME so that a failure in it can be armed.
@@ -421,7 +496,7 @@
           (guard (e ((fs-error? e)
                      (close-noting-failure fd)
                      (list 'transport-error (fs-error-errno e))))
-            (let ((outcome (exchange-on fd frame timeout-ms path)))
+            (let ((outcome (exchange-on fd frame path)))
               ;; NEVER: THE ANSWER IS THE RESULT, AND CLOSING CANNOT UNMAKE IT.
               ;; This close used to sit inside the guard with its failure
               ;; treated like any other: a close that raised threw away a
@@ -450,21 +525,97 @@
   ;; count still at zero is the same situation as a failed connect, and is
   ;; answered the same way. Once any byte has gone, the outcome is
   ;; genuinely unknown and stays so.
-  (define (exchange-on fd frame timeout-ms path)
-    (let* ((sent 0)
+  ;; THE CLOCK IS MONOTONIC AND MOVES WITH THE BYTES. The window starts
+  ;; when the frame's first byte is offered and is moved to now by every
+  ;; byte written; the answer's reading then moves it with every byte read,
+  ;; keepalive bytes included. A send that expires with nothing written is
+  ;; not-sent; one that wrote part of the frame is silent, and unknown.
+  (define (exchange-on fd frame path)
+    (let* ((start (monotonic-ms))
+           (last start)
+           (sent 0)
+           (left (lambda () (- (+ last silence-window-ms) (monotonic-ms))))
            (unsent (guard (e ((and (fs-error? e) (= sent 0))
                               (list 'not-sent
                                     (list 'error 'write-failed
                                           (list 'path path)
-                                          (list 'errno (fs-error-errno e))))))
-                     (write-all! fd frame path (lambda (n) (set! sent n)))
+                                          (list 'errno (fs-error-errno e)))))
+                             ((socket-expired? e) (silent-outcome start)))
+                     (socket-send-within! fd frame left (lambda (n) (set! sent n) (set! last (monotonic-ms))))
                      #f)))
       (if unsent
           unsent
-          (exchange-read fd timeout-ms))))
+          (let ((a (read-socket-answer fd start last)))
+            ;; ONLY AN ANSWER THAT ALREADY IS THE OLD REFUSAL'S BYTES, with no
+            ;; keepalive before it, from a version-2 frame, is read past: a
+            ;; daemon keeps a connection open after an ordinary answer, and
+            ;; reading on would wait out the window for nothing.
+            (cond
+              ((not (eq? 'answer (car a))) a)
+              ((and (= 0 (caddr a))
+                    (old-version-refusal-of? (cadr a) frame)
+                    (eq? 'eof (after-answer fd (cadddr a))))
+               (list 'answer (cadr a) 'refusal-then-eof))
+              (else (list 'answer (cadr a))))))))
 
-  (define (exchange-read fd timeout-ms)
-    (read-answer fd (+ (wall-clock-ms) timeout-ms)))
+  (define (silent-outcome start)
+    (list 'transport-error 'silent (list 'window silence-window-ms)
+          (list 'elapsed (- (monotonic-ms) start))))
+
+  ;; A SOCKET'S ANSWER, READ UNDER THE WINDOW. Its terminator is the newline
+  ;; that is its last byte, and the ceiling counts every byte of it.
+  ;; NEVER: BYTE 32 IS STRIPPED ONLY BEFORE THE ANSWER'S FIRST OTHER BYTE.
+  ;; Those are a daemon's keepalives, sent while the request runs; they move
+  ;; the window, are not part of the answer and do not count against the
+  ;; ceiling. After the first byte of the answer nothing is stripped. A row
+  ;; reads how many were stripped from the trace (keepalive-stripped).
+  ;; -> (answer <bytes> <stripped> <when>), WHEN being the moment its last
+  ;; byte arrived; or the transport error.
+  (define (read-socket-answer fd start last)
+    (let loop ((chunks '()) (total 0) (last last) (stripped 0))
+      (if (> total (answer-limit))
+          (list 'transport-error 'answer-too-large)
+          (let ((chunk (guard (e ((socket-expired? e) 'expired))
+                         (socket-read-within fd 65536 (lambda () (- (+ last silence-window-ms) (monotonic-ms)))))))
+            (cond
+              ((eq? chunk 'expired) (silent-outcome start))
+              ;; NEVER: EOF BEFORE THE TERMINATOR IS NOT AN EMPTY ANSWER. The
+              ;; daemon may have taken the request and died after acting on
+              ;; it, so the outcome is UNKNOWN -- never that nothing happened.
+              ((zero? (bytevector-length chunk)) (list 'transport-error 'lost-answer))
+              (else
+               (let* ((now (monotonic-ms))
+                      (skip (if (null? chunks) (leading-spaces chunk) 0))
+                      (stripped (+ stripped skip)))
+                 (when (> skip 0) (trace-event! 'keepalive-stripped skip #f))
+                 (if (= skip (bytevector-length chunk))
+                     (loop chunks total now stripped)
+                     (let* ((part (if (zero? skip) chunk (sub-bytevector chunk skip (bytevector-length chunk))))
+                            (chunks (cons part chunks))
+                            (total (+ total (bytevector-length part))))
+                       ;; NEVER: THE CEILING IS CHECKED BEFORE THE ANSWER IS
+                       ;; RETURNED, not only at the top of the loop: a final
+                       ;; chunk carrying the terminator came back whatever its
+                       ;; size when it was tested only there.
+                       (cond
+                         ((> total (answer-limit)) (list 'transport-error 'answer-too-large))
+                         ((= 10 (bytevector-u8-ref part (- (bytevector-length part) 1)))
+                          (list 'answer (join-bytes (reverse chunks) total) stripped now))
+                         (else (loop chunks total now stripped))))))))))))
+  ;; What follows an answer, read only to tell an exact refusal from one
+  ;; with bytes after it: eof, more, or silent. The answer is the result
+  ;; whatever this finds.
+  (define (after-answer fd since)
+    (guard (e (#t 'failed))
+      (let ((chunk (socket-read-within fd 1 (lambda () (- (+ since silence-window-ms) (monotonic-ms))))))
+        (if (zero? (bytevector-length chunk)) 'eof 'more))))
+  (define (leading-spaces bv)
+    (let loop ((i 0))
+      (if (and (< i (bytevector-length bv)) (= 32 (bytevector-u8-ref bv i))) (loop (+ i 1)) i)))
+  (define (sub-bytevector bv from to)
+    (let ((out (make-bytevector (- to from))))
+      (bytevector-copy! bv from out 0 (- to from))
+      out))
 
   ;; THE ANSWER'S BYTES, READ AS THEY COME AND COUNTED AGAINST THE CEILING
   ;; CHUNK BY CHUNK, for both routes. A socket has a deadline and its answer
@@ -1324,7 +1475,8 @@
              (else (look (cdr xs)))))))
 
   (define (request-frame store verb args fields)
-    (let ((actor (field 'actor fields "rpc"))
+    (let ((version (field 'version fields (envelope-version)))
+          (actor (field 'actor fields "rpc"))
           (writer (field 'writer fields #f))
           (mode (field 'mode fields 'wire))
           (cwd (field 'cwd fields #f))
@@ -1341,6 +1493,12 @@
         (assertion-violation 'request-frame "cwd is a string or #f" cwd))
       (unless (or (not stdin) (string? stdin))
         (assertion-violation 'request-frame "stdin is a string or #f" stdin))
+      ;; THE VERSION IS ASKED FOR, NEVER DEFAULTED UPWARD: envelope-version is
+      ;; the version-1 envelope, and only a caller that reads keepalives asks
+      ;; for 2. So every frame built without asking, every hand-built one in
+      ;; the fixtures among them, stays version 1.
+      (unless (or (eqv? version 1) (eqv? version 2))
+        (assertion-violation 'request-frame "version is 1 or 2" version))
       ;; NEVER: THE STORE TRAVELS BY ITS RESOLVED NAME, and every frame is built
       ;; here so that no caller can forget to. The socket key has always
       ;; been the resolved path -- which is how `--store .` reaches the
@@ -1354,7 +1512,7 @@
       ;; its name is.
       (string->utf8
         (render-wire
-          (append (list 'request (envelope-version) (resolved-name store)
+          (append (list 'request version (resolved-name store)
                         actor writer mode cwd stdin verb)
                   args)))))
 

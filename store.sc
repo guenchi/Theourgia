@@ -79,7 +79,7 @@
           (only (theourgia timing-wrappers) timed intent-timed timing-call timing-quiet)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
-                hold-point! entry-name-type entry-bytes)
+                hold-point! entry-name-type entry-bytes progress!)
           (only (theourgia digest) sha256 bytevector->hex)
           ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
           ;; `code-project.sc` says it outright: a code block's `name` is
@@ -5020,8 +5020,15 @@
   ;; AFTER-EACH, when given, is called after every intent that answered ok,
   ;; with its index and its answer; #f goes on, anything else is the answer
   ;; that ends the run, after the ok. The table of blocks made stays here.
+  ;; ONE INTENT APPLIED IS PROGRESS. The bump rides the after-each a caller
+  ;; may pass, and never replaces it: the caller's is called once, with the
+  ;; same arguments, its answer is the answer (#f when there is none), and
+  ;; what it raises goes through.
   (define (run-intents! s state actor-at intents . rest)
-    (define after-each (and (pair? rest) (car rest)))
+    (define caller-after-each (and (pair? rest) (car rest)))
+    (define (after-each n answer)
+      (progress!)
+      (if caller-after-each (caller-after-each n answer) #f))
     (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)

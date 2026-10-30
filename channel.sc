@@ -45,7 +45,8 @@
           (only (chezscheme) format getenv putenv current-directory iota list-head)
           (only (theourgia rpc) rpc-dispatch-parsed)
           (only (theourgia arguments) parse-arguments argument-option argument-option-list)
-          (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum)
+          (only (theourgia client) socket-path call! request-frame answer-field readable-shape? plain-datum
+                unknown-outcome)
           (only (theourgia ffi) entry-type read-entry)
           (only (theourgia landing-files) file-new-intents)
           (only (theourgia store) with-store-write judgement-refusal?)
@@ -76,13 +77,13 @@
           (let ((outcome (call! socket
                                 (request-frame store verb args
                                                (list (cons 'actor actor) (cons 'mode 'wire)
-                                                     (cons 'cwd (current-directory))))
-                                30000)))
+                                                     (cons 'cwd (current-directory))
+                                                     (cons 'version 2))))))
             (cond
               ((eq? (car outcome) 'answer) (envelope-answer (cadr outcome)))
               ((eq? (car outcome) 'no-daemon) (here))
               ((eq? (car outcome) 'not-sent) (cadr outcome))
-              (else (list 'error 'transport-unknown (list 'reason (cadr outcome)))))))))
+              (else (unknown-outcome outcome)))))))
 
   ;; THE DAEMON'S ANSWER IS ITS RENDERED WIRE TEXT, in an envelope; it is read
   ;; back into the datum the local route would have answered.

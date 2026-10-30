@@ -44,7 +44,7 @@
         ;; THE FRAME'S READER AND THE DISPATCH A DAEMON'S CONNECTION USES, for
         ;; `--frame`: a request handed here by the thin client is answered by
         ;; the same procedures, not by a second reading of it.
-        (only (theourgia frame) frame-limit parse-frame frame-field request-shape-error
+        (only (theourgia frame) frame-limit parse-frame frame-refusal frame-field request-shape-error
               answer-for answer-envelope)
         (only (theourgia trace) trace-event!)
         (only (theourgia working) working-snapshot working-baseline)
@@ -762,8 +762,8 @@
         (else
           (let ((parsed (parse-frame line)))
             (cond
-              ((symbol? parsed)
-               (answer-frame-and-exit! (list 'error 'bad-request (list 'reason parsed)) 'wire 'transport))
+              ((frame-refusal parsed)
+               => (lambda (refusal) (answer-frame-and-exit! refusal 'wire 'transport)))
               ((request-shape-error (frame-field 'request parsed))
                => (lambda (err) (answer-frame-and-exit! err 'wire 'transport)))
               (else

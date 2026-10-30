@@ -490,9 +490,9 @@
                     (let* ((env (read (open-string-input-port (utf8->string (cadr r)))))
                            (out (assq 'stdout (cdr env))))
                       (read (open-string-input-port (cadr out)))))))
-       (shape (call! (socket-path st) (request-frame st 'read (list b1 "--cut") '()) 5000))
-       (other (call! (socket-path st) (request-frame root 'read (list b1) '()) 5000))
-       (garbage (call! (socket-path st) (string->utf8 "(((\n") 5000))
+       (shape (call! (socket-path st) (request-frame st 'read (list b1 "--cut") '())))
+       (other (call! (socket-path st) (request-frame root 'read (list b1) '())))
+       (garbage (call! (socket-path st) (string->utf8 "(((\n")))
        (routes (filter (lambda (l) (not (prefix? "(trace routed outline" l))) (trace-lines-with st "routed "))))
   (stop-daemon! st)
   (want "RC-R5 refused before being handed on, each answered and traced connection: arguments that do not parse, another store, no datum"

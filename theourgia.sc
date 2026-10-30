@@ -45,7 +45,7 @@
         (only (theourgia client)
               socket-path request-frame
               call! call-child! answer-field readable-shape? exit-code?
-              verb-spelling-error plain-datum program-launch)
+              verb-spelling-error plain-datum program-launch unknown-outcome)
         ;; NOTE: THE ARGUMENT TABLES, AND NOTHING ELSE. `(theourgia arguments)`
         ;; is a pure library with no dependencies of its own: it reaches
         ;; neither the dispatcher, nor the scheduler, nor the network. It
@@ -323,7 +323,7 @@
                  (if (eof-object? c) (get) (begin (put-char out c) (loop))))))))))
 
 (define (send-once socket frame)
-  (call! socket frame 30000))
+  (call! socket frame))
 
 ;; ---- a stream -----------------------------------------------------------
 ;;
@@ -454,7 +454,9 @@
                                        ;; travel with the request.
                                        (cons 'stdin (piped-input verb args))
                                        (cons 'cwd (current-directory))
-                                       (cons 'mode (if wire? 'wire 'human)))))
+                                       (cons 'mode (if wire? 'wire 'human))
+                                       ;; THIS CLIENT READS KEEPALIVES: version 2.
+                                       (cons 'version 2))))
            (ask-once (if (memq verb stream-verbs) stream-once send-once))
            (first (ask-once socket frame)))
       (settle first
@@ -506,8 +508,9 @@
          (refuse (list 'error 'connect-failed
                        (list 'errno (cadr outcome))
                        '(carried-out no)))))
+    ;; A SILENT DAEMON KEEPS ITS WINDOW AND HOW LONG IT RAN (unknown-outcome).
     (else
-     (refuse (list 'error 'transport-unknown (list 'reason (cadr outcome)))))))
+     (refuse (unknown-outcome outcome)))))
 
 ;; THE LOCAL ROUTE'S PROGRAM: core.sc beside this one, with one argument.
 ;; NEVER: THE REQUEST IS NOT IN ITS COMMAND LINE. It goes to the child as the

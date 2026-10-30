@@ -175,10 +175,35 @@
    "the child's output could not be read: no whole answer came back, so lost-answer (the request may have run); the child is still waited for and reaped; a pipe, not a store entry"
    (e ((fs-error? e) (list (quote transport-error) (quote lost-answer)))))
   ("client.sc" (exchange-on) 1 guard
-   ((and (fs-error? e) (= sent 0)))
+   ((and (fs-error? e) (= sent 0)) (socket-expired? e))
    unrelated a
-   "socket write"
-   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e)))))))
+   "socket write: a failure with nothing sent is not-sent; a send whose allowance ran out after part of the frame went is silent"
+   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e))))) ((socket-expired? e) (silent-outcome start))))
+  ("client.sc" (read-socket-answer) 1 guard
+   ((socket-expired? e))
+   unrelated a
+   "socket read: the window ran out with no byte, so the answer is silent"
+   (e ((socket-expired? e) (quote expired))))
+  ("client.sc" (after-answer) 1 guard
+   (#t)
+   unrelated a
+   "the read after an answer, made only to tell the old refusal's exact bytes: any failure means it is not that refusal, and the answer stands"
+   (e (#t (quote failed))))
+  ("client.sc" (old-refusal-bytes?) 1 guard
+   (#t)
+   unrelated a
+   "an answer's bytes that are not UTF-8 text are not the old refusal; the answer itself is not judged here"
+   (e (#t #f)))
+  ("client.sc" (old-refusal-bytes?) 2 guard
+   (#t)
+   unrelated a
+   "an answer's text the reader refuses is not the old refusal; the answer itself is not judged here"
+   (e (#t #f)))
+  ("client.sc" (frame-version) 1 guard
+   (#t)
+   unrelated a
+   "this client's own frame read for its version: bytes that are not such a frame have none (#f)"
+   (e (#t #f)))
   ("client.sc" (start-one!) 1 guard
    ((classify-failure e (quote ())))
    refuse a
@@ -199,31 +224,46 @@
    conservative a
    "store-absent?: a meta.sexp that cannot be asked about is not observed absence. Before a start (client and theourgiad) the start goes on, and the daemon's store process asks store-here? again and states the unreadable entry itself; after a child exited with no report (exited-without-report) the answer is (kind exited), as before this check existed"
    (e ((unreadable-entry? e) #f)))
-  ("stream-client.sc" (stream!) 1 guard
+  ("stream-client.sc" (stream-on) 1 guard
    ((fs-error? e))
    unrelated a
    "stream socket connect, as call-on-socket's"
    (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (list (quote error) (quote connect-failed) (list (quote path) path) (list (quote errno) code))))))))
-  ("stream-client.sc" (stream!) 2 guard
+  ("stream-client.sc" (stream-on) 2 guard
    ((fs-error? e))
    unrelated a
    "stream socket: a transport failure after the frame may have gone ends the stream as lost-stream"
    (e ((fs-error? e) (list (quote ended) (quote lost-stream)))))
-  ("stream-client.sc" (stream!) 3 guard
-   ((and (fs-error? e) (= sent 0)))
+  ("stream-client.sc" (stream-on) 3 guard
+   ((and (fs-error? e) (= sent 0)) (socket-expired? e))
    unrelated a
-   "stream socket write, as exchange-on's"
-   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e)))))))
+   "stream socket write, as exchange-on's: a failure with nothing sent is not-sent; a send whose allowance ran out after part of the frame went is silent"
+   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e))))) ((socket-expired? e) (silent-since start))))
   ("stream-client.sc" (bound-receive!) 1 guard
    ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)))
    unrelated a
    "stream socket receive bound: only EINVAL is passed over -- setsockopt on a socket whose peer has closed answers it on macOS (measured), and such a peer cannot leave a read blocked; any other failure raises and ends the stream lost-stream"
    (e ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)) #f)))
   ("stream-client.sc" (stream-lines) 1 guard
+   ((socket-expired? e) (fs-error? e))
+   unrelated a
+   "stream socket read before the acceptance, under the window: the window running out is silent; any other failed read ends the stream as lost-stream"
+   (e ((socket-expired? e) (quote silent)) ((fs-error? e) (quote failed))))
+  ("stream-client.sc" (stream-lines) 2 guard
    ((fs-error? e))
    unrelated a
-   "stream socket read: a failed or timed-out read ends the stream as lost-stream"
+   "stream socket read after the acceptance: a failed or timed-out read ends the stream as lost-stream"
    (e ((fs-error? e) (quote failed))))
+  ("daemon.sc" (await-terminal issue!) 1 guard
+   (#t)
+   unrelated a
+   "a keepalive's write that raises: the keepalives stop (keepalive-failed is traced) and the request runs on; a socket write, not a store entry"
+   (e (#t #f)))
+  ("ffi.sc" (progress!) 1 guard
+   (#t)
+   unrelated a
+   "the progress sink is in-memory bookkeeping (a request's counter); a raise in it is traced as progress-failed and the unit of work it counts stands"
+   (e (#t (trace-event! (quote progress-failed) #f #f))))
   ("project.sc" (export-md-view) 1 guard
    ((unreadable-entry? e) (fs-error? e))
    refuse a

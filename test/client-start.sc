@@ -118,7 +118,7 @@
 ;; is bound but not yet being read; this row is what says the difference
 ;; did not matter.
 (want "CS-1 and it answers, from the store it was started for"
-      (let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor "tester"))) 5000)))
+      (let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor "tester"))))))
         (if (and (pair? r) (eq? 'answer (car r)))
             (if (let* ((text (utf8->string (cadr r))) (n (string-length text)))
                   (let scan ((i 0))
@@ -265,7 +265,7 @@
       'ready)
 
 (want "CS-4 TWIN: and the daemon that start produced does answer"
-      (let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor "tester"))) 5000)))
+      (let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor "tester"))))))
         (if (and (pair? r) (eq? 'answer (car r))) 'answered r))
       'answered)
 
@@ -331,7 +331,7 @@
             ;; and starting it is not the step being measured: the fault
             ;; is scoped to the call, so nothing here can arm it.
             "(ensure-daemon! argv store sock)"
-            "(let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor \"tester\"))) 5000)))"
+            "(let ((r (call! sock (request-frame store 'outline '() (list (cons 'actor \"tester\"))))))"
             "  (write (car r)) (newline)"
             ;; the answer's own bytes, so a row can ask whether THIS answer
             ;; survived rather than whether some answer came back

@@ -1411,7 +1411,13 @@
                                  (end (if last
                                           (list seg (caddr outcome) last)
                                           end))
-                                 (buffer (if current? (cons seg clipped) buffer)))
+                                 (buffer (if current? (cons seg clipped) buffer))
+                                 ;; ONE SEGMENT VALIDATED IS PROGRESS, once its scan
+                                 ;; completed and its range and end are known: an
+                                 ;; unreadable, mismatched or torn segment is not.
+                                 ;; INJECTION ONLY: validate-slow makes each take
+                                 ;; 100 ms more.
+                                 (_ (begin (progress!) (fault-pause! 'validate-slow 100))))
                             (if (or (and retired-seq
                                          (retirement-ends-here? seg retired))
                                     (and ceiling last (>= last ceiling)))
@@ -7397,7 +7403,9 @@
                            ;; impossible shape only hides the day it
                            ;; becomes possible again.
                            (cond
-                             ((and reached (>= reached needed)) (loop (cdr rs)))
+                             ;; ONE SEGMENT DELIVERED IS PROGRESS, once it reached
+                             ;; the boundary validation promised
+                             ((and reached (>= reached needed)) (progress!) (loop (cdr rs)))
                              (else (list 'failed (list 'scanner outcome needed)))))))))))))))
 ))
 )

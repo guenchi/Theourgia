@@ -28,7 +28,7 @@
 ;;; to avoid; the thin client does not load this at all.
 
 (library (theourgia frame)
-  (export frame-limit parse-frame frame-field request-shape-error answer-for answer-envelope)
+  (export frame-limit parse-frame frame-refusal frame-field request-shape-error answer-for answer-envelope)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io ports) (rnrs unicode) (rnrs exceptions)
           (only (chezscheme) read)
@@ -169,7 +169,19 @@
              ;; exists to prevent, defeated by a literal.
              (clean (nothing-but-space-left? port)))
         (if (not (and clean (well-formed-envelope? datum)))
-            'malformed-envelope
+            ;; A VERSION-2 FRAME THAT CANNOT BE USED SAYS SO WITH ITS VERSION
+            ;; (a bad field, something after it). The version is the one the
+            ;; reader read, in its place, never a byte pattern. A client that
+            ;; predates version 2 is answered today's bytes by a daemon that
+            ;; predates it, and resends at version 1 on exactly those bytes; a
+            ;; refusal naming the version is never them, so this daemon's own
+            ;; refusal of a version-2 frame is never resent. Every other
+            ;; version, and a frame whose version cannot be read, gets today's
+            ;; bytes.
+            (if (and (pair? datum) (eq? 'request (car datum))
+                     (pair? (cdr datum)) (eqv? 2 (cadr datum)))
+                (vector 'refused 'malformed-envelope 2)
+                'malformed-envelope)
             (list (cons 'version (list-ref datum 1))
                   (cons 'store (list-ref datum 2))
                   (cons 'actor (list-ref datum 3))
@@ -194,11 +206,24 @@
 
   (define (string-or-false? x) (or (not x) (string? x)))
 
+  ;; A FRAME parse-frame REFUSED, AS THE ANSWER'S DATUM, or #f for one it
+  ;; parsed: (error bad-request (reason <why>)), with (version 2) after the
+  ;; reason when the frame was a version-2 frame.
+  (define (frame-refusal parsed)
+    (cond
+      ((symbol? parsed) (list 'error 'bad-request (list 'reason parsed)))
+      ((and (vector? parsed) (= 3 (vector-length parsed)) (eq? 'refused (vector-ref parsed 0)))
+       (list 'error 'bad-request (list 'reason (vector-ref parsed 1)) (list 'version (vector-ref parsed 2))))
+      (else #f)))
+
   (define (well-formed-envelope? datum)
     (and (list? datum)
          (>= (length datum) 9)
          (eq? 'request (car datum))
-         (equal? (list-ref datum 1) (envelope-version))
+         ;; VERSION 1, THE ENVELOPE OF envelope-version, OR 2, THE SAME
+         ;; ENVELOPE FROM A CLIENT THAT READS KEEPALIVES. A connection
+         ;; reads the version from the parse and keeps it alive only on 2.
+         (let ((v (list-ref datum 1))) (or (eqv? v (envelope-version)) (eqv? v 2)))
          (string? (list-ref datum 2))
          (string? (list-ref datum 3))
          (string-or-false? (list-ref datum 4))

@@ -50,7 +50,8 @@
 (import (chezscheme) (theourgia sched) (theourgia net)
         (only (theourgia ffi) io-yield! io-yield-tally with-no-yield lock-try-acquire! lock-release! file-ensure!
               symlink! fsync! theourgia-stage fd-open fd-close)
-        (only (theourgia log) atomic-write!))
+        (only (theourgia log) atomic-write!)
+        (only (theourgia code-project) capture-import))
 
 (define bad 0)
 (define rows 0)
@@ -142,6 +143,18 @@
             (length (filter (lambda (s) (and (eq? (car s) 'inside) (pair? (cdr s)) (eq? (cadr s) 'read))) io-sites))
             (filter (lambda (s) (eq? (cdr s) 'sleeper)) io-sites))
       '(8 2 4 ((outside . sleeper))))
+;; THE SAME RULE FOR THE DAEMON'S PROGRESS TABLES (daemon.sc): the counts by
+;; ticket, the connection that owns each, and the executor's association,
+;; every operation in a region.
+(define daemon-forms (read-forms (string-append script-dir "/../daemon.sc")))
+(define progress-sites
+  (apply append (map (lambda (name) (let ((f (find-define daemon-forms name))) (if f (sites f) (list (cons 'missing name)))))
+                     '(progress-register! progress-drop! progress-count progress-bump! with-ticket progress-reclaim!))))
+(want "YA-8 the daemon's progress tables: no table operation outside an interrupt region, in the six that touch them"
+      (filter (lambda (s) (not (eq? (car s) 'inside))) progress-sites) '())
+(want "YA-8 TWIN: the walk finds them: fifteen table operations, all inside (two in register, three in drop, one in count, three in the bump, three in the association, three in the reclaim)"
+      (length (filter (lambda (s) (and (eq? (car s) 'inside) (memq (cdr s) table-ops))) progress-sites))
+      15)
 
 ;; ---- the tree YA-1 exports ----------------------------------------------------
 ;; SIZED BY THIS DISK. Forty atomic writes are timed first, and the tree gets
@@ -287,9 +300,77 @@
                    (reads (if partial? (cons (list (- (real-time) t0) (starts-with? (stdout-of a) "(ok")) reads) reads)))
               (loop reads first-write)))))))
 
+;; YA-6 AN IMPORT'S CAPTURE LETS OTHER ACTORS RUN. The capture reads every
+;; file of a tree (code-project.sc capture-import) and calls progress! per
+;; file, which yields; a ticker actor that sleeps 10 ms between ticks keeps
+;; its cadence while it runs, and the capture's yields show in the tally. The
+;; window is the capture alone: an import through a daemon then commits what
+;; it captured as a batch, and the batch path reports no progress and yields
+;; only at its flushes (B5's stated limit; README, Waiting for an answer), so
+;; a window over the whole import would time that.
+;; THE TREE IS SIZED TO THE MACHINE: reads are fast (YA-1's tree of 1000
+;; files is captured in under 100 ms here), so the faster of two timed
+;; captures of it (the first can be cold) says how many copies of it make a
+;; capture of about 1.5 s (at most 40).
+;; The bound is the ticker's 10 ms + Y + 500 ms, the margin for a loaded
+;; runner. A capture still under 800 ms reads red, not skipped.
+;; THE YIELD COUNT IS WHAT TELLS; THE CADENCE ROW IS A GUARD. Measured with
+;; both of the capture's progress! calls removed: 0 yields, and the ticker
+;; still kept its cadence (longest gap 12 ms), because igropyr preempts an
+;; actor that runs Scheme code; a loop of fast reads never holds the thread
+;; long. So only the tally row goes red without the yield; the cadence row
+;; says the capture leaves the others running. It stays green for that
+;; mutant, and can still go red for what no yield prevents: the host
+;; descheduling the process, a long region with interrupts disabled. Neither
+;; row proves a bound of 50 ms between explicit yields.
+;; THE TALLY IS THE PROCESS'S, the throttle the actor's: the count is taken
+;; just before and just after the capture, and a control of the same length,
+;; the ticker still running and this actor only sleeping, must count none,
+;; so no other actor supplies the yields the row reads. The threshold is
+;; rounded up.
+(define (ya-6)
+  (let ((st6 (string-append scratch "/store6")) (tree6 (string-append scratch "/tree6")) (me self))
+    (system (cli "init" "--store" st6 "> /dev/null"))
+    (let* ((timed (lambda () (let ((t0 (real-time))) (capture-import st6 tree #f #f) (max 1 (- (real-time) t0)))))
+           (first (min (timed) (timed)))
+           (copies (max 1 (min 40 (exact (ceiling (/ 1500 first)))))))
+      (system (string-append "mkdir -p " tree6))
+      (do ((c 0 (+ c 1))) ((= c copies))
+        (system (string-append "cp -R " tree " " tree6 "/c" (number->string c))))
+      (let* ((ticker (spawn (lambda ()
+                              (let loop ()
+                                (receive
+                                  (after 10 (send me (list 'tick (real-time))) (loop))
+                                  (`(stop) (void)))))))
+             (y0 (io-yield-tally))
+             (t0 (real-time))
+             (r (guard (e (#t 'raised)) (capture-import st6 tree6 #f #f)))
+             (t1 (real-time))
+             (yields (- (cadr (io-yield-tally)) (cadr y0)))
+             (control (let ((c0 (io-yield-tally)))
+                        (sleep-ms (max 100 (- t1 t0)))
+                        (- (cadr (io-yield-tally)) (cadr c0)))))
+        (send ticker '(stop))
+        (let* ((ticks (let collect ((out '())) (receive (after 0 (reverse out)) (`(tick ,t) (collect (cons t out))))))
+               (in (filter (lambda (t) (and (<= t0 t) (<= t t1))) ticks))
+               (points (append (list t0) in (list t1)))
+               (gap (apply max 0 (map - (cdr points) (reverse (cdr (reverse points))))))
+               (window (- t1 t0)))
+          (printf "YA-6 reading: first capture ~a ms, ~a copies, capture ~a ms, ~a yields, ~a ticks in it, longest gap ~a ms, control ~a yields~%"
+                  first copies window yields (length in) gap control)
+          (want "YA-6 the capture runs to its end"
+                (not (eq? r 'raised)) #t)
+          (want "YA-6 the capture yields: at least one yield per 100 ms of it, rounded up"
+                (and (>= window 800) (>= yields (quotient (+ window 99) 100))) #t)
+          (want "YA-6 TWIN: a control as long as the capture, the ticker running and this actor sleeping, counts no yield"
+                control 0)
+          (want "YA-6 a 10 ms ticker keeps its cadence through an import's capture of at least 800 ms: a tick in every 10 ms + Y + 500 ms"
+                (list (>= window 800) (>= (length in) 2) (< gap 560)) '(#t #t #t)))))))
+
 (start-scheduler
   (lambda ()
     (ya-1)
+    (ya-6)
 
     ;; ---- YA-3 interrupts disabled ------------------------------------------------
     ;; The clock is started, then run past: the same call yields with interrupts

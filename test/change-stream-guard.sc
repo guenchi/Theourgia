@@ -173,6 +173,53 @@
       (and data exit (eqv? (cadr exit) 0)
            (= 1 (length data)) (pair? (car data)) (eq? (car (car data)) 'ok)))))
 ;; TEXT without its (trace store-check ...) lines, each with its newline.
+;; PART B'S EXECUTOR LINES, (trace executing <ticket> #f), (trace
+;; executing-done <ticket> #f) and (trace association-cleared <ticket> #t|#f),
+;; one set around every request an executor runs, whatever its frame's
+;; version: the base has none. -> (<the text
+;; without them> . <those lines, in order>), so the guard can compare the
+;; rest byte for byte and still check the pairing of what it left out.
+(define (without-executor-lines text)
+  (define (starts? l p) (and (>= (string-length l) (string-length p)) (string=? (substring l 0 (string-length p)) p)))
+  (define (executor? l) (or (starts? l "(trace executing ") (starts? l "(trace executing-done ") (starts? l "(trace association-cleared ")))
+  (let loop ((cs (string->list text)) (line '()) (out '()) (left '()))
+    (cond ((null? cs)
+           (let ((l (list->string (reverse line))))
+             (cons (apply string-append (reverse (if (or (null? line) (executor? l)) out (cons l out))))
+                   (reverse (if (and (pair? line) (executor? l)) (cons l left) left)))))
+          ((char=? (car cs) #\newline)
+           (let ((l (list->string (reverse line))))
+             (if (executor? l)
+                 (loop (cdr cs) '() out (cons l left))
+                 (loop (cdr cs) '() (cons "\n" (cons l out)) left))))
+          (else (loop (cdr cs) (cons (car cs) line) out left)))))
+;; THE PAIRING: every ticket has exactly one executing, after it exactly one
+;; executing-done, and after that exactly one association-cleared that says
+;; #t; and there are as many tickets as the trace's requests routed to the
+;; store or a writer (a connection-local read has none).
+(define (executor-pairs-hold? lines rest)
+  (let* ((data (map (lambda (l) (read (open-string-input-port l))) lines))
+         (tickets (let loop ((ds data) (seen '()))
+                    (cond ((null? ds) (reverse seen))
+                          ((member (caddr (car ds)) seen) (loop (cdr ds) seen))
+                          (else (loop (cdr ds) (cons (caddr (car ds)) seen))))))
+         (routed (let loop ((ls (let split ((cs (string->list rest)) (line '()) (out '()))
+                                  (cond ((null? cs) (reverse (if (null? line) out (cons (list->string (reverse line)) out))))
+                                        ((char=? (car cs) #\newline) (split (cdr cs) '() (cons (list->string (reverse line)) out)))
+                                        (else (split (cdr cs) (cons (car cs) line) out)))))
+                           (n 0))
+                   (cond ((null? ls) n)
+                         ((let ((l (car ls)))
+                            (and (>= (string-length l) 14) (string=? (substring l 0 14) "(trace routed ")
+                                 (not (string=? (substring l (- (string-length l) 11) (string-length l)) "connection)"))))
+                          (loop (cdr ls) (+ n 1)))
+                         (else (loop (cdr ls) n))))))
+    (and (= (length tickets) routed)
+         (for-all (lambda (t)
+                    (let ((mine (filter (lambda (d) (equal? (caddr d) t)) data)))
+                      (and (equal? (map cadr mine) '(executing executing-done association-cleared))
+                           (eq? #t (cadddr (caddr mine))))))
+                  tickets))))
 (define (without-store-checks text)
   (define (check? l) (and (>= (string-length l) 19) (string=? (substring l 0 19) "(trace store-check ")))
   (let loop ((cs (string->list text)) (line '()) (out '()))
@@ -505,19 +552,27 @@
       ;; base has none.
       ;; -> (<read and set both answered ok> . <trace>): a refused set has no
       ;; commit to trace, so the row asserts both answers before comparing.
+      ;; NOTE: SO ARE PART B'S EXECUTOR LINES (without-executor-lines): the
+      ;; rest is compared byte for byte, and what was left out is checked for
+      ;; its pairing, one executing, one executing-done and one
+      ;; association-cleared #t per request an executor ran; the base writes none.
+      ;; -> (<read and set both answered ok> <trace> <executor lines>)
       (let ((trace-of (lambda (d)
                         (let* ((before (string-length (file-text (cadddr d))))
                                (r (answered-ok? (ask-raw d 'read (list seed))))
                                (w (answered-ok? (ask-raw d 'set (list seed "src" "traced")))))
                           (sleep-ms 300)
-                          (cons (and r w)
-                                (mask-temporaries
-                                  (normalize-for d (without-store-checks
-                                                     (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))))))
-        (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them is byte for byte the base's"
+                          (let ((split (without-executor-lines
+                                         (without-store-checks
+                                           (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))
+                            (list (and r w) (mask-temporaries (normalize-for d (car split))) (cdr split)))))))
+        (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines left out, is byte for byte the base's; the base has none, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
               (let ((tb (trace-of b)) (tn (trace-of n)))
-                (list (car tb) (car tn) (if (equal? (cdr tb) (cdr tn)) 'equal (list (cdr tb) (cdr tn)))))
-              '(#t #t equal)))
+                (list (car tb) (car tn)
+                      (if (equal? (cadr tb) (cadr tn)) 'equal (list (cadr tb) (cadr tn)))
+                      (length (caddr tb))
+                      (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
+              '(#t #t equal 0 #t)))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by

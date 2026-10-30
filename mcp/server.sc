@@ -71,7 +71,6 @@
 
 (define protocol-version "2025-11-25")
 (define frame-limit (* 1024 1024))
-(define answer-deadline-ms 30000)
 
 (define instructions
   (string-append
@@ -552,8 +551,10 @@
                                                        (string? (car piped))
                                                        (car piped)))
                                      (cons 'cwd (current-directory))
-                                     (cons 'mode 'wire))))
-         (first (call! socket frame answer-deadline-ms)))
+                                     (cons 'mode 'wire)
+                                     ;; THIS SHELL READS KEEPALIVES: version 2.
+                                     (cons 'version 2))))
+         (first (call! socket frame)))
     (settle first
             (lambda ()
               ;; INJECTION ONLY: held after the request's first connect found
@@ -577,12 +578,12 @@
                       (if (eq? 'ready started)
                           ;; INJECTION ONLY: held after an ensure answered ready,
                           ;; before the request's own connect (each attempt).
-                          (settle (begin (hold-point! 'shell-after-ready) (call! socket frame answer-deadline-ms))
+                          (settle (begin (hold-point! 'shell-after-ready) (call! socket frame))
                                   (lambda ()
                                     (let ((again (attempt 2)))
                                       (if (eq? 'ready again)
                                           (settle (begin (hold-point! 'shell-after-ready)
-                                                         (call! socket frame answer-deadline-ms))
+                                                         (call! socket frame))
                                                   #f)
                                           (list 'start-failed again)))))
                           (list 'start-failed started)))))))))
@@ -621,7 +622,9 @@
            (list 'not-sent (list 'error 'connect-failed
                                  (list 'errno (cadr outcome))
                                  '(carried-out no)))))
-      (else (list 'transport-lost))))
+      ;; THE TRANSPORT'S OWN WORDS TRAVEL WITH THE LOSS, so a silent daemon
+      ;; reaches the agent with its window and how long it ran.
+      (else (list 'transport-lost (cdr outcome)))))
 
 ;; NEVER: THE SHELL TAKES `stdout` AND NOTHING ELSE from the envelope. The
 ;; text it returns to its caller is the core's answer, and that is what
@@ -981,6 +984,21 @@
 ;; THE TRANSPORT ERROR A LOST CHILD IS ANSWERED WITH: the one this shell uses
 ;; when a request's fate is unknown, with what is known in its data. Never
 ;; re-sent.
+;; THE SAME ERROR FOR A DAEMON THAT WENT SILENT, with its window and how long
+;; the request had run, both in milliseconds. CLAUSES is ((window <ms>)
+;; (elapsed <ms>)).
+;; -> the clauses ((window <ms>) (elapsed <ms>)) when OUTCOME is a silent
+;; daemon's loss, (transport-lost (silent ...)); #f for any other outcome.
+(define (silent-loss-clauses outcome)
+  (and (pair? outcome) (eq? 'transport-lost (car outcome)) (pair? (cdr outcome))
+       (pair? (cadr outcome)) (eq? 'silent (car (cadr outcome)))
+       (cdr (cadr outcome))))
+(define (silent-error-json clauses)
+  (let ((ms (lambda (k) (let ((c (assq k clauses))) (if (and c (pair? (cdr c))) (number->string (cadr c)) "null")))))
+    (string-append "{\"code\":-32603,\"message\":\"Core answer unavailable; execution may be unknown\""
+                   ",\"data\":{\"reason\":\"silent\",\"window\":" (ms 'window)
+                   ",\"elapsed\":" (ms 'elapsed) "}}")))
+
 (define (child-lost-error-json reason diag)
   (string-append "{\"code\":-32603,\"message\":\"Core answer unavailable; execution may be unknown\""
                  ",\"data\":{\"reason\":" (json->string reason)
@@ -1091,6 +1109,9 @@
                    (list 'error-object identity (refusal-error-json (cadr listing) '() (caddr listing))))
                   ((eq? 'not-sent (car listing))
                    (list 'error identity -32603 (not-sent-message (cadr listing))))
+                  ;; A silent daemon: the same error, with its window and elapsed.
+                  ((silent-loss-clauses listing)
+                   => (lambda (clauses) (list 'error-object identity (silent-error-json clauses))))
                   ;; The answer was lost: execution may be unknown, as before.
                   ((eq? 'transport-lost (car listing))
                    (list 'error identity -32603
@@ -1231,6 +1252,8 @@
                         (list 'result identity (refusal-result-json (cadr outcome))))
                        ((eq? 'not-sent (car outcome))
                         (list 'error identity -32603 (not-sent-message (cadr outcome))))
+                       ((silent-loss-clauses outcome)
+                        => (lambda (clauses) (list 'error-object identity (silent-error-json clauses))))
                        (else
                         (list 'error identity -32603
                               "Core answer unavailable; execution may be unknown")))))))))))))

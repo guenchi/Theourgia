@@ -527,8 +527,7 @@
 ;; P2b (dispatch-frame's store check; PR-06): a raw frame naming the store as
 ;; <parent>/./store, as test/client-socket.sc sends one.
 (define (raw-frame sock spelling verb . args)
-  (call! sock (string->utf8 (render-wire (append (list 'request (envelope-version) spelling "test" #f 'wire (current-directory) #f verb) args)))
-         5000))
+  (call! sock (string->utf8 (render-wire (append (list 'request (envelope-version) spelling "test" #f 'wire (current-directory) #f verb) args)))))
 (define (origin-and-datum outcome)
   (if (and (pair? outcome) (eq? (car outcome) 'answer))
       (let* ((env (read (open-string-input-port (utf8->string (cadr outcome)))))

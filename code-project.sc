@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia code-project)
-  (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
+  (export import-code capture-import export-code export-code-view code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory duplicate-path-failure
           file-projection-key projected-files
           projection-outputs projected-file lang-fields (rename (answer code-project-answer)))
@@ -24,7 +24,7 @@
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia timing-wrappers) timed)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
-                entry-bytes)
+                entry-bytes progress! fault-pause!)
           (only (theourgia markers) import-text?)
           (only (theourgia wire) storable-encode sexpr->string-extended)
           (only (theourgia digest) sha256 bytevector->hex))
@@ -155,8 +155,11 @@
                                      b)))))))))
            (files (map (lambda (rel)
                          (unless (relative-safe? rel) (projection-failure 'unsafe-path))
-                         (let ((b (read-code-bytes (string-append dir "/" rel))))
-                           (list rel b (and (import-text? b) (by-symbols rel b (projection-input rel b))))))
+                         (let* ((b (read-code-bytes (string-append dir "/" rel)))
+                                (f (list rel b (and (import-text? b) (by-symbols rel b (projection-input rel b))))))
+                           ;; ONE FILE READ IS PROGRESS (the daemon's keepalive reads it).
+                           (progress!)
+                           f))
                        (directory-files dir)))
            (skipped (map car (filter (lambda (f) (not (or (caddr f) (assoc (car f) refused)))) files)))
            (inputs (map caddr (filter caddr files)))
@@ -172,6 +175,7 @@
                (projection-failure 'mode-mismatch (list 'ids (list id))))))
       (for-each
         (lambda (input)
+          (progress!)
           (let* ((rel (car input)) (entry (cadr input)) (parsed (caddr input))
                  (header (car parsed)) (entries (cadr parsed))
                  (file (and header (list-ref header 3)))
@@ -365,7 +369,12 @@
     (let loop ((ids (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state))) (out '()))
       (if (null? ids)
           (reverse out)
-          (loop (cdr ids) (cons (projected-file state (car ids)) out)))))
+          (let ((f (projected-file state (car ids))))
+            ;; ONE FILE GATHERED IS PROGRESS, before the first output exists.
+            ;; INJECTION ONLY: gather-slow makes each take 100 ms more.
+            (progress!)
+            (fault-pause! 'gather-slow 100)
+            (loop (cdr ids) (cons f out))))))
   ;; ONE TEXT FILE AS THE EXPORTER PROJECTS IT, or the exporter's refusal.
   (define (projected-file state id)
     (let ((k (file-projection-key state id)))
@@ -381,9 +390,11 @@
   (define (projection-outputs store state raw?)
     (let ((cut (reduce-applied-cut state)))
       (map (lambda (f)
-             (let ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f)))
-               (list rel (if raw? (apply bytes-append (map cadr entries))
-                             (projection-encode entry (list (store-id-of store) id cut) entries)))))
+             (let* ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f))
+                    (out (list rel (if raw? (apply bytes-append (map cadr entries))
+                                       (projection-encode entry (list (store-id-of store) id cut) entries)))))
+               (progress!)
+               out))
            (projected-files state))))
 
   ;; OVERLAY, when given: a procedure from the outputs to the outputs written,
@@ -394,7 +405,16 @@
         (let* ((state (view))
                (outputs (let ((o (projection-outputs store state raw?)))
                           (if (and (pair? overlay) (car overlay)) ((car overlay) o) o))))
+          ;; ONE FILE WRITTEN IS PROGRESS. INJECTION ONLY: export-slow makes
+          ;; each take 100 ms more, and so does every keepalive fault and
+          ;; conn-killed-pending, whose rows need a request that keeps
+          ;; progressing while its connection runs or after it is killed.
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
-                                   (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
+                                   (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working)
+                                   (progress!)
+                                   (fault-pause! '(export-slow keepalive-late keepalive-never keepalive-error
+                                                   keepalive-stale keepalive-raise conn-killed-pending)
+                                                 100)))
+                    outputs)
           (list 'ok (list 'files (length outputs)))))))
 )

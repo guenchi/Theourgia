@@ -645,8 +645,7 @@
 (define frame-answer
   (let ((o (call! (socket-path M)
                   (request-frame M 'scope (list (string-append root "/x7") "--cut" "t1" "--roots" R1 "--for" "codex")
-                                 '((actor . "author") (mode . wire)))
-                  30000)))
+                                 '((actor . "author") (mode . wire))))))
     (and (eq? (car o) 'answer) (first-datum (answer-field (first-datum (utf8->string (cadr o))) 'stdout string?)))))
 (want "D a daemon asked to carry out scope does not have the verb, and makes nothing"
       (in-order (and (pair? frame-answer) (list-head frame-answer 2)) (dir-exists? (string-append root "/x7")))

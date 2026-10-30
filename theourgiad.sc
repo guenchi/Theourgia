@@ -139,9 +139,11 @@
       '("--session-size" "--idle-exit" "--idle-grace-ms"))
     ;; THE GRACE IS BOUNDED WHERE IT IS READ: a request that arrives while the
     ;; daemon is leaving waits for the rest of the grace before it is admitted,
-    ;; and its answer must arrive inside the thin client's receive timeout
-    ;; (theourgia.sc, send-once, 30 s). 5000 ms leaves the rest of that budget
-    ;; to the rebind and to the client's own start-up. A literal here, refused
+    ;; and nothing reaches its client meanwhile, so grace + rebind + start-up
+    ;; must fit both the client's silence window (client.sc,
+    ;; silence-window-ms, 30 s) and the adapter's idle bound before a
+    ;; connection reads (daemon.sc, adapter-idle-ms, 15 s). 5000 ms leaves the
+    ;; rest of those to the rebind and to the client's own start-up. A literal here, refused
     ;; before --detach and before anything is opened, as the counts above are;
     ;; the daemon's library is not loaded yet, and a refusal from inside it
     ;; would go to the log under --detach.

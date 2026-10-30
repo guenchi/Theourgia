@@ -15,8 +15,11 @@
 (library (theourgia datum-project)
   (export import-datum export-datum export-datum-view def-datum)
   (import (rnrs) (theourgia datum-code) (theourgia datum-match) (theourgia datum-metadata)
-          (theourgia code-project) (theourgia code-markers) (theourgia text-code) (theourgia languages)
-          (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
+          ;; NOT code-project's capture-import (store dir allow-delete? symbols), the
+          ;; four-argument export an import's capture is; this library's own
+          ;; capture-import (store dir), defined below, is the datum one.
+          (except (theourgia code-project) capture-import) (theourgia code-markers) (theourgia text-code)
+          (theourgia languages) (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!) (only (theourgia ffi) mkdir-p!))
   (define scheme-entry (language-for-name 'scheme))
   (define (answer thunk)

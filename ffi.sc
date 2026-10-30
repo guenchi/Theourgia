@@ -392,6 +392,8 @@
           with-mutation-record mutation-record mutation-set-self!
           EIO ENOENT EACCES ENOTDIR EBADF ECHILD waitpid-status
           hold-point! hold-sleeper-set! io-yield! io-yield-set! with-no-yield io-yield-tally
+          monotonic-ms progress! progress-sink-set! theourgia-silence-ms theourgia-keepalive-ms fault-pause!
+          socket-send-within! socket-read-within socket-expired?
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir! symlink! read-link
           unix-socket-connect fd-read socket-timeout! socket-receive-timeout! sun-path-max sockaddr-un
@@ -2018,6 +2020,93 @@
                (bytevector-copy! buf 0 out 0 n)
                out)))))))
 
+  ;; A SEND AND A RECEIVE UNDER A DEADLINE THAT MOVES. A client that gives up
+  ;; on silence, not on a clock, needs each syscall bounded by what is LEFT of
+  ;; its allowance, and that allowance moves when bytes move. REMAINING is a
+  ;; procedure answering the milliseconds left; it is asked before every
+  ;; syscall and the socket's timeout set to that, at least 1 ms.
+  ;; NEVER: EINTR RECOMPUTES THE ALLOWANCE, IT NEVER RESETS IT. A signal
+  ;; arriving every few seconds used to restart the full timeout each time,
+  ;; so a silent peer was never given up on.
+  ;; A timeout the kernel ends while REMAINING still answers more than zero
+  ;; (its clock and ours round differently) is retried with what is left. The
+  ;; expiry is raised as the read's or the write's failure with
+  ;; EWOULDBLOCK, and only when REMAINING answers zero or less;
+  ;; socket-expired? tells it from every other failure.
+  ;; NEVER: A PEER THAT HAS CLOSED IS NOT A FAILURE TO SET THE RECEIVE BOUND.
+  ;; On Darwin setsockopt answers EINVAL once the peer has shut the
+  ;; connection down, and an answer that arrived with its close was lost with
+  ;; it. Such a socket's read returns at once -- what was sent, then end of
+  ;; file -- so the read goes ahead unbounded; the failure moves no clock.
+  ;; Only the receive bound is passed over: the send bound, and every other
+  ;; failure, raise (stream-client.sc's bound-receive! does the same).
+  ;; MS is never below 1: an allowance already spent answers silent before
+  ;; any call, and a zero timeval would mean no bound at all.
+  (define (socket-timeout-left! fd opt ms)
+    (let ((tv (timeval-bytes (max 1 ms))))
+      (when (= -1 (c-setsockopt fd SOL_SOCKET opt tv (bytevector-length tv)))
+        (let ((code (errno)))
+          (unless (and (= code EINVAL) (= opt SO_RCVTIMEO))
+            (raise (fs-err 'setsockopt "socket" code)))))))
+  (define (socket-expired? e)
+    (and (fs-error? e) (eqv? (fs-error-errno e) EWOULDBLOCK)))
+  ;; -> the bytes sent, all of them; a failure raises after PROGRESS has been
+  ;; told the running total, so "nothing went out" is decided by the count.
+  (define (socket-send-within! fd bv remaining progress)
+    (unless (bytevector? bv)
+      (assertion-violation 'socket-send-within! "not a bytevector" bv))
+    (let ((total (bytevector-length bv)))
+      (let loop ((pos 0) (chunk bv))
+        (if (>= pos total)
+            total
+            (let ((left (begin
+                          ;; INJECTION ONLY: a peer that takes nothing at all, so the
+                          ;; send expires with no byte written (send-stall@client).
+                          (when (and (= pos 0) (eq? (theourgia-fault) 'send-stall))
+                            (let wait ()
+                              (when (> (remaining) 0)
+                                (sleep (make-time 'time-duration 10000000 0))
+                                (wait))))
+                          (remaining))))
+              (when (<= left 0) (raise (fs-err 'write "socket" EWOULDBLOCK)))
+              (socket-timeout-left! fd SO_SNDTIMEO left)
+              (let-values (((n code skipped) (begin (written! fd)
+                                                     (write-once fd chunk (- total pos) "socket"))))
+                (cond
+                  ((and (< n 0) (= code EINTR)) (loop pos chunk))
+                  ((and (< n 0) (= code EWOULDBLOCK) (> (remaining) 0)) (loop pos chunk))
+                  ((< n 0) (raise (fs-err 'write "socket" code)))
+                  ((= n 0) (raise (fs-err 'write "socket" #f)))
+                  (else
+                   (trace-event! 'write "socket" n)
+                   (progress (+ pos n))
+                   (let ((pos (+ pos n)))
+                     (if (>= pos total)
+                         (loop pos chunk)
+                         (let ((tail (make-bytevector (- total pos))))
+                           (bytevector-copy! bv pos tail 0 (- total pos))
+                           (loop pos tail))))))))))))
+  ;; One read of up to WANT bytes under REMAINING, as fd-read answers it: an
+  ;; empty bytevector at end of file.
+  (define (socket-read-within fd want remaining)
+    (let ((buf (make-bytevector want)))
+      (let retry ()
+        (let ((left (remaining)))
+          (when (<= left 0) (raise (fs-err 'read "socket" EWOULDBLOCK)))
+          (socket-timeout-left! fd SO_RCVTIMEO left)
+          (let* ((n (c-read fd buf want))
+                 (code (and (< n 0) (errno))))
+            (cond
+              ((and code (= code EINTR)) (retry))
+              ((and code (= code EWOULDBLOCK) (> (remaining) 0)) (retry))
+              (code (raise (fs-err 'read "socket" code)))
+              ((= n 0) (bytevector))
+              ((= n want) buf)
+              (else
+               (let ((out (make-bytevector n)))
+                 (bytevector-copy! buf 0 out 0 n)
+                 out))))))))
+
     (define (machine-kind)
     (let ((m (symbol->string (machine-type))))
       (cond
@@ -2055,6 +2144,7 @@
   ;; flock's "somebody else holds it" under LOCK_NB: 35 on macOS and
   ;; FreeBSD (EAGAIN), 11 on Linux, as the rows read it.
   (define EWOULDBLOCK (platform-number 'EWOULDBLOCK))
+  (define EINVAL (platform-number 'EINVAL))
   ;; THE THREE WAYS AN OPEN FAILS THAT A BARRIER HAS TO SURVIVE,
   ;; named because an injected fault says which one it is: the file is
   ;; gone, this process may not read it, or this process has no
@@ -2692,6 +2782,17 @@
      (define read-chunk-setting (positive-setting "THEOURGIA_READ_CHUNK"))
      (define (theourgia-send-buffer) send-buffer-setting)
      (define (theourgia-read-chunk) read-chunk-setting)
+     ;; THE TWO CLOCKS OF LIVENESS, SHORTENED FOR ROWS ONLY: THEOURGIA_SILENCE_MS
+     ;; replaces the client's silence window and THEOURGIA_KEEPALIVE_MS the
+     ;; daemon's keepalive interval, read like the two above. NEVER: they exist
+     ;; only in this branch; a build without injection does not read them, and
+     ;; the clocks there are the defined ones. The keepalive must be shorter
+     ;; than the window; the library that holds both says so when it loads
+     ;; (daemon.sc, keepalive-ms).
+     (define silence-setting (positive-setting "THEOURGIA_SILENCE_MS"))
+     (define keepalive-setting (positive-setting "THEOURGIA_KEEPALIVE_MS"))
+     (define (theourgia-silence-ms) silence-setting)
+     (define (theourgia-keepalive-ms) keepalive-setting)
      ;; THE DAEMON'S TIMER PROBE, OFF FOR A FIXTURE: THEOURGIA_PROBE=off
      ;; spawns no prober, so a change folds only when something asks for it
      ;; and a row's frames do not race a timer fold. Unset, the prober runs
@@ -2793,7 +2894,10 @@
          stream-written-ref stream-written-token stream-coalesce-cut stream-write-raise
          writer-raise-second probe-slow refresh-snapshot-raise rotation-probe-fail
          frame-unanswered adapter-dies accept-refused-once accept-raise-once
-         accept-raise-second accept-exhaust-first))
+         accept-raise-second accept-exhaust-first
+         export-slow gather-slow validate-slow send-stall
+         keepalive-late keepalive-never keepalive-error keepalive-stale keepalive-raise
+         conn-killed-pending))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -3051,7 +3155,7 @@
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
          after-discovery after-barrier mcp-child-wait eval-admission reload-before-publish
-         commit-before-publish
+         commit-before-publish executor-before-verb executor-block-before-verb
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
          freeze-after-dump freeze-before-list landing-before-tag import-before-batch
          freeze-before-move structural-move-before-write
@@ -3103,6 +3207,15 @@
      (define hold-sleeper
        (lambda (ms) (sleep (make-time 'time-duration (* ms 1000000) 0))))
      (define (hold-sleeper-set! proc) (set! hold-sleeper proc))
+     ;; A PAUSE OF MS IN A LOOP OF WORK, when FAULT (one fault, or a list of
+     ;; them) is the one armed: a unit of work made to take that long, so a row
+     ;; can make a request outlast the client's window while it keeps
+     ;; progressing. It waits as a hold does, yielding inside a daemon -- the
+     ;; only yield such a loop gets, since io-yield! never yields while a fault
+     ;; is armed.
+     (define (fault-pause! fault ms)
+       (when (and fault-name (if (pair? fault) (memq fault-name fault) (eq? fault fault-name)))
+         (hold-sleeper ms)))
      (define (hold-point! stage)
        (let ((h (assq stage holds)))
          (when h
@@ -3354,6 +3467,8 @@
      (define (theourgia-fault-armed?) #f)
      (define (theourgia-send-buffer) #f)
      (define (theourgia-read-chunk) #f)
+     (define (theourgia-silence-ms) #f)
+     (define (theourgia-keepalive-ms) #f)
      (define (theourgia-probe-off?) #f)
      (define (stat-fault? path) #f)
      (define (stat-fault-errno) EIO)
@@ -3373,6 +3488,7 @@
      (define (barrier! name) (void))
      (define (hold-point! stage) (void))
      (define (hold-sleeper-set! proc) (void))
+     (define (fault-pause! fault ms) (void))
      (define no-flock? #f)
      (define (write-once fd bv count subject) (real-write/skipped fd bv count))))
 
@@ -3662,6 +3778,30 @@
           (with-interrupts-disabled
             (set! io-yields (+ io-yields 1))
             (hashtable-set! io-last-yield key (monotonic-ms)))))))
+
+  ;; WORK REPORTS ITS OWN PROGRESS, AND EVERY REPORT IS ALSO A YIELD. The
+  ;; loops that make an answer -- an export's files, an import's, a commit's
+  ;; intents, a fold's segments -- call progress! once per unit. Until a
+  ;; daemon installs a sink it only yields; the daemon's sink advances the
+  ;; counter of the request this process is executing, and the connection
+  ;; waiting for that request reads it to decide whether to keep its client
+  ;; waiting. The yield is io-yield!'s, with its guards and its 50 ms
+  ;; throttle, so a read-heavy loop lets the connection run as a write-heavy
+  ;; one does.
+  ;; NEVER: A FAILING SINK NEVER BECOMES A RETURN OF THE WORK. The sink is
+  ;; bookkeeping; the unit it counts has been done, so a sink that raises is
+  ;; traced and the work goes on.
+  (define progress-sink #f)
+  (define (progress-sink-set! proc)
+    (unless (procedure? proc)
+      (assertion-violation 'progress-sink-set! "not a procedure" proc))
+    (set! progress-sink proc))
+  (define (progress!)
+    (let ((sink progress-sink))
+      (when sink
+        (guard (e (#t (trace-event! 'progress-failed #f #f)))
+          (sink))))
+    (io-yield!))
 
   (define (fsync! fd subject stage)
     (check-stage! 'fsync! stage)

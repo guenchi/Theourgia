@@ -856,6 +856,10 @@
       (list-sort (lambda (a b) (string<? (format "~s" a) (format "~s" b)))
                  '(("channel.sc" "collect-into-verb" plain-datum 1) ("channel.sc" "envelope-answer" plain-datum 1)
                    ("channel.sc" "envelope-answer" read 1) ("channel.sc" "text-datum" plain-datum 1) ("client.sc" "line-datum" plain-datum 1) ("client.sc" "plain-datum" read 2)
+                   ;; this client's own frame, read for its version and rebuilt at version 1
+                   ("client.sc" "frame-version" read 1) ("client.sc" "frame-at-version-1" read 1)
+                   ;; the envelope, by the reader after readable-shape?, its stdout held to exact bytes
+                   ("client.sc" "old-refusal-bytes?" read 1)
                    ("core.sc" "forward-then-exit!" read 1) ("mcp/server.sc" "catalogue" plain-datum 1)
                    ("mcp/server.sc" "refusal-datum" plain-datum 1) ("mcp/server.sc" "unpack" read 1)
                    ("theourgia.sc" "read-envelope" read 1) ("theourgia.sc" "stream-terminal" plain-datum 1))))
