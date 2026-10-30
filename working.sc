@@ -34,7 +34,7 @@
                 remember-unreadable-notes! unreadable-behind
                 directory-entry-durable! present-or-unreadable-skip?
                 ownership-table ownership-passed-over? ownership-foreign-beside-owned?)
-          (only (theourgia answers) with-written)
+          (only (theourgia answers) with-written classify-failure)
           (only (theourgia arguments) working-id?)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
@@ -371,16 +371,45 @@
                                 (car cuts) (cdr cuts))))
            (and (for-all (lambda (c) (cut-covers? best c)) cuts) best))))
 
+  ;; ---- a fold at a named cut that failed ------------------------------------
+  ;;
+  ;; NEVER: A FOLD THAT FAILED IS NOT AN UNUSABLE CUT. A cut that cannot be
+  ;; used -- it does not parse, or the state it names cannot be rebuilt --
+  ;; is a value open-and-reduce returns (cut-usable?'s verdict), never a
+  ;; raise. What the fold RAISES is something else: the store's lock held
+  ;; past the daemon's budget, a segment that cannot be read, a log error.
+  ;; Each was swallowed into #f and answered cut-unusable, so a caller whose
+  ;; cut was fine went looking for what was wrong with it while the store
+  ;; was only busy. It is answered in its own class, as the dispatch's
+  ;; table answers the same condition elsewhere and as a commit's failure
+  ;; says it (commit-failure): a lock busy past the budget is (error
+  ;; store-busy (path <store>/lock)), unchanged.
+  ;; NOTE: RETURNED, NOT RAISED, so each caller answers it where it answered
+  ;; the unusable cut, and every refusal that came before that one still
+  ;; comes first.
+  (define-record-type fold-failure (fields answer))
+  (define (fold-at-cut thunk)
+    (guard (e (#t (make-fold-failure
+                    (or (classify-failure e '()) (cons 'error (cdr (commit-failure e)))))))
+      (thunk)))
+  ;; THE ANSWER FOR A STATE AT A CUT THAT IS NOT ONE: the fold's failure, or
+  ;; the cut that cannot be used.
+  (define (no-state-answer at)
+    (if (fold-failure? at)
+        (fold-failure-answer at)
+        '(error invalid-working-baseline (reason cut-unusable))))
+
   (define (committed-parent store state writer id version hash original-cut)
     (and writer version (safe-id? writer)
       ;; THE CUT IS THE JOIN OF THE PLAN'S MEMBER CUTS, which for every
       ;; plan this core writes is the last member's -- and for a plan
       ;; whose members came from two writers is the only cut that
       ;; contains both. `state-consumed-parent-cuts` computes it.
+      ;; A FOLD THAT FAILED THERE is handed back as its fold-failure.
       (let ((latest (latest-parent-cut (filter values (state-consumed-parent-cuts state writer version)))))
         (and latest
-          (let ((past (open-and-reduce store latest)))
-            (and (reduction? past) past))))))
+          (let ((past (fold-at-cut (lambda () (open-and-reduce store latest)))))
+            (and (or (reduction? past) (fold-failure? past)) past))))))
 
   (define (working-write! store state supplied id bytes rebase? . provenance)
     (needing-writer supplied (lambda ()
@@ -397,8 +426,8 @@
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
                (parent-version (and (>= (length provenance) 4) (list-ref provenance 3)))
                (historical (and hash cut-text
-                 (guard (failure (#t #f))
-                   (let ((parsed (parse-cut cut-text))) (and parsed (open-and-reduce store parsed))))))
+                 (let ((parsed (parse-cut cut-text)))
+                   (and parsed (fold-at-cut (lambda () (open-and-reduce store parsed)))))))
                (parent (and (reduction? historical)
                             (committed-parent store state parent-writer id parent-version hash (reduce-applied-cut historical)))))
           (cond
@@ -441,6 +470,9 @@
              '(error invalid-working-baseline (reason cut-missing)))
             ((and cut-text (not hash))
              '(error invalid-working-baseline (reason based-on-missing)))
+            ;; THE FOLD AT THE CUT FAILED, which says nothing about the cut
+            ;; (fold-at-cut): answered as that failure.
+            ((fold-failure? historical) (fold-failure-answer historical))
             ;; THE CUT CANNOT BE USED AT ALL -- it does not parse, or the
             ;; state it names cannot be rebuilt. Nothing about the hash
             ;; has been established, and the client's only move is an
@@ -455,6 +487,8 @@
             ((and (or hash cut-text)
                   (not (equal? hash (block-hash historical id))))
              '(error invalid-working-baseline (reason hash-not-at-cut)))
+            ;; AND THE FOLD AT THE PARENT'S CUT, the same way.
+            ((fold-failure? parent) (fold-failure-answer parent))
             (else
              ;; THE BASELINE IS DECIDED FIRST AND THE NAME FOLLOWS FROM
              ;; IT. The version used to be a fresh counter, so two writes
@@ -529,15 +563,20 @@
                     (based-on (caddr item))
                     (cut (cadddr item))
                     (declared (caddr found))
+                    ;; A FOLD THAT FAILED AT THE CUT stands in for the text,
+                    ;; and is answered as that failure (fold-at-cut).
                     (text (or declared
-                              (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
-                                (and (reduction? past) (field past id 'src)))))
-                    (body (and text (if (string? text) (string->utf8 text) text))))
+                              (let ((past (fold-at-cut (lambda () (open-and-reduce store cut)))))
+                                (if (fold-failure? past)
+                                    past
+                                    (and (reduction? past) (field past id 'src))))))
+                    (body (and text (not (fold-failure? text)) (if (string? text) (string->utf8 text) text))))
                (cond
                  ;; NEVER: NO ROUTE MAKES A DRAFT ON A DATUM BLOCK (store.sc,
                  ;; datum-mode-block?), and restore is one: a revoked draft on
                  ;; one is refused by name and no draft file is written.
                  ((datum-mode-block? state id) (draft-on-datum-refusal id))
+                 ((fold-failure? text) (fold-failure-answer text))
                  ((not body) (list 'error 'working-unavailable (list 'reason 'no-text-for-version)))
                  ((not (equal? version (content-version body based-on cut)))
                   (list 'error 'consumes-version-mismatch (list 'block id)))
@@ -723,11 +762,15 @@
   ;; -> the file baseline of HOLDER in STATE, or #f
   (define (holder-baseline state holder)
     (let ((c (file-content state holder))) (and c (file-baseline (car c) (cadr c)))))
-  ;; -> the state at CUT-TEXT, or STATE when there is none; #f when unusable
+  ;; -> the state at CUT-TEXT, or STATE when there is none; #f when unusable;
+  ;; the fold's fold-failure when it failed (fold-at-cut). no-state-answer
+  ;; answers either of the last two.
   (define (state-at-cut-text store state cut-text)
     (if cut-text
-        (guard (e (#t #f))
-          (let ((parsed (parse-cut cut-text))) (and parsed (let ((s (open-and-reduce store parsed))) (and (reduction? s) s)))))
+        (let ((parsed (parse-cut cut-text)))
+          (and parsed
+               (let ((s (fold-at-cut (lambda () (open-and-reduce store parsed)))))
+                 (and (or (reduction? s) (fold-failure? s)) s))))
         state))
   ;; SAVE A STRUCTURAL ENTRY, or answer the one saved when it is already this
   ;; version: a retry writes nothing.
@@ -761,7 +804,7 @@
                   (at (if live-old (state-at-cut-text store state (cut->text (list-ref live-old 7)))
                           (state-at-cut-text store state cut-text))))
              (cond
-               ((not at) '(error invalid-working-baseline (reason cut-unusable)))
+               ((not (reduction? at)) (no-state-answer at))
                ((path-holder at path) (list 'error 'path-exists (list 'path path)))
                (else
                 (let ((cut (if live-old (list-ref live-old 7) (reduce-applied-cut at))))
@@ -783,9 +826,9 @@
                   (live-old (and old (not (consumed? store state old)) old))
                   (at (if live-old (state-at-cut-text store state (cut->text (list-ref live-old 6)))
                           (state-at-cut-text store state cut-text)))
-                  (based-on (and at (holder-baseline at holder))))
+                  (based-on (and (reduction? at) (holder-baseline at holder))))
              (cond
-               ((not at) '(error invalid-working-baseline (reason cut-unusable)))
+               ((not (reduction? at)) (no-state-answer at))
                ((not based-on) (list 'error 'not-a-file (list 'holder holder)))
                (else
                 (let ((cut (if live-old (list-ref live-old 6) (reduce-applied-cut at))))
@@ -831,8 +874,8 @@
                          (list 'error 'structural-changed (list 'key key) (list 'expected expected-version)
                                (list 'found (and live (list-ref live 4))))
                          (let ((at (state-at-cut-text store state cut-text)))
-                           (if (not at)
-                               '(error invalid-working-baseline (reason cut-unusable))
+                           (if (not (reduction? at))
+                               (no-state-answer at)
                                (let* ((cut (reduce-applied-cut at)) (entry (entry-at-cut live at cut)))
                                  (if (eq? (car entry) 'error)
                                      entry

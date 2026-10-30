@@ -1452,21 +1452,16 @@
    fact b
    "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10); each answer carries the working record through with-written (NO1)"
    (e ((and (pair? e) (eq? (quote working-error) (car e))) (with-written (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (mutation-record))) ((unreadable-entry? e) (with-written (unreadable-answer e) (mutation-record))) (#t (with-written (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))) (mutation-record)))))
-  ("working.sc" (working-write!) 1 guard
+  ("working.sc" (fold-at-cut) 1 guard
    (#t)
-   propagate b
-   "working-write!: the historical reduction at the provenance cut; incomplete and unreadable propagate instead of reading as no parent; a bad cut stays #f"
-   (failure (#t #f)))
+   propagate a
+   "fold-at-cut: a raise from the fold at a named cut becomes the fold-failure record, its answer the failure's own class (classify-failure, else commit-failure's); working-write!'s historical, committed-parent, working-restore! and state-at-cut-text render it where they answer an unusable cut, so the catch-all is by design: no failure becomes #f"
+   (e (#t (make-fold-failure (or (classify-failure e (quote ())) (cons (quote error) (cdr (commit-failure e))))))))
   ("working.sc" (draft-body) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a
    "working view: a datum draft the reader refuses is refused by name"
    (e ((and (pair? e) (eq? (car e) (quote error))) (refused (or (assq (quote reason) (filter pair? e)) (quote (reason reader-rejected)))))))
-  ("working.sc" (working-restore!) 1 guard
-   (#t)
-   propagate b
-   "working-restore!: as working-write!; an unreadable writer is not no-text-for-version"
-   (e (#t #f)))
   ("working.sc" (behind-clauses) 1 guard
    (#t)
    unrelated b
@@ -1487,11 +1482,6 @@
    fact b
    "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (found in review)"
    (failure (#t #f)))
-  ("working.sc" (state-at-cut-text) 1 guard
-   (#t)
-   propagate b
-   "state-at-cut-text: the state at a structural draft's cut; a cut that does not parse or cannot be rebuilt is #f, refused cut-unusable, as working-write!'s historical reduction"
-   (e (#t #f)))
   ("working.sc" (retire-structural!) 1 guard
    (#t)
    fact b

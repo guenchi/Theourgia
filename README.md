@@ -2506,7 +2506,7 @@ stated here because the failure it prevents is silent.
 
 Puts a draft in that writer's slot for that block. A draft's version is
 the name of its content -- `sha256(bytes || based-on || cut)` -- so the
-same bytes written twice are the same version. A write into a slot that already holds a live draft keeps that draft's `based-on` and cut. `--rebase` moves a draft onto the committed version the caller merged onto, which it must name with both `--based-on <version>` and `--working-cut <cut>`, or it is refused `(error bad-request rebase-needs-baseline)`. A baseline is named by both options, `--based-on <version>` and `--working-cut <cut>`, the cut the version was read at: `--based-on` alone is refused `(error invalid-working-baseline (reason cut-missing))`, and `--working-cut` alone `(error invalid-working-baseline (reason based-on-missing))`. A named baseline that cannot be checked is refused `(error invalid-working-baseline (reason cut-unusable|block-not-at-cut|hash-not-at-cut))`. The answer is `(ok (saved <block>) (writer <w>) (version <v>) (based-on <v>))`. A draft whose bytes are a UTF-8 byte-order mark followed by valid UTF-8 reads back under `read --working` with the mark, as U+FEFF in front of its text, and `commit` stores it as its bytes, mark included, as `import-code` stores a marked file.
+same bytes written twice are the same version. A write into a slot that already holds a live draft keeps that draft's `based-on` and cut. `--rebase` moves a draft onto the committed version the caller merged onto, which it must name with both `--based-on <version>` and `--working-cut <cut>`, or it is refused `(error bad-request rebase-needs-baseline)`. A baseline is named by both options, `--based-on <version>` and `--working-cut <cut>`, the cut the version was read at: `--based-on` alone is refused `(error invalid-working-baseline (reason cut-missing))`, and `--working-cut` alone `(error invalid-working-baseline (reason based-on-missing))`. A named baseline that cannot be checked is refused `(error invalid-working-baseline (reason cut-unusable|block-not-at-cut|hash-not-at-cut))`; `cut-unusable` means the cut does not parse or the state it names cannot be rebuilt. A failure of the store's fold at that cut, or at the cut of the parent the write names, is answered as that failure instead: through a daemon, a store whose lock is held past the five-second budget answers `(error store-busy (path <store>/lock))`. The answer is `(ok (saved <block>) (writer <w>) (version <v>) (based-on <v>))`. A draft whose bytes are a UTF-8 byte-order mark followed by valid UTF-8 reads back under `read --working` with the mark, as U+FEFF in front of its text, and `commit` stores it as its bytes, mark included, as `import-code` stores a marked file.
 
 A draft is text, and a datum block's code is its body, not a src: `write` on a
 block whose mode is `datum` is refused `(error bad-request
@@ -2546,6 +2546,9 @@ one writer and restorable by another. A version not in that list is
 `(error unknown-version <version>)`; one whose bytes, read back from the
 log, do not hash to it with the recorded based-on and cut is
 `(error consumes-version-mismatch (block <id>))`, and nothing is written.
+The bytes of an item its commit did not change are the committed text at
+the version's cut; a fold there that fails is answered as that failure,
+as for `write`, and nothing is written.
 
 ### The working view on disk
 
