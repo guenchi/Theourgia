@@ -20,6 +20,17 @@
 (want "CT-14 numeric-looking binding does not enter a numeric reader" (definition-name scheme "(define #e1e99999999 1)") "#e1e99999999")
 (want "CT-05 unknown head has no guessed name" (definition-name scheme "(magic x y)") #f)
 (want "CT-05 anonymous head has no guessed name" (definition-name (language-for-name 'javascript) "function () {}") #f)
+;; THE ECMASCRIPT FUNCTION HEAD IN EVERY ENTRY THAT READS JAVASCRIPT OR
+;; TYPESCRIPT: exported as the default, async, and both, each names f, in
+;; the parents as in the jsx entries.
+(for-each
+  (lambda (lang)
+    (want (string-append "CT-05 " (symbol->string lang) " export default, export async, async and export default async function heads")
+          (map (lambda (s) (definition-name (language-for-name lang) s))
+               '("export default function f() {}" "export async function f() {}"
+                 "async function f() {}" "export default async function f() {}"))
+          '("f" "f" "f" "f")))
+  '(javascript typescript typescriptreact javascriptreact))
 (want "CT-05 unsupported Unicode name cannot become an ASCII prefix"
       (definition-name (language-for-name 'javascript) "function café() {}") #f)
 (want "CT-06 comments remain in src while supplying doc"

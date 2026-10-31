@@ -2933,9 +2933,10 @@ still only suggest. Such a file is listed in the answer's
 `(symbols-ignored (<path> ...))`. A code block's name is derived from its
 source, as for any text block, and where the definition patterns derive
 one, nothing else is stored: the derived name follows later edits. Where
-they derive none (in TypeScript, a class, a const or an export default),
-the block's title is the editor's name for the symbol at the first import,
-and like any title it is not updated by later edits. A block that does
+they derive none (in TypeScript, a class or a const; in JavaScript or
+TypeScript, an `export default` of anything but a function), the block's
+title is the editor's name for the symbol at the first import, and like
+any title it is not updated by later edits. A block that does
 not start at a symbol (what comes before the first, between two, or after
 the last), and one whose symbol is named `""`, gets no title.
 

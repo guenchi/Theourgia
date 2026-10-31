@@ -118,9 +118,16 @@
       entries)
     (vector entries))
 
+  ;; THE ECMASCRIPT FUNCTION HEAD, ONE STRING FOR THE FOUR ENTRIES THAT READ
+  ;; JAVASCRIPT OR TYPESCRIPT: a declaration may be exported, exported as
+  ;; the default, and async, in that order (`export default async function
+  ;; f(`). The table unquotes it, so the entries cannot drift apart.
+  (define ecmascript-function-head
+    "^(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)")
+
   (define catalog
     (checked-catalogue
-      '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls")) (identifier "[A-Za-z!$%&*/:<=>?^_~+.@\\-][A-Za-z0-9!$%&*/:<=>?^_~+.@\\-]*")
+      `(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls")) (identifier "[A-Za-z!$%&*/:<=>?^_~+.@\\-][A-Za-z0-9!$%&*/:<=>?^_~+.@\\-]*")
           (line-comment ";;") (block-comment ("#|" "|#"))
           ;; THE SOURCE IS READ AS FORMS by reader.sc for name use, and a text
           ;; file's first form is its header (its library and imports): the
@@ -152,7 +159,7 @@
            (runner ((argv ("node" "{file}")) (source-name "__eval.mjs")))
            (block-comment ("/*" "*/"))
            (def-heads
-             ("^(?:export\\s+)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+             (,ecmascript-function-head
                "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
                "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
            (name-capture 1)
@@ -176,7 +183,7 @@
            (def-heads
              ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
                "^(?:export\\s+)?type\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*="
-               "^(?:export\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"))
+               ,ecmascript-function-head))
            (name-capture 1)
            (suggest-only
              ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
@@ -194,14 +201,13 @@
          ((lang "typescriptreact") (extensions ("tsx")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
            ;; no runner: eval --lang answers no-runner, as for markdown
            (block-comment ("/*" "*/"))
-           ;; typescript's interface and type heads, then a function head that
-           ;; also takes `export default` and `async` (a component is
-           ;; `export default function Screen(`), and javascript's class and
-           ;; const-arrow heads
+           ;; typescript's heads (the ecmascript function head takes a
+           ;; component's `export default function Screen(`), then javascript's
+           ;; class and const-arrow heads
            (def-heads
              ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
                "^(?:export\\s+)?type\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*="
-               "^(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               ,ecmascript-function-head
                "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
                "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
            (name-capture 1)
@@ -229,9 +235,9 @@
          ((lang "javascriptreact") (extensions ("jsx")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
            ;; no runner: eval --lang answers no-runner, as for markdown
            (block-comment ("/*" "*/"))
-           ;; javascript's heads, the function head also taking `export default`
+           ;; javascript's heads
            (def-heads
-             ("^(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+             (,ecmascript-function-head
                "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
                "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
            (name-capture 1)
