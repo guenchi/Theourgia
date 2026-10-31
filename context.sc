@@ -66,14 +66,28 @@
 ;;; is reserved at its largest before anything is admitted, from the request
 ;;; and the hard set alone: the whole receipt, the notes, the working clause
 ;;; with --working, the budget clause at the budget's own digits, the
-;;; insufficient clause at twenty of the longest hard entries, the excluded
-;;; counters at six digits, the users clause and its skipped counts reserved
-;;; at the counters' digits, and with
+;;; insufficient clause at its largest (its missing list at twenty of the
+;;; longest hard entries, its reduced list at up to twenty items of the
+;;; longest hard id, each at identity and at the counters' digits), the
+;;; excluded counters at six digits, the users clause and its skipped
+;;; counts reserved at the counters' digits, and with
 ;;; --names the asked clause at its largest. An entry is admitted at a level
 ;;; only when the answer with it fits. Greedy, one pass: stated, not
 ;;; optimal. `--budget min+<t>` asks for the minimum the request would
 ;;; report in budget-too-small plus t tokens, and the budget clause shows
 ;;; the number it resolved to.
+;;;
+;;; WHAT THE BUDGET CUT IS SAID IN `insufficient`:
+;;; (insufficient [(reduced ((<id> <level> (full <bytes>)) ...) [(more <n>)] [(capped)])]
+;;;               [(missing ((<id> <bytes>) ...))] [(more <n> (bytes <b>))])
+;;; reduced names every hard block shown below full, at identity or summary,
+;;; the block asked for first and the rest in hard order, with the wire
+;;; length of its entry at full as the upgrade measured it; missing names
+;;; the hard blocks not shown at all, at the cost of their identity. Each
+;;; list names twenty and counts the rest in its own more. A figure in
+;;; reduced above the counters' cap is shown at the cap and the list then
+;;; says (capped), as the excluded counters do. The clause is absent only
+;;; when every hard block is shown in full.
 ;;;
 ;;; AMBIGUITY IS FOLDED: when a name a hard code block uses has more than two
 ;;; definitions left after the hard blocks and those already entered, the
@@ -496,6 +510,9 @@
   (define reserved-excluded
     (append (list 'excluded) (map (lambda (n) (list n counter-cap)) excluded-names) '((capped))))
 
+  ;; k copies of x, a reservation's items
+  (define (copies k x) (let loop ((k k) (out '())) (if (= k 0) out (loop (- k 1) (cons x out)))))
+
   ;; An ok answer without its cut fits when ten times its bytes are at most
   ;; thirty-six times the budget: four bytes a token, nine tenths usable.
   (define (fits? bytes budget) (<= (* 10 bytes) (* 36 budget)))
@@ -515,14 +532,25 @@
            (longest-id (fold-left (lambda (best h) (if (> (string-length h) (string-length best)) h best)) "" others))
            (largest (fold-left max 0 costs))
            (named (min 20 n-others))
+           ;; THE REDUCED LIST AT ITS LARGEST: every hard block, the block
+           ;; asked for among them, may be shown below full, so up to twenty
+           ;; items of the longest hard id at identity, the longer level word,
+           ;; with the figures at the counters' digits.
+           (longest-hard (fold-left (lambda (best h) (if (> (string-length h) (string-length best)) h best)) "" order))
+           (n-hard (+ 1 n-others))
+           (reserved-reduced
+             (append (list 'reduced (copies (min 20 n-hard) (list longest-hard 'identity (list 'full counter-cap))))
+                     (if (> n-hard 20) (list (list 'more counter-cap)) '())
+                     '((capped))))
            (reserved-insufficient
-             (if (= n-others 0)
-                 '()
-                 (list (cons* 'insufficient
-                              (list 'missing (let copies ((k named) (out '())) (if (= k 0) out (copies (- k 1) (cons (list longest-id largest) out)))))
-                              (if (> n-others 20)
-                                  (list (list 'more (- n-others 20) (list 'bytes (fold-left + 0 costs))))
-                                  '())))))
+             (list (cons* 'insufficient
+                          reserved-reduced
+                          (if (= n-others 0)
+                              '()
+                              (cons (list 'missing (copies named (list longest-id largest)))
+                                    (if (> n-others 20)
+                                        (list (list 'more (- n-others 20) (list 'bytes (fold-left + 0 costs))))
+                                        '()))))))
            ;; THE ASKED CLAUSE AT AN UPPER BOUND, from the request and the hard
            ;; set alone: every given name as having no definition, and as
            ;; defined in every hard block. What the clause does not use goes
@@ -574,6 +602,8 @@
           (counts (map (lambda (n) (cons n 0)) section-names))
           (sections (map (lambda (n) (cons n '())) section-names))
           (missing '())
+          (full-length (make-hashtable string-hash string=?))
+          (reduced '())
           (entered '()))
       (define (count-of s) (cdr (assq s counts)))
       (define (enter! s id e)
@@ -590,18 +620,26 @@
                         (set! missing (cons h missing)))))
                 (cdr order))
       (set! missing (reverse missing))
-      ;; B6: one pass of upgrades in hard order.
+      ;; B6: one pass of upgrades in hard order. The length at full is kept
+      ;; for every block it measures: a block left below full is named with
+      ;; it in insufficient's reduced list.
       (for-each (lambda (h)
                   (when (hashtable-ref levels h #f)
                     (let ((at-identity (entry-length (identity h))))
                       (let try ((ls '(full summary)))
                         (unless (null? ls)
-                          (let ((d (- (entry-length (entry view records h (version h) (whys h) (validity-clause h) (car ls)))
-                                      at-identity)))
+                          (let* ((at-level (entry-length (entry view records h (version h) (whys h) (validity-clause h) (car ls))))
+                                 (d (- at-level at-identity)))
+                            (when (eq? (car ls) 'full) (hashtable-set! full-length h at-level))
                             (if (fits? (+ size d) budget)
                                 (begin (set! size (+ size d)) (hashtable-set! levels h (car ls)))
                                 (try (cdr ls)))))))))
                 order)
+      ;; THE HARD BLOCKS SHOWN BELOW FULL, in hard order, which puts the block
+      ;; asked for first: (<id> <level> <length at full>).
+      (set! reduced
+        (map (lambda (h) (list h (hashtable-ref levels h #f) (hashtable-ref full-length h 0)))
+             (filter (lambda (h) (memq (hashtable-ref levels h #f) '(identity summary))) order)))
       ;; B7: the preferred material in what room is left.
       (let* ((hard-entry (lambda (h) (entry view records h (version h) (whys h) (validity-clause h) (hashtable-ref levels h 'identity))))
              (L (lc:lifecycle view))
@@ -671,7 +709,7 @@
           steps)
         ;; WHAT THE PREFERRED STEPS PRODUCED AND TRIED, for the session trace
         (session-note! S 'preferred-candidates (reverse tried))
-        (finish view t budget order hard-entry place notes receipt missing cost sections excluded
+        (finish view t budget order hard-entry place notes receipt missing reduced cost sections excluded
                 (reverse chosen) version (vector-ref preferred 1) tail
                 (if (or fold-refused (null? groups)) #f (folded-clause groups)) asked marking (reverse listed) users))))
 
@@ -854,7 +892,7 @@
     (append (list 'excluded) (map (lambda (e) (list (car e) (min counter-cap (cdr e)))) excluded)
             (if (exists (lambda (e) (> (cdr e) counter-cap)) excluded) '((capped)) '())))
 
-  (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail
+  (define (finish view t budget order hard-entry place notes receipt missing reduced cost sections excluded chosen version consulted tail
                   folded asked marking listed users)
     (let* ((section-of
              (lambda (name)
@@ -867,15 +905,28 @@
            (shown (map (lambda (name) (list name (section-of name))) section-names))
            (ids (append (list t) (apply append (map (lambda (s) (map car (cadr s))) shown))))
            (versions (map (lambda (id) (cons id (or (version id) (let ((p (assoc id chosen))) (and p (cdr p)))))) ids))
-           (insufficient
+           (reduced-part
+             (if (null? reduced)
+                 '()
+                 (let* ((first (list-head reduced 20))
+                        (rest (length (list-tail reduced (length first))))
+                        (capped? (or (> rest counter-cap) (exists (lambda (r) (> (caddr r) counter-cap)) first))))
+                   (list (append (list 'reduced
+                                       (map (lambda (r) (list (car r) (cadr r) (list 'full (min counter-cap (caddr r))))) first))
+                                 (if (= rest 0) '() (list (list 'more (min counter-cap rest))))
+                                 (if capped? '((capped)) '()))))))
+           (missing-part
              (if (null? missing)
                  '()
-                 (let* ((first (let take ((l missing) (k 0)) (if (or (null? l) (= k 20)) '() (cons (car l) (take (cdr l) (+ k 1))))))
+                 (let* ((first (list-head missing 20))
                         (rest (list-tail missing (length first))))
-                   (list (cons* 'insufficient
-                                (list 'missing (map (lambda (h) (list h (cost h))) first))
-                                (if (null? rest) '()
-                                    (list (list 'more (length rest) (list 'bytes (fold-left + 0 (map cost rest)))))))))))
+                   (cons (list 'missing (map (lambda (h) (list h (cost h))) first))
+                         (if (null? rest) '()
+                             (list (list 'more (length rest) (list 'bytes (fold-left + 0 (map cost rest))))))))))
+           (insufficient
+             (if (and (null? reduced-part) (null? missing-part))
+                 '()
+                 (list (cons 'insufficient (append reduced-part missing-part)))))
            (form (lambda (used)
                    (append (list 'ok (list 'for (hard-entry t)))
                            ;; `(working <writer>)` with --working, inside the

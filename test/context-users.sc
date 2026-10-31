@@ -353,10 +353,12 @@
 ;; counter, the clause reserved at the counters' digits whatever its counts
 ;; are (so this number no longer depends on U10's unreadable block). On
 ;; master (ded1d15) the same request at the same point answered 399 tokens;
-;; with the clause reserved at its own digits (freeze1) it was 418.
-(want "U9 lonely's minimum budget is 432 tokens (399 on master, 418 with the clause at its own digits: the clause at the counters' digits and the users counter cost 33)"
+;; with the clause reserved at its own digits (freeze1) it was 418. The
+;; insufficient clause's reduced list, reserved at one item for the one
+;; hard block, takes it from 432 (bd78e7f) to 452.
+(want "U9 lonely's minimum budget is 452 tokens (399 on master, 418 with the clause at its own digits, 432 with the clause at the counters' digits and the users counter; reduced's one item costs 20)"
       (run 'context "--for" lonely "--budget" "1")
-      '(error budget-too-small (minimum 432)))
+      '(error budget-too-small (minimum 452)))
 
 ;; ---- U11: counts at and above the cap ---------------------------------------------------------------
 

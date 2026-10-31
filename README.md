@@ -1472,7 +1472,9 @@ as their bytes. Nine tenths of it are usable, and an
 `ok` answer without its cut is never larger. The envelope is reserved at
 its largest first, from the request and the hard set alone: the whole
 receipt, the notes, the budget clause at the budget's own digits,
-`insufficient` at twenty of the longest hard entries, the seven excluded
+`insufficient` at its largest (its `missing` list at twenty of the longest
+hard entries, its `reduced` list at up to twenty items of the longest hard
+id at identity, its figures at the counters' digits), the seven excluded
 counters at six digits, the `users` clause and its skipped counts reserved
 at the counters' digits, with `--names` the `asked` clause at its largest,
 and the `(incomplete ...)` clause the
@@ -1487,9 +1489,15 @@ one pass: the hard blocks at identity in HARD ORDER -- T; the rest of the
 unit in document order; the other members by distance from the unit over
 depends edges, ties by id; then the others by role (unsettled, supersedes,
 cause, implementer, stale), by id -- one that does not fit named in
-`(insufficient (missing ((<id> <bytes>) ...)) [(more <n> (bytes <b>))])`,
+`insufficient`'s `(missing ((<id> <bytes>) ...)) [(more <n> (bytes <b>))]`,
 at most twenty named, every later one still tried; then one pass of
-upgrades in hard order, to full when it fits, else to summary; then the
+upgrades in hard order, to full when it fits, else to summary, and every
+hard block left below full, T included, named in `insufficient`'s
+`(reduced ((<id> <level> (full <bytes>)) ...) [(more <n>)] [(capped)])`,
+T first, then in hard order, with the length its entry would have at full
+(a figure above 999999 shown at it, and the list then says `(capped)`), at
+most twenty named. So `insufficient` is absent exactly when every hard
+block is shown in full, and a T shown at summary always says so; then the
 preferred material in what room is left, in the order above -- the users
 between the dependents and the relevant blocks, so a large relevant step
 cannot crowd them out -- one that does not fit at identity counted in
@@ -1501,7 +1509,8 @@ queries, the hard blocks' records and the request: the users clause and its
 skipped counts are reserved at the counters' digits, so a use or an
 unreadable block elsewhere does not move it. A count above 999999 is shown
 as 999999 and its clause ends with `(capped)`: the excluded counters, and
-the users clause's `listed`, `of` and skipped counts.
+the users clause's `listed`, `of` and skipped counts; `reduced`'s figures
+say it at the end of their own list.
 
     (ok (for <entry>)
         (constraints (<entry> ...)) (evidence (<entry> ...))

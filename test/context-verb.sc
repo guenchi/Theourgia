@@ -485,7 +485,9 @@
 (want "C4 the minimum is exact: one token less is too small, the minimum answers ok"
       (in-order (cadr (ctx c4s c4T (- c4-minimum 1))) (car (ctx c4s c4T c4-minimum)))
       '(budget-too-small ok))
-(define (missing-of a) (let ((i (clause a 'insufficient))) (if i (map car (cadr (assq 'missing (cdr i)))) '())))
+;; insufficient may carry reduced without missing: no missing list is none missing.
+(define (missing-of a)
+  (let* ((i (clause a 'insufficient)) (m (and i (assq 'missing (cdr i))))) (if m (map car (cadr m)) '())))
 (define (more-of a) (let ((i (clause a 'insufficient))) (and i (let ((m (assq 'more (cdr i)))) (and m (cadr m))))))
 (define (entered-hard a) (append (list (for-id a)) (apply append (map (lambda (n) (ids-in a n)) hard-sections))))
 (define c4-ladder (map (lambda (k) (+ c4-minimum (* k 150))) '(0 1 2 3 5 8 13 21 34 55)))
@@ -561,6 +563,128 @@
       (in-order (string-length (number->string c4-count-before)) (string-length (number->string (writer-count c4s)))
                 (filter values (map (lambda (b before) (and (not (equal? before (hard-part (ctx c4s c4T b)))) b)) c4-small c4-before)))
       (list (string-length (number->string c4-count-before)) (+ 1 (string-length (number->string c4-count-before))) '()))
+
+;; ---- CT-reduced: a hard block shown below full is said in insufficient ----------------------------------
+
+;; insufficient's reduced list, its items (<id> <level> (full <bytes>)), and
+;; the count under its own more; '() and #f when the answer has none.
+(define (reduced-of a)
+  (let* ((i (clause a 'insufficient)) (r (and i (assq 'reduced (cdr i))))) (if r (cadr r) '())))
+(define (reduced-more a)
+  (let* ((i (clause a 'insufficient)) (r (and i (assq 'reduced (cdr i)))) (m (and r (assq 'more (cddr r)))))
+    (and m (cadr m))))
+;; An entry's wire length, its newline left out, as the verb measures it.
+(define (entry-wire-length e) (- (bytevector-length (string->utf8 (render-wire e))) 1))
+(define (minimum-of s T)
+  (let ((a (ctx s T 1))) (if (and (clause a 'minimum) (integer? (cadr (clause a 'minimum)))) (cadr (clause a 'minimum)) 1000)))
+;; The first budget from FROM up, in steps of STEP tokens, whose answer
+;; satisfies PRED; #f within three thousand tokens of FROM.
+(define (first-budget s T from step pred)
+  (let loop ((b from))
+    (cond ((> b (+ from 3000)) #f) ((pred (ctx s T b)) b) (else (loop (+ b step))))))
+;; Every hard entry of an answer, by id.
+(define (hard-entries a) (append (list (section a 'for)) (apply append (map (lambda (n) (or (section a n) '())) hard-sections))))
+(define (level-in a id) (let ((e (assoc id (hard-entries a)))) (and e (level-of e))))
+(define (below-full? l) (and (memq l '(identity summary)) #t))
+;; The length at full of each hard block, read at a budget that shows all in full.
+(define (full-lengths s T) (map (lambda (e) (cons (car e) (entry-wire-length e))) (hard-entries (ctx s T 1000000))))
+;; What reduced must say for an answer: every hard block below full, in hard
+;; order ORDER, as (<id> <level> (full <bytes>)).
+(define (expected-reduced a order fulls)
+  (map (lambda (id) (list id (level-in a id) (list 'full (cdr (assoc id fulls)))))
+       (filter (lambda (id) (below-full? (level-in a id))) order)))
+
+;; T alone, a task whose text is far larger than a small budget.
+(define r1s (fresh-store!))
+(define r1T (make! r1s "root" "Reduced task" "kind" "task" "text" (make-string 4000 #\r)))
+(define r1-minimum (minimum-of r1s r1T))
+(define r1-fulls (full-lengths r1s r1T))
+(define r1-summary-budget
+  (first-budget r1s r1T r1-minimum 10 (lambda (a) (and (ok? a) (eq? (level-of (section a 'for)) 'summary)))))
+(want "CT-reduced-1 the target at summary is named in reduced with its length at full, and nothing is missing"
+      (let ((a (ctx r1s r1T (or r1-summary-budget 1000000))))
+        (in-order (and r1-summary-budget (> (* 10 (cdr (assoc r1T r1-fulls))) (* 36 r1-summary-budget)))
+                  (level-of (section a 'for)) (reduced-of a) (reduced-more a) (missing-of a)))
+      (list #t 'summary (list (list r1T 'summary (list 'full (cdr (assoc r1T r1-fulls))))) #f '()))
+(want "CT-reduced-2 at the minimum the target at identity is named in reduced with its length at full"
+      (let ((a (ctx r1s r1T r1-minimum)))
+        (in-order (level-of (section a 'for)) (reduced-of a) (missing-of a)))
+      (list 'identity (list (list r1T 'identity (list 'full (cdr (assoc r1T r1-fulls))))) '()))
+(want "CT-reduced-4 the control: with room every hard block is at full and there is no insufficient clause"
+      (let ((a (ctx r1s r1T 1000000)))
+        (in-order (clause a 'insufficient) (unique (map level-of (hard-entries a)))))
+      '(#f (full)))
+
+;; T and three members it depends on: M1 short, M2 and M3 far larger.
+(define r3s (fresh-store!))
+(define r3T (make! r3s "root" "Reduced unit task" "kind" "task"))
+(define r3M1 (make! r3s "root" "short member" "text" "short"))
+(define r3M2 (make! r3s "root" "long member two" "text" (make-string 4000 #\s)))
+(define r3M3 (make! r3s "root" "long member three" "text" (make-string 4000 #\t)))
+(for-each (lambda (m) (link! r3s r3T "depends-on" m)) (list r3M1 r3M2 r3M3))
+(define r3-order (cons r3T (list-sort string<? (list r3M1 r3M2 r3M3))))
+(define r3-fulls (full-lengths r3s r3T))
+(define r3-budget
+  (first-budget r3s r3T (minimum-of r3s r3T) 10
+                (lambda (a) (and (ok? a) (null? (missing-of a))
+                                 (eq? (level-in a r3T) 'full) (eq? (level-in a r3M1) 'full)
+                                 (below-full? (level-in a r3M2)) (below-full? (level-in a r3M3))))))
+(want "CT-reduced-3 the target in full and two members below full: reduced names the members, in hard order, not the target"
+      (let ((a (ctx r3s r3T (or r3-budget 1000000))))
+        (in-order (and r3-budget #t) (map car (reduced-of a)) (equal? (reduced-of a) (expected-reduced a r3-order r3-fulls))))
+      (list #t (filter (lambda (id) (member id (list r3M2 r3M3))) r3-order) #t))
+
+;; T and twenty-five members it depends on, each with a short title and a
+;; large text: where all are shown, all members are below full.
+(define r5s (fresh-store!))
+(define r5T (make! r5s "root" "Reduced many task" "kind" "task"))
+(define r5-members
+  (let loop ((k 0) (acc '()))
+    (if (= k 25) (reverse acc)
+        (let ((m (make! r5s "root" (format "m~a" k) "text" (make-string 2000 #\u))))
+          (link! r5s r5T "depends-on" m)
+          (loop (+ k 1) (cons m acc))))))
+(define r5-order (cons r5T (list-sort string<? r5-members)))
+(define r5-fulls (full-lengths r5s r5T))
+;; THE SMALLEST BUDGET THAT SHOWS EVERY HARD BLOCK, by bisection between the
+;; minimum and three thousand tokens above it: the first budget whose answer
+;; is not an ok one naming a block missing. There the room left after the
+;; identities is least, so a reduced list the envelope did not reserve makes
+;; the answer larger than its budget; a search in steps passes over that
+;; budget to one with room to spare.
+(define (smallest-all-shown s T)
+  (let* ((shown? (lambda (a) (not (and (ok? a) (pair? (missing-of a))))))
+         (lo (minimum-of s T)))
+    (if (shown? (ctx s T lo))
+        lo
+        (let loop ((lo lo) (hi (+ lo 3000)))
+          (if (<= (- hi lo) 1)
+              hi
+              (let ((m (quotient (+ lo hi) 2))) (if (shown? (ctx s T m)) (loop lo m) (loop m hi))))))))
+(define r5-budget (smallest-all-shown r5s r5T))
+(want "CT-reduced-5 at the smallest budget that shows every hard block, more than twenty below full: ok, twenty named in hard order, the rest under reduced's more, and the answer within its budget"
+      (let* ((a (ctx r5s r5T r5-budget)) (all (if (ok? a) (expected-reduced a r5-order r5-fulls) '())))
+        (in-order (car a) (> (length all) 20) (and (> (length all) 20) (equal? (reduced-of a) (list-head all 20)))
+                  (reduced-more a) (within-usable? a r5-budget)))
+      (let* ((a (ctx r5s r5T r5-budget)) (all (if (ok? a) (expected-reduced a r5-order r5-fulls) '())))
+        (list 'ok #t #t (- (length all) 20) #t)))
+
+;; THE RESERVATION GROWS BY ONE ITEM FOR A ONE-BLOCK REQUEST: the minimum the
+;; tree before reduced reported for r1's request, read on the base tree, and
+;; the tokens one item of r1's id at identity and the six-digit figure take.
+(define r1-minimum-before 429)
+(define r1-item-tokens
+  (let ((n (entry-wire-length (list r1T 'identity (list 'full 999999))))) (div (+ (* 10 n) 35) 36)))
+(want "CT-reduced-6 the minimum grows with the reduced reservation, by at least one item and less than two for one hard block, and min+0 answers ok within its budget"
+      (let* ((a (run r1s 'context "--for" r1T "--budget" "min+0")) (b (clause a 'budget)))
+        (in-order (<= (+ r1-minimum-before r1-item-tokens) r1-minimum)
+                  (< r1-minimum (+ r1-minimum-before (* 2 r1-item-tokens) 10))
+                  (car a)
+                  (and b (<= (cadr (assq 'used (cdr b))) (cadr (assq 'tokens (cdr b)))))))
+      '(#t #t ok #t))
+(printf "CT-reduced readings: r1 minimum ~a, summary budget ~a, full ~a; r3 budget ~a; r5 budget ~a, below full ~a\n"
+        r1-minimum r1-summary-budget (cdr (assoc r1T r1-fulls)) r3-budget r5-budget
+        (let ((a (ctx r5s r5T r5-budget))) (if (ok? a) (length (expected-reduced a r5-order r5-fulls)) (car a))))
 
 ;; ---- C5: order --------------------------------------------------------------------------------------------
 
