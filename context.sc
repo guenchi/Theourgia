@@ -102,10 +102,10 @@
 ;;; writer that has none it creates nothing.
 (library (theourgia context)
   (export context-verb
-          ;; users-clause and reserved-users are exported for the fixture's
-          ;; rows on the counter cap (test/context-users.sc), not as an
-          ;; interface.
-          users-clause reserved-users)
+          ;; users-clause and reserved-users, excluded-clause and
+          ;; reserved-excluded are exported for the fixture's rows on the
+          ;; counter cap (test/context-users.sc), not as an interface.
+          users-clause reserved-users excluded-clause reserved-excluded)
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
@@ -491,6 +491,10 @@
   (define reserved-users
     (list 'users (list 'listed counter-cap) (list 'of counter-cap)
           (list 'skipped (list 'no-language counter-cap) (list 'unreadable-code counter-cap)) '(capped)))
+  ;; THE EXCLUDED CLAUSE AS RESERVED, whatever its counts: every counter at
+  ;; the cap, and capped.
+  (define reserved-excluded
+    (append (list 'excluded) (map (lambda (n) (list n counter-cap)) excluded-names) '((capped))))
 
   ;; An ok answer without its cut fits when ten times its bytes are at most
   ;; thirty-six times the budget: four bytes a token, nine tenths usable.
@@ -519,7 +523,6 @@
                               (if (> n-others 20)
                                   (list (list 'more (- n-others 20) (list 'bytes (fold-left + 0 costs))))
                                   '())))))
-           (reserved-excluded (append (list 'excluded) (map (lambda (n) (list n counter-cap)) excluded-names) '((capped))))
            ;; THE ASKED CLAUSE AT AN UPPER BOUND, from the request and the hard
            ;; set alone: every given name as having no definition, and as
            ;; defined in every hard block. What the clause does not use goes
@@ -844,6 +847,13 @@
 
   ;; ---- the answer ------------------------------------------------------------------------------
 
+  ;; THE EXCLUDED CLAUSE: each counter in its order, its count shown at most
+  ;; at the cap and a zero shown as 0, then (capped) when any count is above
+  ;; the cap, as the users clause does.
+  (define (excluded-clause excluded)
+    (append (list 'excluded) (map (lambda (e) (list (car e) (min counter-cap (cdr e)))) excluded)
+            (if (exists (lambda (e) (> (cdr e) counter-cap)) excluded) '((capped)) '())))
+
   (define (finish view t budget order hard-entry place notes receipt missing cost sections excluded chosen version consulted tail
                   folded asked marking listed users)
     (let* ((section-of
@@ -866,9 +876,6 @@
                                 (list 'missing (map (lambda (h) (list h (cost h))) first))
                                 (if (null? rest) '()
                                     (list (list 'more (length rest) (list 'bytes (fold-left + 0 (map cost rest)))))))))))
-           (capped? (exists (lambda (e) (> (cdr e) counter-cap)) excluded))
-           (excluded-clause (append (list 'excluded) (map (lambda (e) (list (car e) (min counter-cap (cdr e)))) excluded)
-                                    (if capped? '((capped)) '())))
            (form (lambda (used)
                    (append (list 'ok (list 'for (hard-entry t)))
                            ;; `(working <writer>)` with --working, inside the
@@ -878,7 +885,7 @@
                            (list (users-clause listed (length (vector-ref users 0)) (vector-ref users 1)))
                            (list (list 'notes notes))
                            insufficient
-                           (list excluded-clause)
+                           (list (excluded-clause excluded))
                            (if folded (list folded) '())
                            (if asked (list asked) '())
                            (list (list 'budget (list 'tokens budget) (list 'used used) (list 'reserve (div budget 10)))

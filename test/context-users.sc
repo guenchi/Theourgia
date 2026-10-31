@@ -40,7 +40,7 @@
         (only (theourgia reduce) state-read state-block-ids block-id provisional-id)
         (only (theourgia working) working-new!)
         (only (theourgia render) render-human)
-        (only (theourgia context) users-clause reserved-users))
+        (only (theourgia context) users-clause reserved-users excluded-clause reserved-excluded))
 
 (define bad 0)
 (define rows 0)
@@ -395,6 +395,40 @@
       (list (for-all (lambda (c) (<= (wire-chars (cadr c)) (wire-chars reserved-users))) cap-cases)
             (equal? (cadr (assq 'both-above cap-cases)) reserved-users))
       '(#t #t))
+
+;; ---- U12: the excluded counters at and above the cap ------------------------------------------------
+
+;; THE EXCLUDED CLAUSE IS BUILT DIRECTLY too (context.sc exports
+;; excluded-clause and reserved-excluded for these rows): the counters in
+;; their order, each count shown at most at the cap, a zero shown as 0, and
+;; (capped) when any count is above the cap; no clause prints longer than
+;; the reservation.
+(define excluded-order '(definitions evidence counterexamples dependents users relevant ancestors))
+(define (ex-counts . ns) (map cons excluded-order ns))
+(define (ex-shown . ns) (cons 'excluded (map list excluded-order ns)))
+(define excluded-cases
+  (list (list 'all-zero (excluded-clause (ex-counts 0 0 0 0 0 0 0)))
+        (list 'below (excluded-clause (ex-counts 17 0 3 0 0 2 1)))
+        (list 'all-at-cap (excluded-clause (ex-counts cap cap cap cap cap cap cap)))
+        (list 'first-above (excluded-clause (ex-counts (+ cap 1) 0 0 0 0 0 0)))
+        (list 'last-above (excluded-clause (ex-counts 0 cap 0 0 0 0 (+ cap 1))))
+        (list 'all-above (excluded-clause (ex-counts (+ cap 1) (+ cap 1) (+ cap 1) (+ cap 1) (+ cap 1) (+ cap 1) (* 1000 cap))))))
+(define (excluded-case name) (cadr (assq name excluded-cases)))
+(want "U12 counts at the cap are shown as they are, with no marker: all seven at the cap, and counts below it"
+      (map excluded-case '(all-at-cap below))
+      (list (ex-shown cap cap cap cap cap cap cap) (ex-shown 17 0 3 0 0 2 1)))
+(want "U12 a count above the cap is shown at it and the clause says (capped): the first counter, the last (beside one at the cap), all"
+      (map excluded-case '(first-above last-above all-above))
+      (list (append (ex-shown cap 0 0 0 0 0 0) '((capped)))
+            (append (ex-shown 0 cap 0 0 0 0 cap) '((capped)))
+            (append (ex-shown cap cap cap cap cap cap cap) '((capped)))))
+(want "U12 no clause prints longer than the reservation, and the all-above one is exactly it"
+      (list (for-all (lambda (c) (<= (wire-chars (cadr c)) (wire-chars reserved-excluded))) excluded-cases)
+            (equal? (excluded-case 'all-above) reserved-excluded))
+      '(#t #t))
+(want "U12 a zero count is shown as 0, not left out"
+      (excluded-case 'all-zero)
+      (ex-shown 0 0 0 0 0 0 0))
 
 ;; ---- U8: an outside user changing moves the users, not the receipt ------------------------------------
 
