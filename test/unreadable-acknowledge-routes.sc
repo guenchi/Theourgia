@@ -258,9 +258,9 @@
     ("working.sc" "working-restore!" "obtain-state" 1 unsealer)
     ("working.sc" "working-restore!" "open-and-reduce" 1 request)
     ("working.sc" "working-snapshot" "obtain-state" 1 unsealer)
-    ("working.sc" "working-state" "obtain-state" 1 unsealer)
-    ("working.sc" "working-state" "open-and-reduce" 2 request)
     ("working.sc" "working-structural" "obtain-state" 1 unsealer)
+    ("working.sc" "working-view-of" "obtain-state" 1 unsealer)
+    ("working.sc" "working-view-of" "open-and-reduce" 2 request)
     ("working.sc" "working-write!" "obtain-state" 1 unsealer)
     ("working.sc" "working-write!" "open-and-reduce" 1 request)))
 (define primitives '("open-load" "log-open" "log-open-in-session" "log-begin"

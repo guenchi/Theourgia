@@ -1064,9 +1064,32 @@ while (my $c = $srv->accept) {
                  (refused (lambda (t)
                             (forged-with t "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"(error unknown-id \\\"f0.sc\\\")\"}],\"isError\":false}}")))
                  (channel-ok? (lambda (t) (and (> (string-length t) 0) (contains? t "(ok (results (letter ") (contains? t "(to \"codex\")")))))
-            (want "LV-6 version-1 frames get byte-identical answers from this daemon and the base's (outline, describe, a missing block, a refusal), and the base tree's own CLI prints the same against both"
-                  (map (lambda (a b) (equal? a b)) (cons (car new) (cdddr new)) (cons (car old) (cdddr old)))
-                  '(#t #t #t #t #t))
+            ;; NOTE: AN ANSWER THIS TREE'S CHANGE ALTERS IS LEFT OUT BY THE RULE THE
+            ;; GUARD LIVES BY: a verb listed in change-stream-guard-expect.sexp is
+            ;; an answer the item means to change, so its frame reads left-out on
+            ;; both sides, with a line naming the verb and the file's reason, and
+            ;; it compares again once a landing empties the file. A listed verb
+            ;; that names no frame here gets a line too. The base CLI's output is
+            ;; an outline and goes with that verb.
+            (let* ((listed (let ((e (guard (x (#t 'unreadable))
+                                      (if (file-exists? "change-stream-guard-expect.sexp")
+                                          (call-with-input-file "change-stream-guard-expect.sexp" read)
+                                          'missing))))
+                             (if (list? e)
+                                 (filter (lambda (x) (and (pair? x) (symbol? (car x)))) e)
+                                 (begin (printf "LV-6 change-stream-guard-expect.sexp is ~a: no frame is left out~%" e) '()))))
+                   (verbs '(outline outline describe read read))
+                   (out? (lambda (v) (assq v listed))))
+              (for-each (lambda (x)
+                          (if (memq (car x) verbs)
+                              (printf "LV-6 left out: the ~a frame, listed in change-stream-guard-expect.sexp: ~a~%" (car x)
+                                      (if (and (pair? (cdr x)) (string? (cadr x))) (cadr x) "(no reason given)"))
+                              (printf "LV-6 change-stream-guard-expect.sexp lists ~a, which names no frame of this row~%" (car x))))
+                        listed)
+              (want "LV-6 version-1 frames get byte-identical answers from this daemon and the base's (outline, describe, a missing block, a refusal), and the base tree's own CLI prints the same against both, but a frame whose verb the guard's expect file lists"
+                    (map (lambda (v a b) (if (out? v) 'left-out (equal? a b)))
+                         verbs (cons (car new) (cdddr new)) (cons (car old) (cdddr old)))
+                    (map (lambda (v) (if (out? v) 'left-out #t)) verbs)))
             (want "LV-6 the base tree's MCP server (initialize, tools/list, a tools/call of outline) prints the same against this daemon and the base's, and each is that answer read as messages, id 3 the outline's own (ok (text ...)); the same with id 3 an isError result holding the four strings is not, nor with id 3 a successful result carrying an unknown-id refusal of f0.sc"
                   (list (same-or-where (cadr new) (cadr old)) (mcp-ok? (cadr new)) (mcp-ok? (cadr old))
                         (four-strings? (forged (cadr new))) (mcp-ok? (forged (cadr new))) (mcp-ok? (refused (cadr new))))

@@ -312,18 +312,20 @@
                                                         (cdr (cadr (run-as "uadd" 'drafts))))))
                                #t))
       '(ok #t))
-(want "C1 context --for <provisional> --working answers provisional-id"
-      (ctx-as "uadd" pid 100000 "--working")
-      refusal)
-(want "C2 the same without --working"
+(define (target a) (and (clause a 'for) (car (cadr (clause a 'for)))))
+(want "C1 context --for <provisional> --working, by the writer that drafted it: its working view holds the holder the commit would make, the target"
+      (let ((a (ctx-as "uadd" pid 100000 "--working"))) (list (car a) (target a)))
+      (list 'ok pid))
+(want "C2 the same without --working answers provisional-id"
       (ctx-as "uadd" pid 100000)
       refusal)
-(want "C3 read <provisional> --working answers provisional-id"
+(want "C3 read <provisional> --working, by that writer: the holder reads as a committed file holder reads"
       (run-as "uadd" 'read pid "--working")
-      refusal)
-(want "C7 for a writer whose view opens, read --working and context --working of it answer the same datum"
-      (equal? (run-as "uadd" 'read pid "--working") (ctx-as "uadd" pid 100000 "--working"))
-      #t)
+      '(ok (text "")))
+(want "C7 for that writer, read --working and context --working of the new file's piece read the piece"
+      (list (run-as "uadd" 'read (string-append pid "/0") "--working")
+            (target (ctx-as "uadd" (string-append pid "/0") 100000 "--working")))
+      (list '(ok (text "alpha()\n")) (string-append pid "/0")))
 (want "C4 an id of nearly the shape is still unknown-id with nearest: 55 and 57 digits, an uppercase digit, a lowercase non-hex letter, a dash among the digits, another prefix"
       (map (lambda (id) (let ((a (run 'read id))) (list (cadr a) (and (assq 'nearest (filter pair? (cdr a))) #t))))
            (list (substring pid 0 59) (string-append pid "0")

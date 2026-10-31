@@ -695,7 +695,7 @@
              ["--working-new" <provisional>=<version>] ["--working-delete" <holder>=<version>] ["--premises" <datum>]))
 
   (define outline-usage
-    '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"]))
+    '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"] ["--working"]))
 
   ;; ONE SPELLING OF subscribe's FORM, reached by name from its catalogue
   ;; entry and from the refusal below. The daemon carries the verb and asks
@@ -753,11 +753,14 @@
     '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
              ("--keywords" <text>) ("--premises" <datum>)))
 
-  ;; An id of a provisional id's exact shape is answered as one (reduce.sc).
+  ;; An id of a provisional id's exact shape is answered as one (reduce.sc);
+  ;; a block a working view hides, because its writer's draft deletes its
+  ;; file, as deleted there (reduce.sc view-hidden-holder).
   (define (unknown-id state id)
-    (if (provisional-id? id)
-        (provisional-id-refusal id)
-        (list 'error 'unknown-id id (list 'nearest (nearest-ids state id)))))
+    (let ((holder (view-hidden-holder state id)))
+      (cond (holder (deleted-in-working-refusal id holder))
+            ((provisional-id? id) (provisional-id-refusal id))
+            (else (list 'error 'unknown-id id (list 'nearest (nearest-ids state id)))))))
 
   ;; ---- the facts an editor supplied: loaded on first use -----------------------
   ;;
@@ -871,11 +874,14 @@
   ;; THE DISPATCHER'S OWN HELPERS, handed to the facts' library by name, so
   ;; its verbs use these definitions rather than copies of them.
   ;; `working-state` is the one way to a writer's working view, as
-  ;; `reduction-for` is the one way to the committed one.
+  ;; `reduction-for` is the one way to the committed one;
+  ;; `working-view-with-files` is that view with the writer's file drafts
+  ;; laid over as blocks, the one a verb that reads blocks takes.
   (define (dispatch-helper name)
     (case name
       ((guarded) guarded) ((items) items) ((unknown-id) unknown-id)
       ((reduction-for) reduction-for) ((working-state) working-state) ((count-argument) count-argument)
+      ((working-view-with-files) working-view-with-files)
       ((usage) usage) ((receipt) receipt) ((keyword-hook) search-keyword-hook)
       ((session) query-session-provider)
       ((read) (cdr (assq 'read (verb-table))))
@@ -1889,16 +1895,25 @@
                   ((and depth (not (count-argument depth))) (usage outline-usage))
                   (else
                    (let ((with-keywords (argument-option options "--with-keywords"))
-                         (with-signatures (argument-option options "--with-signatures")))
-                     (guarded (lambda ()
-                                (let ((st (reduction-for store state)))
-                                  (if (not (and with-signatures (derived-tables? store 'signatures)))
-                                      (append (text (outline-text st (and depth (count-argument depth)) with-keywords))
-                                              (receipt st #f))
-                                      (let-values (((signature-of finish) ((derived 'outline-signatures) store st)))
-                                        (let ((listing (outline-text st (and depth (count-argument depth))
-                                                                     with-keywords signature-of)))
-                                          (append (text listing) (finish) (receipt st #f))))))))))))))
+                         (with-signatures (argument-option options "--with-signatures"))
+                         ;; --working: the request writer's working view with its
+                         ;; files (working-view-with-files), whose refusal is the
+                         ;; answer; the outline over it is marked (working <writer>)
+                         ;; after the rest, as context marks a working answer
+                         (w (and (argument-option options "--working")
+                                 (working-view-with-files store state writer))))
+                     (if (and w (not (eq? (car w) 'ok)))
+                         w
+                         (guarded (lambda ()
+                                    (let ((st (if w (caddr w) (reduction-for store state)))
+                                          (marking (if w (list (list 'working (cadr w))) '())))
+                                      (if (not (and with-signatures (derived-tables? store 'signatures)))
+                                          (append (text (outline-text st (and depth (count-argument depth)) with-keywords))
+                                                  (receipt st #f) marking)
+                                          (let-values (((signature-of finish) ((derived 'outline-signatures) store st)))
+                                            (let ((listing (outline-text st (and depth (count-argument depth))
+                                                                         with-keywords signature-of)))
+                                              (append (text listing) (finish) (receipt st #f) marking))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections

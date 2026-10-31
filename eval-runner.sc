@@ -45,7 +45,7 @@
           (only (theourgia store) open-and-reduce)
           (only (theourgia log) log-error?)
           (only (theourgia rpc) describe-log-error)
-          (only (theourgia working) working-state)
+          (only (theourgia working) working-view-with-files)
           (only (theourgia reduce) reduce-applied-cut)
           (only (theourgia code-project) export-code-view)
           (only (theourgia languages) language-for-name language-runner runner-valid? override-valid?
@@ -357,7 +357,7 @@
       (let ((refusal (or config-refusal (launcher-library-refusal))))
         (if refusal
             refusal
-            (let ((working (and (option-of options 'working?) (working-state key #f (option-of options 'writer)))))
+            (let ((working (and (option-of options 'working?) (working-view-with-files key #f (option-of options 'writer)))))
               (if (and working (not (and (pair? working) (eq? 'ok (car working)))))
                   (append working '((during view)))
                   (with-mutation-record

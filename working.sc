@@ -14,7 +14,7 @@
 ;; limitations under the License.
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit! latest-parent-cut
-          working-restore! working-snapshot working-baseline working-state
+          working-restore! working-snapshot working-baseline working-state working-view-with-files
           working-new! working-delete! working-move-structural! working-structural provisional-id provisional-id?
           working-structural-outputs
           ;; the two tests a structural draft is judged by, a new file's path
@@ -602,6 +602,8 @@
       (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
+          ((structural-read store writer state id (and (pair? information) (car information)))
+           => (lambda (answer) answer))
           (else
             (let* ((e (and (safe-id? id) (entry-at store writer id)))
                    (active (and e (not (consumed? store state e))))
@@ -621,6 +623,47 @@
                               (string-append (or (field state id 'front) "") (or (field state id 'heading-src) ""))))
                             '(error working-unavailable non-text-projection))
                         (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes b))))))))))))))))
+
+  ;; AN ID ONE OF WRITER'S FILE DRAFTS NAMES is read as working-view-with-files
+  ;; holds it. A new file's holder reads as a committed file holder reads,
+  ;; with no src (""), a piece as its bytes; with INFORMATION, as the
+  ;; projection a draft reads as, its version the one the view names it by
+  ;; (new-file-blocks), its based-on #f (a new block has no baseline), its
+  ;; cut the draft's and its front "". A block of a file the writer's draft
+  ;; deletes is unknown there (deleted-in-working-refusal), whatever the
+  ;; committed state holds. -> the answer, or #f when no file draft names ID.
+  ;; NOTE: A DELETED FILE'S CHILDREN ARE READ IN STATE, the present a commit
+  ;; reads them in; the view reads them at its cut. The two differ only for
+  ;; a delete whose file has changed since, which its commit refuses.
+  ;; NEVER: NO LOCK, as the rest of this read takes none (with-draft-read's
+  ;; note): a read --working must not wait behind a write holding the
+  ;; writer's lock. An entry is written whole (atomic-write!), so a listing
+  ;; read without the lock sees each file whole, before or after a write.
+  (define (structural-read store writer state id information)
+    (let ((entries (if (eq? 'directory (entry-type (area store writer "structural")))
+                       (active-structural store writer state)
+                       '())))
+      (or (exists (lambda (e)
+                    (and (eq? (car e) 'working-new)
+                         (>= (string-length id) 60) (string=? (substring id 0 60) (list-ref e 3))
+                         (let ((b (assoc id (new-file-blocks e))))
+                           (and b (new-block-answer writer e b information)))))
+                  entries)
+          (exists (lambda (e)
+                    (and (eq? (car e) 'working-delete)
+                         (member id (deleted-file-ids state e))
+                         (deleted-in-working-refusal id (list-ref e 3))))
+                  entries))))
+  (define (new-block-answer writer e b information)
+    (let* ((src (assq 'src (cadr b)))
+           (bytes (cond ((not src) (make-bytevector 0))
+                        ((string? (cdr src)) (string->utf8 (cdr src)))
+                        (else (cdr src))))
+           (text (src-text bytes)))
+      (cond
+        ((not information) (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes bytes))))
+        (text (list 'ok (list 'projection 'working writer (car b) (caddr b) #f (list-ref e 7) text "")))
+        (else '(error working-unavailable non-text-projection)))))
 
   ;; NEVER: NO `state` PARAMETER, AND THAT IS NOT AN OVERSIGHT. Every other
   ;; verb in this family takes one because it folds the log to answer;
@@ -732,12 +775,22 @@
                         #f)))
       (list (thunk) #f #f)))
   ;; -> the writer's live structural entries, by key
+  ;; NOTE: A LISTED KEY CAN BE GONE BY ITS READ, for the two callers that
+  ;; take no lock, structural-read (a read --working waits behind no write)
+  ;; and working-list (the drafts listing): the same writer's discard can
+  ;; unlink it in between, and structural-at then answers #f. Such an entry
+  ;; is not there, as a read just after the discard would find. Under the
+  ;; writer's lock a listed key is never absent, so the locked callers read
+  ;; as before.
   (define (active-structural store writer state)
     (let ((names (list-entries (area store writer "structural"))))
       (if (eq? names 'absent) '()
-          (filter (lambda (e) (not (consumed? store state e)))
-                  (map (lambda (k) (structural-at store writer k))
-                       (filter structural-key? (list-sort string<? names)))))))
+          (begin
+            ;; INJECTION ONLY: between the listing and the reads of what it lists
+            (hold-point! 'structural-list-before-read)
+            (filter (lambda (e) (and e (not (consumed? store state e))))
+                    (map (lambda (k) (structural-at store writer k))
+                         (filter structural-key? (list-sort string<? names))))))))
   ;; -> (<bytes> <child ids>) of the live text file HOLDER carries in STATE, or #f
   (define (file-content state holder)
     (and (block-name? holder)
@@ -1232,13 +1285,22 @@
   ;;
   ;; KEY: A DRAFT CANNOT INSERT A BLOCK -- working-write! refuses an id the
   ;; state does not hold -- so the view has the committed state's blocks.
-  ;; NOTE: THE STRUCTURAL DRAFTS ARE THE ANSWER'S FIFTH ELEMENT, not part of
-  ;; the view: a new file has no blocks until it is committed, so only the
-  ;; file trees built from this answer (export-code --working, edit-export,
-  ;; landing-freeze: landing-files.sc structural-outputs) show it, and a
-  ;; deleted file is hidden there alone. outline, context and read --working
-  ;; read the view and show neither (v1).
+  ;; NOTE: THE STRUCTURAL DRAFTS ARE THE ANSWER'S FIFTH ELEMENT, and this
+  ;; answer's view holds none of them: the file trees built from it
+  ;; (export-code --working, edit-export, landing-freeze: landing-files.sc
+  ;; structural-outputs) lay them over the files the view projects, and a
+  ;; view that held a new file's blocks would give those trees the file
+  ;; twice.
+  ;; THE VIEW WITH THE FILES is working-view-with-files: the same answer, its
+  ;; view with the writer's new files admitted as the blocks their commit
+  ;; would make and its deleted files' blocks hidden (structural-layer).
+  ;; The verbs that read blocks take it: outline, read and context with
+  ;; --working, and a foreign eval.
   (define (working-state store state supplied)
+    (working-view-of store state supplied #f))
+  (define (working-view-with-files store state supplied)
+    (working-view-of store state supplied #t))
+  (define (working-view-of store state supplied files?)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
       (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
@@ -1258,7 +1320,8 @@
                   (let ((fields (draft-fields base drafts)))
                     (if (eq? (car fields) 'error)
                         fields
-                        (list 'ok writer (overlay-drafts base (cdr fields)) drafts structural)))))))))))))
+                        (list 'ok writer (overlay-drafts base (cdr fields) (if files? structural '()))
+                              drafts structural)))))))))))))
 
   ;; `(ok (<id> <field> . <value>) ...)`, the stored field each draft
   ;; replaces, or the refusal of the first draft that does not read.
@@ -1314,29 +1377,111 @@
   ;; THE OVERLAY KEEPS ITS BASE'S NOTES (found in design review): it is a
   ;; new value built from the base's rows, and whatever the base was
   ;; missing it is missing too.
-  (define (overlay-drafts base replacements)
-    (let ((overlay (overlay-drafts-rows base replacements)))
+  (define (overlay-drafts base replacements structural)
+    (let ((overlay (overlay-drafts-rows base replacements structural)))
       (remember-unreadable-notes! overlay (unreadable-behind base))
       overlay))
 
   ;; MARKED AS A WORKING VIEW (reduce.sc reduction-overlay?), so that no
   ;; cache kept for committed states answers for it.
-  (define (overlay-drafts-rows base replacements)
-    (let ((overlay
-           (rows->state
-             (map (lambda (row)
-                    (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
-                      (if (not r) row
-                          (list 'block (cadr row)
-                                (map (lambda (part)
-                                       (if (eq? (car part) 'fields)
-                                           (cons 'fields (map (lambda (f) (if (and (pair? f) (eq? (car f) (cadr r))) (drafted-register f (cddr r)) f))
-                                                              (cdr part)))
-                                           part))
-                                     (caddr row))))))
-                  (state->rows base)))))
+  ;; STRUCTURAL, the file drafts laid over as blocks (structural-layer), is
+  ;; '() for working-state's view: its rows are then the base's, as before.
+  (define (overlay-drafts-rows base replacements structural)
+    (let* ((layer (structural-layer base structural))
+           (hidden (cadr layer))
+           (overlay
+             (rows->state
+               (append
+                 (filter (lambda (row) (not (and (eq? (car row) 'block) (hashtable-contains? hidden (cadr row)))))
+                   (map (lambda (row)
+                          (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
+                            (if (not r) row
+                                (list 'block (cadr row)
+                                      (map (lambda (part)
+                                             (if (eq? (car part) 'fields)
+                                                 (cons 'fields (map (lambda (f) (if (and (pair? f) (eq? (car f) (cadr r))) (drafted-register f (cddr r)) f))
+                                                                    (cdr part)))
+                                                 part))
+                                           (caddr row))))))
+                        (state->rows base)))
+                 (car layer)))))
       (reduction-overlay-set! overlay #t)
+      (unless (null? structural) (view-facts-set! overlay (cons (caddr layer) hidden)))
       overlay))
+
+  ;; ---- the file drafts as blocks of the view -------------------------------
+  ;;
+  ;; THE WRITER'S FILE DRAFTS AS BLOCKS over BASE, the committed state at the
+  ;; view's cut. -> (<rows> <hidden> <versions>): the block rows each new file
+  ;; adds; by id, the holder of the deleted file each hidden block belongs
+  ;; to; by id, the version each new block is named by.
+  ;; NEVER: WHERE ITS COMMIT WILL PUT IT. A new file's holder is placed after
+  ;; the last top-level sibling, as a commit's insert with no `after` is
+  ;; (store.sc ord-for), and a later new file after it, in the order
+  ;; active-structural lists the drafts (provisional id, string<?): the
+  ;; order the landing route names them to commit (tools/landing-commit.sc)
+  ;; and the order of a direct commit given them as `drafts` lists them.
+  ;; Its pieces follow under it from ord 0, in K order. A view in path
+  ;; order would move the file at its commit (measured on 7b93aa3: a.sc,
+  ;; c.sc, then a committed b.sc comes last).
+  ;; NOTE: A NEW BLOCK'S FIELDS ARE ITS INSERT'S, stored as an insert stores
+  ;; them (the last field first), each one candidate whose event is the
+  ;; drafted-register fallback ("" . 0): no record made it, so its version is
+  ;; not a digest of them but the one view-facts names (reduce.sc block-hash).
+  (define (structural-layer base structural)
+    (let ((hidden (make-hashtable string-hash string=?))
+          (versions (make-hashtable string-hash string=?))
+          (event (cons "" 0)))
+      (for-each (lambda (e)
+                  (when (eq? (car e) 'working-delete)
+                    (for-each (lambda (id) (hashtable-set! hidden id (list-ref e 3)))
+                              (deleted-file-ids base e))))
+                structural)
+      (let loop ((es (filter (lambda (e) (eq? (car e) 'working-new)) structural))
+                 (last (and (pair? structural) (state-sibling-last-ord base 'root)))
+                 (rows '()))
+        (if (null? es)
+            (list (reverse rows) hidden versions)
+            (let* ((blocks (new-file-blocks (car es)))
+                   (holder (car blocks))
+                   (ord (ord-between last #f))
+                   (row (lambda (b parent at)
+                          (list 'block (car b)
+                                (list (cons 'tomb #f)
+                                      (cons 'fields (map (lambda (f) (list (car f) (cons (cdr f) event)))
+                                                         (reverse (cadr b))))
+                                      (cons 'position (list (cons (cons parent at) event))))))))
+              (for-each (lambda (b) (hashtable-set! versions (car b) (caddr b))) blocks)
+              (loop (cdr es) ord
+                    (let pieces ((ps (cdr blocks)) (prev #f) (rows (cons (row holder 'root ord) rows)))
+                      (if (null? ps)
+                          rows
+                          (let ((at (ord-between prev #f)))
+                            (pieces (cdr ps) at (cons (row (car ps) (car holder) at) rows)))))))))))
+  ;; A NEW FILE'S BLOCKS, as its commit would make them: the intents of
+  ;; landing-files.sc file-new-intents, the split structural-intents
+  ;; commits, read for their fields. -> ((<id> <fields> <version>) ...), the
+  ;; holder first (kind file, mode text, its path and language, no src),
+  ;; named by the provisional id and the draft's version; then each piece,
+  ;; named "<provisional id>/<K>" (piece-name) and by the structural-version
+  ;; of (new, that name, its bytes' sha256, the draft's cut).
+  (define (new-file-blocks e)
+    (let* ((pid (list-ref e 3)) (cut (list-ref e 7))
+           (intents ((eval 'file-new-intents (environment '(theourgia landing-files)))
+                     (list-ref e 5) (list-ref e 8) 0)))
+      (cons (list pid (cadddr (car intents)) (list-ref e 4))
+            (map (lambda (i k)
+                   (let* ((name (piece-name pid k))
+                          (src (cdr (assq 'src (cadddr i))))
+                          (bytes (if (string? src) (string->utf8 src) src)))
+                     (list name (cadddr i) (structural-version 'new name (hex-digest bytes) cut))))
+                 (cdr intents) (count-up (length (cdr intents)))))))
+  ;; A DELETED FILE'S BLOCKS in STATE: its holder and the children its commit
+  ;; deletes (file-content, what structural-intents reads); the holder alone
+  ;; when STATE holds no such file.
+  (define (deleted-file-ids state e)
+    (let ((c (file-content state (list-ref e 3))))
+      (cons (list-ref e 3) (if c (cadr c) '()))))
 
   (define (working-list store state supplied)
     (needing-writer supplied (lambda ()

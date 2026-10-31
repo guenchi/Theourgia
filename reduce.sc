@@ -60,7 +60,8 @@
           provisional-id-refusal
           cut-join
           ord-between block-id
-          reduction? reduction-state reduction-overlay? reduction-overlay-set!)
+          reduction? reduction-state reduction-overlay? reduction-overlay-set!
+          view-facts-set! view-hidden-holder deleted-in-working-refusal)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (only (chezscheme) make-parameter)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
@@ -171,7 +172,13 @@
             ;; laid over it. It shares the committed cut, so the process-wide
             ;; caches kept by cut for committed states (store.sc defs-index,
             ;; header-table) never answer for one.
-            (mutable overlay reduction-overlay? reduction-overlay-set!)))
+            (mutable overlay reduction-overlay? reduction-overlay-set!)
+            ;; A WORKING VIEW'S FILE DRAFTS (working.sc, working-view-with-files),
+            ;; and only there: #f, or (<versions> . <hidden>), two tables by id:
+            ;; the version a new file's block is named by (block-hash answers
+            ;; it), and, for each block of a deleted file the view hides, that
+            ;; file's holder (view-hidden-holder).
+            (mutable view-facts reduction-view-facts view-facts-set!)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
   ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
@@ -267,13 +274,22 @@
   (define (provisional-id? x)
     (and (string? x) (= (string-length x) 60) (string=? (substring x 0 4) "new-")
          (for-all draft-hex-digit? (string->list (substring x 4 60)))))
-  ;; THE ANSWER FOR A PROVISIONAL ID ASKED AS A BLOCK. It names no block until
-  ;; a commit makes one from its draft, whoever asks and over whatever view,
-  ;; and no committed block is near it: not unknown-id with its nearest ids.
-  ;; The drafts are not consulted. Every verb that resolves an id over a view
+  ;; THE ANSWER FOR A PROVISIONAL ID ASKED AS A BLOCK that the view asked
+  ;; does not hold. It names no committed block until a commit makes one
+  ;; from its draft, and no committed block is near it: not unknown-id with
+  ;; its nearest ids. Only its own writer's working view with its files
+  ;; (working.sc, working-view-with-files) holds it, as the holder its draft
+  ;; would make; without --working, in another writer's view and after the
+  ;; commit it is answered here. Every verb that resolves an id over a view
   ;; answers it from here (rpc.sc's unknown-id, working-read).
   (define (provisional-id-refusal id)
     (list 'error 'provisional-id (list 'id id) (list 'reason 'not-committed)))
+  ;; THE ANSWER FOR A BLOCK A WORKING VIEW HIDES: its writer's draft deletes
+  ;; the file HOLDER carries, and ID is that holder or one of the children
+  ;; the commit of the draft deletes. unknown-id, with the reason and the
+  ;; holder after the id; everywhere else unknown-id keeps its shape.
+  (define (deleted-in-working-refusal id holder)
+    (list 'error 'unknown-id id (list 'reason 'deleted-in-working) (list 'holder holder)))
   ;; THE BASELINE OF A FILE a delete draft stands on: its exported bytes and
   ;; its children's ids in order, since the holder's block hash covers its own
   ;; fields and edges and none of its children's src. -> 64 hex
@@ -709,7 +725,7 @@
   (define (reduce-empty)
     (make-reduction '() '() '() '() '() (make-pending-queue) '() (empty-notes) '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
-                    (make-empty-structure) #f))
+                    (make-empty-structure) #f #f))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -742,7 +758,8 @@
                       index #f (hashtable-copy (reduction-pasts-index r) #t)
                       (structure-copy (reduction-structure r))
                       ;; a copy of a working view is one too
-                      (reduction-overlay? r))))
+                      (reduction-overlay? r)
+                      (reduction-view-facts r))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
@@ -2775,12 +2792,26 @@
   ;; every block is in it. A whole-state comparison is still available by
   ;; comparing state-datum, which is what the three-way equality case
   ;; wants; a token is a different question and gets a different answer.
+  ;; A NEW FILE'S BLOCK IN A WORKING VIEW is named by the version its draft
+  ;; gives it (view-facts), not by a digest of the fields the view made up
+  ;; for it: those carry no event of their own.
   (define (block-hash r id)
-    (let ((b (find-block r id)))
-      (and b
-           (bytevector->hex
-             (sha256 (string->utf8
-                       (sexpr->string-extended (storable-encode (block->datum r id b)))))))))
+    (or (view-version r id)
+        (let ((b (find-block r id)))
+          (and b
+               (bytevector->hex
+                 (sha256 (string->utf8
+                           (sexpr->string-extended (storable-encode (block->datum r id b))))))))))
+  ;; -> the version VIEW-FACTS names ID by in R, or #f
+  (define (view-version r id)
+    (let ((facts (reduction-view-facts r)))
+      (and facts (hashtable-ref (car facts) id #f))))
+  ;; -> the holder of the deleted file whose block ID a working view R hides,
+  ;; or #f; anything but a reduction hides nothing
+  (define (view-hidden-holder r id)
+    (and (reduction? r)
+         (let ((facts (reduction-view-facts r)))
+           (and facts (hashtable-ref (cdr facts) id #f)))))
 
   ;; THE DECLARATIONS ARE PART OF THE STATE, after the blocks, a name's
   ;; candidates by event; a store with none hashes the blocks alone, as it

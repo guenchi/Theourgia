@@ -278,7 +278,7 @@
              ;; THE VIEW: the committed one, or with --working the request
              ;; writer's working view, taken through the dispatcher as
              ;; export-code --working takes it; its refusal is the answer.
-             (let ((w (and working? ((dispatch-helper 'working-state) store state writer))))
+             (let ((w (and working? ((dispatch-helper 'working-view-with-files) store state writer))))
                (if (and w (not (eq? (car w) 'ok)))
                    w
                    (let* ((view (if w (caddr w) ((dispatch-helper 'reduction-for) store state)))

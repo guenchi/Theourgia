@@ -3158,7 +3158,7 @@
          commit-before-publish executor-before-verb executor-block-before-verb
          stream-overflow probe-before-ack read-cut-before-replay diff-cut-before-replay
          freeze-after-dump freeze-before-list landing-before-tag import-before-batch
-         freeze-before-move structural-move-before-write
+         freeze-before-move structural-move-before-write structural-list-before-read
          frame-child-start
          namespace-after-mkdir namespace-before-publish reserve-after-resolve serve-before-reserve-check
          reserve-after-first-resolve serve-before-mkdir walk-after-resolve

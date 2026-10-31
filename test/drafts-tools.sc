@@ -75,6 +75,10 @@
 ;; at freeze-before-move is refused structural-changed and stands; a write of
 ;; the same draft begun inside the lock waits for the move; --check on a freeze
 ;; whose draft was made again judges the frozen item and writes nothing.
+;; R1: a read --working and the drafts listing, which take no lock, each held
+;; between the listing of its writer's structural drafts and their reads while
+;; the writer discards one: each answers as it does after the discard, its hold
+;; not expired.
 ;; SEED: a copy of a store holds a writer's owner.sexp; adopt takes it over,
 ;; and a draft is written and committed. THEOURGIA_SEED_STORE names a store to
 ;; copy as well (the split mirror a writable store would be seeded from);
@@ -1229,6 +1233,64 @@
       (list (list (car m6b-run) (cadr m6b-run)) (list-ref m6b-run 4) m6b-done (and m6b-done (file-datum m6b-rc))
             (let ((e (entry-of m6b m-pid))) (and e (caddr e))))
       (list '(#t #t) #t #t 0 (string->utf8 m6-text)))
+;; THE TWO READERS THAT TAKE NO LOCK, read --working and the drafts listing,
+;; list the writer's structural drafts and then read them, so a draft can go
+;; in between: held at structural-list-before-read, each waits while the same
+;; writer's discard of its one structural draft runs, and then answers as it
+;; answers after the discard.
+;; NOTE: THE HOLD CANNOT EXPIRE UNSEEN (as unreadable-acknowledge-routes.sc's
+;; held search, whose hold once expired by itself on a slow runner): the child
+;; holds for up to 120 s, above the row's 60 s waits, and the row asserts that
+;; its standard error has no `(theourgia hold-expired` line. An expired hold
+;; would let the read run before the discard and pass on the old code.
+;; -> (held <discard's answer> done <the answer> <expired>)
+(define (held-at-listing st tag args)
+  (let ((rel (string-append root "/" tag "-release"))
+        (out (string-append root "/" tag ".out")) (err (string-append root "/" tag ".err"))
+        (rc (string-append root "/" tag ".rc")))
+    (sh "( THEOURGIA_LOCAL=1 THEOURGIA_INJECT=on THEOURGIA_HOLD_MS=120000 THEOURGIA_HOLD="
+        (quoted (string-append "structural-list-before-read:" rel))
+        " THEOURGIA_WRITER=" (quoted W) " scheme --script " (quoted (string-append (path-parent (current-directory)) "/core.sc"))
+        (apply string-append (map (lambda (a) (string-append " " (quoted a))) args))
+        " --wire --store " (quoted st) " > " (quoted out) " 2> " (quoted err)
+        " < /dev/null; echo $? > " (quoted (string-append rc ".part")) " && mv " (quoted (string-append rc ".part")) " " (quoted rc) " ) &")
+    (let* ((h (wait-for (string-append rel ".held") 60000))
+           (discarded (and h (ask st 'discard m-pid "--writer" W))))
+      (call-with-output-file rel (lambda (p) (display "go" p)))
+      (let ((done (wait-for rc 60000)))
+        (list h discarded done
+              ;; the answer: the last datum on standard output that is (ok ...) or (error ...)
+              (guard (e (#t 'UNREADABLE))
+                (call-with-input-file out
+                  (lambda (p)
+                    (let loop ((last #f))
+                      (let ((x (read p)))
+                        (cond ((eof-object? x) last)
+                              ((and (pair? x) (memq (car x) '(ok error))) (loop x))
+                              (else (loop last))))))))
+              (let ((t (text-of err)))
+                (and (string? t)
+                     (let ((k (string-length "(theourgia hold-expired")))
+                       (let scan ((i 0))
+                         (cond ((> (+ i k) (string-length t)) #f)
+                               ((string=? (substring t i (+ i k)) "(theourgia hold-expired") #t)
+                               (else (scan (+ i 1)))))))))))))
+(define r1 (imported-store!))
+(new-draft! r1 "m.sc" m-text)
+(define r1-run (held-at-listing r1 "r1" (list "read" (block-of r1 "a.txt") "--working")))
+(want "ST-R1 a read --working of a committed block held between the listing of the writer's structural drafts and their reads, while the writer discards its draft: the read answers the block, as a read after the discard does, and the hold did not expire"
+      (list (car r1-run) (head-of (cadr r1-run)) (caddr r1-run) (cadddr r1-run) (list-ref r1-run 4))
+      (list #t 'ok #t '(ok (text "one\n")) #f))
+;; the drafts listing, unlocked since before the view held files: the same race
+(define r1b (imported-store!))
+(new-draft! r1b "m.sc" m-text)
+(define r1b-run (held-at-listing r1b "r1b" (list "drafts" "--writer" W)))
+(define r1b-after (ask r1b 'drafts "--writer" W))
+(want "ST-R1b the drafts listing held between the listing of the writer's structural drafts and their reads, while the writer discards its draft: it answers the listing a drafts after the discard answers, and the hold did not expire"
+      (list (car r1b-run) (head-of (cadr r1b-run)) (caddr r1b-run) (head-of (cadddr r1b-run))
+            (equal? (cadddr r1b-run) r1b-after) (list-ref r1b-run 4))
+      (list #t 'ok #t 'ok #t #f))
+
 ;; --check AFTER THE DRAFT WAS MADE AGAIN: a freeze whose new file is behind,
 ;; its live draft discarded and laid again; the frozen item is judged, so the
 ;; answer names it as moved, and nothing is written

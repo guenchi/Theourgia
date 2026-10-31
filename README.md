@@ -349,6 +349,14 @@ without it the writer is the one this caller was given. A block with no
 draft still reads as committed in the same answer -- the overlay replaces
 the blocks it covers, not the view. `--working-info` adds what the view
 is made of rather than changing what is read. `--working` or `--working-info` with `--md` or `--recursive` is refused with `(error bad-request incompatible-working-options)`.
+The view holds the writer's new files and hides its deleted ones (see
+`commit`): a new file's holder, named by its provisional id, reads as a
+committed file holder reads, `""`, its bytes being its pieces', and a piece,
+`<provisional>/<K>`, as its bytes; `--working-info` on either answers the
+projection with the version the view names it by, the draft's cut and
+`based-on` `#f`, a new block having no baseline. A block of a file the writer
+deletes is `(error unknown-id <id> (reason deleted-in-working) (holder
+<holder>))`.
 
 **`--rev` names the publication the answer was built from**, for a program that
 follows the store with `subscribe`: an `ok` answer gains `(rev <n> (daemon
@@ -1370,7 +1378,10 @@ kept one. The answer carries `(working "<writer>")` after `for`, counted in
 the budget; a refusal of the view (`writer-required`,
 `invalid-working-writer`, `working-unavailable`,
 `working-draft-unreadable`) is the answer, and an id the view does not
-hold is answered as `read` answers it over that view. A working view
+hold is answered as `read` answers it over that view. The view holds the
+writer's new files and hides its deleted ones, as `read --working` reads
+them: a piece of a new file can be the target, and a committed block that
+uses a name the piece defines finds it among that name's definitions. A working view
 changes block text and the names it uses, not validity: drafts are not
 changes, so the five queries answer the committed rows. Its premises for
 drafted blocks are the overlay's versions and are not handed to a
@@ -2494,7 +2505,7 @@ land as a src beside the body that export, `whereis` and `eval` read.
 
 ### `outline`
 
-    (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"])
+    (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"] ["--working"])
 
 Prints the store's block tree as indented text, answered as `(ok (text "..."))`: one line per block, `- <id>  <title>`, indented two spaces per level. `--depth` stops at that many levels.
 A row whose position is in structural conflict carries the conflict's mark after its title, and a row that is also an orphan carries `orphan`. Orphans the tree did not draw are listed after it under `orphans:`, each with its subtree, under the same `--depth` limit, so `--depth 0` prints nothing. A `--depth` that is not a count is answered with the usage form.
@@ -2509,6 +2520,12 @@ supplied a signature for (after the keywords' brackets when both are asked
 for), from the committed store's facts. Once a table was read the answer
 ends with `(stale <n>)`, the signature facts it could not use, and
 `(via ...)` for the signatures it printed.
+
+`--working` prints the request writer's working view, the one `context
+--working` reads, with the writer's new files where their commit will put
+them and its deleted files left out (see `commit`), and the answer ends with
+`(working "<writer>")`; a refusal of the view is the answer. Its signatures
+are still the committed store's, so a new file's pieces print none.
 
 ## Drafts, and committing them
 
@@ -2662,6 +2679,9 @@ After the items, each draft that is not fresh is named again, `(behind
 <block> (based-on <v>) (committed <v>))`, the block's committed version in
 place of `now`; a fresh draft has no such clause, and a writer whose drafts
 are all fresh gets none.
+The structural drafts (see `commit`) are listed after the revoked
+consumptions, by key: the deletes, then the new files by provisional id, the
+order the writer's working view places them in.
 
 Once an editor has supplied diagnostics for the writer (see "Derived data
 from an editor"), each draft also carries `(diagnostics <n>)`, the
@@ -2728,17 +2748,26 @@ each new file's code children in the order they were inserted, K from 0
 replay of the commit, sent again under its `--req`, answers both again,
 read from the request's own records: the holder by its path, its pieces
 by their parent, ordered by the intent index. A draft of a block named by a provisional id is refused
-`(error bad-request provisional-target)`. In this version only the file
-trees built from the working view (`export-code --working`,
-`tools/edit-export.sc`, `tools/landing-freeze.sc`) show a new file and hide
-a deleted one; `outline`, `context`, `read --working` and `eval --working`
-read the committed blocks under the drafts and show neither. A new file's
-provisional id asked as a block, by any verb that resolves an id over a
-view, is answered `(error provisional-id (id "<id>") (reason
-not-committed))`, whoever asks: without `--working`, and with it once the
-writer's view opens (a refusal of the view is the answer first, as for any
-id). It names no block until a commit makes one, and no committed block is
-near it. An id of another shape (another length, an uppercase digit) stays
+`(error bad-request provisional-target)`. The writer's working view shows
+its new files and hides its deleted ones. The file trees built from it
+(`export-code --working`, `tools/edit-export.sc`, `tools/landing-freeze.sc`)
+add a new file's bytes and leave a deleted file out. `outline --working`,
+`read --working`, `context --working` and an `eval --working` in another
+language than Scheme (over the tree it projects) read the view as the
+blocks the commit would make: the holder, named by the provisional id, and
+its pieces, `<provisional>/<K>` in K order, split as the commit splits the
+file; the holder after the last top-level holder, where the commit's insert
+puts it, and several new files in the order `drafts` lists them
+(provisional id), the order the landing route commits them in. A deleted
+file's holder and the children its commit deletes are absent from the view,
+and asked for with `--working` are `(error unknown-id <id> (reason
+deleted-in-working) (holder <holder>))`; `unknown-id` keeps its shape
+everywhere else. A new file's provisional id asked as a block over any other
+view -- without `--working`, in another writer's view, and after the commit
+-- is answered `(error provisional-id (id "<id>") (reason not-committed))`
+(a refusal of the view is the answer first, as for any id). It names no
+committed block until a commit makes one, and no committed block is near
+it. An id of another shape (another length, an uppercase digit) stays
 `unknown-id`.
 
 NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
@@ -4749,7 +4778,8 @@ by the launcher; a runner configured to search it, as `chez` is, loads from
 it after exec, and that is the runner's reach.
 
 The store is projected by `export-code` with raw bytes (no markers) -- the
-committed state, or with `--working` the writer's working view -- into
+committed state, or with `--working` the writer's working view, its new
+files in it and its deleted ones not -- into
 `tree/` of a fresh `eval-<token>/` under the run root, and the source is
 written into its sibling `source/`. Fresh means this evaluation created
 the directory itself: a name already taken, by a file or a directory, is
@@ -5420,7 +5450,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them. The faults are the list `known-faults` in `ffi.sc`, and the stages the list `known-stages` beside it; a name in neither is refused when the library loads, so those lists, not this table, are the enumeration. The daemon's record of its own torn-tail repair takes its snapshot in stage `repair`, so `stat-fail@repair:file=<sub>` reaches that snapshot alone; in a write whose first stat of a segment is such a repair, a `stat-fail@commit` aimed at the segment therefore fails the rotation probe (a raise) where it used to be taken by the repair record (a version that could not be read). `rotation-probe-fail@commit:file=<sub>` fails the rotation probe once, and only in a write that cut a torn tail; the barrier `after-repair-cut` parks a write between that cut and the record |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists; once `<path>` exists, later passes through that stage do not wait. A hold yields to the daemon's other actors while it waits, except the two `leave-block-` stages and `executor-block-before-verb`, which block the whole process so that nothing is delivered meanwhile. The stages are the list `known-hold-stages` in `ffi.sc`, each placed as follows. A start and its client: `client-scan` (the client, before it reads the log of a start that exited), `report-write` (before a startup report's one write), `bind` (the listener, before its bind), `store-start` (the store process, before its first load), `frame-child-start` (the command line, after it found nobody listening and before it starts its `core.sc` child), `opener-after-probe` (the opener's ensure-daemon!, after its connect probe found nobody and before it starts a daemon). The socket's namespace (a start through `--socket` or the default socket): `serve-before-reserve-check` (after the starter's own check of the socket's directory, before the reservation check), `reserve-after-first-resolve` (the check, after its one resolution of the socket's parent), `walk-after-resolve` (the walk up an absent parent, after an ancestor's one resolution and before it is judged), `reserve-after-resolve` (the check, after the resolution repeated under the candidate's reservation lock), `serve-before-mkdir` (after the check, before the socket's directory is made), `reserve-before-identity` and `reserve-after-identity` (either side of the endpoint's identity), `namespace-after-mkdir` (after the backing directory is made, before its marker), `namespace-before-publish` (after the marker, before the namespace link is published), `reclaim-after-link`, `reclaim-after-sockets` and `reclaim-after-marker` (after each step of a reclaim of this endpoint's earlier namespace). The idle exit: `leave-before-unlink` and `leave-after-unlink` (the listener, either side of the public link's unlink), `leave-block-before-unlink` and `leave-block-after-unlink` (the same places, blocking), `adapter-before-report` (an accepted connection's adapter, before it reports to the listener), `resumed-adapter-before-report` (the same, for the listener bound again after a cancelled exit), `resume-before-bound` (that listener, after its rebind and publish, before it tells main), `listener-before-stop` (the listener, on a stop, before it closes). The store and its readers: `write-after-create`, `publish-after-link`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `reload-before-publish` (the daemon's store process, between a refold and its publication), `executor-before-verb` and `executor-block-before-verb` (an executor, the store process or a writer's, after it was let begin a request and before the verb runs: held alive and making no progress, or with the whole process blocked), `commit-before-publish` (a commit, after its records and before its publication, inside the store's lock), `probe-before-ack` (the store process, after a change probe and before it acknowledges it), `stream-overflow` (a change stream, at its queue's overflow, before it latches lagging), `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it), `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `structural-move-before-write` (a structural draft's move, inside its lock, before its one write). The shell: `shell-before-ensure` (the MCP shell, after a request's first connect found nobody, before its first start), `shell-after-ready` (the MCP shell, after a start answered ready, before the request's own connect), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll). Evaluation: `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks). The tools: `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read), `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `freeze-before-move` (the same, before a structural draft is moved), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written), `import-before-batch` (tools/import-git.sc, after the batch's premises are computed and before the batch is sent). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists; once `<path>` exists, later passes through that stage do not wait. A hold yields to the daemon's other actors while it waits, except the two `leave-block-` stages and `executor-block-before-verb`, which block the whole process so that nothing is delivered meanwhile. The stages are the list `known-hold-stages` in `ffi.sc`, each placed as follows. A start and its client: `client-scan` (the client, before it reads the log of a start that exited), `report-write` (before a startup report's one write), `bind` (the listener, before its bind), `store-start` (the store process, before its first load), `frame-child-start` (the command line, after it found nobody listening and before it starts its `core.sc` child), `opener-after-probe` (the opener's ensure-daemon!, after its connect probe found nobody and before it starts a daemon). The socket's namespace (a start through `--socket` or the default socket): `serve-before-reserve-check` (after the starter's own check of the socket's directory, before the reservation check), `reserve-after-first-resolve` (the check, after its one resolution of the socket's parent), `walk-after-resolve` (the walk up an absent parent, after an ancestor's one resolution and before it is judged), `reserve-after-resolve` (the check, after the resolution repeated under the candidate's reservation lock), `serve-before-mkdir` (after the check, before the socket's directory is made), `reserve-before-identity` and `reserve-after-identity` (either side of the endpoint's identity), `namespace-after-mkdir` (after the backing directory is made, before its marker), `namespace-before-publish` (after the marker, before the namespace link is published), `reclaim-after-link`, `reclaim-after-sockets` and `reclaim-after-marker` (after each step of a reclaim of this endpoint's earlier namespace). The idle exit: `leave-before-unlink` and `leave-after-unlink` (the listener, either side of the public link's unlink), `leave-block-before-unlink` and `leave-block-after-unlink` (the same places, blocking), `adapter-before-report` (an accepted connection's adapter, before it reports to the listener), `resumed-adapter-before-report` (the same, for the listener bound again after a cancelled exit), `resume-before-bound` (that listener, after its rebind and publish, before it tells main), `listener-before-stop` (the listener, on a stop, before it closes). The store and its readers: `write-after-create`, `publish-after-link`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `reload-before-publish` (the daemon's store process, between a refold and its publication), `executor-before-verb` and `executor-block-before-verb` (an executor, the store process or a writer's, after it was let begin a request and before the verb runs: held alive and making no progress, or with the whole process blocked), `commit-before-publish` (a commit, after its records and before its publication, inside the store's lock), `probe-before-ack` (the store process, after a change probe and before it acknowledges it), `stream-overflow` (a change stream, at its queue's overflow, before it latches lagging), `read-cut-before-replay` (a read at a cut, after the cut is judged and before the replay to it), `diff-cut-before-replay` (a diff, after its two cuts are judged and before they are replayed), `structural-move-before-write` (a structural draft's move, inside its lock, before its one write), `structural-list-before-read` (a listing of a writer's structural drafts, after the names are listed and before each is read). The shell: `shell-before-ensure` (the MCP shell, after a request's first connect found nobody, before its first start), `shell-after-ready` (the MCP shell, after a start answered ready, before the request's own connect), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll). Evaluation: `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks). The tools: `freeze-after-dump` (tools/landing-freeze.sc, after the drafts are dumped and before the working view is read), `freeze-before-list` (the same, after the tree is written and before the draft list is read again), `freeze-before-move` (the same, before a structural draft is moved), `landing-before-tag` (tools/landing-commit.sc with `--start`, after the cut check and before the start tag is written), `import-before-batch` (tools/import-git.sc, after the batch's premises are computed and before the batch is sent). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_PROBE` | `off` starts a daemon without its once-a-second probe for outside changes, so a change folds only when something asks for it (a read, a write, a refresh) and a fixture's frames do not race a timer fold; unset, the probe runs as always; any other value is refused when the library loads. Never set in use |
 | `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |

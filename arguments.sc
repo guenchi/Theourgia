@@ -230,7 +230,7 @@
       ;; form. A `serve` started by hand must keep its terminal, so this
       ;; is a flag the CLIENT passes and a person does not.
       ((serve) '("--detach"))
-      ((outline) '("--with-keywords" "--with-signatures"))
+      ((outline) '("--with-keywords" "--with-signatures" "--working"))
       ;; `--all` releases grep's two caps; `--under` takes a block id and is
       ;; therefore not here. `--all-validity` keeps the superseded and
       ;; refuted blocks a search leaves out by default.
