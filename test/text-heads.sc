@@ -6,6 +6,7 @@
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" name got expected))))
 (define expected
   '(("scheme" "f" "x" "m") ("javascript" "f" "C" "inc") ("typescript" "Shape" "Count" "f")
+    ("typescriptreact" "Props" "Screen" "Row") ("javascriptreact" "Screen" "Panel" "Row")
     ("python" "f" "C" "answer") ("go" "f" "Count" "M") ("rust" "f" "Thing" "Thing")
     ("c" "f" "g" "Point") ("java" "C" "I" "E") ("shell" "f" "g" "h")
     ("markdown" "Alpha" "Beta" "Gamma") ("chez" "f" "x" "m")))

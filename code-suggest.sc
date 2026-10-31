@@ -59,8 +59,15 @@
   ;; A STATE is (stack lex prev owed cont fresh), interned, so two equal states
   ;; are eq? and a merge is a pointer comparison:
   ;;   stack  frames, innermost first: paren, bracket, brace, tmpl (a
-  ;;          template's text), expr (a template's "${"), as an interned list
-  ;;   lex    code, sq, dq, regex, class (a regex's [...]), comment, tmpl
+  ;;          template's text), expr (a template's "${"), and with JSX elem
+  ;;          (an element, from its "<" to the ">" that ends it), attr (an
+  ;;          attribute's "{...}") and child (a child's "{...}"), as an
+  ;;          interned list
+  ;;   lex    code, sq, dq, regex, class (a regex's [...]), comment, tmpl,
+  ;;          and with JSX tag (an opening tag's tokens), text (children),
+  ;;          tag-dq and tag-sq (attribute strings), close (a closing tag, or
+  ;;          a self-closing end from its "/"), tag-comment and close-comment
+  ;;          (a block comment in either, returning to it)
   ;;   prev   what the last significant token was, for a "/": rx (it cannot
   ;;          end an expression: a regex follows), fk (it can: fork), dot ("."
   ;;          or "?.": a reserved word after it is a property name)
@@ -78,30 +85,87 @@
   ;; a fork shares its parent, a merge makes an AND node of both, and the
   ;; answer is read once, at the end, from the survivors' nodes.
   ;;
-  ;; JSX, IN PLAIN JAVASCRIPT (ANNEX-B?), by its OPENER and its SELF-CLOSE, on
+  ;; JSX, IN THREE PARTS: refused by two rules in plain JavaScript, followed in
+  ;; the jsx profiles, and the limits and the cost both share.
+  ;;
+  ;; JSX IN PLAIN JAVASCRIPT (ANNEX-B?), by its OPENER and its SELF-CLOSE, on
   ;; every live reading. A "<" in code where an operand is expected (prev rx)
   ;; falls the file back `opener`: no JavaScript expression starts with "<"
   ;; (Annex B's "<!--" is refused before it). A "/" read as a division (prev
   ;; fk, not "/=") whose next significant character -- past whitespace,
   ;; comments and line ends -- is ">" falls it back `self-close`: ">" begins no
   ;; divisor. Comments, strings, template text and regex bodies are not code,
-  ;; so markup in them refuses nothing.
-  ;; THE STATED LIMIT, in two parts. PASSING (a missed refusal): a file holding
-  ;; JSX passes when its outermost JSX opener sits at a position the scan
-  ;; classes fk (after ")", after a block's "}", after debugger, yield, await
-  ;; or of), no live reading meets either rule, no other whole-file fallback
-  ;; fires, and at least one reading reaches the end of the file. HARM (a
-  ;; mis-split): a file that passes may then get a boundary inside the JSX,
-  ;; which happens only when a candidate line start lies inside it. Every such
-  ;; file has its outermost opener at fk, so JSX where an operand is expected
-  ;; is always refused. Precision only, never bytes: the blocks still join to
-  ;; the file. Making fk exact needs the statement/expression distinction,
-  ;; which this scan does not make.
-  ;; THE STATED COST: a plain-JavaScript file is refused when SOME live
-  ;; reading, even one that would later die, meets either rule: a regex
-  ;; beginning with ">" where an operator is expected (`if (ok) />/.test(s)`),
-  ;; or a speculative regex reading that ends inside a string. TypeScript is
-  ;; not tested.
+  ;; so markup in them refuses nothing. TypeScript (TYPES? without JSX?) has
+  ;; neither rule: a "<" where an operand is expected starts a type assertion
+  ;; or type parameters there.
+  ;;
+  ;; JSX FOLLOWED (JSX?, the .tsx and .jsx profiles). The opener rule is
+  ;; replaced by following the element; the self-close rule stays. TRIVIA is
+  ;; one notion throughout: whitespace, line ends, `//` to the line's end and
+  ;; `/* */`. A "<" in code with prev rx looks past trivia at the next
+  ;; character: ">" (a fragment) or a JSX name start (a letter, "_", "$" or a
+  ;; non-ASCII non-space character) pushes `elem`, enters `tag` and advances
+  ;; past the "<" only, so the tag's own states consume the trivia; anything
+  ;; else, a "/" included, refuses the file at the "<". With TYPES?, a name
+  ;; start is first put to TypeScript's own test for a .tsx file: past
+  ;; trivia an optional `const` and then ONE identifier token are skipped,
+  ;; and the next token decides: "," or "=", or `extends` not followed by
+  ;; "=", ">" or "/", is type parameters, refused at the "<"; anything else,
+  ;; an empty identifier included, is an element.
+  ;; `tag` and `close` are TOKEN SETS, each token admitted wherever it
+  ;; appears with trivia between any two. `tag`: a JSX name (that start, then
+  ;; those, digits and "-"), ".", ":", "=", an attribute string ("..." or
+  ;; '...', no escape character, may span lines: `tag-dq`, `tag-sq`), "{" (an
+  ;; `attr` frame, code inside), "/" (enters `close`), ">" (enters `text`, the
+  ;; children). `close`: "/", a JSX name, ".", ":" and ">", which ends the
+  ;; element. A block comment in either is `tag-comment` or `close-comment`
+  ;; and returns to it. Anything else in either refuses at that character.
+  ;; `text` runs to "<", "{", ">" or "}": "{" pushes `child` (code inside);
+  ;; ">" and "}" refuse at themselves, which JSX does not allow as text; "<"
+  ;; looks past trivia: "/" enters `close` (a closing tag, matched by depth,
+  ;; not by name), ">" or a name start opens a nested element, anything else
+  ;; refuses at the "<". Quotes, "//", "/*" and entities in text are text.
+  ;; WHEN AN ELEMENT ENDS (its closer's ">", or a self-closing end's), `elem`
+  ;; is popped: if the frame now on top is `elem`, lex is `text`, the
+  ;; parent's children; otherwise lex is `code`, prev fk, owed #f, an
+  ;; expression ended (the outermost element, or one inside a container). A
+  ;; "}" closes `attr` back to `tag` and `child` back to `text`. While any
+  ;; frame is open no line is at the top level, so no line inside an element
+  ;; is a cut. Every refusal here is `lexically-uncertain`, made by the first
+  ;; reading that meets it, at its scan position (the "<" for a lookahead).
+  ;;
+  ;; THE LIMITS, named so the fixture can pin them:
+  ;;   L1 JSX whose OUTERMOST opener sits where the scan classes fk (after
+  ;;      ")", after a block's "}", after debugger, yield, await or of) is read
+  ;;      as a comparison, in every profile. It is then refused by the
+  ;;      self-close rule, or by a regex a closer's "/" leaves open at a line
+  ;;      end, or it PASSES: a file passes when no live reading meets either
+  ;;      rule, no other whole-file fallback fires and a reading reaches the
+  ;;      end, and it may then get a boundary inside the JSX when a candidate
+  ;;      line start lies inside it. Precision only, never bytes: the blocks
+  ;;      still join to the file. Making fk exact needs the
+  ;;      statement/expression distinction, which this scan does not make.
+  ;;   L2 (.tsx) type parameters where an operand is expected (`<T,>(`,
+  ;;      `<T extends U>(`, `<T = X>(`, `<const T,>(`, `<const value="x"/>`):
+  ;;      refused at the "<".
+  ;;   L3 type arguments on a tag name (`<Foo<string> />`): refused at the
+  ;;      inner "<".
+  ;;   L4 a "<" where an operand is expected followed by neither ">" nor a
+  ;;      name start (`<!--`, `<=`, a closer with no element open): refused at
+  ;;      the "<"; the same in text.
+  ;;   L5 ">" or "}" as text: refused at it.
+  ;;   L6 the ARRANGEMENT of tag tokens is not checked: closers match by
+  ;;      depth, not by name (`<a></b>`), and `<A . B/>`, `<A / b>`, `</A b>`
+  ;;      and `<A x=value/>` are followed as valid JSX is; what is invalid in
+  ;;      them is the type checker's business.
+  ;;   L7 (.tsx) a function type where an operand is expected (`type F =
+  ;;      <T>(x: T) => T`) opens an element: refused by L5 at the arrow's ">".
+  ;;   L8 an element as an attribute's value (`b=<C/>`): refused at its "<".
+  ;; THE STATED COST: a file is refused when SOME live reading, even one that
+  ;; would later die, meets one of these refusals or either plain-JavaScript
+  ;; rule: a regex beginning with ">" where an operator is expected (`if (ok)
+  ;; />/.test(s)`), or a speculative regex reading that ends inside a string
+  ;; and then meets markup (`a / "x/y/>" / b`, `a / "x/ + <Q>}" / b`).
   ;;
   ;; THE END STATES, as the table scan names the same ones: a reading open in
   ;; '...' or "..." at a line end without a continuing escape dies
@@ -116,21 +180,25 @@
   ;; strings without their line feeds. TYPES? is TypeScript's syntax (a run of
   ;; ">" and a postfix "!" can end an expression, `void` is also a type);
   ;; ANNEX-B? is plain JavaScript's: its HTML-like comments, and JSX by its
-  ;; opener and its self-close (below), are refused for the whole file.
-  ;; OWES? asks whether a token continues the statement. -> a vector with one
+  ;; opener and its self-close (above), are refused for the whole file.
+  ;; OWES? asks whether a token continues the statement. JSX? follows JSX
+  ;; (above), with the self-close rule kept. -> a vector with one
   ;; (top? . owed?) per line, or (fallback <reason> <line> <char>), <line>
   ;; being 'eof for the file's end.
-  (define (ecmascript-judgments lines types? annex-b? owes?)
+  (define (ecmascript-judgments lines types? annex-b? owes? jsx?)
     (call/cc
       (lambda (give-up)
         (define stack-ids (make-eqv-hashtable))
         (define state-ids (make-eqv-hashtable))
         (define next-id 1)
         ;; an interned stack node: #(id frame below); the empty stack is 0
-        (define (frame-code f) (case f ((paren) 1) ((bracket) 2) ((brace) 3) ((tmpl) 4) ((expr) 5) (else 0)))
+        (define (frame-code f)
+          (case f ((paren) 1) ((bracket) 2) ((brace) 3) ((tmpl) 4) ((expr) 5) ((elem) 6) ((attr) 7) ((child) 8) (else 0)))
         (define (stack-id s) (if (eqv? s 0) 0 (vector-ref s 0)))
+        ;; the key's radix is above every frame code, so (below, frame) is
+        ;; one key and no other pair has it
         (define (push s f)
-          (let ((key (+ (* (stack-id s) 8) (frame-code f))))
+          (let ((key (+ (* (stack-id s) 16) (frame-code f))))
             (or (hashtable-ref stack-ids key #f)
                 (let ((n (vector next-id f s)))
                   (set! next-id (+ next-id 1))
@@ -138,7 +206,11 @@
                   n))))
         (define (top s) (if (eqv? s 0) #f (vector-ref s 1)))
         (define (pop s) (vector-ref s 2))
-        (define (lex-code l) (case l ((code) 0) ((sq) 1) ((dq) 2) ((regex) 3) ((class) 4) ((comment) 5) ((tmpl) 6)))
+        ;; fourteen values: the state key below keeps 64 per lex value and 1024
+        ;; per stack, room for sixteen
+        (define (lex-code l)
+          (case l ((code) 0) ((sq) 1) ((dq) 2) ((regex) 3) ((class) 4) ((comment) 5) ((tmpl) 6)
+                  ((tag) 7) ((text) 8) ((tag-dq) 9) ((tag-sq) 10) ((close) 11) ((tag-comment) 12) ((close-comment) 13)))
         (define (prev-code p) (case p ((rx) 0) ((fk) 1) ((dot) 2)))
         ;; an interned state: #(id stack lex prev owed cont fresh)
         (define (state stack lex prev owed cont fresh)
@@ -200,6 +272,53 @@
         (define (ident-start? c) (or (name-char? c) (char=? c #\#)))
         (define (ident-char? c) (or (name-char? c) (char-numeric? c)))
         (define (gt-run? t) (and (> (string-length t) 0) (for-all (lambda (c) (char=? c #\>)) (string->list t))))
+        ;; A JSX NAME starts as a JavaScript name does, without its "\" escapes
+        ;; and "#" private names, and continues with digits and "-" too; "."
+        ;; and ":" are tokens of their own
+        (define (jsx-name-start? c) (and (name-char? c) (not (char=? c #\\))))
+        (define (jsx-name-char? c) (or (jsx-name-start? c) (char-numeric? c) (char=? c #\-)))
+        ;; ONE IDENTIFIER TOKEN at line LN, index I, for TypeScript's test
+        ;; below: a name start and the identifier characters after it, or
+        ;; empty when no name starts there (a digit starts none)
+        (define (identifier-at ln i)
+          (let ((l (vector-ref line-vec ln)))
+            (if (and (< i (string-length l)) (name-char? (string-ref l i)))
+                (let loop ((j (+ i 1))) (if (and (< j (string-length l)) (ident-char? (string-ref l j))) (loop (+ j 1)) (substring l i j)))
+                "")))
+        ;; TYPESCRIPT'S TEST FOR A .tsx FILE, after a "<" where an operand is
+        ;; expected (its parser's arrow-function lookahead in a JSX file): past
+        ;; trivia an optional `const` and one identifier token are skipped, and
+        ;; the next token decides. "," or "=" (not "==" or "=>") means type
+        ;; parameters; so does `extends`, unless the token after it is "=", ">"
+        ;; or "/" (not "/="), which makes it an attribute. Anything else, an
+        ;; empty identifier included, is an element. LN and I are the place
+        ;; just past the "<". -> #t for type parameters
+        (define (type-parameters? ln i)
+          (let* ((p (next-sig-at ln i))
+                 (p (if (and p (string=? (identifier-at (car p) (cadr p)) "const")) (next-sig-at (car p) (+ (cadr p) 5)) p))
+                 (name (and p (identifier-at (car p) (cadr p))))
+                 (q (and name (> (string-length name) 0) (next-sig-at (car p) (+ (cadr p) (string-length name))))))
+            (and q
+                 (let* ((l (vector-ref line-vec (car q)))
+                        (after (lambda (k) (and (< (+ (cadr q) k) (string-length l)) (string-ref l (+ (cadr q) k))))))
+                   (cond ((char=? (caddr q) #\,) #t)
+                         ((char=? (caddr q) #\=) (not (memv (after 1) '(#\= #\>))))
+                         ((string=? (identifier-at (car q) (cadr q)) "extends")
+                          (let ((r (next-sig-at (car q) (+ (cadr q) 7))))
+                            (not (and r (let ((lr (vector-ref line-vec (car r))))
+                                          (case (caddr r)
+                                            ((#\>) #t)
+                                            ((#\=) (not (and (< (+ (cadr r) 1) (string-length lr)) (memv (string-ref lr (+ (cadr r) 1)) '(#\= #\>)))))
+                                            ((#\/) (not (and (< (+ (cadr r) 1) (string-length lr)) (char=? (string-ref lr (+ (cadr r) 1)) #\=))))
+                                            (else #f)))))))
+                         (else #f))))))
+        ;; AN ELEMENT ENDS: pop `elem`; back in the parent's children when an
+        ;; element is on top, else back in code, an expression ended
+        (define (element-ended s)
+          (let ((below (pop (s-stack s))))
+            (if (eq? (top below) 'elem)
+                (with s 'stack below 'lex 'text 'fresh #f)
+                (with s 'stack below 'lex 'code 'prev 'fk 'owed #f 'fresh #f))))
         ;; ONE TOKEN of reading R at its index on LINE (number LN) -> the
         ;; readings it becomes: one, two at a fork, none at a death
         (define (step r line ln)
@@ -209,11 +328,49 @@
                  (code (lambda (prev owed) (with s 'lex 'code 'prev prev 'owed owed 'fresh #f)))
                  ;; the index of the next character from J that is one of
                  ;; CS, or the line's end: what lies between changes nothing
-                 (skip (lambda (j cs) (let loop ((j j)) (if (or (= j n) (memv (string-ref line j) cs)) j (loop (+ j 1)))))))
+                 (skip (lambda (j cs) (let loop ((j j)) (if (or (= j n) (memv (string-ref line j) cs)) j (loop (+ j 1))))))
+                 ;; the index past a run of whitespace from J
+                 (spaces (lambda (j) (let ws ((j j)) (if (and (< j n) (es-space? (string-ref line j))) (ws (+ j 1)) j)))))
             (case (s-lex s)
-              ((comment)
-               (cond ((and (char=? c #\*) (eqv? (at (+ i 1)) #\/)) (go (with s 'lex 'code) (+ i 2)))
+              ;; a block comment returns to the state it began in
+              ((comment tag-comment close-comment)
+               (cond ((and (char=? c #\*) (eqv? (at (+ i 1)) #\/))
+                      (go (with s 'lex (case (s-lex s) ((comment) 'code) ((tag-comment) 'tag) (else 'close))) (+ i 2)))
                      (else (go s (skip (+ i 1) '(#\*))))))
+              ;; A JSX ATTRIBUTE STRING has no escape character and may span
+              ;; lines
+              ((tag-dq tag-sq)
+               (let ((q (if (eq? (s-lex s) 'tag-dq) #\" #\')))
+                 (if (char=? c q) (go (with s 'lex 'tag) (+ i 1)) (go s (skip (+ i 1) (list q))))))
+              ;; THE TAG STATES' TOKENS (see the header), trivia between any two
+              ((tag close)
+               (let ((tag? (eq? (s-lex s) 'tag)))
+                 (cond ((es-space? c) (go s (spaces (+ i 1))))
+                       ((and (char=? c #\/) (eqv? (at (+ i 1)) #\/)) (go s n))
+                       ((and (char=? c #\/) (eqv? (at (+ i 1)) #\*)) (go (with s 'lex (if tag? 'tag-comment 'close-comment)) (+ i 2)))
+                       ((char=? c #\/) (go (with s 'lex 'close) (+ i 1)))
+                       ((jsx-name-start? c) (go s (let nm ((j (+ i 1))) (if (and (< j n) (jsx-name-char? (string-ref line j))) (nm (+ j 1)) j))))
+                       ((memv c '(#\. #\:)) (go s (+ i 1)))
+                       ((char=? c #\>)
+                        (cond (tag? (go (with s 'lex 'text) (+ i 1)))
+                              ((eq? (top (s-stack s)) 'elem) (go (element-ended s) (+ i 1)))
+                              (else (die! 'unbalanced ln i))))
+                       ((and tag? (char=? c #\=)) (go s (+ i 1)))
+                       ((and tag? (char=? c #\")) (go (with s 'lex 'tag-dq) (+ i 1)))
+                       ((and tag? (char=? c #\')) (go (with s 'lex 'tag-sq) (+ i 1)))
+                       ((and tag? (char=? c #\{)) (go (with s 'stack (push (s-stack s) 'attr) 'lex 'code 'prev 'rx 'owed #f) (+ i 1)))
+                       (else (give-up (list 'fallback 'lexically-uncertain ln i))))))
+              ;; THE CHILDREN (see the header)
+              ((text)
+               (cond ((char=? c #\{) (go (with s 'stack (push (s-stack s) 'child) 'lex 'code 'prev 'rx 'owed #f) (+ i 1)))
+                     ((memv c '(#\> #\})) (give-up (list 'fallback 'lexically-uncertain ln i)))
+                     ((char=? c #\<)
+                      (let* ((p (next-sig-at ln (+ i 1))) (d (and p (caddr p))))
+                        (cond ((eqv? d #\/) (go (with s 'lex 'close) (+ i 1)))
+                              ((and d (or (char=? d #\>) (jsx-name-start? d)))
+                               (go (with s 'stack (push (s-stack s) 'elem) 'lex 'tag) (+ i 1)))
+                              (else (give-up (list 'fallback 'lexically-uncertain ln i))))))
+                     (else (go s (skip (+ i 1) '(#\< #\{ #\> #\}))))))
               ((sq dq)
                (cond ((char=? c #\\)
                       (if (or (= (+ i 1) n) (and (= (+ i 2) n) (eqv? (at (+ i 1)) #\return)))
@@ -240,11 +397,19 @@
                      (else (go s (skip (+ i 1) '(#\\ #\` #\$))))))
               (else
                (cond
-                 ((es-space? c) (go s (let ws ((j (+ i 1))) (if (and (< j n) (es-space? (string-ref line j))) (ws (+ j 1)) j))))
+                 ((es-space? c) (go s (spaces (+ i 1))))
                  ((and annex-b? (string-prefix-at? line "<!--" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
                  ((and annex-b? (s-fresh s) (string-prefix-at? line "-->" i)) (give-up (list 'fallback 'lexically-uncertain ln i)))
                  ;; JSX'S OPENER (see the header): a "<" where an operand is expected
                  ((and annex-b? (char=? c #\<) (eq? (s-prev s) 'rx)) (give-up (list 'fallback 'opener ln i)))
+                 ;; JSX FOLLOWED (see the header): the opener, with TypeScript's
+                 ;; type-parameter test first under TYPES?
+                 ((and jsx? (char=? c #\<) (eq? (s-prev s) 'rx))
+                  (let* ((p (next-sig-at ln (+ i 1))) (d (and p (caddr p))))
+                    (if (and d (or (char=? d #\>) (jsx-name-start? d))
+                             (not (and types? (jsx-name-start? d) (type-parameters? ln (+ i 1)))))
+                        (go (with s 'stack (push (s-stack s) 'elem) 'lex 'tag 'fresh #f) (+ i 1))
+                        (give-up (list 'fallback 'lexically-uncertain ln i)))))
                  ((char=? c #\/)
                   (cond ((eqv? (at (+ i 1)) #\/) (go s n))
                         ((eqv? (at (+ i 1)) #\*) (go (with s 'lex 'comment) (+ i 2)))
@@ -256,7 +421,7 @@
                            ;; JSX'S SELF-CLOSE (see the header): on the division
                            ;; reading, a ">" next refuses
                            (if (eq? (s-prev s) 'fk)
-                               (if (and annex-b? (not assign?) (eqv? (next-sig ln (+ i 1)) #\>))
+                               (if (and (or annex-b? jsx?) (not assign?) (eqv? (next-sig ln (+ i 1)) #\>))
                                    (give-up (list 'fallback 'self-close ln i))
                                    (list regex division))
                                (list regex))))))
@@ -273,6 +438,8 @@
                  ((char=? c #\})
                   (case (top (s-stack s))
                     ((expr) (go (with s 'stack (pop (s-stack s)) 'lex 'tmpl) (+ i 1)))
+                    ((attr) (go (with s 'stack (pop (s-stack s)) 'lex 'tag) (+ i 1)))
+                    ((child) (go (with s 'stack (pop (s-stack s)) 'lex 'text) (+ i 1)))
                     ((brace) (go (with (code 'fk #f) 'stack (pop (s-stack s))) (+ i 1)))
                     (else (die! 'unbalanced ln i))))
                  ((or (char-numeric? c) (and (char=? c #\.) (let ((d (at (+ i 1)))) (and d (char-numeric? d)))))
@@ -309,10 +476,12 @@
                       (loop (cdr rs) (cons r out)))))))
         (define line-count (length lines))
         ;; THE NEXT SIGNIFICANT CHARACTER from line LN, index I: whitespace,
-        ;; // and /* */ comments and line ends skipped; #f at the file's end.
-        ;; For the self-close rule, whose ">" may follow on another line.
+        ;; // and /* */ comments and line ends skipped, which is JSX's trivia;
+        ;; -> (line index char), #f at the file's end. For the self-close
+        ;; rule, whose ">" may follow on another line, and JSX's lookaheads.
         (define line-vec (list->vector lines))
-        (define (next-sig ln i)
+        (define (next-sig ln i) (let ((p (next-sig-at ln i))) (and p (caddr p))))
+        (define (next-sig-at ln i)
           (let loop ((ln ln) (i i))
             (cond ((>= ln line-count) #f)
                   ((>= i (string-length (vector-ref line-vec ln))) (loop (+ ln 1) 0))
@@ -328,7 +497,7 @@
                                           (char=? (string-ref (vector-ref line-vec ln) (+ j 1)) #\/))
                                      (loop ln (+ j 2)))
                                     (else (skip ln (+ j 1))))))
-                           (else c)))))))
+                           (else (list ln i c))))))))
         (define (judge s) (and (eqv? (s-stack s) 0) (eq? (s-lex s) 'code) (not (s-cont s))))
         (let line-loop ((ls lines) (ln 0) (live (list (reading (state 0 'code 'rx #f #f #t) 0 #f))))
           (if (null? ls)
@@ -593,7 +762,7 @@
             (let* ((rows (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
                    (offsets (map (lambda (row) (+ prefix (car row))) rows))
                    (lines (map (lambda (row) (safe-utf8 (byte-slice bytes (+ prefix (car row)) (+ prefix (cadr row))))) rows))
-                   (judged (ecmascript-judgments lines (get 'type-syntax #f) (get 'annex-b-comments #f) continuation?)))
+                   (judged (ecmascript-judgments lines (get 'type-syntax #f) (get 'annex-b-comments #f) continuation? (get 'jsx #f))))
               (when (and (pair? judged) (eq? (car judged) 'fallback))
                 (let ((ln (caddr judged)) (ch (cadddr judged)))
                   (fallback (cadr judged)

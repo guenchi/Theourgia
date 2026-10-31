@@ -386,7 +386,7 @@
            (language-table))
       (map (lambda (e)
              (let ((lang (language-property e 'lang #f)))
-               (list lang (if (member lang '("javascript" "typescript" "scheme" "chez")) '($x a_1) '(a_1 x)))))
+               (list lang (if (member lang '("javascript" "typescript" "typescriptreact" "javascriptreact" "scheme" "chez")) '($x a_1) '(a_1 x)))))
            (language-table)))
 (want "U13 a token is the longest match wherever it ends: 31 letters, a hyphen and one more under a hyphen pattern"
       (text-uses (string-append (make-string 31 #\a) "-b c") "[A-Za-z]+(-[A-Za-z]+)*")

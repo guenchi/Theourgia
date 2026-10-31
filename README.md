@@ -2998,9 +2998,10 @@ files, a section that names no text file the walk found, as `(<path>
 
 Two refusals are not about a cut but about the file: `symbols-unchecked`,
 where no scanner can say what is top level (the file's language has no
-entry, as for `.tsx` and `.jsx`, or no suggest profile), and
-`symbols-unscanned`, where the scanner cannot follow the file (unbalanced,
-an unclosed quote, a token it cannot judge, JSX in a `.js` file). Such a
+entry or no suggest profile), and `symbols-unscanned`, where the scanner
+cannot follow the file (unbalanced, an unclosed quote, a token it cannot
+judge, JSX in a `.js` file, or in a `.tsx` or `.jsx` file a shape its JSX
+scan refuses; the refusal carries the scan's reason). Such a
 file is imported as a plain import would import it -- whole, as one block,
 since it carries no marker -- and the answer lists it with its refusal in
 `(symbols-imported-whole ((<path> <refusal>) ...))`, not in
@@ -3095,13 +3096,37 @@ The definition patterns are looked for at the top level, outside strings,
 comments and brackets, as the language's profile reads them. A token the
 scanner cannot follow makes the whole file one block, with the warning
 `(code lexically-uncertain byte-offset <n>)`; an unbalanced file does the
-same with `unbalanced`. JavaScript's JSX, which the scanner does not follow,
-does the same: `opener` at a `<` where an operand is expected, and
-`self-close` at a `/` read as a division whose next token is `>`. JSX whose
-outermost opener sits where an operator is expected (a statement start after
-`)` or `}`, after `debugger`, an operand of `yield` or `await`) can pass,
-and the file may then be cut inside it; a regex beginning with `>` there,
-`if (ok) />/.test(s)`, is refused. TypeScript is not tested. In Scheme a character literal -- `#\(`, `#\"`,
+same with `unbalanced`. In plain JavaScript (`.js`, `.mjs`, `.cjs`) JSX is
+not followed, and does the same: `opener` at a `<` where an operand is
+expected, and `self-close` at a `/` read as a division whose next token is
+`>`. In TypeScript (`.ts`, `.mts`, `.cts`) neither rule applies: a `<` where
+an operand is expected starts a type assertion or type parameters there. In
+`.tsx` (`typescriptreact`) and `.jsx` (`javascriptreact`) the scanner
+FOLLOWS JSX: an element where an operand is expected is read through its
+tags, its attribute strings (no escape character, and a string may span
+lines), its children and its `{...}` containers, nested elements and
+fragments included, with JavaScript comments allowed between any two tokens
+of a tag, and no line inside it is a cut. The arrangement of a tag's tokens
+is not checked, which is the type checker's business: closing tags are
+matched by depth, not by name, and `<A / b>` or `<A x=value/>` is followed
+as valid JSX is. `self-close` applies there too. What the JSX scan does not
+follow refuses the file `lexically-uncertain`, at the first offset any
+reading meets it: in `.tsx`, type parameters where an operand is expected,
+as TypeScript itself reads them in a `.tsx` file (`<T,>(x: T) => x`,
+`<T extends U>(x: T) => x`, `<T = string>() => x`, `<const T,>(x: T) =>
+x`), at the `<`, and a function type there (`type F = <T>(x: T) => T`), at
+the arrow's `>`; in both, type arguments on a tag name (`<Foo<string> />`)
+and an element as an attribute's value (`b=<C/>`), at the inner `<`; a
+character no tag token starts with (`<A 1/>`), at it; a `<` followed by
+neither a name nor `>` (`<!--`, `<=`, a closing tag where no element is
+open), at the `<`; and `>` or `}` as text, which JSX does not allow, at that
+character. In every profile, JSX whose outermost opener sits where an
+operator is expected (a statement start after `)` or `}`, after `debugger`,
+an operand of `yield` or `await`) is read as a comparison: it can pass, and
+the file may then be cut inside it. A regex beginning with `>` there,
+`if (ok) />/.test(s)`, is refused `self-close` in `.js`, `.jsx` and `.tsx`,
+and a file is refused when any live reading, even one that later dies, meets
+one of these refusals (`a / "x/ + <Q>}" / b`). In Scheme a character literal -- `#\(`, `#\"`,
 `#\;`, `#\space`, `#\x41` -- is read as code, and a datum comment, `#;`,
 is still a token the scanner cannot follow. A Scheme file in which the
 first bracket opened at the top level, of any kind, begins `(library ...)`
@@ -4765,7 +4790,8 @@ naming it.
 The refusals: `(error bad-request (reason lang-and-cut))` for `--cut` or
 `--latest`, `(reason lang-and-under)` for `--under`, `(reason no-runner)`
 with `(lang <language>)` for a language the table does not know or one with no
-runner (`markdown` has none); `(error projection-failed <the export's
+runner (`markdown`, `typescriptreact` and `javascriptreact` have none);
+`(error projection-failed <the export's
 answer>)` when the store cannot be projected, and nothing runs -- a store whose `meta.sexp` is
 missing, or is not a store's, answers the export verb's own `(error meta
 (path ...))` inside it -- with `--working` the view meets it first and

@@ -191,6 +191,67 @@
              ("interface Shape {}"
                "type Count = number;"
                "function f(): void {}")))
+         ((lang "typescriptreact") (extensions ("tsx")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
+           ;; no runner: eval --lang answers no-runner, as for markdown
+           (block-comment ("/*" "*/"))
+           ;; typescript's interface and type heads, then a function head that
+           ;; also takes `export default` and `async` (a component is
+           ;; `export default function Screen(`), and javascript's class and
+           ;; const-arrow heads
+           (def-heads
+             ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?type\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*="
+               "^(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               ;; the ecmascript scan with TypeScript's type syntax and JSX
+               ;; followed (code-suggest.sc): an element where an operand is
+               ;; expected is read through its tags, attribute strings,
+               ;; children and containers, and no line inside it is a cut. What
+               ;; the scan does not follow refuses the file: type parameters or
+               ;; a function type where an operand is expected (`<T,>(`,
+               ;; `<T extends U>(`, `type F = <T>(x: T) => T`), type arguments
+               ;; on a tag name, an element as an attribute's value, ">" or "}"
+               ;; as text. The arrangement of a tag's tokens is not checked:
+               ;; that is the type checker's business. A module, so no
+               ;; HTML-like comments.
+               (lexer "ecmascript") (type-syntax #t) (jsx #t) (annex-b-comments #f)
+               (uncertain-tokens ())
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("interface Props {}"
+               "export default function Screen() {}"
+               "const Row = (p) => <li>{p.label}</li>;")))
+         ((lang "javascriptreact") (extensions ("jsx")) (identifier "[A-Za-z_$][A-Za-z0-9_$]*") (line-comment "//")
+           ;; no runner: eval --lang answers no-runner, as for markdown
+           (block-comment ("/*" "*/"))
+           ;; javascript's heads, the function head also taking `export default`
+           (def-heads
+             ("^(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               ;; the ecmascript scan with JSX followed (code-suggest.sc), as
+               ;; for typescriptreact but without type syntax: an element
+               ;; where an operand is expected is followed, and no line inside
+               ;; it is a cut; type arguments on a tag name, an element as an
+               ;; attribute's value, ">" or "}" as text refuse the file, and the
+               ;; arrangement of a tag's tokens is not checked. A module, so no
+               ;; HTML-like comments.
+               (lexer "ecmascript") (jsx #t) (annex-b-comments #f)
+               (uncertain-tokens ())
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("export default function Screen() {}"
+               "class Panel {}"
+               "const Row = (p) => <li>{p.label}</li>;")))
          ((lang "python") (extensions ("py" "pyw")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment "#")
            (runner ((argv ("python3" "{file}")) (source-name "__eval.py")))
            (block-comment #f)

@@ -26,7 +26,7 @@
 (import (chezscheme) (theourgia rpc)
         (only (theourgia store) open-and-reduce)
         (only (theourgia code-project) code-files code-children code-field)
-        (only (theourgia languages) language-for-name)
+        (only (theourgia languages) language-for-name language-for-path language-property language-runner)
         (only (theourgia code-suggest) suggest-boundaries)
         (only (theourgia digest) sha256 bytevector->hex))
 
@@ -114,7 +114,10 @@
     (write! (string-append src "/" name) text)
     (write! syms (apply string-append
                         (format "~s\n" (list 'symbols (list 'path name) (list 'digest (bytevector->hex (sha256 (string->utf8 text))))
-                                             (list 'source (list 'vscode "1.0.0" (if (string=? ext "ts") "typescript" "javascript")))
+                                             (list 'source (list 'vscode "1.0.0" (cond ((string=? ext "ts") "typescript")
+                                                                                       ((string=? ext "tsx") "typescriptreact")
+                                                                                       ((string=? ext "jsx") "javascriptreact")
+                                                                                       (else "javascript"))))
                                              '(top-level #t)))
                         (map (lambda (n) (let ((o (off text n))) (format "~s\n" (list 'symbol o (line-end text o) 'function "s"))))
                              needles)))
@@ -374,6 +377,198 @@
   (want "I1-I4 iter's shapes (doc comment, // >0, regexes with HTML strings, a regex holding </): each splits"
         (list (split "js" p) (split "js" g) (split "js" a) (split "js" m))
         (list (two p "export function g") (two g "function f") (two a "function row") (two m "function f"))))
+
+;; ==== jsx rows: .tsx and .jsx follow JSX ===============================================
+;; THE JSX PROFILES (typescriptreact, javascriptreact) follow an element where an
+;; operand is expected through its tags, attribute strings, children and
+;; containers, and cut at no line inside it; what they do not follow refuses
+;; the file lexically-uncertain at the first offset any reading meets it
+;; (code-suggest.sc's header, L1-L8). Most rows run the same text in both.
+(printf "== jsx ==\n")
+(define (both t) (list (split "tsx" t) (split "jsx" t)))
+(define (twice e) (list e e))
+(define (real t) (two t "function real"))
+(define (refused o) (one 'lexically-uncertain o))
+;; X1: a component file cuts at its definition lines only, never inside the
+;; JSX; the apostrophe, quotes, "//", "/*" and the entity in the text are text.
+(let* ((head (string-append "import React from 'react';\n"
+                            "import { View, Text } from 'react-native';\n"
+                            "const styles = { a: { flex: 1 } };\n"
+                            "function Helper() { return null; }\n"
+                            "export default function Screen({ items }) {\n"
+                            "  return (\n"
+                            "    <View style={styles.a}>\n"
+                            "      {items.map(i => <Row key={i} />)}\n"
+                            "      <Text>don't \"quote\" // not a comment /* nor this */ &amp; more</Text>\n"
+                            "    </View>\n"
+                            "  );\n"
+                            "}\n"
+                            "class Panel extends React.Component {}\n"
+                            "export const Row = (p) => <li>{p.label}</li>;\n"))
+       (tsx (string-append head "type Props = { items: string[] };\n")))
+  (want "X1 a component file: tsx cuts at Helper, Screen, Panel, Row and Props, jsx (no type line) at the first four, none inside the JSX"
+        (list (split "tsx" tsx) (split "jsx" head))
+        (list (blocks tsx "function Helper" "export default function Screen" "class Panel" "export const Row" "type Props")
+              (blocks head "function Helper" "export default function Screen" "class Panel" "export const Row"))))
+;; THE RETURN WHEN AN ELEMENT ENDS: to the parent's text when an element is on
+;; top (<br/> inside <p>), else to code (an element inside a container, child
+;; or attribute).
+(let ((p "const a = <p>a<br/>b</p>;\nfunction real() {}\n"))
+  (want "X1 an element self-closing inside an element's text returns to that text: <p>a<br/>b</p>, one cut at real"
+        (both p) (twice (real p))))
+(let ((c "const a = <A>{c && <B>x</B>}</A>;\nfunction real() {}\n")
+      (d "const a = <div x={<A></A>}/>;\nfunction real() {}\n"))
+  (want "X1 CONTROL an element ending inside a child or an attribute container returns to that container's code: one cut at real each"
+        (list (both c) (both d)) (list (twice (real c)) (twice (real d)))))
+;; THE ELEMENT IS A FRAME: a definition line inside an element's text is not a
+;; cut.
+(let ((t "const view = <div>\nfunction fake() {}\n</div>;\nfunction real() {}\n"))
+  (want "X1 an element at the top level whose text holds a line `function fake() {}`: one cut, at real, none at fake"
+        (both t) (twice (real t))))
+;; X2: names and strings, each element followed by `function real() {}`.
+(define (after-real . elements)
+  (map (lambda (e) (string-append "const a = " e ";\nfunction real() {}\n")) elements))
+(let ((ts (after-real "<div><>x<>y</></></div>" "<A.B.C>x</A.B.C>" "<svg:path d=\"m\"/>" "<my-el/>"
+                      "<a xlink /* c */ : href=\"u\"/>" "<A . B/>" "<A /* c */ . B/>" "<A.B></A /* c */ . B>"
+                      "<div>x< /div>")))
+  (want "X2 fragments nested in an element, member, namespaced and dashed names, and tag tokens with trivia between any two: one cut at real each"
+        (map both ts) (map (lambda (t) (twice (real t))) ts)))
+(let ((ts (after-real "<a title=\"C:\\\" alt='D:\\' b=\"y\"/>" "<a title=\"x\nfunction fake() {}\n\"/>")))
+  (want "X2 attribute strings have no escape (C:\\ then more attributes) and may span lines (a line inside one is not a cut): one cut at real each"
+        (map both ts) (map (lambda (t) (twice (real t))) ts)))
+(let ((ts (after-real "<br /* c */ />" "<br /*\nfunction fake() {}\n*/ />" "<A / /* c */ >" "<A / // c\n>")))
+  (want "X2 comments in a tag and in a self-closing end, on one line or across lines: one cut at real each"
+        (map both ts) (map (lambda (t) (twice (real t))) ts)))
+(let ((ts (after-real "< /* c */ A/>" "<\n// c\nA/>" "< /* c */ >x</>")))
+  (want "X2 trivia between the opener's < and the name, or the fragment's >: one cut at real each"
+        (map both ts) (map (lambda (t) (twice (real t))) ts)))
+(let ((ts (after-real "<A / b>" "<A x=value/>" "<a></b>")))
+  (want "X2 L6 the arrangement of tag tokens is not checked: <A / b>, <A x=value/> and <a></b> are followed: one cut at real each"
+        (map both ts) (map (lambda (t) (twice (real t))) ts)))
+;; X3: containers, holding elements, comments, a spread, a template whose text
+;; holds "}" and a regex holding "<".
+(let ((t (string-append "const a = (\n"
+                        "  <ul {...props}>\n"
+                        "    {cond && <A/>}\n"
+                        "    {list.map(i => <li key={i}>{i}</li>)}\n"
+                        "    {/* comment */}\n"
+                        "    {}\n"
+                        "    {`${a}}`}\n"
+                        "    {s.replace(/</g, \"\")}\n"
+                        "  </ul>\n"
+                        ");\n"
+                        "function real() {}\n")))
+  (want "X3 containers in an element: one cut, at the function after it"
+        (both t) (twice (real t))))
+;; X4: type positions in .tsx read as in .ts.
+(let ((ts (list "const [a, setA] = useState<Record<string, number>>({});\nfunction real() {}\n"
+                "const rows = new Map<string, Row>();\nfunction real() {}\n"
+                "type P = NativeStackScreenProps<R, 'Home'>;\nfunction real() {}\n"
+                "export default function S({\n  x,\n}: Props<A, 'x'>) {\n  return null;\n}\nfunction real() {}\n")))
+  (want "X4 type arguments after a name in .tsx: each splits at real, as in .ts"
+        (list (map (lambda (t) (split "tsx" t)) ts) (map (lambda (t) (split "ts" t)) ts))
+        (list (map real ts) (map real ts))))
+;; X5: what the scan refuses, each at its offset (the first any reading meets).
+(let ((ts (list "const f = <T,>(x: T) => x;\nfunction real() {}\n"
+                "const g = <T extends U>(x: T) => x;\nfunction real() {}\n"
+                "const h = <T = string>() => x;\nfunction real() {}\n"
+                "const k = <const T,>(x: T) => x;\nfunction real() {}\n"
+                "const m = <const value=\"x\"/>;\nfunction real() {}\n"
+                "const n = <T extends==\"x\"/>;\nfunction real() {}\n"
+                "const p = <T extends=> x;\nfunction real() {}\n")))
+  (want "X5 L2 type parameters where an operand is expected in .tsx (extends then == or => is no attribute): refused at the <"
+        (map (lambda (t) (split "tsx" t)) ts) (map (lambda (t) (refused (at t "<"))) ts)))
+(let ((ts (after-real "<T extends>x</T>" "<T extends=\"x\"/>" "<T extends/>" "<const T/>" "<const/>"
+                      "<in value=\"x\"/>" "<out value/>")))
+  (want "X5 elements TypeScript does not read as type parameters in .tsx (extends then > = or /, const with no list, in, out): one cut at real each"
+        (map (lambda (t) (split "tsx" t)) ts) (map real ts)))
+(let ((t "const a = <A.B,>(x) => x;\nfunction real() {}\n"))
+  (want "X5 <A.B,> in .tsx is an element (the token after A is \".\"), and its tag refuses the \",\""
+        (split "tsx" t) (refused (at t ","))))
+(let ((t "const a = <const 1,/>;\nfunction real() {}\n"))
+  (want "X5 after const in .tsx a digit is no identifier: an element named const, whose tag refuses the digit"
+        (split "tsx" t) (refused (at t "1,"))))
+(let ((t "type F = <T>(x: T) => T;\nfunction real() {}\n"))
+  (want "X5 L7 a function type where an operand is expected in .tsx opens an element: refused at the arrow's > as text"
+        (split "tsx" t) (refused (+ 1 (at t "=> T")))))
+(let ((f "const f = <T,>(x) => x;\nfunction real() {}\n") (h "const h = <T>(x) => x;\nfunction real() {}\n"))
+  (want "X5 in .jsx <T,> is an element whose tag refuses the \",\", and <T>(x) => x one whose text refuses the arrow's >"
+        (list (split "jsx" f) (split "jsx" h)) (list (refused (at f ",")) (refused (+ 1 (at h "=> x"))))))
+(let ((l3 "const a = <Foo<string> />;\nfunction real() {}\n") (l8 "const a = <A b=<C/>/>;\nfunction real() {}\n")
+      (n1 "const a = <A 1/>;\nfunction real() {}\n"))
+  (want "X5 L3 type arguments on a tag name and L8 an element as an attribute's value: refused at the inner <; a digit in a tag at the digit"
+        (list (both l3) (both l8) (both n1))
+        (list (twice (refused (at l3 "<string"))) (twice (refused (at l8 "<C"))) (twice (refused (at n1 "1/>"))))))
+(let ((a "x = <!-- y\nfunction real() {}\n") (b "x = <= 1;\nfunction real() {}\n")
+      (c "</div>\nfunction real() {}\n") (d "x = 1;\n</div>\nfunction real() {}\n")
+      (e "const a = <div>< 3</div>;\nfunction real() {}\n") (f "const a = <div><!-- c --></div>;\nfunction real() {}\n"))
+  (want "X5 L4 a < followed by neither a name nor >, in code (a bare closer included) and in text: refused at the <"
+        (map both (list a b c d e f))
+        (list (twice (refused (at a "<"))) (twice (refused (at b "<"))) (twice (refused 0)) (twice (refused (at d "<")))
+              (twice (refused (at e "< 3"))) (twice (refused (at f "<!"))))))
+(let ((g "const a = <div>a > b</div>;\nfunction real() {}\n") (r "const a = <div>}</div>;\nfunction real() {}\n"))
+  (want "X5 L5 > or } as text: refused at it"
+        (list (both g) (both r)) (list (twice (refused (at g "> b"))) (twice (refused (at r "}"))))))
+(let ((e "const a = <div>\nfunction real() {}\n") (s "const a = <a b=\"x\nfunction real() {}\n"))
+  (want "X5 an element or an attribute string open at the end of the file: unbalanced at the size"
+        (list (both e) (both s)) (list (twice (one 'unbalanced (bytes-of e))) (twice (one 'unbalanced (bytes-of s))))))
+(let ((t "const x = <div></div /* c */>;\nfunction real() {}\n"))
+  (want "X5 a comment inside a closing tag: one cut at real"
+        (both t) (twice (real t))))
+;; SC6, THE COST in the jsx profiles: the speculative regex reading of the first
+;; "/" ends at the slash inside the string, so on it <Q> opens an element whose
+;; text meets "}": refused, though the program is a string. Plain JavaScript
+;; refuses the same file `opener` at the "<".
+(let ((t "const z = a / \"x/ + <Q>}\" / b;\nfunction real() {}\n"))
+  (want "SC6 THE COST: a speculative reading meets markup inside a string: refused in .tsx and .jsx at the }, opener in .js at the <"
+        (list (both t) (split "js" t)) (list (twice (refused (at t "}"))) (one 'opener (at t "<Q>")))))
+;; X6, L1 in the jsx profiles: an outermost opener where the scan expects an
+;; operator is read as a comparison, as in every profile.
+(let ((b "if (ok) <br/>\nfunction f() {}\n")
+      (l "if (ok) <div>\nfunction fake() {}\ntext</div> / 2;\nfunction real() {}\n")
+      (d "if (ok) <div>/ 2 /\nfunction fake() {}\ntext</div>;\nfunction real() {}\n"))
+  (want "X6 L1 if (ok) <br/>: self-close; the operand-position limit's witness: split, the cut at fake inside the JSX; a / after the >: refused at the closer's line end"
+        (list (both b) (both l) (both d))
+        (list (twice (one 'self-close (at b "/>"))) (twice (blocks l "function fake" "function real"))
+              (twice (refused (- (off d "function real") 1))))))
+(let ((a "y = a / b > c;\nfunction f() {}\n") (b "y = a/2>b;\nfunction f() {}\n"))
+  (want "X6 CONTROL a / b > c and a/2>b: each splits"
+        (list (both a) (both b)) (list (twice (two a "function f")) (twice (two b "function f")))))
+;; THE COVERAGE ROW: every new frame and lex value, each with a nested frame
+;; above it (tag-dq, tag-sq, a template inside an attribute inside an element,
+;; an element inside a child container, a closer with a comment).
+(let ((t "const a = <A x={<B y=\"q\" z='r' w={`${z}`}>{[1].map(i => <C/>)}</B /* c */>}/>;\nfunction real() {}\n"))
+  (want "X1 B7 the coverage row: one cut at real"
+        (both t) (twice (real t))))
+;; X7: an import with symbols checks a .tsx or .jsx file's cuts, the source
+;; naming the editor's language id. Each symbol ends at its line's end, so the
+;; definitions are one line each.
+(let* ((parts (list "import React from 'react';\n"
+                    "export default function Screen() { return <div>{1}</div>; }\n"
+                    "function Helper() {}\n"))
+       (t (apply string-append parts)))
+  (want "X7 import --symbols of a .tsx and a .jsx at Screen and Helper: accepted, three blocks as cut"
+        (list (import-with "tsx" t '("export default function Screen" "function Helper"))
+              (import-with "jsx" t '("export default function Screen" "function Helper")))
+        (twice (list 'accepted parts))))
+;; X8: the two entries, by extension, and no runner: eval refuses as for any
+;; language without one.
+(want "X8 f.tsx and f.jsx have entries typescriptreact and javascriptreact, their extensions as stated, no runner"
+      (map (lambda (p) (let ((e (language-for-path p)))
+                         (and e (list (language-property e 'lang #f) (language-property e 'extensions #f) (language-runner e)))))
+           '("f.tsx" "f.jsx"))
+      '(("typescriptreact" ("tsx") #f) ("javascriptreact" ("jsx") #f)))
+;; eval is the command line's own (no rpc verb): asked of core.sc as a child.
+(define (eval-answer lang)
+  (let ((out (string-append root "/eval-" lang)))
+    (sh "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval --lang " lang " 1 --store " (quoted store)
+        " --wire < /dev/null > " (quoted out) " 2> /dev/null")
+    (guard (e (#t 'UNREADABLE)) (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d)))))
+(want "X8 CONTROL eval --lang typescriptreact and javascriptreact: refused no-runner, nothing runs"
+      (map (lambda (l) (let ((a (eval-answer l)))
+                         (and (pair? a) (list? a) (>= (length a) 4) (list (car a) (cadr a) (caddr a) (cadddr a)))))
+           '("typescriptreact" "javascriptreact"))
+      '((error bad-request (reason no-runner) (lang typescriptreact)) (error bad-request (reason no-runner) (lang javascriptreact))))
 
 ;; ==== ambiguity rows: forks ===========================================================
 (printf "== ambiguity ==\n")

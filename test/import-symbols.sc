@@ -258,20 +258,32 @@
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
         (list 'ok #f '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64))))
               (list (cons "b.js" two-blocks) (list "o.js" open-text)))))
-;; A .tsx FILE HAS NO LANGUAGE ENTRY (JSX is not lexed), so no scanner can say
-;; what is top level in it. (no-suggest-profile, the other reason, cannot be
-;; reached from this table: every language entry has a profile the scanner
-;; can follow.)
+;; A .vue FILE HAS NO LANGUAGE ENTRY, so no scanner can say what is top level
+;; in it. (no-suggest-profile, the other reason, cannot be reached from this
+;; table: every language entry has a profile the scanner can follow.)
 (define tsx "export const A = () => <div/>;\nexport function B() {}\n")
+(let* ((c (case! (list (cons "x.vue" tsx) (cons "b.js" two))
+                 (string-append (section "x.vue" tsx (sym 0 (offset-of tsx "\nexport function") 'variable "A")
+                                         (sym (offset-of tsx "export function") (- (bytes-of tsx) 1) 'function "B"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4b a .vue with symbols is unchecked (no language entry) and imported whole, listed in symbols-imported-whole; b.js is cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f '(("x.vue" (error symbols-unchecked (reason no-language-entry))))
+              (list (cons "b.js" two-blocks) (list "x.vue" tsx)))))
+;; THE SAME TEXT IN A .tsx FILE IS CHECKED: the tsx entry's scan follows JSX,
+;; so the symbols at A and B are checked and the file is cut at its top-level
+;; def-head lines, with neither clause in the answer.
 (let* ((c (case! (list (cons "x.tsx" tsx) (cons "b.js" two))
                  (string-append (section "x.tsx" tsx (sym 0 (offset-of tsx "\nexport function") 'variable "A")
                                          (sym (offset-of tsx "export function") (- (bytes-of tsx) 1) 'function "B"))
                                 (apply section "b.js" two two-symbols))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS4b a .tsx with symbols is unchecked (no language entry) and imported whole, listed in symbols-imported-whole; b.js is cut at 33"
+  (want "IS4f a .tsx with symbols is scanned and cut at B; b.js is cut at 33"
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
-        (list 'ok #f '(("x.tsx" (error symbols-unchecked (reason no-language-entry))))
-              (list (cons "b.js" two-blocks) (list "x.tsx" tsx)))))
+        (list 'ok #f #f
+              (list (cons "b.js" two-blocks)
+                    (list "x.tsx" "export const A = () => <div/>;\n" "export function B() {}\n")))))
 ;; JSX IN A .js FILE: the scanner falls the file back at its opener (a "<"
 ;; where an operand is expected), so the symbols at fake and real cannot be
 ;; checked.
