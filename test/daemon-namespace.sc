@@ -547,32 +547,41 @@
 ;; SIGKILL. The public link is left pointing at nothing.
 ;; (hold-a-write! sock rel): an insert through SOCKET, then a write of that
 ;; block in the background, which a daemon started with the write-after-create
-;; hold armed at REL holds running; -> whether the hold was reached.
+;; hold armed at REL holds running; -> whether the hold was reached, #t or #f,
+;; or (refused <answer>) when the insert's answer is not ok.
+;; THE ANSWER'S HEAD IS JUDGED FIRST: only an ok answer is an alist after its
+;; head, and a refused insert -- (error unknown (commit-barrier-failed) ...)
+;; on a disk that cannot flush -- made the alist read raise and end the run
+;; at this row. A refusal starts no write and comes back as the value, which
+;; every row calling this compares to #t, so the row reads red with the
+;; answer in its FAIL line and the run goes on.
 (define (hold-a-write! sock rel)
   (let* ((inserted (sh-out (string-append "cd " here " && " env-text "scheme --script " tree
                                           "/theourgia.sc insert --wire --store " store " --socket " sock
                                           " --title p --text p < /dev/null")))
-         (id (let ((ds (datums inserted)))
-               (and (pair? ds) (let ((st (assq 'state (cdar ds)))) (and st (car (caadr st)))))))
-         (writer (let ((ds (datums inserted)))
-                   (and (pair? ds) (let ((ev (assq 'events (cdar ds)))) (and ev (car (caadr ev))))))))
-    (sh (string-append "( cd " here " && " env-text "scheme --script " tree "/theourgia.sc write --wire --store "
-                       store " --socket " sock " --writer " (or writer "none") " " (or id "none")
-                       " held > /dev/null 2>&1 < /dev/null & )"))
-    (held? rel)))
+         (ds (datums inserted))
+         (answer (if (pair? ds) (car ds) inserted)))
+    (if (not (and (pair? answer) (eq? (car answer) 'ok)))
+        (list 'refused answer)
+        (let ((id (let ((st (assq 'state (cdr answer)))) (and st (car (caadr st)))))
+              (writer (let ((ev (assq 'events (cdr answer)))) (and ev (car (caadr ev))))))
+          (sh (string-append "( cd " here " && " env-text "scheme --script " tree "/theourgia.sc write --wire --store "
+                             store " --socket " sock " --writer " (or writer "none") " " (or id "none")
+                             " held > /dev/null 2>&1 < /dev/null & )"))
+          (held? rel)))))
 
 (let* ((d (fresh-dir "p"))
        (rel (string-append here "/p-rel"))
        (pid (start! "p1" d "s" (hold-env "write-after-create" rel) store))
        (said (await "p1"))
-       (sock (string-append d "/s")))
-  (hold-a-write! sock rel)
+       (sock (string-append d "/s"))
+       (reached (hold-a-write! sock rel)))
   (signal! pid "TERM")
   (sh "sleep 1")
   (kill! pid)
   (want "W5p the public link is left dangling (its private socket closed with the listener)"
-        (list said (and (link sock) #t) (guard (e (#t 'raised)) (file-exists? sock)))
-        '(serving #t #f))
+        (list said reached (and (link sock) #t) (guard (e (#t 'raised)) (file-exists? sock)))
+        '(serving #t #t #f))
   (release! rel)
   (let* ((pid2 (start! "p2" d "s" "" store))
          (said2 (await "p2")))

@@ -8,7 +8,7 @@ ascii-only 16 22 d891c86dc09838032580869015b058e3
 attest-model 65 68 32f616f1b8a9ec58ec90bd74595c137b
 baseline-rules 34 37 7eb4a680097a8607f9d1f4da7cedeef5
 behind 41 44 329b21acc04911b4936545280a4e0ce0
-change-stream 131 164 617cb1aa6a78319b4375210357519e4f
+change-stream 131 164 93e06f1202febfdcdfeca4726b24e97b
 change-stream-client 21 25 a3b632c7331902d0c83de70ea2ec720d
 change-stream-guard 12 19 1cc93039ba9f742045f2874e595fb447
 changed-files 20 26 53bd05c23ac62cb2e3b6d11a7f4476d0
@@ -40,7 +40,7 @@ crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 74 79 ebb61bad84fab358709265d4cac7075e
 daemon-idle 124 132 c0f405f969f216e8a54d314539b54e09
 daemon-link-gate 38 41 cea34b20543f41532539d2f004f9967b
-daemon-namespace 118 122 33768aa56d02d71696609065b829d2cb
+daemon-namespace 118 122 94b3e70857bd9f52d2178620e03a6ba9
 daemon-session 27 37 4792ae8b130ff43bfffe26bbb9c092c0
 daemon-socket 13 16 ef3e83b1f7d4d913e9e651854a5edf0f
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87

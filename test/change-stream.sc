@@ -56,11 +56,23 @@
 
 (define bad 0)
 (define rows 0)
+;; A REFUSED WRITE FAILS THE ROW'S NEXT CHECK: new-id and mark-of keep the
+;; answer here (refused!, once however many helpers read it), and want-1
+;; then reads red whatever it compares and prints the answer, so a row whose
+;; own comparison comes out right on a store that refused its write still
+;; does not read green.
+(define refusals '())
+(define (refused! answer)
+  (unless (memq answer refusals) (set! refusals (cons answer refusals))))
 (define (want-1 label got expected)
   (set! rows (+ rows 1))
-  (if (equal? got expected)
-      (printf "ok ~a\n" label)
-      (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" label got expected))))
+  (let ((refused (reverse refusals)))
+    (set! refusals '())
+    (if (and (null? refused) (equal? got expected))
+        (printf "ok ~a\n" label)
+        (begin (set! bad (+ bad 1))
+               (printf "FAIL ~a: ~s WANT ~s\n" label got expected)
+               (unless (null? refused) (printf "   refused before this check: ~s\n" refused))))))
 (define-syntax caught
   (syntax-rules ()
     ((_ e0)
@@ -284,9 +296,16 @@
     (if (and (pair? r) (eq? 'answer (car r)))
         (unwrap-answer (utf8->string (cadr r)))
         (list 'transport r))))
+;; THE ANSWER'S HEAD IS JUDGED FIRST: only an ok answer is an alist after its
+;; head. A refused insert -- (error unknown (commit-barrier-failed) ...) on a
+;; disk that cannot flush -- made the alist read raise, and the raise ended
+;; the run with the row's daemon still running. A refusal is kept for the
+;; row's next check (want-1) and the id is #f.
 (define (new-id a)
-  (let ((ev (and (pair? a) (assq 'events (cdr a)))))
-    (and ev (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e)))))))
+  (if (not (and (pair? a) (eq? (car a) 'ok)))
+      (begin (refused! a) #f)
+      (let ((ev (assq 'events (cdr a))))
+        (and ev (let ((e (car (cadr ev)))) (string-append (car e) "." (number->string (cdr e))))))))
 (define (insert! d title) (new-id (ask d 'insert "--title" title)))
 
 ;; ---- subscribers --------------------------------------------------------------
@@ -487,28 +506,38 @@
 (define (covers? f mark)
   (let ((c (frame-cut f)))
     (and (list? c) (let ((e (assoc (car mark) c))) (and e (>= (cdr e) (cdr mark)))))))
+;; NO MARK, NO FRAME TO WAIT FOR: a refused write's answer has no record
+;; (mark-of answers #f and keeps the refusal for the row's check), so the
+;; answer is (no-mark) at once, before any frame is read; covers? is never
+;; asked about a mark that is not there.
 (define (frame-settled d sub after mark)
-  (let* ((factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
-    (let look ()
-      (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r (> r after))))
-                         (frames-of (sub-lines sub))))
-             (hit (find (lambda (f) (covers? f mark)) fs)))
-        (cond (hit
-               (let* ((upto (filter (lambda (f) (<= (frame-rev f) (frame-rev hit))) fs))
-                      (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) upto)))
-                 (cond ((null? said) hit)
-                       ((null? (cdr said)) (car said))
-                       (else (list 'several-frames-with-items (map frame-rev said))))))
-              ((> (- (real-time) t0) bound)
-               (let ((seen (list 'wanted mark 'past after 'last-published (last-published d)
-                                 'frames (map (lambda (f) (list (frame-rev f) (frame-cut f))) fs))))
-                 (wait-gave-out! "frame-settled" (- (real-time) t0) bound factor seen)
-                 (list 'no-frame seen)))
-              (else (sleep-ms 50) (look)))))))
+  (if (not mark)
+      (list 'no-mark)
+      (let* ((factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
+        (let look ()
+          (let* ((fs (filter (lambda (f) (let ((r (frame-rev f))) (and r (> r after))))
+                             (frames-of (sub-lines sub))))
+                 (hit (find (lambda (f) (covers? f mark)) fs)))
+            (cond (hit
+                   (let* ((upto (filter (lambda (f) (<= (frame-rev f) (frame-rev hit))) fs))
+                          (said (filter (lambda (f) (not (equal? (clause 'items f) '()))) upto)))
+                     (cond ((null? said) hit)
+                           ((null? (cdr said)) (car said))
+                           (else (list 'several-frames-with-items (map frame-rev said))))))
+                  ((> (- (real-time) t0) bound)
+                   (let ((seen (list 'wanted mark 'past after 'last-published (last-published d)
+                                     'frames (map (lambda (f) (list (frame-rev f) (frame-cut f))) fs))))
+                     (wait-gave-out! "frame-settled" (- (real-time) t0) bound factor seen)
+                     (list 'no-frame seen)))
+                  (else (sleep-ms 50) (look))))))))
 ;; The record a request's answer says it wrote, (<writer> . <seq>).
+;; THE ANSWER'S HEAD IS JUDGED FIRST, as in new-id: a refusal is kept for the
+;; row's check and there is no record, #f.
 (define (mark-of answer)
-  (let ((ev (and (pair? answer) (assq 'events (cdr answer)))))
-    (and ev (pair? (cadr ev)) (car (cadr ev)))))
+  (if (not (and (pair? answer) (eq? (car answer) 'ok)))
+      (begin (refused! answer) #f)
+      (let ((ev (assq 'events (cdr answer))))
+        (and ev (pair? (cadr ev)) (car (cadr ev))))))
 ;; WAITS until the daemon's log holds at least N lines containing NEEDLE, or
 ;; MS pass; the rows then read the count themselves.
 (define (await-trace d needle n ms)
@@ -693,7 +722,32 @@
       (list (contains? (file-text out) "flood complete") (length whole) (car (torn-trace-lines text))
             (and (> (car (torn-trace-lines text)) 0) (caddr (torn-trace-lines text)))))))
 
-(start-scheduler
+;; A ROW THAT RAISES OUTSIDE ITS CHECK ENDS THE RUN THROUGH THE TEARDOWN: the
+;; raise counts as one failure, every daemon this run started is stopped,
+;; and the run ends with exit 1 and without its completion line. Unguarded,
+;; the raise reached the scheduler, which ends the process at once (PANIC,
+;; exit 70) with the row's daemon still running. A warning is not caught.
+;; The daemons are found by their runner files, which carry this run's pid,
+;; asked to drain and after a second killed; the bracket keeps the pattern
+;; from matching the shell that runs pkill.
+(define (start-scheduler-with-teardown rows-thunk)
+  (start-scheduler
+    (lambda ()
+      (guard (c ((not (warning? c))
+                 (set! bad (+ bad 1))
+                 (printf "FAIL a row raised outside its check: ")
+                 (display-condition c)
+                 (newline)
+                 (unless (null? refusals)
+                   (printf "   refused before this raise: ~s~%" (reverse refusals)))
+                 (let ((runners (string-append scratch-base "/[c]s-" pid-text "-")))
+                   (system (string-append "pkill -f '" runners "' 2>/dev/null; sleep 1; pkill -KILL -f '"
+                                          runners "' 2>/dev/null")))
+                 (printf "rows: ~a~%~a failures~%" rows bad)
+                 (exit 1)))
+        (rows-thunk)))))
+
+(start-scheduler-with-teardown
   (lambda ()
     ;; ==== TL: a trace line is written whole ====
     (printf "~%== TL: a trace line is written whole ==~%")
