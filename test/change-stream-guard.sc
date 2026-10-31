@@ -176,7 +176,8 @@
 ;; PART B'S EXECUTOR LINES, (trace executing <ticket> #f), (trace
 ;; executing-done <ticket> #f) and (trace association-cleared <ticket> #t|#f),
 ;; one set around every request an executor runs, whatever its frame's
-;; version: the base has none. -> (<the text
+;; version: a base before Part B has none, a base from it on writes them
+;; like the tree. -> (<the text
 ;; without them> . <those lines, in order>), so the guard can compare the
 ;; rest byte for byte and still check the pairing of what it left out.
 (define (without-executor-lines text)
@@ -555,7 +556,10 @@
       ;; NOTE: SO ARE PART B'S EXECUTOR LINES (without-executor-lines): the
       ;; rest is compared byte for byte, and what was left out is checked for
       ;; its pairing, one executing, one executing-done and one
-      ;; association-cleared #t per request an executor ran; the base writes none.
+      ;; association-cleared #t per request an executor ran. The base's own
+      ;; lines are judged, not counted: none (a base before Part B) or the same
+      ;; pairing against the base's own trace (a base from Part B on), so the
+      ;; row holds on either base and still reads a broken base pairing red.
       ;; -> (<read and set both answered ok> <trace> <executor lines>)
       (let ((trace-of (lambda (d)
                         (let* ((before (string-length (file-text (cadddr d))))
@@ -566,13 +570,16 @@
                                          (without-store-checks
                                            (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))
                             (list (and r w) (mask-temporaries (normalize-for d (car split))) (cdr split)))))))
-        (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines left out, is byte for byte the base's; the base has none, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
-              (let ((tb (trace-of b)) (tn (trace-of n)))
+        (let* ((tb (trace-of b)) (tn (trace-of n))
+               (base-set (cond ((null? (caddr tb)) 'none)
+                               ((executor-pairs-hold? (caddr tb) (cadr tb)) 'paired)
+                               (else (list 'unpaired (caddr tb))))))
+          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines left out, is byte for byte the base's; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
                 (list (car tb) (car tn)
                       (if (equal? (cadr tb) (cadr tn)) 'equal (list (cadr tb) (cadr tn)))
-                      (length (caddr tb))
-                      (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
-              '(#t #t equal 0 #t)))
+                      base-set
+                      (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn))))
+                (list #t #t 'equal (if (eq? base-set 'none) 'none 'paired) #t))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by
