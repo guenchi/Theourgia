@@ -36,6 +36,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -258,22 +259,10 @@
 
 ;; ---- START: the daemon the thin client starts is theourgiad.sc ---------------
 (printf "== START: the thin client starts theourgiad.sc ==\n")
-(define (daemon-lines store)
-  ;; ps into a file, then filter in here: the shell that runs ps carries no
-  ;; store path, so the listing cannot match this fixture's own command.
-  (let ((f (string-append here "/ps.txt")))
-    (system (string-append "ps -axo pid,command > " f))
-    (filter (lambda (l) (and (contains? l "serve") (contains? l store)))
-            (let loop ((t (file-text f)) (acc '()))
-              (let ((i (let find ((k 0)) (cond ((>= k (string-length t)) #f)
-                                                 ((char=? (string-ref t k) #\newline) k)
-                                                 (else (find (+ k 1)))))))
-                (if i (loop (substring t (+ i 1) (string-length t)) (cons (substring t 0 i) acc))
-                    (reverse acc)))))))
-(define (pid-of line)
-  (let loop ((i 0)) (if (char=? (string-ref line i) #\space) (loop (+ i 1))
-                        (let end ((j i)) (if (and (< j (string-length line)) (char-numeric? (string-ref line j))) (end (+ j 1))
-                                             (string->number (substring line i j)))))))
+;; The store's daemon is found by ps (signal-send.ss): the word after `serve`,
+;; or after `serve --store` for a store spelled with a leading `-`, is the
+;; store. serve-pids counts, serve-lines gives the command lines a row reads,
+;; and the daemons a row stops are registered where they are found.
 (let* ((d (row-dir!))
        (store (string-append d "/cwd/s")))
   (system (string-append "mkdir -p " store))
@@ -282,11 +271,11 @@
   ;; starts nothing. The start below is the client library's (start-driver.ss).
   (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30)))
     (want "START-0 the thin client with no daemon answers ok in process and starts no daemon"
-          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (daemon-lines store)))
+          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (serve-pids store)))
           '(0 "(ok " 0)))
   (let* ((forwarded (run-in d start-driver (string-append "outline --store " store " --wire") 30))
-         (lines (daemon-lines store))
-         (pids (map pid-of lines)))
+         (lines (serve-lines store))
+         (found (register! (serve-processes store))))
     (want "CONTROL START the client library's start answered ok and one daemon is up for the store"
           (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
           '(0 "(ok " 1))
@@ -304,15 +293,15 @@
               (system (string-append "cd " d "/cwd && HOME=" d "/home THEOURGIA_HOME=" d "/home THEOURGIA_RUN=" sock-base "/es-" pid-text "-" (number->string row-n)
                                      " CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 scheme --script " programs-root "/core.sc outline --store " store " --wire < /dev/null > " f " 2>/dev/null"))
               (let ((l (file-text f)))
-                (list (length (daemon-lines store)) (if (string=? l (out-of forwarded)) 'identical (list 'differ l (out-of forwarded))))))
+                (list (length (serve-pids store)) (if (string=? l (out-of forwarded)) 'identical (list 'differ l (out-of forwarded))))))
             '(1 identical)))
     ;; stop the daemon by pid, and wait for it to go
-    (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p) " 2>/dev/null"))) pids)
+    (for-each (lambda (p) (signal! (car p) "TERM")) found)
     (let wait ((n 0))
-      (when (and (< n 100) (not (null? (daemon-lines store))))
+      (when (and (< n 100) (pair? (serve-pids store)))
         (system "sleep 0.1") (wait (+ n 1))))
     (want "START-2 TWIN: the daemon stopped on TERM and left no process for the store"
-          (length (daemon-lines store))
+          (length (serve-pids store))
           0)))
 
 ;; THE CLIENT'S OWN SPAWN IS NEVER REFUSED BY THE DAEMON'S OPTION TABLE (found
@@ -327,17 +316,16 @@
   (run-in d "theourgia.sc" (string-append "init --store " store))
   (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30)))
     (want "DSERVE-8 the thin client with a store spelled --dash-<pid> and no daemon answers ok in process and starts none"
-          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (daemon-lines store)))
+          (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4)) (length (serve-pids store)))
           '(0 "(ok " 0)))
   (let* ((forwarded (run-in d start-driver (string-append "outline --store " store " --wire") 30))
-         (lines (daemon-lines store))
-         (pids (map pid-of lines)))
+         (found (register! (serve-processes store))))
     (want "DSERVE-8 TWIN: the client library's start with a store spelled --dash-<pid> starts its daemon and is answered ok"
-          (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
+          (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length found))
           '(0 "(ok " 1))
-    (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p) " 2>/dev/null"))) pids)
+    (for-each (lambda (p) (signal! (car p) "TERM")) found)
     (let wait ((n 0))
-      (when (and (< n 100) (not (null? (daemon-lines store))))
+      (when (and (< n 100) (pair? (serve-pids store)))
         (system "sleep 0.1") (wait (+ n 1))))))
 
 ;; ---- EVAL: eval through core.sc ---------------------------------------------
@@ -609,21 +597,21 @@
          (r (run-in d start-driver (string-append "outline --store " store " --socket " absent "/deep/s.sock") 30))
          (ms (- (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))) t0))
          (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read)))
-         (lines (daemon-lines store)))
-    (for-each (lambda (l) (system (string-append "kill -TERM " (number->string (pid-of l)) " 2>/dev/null"))) lines)
+         (found (serve-processes store)))
+    (signal-processes! found "TERM")
     (want "SOCKDIR-2 the client library's start with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
           (list (rc-of r)
                 (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
                 (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'dir))) (cdr a))))) (and f (equal? (cadr f) (string-append absent "/deep"))))
                 (if (< ms 5000) 'under-half-the-budget (list 'took-ms ms))
-                (length lines)
+                (length found)
                 (if (file-exists? absent) 'created 'nothing-created))
           (list 75 '(error socket-dir-missing) #t 'under-half-the-budget 0 'nothing-created))
     (system (string-append "rm -rf " absent))
     (let ((plain (run-in d "theourgia.sc" (string-append "outline --store " store " --socket " absent "/deep/s.sock --wire") 30)))
       (want "SOCKDIR-3 the thin client with that --socket and no daemon answers ok in process, starts no daemon, and creates nothing"
             (list (rc-of plain) (and (> (string-length (out-of plain)) 4) (substring (out-of plain) 0 4))
-                  (length (daemon-lines store)) (if (file-exists? absent) 'created 'nothing-created))
+                  (length (serve-pids store)) (if (file-exists? absent) 'created 'nothing-created))
             '(0 "(ok " 0 nothing-created)))))
 
 (system (string-append "rm -rf " here " " sock-base "/es-" pid-text "-*"))

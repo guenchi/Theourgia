@@ -9,7 +9,7 @@ attest-model 65 68 32f616f1b8a9ec58ec90bd74595c137b
 baseline-rules 34 37 7eb4a680097a8607f9d1f4da7cedeef5
 behind 41 44 329b21acc04911b4936545280a4e0ce0
 change-stream 131 164 93e06f1202febfdcdfeca4726b24e97b
-change-stream-client 21 25 a3b632c7331902d0c83de70ea2ec720d
+change-stream-client 21 25 beb3ff5b5857c03380af6e6a16b5f131
 change-stream-guard 12 19 1cc93039ba9f742045f2874e595fb447
 changed-files 20 26 53bd05c23ac62cb2e3b6d11a7f4476d0
 cli-forward 22 25 45768e3f0e5456c8ece65f0616ce13c7
@@ -37,7 +37,7 @@ context-users 43 46 15251400721bcc70ddc9143361acc4e4
 context-verb 123 128 09bbe99c14da4cfbd2b209872ccaddfd
 crash 15 19 7dc2d98b549e4f3cbbef2f17820a2c6a
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
-daemon-e1 74 79 044cd563ddd527b375dcf3c30345a679
+daemon-e1 74 79 2d907ef132b256d7c5e7272077360622
 daemon-idle 124 132 ce59421dc13853bb471b11561aacd2eb
 daemon-link-gate 38 41 cea34b20543f41532539d2f004f9967b
 daemon-namespace 118 122 bf0890eb8f45fa1e4cf0cae2b2dcd791
@@ -60,7 +60,7 @@ drafts-tools 78 91 711f145af083ffc3242d1a2f16abfc1b
 ecmascript-scan 110 124 8b23f0cde8c374d87400e83299c02cd3
 edit-tools 61 73 c82e91c7589b9ed453f684ca3f95ac7c
 empty-plan - 16 e067ce38b231d75f46ae93c79ba84b4a
-entry-split 33 48 9153945eead53294894e034f688cbd11
+entry-split 33 48 7de7072f1148a84457f841a09800402c
 envelope 76 79 47365074aa877f62e85471f983b8ff24
 eval-lang 150 161 fb691e80c34700f982f98c2af4d4fa57
 eval-local 64 67 d8eaf13d6a4a046b0bf1b28424d046dc
@@ -72,7 +72,7 @@ exit-codes 3 9 b89f2f7bb940efb6471125b90208754a
 expansion-branches 2 7 73e0e08d3ca15268ee8f292ab4e37e5b
 expected-guard 5 8 f0184f685167721091dd60ae130aafc3
 export-working 31 34 438e4070d7332822e62db36c1bf5bb39
-f0-ondemand 35 39 31a50e1374852b16a337a242c01b37b9
+f0-ondemand 35 39 38fb57090ac411f94f8cc266ba543d44
 f1-protocol 15 18 ae3634631db3fd372bbc303074eb319a
 f2-keywords 11 14 1192f813f5dc023f8e05835d4be6b09b
 f3-wire-utf8 7 11 921b914e46c09e875b58eaa448ccf82d
@@ -153,7 +153,7 @@ query-dispatch 23 32 a4e6fcc870a8deefdedab5dbd37cf0b7
 query-facts 34 37 453f6af6141b096d1e7aa4a0403f6ed9
 query-kinds 33 42 550d00de3179ba10b89e26583cfd3122
 query-strata 89 99 18b3dc32970ea602fa4eaaf0b2e7e882
-read-at-cut 40 51 bb670f8233f00324a9045991a1c3839d
+read-at-cut 40 51 8f24adf29bb24c4ef4f970f98f8e0347
 read-receipt 123 127 75553e392332749d1cb8f0e0e9975a3d
 read1 19 34 c975d77362bb4eafc60a961aa0e9d848
 reader-creates - 7 3a6df3454f8cb62607b914f88dd6a4ab
@@ -174,7 +174,7 @@ runner-self 80 107 d239b437ddb98105ed99e6c7404656d1
 sb2 17 27 5f6f40a6255a864826e3b1eb883bf2b1
 scope-model 13 19 3cecaeb1c475debe3164a66df20d2b9a
 session-advance 61 71 4564bfeef2c307f00b296370cf23be36
-signal-audit 19 37 ef44a7323952e1e551fd590665afcb24
+signal-audit 32 51 cdb255d78e3caa322796492f3a66f8ed
 since-contract 57 60 5f0385a577fc331100dca7ce193de5de
 smoke-crc32 - 9 7995b0255470cdef541c5e2aef31e412
 smoke-shortwrite - 4 f00f08055256b64c8ef4117ccdb07b56
@@ -196,12 +196,12 @@ subtree 15 19 d2124efd9468aef241da1e20468aea5e
 supply 209 213 0ff8fce6ecc781089509451949fde448
 tmp-paths 47 122 cadfdb0c07ef402e2629a3baae967e8b
 tree-round-trip 0 5 aecdb9f13babca53abb3f9b0618bfd96
-unreadable-acknowledge-routes 68 77 4cc0a61dda45279c59b6ff7696aca789
+unreadable-acknowledge-routes 68 77 b702f93bf56da8216bbb831a29ee6667
 unreadable-adopt 34 47 6e1360b0c68e5776dea2e985fabc85c2
 unreadable-census 42 47 8903dba92289c92d904de8913366556b
 unreadable-drafts 16 24 a035f1bf4c6358cd9afc9b0207e9d6a2
 unreadable-publish 12 20 d17d2070325ad05331f3fd35a9ea3f8d
-unreadable-routes 88 100 7f2059ad2702203f2fb91ca77b498bd4
+unreadable-routes 88 100 4ad4b9695e347c7d870497ad87130d00
 unreadable-writer 77 105 7b40683adf47492630187a3930fdb3ad
 unscoped-lock 2 11 5c96faabab689055f42c580b43b657a2
 validity 35 38 9eeea59e2540cc721dd6399273b683db

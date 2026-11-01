@@ -757,27 +757,26 @@
 ;; other run's can match it, is counted (it should be none) and stopped below,
 ;; in either form; which form the child was started in is the LAUNCH row's to
 ;; say.
-(define f18-daemon-pids
-  (let* ((out (string-append scratch "/f18-ps.txt")))
-    (sh (string-append "ps -ax -o pid= -o command= | grep -F -e '" (product-file "theourgiad.so") " serve '"
-                       " -e '" (product-file "theourgiad.sc") " serve '"
-                       " | grep -v grep | awk '{print $1}' > " out))
-    (let ((t (file-text out)))
-      (let loop ((p (open-string-input-port t)) (acc '()))
-        (let ((x (read p)))
-          (if (eof-object? x) (reverse acc) (loop p (if (integer? x) (cons x acc) acc))))))))
+;; (served-by? program) -> a predicate on a command text: the word right
+;; before `serve` is this run's PROGRAM, in its .so or .sc form.
+(define (served-by? program)
+  (lambda (text)
+    (or (word-after? text (product-file (string-append program ".so")) "serve")
+        (word-after? text (product-file (string-append program ".sc")) "serve"))))
+;; Registered as they are found (signal-send.ss), and sent below.
+(define f18-daemons (register! (command-processes (served-by? "theourgiad"))))
 
 (define f18-outline-launches (argv-lines))
 (want "OUTDIR-6 a call from the output directory with no daemon is answered, and starts no daemon"
       (list (if (contains? f18-outline "(ok ") 'answered (list 'said f18-outline))
-            (length f18-daemon-pids))
+            (length f18-daemons))
       '(answered 0))
 (want "LAUNCH-1 theourgia.sc's local route (frame-child-argv): the child was started as --program core.so --frame, from beside the thin client"
       (launched? f18-outline-launches (string-append "--program " (product-file "core.so") " --frame"))
       #t)
 
 ;; Stopped by the pid read above, and waited for.
-(for-each (lambda (pid) (sh (string-append "kill " (number->string pid) " 2>/dev/null"))) f18-daemon-pids)
+(for-each (lambda (p) (signal! (car p) "TERM")) f18-daemons)
 (sh "sleep 1")
 
 ;; ---- the programs as program objects ---------------------------------------------
@@ -947,9 +946,8 @@
       '(#t #t))
 ;; the shell's daemon, stopped by its command line, which carries this run's
 ;; path, in either form
-(sh (string-append "ps -ax -o pid= -o command= | grep -F -e '" (product-file "mcp/../theourgiad.so") " serve '"
-                   " -e '" (product-file "mcp/../theourgiad.sc") " serve '"
-                   " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null; sleep 1; rm -rf " mcp-run))
+(signal-processes! (command-processes (served-by? "mcp/../theourgiad")) "TERM")
+(sh (string-append "sleep 1; rm -rf " mcp-run))
 
 (signal! (pid-of-file (string-append scratch "/serve.pid")) "TERM")
 (sh (string-append "sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))

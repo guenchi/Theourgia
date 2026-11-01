@@ -31,10 +31,15 @@
 ;; SA-3  in each file whose sends were moved onto signal! (or, in generated
 ;;       shell text, onto the same check made inline), the bare sends left are
 ;;       exactly the ones named below, each with its census row; and the
-;;       checked sends are there.
+;;       checked sends, and the lookups by ps that feed them, are there.
 ;; SA-4  signal! itself (test/signal-send.ss): a registered process that has
 ;;       ended is not signalled, a live one is, an unregistered one is not,
 ;;       and one whose recorded start differs is not.
+;; SA-5  no removal glob has `*` right after a splice of the run's pid.
+;; SA-6  the lookup by store (test/signal-send.ss): the word after `serve`,
+;;       or after `serve --store`, is the store, so a longer store that
+;;       begins with it is not found; and on a real process, the lookup finds
+;;       it with the instant ps prints for it, and signal-processes! ends it.
 ;;
 ;; NEVER: A TEXT RULE IS NOT A PROOF. SA-1..3 read the files line by line with
 ;; named patterns; they catch the shapes the census found and say nothing
@@ -252,19 +257,31 @@
     ("retire-race.sc")
     ("cli2.sc")
     ("f0-ondemand.sc"
-     (76 "slice B: so-serve.pid" "\"kill $(cat \" scratch \"/so-serve.pid)" 1)
-     (77 "slice B: pids looked up by ps" "\"kill \" (number->string pid)" 1)
-     (78 "slice B: pids looked up by ps" "xargs kill" 1))))
+     (76 "slice B2: so-serve.pid" "\"kill $(cat \" scratch \"/so-serve.pid)" 1))
+    ("change-stream-client.sc"
+     (7 "slice B2: the fake daemon's pid, read from its pid file" "(string-append \"kill \" (number->string pid)" 1))
+    ("entry-split.sc")
+    ("read-at-cut.sc")
+    ("unreadable-acknowledge-routes.sc")
+    ("unreadable-routes.sc"
+     (178 "slice B2: holder.pid" "\"kill -TERM $(cat \" holder-pid" 1)
+     (179 "slice B2: the pid the client's answer names" "(string-append \"kill -TERM \" (number->string p))" 1))))
 
-;; The checked sends that must be there, per file: the text of the form and
-;; the least number of lines that carry it.
+;; The checked sends that must be there, per file, and the lookups by ps that
+;; feed them: each the text of the form and the least number of lines that
+;; carry it.
 (define converted
-  '(("log15.sc" "(signal! " 4)
-    ("launch-self.sc" "(signal! " 1)
-    ("runner-self.sc" "(signal! " 1)
-    ("retire-race.sc" "trap 'kill9_if_same " 2)
-    ("cli2.sc" "(signal! " 1)
-    ("f0-ondemand.sc" "(signal! " 1)))
+  '(("log15.sc" ("(signal! " 4))
+    ("launch-self.sc" ("(signal! " 1))
+    ("runner-self.sc" ("(signal! " 1))
+    ("retire-race.sc" ("trap 'kill9_if_same " 2))
+    ("cli2.sc" ("(signal! " 1))
+    ("f0-ondemand.sc" ("(signal! " 2) ("(command-processes " 2))
+    ("change-stream-client.sc" ("(serve-processes " 1) ("(command-processes" 1) ("(signal! " 1))
+    ("entry-split.sc" ("(serve-processes " 3) ("(signal! " 2) ("(signal-processes! " 1))
+    ("read-at-cut.sc" ("(serve-processes " 2) ("(signal-processes! " 2))
+    ("unreadable-acknowledge-routes.sc" ("(serve-processes " 2) ("(signal-processes! " 2))
+    ("unreadable-routes.sc" ("(serve-processes " 5) ("(signal-processes! " 5))))
 
 (define (bare-lines f)
   (fold-right (lambda (l acc)
@@ -293,12 +310,52 @@
       (want (format "SA-3 ~a: its bare sends are exactly the named ones (~a)" f (length (cdr entry)))
             (remainder-verdict f)
             '(()))
-      (let ((c (assoc f converted)))
-        (want (format "SA-3 ~a: the checked sends are there (~s on at least ~a lines)" f (cadr c) (caddr c))
-              (let ((n (length (filter (lambda (l) (has? (cdr l) (cadr c))) (code-lines f)))))
-                (>= n (caddr c)))
+      (let ((forms (cdr (assoc f converted))))
+        (want (format "SA-3 ~a: the checked sends are there (~a)" f
+                      (fold-left (lambda (acc c)
+                                   (string-append acc (if (string=? acc "") "" " and ")
+                                                  (format "~s on at least ~a lines" (car c) (cadr c))))
+                                 "" forms))
+              (for-all (lambda (c) (>= (length (filter (lambda (l) (has? (cdr l) (car c))) (code-lines f))) (cadr c)))
+                       forms)
               #t))))
   remainders)
+
+;; ---- SA-5: a removal glob ends where this run's name does ------------------------
+;;
+;; A GLOB WITH `*` RIGHT AFTER THE RUN'S PID (`" pid-text "*`) matches every
+;; name the pid's digits begin, so it also removes the files of a run whose
+;; pid begins with them, and with a `*` before the pid as well, of a run whose
+;; pid holds them anywhere. The names that end in the pid are SA-1's, with
+;; (number->string pid) beside them. Every code line of test/*.sc is read, not
+;; only one holding the `rm`, since a removal's operands run on over lines.
+(define (glob-after-pid? name names)
+  (or (string=? name pid-expr) (string=? name "(number->string pid)") (and (member name names) #t)))
+(define (spliced-before-glob line)
+  (let loop ((i 0) (acc '()))
+    (let ((e (index-of line " \"*" i)))
+      (if (not e)
+          (reverse acc)
+          (let ((s (let back ((j (- e 1)))
+                     (cond ((< j 1) #f)
+                           ((and (char=? (string-ref line j) #\space) (char=? (string-ref line (- j 1)) #\")) (+ j 1))
+                           (else (back (- j 1)))))))
+            (loop (+ e 1) (if s (cons (substring line s e) acc) acc)))))))
+(define sa5-hits
+  (apply append
+    (map (lambda (f)
+           (let* ((ls (code-lines f)) (names (pid-ending-names ls)))
+             (fold-right
+               (lambda (l acc)
+                 (append (map (lambda (n) (list f (car l)))
+                              (filter (lambda (n) (glob-after-pid? n names)) (spliced-before-glob (cdr l))))
+                         acc))
+               '() ls)))
+         (filter (lambda (f) (ends-with? f ".sc")) scanned))))
+(for-each (lambda (h) (printf "SA-5 hit ~a:~a\n" (car h) (cadr h))) sa5-hits)
+(want "SA-5 no removal glob has `*` right after a splice of the run's pid"
+      sa5-hits
+      '())
 
 ;; ---- SA-4: signal! itself ----------------------------------------------------------
 ;;
@@ -371,6 +428,40 @@
       (want "SA-4 a pid whose recorded start differs is not signalled; under its true start it is"
             (list (string? true-id) wrong still right gone)
             '(#t already-gone #t sent #t)))))
+
+;; ---- SA-6: the lookup by store -------------------------------------------------------
+;;
+;; serves-store? takes the word after `serve`, or after `serve --store`, as
+;; the store, so a store whose path has the asked one's as a prefix is not
+;; matched. Red on a lookup that asks whether the line holds `serve <store>`.
+(want "SA-6 serves-store? reads exactly the store after serve or serve --store"
+      (map (lambda (line) (serves-store? line "/x/s"))
+           '("123 scheme --script /p/theourgiad.sc serve /x/s"
+             "123 scheme --script /p/theourgiad.sc serve /x/s --wire"
+             "123 scheme --script /p/theourgiad.sc serve --store /x/s --socket /r/d.sock"
+             "123 scheme --program /p/theourgiad.so serve /x/s --socket /r/d.sock"
+             "123 scheme --script /p/theourgiad.sc serve /x/s1"
+             "123 scheme --script /p/theourgiad.sc serve /x/s/"
+             "123 scheme --script /p/theourgiad.sc serve --store /x/s1"
+             "123 scheme --script /p/core.sc outline --store /x/s"))
+      '(#t #t #t #t #f #f #f #f))
+
+;; A REAL PROCESS WHOSE COMMAND LINE CARRIES `serve <here>/s1`, started by a
+;; shell that then exits (perl: macOS sleep refuses operands it does not
+;; read): asked for <here>/s, the lookup finds nothing; asked for <here>/s1,
+;; it finds that pid, with the instant ps -o lstart= -p prints for it, and
+;; signal-processes! TERM ends it.
+(let* ((s1 (string-append here "/s1"))
+       (pidf (string-append here "/serve-s1.pid"))
+       (pid (begin (system (format "perl -e 'sleep 30' serve ~a < /dev/null > /dev/null 2>&1 & echo $! > ~a" s1 pidf))
+                   (pid-of-file pidf)))
+       (shorter (serve-processes (string-append here "/s")))
+       (found (serve-processes s1))
+       (instant (pid-identity pid))
+       (sent (signal-processes! found "TERM")))
+  (want "SA-6 a live serve of <here>/s1 is not found for <here>/s; it is for <here>/s1, with its instant, and TERM ends it"
+        (list shorter (map car found) (and (pair? found) (equal? (cdar found) instant)) sent (gone-within? pid 5))
+        (list '() (list pid) #t '(sent) #t)))
 
 (system (string-append "rm -rf " here))
 

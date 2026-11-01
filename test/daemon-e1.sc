@@ -2741,8 +2741,14 @@
       ;; against a directory left by a run three hours earlier that had
       ;; happened to get the same pid.
       ;;
-      ;; NOTE: BY PID PREFIX, so it removes this run's files and NEVER: nothing
-      ;; belonging to a run going on beside it.
+      ;; NOTE: BY THE NAMES THIS FIXTURE BUILDS, so it removes this run's files
+      ;; and NEVER: nothing belonging to a run going on beside it. The list
+      ;; below is the fixture's own: every `dmn-` name its string-appends
+      ;; make, and the daemon's files beside each socket (`<socket>.d`,
+      ;; `<socket>.d.reserve`, `.<socket>.lock`). In each glob the run's pid
+      ;; is followed by the delimiter the name carries (`-`, `.` or the end),
+      ;; never by `*`: a `*` right after the pid also matches a run whose pid
+      ;; begins with these digits.
       ;; NEVER: THE PROCESSES GO FIRST, AND THEY WERE NOT GOING AT ALL. This
       ;; tidy-up removed the FILES and left the daemons that were using
       ;; them running -- found as an orphaned `scheme --script
@@ -2757,11 +2763,32 @@
       (system (string-append "pkill -f '" runners-pattern "' 2>/dev/null"))
       (system (string-append "pkill -f '" store-serve-pattern "' 2>/dev/null"))
       (system "sleep 1")
-      (system (string-append "rm -rf " scratch-base "/dmn-*" pid-text "* " socket-base "/dmn-*" pid-text "*"
-                             " " scratch-base "/dmn-store-" pid-text
-                             " " scratch-base "/dmn-run*-" pid-text ".sc " scratch-base "/dmn-log*-" pid-text ".txt"
-                             " " socket-base "/dmn-occupied-" pid-text " " socket-base "/.dmn-*" pid-text "*.lock"
-                             " 2>/dev/null"))
+      (system (apply string-append "rm -rf"
+                     (append
+                       (map (lambda (shape) (string-append " " scratch-base "/" shape))
+                            (list (string-append "dmn-store-" pid-text)
+                                  (string-append "dmn-run*-" pid-text ".sc")
+                                  (string-append "dmn-log*-" pid-text ".txt")
+                                  (string-append "dmn-torn-" pid-text ".txt")
+                                  (string-append "dmn-swap-" pid-text ".*")
+                                  (string-append "dmn-found-" pid-text ".txt")
+                                  (string-append "dmn-cli-" pid-text)
+                                  (string-append "dmn-cli-" pid-text ".*")
+                                  (string-append "dmn-residue-" pid-text "-*")
+                                  (string-append "dmn-rel-" pid-text "-*")
+                                  (string-append "dmn-fifo-" pid-text "-*")
+                                  (string-append "dmn-hold-" pid-text "-*")
+                                  (string-append "dmn-out-" pid-text "-*")
+                                  (string-append "dmn-c" pid-text "-*")))
+                       (map (lambda (shape) (string-append " " socket-base "/" shape))
+                            (list (string-append "dmn-" pid-text ".sock")
+                                  (string-append "dmn-" pid-text ".sock.*")
+                                  (string-append "dmn-c" pid-text "-*")
+                                  (string-append "dmn-occupied-" pid-text)
+                                  (string-append ".dmn-occupied-" pid-text ".lock")
+                                  (string-append ".dmn-" pid-text ".sock.lock")
+                                  (string-append ".dmn-c" pid-text "-*")))
+                       (list " 2>/dev/null"))))
       ;; NEVER: AND IT IS ASSERTED, not assumed. "I issued a kill" is not the
       ;; same claim as "nothing is left running", and it is the second
       ;; one the next run depends on.

@@ -53,6 +53,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -366,42 +367,28 @@
                      (list 'no-answer (let ((t (call-with-input-file err get-string-all)))
                                         (if (eof-object? t) "" (substring t (max 0 (- (string-length t) 300)) (string-length t)))))
                      d))))))
-(define (lines-of-command cmd)
-  (let* ((p (process cmd)) (t (get-string-all (car p))))
-    (close-port (car p)) (close-port (cadr p))
-    (let loop ((cs (if (eof-object? t) '() (string->list t))) (cur '()) (acc '()))
-      (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
-            ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) acc)))
-            (else (loop (cdr cs) (cons (car cs) cur) acc))))))
 (define (has-substring? text needle)
   (let ((n (string-length needle)) (m (string-length text)))
     (let loop ((i 0))
       (cond ((> (+ i n) m) #f)
             ((string=? (substring text i (+ i n)) needle) #t)
             (else (loop (+ i 1)))))))
-(define (daemon-pids store)
-  (let ((needle (string-append "theourgiad.sc serve " store)))
-    (map (lambda (l) (string->number (car (filter (lambda (w) (> (string-length w) 0))
-                                                   (let split ((cs (string->list l)) (cur '()) (acc '()))
-                                                     (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
-                                                           ((char=? (car cs) #\space) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
-                                                           (else (split (cdr cs) (cons (car cs) cur) acc))))))))
-         (filter (lambda (l) (has-substring? l needle)) (lines-of-command "ps -ax -o pid= -o command=")))))
+;; The store's daemons are found by ps (signal-send.ss: the word after
+;; `serve` is the store) and signalled through signal!; the counts and the
+;; waits read the lookup alone.
 (define daemon-counts '())
 (define (stop-daemon! label store)
-  (set! daemon-counts (append daemon-counts (list (cons label (length (daemon-pids store))))))
-  (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null")))
-            (daemon-pids store))
+  (set! daemon-counts (append daemon-counts (list (cons label (length (serve-pids store))))))
+  (signal-processes! (serve-processes store) "TERM")
   (let loop ((k 0))
-    (when (and (< k 50) (pair? (daemon-pids store)))
+    (when (and (< k 50) (pair? (serve-pids store)))
       (system "sleep 0.1") (loop (+ k 1))))
   ;; A DAEMON THAT OUTLIVES TERM IS NOT LEFT (found in review): after
   ;; five seconds whatever still answers to the exact argv line is sent
   ;; KILL, and the wait is repeated.
-  (for-each (lambda (pid) (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
-            (daemon-pids store))
+  (signal-processes! (serve-processes store) "KILL")
   (let loop ((k 0))
-    (when (and (< k 20) (pair? (daemon-pids store)))
+    (when (and (< k 20) (pair? (serve-pids store)))
       (system "sleep 0.1") (loop (+ k 1)))))
 ;; A ROW THAT RAISES MUST NOT LEAVE ITS DAEMON. The daemons here detach,
 ;; so one outlives this script: in M1's first run P1-b raised before its
@@ -572,8 +559,7 @@
     ;; anyway -- a chmod that failed or did not block would let the thin
     ;; client start one (found in review). Stopped without being
     ;; counted; the final row reads that none remains.
-    (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null")))
-              (daemon-pids s))
+    (signal-processes! (serve-processes s) "TERM")
     (want "CONTROL P3-a/P4 the chmod 000 of the store's parent succeeded"
           locked 0)
     (let ((answer (list 'error 'unreadable (list 'path s) (list 'reason denied) '(errno EACCES))))
@@ -1367,7 +1353,7 @@
          (a (cadr r))
          (p (let ((c (and (list? a) (assq 'pid (filter pair? a))))) (and c (cadr c))))
          (alive (and (integer? p) (pid-alive? p)))
-         (is-daemon (and (integer? p) (equal? (daemon-pids s) (list p)))))
+         (is-daemon (and (integer? p) (equal? (serve-pids s) (list p)))))
     (touch! rel)
     (let* ((bound (wait-until-file sock 5000))
            (stopped (begin (when (integer? p) (system (string-append "kill -TERM " (number->string p))))
@@ -1392,8 +1378,8 @@
   (client-bg-start! (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=report-write:" never)
               (list "read" "root" "--store" s) out)
   (let* ((held (wait-until-file (string-append never ".held") 10000))
-         (pids (daemon-pids s)))
-    (for-each (lambda (p) (system (string-append "kill -KILL " (number->string p)))) pids)
+         (pids (serve-processes s)))
+    (signal-processes! pids "KILL")
     (let* ((answered (wait-until-text out 10000))
            (a (first-datum-of out)))
       (p6-done! s)
@@ -1504,8 +1490,8 @@
         (out (string-append root "/" name ".out"))
         (err (string-append root "/" name ".err"))
         (rcf (string-append root "/" name ".rc")))
-    ;; THE WRAPPER'S OWN ARGV MUST NOT NAME THE STORE: daemon-pids finds the
-    ;; daemon by `theourgiad.sc serve <store>` in a process's argv, and an
+    ;; THE WRAPPER'S OWN ARGV MUST NOT NAME THE STORE: serve-processes finds
+    ;; the daemon by `serve <store>` in a process's argv, and an
     ;; `sh -c '<command>'` carrying that text would be signalled too. The
     ;; command goes in a file and sh is given the file.
     (let ((script (string-append root "/" name ".sh")))
@@ -1532,7 +1518,7 @@
 ;; After a second TERM the signal watcher sends `again` ONCE, so the
 ;; trace is exactly drain, again. It used to be sent on every poll.
 (define (drain-then-again? ks) (equal? ks '(drain again)))
-(define (term! store) (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p)))) (daemon-pids store)))
+(define (term! store) (signal-processes! (serve-processes store) "TERM"))
 (define (finish-held! h)
   (touch! (car h))
   (wait-until-text (cadddr h) 15000)
@@ -1549,7 +1535,7 @@
 (define (still-held? store h)
   (system "sleep 6")
   (and (= 0 (string-length (text-of-file (cadr h))))
-       (pair? (daemon-pids store))
+       (pair? (serve-pids store))
        (= 0 (string-length (text-of-file (cadddr h))))))
 
 (let* ((s (m1-store!)) (d (m2-sock-dir! "sa")) (sock (string-append d "/sock"))
@@ -1685,22 +1671,22 @@
 ;; and starts nothing -- on a plain store, and on one whose start would fail.
 (let* ((s (m1-store!)) (r (m1-run "" "../theourgia.sc" (list "outline" "--store" s "--wire"))))
   (want "R1 TWIN the thin client with no daemon answers an outline in process, rc 0, and starts no daemon"
-        (list (car r) (and (pair? (cadr r)) (car (cadr r))) (daemon-pids s) (file-exists? (socket-path s)))
+        (list (car r) (and (pair? (cadr r)) (car (cadr r))) (serve-pids s) (file-exists? (socket-path s)))
         '(0 ok () #f)))
 (let* ((s (m1-store!))
        (_ (chmod! "000" (writers-of s)))
        (r (m1-run "" "../theourgia.sc" (list "outline" "--store" s "--wire"))))
   (chmod! "700" (writers-of s))
   (want "R1 TWIN where a start would fail (writers/ unreadable): the thin client answers in process with the store's refusal, rc 1, and starts no daemon"
-        (list (car r) (and (pair? (cadr r)) (list? (cadr r)) (list-head (cadr r) 2)) (daemon-pids s) (file-exists? (socket-path s)))
+        (list (car r) (and (pair? (cadr r)) (list? (cadr r)) (list-head (cadr r) 2)) (serve-pids s) (file-exists? (socket-path s)))
         '(1 (error unreadable) () #f)))
 (want "no daemon of a store this section made is left running"
-      (apply + (map (lambda (s) (length (daemon-pids s))) m1-stores))
+      (apply + (map (lambda (s) (length (serve-pids s))) m1-stores))
       0)
 ;; THE ROW ABOVE DETECTS; THIS CLEANS (found in review): whatever
 ;; it found is stopped here, so a red reading does not also leave a
 ;; process behind.
-(for-each (lambda (s) (unless (null? (daemon-pids s)) (stop-daemon! 'sweep s))) m1-stores)
+(for-each (lambda (s) (unless (null? (serve-pids s)) (stop-daemon! 'sweep s))) m1-stores)
 (system (string-append "rm -rf " m1-run-root))
 
 (system (string-append "chmod -R u+rwx " root " 2>/dev/null; rm -rf " root))
