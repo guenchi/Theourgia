@@ -197,6 +197,11 @@ fixtures, `q8-cli.py` (driven on its own, not one of the nine),
 the same reason --
 **`trace-poll.ss`**, the bounded wait on a child's trace or output that
 `retire-race.sc`, `cli1.sc` and `unreadable-acknowledge-routes.sc` `load` --
+**`signal-send.ss`**, the registry of started processes and the one send
+that checks a pid is still the process registered under it (`started!`,
+`signal!`), which `daemon-idle.sc`, `daemon-namespace.sc`, `log15.sc`,
+`launch-self.sc`, `runner-self.sc`, `cli2.sc` and `f0-ondemand.sc`
+`include` --
 **`evidence-cli1-hang/`**, which this file cites above, and
 **`vectors/`**, ten language files `code-text.sc` imports. The last of
 those were read from `../theourgos/`, a different and closed repository,

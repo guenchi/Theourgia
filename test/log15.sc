@@ -148,6 +148,7 @@
 (define rows-run 0)
 
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect)
@@ -263,6 +264,9 @@
                            "THEOURGIA_BARRIER=" barrier ":" fifo " "
                            "scheme --script " child-path " > /dev/null 2> " trace
                            " & echo $! > " pidf))
+    ;; REGISTERED AS IT STARTS, so the kill below reaches this child and no
+    ;; process that took its pid after it ended (test/signal-send.ss).
+    (started! (pid-of-file pidf))
     (let ((reached (wait-for-barrier trace barrier 200)))
       (cond
         ;; NOT PARKED MEANS NOT RELEASED. Writing to a fifo with no
@@ -270,10 +274,10 @@
         ;; barrier is killed and reported -- the case then goes red on a
         ;; reading instead of hanging the suite.
         ((not reached)
-         (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null"))
+         (signal! (pid-of-file pidf) "9")
          'never-parked)
         ((eq? action 'kill)
-         (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null"))
+         (signal! (pid-of-file pidf) "9")
          (system "sleep 0.1")
          (text-of trace))
         (else
@@ -600,6 +604,7 @@
                        "THEOURGIA_BARRIER=written-identity-read:" id-fifo " "
                        "scheme --script " id-child " > /dev/null 2> " id-trace
                        " & echo $! > " id-pid))
+(started! (pid-of-file id-pid))
 (define id-parked (wait-for-barrier id-trace "written-identity-read" 400))
 (want "CONTROL: the child parks at the read this guard is about"
       id-parked
@@ -638,7 +643,7 @@
         (crash-has-substring? after "registry-check"))
       #f)
 (when id-parked
-  (system (string-append "kill -9 $(cat " id-pid ") 2>/dev/null")))
+  (signal! (pid-of-file id-pid) "9"))
 
 ;; THE OTHER ARM OF THE SAME GUARD. It refuses on two conditions -- the
 ;; store id unreadable, and the instance nonce absent -- and the rows
@@ -671,6 +676,7 @@
                        "THEOURGIA_BARRIER=written-identity-read:" n-fifo " "
                        "scheme --script " n-child " > /dev/null 2> " n-trace
                        " & echo $! > " n-pid))
+(started! (pid-of-file n-pid))
 (define n-parked (wait-for-barrier n-trace "written-identity-read" 400))
 (want "CONTROL: the child parks with the metadata left alone"
       n-parked
@@ -695,7 +701,7 @@
         (crash-has-substring? after "registry-check"))
       #f)
 (when n-parked
-  (system (string-append "kill -9 $(cat " n-pid ") 2>/dev/null")))
+  (signal! (pid-of-file n-pid) "9"))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

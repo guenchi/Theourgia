@@ -45,6 +45,7 @@
                                      e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expected)
@@ -99,13 +100,20 @@
     (cond ((file-exists? path) #t)
           ((> k (* 10 secs)) #f)
           (else (pause-tenths 1) (loop (+ k 1))))))
-(define (alive? pid)
-  (and (integer? pid) (> pid 1)
-       (= 0 (system (string-append "kill -0 " (number->string pid) " 2>/dev/null")))))
+;; (stop-pid! file): KILL the pid FILE holds through signal!, so only while it
+;; is the process registered under it (test/signal-send.ss); a file with no
+;; pid sends nothing.
+;;
+;; THE DESCENDANT IS REGISTERED AT THE FIRST READ OF d.pid, and is expected
+;; gone by then: it is started inside W's command, and W has ended its group
+;; before this file can read the pid. Registered gone, it records no instant
+;; and is never signalled. What remains is the milliseconds between W's end
+;; and that read, in which the pid would have to be reused. Recording the
+;; instant inside the command instead (a ps after `sleep 60 &`) would put
+;; one more process into the group these rows measure.
 (define (stop-pid! file)
-  (let ((pid (read-datum file)))
-    (when (and (integer? pid) (> pid 1))
-      (sh "kill -9 " (number->string pid) " 2>/dev/null"))))
+  (let ((pid (pid-of-file file)))
+    (when pid (signal! pid "9"))))
 (define (now-ms) (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
 
 ;; ---- the launcher --------------------------------------------------------------
@@ -256,7 +264,7 @@
 (printf "== L4, L5: the group ends with its command ==\n")
 (let ((d (case!)))
   (let ((r (run-w d 30 (string-append "sh -c 'sleep 60 & echo $! > " d "/d.pid; exit 0'"))))
-    (let ((dp (read-datum (string-append d "/d.pid")))
+    (let ((dp (started! (read-datum (string-append d "/d.pid"))))
           (res (result-of d)))
       (stop-pid! (string-append d "/d.pid"))
       ;; ON RED THE LAUNCH'S OWN ACCOUNT GOES WITH THE READING -- its
@@ -284,7 +292,7 @@
           '(0 (#t 0 "clean")))))
 (let ((d (case!)))
   (let ((r (run-w d 1 (string-append "sh -c 'sleep 60 & echo $! > " d "/d.pid; sleep 60'"))))
-    (let ((dp (read-datum (string-append d "/d.pid"))))
+    (let ((dp (started! (read-datum (string-append d "/d.pid")))))
       (stop-pid! (string-append d "/d.pid"))
       (want "LS-10 over the limit, the command AND its descendant are gone once W returns"
             (list (car r) (alive? dp) (< (cadr r) 15000))
@@ -297,7 +305,7 @@
          (w (begin (pause-tenths 5) (read-datum (string-append d "/w.pid")))))
     (when (integer? w) (sh "kill -TERM " (number->string w)))
     (let* ((done (await (string-append d "/w.rc") 20))
-           (dp (read-datum (string-append d "/d.pid"))))
+           (dp (started! (read-datum (string-append d "/d.pid")))))
       (stop-pid! (string-append d "/d.pid"))
       (want "LS-11 TERM to W stops its group: W exits 143, the group is clean, the descendant is gone"
             (list up (integer? w) done (read-datum (string-append d "/w.rc"))

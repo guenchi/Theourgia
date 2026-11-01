@@ -167,6 +167,7 @@
 (define rows-run 0)
 
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect)
@@ -410,12 +411,16 @@
                          "THEOURGIA_BARRIER=before-append:" fifo " "
                          "scheme --script " holder " > /dev/null 2> " trace
                          " & echo $! > " scratch "/holder.pid"))
+  ;; REGISTERED AS IT STARTS: the holder that never parks may have died, and
+  ;; the kill below must not reach a process that took its pid since
+  ;; (test/signal-send.ss).
+  (started! (pid-of-file (string-append scratch "/holder.pid")))
   (let ((parked (let loop ((n 0))
                   (cond ((> n 400) #f)
                         ((has-substring? (text-of trace) "(trace barrier before-append") #t)
                         (else (system "sleep 0.05") (loop (+ n 1)))))))
     (if (not parked)
-        (begin (system (string-append "kill -9 $(cat " scratch "/holder.pid) 2>/dev/null"))
+        (begin (signal! (pid-of-file (string-append scratch "/holder.pid")) "9")
                'holder-never-parked)
         (begin
           ;; asynchronous, because this process cannot wait for it yet

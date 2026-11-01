@@ -103,8 +103,10 @@
 ;; other the fixture made still running, and the pattern is this run's own
 ;; directory -- which carries this process's pid, so it cannot reach
 ;; another run's daemons.
+;; The "/" after the run's directory: without it the pattern also matches
+;; the daemons of a run whose pid begins with this one's digits.
 (define (kill-daemon!)
-  (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+  (system (string-append "pkill -f 'serve " here "/' 2>/dev/null"))
   (system "sleep 1"))
 
 ;; ---- CS-1 a cold start -----------------------------------------------------

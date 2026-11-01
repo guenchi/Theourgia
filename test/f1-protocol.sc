@@ -418,7 +418,9 @@
       (unused-anywhere (top-level-forms shell))
       '())
 
-(system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+;; The "/" after the run's directory: without it the pattern also matches
+;; the daemons of a run whose pid begins with this one's digits.
+(system (string-append "pkill -f 'serve " here "/' 2>/dev/null"))
 (system "sleep 1")
 
 (printf "rows: ~a\n~a failures\nf1-protocol complete\n" rows bad)

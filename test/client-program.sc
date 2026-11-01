@@ -137,8 +137,10 @@
 ;; a daemon still exiting a second later was counted beside the one the next
 ;; request started (P-20 read "2"). It polls the kill's own pattern until no
 ;; process matches, every tenth of a second, for at most ten seconds.
+;; The "/" after the run's directory: without it the pattern also matches
+;; the daemons of a run whose pid begins with this one's digits.
 (define (kill-daemons!)
-  (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+  (system (string-append "pkill -f 'serve " here "/' 2>/dev/null"))
   (let wait ((n 0))
     (unless (or (string=? (alive-under here) "0") (>= n 100))
       (system "sleep 0.1")

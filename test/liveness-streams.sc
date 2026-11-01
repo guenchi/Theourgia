@@ -170,7 +170,11 @@
   (if (await-file (string-append o ".rc") ms)
       (list (lines-of (file-text o)) (file-text (string-append o ".err")) (string->number (car (lines-of (file-text (string-append o ".rc"))))))
       (list (lines-of (file-text o)) (file-text (string-append o ".err")) 'running)))
-(define (kill-stream! o) (sh "pkill -f " (q (string-append o ".err")) " 2>/dev/null; pkill -f 'subscribe changes 0 --store' 2>/dev/null"))
+;; The second pkill names this run's stores (<scratch>/s<n>/store): without
+;; the run's directory it stopped the subscribers of every run and every user.
+(define (kill-stream! o)
+  (sh "pkill -f " (q (string-append o ".err")) " 2>/dev/null; pkill -f "
+      (q (string-append "subscribe changes 0 --store " scratch "/")) " 2>/dev/null"))
 
 ;; ---- perl stubs ---------------------------------------------------------------------------
 

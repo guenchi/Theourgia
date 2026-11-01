@@ -3144,10 +3144,15 @@
 ;; not a survivor. The row polls until nothing matches, up to 10 s, and ends
 ;; as soon as that is so; what is still there then is named by its command
 ;; line, which also shows a process that matched without being this file's.
-(system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+;; ONE PATTERN FOR THE KILL AND THE COUNT, ending at the "/" after the run's
+;; directory: without it the pkill also stops the daemons of a run whose pid
+;; begins with this one's digits, and a count on the looser pattern than the
+;; kill's would list that run's daemons as this one's survivors.
+(define mc-daemons (string-append "serve " here "/"))
+(system (string-append "pkill -f '" mc-daemons "' 2>/dev/null"))
 (let ((left (string-append here "/left.txt")))
   (define (survivors)
-    (system (string-append "pgrep -fl 'serve " here "' > " left " 2>/dev/null"))
+    (system (string-append "pgrep -fl '" mc-daemons "' > " left " 2>/dev/null"))
     (lines-of-text (file-text left)))
   (let loop ((waited 0))
     (let ((alive (survivors)))

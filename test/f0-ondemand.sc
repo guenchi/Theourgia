@@ -45,6 +45,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -341,6 +342,10 @@
                    " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
                    "scheme --script " root "/theourgiad.sc serve " store " --socket " socket
                    " > " scratch "/serve.txt 2>&1 & echo $! > " scratch "/serve.pid )"))
+;; REGISTERED AS IT STARTS: the TERM at the end of this file comes some six
+;; hundred lines later, by when the daemon may be gone and its pid another
+;; process's (test/signal-send.ss).
+(started! (pid-of-file (string-append scratch "/serve.pid")))
 (sh "sleep 5")
 
 (define serve-text (call-with-input-file (string-append scratch "/serve.txt") get-string-all))
@@ -946,7 +951,8 @@
                    " -e '" (product-file "mcp/../theourgiad.sc") " serve '"
                    " | grep -v grep | awk '{print $1}' | xargs kill 2>/dev/null; sleep 1; rm -rf " mcp-run))
 
-(sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))
+(signal! (pid-of-file (string-append scratch "/serve.pid")) "TERM")
+(sh (string-append "sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))
 
 (printf "rows: ~a\n~a failures\nf0-ondemand complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

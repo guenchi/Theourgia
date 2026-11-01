@@ -103,34 +103,11 @@
 ;; ---- starting, asking, stopping ---------------------------------------------
 ;;
 ;; EVERY PROCESS A ROW STARTS IS REGISTERED, so that the teardown can stop it
-;; whatever the row did or raised, with the instant it started.
-;;
-;; NEVER: A SIGNAL TO A PID THAT WAS NOT VERIFIED. A pid is reused once its
-;; process is gone, so a row or the teardown that signals a daemon which
-;; already exited could reach an unrelated process. signal! sends only when
-;; the pid answers kill -0 AND its start instant (ps lstart) is the one
-;; recorded here when it was registered; otherwise it sends nothing and the
-;; output says the process was already gone. A process gone before it was
-;; registered has no recorded instant and is never signalled.
-(define started '())
-(define identities '())
-(define (pid-identity pid)
-  (let ((t (sh-out (format "ps -o lstart= -p ~a 2>/dev/null" pid))))
-    (and (> (string-length t) 0) t)))
-(define (started! pid)
-  (when pid
-    (set! started (cons pid started))
-    (set! identities (cons (cons pid (pid-identity pid)) identities)))
-  pid)
-(define (signal! pid sig)
-  (let ((known (and pid (assv pid identities))))
-    (cond
-      ((and known (cdr known) (alive? pid) (equal? (cdr known) (pid-identity pid)))
-       (sh (format "kill -~a ~a 2>/dev/null" sig pid))
-       'sent)
-      (else
-       (printf "NOTE ~a to ~a not sent: already gone\n" sig pid)
-       'already-gone))))
+;; whatever the row did or raised, with the instant it started. The registry
+;; (started, identities, pid-identity, started!, alive?) and the one send
+;; that checks it (signal!) are test/signal-send.ss, which says why a send is
+;; verified first; every fixture that signals a pid it read includes it.
+(include "signal-send.ss")
 
 ;;
 ;; (start! tag cwd socket env . args): `serve` in the background from CWD, its
@@ -160,8 +137,6 @@
            (find (lambda (d) (and (pair? d) (eq? (car d) 'error))) ds))
           ((>= i 300) 'timeout)
           (else (sh "sleep 0.05") (loop (+ i 1))))))))
-
-(define (alive? pid) (and pid (zero? (system (format "kill -0 ~a 2>/dev/null" pid)))))
 
 (define (wait-gone pid)
   (let loop ((i 0))

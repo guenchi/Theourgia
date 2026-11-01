@@ -62,6 +62,15 @@
 (define socket (string-append socket-base "/dmn-" pid-text ".sock"))
 (define runner (string-append scratch-base "/dmn-run-" pid-text ".sc"))
 (define log (string-append scratch-base "/dmn-log-" pid-text ".txt"))
+;; THE TIDY-UP'S PATTERNS (the end of this file), bound once for its pkill
+;; and for the pgrep that asserts nothing is left: the runners
+;; dmn-run<n>-<pid>.sc, and a serve of this run's store followed by an
+;; argument or the end of the line. Each ends where the real command line
+;; does, so a run whose pid begins with this one's digits is neither stopped
+;; nor counted; a count on a looser pattern than the kill's would list that
+;; run's runners as this one's.
+(define runners-pattern (string-append "dmn-run[0-9]*-" pid-text "[.]sc"))
+(define store-serve-pattern (string-append "serve " store "( |$)"))
 
 (define (line-complete? bv)
   (let loop ((i 0))
@@ -2742,10 +2751,11 @@
       ;; whatever was actually being measured.
       ;;
       ;; NOTE: BEFORE the `rm`, so nothing is still writing the files being
-      ;; removed; and by the same pid prefix, so a run going on beside
+      ;; removed; and by patterns that end where this run's paths end
+      ;; (runners-pattern, store-serve-pattern), so a run going on beside
       ;; this one is not touched.
-      (system (string-append "pkill -f 'dmn-run.*" pid-text "' 2>/dev/null"))
-      (system (string-append "pkill -f 'serve " scratch-base "/dmn-store-" pid-text "' 2>/dev/null"))
+      (system (string-append "pkill -f '" runners-pattern "' 2>/dev/null"))
+      (system (string-append "pkill -f '" store-serve-pattern "' 2>/dev/null"))
       (system "sleep 1")
       (system (string-append "rm -rf " scratch-base "/dmn-*" pid-text "* " socket-base "/dmn-*" pid-text "*"
                              " " scratch-base "/dmn-store-" pid-text
@@ -2756,7 +2766,7 @@
       ;; same claim as "nothing is left running", and it is the second
       ;; one the next run depends on.
       (let ((left (string-append scratch-base "/dmn-left-" pid-text ".txt")))
-        (system (string-append "pgrep -f 'dmn-run.*" pid-text "' | wc -l | tr -d ' ' > " left))
+        (system (string-append "pgrep -f '" runners-pattern "' | wc -l | tr -d ' ' > " left))
         (let ((n (guard (e (#t "?"))
                    (let ((t (call-with-input-file left get-string-all)))
                      (if (and (string? t) (> (string-length t) 0))

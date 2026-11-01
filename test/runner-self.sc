@@ -62,6 +62,7 @@
                                      e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expected)
@@ -126,13 +127,32 @@
     (cond ((file-exists? path) #t)
           ((> k (* 10 secs)) #f)
           (else (pause-tenths 1) (loop (+ k 1))))))
+;; (stop-pid! file): KILL the pid FILE holds through signal!, so only while it
+;; is the process registered under it (test/signal-send.ss); a file with no
+;; pid sends nothing. Most of these processes have ended by the time a case
+;; tidies up, which is why the send is checked.
 (define (stop-pid! file)
-  (let ((pid (read-datum file)))
-    (when (and (integer? pid) (> pid 1))
-      (sh "kill -9 " (number->string pid) " 2>/dev/null"))))
-(define (alive? pid)
-  (and (integer? pid) (> pid 1)
-       (= 0 (system (string-append "kill -0 " (number->string pid) " 2>/dev/null")))))
+  (let ((pid (pid-of-file file)))
+    (when pid (signal! pid "9"))))
+;; (pid-registered! file) -> the pid FILE holds, registered with started!.
+;;
+;; NEVER: A REGISTRATION AFTER THE RUN HAS FINISHED. A pid is registered while
+;; its process is expected to be running: the file is awaited right after the
+;; inner run starts (or right after the spawn), never read first once the run
+;; is over, since by then the process may have ended and its pid be another
+;; process's, and registering that one would authorise the KILL the check is
+;; there to stop. A registration just before the send is no check at all.
+;;
+;; The file is waited for (up to 120 s), and then the number in it: the
+;; process writes the file itself, so the file can exist a moment before the
+;; number is in it (up to a second).
+(define (pid-registered! file)
+  (await file 120)
+  (let loop ((k 0))
+    (let ((pid (pid-of-file file)))
+      (if (or pid (>= k 10))
+          (started! pid)
+          (begin (pause-tenths 1) (loop (+ k 1)))))))
 (define (entries dir)
   (if (file-directory? dir) (list-sort string<? (directory-list dir)) '()))
 (define (ths-now)
@@ -514,6 +534,7 @@
     ;; command-line match looks for, started after the run's first count.
     (sh "cd " (car c) " && { sh -c 'i=0; while [ ! -f stop-asker ] && [ $i -lt 90 ]; do sleep 1; i=$((i+1)); done # scheme --script' "
         "> /dev/null 2>&1 < /dev/null & echo $! > asker.pid; }")
+    (pid-registered! (string-append (car c) "/asker.pid"))
     (pause-tenths 10)
     (go! c)
     (let ((done (finished? c 120)))
@@ -583,6 +604,7 @@
     ;; the inner run's.
     (sh "cd " (car c) " && { scheme --script foreign.ss > /dev/null 2>&1 < /dev/null & }")
     (let ((foreign-up (await (string-append (car c) "/foreign.pid") 30)))
+      (pid-registered! (string-append (car c) "/foreign.pid"))
       (go! c)
       (let ((done (finished? c 120)))
         (stop-pid! (string-append (car c) "/foreign.pid"))
@@ -596,10 +618,10 @@
 (printf "== RS-3: fixtures that leave processes running ==\n")
 (let ((c (inner! '("ok.py" "leaker.sc" "leakspawn.sc" "leaksh.sc"))))
   (start! c)
-  (let* ((done (finished? c 120))
-         (p1 (read-datum (string-append (car c) "/sleeper.pid")))
-         (p2 (read-datum (string-append (car c) "/sleeper2.pid")))
-         (p3 (read-datum (string-append (car c) "/sleepsh.pid"))))
+  (let* ((p1 (pid-registered! (string-append (car c) "/sleeper.pid")))
+         (p2 (pid-registered! (string-append (car c) "/sleeper2.pid")))
+         (p3 (pid-registered! (string-append (car c) "/sleepsh.pid")))
+         (done (finished? c 120)))
     (for-each (lambda (f) (stop-pid! (string-append (car c) "/" f)))
               '("sleeper.pid" "sleeper2.pid" "sleepsh.pid"))
     (want "CONTROL RS-3 the inner run finished and each left process wrote its pid"
@@ -623,13 +645,14 @@
 (let ((c (inner! '("ok.py" "leaker.sc" "wait.sc"))))
   (sh "cd " (car c) " && { scheme --script foreign.ss > /dev/null 2>&1 < /dev/null & }")
   (let ((foreign-up (await (string-append (car c) "/foreign.pid") 30)))
+    (pid-registered! (string-append (car c) "/foreign.pid"))
     (start! c)
     (let ((started (await (string-append (car c) "/started") 60)))
       (stop-pid! (string-append (car c) "/foreign.pid"))
       (pause-tenths 10)
       (go! c)
-      (let* ((done (finished? c 120))
-             (p (read-datum (string-append (car c) "/sleeper.pid"))))
+      (let* ((p (pid-registered! (string-append (car c) "/sleeper.pid")))
+             (done (finished? c 120)))
         (stop-pid! (string-append (car c) "/sleeper.pid"))
         (want "CONTROL RS-3 cancel: the foreign process was up before the run, the run finished"
               (list foreign-up started done (integer? p))
@@ -682,10 +705,10 @@
 ;; scratch root the fixtures were handed, and the leak still refuses first.
 (let ((c (inner! '("ok.py" "leaker.sc" "zz-lockbase.sc"))))
   (start! c)
-  (let* ((done (finished? c 120))
+  (let* ((p (pid-registered! (string-append (car c) "/sleeper.pid")))
+         (done (finished? c 120))
          (l (read-datum (string-append (car c) "/locked.txt")))
-         (troot (and l (car l)))
-         (p (read-datum (string-append (car c) "/sleeper.pid"))))
+         (troot (and l (car l))))
     (sh "chmod 700 " (cadr c))
     (stop-pid! (string-append (car c) "/sleeper.pid"))
     (want "CONTROL RS-11b the run finished, the base was locked, and the leak wrote its pid"
@@ -966,8 +989,8 @@
   (spit! (string-append shim "/uname") "#!/bin/sh\necho Linux\n")
   (sh "chmod +x " shim "/uname")
   (start! c #f #f shim)
-  (let* ((done (finished? c 120))
-         (p (read-datum (string-append (car c) "/sleeper.pid"))))
+  (let* ((p (pid-registered! (string-append (car c) "/sleeper.pid")))
+         (done (finished? c 120)))
     (stop-pid! (string-append (car c) "/sleeper.pid"))
     (want "CONTROL RS-9 with uname answering Linux the run finished and said it was in its machine-wide fallback"
           (list done (contains? (run-log c) "machine-wide") (integer? p))
@@ -1009,7 +1032,7 @@
   (start! c)
   (let* ((started (await (string-append (car c) "/started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid")))
-         (holder (read-datum (string-append (car c) "/wait.pid"))))
+         (holder (pid-registered! (string-append (car c) "/wait.pid"))))
     (when (and (integer? runner) (> runner 1))
       (sh "kill -TERM " (number->string runner)))
     (pause-tenths 30)
@@ -1060,6 +1083,8 @@
   (start! c)
   (let* ((pre (await (string-append (car c) "/pre-started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid"))))
+    (pid-registered! (string-append (car c) "/pre.pid"))
+    (pid-registered! (string-append (car c) "/writer.pid"))
     (when (and (integer? runner) (> runner 1)) (sh "kill -TERM " (number->string runner)))
     (pause-tenths 110)
     (let* ((writer (read-datum (string-append (car c) "/writer.pid")))
@@ -1086,7 +1111,7 @@
   (start! c)
   (let* ((started (await (string-append (car c) "/started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid")))
-         (child (read-datum (string-append (car c) "/tchild.pid"))))
+         (child (pid-registered! (string-append (car c) "/tchild.pid"))))
     (when (and (integer? runner) (> runner 1)) (sh "kill -TERM " (number->string runner)))
     (let ((done (finished? c 60)))
       (pause-tenths 10)
@@ -1128,8 +1153,14 @@
 (printf "== RS-14: a member left in the group is reported at its fixture ==\n")
 (let ((c (inner! '("ok.py" "green.sc" "leavegroup.sc"))))
   (start! c)
-  (let* ((done (finished? c 120))
-         (p (read-datum (string-append (car c) "/lg.pid"))))
+  ;; THE MEMBER IS REGISTERED AS ITS PID FILE APPEARS, while the fixture that
+  ;; started it is running; the runner stops it when that fixture ends. Either
+  ;; outcome is safe: registered alive, a later process on its pid fails the
+  ;; start-instant comparison; registered after it was stopped, no instant is
+  ;; recorded and nothing is sent. What remains is a reuse of its pid inside
+  ;; the moment between the runner's stop and this read.
+  (let* ((p (pid-registered! (string-append (car c) "/lg.pid")))
+         (done (finished? c 120)))
     (want "CONTROL RS-14 the run finished and the fixture recorded its group member"
           (list done (integer? p))
           '(#t #t))
@@ -1150,6 +1181,7 @@
   (start! c #f #f #f #f #f #t)
   (let* ((started (await (string-append (car c) "/started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid"))))
+    (pid-registered! (string-append (car c) "/wait.pid"))
     (when (and (integer? runner) (> runner 1)) (sh "kill -TERM " (number->string runner)))
     (let ((done (finished? c 20)))
       (go! c)
@@ -1194,6 +1226,7 @@
   (start! c #f #f shim)
   (let* ((started (await (string-append (car c) "/started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid"))))
+    (pid-registered! (string-append (car c) "/wait.pid"))
     (spit! (string-append (car c) "/clock-armed") "1")
     (when (and (integer? runner) (> runner 1)) (sh "kill -TERM " (number->string runner)))
     (let ((done (finished? c 30)))
@@ -1225,6 +1258,7 @@
   (start! c)
   (let* ((started (await (string-append (car c) "/started") 60))
          (runner (read-datum (string-append (car c) "/runner.pid"))))
+    (pid-registered! (string-append (car c) "/wait.pid"))
     (when (and (integer? runner) (> runner 1))
       (sh "kill -9 " (number->string runner)))
     (pause-tenths 10)

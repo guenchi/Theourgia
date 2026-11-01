@@ -140,6 +140,19 @@
 ;;      block on the lock, and the report records whether it had
 ;;      finished before the first was released;
 ;;   3. the first is released; both finish.
+;; THE RUNNERS' EXIT TRAPS KILL A CHILD ONLY WHILE IT IS STILL THAT CHILD.
+;; The traps run when a runner ends, by when its children have normally
+;; finished and their pids may belong to other processes. The shell cannot
+;; call signal! (test/signal-send.ss), so it makes the same check itself:
+;; each child's start instant (ps lstart) is recorded right after it is
+;; started, and kill9_if_same sends only when the pid answers kill -0 and
+;; still has that instant. An empty pid or an empty instant (the child gone
+;; before ps read it) sends nothing.
+(define kill9-if-same-sh
+  (string-append
+    "kill9_if_same() { [ -n \"$1\" ] && [ -n \"$2\" ] && kill -0 $1 2>/dev/null"
+    " && [ \"$(ps -o lstart= -p $1)\" = \"$2\" ] && kill -9 $1 2>/dev/null; }\n"))
+
 (call-with-port (open-file-output-port runner (file-options no-fail) 'block (native-transcoder))
   (lambda (p)
     (put-string p
@@ -147,20 +160,23 @@
         "#!/bin/sh\n"
         "rm -f '" fifo "' '" trace "' '" wtrace "'\n"
         "mkfifo '" fifo "'\n"
-        "a= ; b=\n"
-        "trap 'test -n \"$a\" && kill -9 $a 2>/dev/null; test -n \"$b\" && kill -9 $b 2>/dev/null' EXIT\n"
+        "a= ; b= ; al= ; bl=\n"
+        kill9-if-same-sh
+        "trap 'kill9_if_same \"$a\" \"$al\"; kill9_if_same \"$b\" \"$bl\"' EXIT\n"
         "THEOURGIA_HOME='" home "' THEOURGIA_INJECT=on "
         "THEOURGIA_BARRIER=retire-locked:'" fifo "' THEOURGIA_TRACE=1 "
         "scheme --script '" cli "' commit '" A "' --req R1 --cursor '" cursor "' "
         "--working-version '" v1 "' --writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" trace "' &\n"
         "a=$!\n"
+        "al=$(ps -o lstart= -p $a)\n"
         (trace-poll "retire-locked" trace report "retirer-inside" poll-bound)
         "THEOURGIA_HOME='" home "' THEOURGIA_TRACE=1 "
         "scheme --script '" cli "' write '" A "' 'v2 text' "
         "--writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" wtrace "' &\n"
         "b=$!\n"
+        "bl=$(ps -o lstart= -p $b)\n"
         (trace-poll "lock-wait" wtrace report "writer-waited-on-lock" poll-bound)
         "printf x > '" fifo "'\n"
         "wait $a 2>/dev/null; a=\n"
@@ -304,14 +320,16 @@
         "#!/bin/sh\n"
         "rm -f '" bfifo "' '" btrace "'\n"
         "mkfifo '" bfifo "'\n"
-        "a= ; b= ; f=\n"
-        "trap 'for pid in $a $b $f; do kill -9 $pid 2>/dev/null; done' EXIT\n"
+        "a= ; b= ; f= ; al= ; bl= ; fl=\n"
+        kill9-if-same-sh
+        "trap 'kill9_if_same \"$a\" \"$al\"; kill9_if_same \"$b\" \"$bl\"; kill9_if_same \"$f\" \"$fl\"' EXIT\n"
         "THEOURGIA_HOME='" home "' THEOURGIA_INJECT=on "
         "THEOURGIA_BARRIER=before-retire:'" bfifo "' THEOURGIA_TRACE=1 "
         "scheme --script '" cli "' commit '" B "' "
         "--writer '" writer "' "
         "--store '" store "' > /dev/null 2> '" btrace "' &\n"
         "a=$!\n"
+        "al=$(ps -o lstart= -p $a)\n"
         (trace-poll "barrier before-retire" btrace breport "retirer-paused" poll-bound)
         ;; THE REPLACEMENT, WHICH MUST FINISH WHILE THE OTHER IS STOPPED.
         ;; NOTE: UNDER ITS OWN ALARM. It is the one step that can block --
@@ -327,6 +345,7 @@
         "md5 -q '" bdraft "' >> '" breport "' 2>/dev/null || echo no-draft >> '" breport "'\n"
         "sh -c 'for k in 1 2 3 4; do printf x > \"" bfifo "\"; done' &\n"
         "f=$!\n"
+        "fl=$(ps -o lstart= -p $f)\n"
         ;; NEVER: AND THE RETIRER'S EXIT STATUS IS PART OF THE REPORT. A
         ;; child that DIES at the barrier leaves the commit durable, the
         ;; barrier line in the trace and the replacement standing -- all
