@@ -539,7 +539,7 @@
 (want "C48a-3 an incomplete store: with the receipt removed, outline and plain read are their own clauses then incomplete"
       (list (heads (without-heads inc-outline '(cut)))
             (cdr (heads (without-heads inc-read '(cut versions)))))
-      '((text incomplete) (version incomplete)))
+      '((text rows incomplete) (version incomplete)))
 (want "C48a-3 an incomplete store: a person still sees the incomplete clause of outline and of read"
       (in-order (string-contains? (render-human inc-outline) "incomplete")
                 (string-contains? (render-human inc-read) "incomplete"))

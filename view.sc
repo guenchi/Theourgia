@@ -39,7 +39,7 @@
 ;;; layer was doing anyway.
 ;;;
 ;;; WHO CALLS WHICH. Anything answering a person or an editor wants the
-;;; view: `rpc.sc`'s `read`, `outline` and `title-of`, and
+;;; view: `rpc.sc`'s `read`, `outline` and `label-of`, and
 ;;; `block-code-field` (code-project.sc's `code-field`). Anything deciding what is stored,
 ;;; what conflicts or what a hash is over wants `state-read`.
 

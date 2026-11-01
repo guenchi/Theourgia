@@ -1145,7 +1145,7 @@
               (if (and (pair? r) (eq? 'answer (car r)))
                   (answer-text (cadr r))
                   (list 'transport r)))
-            "(ok (text \"\") (cut ()))\n")
+            "(ok (text \"\") (rows) (cut ()))\n")
 
       ;; ---- D-03 two frames in one write --------------------------------
       ;;
@@ -1351,7 +1351,7 @@
               (if (and (pair? r) (eq? 'answer (car r)))
                   (answer-text (cadr r))
                   (list 'transport r)))
-            "(ok (text \"\") (cut ()))\n")
+            "(ok (text \"\") (rows) (cut ()))\n")
 
       ;; ---- D-09 a conn process that dies says why ---------------------
       ;;
@@ -1382,7 +1382,7 @@
               (list (cadr quiet)
                     (if (contains? (car quiet) "daemon-down") 'traced-anyway 'quiet)
                     (caddr quiet))
-              '("(ok (text \"\") (cut ()))\n" quiet socket-still-there)))
+              '("(ok (text \"\") (rows) (cut ()))\n" quiet socket-still-there)))
 
       ;; ---- D-10 the store process dies -------------------------------
       ;;

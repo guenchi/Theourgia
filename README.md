@@ -2550,8 +2550,27 @@ land as a src beside the body that export, `whereis` and `eval` read.
 
     (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"] ["--working"])
 
-Prints the store's block tree as indented text, answered as `(ok (text "..."))`: one line per block, `- <id>  <title>`, indented two spaces per level. `--depth` stops at that many levels.
+Prints the store's block tree as indented text, answered as `(ok (text "...") (rows <row> ...))`: one line per block, `- <id>  <title>`, indented two spaces per level. `--depth` stops at that many levels.
 A row whose position is in structural conflict carries the conflict's mark after its title, and a row that is also an orphan carries `orphan`. Orphans the tree did not draw are listed after it under `orphans:`, each with its subtree, under the same `--depth` limit, so `--depth 0` prints nothing. A `--depth` that is not a count is answered with the usage form.
+
+The `rows` clause is what the text is printed from, one row per line in the
+text's order, so a program reads the outline without parsing it. It is the
+answer's second element, present even when there are no rows (`(rows)`);
+every clause the options add comes after it. The human form prints only the
+text. A row is
+
+    (row <id> <kind> <mode> <path> <label> <depth> <mark> <orphan> <group>
+         (conflicts (<field> ...)) [(keywords "<s>")] [(signature "<s>")])
+
+`kind`, `mode` and `path` are the block's view values, `#f` when absent and
+a contested field's `(conflict ...)` datum; `label` is what the line prints
+after the id; `depth` the line's level; `mark` the structural conflict's
+mark or `#f`; `orphan` `#t` for an orphan; `group` `tree` or `orphans`, the
+section the line is under (an orphan under `orphans:` prints no `orphan`
+word on its own line, the section saying it); `conflicts` the fields whose
+value is contested, in the view's order, the position not repeated (it is
+the mark). The `keywords` and `signature` clauses are there exactly when the
+line prints that column.
 
 `--with-keywords` appends `  [<keywords>]` to each row that has them. NOTE:
 A block without the field prints no brackets: empty ones would say the

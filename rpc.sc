@@ -36,7 +36,7 @@
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs register-verbs! dispatch-helper
           request-frame transport-unreachable?
-          count-argument outline-text write-protocol verb-catalogue
+          count-argument outline-text outline-rows render-outline-rows write-protocol verb-catalogue
           describe-log-error eval-usage subscribe-shape-error query-session-provider!)
   (import (only (theourgia view) view-read block-code-field)
           (only (theourgia render) render-wire)
@@ -535,9 +535,13 @@
   ;; A TITLE IS SOMETHING A PERSON READS, so it comes from the view: for
   ;; a code block the name is derived from its source, and `state-read`
   ;; no longer derives anything.
-  (define (title-of state id)
-    (let* ((b (view-of state id))
-           (fs (and b (cdr (assq 'fields b)))))
+  ;; THE LABEL IS COMPUTED FROM THE RECORD ALREADY FETCHED. B is the
+  ;; block's view (or #f) and ROWS the complete sorted structural rows of
+  ;; `state-outline`, never a depth-limited listing: an unnamed code block
+  ;; is numbered among all of its siblings, drawn or not, so its label
+  ;; does not change with the depth it is listed at.
+  (define (label-of b rows id)
+    (let ((fs (and b (cdr (assq 'fields b)))))
       (define (get k)
         (let ((e (and fs (assq k fs))))
           (and e (or (and (string? (cdr e)) (cdr e))
@@ -546,7 +550,7 @@
         (if (not (and fs (equal? (assq 'kind fs) '(kind . code)))) ""
             (let* ((lang (assq 'lang fs))
                    (parent (cadr (assq 'position b)))
-                   (siblings (map caddr (filter (lambda (r) (equal? (car r) parent)) (state-outline state)))))
+                   (siblings (map caddr (filter (lambda (r) (equal? (car r) parent)) rows))))
               (string-append
                 (if (and lang (symbol? (cdr lang))) (symbol->string (cdr lang)) "unknown") ":"
                 (number->string
@@ -554,136 +558,166 @@
                     (if (or (null? xs) (equal? (car xs) id)) n (loop (cdr xs) (+ n 1)))))))))
       (escape-one-line (or (get 'title) (get 'path) (get 'name) (fallback)))))
 
-  ;; THE OUTLINE IS TEXT, and it is rendered here rather than by whoever
-  ;; asked. A caller that received the rows and drew them itself would be
-  ;; a second opinion about what an outline looks like -- and the two
-  ;; would differ first at exactly the rows that are hardest to draw, the
-  ;; ones in a structural conflict.
+  ;; THE OUTLINE IS ROWS, AND ITS TEXT IS PRINTED FROM THEM. The text is
+  ;; still rendered here rather than by whoever asked: a caller that drew
+  ;; the rows itself would be a second opinion about what an outline
+  ;; looks like, and the two would differ first at exactly the rows that
+  ;; are hardest to draw, the ones in a structural conflict. A program
+  ;; reads the rows, a person the text, and both are one walk.
+  ;;
+  ;; A ROW is (row <id> <kind> <mode> <path> <label> <depth> <mark>
+  ;; <orphan> <group> (conflicts (<field> ...)) [(keywords "<s>")]
+  ;; [(signature "<s>")]): kind, mode and path are the view's values (#f
+  ;; when absent, a contested one its (conflict ...) datum), label what
+  ;; the text prints, mark the structural row's fourth element or #f,
+  ;; orphan #t when the structure lists the id as an orphan, group `tree`
+  ;; or `orphans`, the section the text prints it under, and conflicts
+  ;; the fields whose view value is contested, in the view's order. The
+  ;; two optional clauses are there exactly when the text prints that
+  ;; column for the row.
+  ;;
+  ;; ONE VIEW PER BLOCK. Each row reads its block's view once, and every
+  ;; element above comes from that record: a label computed by a second
+  ;; read would be a second opinion inside one listing.
   ;; NOTE: THE SECOND REST ARGUMENT IS OPTIONAL SO EVERY EXISTING CALLER IS
   ;; UNCHANGED, and `--with-keywords` is off unless it is asked for. A
   ;; listing that grew a suffix by default would change the bytes of
-  ;; every outline anybody has ever scripted against.
-  (define (outline-text state . limit)
+  ;; every outline anybody has ever scripted against. The third is the
+  ;; signature lookup, id -> the signature an editor supplied, or #f.
+  (define (outline-rows state . limit)
+    (let* ((depth-limit (if (pair? limit) (car limit) #f))
+           (with-keywords? (and (pair? limit) (pair? (cdr limit)) (cadr limit)))
+           (signature-of (if (and (pair? limit) (pair? (cdr limit)) (pair? (cddr limit)))
+                             (caddr limit)
+                             (lambda (id) #f)))
+           (structural (state-outline state))
+           (orphans (cdr (assq 'orphans (state-structure state))))
+           (out '()))
+      (define (children-of parent)
+        (filter (lambda (row) (equal? (car row) parent)) structural))
+      ;; WHAT THE TREE ALREADY DREW. A block can be both a structural
+      ;; conflict and an orphan -- a parent chain that closes on itself
+      ;; through a deleted block is one -- and `state-outline` relocates
+      ;; a cyclic row to the top, so the tree has already listed it.
+      ;; Listing it again under `orphans:` listed it twice, and walking it
+      ;; there listed its whole subtree twice. A listing says where each
+      ;; block is, once.
+      (define drawn '())
+      (define (row! id depth mark group)
+        (let* ((b (view-of state id))
+               (fs (if b (cdr (assq 'fields b)) '()))
+               (field (lambda (k) (let ((e (assq k fs))) (and e (cdr e)))))
+               (contested? (lambda (v) (and (pair? v) (eq? (car v) 'conflict))))
+               (keywords (field 'keywords))
+               (signature (signature-of id)))
+          (set! drawn (cons id drawn))
+          (set! out
+            (cons (append
+                    (list 'row id (field 'kind) (field 'mode) (field 'path)
+                          (label-of b structural id) depth mark
+                          (and (member id orphans) #t) group
+                          (list 'conflicts (map car (filter (lambda (e) (contested? (cdr e))) fs))))
+                    ;; NEVER: A BLOCK WITHOUT THE FIELD GETS NO KEYWORDS.
+                    ;; Empty brackets would say the writer chose no
+                    ;; keywords, which is a different thing from a store
+                    ;; written before the field existed; a contested
+                    ;; field is named in conflicts instead.
+                    (if (and with-keywords? (string? keywords)) (list (list 'keywords keywords)) '())
+                    (if signature (list (list 'signature signature)) '()))
+                  out))))
+      ;; A DEPTH LIMIT STOPS THE WALK, it does not filter the output: a
+      ;; filtered listing still pays to render everything, and on a
+      ;; corpus that is the difference between an outline and a dump.
+      ;; THE FOURTH ELEMENT OF A STRUCTURAL ROW NAMES A STRUCTURAL
+      ;; CONFLICT, and a row that has one has to say so: a block whose
+      ;; position never settled must not look like an ordinary one at the
+      ;; top level.
+      (define (walk parent depth group)
+        (for-each
+          (lambda (row)
+            (let ((id (caddr row))
+                  (mark (and (= 4 (length row)) (cadddr row))))
+              (when (or (not depth-limit) (< depth depth-limit))
+                (row! id depth mark group)
+                (walk id (+ depth 1) group))))
+          (children-of parent)))
+      (walk 'root 0 'tree)
+      ;; AN ORPHAN IS A ROOT, AND A ROOT IS WALKED. Listing the orphan and
+      ;; stopping there drops everything hanging under it: delete a block
+      ;; and its grandchildren leave the outline altogether, while staying
+      ;; in the store and in `read`. They are exactly as reachable as their
+      ;; parent, which this section lists, so a listing that omits them
+      ;; tells an operator the store has lost blocks it still holds.
+      ;;
+      ;; DEPTH 1 under the orphan, so a limit of one behaves here as it
+      ;; does at the top: the orphan itself is the row at depth 0.
+      ;; AND THE ORPHAN ROW OBEYS THE LIMIT THE TREE OBEYS. An orphan is a
+      ;; root, so it is a row at depth 0 -- and `--depth 0` asks for no
+      ;; rows at all. This section used to list its roots through the
+      ;; limit while the tree listed none of its own, so one number meant
+      ;; two things in one listing.
+      ;; Every marked structural row is a root's, drawn by the tree, so an
+      ;; orphan listed here has no mark.
+      (let ((left (if (and depth-limit (not (< 0 depth-limit)))
+                      '()
+                      (filter (lambda (id) (not (member id drawn))) orphans))))
+        (for-each (lambda (id)
+                    (row! id 0 #f 'orphans)
+                    (walk id 1 'orphans))
+                  left))
+      (reverse out)))
+
+  ;; THE TEXT FROM THE ROWS ALONE, byte for byte the listing a person has
+  ;; always seen: `orphans:` before the first row of that group, and the
+  ;; group's own roots print no `orphan` word, the section saying it.
+  ;; A row in the tree that is also an orphan says so after its mark: a
+  ;; block whose parent chain closes on itself through a deleted block is
+  ;; both, and the tree draws it once, so its row is the only place left
+  ;; to say the second thing.
+  (define (render-outline-rows rows)
     (let*-values (((out get) (open-string-output-port)))
-      (let* ((depth-limit (if (pair? limit) (car limit) #f))
-             (with-keywords? (and (pair? limit) (pair? (cdr limit)) (cadr limit)))
-             ;; id -> the signature an editor supplied, or #f; absent, no column
-             (signature-of (if (and (pair? limit) (pair? (cdr limit)) (pair? (cddr limit)))
-                               (caddr limit)
-                               (lambda (id) #f)))
-             (put-signature
-               (lambda (id)
-                 (let ((sig (signature-of id)))
-                   (when sig
-                     (put-string out "  :: ")
-                     (put-string out sig)))))
-             (keywords-of
-               (lambda (id)
-                 (let* ((block (state-read state id))
-                        (fields (and block (assq 'fields block)))
-                        (e (and fields (assq 'keywords (cdr fields)))))
-                   (and e (string? (cdr e)) (cdr e)))))
-             (put-keywords
-               (lambda (id)
-                 (when with-keywords?
-                   (let ((k (keywords-of id)))
-                     ;; NEVER: A BLOCK WITHOUT THE FIELD PRINTS NO BRACKETS.
-                     ;; Empty brackets would say the writer chose no
-                     ;; keywords, which is a different thing from a store
-                     ;; written before the field existed.
-                     (when k
-                       (put-string out "  [")
-                       (put-string out k)
-                       (put-string out "]"))))))
-             (rows (state-outline state))
-             (structure (state-structure state))
-             (orphans (cdr (assq 'orphans structure))))
-        (define (children-of parent)
-          (filter (lambda (row) (equal? (car row) parent)) rows))
-        ;; WHAT THE TREE ALREADY DREW. A block can be both a structural
-        ;; conflict and an orphan -- a parent chain that closes on itself
-        ;; through a deleted block is one -- and `state-outline` relocates
-        ;; a cyclic row to the top, so the tree above has already printed
-        ;; it. Printing it again under `orphans:` listed it twice, and
-        ;; walking it there listed its whole subtree twice. A listing says
-        ;; where each block is, once.
-        (define drawn '())
-        ;; A DEPTH LIMIT STOPS THE WALK, it does not filter the output: a
-        ;; filtered listing still pays to render everything, and on a
-        ;; corpus that is the difference between an outline and a dump.
-        (define (walk parent depth)
-          (for-each
-            (lambda (row)
-              (let ((id (caddr row))
-                    ;; THE FOURTH ELEMENT NAMES A STRUCTURAL CONFLICT, and
-                    ;; a row that has one has to say so. The reduction
-                    ;; marks these rows and this printer used to drop the
-                    ;; mark, so a block whose position never settled
-                    ;; rendered exactly like an ordinary one at the top
-                    ;; level -- the library knew and the command line did
-                    ;; not, which is the same failure as saying half of
-                    ;; something.
-                    (mark (and (= 4 (length row)) (cadddr row))))
-                (when (or (not depth-limit) (< depth depth-limit))
-                  (set! drawn (cons id drawn))
-                  (put-string out (make-string (* 2 depth) #\space))
-                  (put-string out "- ")
-                  (put-string out id)
-                  (put-string out "  ")
-                  (put-string out (title-of state id))
-                  (when mark
-                    (put-string out "  ")
-                    (put-string out (symbol->string mark)))
-                  ;; AND IT SAYS SO IF IT IS ALSO AN ORPHAN. A block whose
-                  ;; parent chain closes on itself through a deleted block
-                  ;; is both, and the tree draws it once -- so the row the
-                  ;; tree draws is the only place left to say the second
-                  ;; thing. Without this, a self-cycle and a cycle through
-                  ;; a deleted ancestor print identically, and only the
-                  ;; second leaves the block unreachable from any root.
-                  ;; `conflicts` still reports both facts; this keeps the
-                  ;; listing from being the one view that does not.
-                  (when (member id orphans)
-                    (put-string out "  orphan"))
-                  (put-keywords id)
-                  (put-signature id)
-                  (put-string out "\n")
-                  (walk id (+ depth 1)))))
-            (children-of parent)))
-        (walk 'root 0)
-        ;; AN ORPHAN IS A ROOT, AND A ROOT IS WALKED. Listing the
-        ;; orphan and stopping there drops everything hanging under it:
-        ;; delete a block and its grandchildren leave the outline
-        ;; altogether, while staying in the store and in `read`. They are
-        ;; not deleted and not unreachable -- they are exactly as
-        ;; reachable as their parent, which this section is printing --
-        ;; so a listing that omits them tells an operator the store has
-        ;; lost blocks it still holds.
-        ;;
-        ;; DEPTH 1, so a limit of one behaves here as it does at the top:
-        ;; the orphan itself is the row at depth 0.
-        ;; AND THE ORPHAN ROW OBEYS THE LIMIT THE TREE OBEYS. An orphan
-        ;; is a root, so it is a row at depth 0 -- and `--depth 0` asks
-        ;; for no rows at all. This section used to print its roots
-        ;; through the limit while the tree above printed none of its
-        ;; own, so one number meant two things in one listing.
-        (let ((left (if (and depth-limit (not (< 0 depth-limit)))
-                        '()
-                        (filter (lambda (id) (not (member id drawn))) orphans))))
-          (unless (null? left)
-            (put-string out "orphans:\n")
-            (for-each (lambda (id)
-                        (set! drawn (cons id drawn))
-                        (put-string out "- ")
-                        (put-string out id)
-                        (put-string out "  ")
-                        (put-string out (title-of state id))
-                        (put-keywords id)
-                        (put-signature id)
-                        (put-string out "\n")
-                        (walk id 1))
-                      left)))
-        (get))))
+      (let loop ((rows rows) (in-orphans? #f))
+        (unless (null? rows)
+          (let* ((r (car rows))
+                 (depth (list-ref r 6))
+                 (mark (list-ref r 7))
+                 (group (list-ref r 9))
+                 (extra (list-tail r 11))
+                 (keywords (assq 'keywords extra))
+                 (signature (assq 'signature extra)))
+            (when (and (eq? group 'orphans) (not in-orphans?))
+              (put-string out "orphans:\n"))
+            (put-string out (make-string (* 2 depth) #\space))
+            (put-string out "- ")
+            (put-string out (list-ref r 1))
+            (put-string out "  ")
+            (put-string out (list-ref r 5))
+            (when mark
+              (put-string out "  ")
+              (put-string out (symbol->string mark)))
+            (when (and (list-ref r 8) (not (and (eq? group 'orphans) (= depth 0))))
+              (put-string out "  orphan"))
+            (when keywords
+              (put-string out "  [")
+              (put-string out (cadr keywords))
+              (put-string out "]"))
+            (when signature
+              (put-string out "  :: ")
+              (put-string out (cadr signature)))
+            (put-string out "\n")
+            (loop (cdr rows) (or in-orphans? (eq? group 'orphans))))))
+      (get)))
+
+  ;; THE LISTING ALONE, for a caller that wants only the text; the rest
+  ;; arguments are those of `outline-rows`.
+  (define (outline-text state . limit)
+    (render-outline-rows (apply outline-rows state limit)))
+
+  ;; THE OUTLINE'S ANSWER: the text first, where every reader of `(ok
+  ;; (text` looks for it, then the rows it was printed from, present even
+  ;; when there are none.
+  (define (outline-answer rows)
+    (list 'ok (list 'text (render-outline-rows rows)) (cons 'rows rows)))
 
   ;; ---- intents --------------------------------------------------------------
 
@@ -1907,14 +1941,17 @@
                          w
                          (guarded (lambda ()
                                     (let ((st (if w (caddr w) (reduction-for store state)))
-                                          (marking (if w (list (list 'working (cadr w))) '())))
+                                          (marking (if w (list (list 'working (cadr w))) '()))
+                                          (limit (and depth (count-argument depth))))
+                                      ;; THE ROWS GO SECOND, after the text and before
+                                      ;; every clause the answer carried without them,
+                                      ;; which keep their order.
                                       (if (not (and with-signatures (derived-tables? store 'signatures)))
-                                          (append (text (outline-text st (and depth (count-argument depth)) with-keywords))
+                                          (append (outline-answer (outline-rows st limit with-keywords))
                                                   (receipt st #f) marking)
                                           (let-values (((signature-of finish) ((derived 'outline-signatures) store st)))
-                                            (let ((listing (outline-text st (and depth (count-argument depth))
-                                                                         with-keywords signature-of)))
-                                              (append (text listing) (finish) (receipt st #f) marking))))))))))))))
+                                            (let ((listing (outline-answer (outline-rows st limit with-keywords signature-of))))
+                                              (append listing (finish) (receipt st #f) marking))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections

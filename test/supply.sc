@@ -685,7 +685,13 @@
   (find (lambda (l) (has-substring? l (string-append "- " id "  "))) (lines-of text)))
 (define (outline-with-signatures st) (ask st 'outline "--with-signatures"))
 (define (text-of-answer a) (and (pair? a) (pair? (cdr a)) (pair? (cadr a)) (cadr (cadr a))))
-(define (clauses-after-text a) (if (and (pair? a) (list? a) (> (length a) 2)) (cddr a) '()))
+(define (rows-clause? a) (and (list? a) (> (length a) 2) (pair? (caddr a)) (eq? (car (caddr a)) 'rows)))
+;; THE CLAUSES AFTER THE TEXT AND ITS ROWS: the rows are outline-rows.sc's
+;; to check, so the tails below stay exact; an answer without the rows
+;; clause is told apart by rows-clause?, not by this tail.
+(define (clauses-after-text a)
+  (let ((after (if (and (pair? a) (list? a) (> (length a) 2)) (cddr a) '())))
+    (if (rows-clause? a) (cdr after) after)))
 (define (row-signature text id)
   (let ((r (outline-row text id)))
     (and r (let loop ((i 0))
@@ -700,10 +706,10 @@
 (define r1-gamma (id-in r1 "function gamma"))
 (define r1-delta (id-in r1 "function delta"))
 (define r1-plain (ask r1 'read r1-alpha))
-(want "D9 control: before any supply, --signature answers absent with no via and no stale; outline --with-signatures carries no clause"
+(want "D9 control: before any supply, --signature answers absent with no via and no stale; outline --with-signatures carries its rows and no clause after them"
       (in-order (and r1-alpha r1-beta r1-gamma r1-delta #t) (sig-of r1 r1-alpha)
-            (clauses-after-text (outline-with-signatures r1)))
-      (list #t '(ok (signature absent)) '()))
+            (rows-clause? (outline-with-signatures r1)) (clauses-after-text (outline-with-signatures r1)))
+      (list #t '(ok (signature absent)) #t '()))
 ;; alpha's signature depends on delta in c.js (a dependency of alpha only);
 ;; gamma's comes from another supply, of another version.
 (want "D1 two supplies: alpha's (1.140.0, a.js and c.js) and gamma's (1.141.0, b.js)"

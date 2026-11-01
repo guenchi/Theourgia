@@ -41,13 +41,23 @@
            (let ((l (list-ref answer (- (length answer) 1)))) (and (pair? l) (eq? (car l) 'cut))))
       (list-head answer (- (length answer) 1))
       answer))
+;; THE ROWS AN OUTLINE CARRIES AFTER ITS TEXT are outline-rows.sc's to
+;; check; these rows compare the text without them, and read the ids the
+;; rows list, in their order: an answer with no rows clause is red.
+(define (without-rows answer)
+  (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'rows)))) answer))
+(define (row-ids answer)
+  (let ((r (find (lambda (c) (and (pair? c) (eq? (car c) 'rows))) (cdr answer))))
+    (and r (map cadr (cdr r)))))
 (when (string=? mode "outline")
   (check 'delete-parent (rpc-ok? (rpc-dispatch d (list 'del a) "review")))
   (let ((answer (without-receipt (rpc-dispatch d '(outline) "review"))))
     (check 'orphan-subtree-visible
-      (equal? answer (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n  - " c "  C\n"))))))
-  (check 'depth-limit-on-orphan-subtree
-    (equal? (without-receipt (rpc-dispatch d '(outline "--depth" "1") "review"))
-            (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n"))))))
+      (and (equal? (without-rows answer) (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n  - " c "  C\n"))))
+           (equal? (row-ids answer) (list b c)))))
+  (let ((answer (without-receipt (rpc-dispatch d '(outline "--depth" "1") "review"))))
+    (check 'depth-limit-on-orphan-subtree
+      (and (equal? (without-rows answer) (list 'ok (list 'text (string-append "orphans:\n- " b "  B\n"))))
+           (equal? (row-ids answer) (list b))))))
 (write (list 'failures bad)) (newline)
 (exit (if (= bad 0) 0 1))
