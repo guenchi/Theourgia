@@ -613,6 +613,93 @@ for path in sys.argv[1:]:
       (map (lambda (e) (list (car e) (cadr e))) (unused-allowances lits))
       '())
 
+;; ---- the socket root ------------------------------------------------------
+;;
+;; A SOCKET PATH IS BUILT UNDER THEOURGIA_TEST_SOCK, NEVER UNDER THE SCRATCH
+;; ROOT. A socket path has to fit sun_path (104 bytes here), and a start
+;; reserves 13 more for the daemon's private name. The runner's socket root
+;; is short so that it always fits; the scratch root is as long as the
+;; directory a run was started in. A socket built under the scratch root
+;; turns red or green with that directory's name: client-start's CS-9 order
+;; row answered socket-path-too-long for socket-dir-missing under a gate
+;; whose work root was three bytes longer, on the base as on the tree.
+;;
+;; READ AS CODE, with Chez's reader, as the literals above are: a socket
+;; path is put together at run time, so no literal holds it, and the rule is
+;; the form that builds one. A form (string-append <name> ... "<s>.sock" ...)
+;; whose first operand is one of the names the fixtures give the scratch
+;; root is a violation; a comment is not a form, and a string holding that
+;; text is a string. A line pattern cannot say where a form ends, and the
+;; one tried read change-stream-guard's two forms on one line, a scratch
+;; path and then a socket under its socket root, as one.
+;;
+;; STATED LIMITS: a scratch root under a name not listed, or a socket path
+;; built through a helper, a format string or a variable holding the
+;; scratch root's "/..." suffix, is not seen.
+(define scratch-root-names '(here scratch-base scratch root dir work))
+;; -> (values hits seen unreadable): hits "<file>:<line>" for each violation,
+;; seen the number of string-append forms with a "<s>.sock" operand under any
+;; first operand, unreadable as in scheme-literals.
+(define (scratch-sockets rel text)
+  (guard (e (#t (values '() 0 (list rel (if (and (condition? e) (message-condition? e))
+                                              (condition-message e) 'unreadable)))))
+    (let* ((sfd (make-source-file-descriptor rel (open-bytevector-input-port (string->utf8 text))))
+           (p (open-string-input-port text))
+           (forms (let loop ((bfp 0) (acc '()))
+                    (let-values (((a nb) (get-datum/annotations p sfd bfp)))
+                      (if (eof-object? a) (reverse acc) (loop nb (cons a acc))))))
+           (hits '())
+           (seen 0))
+      (define (socket-operand? items)
+        (exists (lambda (i) (let ((s (unwrap i))) (and (string? s) (suffix? s ".sock")))) items))
+      (for-each
+        (lambda (a)
+          (let walk ((x a))
+            (let ((d (unwrap x)))
+              (cond
+                ((pair? d)
+                 (let ((items (unwrap-list x)))
+                   (when (and (eq? (unwrap (car items)) 'string-append)
+                              (pair? (cdr items))
+                              (socket-operand? (cddr items)))
+                     (set! seen (+ seen 1))
+                     (when (memq (unwrap (cadr items)) scratch-root-names)
+                       (set! hits (cons (format "~a:~a" rel
+                                                (if (annotation? x)
+                                                    (line-of text (source-object-bfp (annotation-source x)))
+                                                    0))
+                                        hits))))
+                   (for-each walk items)))
+                ((vector? d) (vector-for-each walk d))
+                (else (void))))))
+        forms)
+      (values (reverse hits) seen #f))))
+(define scheme-files (filter (lambda (f) (or (suffix? f ".sc") (suffix? f ".ss"))) files))
+(define socket-reading
+  (map (lambda (f) (call-with-values (lambda () (scratch-sockets f (text-of script-dir f))) list))
+       scheme-files))
+(want (format "TP-S1 no socket path is built under the scratch root: no (string-append <name> ... \"<s>.sock\" ...) with <name> one of ~a, over the Scheme files read, which hold more than 20 such forms under the socket root"
+              scratch-root-names)
+      (list (> (length scheme-files) 100)
+            (> (apply + (map cadr socket-reading)) 20)
+            (apply append (map car socket-reading))
+            (filter values (map caddr socket-reading)))
+      '(#t #t () ()))
+(want "TP-S1 control: a planted socket under here is found at the line its form starts, nested operands and a form across two lines too; under sock-here, in a comment, or in a scratch path beside a socket under its socket root it is not"
+      (call-with-values
+        (lambda ()
+          (scratch-sockets "planted.sc"
+                           (string-append "(define a 1)\n"
+                                          "(f (string-append here \"/no-such-dir/x.sock\"))\n"
+                                          "(f (string-append sock-here \"/x.sock\"))\n"
+                                          ";; (f (string-append here \"/c.sock\"))\n"
+                                          "(f (string-append here \"/s-\" (number->string 1) \".sock\"))\n"
+                                          "(f (string-append scratch \"/a\") (string-append sockets \"/b.sock\"))\n"
+                                          "(f (string-append\n"
+                                          "   here \"/m.sock\"))\n")))
+        list)
+      '(("planted.sc:2" "planted.sc:5" "planted.sc:7") 5 #f))
+
 ;; ---- the negatives --------------------------------------------------------
 ;;
 ;; Each reads a copy of one file with one thing changed and asks for the

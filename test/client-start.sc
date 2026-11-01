@@ -595,7 +595,7 @@
         (and (pair? a) (list (car a) (cadr a))))
       '(error socket-path-too-long))
 (want "CS-9 order: a store that is not there, given a socket in a directory that is not there, is refused for the directory"
-      (let ((a (ensure-daemon! (absent-argv absent9) absent9 (string-append here "/no-such-dir/x.sock"))))
+      (let ((a (ensure-daemon! (absent-argv absent9) absent9 (string-append sock-here "/no-such-dir/x.sock"))))
         (and (pair? a) (list (car a) (cadr a))))
       '(error socket-dir-missing))
 ;; RESIDUE IS KEPT: what an earlier start left under <run>/<key> -- a lock,
