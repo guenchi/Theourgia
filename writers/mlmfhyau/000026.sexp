@@ -132,3 +132,7 @@ c266d416 (2001 1793526576313 ("landing-commit" ("mlmfhyau" . "w-30806-1793526566
 b1ac0be1 (2006 1793526588724 "guenchi" (("4gm4c2jr" . 3240) ("w5vbequy" . 14982)) (set "mlmfhyau.1jm" base "4fe8bc819b44b546b3eb6d159a5290763dfcbc90"))
 69523f84 (2007 1793526591177 "guenchi" (("4gm4c2jr" . 3240) ("w5vbequy" . 14982)) (set "mlmfhyau.1jm" status "done"))
 e2d1d26c (2008 1793526593618 "guenchi" (("4gm4c2jr" . 3240) ("mlmfhyau" . 2007) ("w5vbequy" . 14982)) (tag "freeze-f16a" (("4gm4c2jr" . 3240) ("mlmfhyau" . 2007) ("w5vbequy" . 14982))))
+e29b8545 (2009 1793526873894 "import-git" (("4gm4c2jr" . 3240) ("w5vbequy" . 14982)) (put ((kind . decision) (slot . "import") (from . "e5d3f448982ee8b52bc6b2bacec2d98a1eb61433") (to . "b06c5d09edd015b48eccbcf05a40142897b28392") (tag . "guard-empty-b06c5d0") (status . "pending") (src . "test: the guard expect file emptied after the landing it listed\n") (parent . root) (ord . 581))))
+170d1936 (2010 1793526876383 "import-git" (("4gm4c2jr" . 3240) ("w5vbequy" . 14982)) (set "w5vbequy.2oo" src #vu8"KCkK"))
+0ff072d6 (2011 1793526876396 "import-git" (("4gm4c2jr" . 3240) ("w5vbequy" . 14982)) (set "mlmfhyau.1jt" status "done"))
+a1f88c11 (2012 1793526876398 "import-git" (("4gm4c2jr" . 3240) ("mlmfhyau" . 2011) ("w5vbequy" . 14982)) (tag "guard-empty-b06c5d0" (("4gm4c2jr" . 3240) ("mlmfhyau" . 2011) ("w5vbequy" . 14982))))
