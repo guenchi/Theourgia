@@ -241,7 +241,7 @@ differences — and is never an error.
 
 ### `read`
 
-    (read <id> ("--md") ("--recursive") ("--writer" <name>)
+    (read <id> ("--md") ("--recursive") ("--ast") ("--writer" <name>)
           ("--working") ("--working-info") ("--signature") ("--cut" <cut>) ("--rev"))
 
 It answers:
@@ -249,6 +249,7 @@ It answers:
     (ok <block> (version "<hash>") (cut <cut>) (versions ((<id> . "<hash>"))))
     (ok (items <block> ...) (versions ((<id> . "<hash>") ...)) (cut <cut>))
     (ok (text "<markdown>") (cut <cut>) (versions ((<id> . "<hash>") ...)))
+    (ok (block <id> <entries> (hash "<hash>") (ast <node> ...)) (cut <cut>) (versions ((<id> . "<hash>"))))
 
 What a block says. Without options it is one block as data; `--md` gives its own
 bytes — the heading line it was written with, then its body.
@@ -342,6 +343,48 @@ ends with one — put it back where it came from and the file is reproduced exac
 
 Neither `--md` nor `--recursive` takes a value and both are stripped before the id
 is read, so the two orders are the same request.
+
+**`--ast` gives a block's body as a parsed tree**, for a program that renders or
+edits store content without parsing markdown itself. The answer is `(ok (block
+<id> <entries> (hash <h>) (ast <node> ...)) <validity> <receipt>)`: `<entries>`
+are the plain read's record after its id, as it prints them (`(deleted . <bool>)`,
+`(fields ...)`, `(position <parent> . <ord>)` or `(position conflict <n>)`,
+`(edges ...)`), so a field or a position in conflict prints its conflict form;
+`<h>` is the block's version, `(unavailable (reason ...))` when it cannot be
+hashed, or `#f` for a deleted block; the validity clause is the plain read's;
+and the receipt is every read's. With `--recursive` it is `(ok (items (block ...)
+...) (versions ...) <listed validity> (cut <cut>))`, the items in the order
+`read --recursive` gives, a deleted block absent from the versions. `--cut`
+reads the tree as it was at the cut, references included. `--ast` with `--md`,
+`--working`, `--working-info` or `--signature` is refused with `(error
+bad-request incompatible-ast-options)`; the refusals of `--cut` and `--rev` come
+first, and with `--rev` an answer gains its `(rev ...)` as any read does.
+
+The tree is the body of a block of a kind the markdown projection writes
+(`doc`, `section`, `decision`, `task`): its `src`, without the front matter or
+the heading line, which are fields. A `src` stored as bytes
+is read as `--md` reads it. A deleted block, and a block of any other kind,
+answers `(ast #f)`; a block of those kinds whose `src` is not text (bytes that are not
+UTF-8, or a value in conflict) answers `(ast #f (note src-not-text))`. The block
+nodes are `(para <inline> ...)`, `(list <ordered?> <start> (item <block> ...)
+...)`, `(code <fence> <lang> "<text>")`, `(quote <block> ...)`, `(hr)` and
+`(raw-md "<text>")`, which keeps whole what the parser does not take apart (a
+table, an HTML block, a footnote, a four-space indented code block). The inline
+nodes are strings, `(em <inline> ...)`, `(strong <inline> ...)`, `(code
+"<text>")`, `(link "<href>" <inline> ...)`, `(br)` and a reference, `(ref
+"<lexeme>" "<key>" <target>)`: the lexeme as written (`[[X|shown]]`), the key
+with a `|display` part dropped and a trailing `.md` removed, and the target the
+id of the LIVE block it names, or `#f`. A target is resolved in the state the
+answer was read from by two spellings, each with a leading `ent:` removed: the
+bracket text with its `.md` kept, then the key; so `[[X]]`, `[[X.md]]`,
+`[[X|shown]]` and `[[ent:X]]` all name a live `X`, and a block whose id itself
+ends in `.md` is still reached. A deleted block is never a target. Nothing
+inside code, a code span or `raw-md` is a reference. The tree printed back as
+markdown, a reference by its lexeme, parses to the same tree.
+
+**The grammar grows**, and a reader of `--ast` pins the shape it read: source
+spans on every node are coming (a reference's fourth element after the
+target), and resolution by a document's name as well as by id.
 
 **`--working` reads the writer's own view**: the committed store with that
 writer's drafts laid over the blocks they cover. `--writer` names whose;

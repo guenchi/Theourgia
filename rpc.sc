@@ -55,7 +55,8 @@
           (only (theourgia request) req-id-ok?)
           (rnrs eval)
           (theourgia arguments) (theourgia md)
-          (only (theourgia markers) src-text))
+          (only (theourgia markers) src-text)
+          (only (theourgia trace) trace-event!))
 
   ;; ---- answers --------------------------------------------------------------
 
@@ -708,7 +709,7 @@
          (usage subscribe-usage)))
 
   (define read-usage-form
-    '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
+    '(read <id> ["--md"] ["--recursive"] ["--ast"] ["--writer" <name>]
            ["--working"] ["--working-info"] ["--signature"] ["--cut" <cut>] ["--rev"]))
 
   ;; <file> BEFORE THE OPTIONAL GROUPS: the positional slots are read off
@@ -1328,7 +1329,7 @@
       (list 'outline outline-usage
             "List the blocks as a tree of titles." #f 'daemon)
       (list 'read read-usage-form
-            "Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. With --cut, the block as it was at a causal cut (a literal or a tag name): the same answer over that cut's state, or unknown-id where the block did not exist yet." #f 'daemon)
+            "Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view. With --cut, the block as it was at a causal cut (a literal or a tag name): the same answer over that cut's state, or unknown-id where the block did not exist yet. With --ast, the body of a block the markdown projection writes, as a markdown tree, each reference carrying its live target." #f 'daemon)
       (list 'refs '(refs <id>)
             "List the relations a block takes part in." #f 'daemon)
       (list 'reach '(reach <id> ["--rel" <rel>] ["--depth" <n>])
@@ -1950,10 +1951,82 @@
                 ;; request's own, or a fresh fold) or the state at a causal cut. It
                 ;; is defined here, inside the handler, so the facade gate's walk of
                 ;; `(items ...)` sites still finds this verb's.
+                ;; ONE BLOCK AS --ast ANSWERS IT, paired with its hash, or #f for an
+                ;; id the state does not hold. What is paired is the block form
+                ;; without its `block` tag, which the caller puts on where it builds
+                ;; the answer (so the facade gate's walk reads the literal tag at the
+                ;; items site): the id, the record a plain read prints, its entries
+                ;; after the id copied as they are (a field or a position in conflict
+                ;; prints its conflict form), then the hash and the tree. The hash is
+                ;; read-version's answer: a string, `(unavailable (reason ...))`, or
+                ;; #f for a tombstone. A tombstone has no tree whatever its kind; a
+                ;; live block of a kind the markdown projection writes (project.sc's
+                ;; md-kinds, not a list of its own here) has the tree of its own
+                ;; body, src only (front and heading-src are fields), its references
+                ;; resolved in the same state; any other kind has none.
+                ;; A src that is bytes is read as --md reads it, through src-text;
+                ;; bytes that are not that text's UTF-8, or a src in conflict, are
+                ;; not text and have no tree.
+                (define (ast-block-form state id)
+                  (let ((b (view-of state id)))
+                    (and b
+                         (let* ((h (read-version state id))
+                                (fs (cdr (assq 'fields b)))
+                                (kind (let ((e (assq 'kind fs))) (and e (cdr e))))
+                                (src (let ((e (assq 'src fs))) (if e (cdr e) "")))
+                                (body (cond ((string? src) src)
+                                            ((bytevector? src) (src-text src))
+                                            (else #f))))
+                           (cons (append (list id)
+                                         (cdr b)
+                                         (list (list 'hash h)
+                                               (cond ((cdr (assq 'deleted b)) '(ast #f))
+                                                     ((not (memq kind (project-entry 'md-kinds))) '(ast #f))
+                                                     ((not body) '(ast #f (note src-not-text)))
+                                                     (else (cons 'ast (ast-with-targets state (md->blocks body)))))))
+                                 h)))))
                 (define (read-from store args options state writer)
                   (let ((md? (argument-option options "--md"))
                         (deep? (argument-option options "--recursive")) (rest args))
                     (cond
+                      ;; --ast IS JUDGED FIRST HERE, AND LAST OVERALL: the handler
+                      ;; below has already refused a malformed request (usage), --rev
+                      ;; with --cut (incompatible-cut-options), --rev with
+                      ;; --working-info or --signature (incompatible-rev-options),
+                      ;; --rev with no publication (no-published-state) and --cut with
+                      ;; a draft option or --signature (incompatible-cut-options), in
+                      ;; that order, before it calls this. What is left to refuse is
+                      ;; --ast with an option that asks for another answer. --writer
+                      ;; alone is accepted and changes nothing, as for a plain read.
+                      ;; With --recursive the clauses after the items are the ones a
+                      ;; --recursive read appends, the versions built from the hashes
+                      ;; the items already carry; a single block's hash is handed to
+                      ;; the receipt, so it is computed once.
+                      ((argument-option options "--ast")
+                       (if (or md? (argument-option options "--working") (argument-option options "--working-info")
+                               (argument-option options "--signature"))
+                           '(error bad-request incompatible-ast-options)
+                           (guarded
+                             (lambda ()
+                               (trace-event! 'read-ast (car rest) #f)
+                               (let ((state (reduction-for store state)))
+                                 (if deep?
+                                     (let ((ids ((project-entry 'subtree-ids) state (car rest))))
+                                       (if (not ids)
+                                           (unknown-id state (car rest))
+                                           (let ((forms (map (lambda (id) (ast-block-form state id)) ids)))
+                                             (append (items (map (lambda (f) (cons 'block (car f))) forms))
+                                                     (list (list 'versions
+                                                                 (filter cdr (map (lambda (id f) (cons id (cdr f))) ids forms))))
+                                                     (validity-clauses (lifecycle-of state) 'listed-validity-clause ids)
+                                                     (receipt state #f '(cut))))))
+                                     (let ((f (ast-block-form state (car rest))))
+                                       (if (not f)
+                                           (unknown-id state (car rest))
+                                           (append (list 'ok (cons 'block (car f)))
+                                                   (validity-clauses (lifecycle-of state) 'read-validity-clause (car rest))
+                                                   (receipt state (list (car rest)) '(cut versions)
+                                                            (list (cons (car rest) (cdr f)))))))))))))
                       ((argument-option options "--signature")
                        ((derived 'read-signature-verb) dispatch-helper store (car rest) options state writer))
                       ((or (argument-option options "--working") (argument-option options "--working-info"))

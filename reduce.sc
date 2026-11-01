@@ -50,6 +50,7 @@
           derive-value-reason state-derived state-derived-names state-derived-all state-derived-contested
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
+          resolve-ref-target ast-with-targets
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
           state-structure state-siblings state-sibling-last-ord state-sibling-bracket reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
@@ -2194,6 +2195,76 @@
                  ;; one question, and the edge set is as much a part of
                  ;; the block as any field.
                  (cons 'edges (block-edges r id))))))
+
+  ;; THE BLOCK A REFERENCE NAMES: the id of a LIVE block in R, or #f. A
+  ;; reference is md.sc's `(ref "<lexeme>" "<key>")`, the key being the
+  ;; bracket text with a `|display` part dropped, trimmed, and a trailing
+  ;; `.md` removed. Two spellings are tried, each with a leading `ent:`
+  ;; removed, in this order: the RAW one, the key with its `.md` given back
+  ;; when the bracket text had one, then the key. The raw one comes first
+  ;; because an id can itself end in `.md` (a writer's event 805 is
+  ;; sequence `md`), and the key alone has lost that suffix. The raw
+  ;; spelling is rebuilt from the key rather than trimmed again here, so
+  ;; the trimming rule stays md.sc's; only the question whether the
+  ;; bracket text ended in `.md` is asked of the lexeme. A tombstone never
+  ;; resolves.
+  ;;
+  ;; R IS THE STATE THE READ ANSWERS FROM: the present, or the state at a
+  ;; cut. A historical read resolved against the present would name
+  ;; targets that did not exist yet and miss ones deleted since.
+  (define (resolve-ref-target r lexeme key)
+    (define (strip-ent s)
+      (if (and (>= (string-length s) 4) (string=? (substring s 0 4) "ent:"))
+          (substring s 4 (string-length s))
+          s))
+    (define (live s)
+      (let ((b (find-block r s)))
+        (and b (not (blk-tomb b)) s)))
+    ;; The bracket text ends where md.sc's key ends: at the first bar, or
+    ;; at the closing brackets, less the blanks ref-key trims on the right.
+    (define (written-with-md?)
+      (let* ((n (string-length lexeme))
+             (bar (let loop ((i 2))
+                    (cond ((>= i (- n 2)) (- n 2))
+                          ((char=? (string-ref lexeme i) #\|) i)
+                          (else (loop (+ i 1))))))
+             (end (let loop ((j bar))
+                    (if (and (> j 2) (memv (string-ref lexeme (- j 1)) '(#\space #\tab #\return)))
+                        (loop (- j 1))
+                        j))))
+        (and (>= (- end 2) 3) (string=? (substring lexeme (- end 3) end) ".md"))))
+    (and (string? key)
+         (or (and (string? lexeme) (>= (string-length lexeme) 4) (written-with-md?)
+                  (live (strip-ent (string-append key ".md"))))
+             (live (strip-ent key)))))
+
+  ;; A PARSED TREE WITH EVERY REFERENCE'S TARGET FILLED IN. TREE is a list
+  ;; of md.sc block nodes, as md->blocks answers it, and the answer is the
+  ;; same list with each `(ref <lexeme> <key>)` replaced by `(ref <lexeme>
+  ;; <key> <target>)`, the target resolved in R. Every node that holds
+  ;; inlines or blocks is visited: para, the inline children of em, strong
+  ;; and link (after the href), quote's blocks and each list item's blocks.
+  ;; code, hr and raw-md are leaves, and the scalar slots (ordered?, start,
+  ;; fence, lang, href) keep their positions. md.sc's printer reads a ref
+  ;; by its lexeme, so the longer node prints as the shorter one did.
+  (define (ast-with-targets r tree)
+    (define (inline x)
+      (cond ((not (pair? x)) x)
+            ((and (eq? (car x) 'ref) (= (length x) 3))
+             (list 'ref (cadr x) (caddr x) (resolve-ref-target r (cadr x) (caddr x))))
+            ((memq (car x) '(em strong)) (cons (car x) (map inline (cdr x))))
+            ((and (eq? (car x) 'link) (pair? (cdr x))) (cons* 'link (cadr x) (map inline (cddr x))))
+            (else x)))
+    (define (item x)
+      (if (and (pair? x) (eq? (car x) 'item)) (cons 'item (map node (cdr x))) x))
+    (define (node x)
+      (cond ((not (pair? x)) x)
+            ((eq? (car x) 'para) (cons 'para (map inline (cdr x))))
+            ((eq? (car x) 'quote) (cons 'quote (map node (cdr x))))
+            ((and (eq? (car x) 'list) (>= (length x) 3))
+             (cons* 'list (cadr x) (caddr x) (map item (cdddr x))))
+            (else x)))
+    (map node tree))
 
   ;; WHAT POINTS AT THIS BLOCK, the mirror of block-edges and held to the
   ;; same discipline: the logical edge set, one entry per (from, rel)

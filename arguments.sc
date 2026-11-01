@@ -238,7 +238,7 @@
       ;; `search` answers its best ten unless asked for everything.
       ((search) '("--all" "--all-validity"))
       ((whereis) '("--all-validity"))
-      ((read) '("--md" "--recursive" "--working" "--working-info" "--signature" "--rev"))
+      ((read) '("--md" "--recursive" "--ast" "--working" "--working-info" "--signature" "--rev"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.
       ;;

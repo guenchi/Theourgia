@@ -1089,11 +1089,23 @@ while (my $c = $srv->accept) {
               (want "LV-6 version-1 frames get byte-identical answers from this daemon and the base's (outline, describe, a missing block, a refusal), and the base tree's own CLI prints the same against both, but a frame whose verb the guard's expect file lists"
                     (map (lambda (v a b) (if (out? v) 'left-out (equal? a b)))
                          verbs (cons (car new) (cdddr new)) (cons (car old) (cdddr old)))
-                    (map (lambda (v) (if (out? v) 'left-out #t)) verbs)))
-            (want "LV-6 the base tree's MCP server (initialize, tools/list, a tools/call of outline) prints the same against this daemon and the base's, and each is that answer read as messages, id 3 the outline's own (ok (text ...)); the same with id 3 an isError result holding the four strings is not, nor with id 3 a successful result carrying an unknown-id refusal of f0.sc"
-                  (list (same-or-where (cadr new) (cadr old)) (mcp-ok? (cadr new)) (mcp-ok? (cadr old))
-                        (four-strings? (forged (cadr new))) (mcp-ok? (forged (cadr new))) (mcp-ok? (refused (cadr new))))
-                  '(#t #t #t #t #f #f))
+                    (map (lambda (v) (if (out? v) 'left-out #t)) verbs))
+              ;; NOTE: AND THE MCP SERVER'S tools/list GOES BY THE SAME RULE. The
+              ;; base tree's server describes each tool with the description the
+              ;; daemon's describe answers, so a change to a verb's description
+              ;; changes these bytes as it changes the describe frame's. When
+              ;; describe is listed, the whole-output comparison reads left-out
+              ;; on both sides, with its own line; the other five checks do not
+              ;; compare the two daemons and run whatever the file lists.
+              (when (out? 'describe)
+                (printf "LV-6 left out: the tools/list comparison, describe listed in change-stream-guard-expect.sexp: ~a~%"
+                        (let ((x (out? 'describe)))
+                          (if (and (pair? (cdr x)) (string? (cadr x))) (cadr x) "(no reason given)"))))
+              (want "LV-6 the base tree's MCP server (initialize, tools/list, a tools/call of outline) prints the same against this daemon and the base's, but when the guard's expect file lists describe, and each is that answer read as messages, id 3 the outline's own (ok (text ...)); the same with id 3 an isError result holding the four strings is not, nor with id 3 a successful result carrying an unknown-id refusal of f0.sc"
+                    (list (if (out? 'describe) 'left-out (same-or-where (cadr new) (cadr old)))
+                          (mcp-ok? (cadr new)) (mcp-ok? (cadr old))
+                          (four-strings? (forged (cadr new))) (mcp-ok? (forged (cadr new))) (mcp-ok? (refused (cadr new))))
+                    (list (if (out? 'describe) 'left-out #t) #t #t #t #f #f)))
             (want "LV-6 the base tree's review channel: review-results on a scope prints the same against this daemon and the base's, and each is that answer"
                   (list (and root-id #t) (same-or-where (caddr new) (caddr old)) (channel-ok? (caddr new)) (channel-ok? (caddr old)))
                   '(#t #t #t #t)))))

@@ -545,19 +545,61 @@
 (define table-from (find-from rpc-text "(define (verb-table)" 0))
 (define table-to (find-from rpc-text "(define verbs " (or table-from 0)))
 
-(define (verb-spans)
-  (let loop ((i (or table-from 0)) (out '()))
-    (let ((at (find-from rpc-text "(cons '" i)))
-      (if (or (not at) (and table-to (>= at table-to)))
+;; NEVER: AND NOT EVERY `(cons '` INSIDE THE TABLE IS AN ENTRY. A handler
+;; written inline in the table builds its answers with `(cons 'ok ...)`,
+;; `(cons 'error ...)` or `(cons 'block ...)`, and each of those used to
+;; open a span: every option read after it was then attributed to a verb
+;; named `block` or `ast`, which the parser has never heard of. Thirteen
+;; such spellings sat in the table harmlessly, because no option read
+;; followed any of them, until `read`'s handler grew three that one did.
+;; An entry is `(cons '<verb>` whose next token is `(lambda` -- the rule
+;; facade-gate.sc's verb-of applies to the same table, so the two gates
+;; count one set.
+;;
+;; NEVER: AND THE TEST IS THE READER'S, NOT A SPELLING. Two lexical rules in
+;; turn missed what the reader sees: comparing the seven characters
+;; `(lambda` accepted `(lambda-wrapper value)`, and ending that token at a
+;; blank or a parenthesis dropped `(lambda; note`, where `;` ends it too.
+;; Each repair moved the gap rather than closing it. So at every `(cons '`
+;; the datum there is read, and it is an entry when verb-of's own test,
+;; written out below as facade-gate.sc writes it, accepts it: whatever the
+;; layout, whatever comments sit inside it, the two gates judge one datum by
+;; one rule. The position is still the text's, because the option reads a
+;; span collects are found in the text.
+;;
+;; NOTE: THE DATUM IS JUDGED AS verb-of JUDGES IT; WHICH DATA ARE JUDGED IS
+;; STILL CHOSEN BY THE TEXT, and the two can disagree. What is always
+;; visible: a `(cons '` the reader cannot read opens no span and prints a line
+;; naming its position. What is not: a whole `(cons '<verb> (lambda ...))`
+;; inside a string, a comment or a `#;` datum is read here as an entry while
+;; verb-of never sees it; an entry the table's end cuts short is dropped,
+;; with its line; a spelling without the exact text `(cons '` is never
+;; visited; and a fresh string port does not carry reader directives or
+;; datum labels from earlier in the file. The 46 row goes red when such a
+;; difference changes the count, and only then: an extra span and a lost one
+;; cancel, so the count does not prove the two gates count the same verbs.
+(define (table-entry-name d)
+  (and (pair? d) (eq? (car d) 'cons) (pair? (cdr d)) (pair? (cddr d))
+       (let ((a (cadr d)) (b (caddr d)))
+         (and (pair? a) (eq? (car a) 'quote) (pair? (cdr a)) (symbol? (cadr a))
+              (pair? b) (eq? (car b) 'lambda)
+              (cadr a)))))
+
+(define (verb-spans-in text table-from table-to)
+  (let loop ((i table-from) (out '()))
+    (let ((at (find-from text "(cons '" i)))
+      (if (or (not at) (>= at table-to))
           (reverse out)
           (let* ((from (+ at (string-length "(cons '")))
-                 (end (let scan ((j from))
-                        (cond ((>= j (string-length rpc-text)) j)
-                              ((or (char=? (string-ref rpc-text j) #\space)
-                                   (char=? (string-ref rpc-text j) #\newline)) j)
-                              (else (scan (+ j 1))))))
-                 (name (string->symbol (substring rpc-text from end))))
-            (loop end (cons (cons name from) out)))))))
+                 (datum (guard (e (#t (display (string-append "options-gate: the reader could not read the (cons ' at character "
+                                                              (number->string at) "\n"))
+                                      #f))
+                          (read (open-string-input-port (substring text at table-to)))))
+                 (name (table-entry-name datum)))
+            (loop from (if name (cons (cons name from) out) out)))))))
+
+(define (verb-spans)
+  (verb-spans-in rpc-text (or table-from 0) (or table-to (string-length rpc-text))))
 
 ;; Every `(argument-option options "--x")` between one verb's `(cons '`
 ;; and the next one's belongs to that verb.
@@ -667,6 +709,31 @@
             (and (member '(read "--working-info") handler-reads) #t)
             (and (member '(import-code "--allow-delete") handler-reads) #t))
       '(#t #t #t))
+
+;; NEVER: AND THE SPANS ARE THE TABLE'S ENTRIES, NOT ITS CONSTRUCTIONS. The
+;; witnesses are the table's own inner `(cons 'error` and `(cons 'ok`, which
+;; are answers built inside a handler and must open no span, and `read`,
+;; which is an entry. 46 is the number of entries facade-gate.sc's verb-of
+;; finds in rpc.sc; a verb added to the table moves it, and this row is
+;; then updated with that count read again, not with this scanner's.
+(want "GATE-B3 CONTROL: the spans are the 46 entries verb-of finds; the inner (cons 'error and (cons 'ok open none, read opens one"
+      (let ((spans (verb-spans)))
+        (list (length spans) (and (assq 'error spans) #t) (and (assq 'ok spans) #t)
+              (and (assq 'read spans) #t)))
+      '(46 #f #f #t))
+
+;; NEVER: AND THE REAL TABLE CANNOT SHOW THE READER'S RULE, because none of
+;; its entries is laid out in a way a spelling would misjudge. A made-up table
+;; can: `a`'s value is `(lambda-wrapper x)`, which verb-of rejects; `b` and
+;; `c` are lambdas after a blank and after a newline; `d`'s `lambda` is ended
+;; by a comment, and `e` has a comment between its name and its lambda. The
+;; two lexical rules this replaced each read it wrong, differently: the
+;; seven-character prefix test reads `(a b c d)`, taking `a` and missing `e`,
+;; and the prefix ended at a blank or a parenthesis reads `(b c)`.
+(want "GATE-B3 CONTROL: an entry is what the reader reads: a value headed lambda-wrapper opens no span; a lambda after a blank, a newline, or with a comment after it or before it does"
+      (map car (let ((t "(cons 'a (lambda-wrapper x)) (cons 'b (lambda (x) x)) (cons 'c (lambda\n(x) x)) (cons 'd (lambda; note\n(x) x)) (cons 'e ; note\n(lambda (x) x))"))
+                 (verb-spans-in t 0 (string-length t))))
+      '(b c d e))
 
 ;; ---- the gate's own instrument ------------------------------------------------
 ;;

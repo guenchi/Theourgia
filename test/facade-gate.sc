@@ -591,9 +591,19 @@
   (list-sort (lambda (a b) (string<? (symbol->string (cdr a)) (symbol->string (cdr b))))
              (car items-scan)))
 
+;; JUDGED, NOT WIDENED: `block` is answered by two verbs. `read --ast`
+;; answers `(block <id> <entries> (hash ...) (ast ...))`, the tag built at
+;; its items site, which this walk reads; `locate` answers `(block <id>
+;; <start> <end>)`, built where this walk does not go, so the TWIN row below
+;; cannot see the pair, and CENSUS-10's run-time table shows both. Each
+;; names a block record, the shapes differ at element 3 (an integer span
+;; start against a `(deleted . <bool>)` entry), and a reader dispatches on
+;; the verb it asked, which the paragraph above the unfollowable-sites row
+;; names as the safe boundary. Accepted as cross-verb reuse, ruled by the
+;; main session, 2026-11-01.
 (want "S-B2b these are the item tags and the place each one is constructed in"
       tag-sites
-      '((log . entry) (search . hit) (grep . match) (refs . ref) (tag . tag)))
+      '((read . block) (log . entry) (search . hit) (grep . match) (refs . ref) (tag . tag)))
 
 ;; THE PROPERTY, ASKED SEPARATELY FROM THE LIST. The row above notices any
 ;; change at all; this one is the rule.
@@ -1046,8 +1056,13 @@
     (cons 'check (seeded (lambda (st x s) (census-ask st 'check))))
     (cons 'snapshot (seeded (lambda (st x s) (census-ask st 'snapshot))))
     (cons 'outline (seeded (lambda (st x s) (census-ask st 'outline))))
-    ;; read's items mode
-    (cons 'read (seeded (lambda (st x s) (census-ask st 'read (census-get s 'B) "--recursive"))))
+    ;; read's items mode, AS --ast: `read --recursive --ast` answers items
+    ;; tagged `block`, which the static scan reads at the items site, and
+    ;; CENSUS-16 asks that every tag it reads is produced here. The census
+    ;; makes one invocation per verb, so the plain --recursive form, whose
+    ;; items are untagged records, is no longer this case; its envelope is
+    ;; pinned by read1, read-receipt and read-ast's RA-9 instead.
+    (cons 'read (seeded (lambda (st x s) (census-ask st 'read (census-get s 'B) "--recursive" "--ast"))))
     (cons 'refs (seeded (lambda (st x s) (census-ask st 'refs (census-get s 'E)))))
     ;; A writer's diagnostics need a projected file and a supply for that
     ;; writer first: one python file is imported, exported from the
@@ -1265,10 +1280,10 @@
 
 (want "CENSUS-06 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code locate log names query refs search tag tasks uses whereis))
+      '(changed-files commit commitments conflicts def diagnostics diff drafts grep import-code locate log names query read refs search tag tasks uses whereis))
 (want "CENSUS-07 these verbs answer with items that carry no tag"
       (census-class 'untagged)
-      '(read))
+      '())
 (want "CENSUS-08 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check collect-into context del derive describe discard export-code export-md import-md init insert
@@ -1284,7 +1299,7 @@
       (census-detail 'tagged)
       '((changed-files (path) . 0) (commit (ok) . 0) (commitments (decision) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
-        (import-code (ok) . 0) (locate (block) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (refs (ref) . 0) (search (hit) . 0)
+        (import-code (ok) . 0) (locate (block) . 0) (log (entry) . 0) (names (import) . 0) (query (row) . 0) (read (block) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (tasks (task) . 0) (uses (use) . 0) (whereis (def export) . 0)))
 (want "CENSUS-11 each not-items verb's answer head"
       (census-detail 'not-items)
