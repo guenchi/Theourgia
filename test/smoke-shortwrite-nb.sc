@@ -126,6 +126,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ name got expected) (with-expected name expected (x) (want-1 name (caught got) x)))))
@@ -193,16 +194,17 @@
   (= 0 (system (string-append "ps -ww -p " (number->string pid) " -o stat= -o command= 2>/dev/null"
                               " | grep -v '^ *Z' | grep -qF '" marker "'"))))
 ;; -> #t once process PID, started with MARKER in its command line, is gone:
-;; TERM while it is ours, then up to five seconds until it is not.
+;; TERM through signal! (test/signal-send.ss), so only while PID is still the
+;; process registered at its spawn, then up to five seconds until it is not.
 (define (stop-pid! pid marker)
-  (when (ours-alive? pid marker)
-    (system (string-append "kill " (number->string pid) " 2>/dev/null")))
+  (signal! pid "TERM")
   (let wait ((k 0))
     (cond ((not (ours-alive? pid marker)) #t)
           ((> k 50) #f)
           (else (sleep (make-time 'time-duration 100000000 0)) (wait (+ k 1))))))
 (define holder-pid-file (string-append dir1 "/holder.pid"))
 (system (string-append "sh -c 'exec 3< " dir1 "/f; exec sleep 30' & echo $! > " holder-pid-file))
+(started! (pid-of-file holder-pid-file))
 (define fd1 (fd-open (string-append dir1 "/f") (list 'write)))
 (define nb1 (make-nonblocking! fd1))
 (define t0 (real-time))

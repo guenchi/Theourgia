@@ -50,6 +50,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -627,11 +628,11 @@
 (define k-holder (hold-lock! S 40))
 (define k-err (string-append here "/k.err"))
 (define k-client
-  (start-bg! (string-append "cd " here " && " (env-prefix "THEOURGIA_TRACE=1") " scheme --script " client
-                            " insert --title ALONE --store " S " --wire > " here "/k.out 2> " k-err)))
+  (started! (start-bg! (string-append "cd " here " && " (env-prefix "THEOURGIA_TRACE=1") " scheme --script " client
+                            " insert --title ALONE --store " S " --wire > " here "/k.out 2> " k-err))))
 (sh "sleep 10")
 (define k-child (let ((d (trace-datum (file-text k-err) 'frame-child))) (and d (caddr d))))
-(sh (string-append "kill -9 " (number->string k-client)))
+(signal! k-client "9")
 (wait-gone! k-client 5000)
 (wait-gone! k-holder 45000)
 (wait-gone! k-child 30000)

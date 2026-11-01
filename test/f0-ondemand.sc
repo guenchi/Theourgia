@@ -498,6 +498,9 @@
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
                    "scheme --program " objects "/theourgia/theourgiad.so serve " so-store " --socket " so-socket
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the stop
+;; below reaches this daemon or, if it has already exited, nothing.
+(started! (pid-of-file (string-append scratch "/so-serve.pid")))
 (sh "sleep 5")
 
 (want "SHIPPED-4 serve loads the daemon on demand from the objects"
@@ -518,7 +521,8 @@
                 'the-daemon-dispatched-it 'IT-RAN-LOCALLY))
       '(answered the-daemon-dispatched-it))
 
-(sh (string-append "kill $(cat " scratch "/so-serve.pid) 2>/dev/null; rm -f " so-socket))
+(signal! (pid-of-file (string-append scratch "/so-serve.pid")) "TERM")
+(sh (string-append "rm -f " so-socket))
 
 ;; ---- LOADS: every library entered on demand loads ----------------------------
 ;;

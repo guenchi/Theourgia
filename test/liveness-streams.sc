@@ -51,6 +51,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -230,10 +231,20 @@ while (my $c = $srv->accept) {
   (let ((sk (string-append sockets "/stub-" mode "-" (number->string stub-n) ".sock")))
     (sh "rm -f " sk " " sk ".pid; perl " stub-script " " sk " " mode " " replies " > /dev/null 2>&1 &")
     (set! stubs (cons sk stubs))
-    (let up ((k 0)) (cond ((file-exists? sk) sk) ((> k 100) #f) (else (sleep-ms 50) (up (+ k 1)))))))
+    (let up ((k 0)) (cond ((file-exists? sk) (stub-registered! sk) sk) ((> k 100) #f) (else (sleep-ms 50) (up (+ k 1)))))))
+;; THE STUB'S PID FILE COMES AFTER ITS SOCKET: the stub binds, then writes
+;; <sk>.pid, so the socket alone does not say the file is there. The file is
+;; waited for after the socket and its pid registered (test/signal-send.ss);
+;; the stub never exits on its own, so it is alive at that read.
+(define (stub-registered! sk)
+  (let wait ((k 0))
+    (let ((pid (pid-of-file (string-append sk ".pid"))))
+      (cond (pid (started! pid))
+            ((> k 100) #f)
+            (else (sleep-ms 50) (wait (+ k 1)))))))
 (define (stop-stubs!)
-  (for-each (lambda (sk) (let ((t (file-text (string-append sk ".pid"))))
-                           (when (> (string-length t) 0) (sh "kill " t " 2>/dev/null"))))
+  (for-each (lambda (sk) (let ((pid (pid-of-file (string-append sk ".pid"))))
+                           (when pid (signal! pid "TERM"))))
             stubs))
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 
@@ -435,7 +446,7 @@ while (my $c = $srv->accept) {
                         (put-string p (string-append
                           "(import (chezscheme) (theourgia stream-client))\n(define hits 0)\n"
                           (if signals?
-                              (format "(register-signal-handler ~a (lambda (s) (set! hits (+ hits 1))))\n(system (format \"( i=0; while [ $i -lt 12 ] && kill -USR1 ~~a 2>/dev/null; do sleep 0.5; i=$((i+1)); done ) > /dev/null 2>&1 &\" (get-process-id)))\n" signo)
+                              (format "(register-signal-handler ~a (lambda (s) (set! hits (+ hits 1))))\n~a\n" signo (signal-loop-text "USR1" 12 0.5))
                               "")
                           (format "(let ((o (stream! ~s (call-with-port (open-file-input-port ~s) get-bytevector-all) (lambda (l) #f)))) (write (list o hits)))\n" sk (string-append o ".frame")))))
                       'truncate)

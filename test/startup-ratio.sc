@@ -97,6 +97,7 @@
                              (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -221,25 +222,25 @@
 ;; compiled object beside a source is never loaded whatever the caller's
 ;; environment says (C5b). The order is A B on even pairs and B A on odd
 ;; ones. THE TRACE IS WHAT HAPPENED, NOT WHAT WAS MEANT (found in review):
-;; each start appends its arm's label to `started` at the moment it starts,
-;; and the trace file (C6) is that list, so a launcher that swapped a pair's
-;; starts writes the swapped order. Answers the two arms' samples in pair
-;; order and arm B's exit statuses.
+;; each start appends its arm's label to `started-labels` at the moment it
+;; starts, and the trace file (C6) is that list, so a launcher that swapped a
+;; pair's starts writes the swapped order. Answers the two arms' samples in
+;; pair order and arm B's exit statuses.
 (define source-exts ".sc::.no-obj:.sls::.no-obj:.scm::.no-obj")
-(define started '())
+(define started-labels '())
 (define (start-ms arm label)
-  (set! started (cons label started))
+  (set! started-labels (cons label started-labels))
   (let* ((t0 (real-time))
          (status (system (string-append "CHEZSCHEMELIBDIRS='" (car arm) "' CHEZSCHEMELIBEXTS='" source-exts
                                         "' scheme --script " (cdr arm) " > /dev/null 2>&1"))))
     (cons (- (real-time) t0) status)))
 (define (run-pairs arm-a arm-b pairs trace-path)
-  (set! started '())
+  (set! started-labels '())
   (let loop ((i 0) (a '()) (b '()) (b-status '()))
     (if (= i pairs)
         (begin
           (call-with-output-file trace-path
-            (lambda (p) (for-each (lambda (s) (write s p) (newline p)) (reverse started)))
+            (lambda (p) (for-each (lambda (s) (write s p) (newline p)) (reverse started-labels)))
             'replace)
           (values (reverse a) (reverse b) (reverse b-status)))
         (if (even? i)
@@ -358,8 +359,11 @@
       (call-with-input-file busy-pids
         (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))
       '()))
+;; Each loop's pid is registered right after the starting shell returns, and
+;; stopped through signal! (test/signal-send.ss), so only while it is still that
+;; loop.
 (define (stop-busy!)
-  (for-each (lambda (pid) (sh (string-append "kill " (number->string pid) " 2>/dev/null"))) (busy-pid-list)))
+  (for-each (lambda (pid) (signal! pid "TERM")) (busy-pid-list)))
 (define skip-load (equal? (getenv "THEOURGIA_F54_SKIP_LOAD") "1"))
 (define c3-reading #f)
 (define loaded
@@ -368,7 +372,8 @@
   (dynamic-wind
     (lambda ()
       (sh (string-append "i=0; while [ $i -lt " (number->string busy-count) " ]; do"
-                         " scheme --script " busy-script " > /dev/null 2>&1 & echo $! >> " busy-pids "; i=$((i+1)); done")))
+                         " scheme --script " busy-script " > /dev/null 2>&1 & echo $! >> " busy-pids "; i=$((i+1)); done"))
+      (for-each started! (busy-pid-list)))
     (lambda ()
       (let ((alive (length (filter (lambda (pid) (= 0 (sh (string-append "kill -0 " (number->string pid) " 2>/dev/null"))))
                                    (busy-pid-list)))))

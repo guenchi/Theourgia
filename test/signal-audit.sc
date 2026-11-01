@@ -40,6 +40,8 @@
 ;;       or after `serve --store`, is the store, so a longer store that
 ;;       begins with it is not found; and on a real process, the lookup finds
 ;;       it with the instant ps prints for it, and signal-processes! ends it.
+;; SA-7  the self-signalling loop (signal-loop-text): a program whose start
+;;       instant ps cannot read is never signalled; with the real ps it is.
 ;;
 ;; NEVER: A TEXT RULE IS NOT A PROOF. SA-1..3 read the files line by line with
 ;; named patterns; they catch the shapes the census found and say nothing
@@ -205,8 +207,15 @@
 ;;
 ;; A BARE SEND is `kill` (not after a letter, digit, `_`, `.` or `-`, so not
 ;; pkill and not os.killpg), an optional signal other than -0, spaces, and
-;; then a pid, a `$` or a splice. A line holding `ps -o lstart=` is the inline
-;; check of generated shell text, not a bare send.
+;; then a pid, a `$` or a splice; or `kill -` followed at once by `"`, a
+;; signal spliced in (`(string-append "kill -" name " " pid)`), whatever comes
+;; after it. A line holding `ps -o lstart=` is the inline check of generated
+;; shell text, not a bare send.
+;;
+;; NEVER: A SPLICED SIGNAL IS A SEND. The rule first read only a signal
+;; written out, so daemon-e1's `"kill -" name` passed every row unseen while
+;; its file's entry was being written (found 11-01 by the base reading of the
+;; widened rule, which names that one line and nothing else on the base).
 ;;
 ;; KEY: THE EXEMPTION IS BY LINE, so the inline check's send and its lstart
 ;; comparison stay on one source line (retire-race's kill9-if-same-sh: `&& [
@@ -228,18 +237,32 @@
                                      (scan (+ j 1))
                                      j))
                                after))
+                 (spliced (and (< (+ after 2) len) (char=? (string-ref line after) #\space)
+                               (char=? (string-ref line (+ after 1)) #\-)
+                               (char=? (string-ref line (+ after 2)) #\")))
                  (flag (substring line after flag-end))
                  (spaces-end (let scan ((j flag-end))
                                (if (and (< j len) (char=? (string-ref line j) #\space)) (scan (+ j 1)) j))))
             (loop after
                   (if (and (or (= k 0) (not (word-char? (string-ref line (- k 1)))))
-                           (not (string=? flag " -0"))
-                           (> spaces-end flag-end)
-                           (< spaces-end len)
-                           (let ((c (string-ref line spaces-end)))
-                             (or (memv c '(#\" #\$)) (char-numeric? c) (char-lower-case? c))))
+                           (or spliced
+                               (and (not (string=? flag " -0"))
+                                    (> spaces-end flag-end)
+                                    (< spaces-end len)
+                                    (let ((c (string-ref line spaces-end)))
+                                      (or (memv c '(#\" #\$)) (char-numeric? c) (char-lower-case? c))))))
                       (+ n 1)
                       n)))))))
+
+;; CONTROL: made-up lines in three spellings, a signal written out, a signal
+;; spliced in, and `kill -l` (lists signal names, sends nothing). Red on a
+;; rule that reads only a written-out signal: the spliced line reads 0.
+(want "SA-3 CONTROL the rule reads a written-out signal and a spliced one as bare sends, and kill -l as none"
+      (map bare-sends-in
+           (list "(sh \"kill -USR1 $pid 2>/dev/null\")"
+                 "(system (string-append \"kill -\" name \" \" (number->string pid)))"
+                 "(sh \"kill -l USR1 > \" out \" 2>/dev/null\")"))
+      '(1 1 0))
 
 ;; THE SENDS LEFT, NAMED. Each: census row, why it stays, the text that marks
 ;; its line, and how many lines carry that text. A send added to one of
@@ -249,39 +272,74 @@
 (define remainders
   '(("log15.sc")
     ("launch-self.sc"
-     (95 "SELF: a command signalling itself" "sh -c 'kill -TERM $$'" 1)
-     (97 "slice B: W's pid, read from w.pid" "(sh \"kill -TERM \" (number->string w))" 1))
-    ("runner-self.sc"
-     (165 "slice B: the inner runner's pid, TERM (rows 165-169)" "(sh \"kill -TERM \" (number->string runner))" 5)
-     (170 "slice B: the inner runner's pid, KILL" "(sh \"kill -9 \" (number->string runner))" 1))
+     (95 "SELF: a command signalling itself" "sh -c 'kill -TERM $$'" 1))
+    ("runner-self.sc")
     ("retire-race.sc")
     ("cli2.sc")
-    ("f0-ondemand.sc"
-     (76 "slice B2: so-serve.pid" "\"kill $(cat \" scratch \"/so-serve.pid)" 1))
-    ("change-stream-client.sc"
-     (7 "slice B2: the fake daemon's pid, read from its pid file" "(string-append \"kill \" (number->string pid)" 1))
+    ("f0-ondemand.sc")
+    ("change-stream-client.sc")
     ("entry-split.sc")
     ("read-at-cut.sc")
     ("unreadable-acknowledge-routes.sc")
-    ("unreadable-routes.sc"
-     (178 "slice B2: holder.pid" "\"kill -TERM $(cat \" holder-pid" 1)
-     (179 "slice B2: the pid the client's answer names" "(string-append \"kill -TERM \" (number->string p))" 1))))
+    ("unreadable-routes.sc")
+    ("append-prefix.sc")
+    ("change-stream.sc")
+    ("cli1.sc")
+    ("client-socket.sc")
+    ("daemon-e1.sc")
+    ("daemon-socket.sc")
+    ("detach.sc")
+    ("eval-lang.sc"
+     (73 "SELF: the evaluated shell program signalling itself" "\"kill -TERM $$\\n\"" 1))
+    ("f3-wire-utf8.sc")
+    ("facade-proc.sc"
+     (84 "library handle: library-send!, end-and-wait!'s sender for the library's worker pids (rows 84-86)" "(string-append \"kill -\" sig" 1))
+    ("fold-failure.sc")
+    ("liveness.sc")
+    ("liveness-streams.sc")
+    ("mcp-shell.sc")
+    ("opener-route.sc")
+    ("ownership.sc")
+    ("smoke-shortwrite-nb.sc")
+    ("startup-ratio.sc")))
 
 ;; The checked sends that must be there, per file, and the lookups by ps that
 ;; feed them: each the text of the form and the least number of lines that
-;; carry it.
+;; carry it. In generated shell text the check is inline: cli1's holder
+;; instant (started-text) compared on the kill's line (`ps -o lstart=`), and
+;; the self-signalling loops' text from signal-loop-text (test/signal-send.ss).
 (define converted
   '(("log15.sc" ("(signal! " 4))
-    ("launch-self.sc" ("(signal! " 1))
-    ("runner-self.sc" ("(signal! " 1))
+    ("launch-self.sc" ("(signal! " 2) ("(started! " 4))
+    ("runner-self.sc" ("(signal! " 7) ("(pid-registered! " 24))
     ("retire-race.sc" ("trap 'kill9_if_same " 2))
     ("cli2.sc" ("(signal! " 1))
-    ("f0-ondemand.sc" ("(signal! " 2) ("(command-processes " 2))
-    ("change-stream-client.sc" ("(serve-processes " 1) ("(command-processes" 1) ("(signal! " 1))
+    ("f0-ondemand.sc" ("(signal! " 3) ("(command-processes " 2) ("(started! " 2))
+    ("change-stream-client.sc" ("(serve-processes " 1) ("(command-processes" 1) ("(signal! " 2) ("(started! " 1))
     ("entry-split.sc" ("(serve-processes " 3) ("(signal! " 2) ("(signal-processes! " 1))
     ("read-at-cut.sc" ("(serve-processes " 2) ("(signal-processes! " 2))
     ("unreadable-acknowledge-routes.sc" ("(serve-processes " 2) ("(signal-processes! " 2))
-    ("unreadable-routes.sc" ("(serve-processes " 5) ("(signal-processes! " 5))))
+    ("unreadable-routes.sc" ("(serve-processes " 5) ("(signal-processes! " 5) ("(signal! " 2) ("(started! " 2))
+    ("append-prefix.sc" ("(signal! " 2) ("(started! " 2))
+    ("change-stream.sc" ("(signal! " 2) ("(started! " 1))
+    ("cli1.sc" ("ps -o lstart=" 3) ("(started-text " 5))
+    ("client-socket.sc" ("(signal! " 1) ("(started! " 1))
+    ("daemon-e1.sc" ("(signal! " 1) ("(started! " 1))
+    ("daemon-socket.sc" ("(signal! " 2) ("(started! " 2))
+    ("detach.sc" ("(signal! " 2) ("(started! " 2))
+    ("eval-lang.sc" ("(signal! " 2) ("(started! " 2))
+    ("f3-wire-utf8.sc" ("(signal! " 1) ("(started! " 1))
+    ("facade-proc.sc" ("(signal! " 1) ("(started! " 1) ("(end-and-wait! (list pid) signal!)" 1))
+    ("fold-failure.sc" ("(signal! " 2) ("(started! " 1))
+    ("liveness.sc" ("(signal-loop-text " 1) ("(signal! " 2) ("(started! " 2))
+    ("liveness-streams.sc" ("(signal-loop-text " 1) ("(signal! " 1) ("(started! " 1))
+    ("mcp-shell.sc" ("(signal! " 1) ("(started! " 2))
+    ("opener-route.sc" ("(signal! " 1) ("(started! " 1))
+    ("ownership.sc" ("(signal! " 1) ("(started! " 1))
+    ("smoke-shortwrite-nb.sc" ("(signal! " 1) ("(started! " 1))
+    ("startup-ratio.sc" ("(signal! " 1) ("(for-each started! " 1))))
+
+(printf "SA-3 covers ~a files\n" (length remainders))
 
 (define (bare-lines f)
   (fold-right (lambda (l acc)
@@ -462,6 +520,48 @@
   (want "SA-6 a live serve of <here>/s1 is not found for <here>/s; it is for <here>/s1, with its instant, and TERM ends it"
         (list shorter (map car found) (and (pair? found) (equal? (cdar found) instant)) sent (gone-within? pid 5))
         (list '() (list pid) #t '(sent) #t)))
+
+;; ---- SA-7: the self-signalling loop, with no identity read -------------------------
+;;
+;; A program counts USR1 and runs signal-loop-text's form (four rounds, 0.2 s
+;; apart), once with PATH shimmed so that `ps` prints nothing and once with the
+;; real ps; the shim is the only difference. With no instant captured the loop
+;; must send nothing: on a loop that accepted an empty capture, the shimmed ps
+;; reads empty twice, the two compare equal, and the program is signalled.
+;; THE ROW IS ABOUT THE EMPTY CAPTURE ONLY: an empty reading in a later round,
+;; after a real capture, already differs from it and ends the loop.
+(define (command-text cmd)
+  (let* ((p (process cmd)) (t (get-string-all (car p))))
+    (close-port (car p))
+    (close-port (cadr p))
+    (if (eof-object? t) "" t)))
+(define usr1 (string->number (signal-send-trim (command-text "kill -l USR1"))))
+(define (loop-hits shim?)
+  (let ((prog (string-append here "/loop-prog.ss"))
+        (out (string-append here (if shim? "/loop-shim.out" "/loop-real.out")))
+        (shim (string-append here "/shim")))
+    (system (string-append "mkdir -p " shim))
+    (call-with-output-file (string-append shim "/ps")
+      (lambda (p) (put-string p "#!/bin/sh\nexit 0\n")) 'truncate)
+    (system (string-append "chmod +x " shim "/ps"))
+    (call-with-output-file prog
+      (lambda (p)
+        (put-string p (string-append
+          "(import (chezscheme))\n(define hits 0)\n"
+          (format "(register-signal-handler ~a (lambda (s) (set! hits (+ hits 1))))\n" usr1)
+          (signal-loop-text "USR1" 4 0.2) "\n"
+          "(let loop ((k 0)) (when (< k 20) (sleep (make-time 'time-duration 100000000 0)) (loop (+ k 1))))\n"
+          "(write hits)\n")))
+      'truncate)
+    (system (string-append (if shim? (string-append "PATH=" shim ":$PATH ") "")
+                           "scheme --script " prog " > " out " 2>&1 < /dev/null"))
+    (guard (e (#t (list 'unreadable (command-text (string-append "cat " out)))))
+      (call-with-input-file out read))))
+(let ((shimmed (loop-hits #t)) (real (loop-hits #f)))
+  (printf "SA-7 USR1 is ~a; hits with no instant ~s, with the real ps ~s\n" usr1 shimmed real)
+  (want "SA-7 the self-signalling loop sends nothing when ps reads no start instant, and signals the program with the real ps"
+        (list shimmed (and (integer? real) (>= real 1)))
+        '(0 #t)))
 
 (system (string-append "rm -rf " here))
 

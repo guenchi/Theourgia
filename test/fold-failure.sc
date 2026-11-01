@@ -58,6 +58,7 @@
                              (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -275,6 +276,9 @@
 
 (system (string-append "THEOURGIA_HOME=" home " scheme --script ../theourgiad.sc serve " dstore
                        " --socket " sock " > " dlog " 2>&1 < /dev/null & echo $! > " dpid-file))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the stop
+;; after FB-9 reaches this daemon or, if it has already exited, nothing.
+(started! (pid-of-file dpid-file))
 (define serving
   (let up ((k 0))
     (cond ((file-exists? sock) #t)
@@ -330,12 +334,12 @@
 
 ;; THE DAEMON IS STOPPED BY ITS PID, and the row waits for it to be gone.
 (define dpid (let ((t (file-text dpid-file))) (string->number (list->string (filter char-numeric? (string->list t))))))
-(when dpid (system (string-append "kill " (number->string dpid) " 2>/dev/null")))
+(when dpid (signal! dpid "TERM"))
 (define daemon-gone
   (let up ((k 0))
     (cond ((not dpid) #f)
           ((not (= 0 (system (string-append "kill -0 " (number->string dpid) " 2>/dev/null")))) #t)
-          ((> k 200) (system (string-append "kill -9 " (number->string dpid) " 2>/dev/null")) #f)
+          ((> k 200) (signal! dpid "9") #f)
           (else (sleep-ms 50) (up (+ k 1))))))
 (want "FB-9 TWIN: the daemon this fixture started is gone once stopped" daemon-gone #t)
 (system (string-append "rm -rf " run-dir))

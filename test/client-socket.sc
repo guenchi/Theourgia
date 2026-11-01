@@ -43,6 +43,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -180,6 +181,9 @@
 (system (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                        "scheme --script ../theourgiad.sc serve " store
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/pid )"))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the stop at
+;; the end reaches this daemon or, if it has already exited, nothing.
+(started! (pid-of-file (string-append here "/pid")))
 (system "sleep 5")
 
 (want "CS-3 the daemon binds the path the client computes"
@@ -656,6 +660,7 @@
       (answer-field '(reply (stdout "x")) 'stdout string?)
       #f)
 
-(system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1; rm -rf " here " " sock-here))
+(signal! (pid-of-file (string-append here "/pid")) "TERM")
+(system (string-append "sleep 1; rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-socket complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

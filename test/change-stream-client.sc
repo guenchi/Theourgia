@@ -417,10 +417,10 @@
   (= 0 (system (string-append "ps -ww -p " (number->string pid) " -o stat= -o command= 2>/dev/null"
                               " | grep -v '^ *Z' | grep -qF '" marker "'"))))
 ;; -> #t once process PID, started with MARKER in its command line, is gone:
-;; TERM while it is ours, then up to five seconds until it is not.
+;; TERM through signal! (test/signal-send.ss), so only while PID is still the
+;; process registered at its spawn, then up to five seconds until it is not.
 (define (stop-pid! pid marker)
-  (when (ours-alive? pid marker)
-    (system (string-append "kill " (number->string pid) " 2>/dev/null")))
+  (signal! pid "TERM")
   (let wait ((k 0))
     (cond ((not (ours-alive? pid marker)) #t)
           ((> k 50) #f)
@@ -432,6 +432,7 @@
     (call-with-output-file sf (lambda (p) (for-each (lambda (l) (display l p) (newline p)) script)))
     (sh "mkdir -p \"$(dirname " (quoted sk) ")\"; perl " (quoted fake-daemon) " " (quoted sk) " " (quoted sf)
         " > " sf ".log 2>&1 & echo $! > " sf ".pid")
+    (started! (pid-of-file (string-append sf ".pid")))
     (set! fake-pid-files (cons (string-append sf ".pid") fake-pid-files))
     (wait-until (lambda () (file-exists? sk)) 5000)
     (subscribe-bg! "" st "0")))

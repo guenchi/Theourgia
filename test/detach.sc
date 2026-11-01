@@ -52,6 +52,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -154,6 +155,9 @@
                        " serve " store " --socket " dt-sock " --detach"
                        " --log " here "/serve.log"
                        " > " here "/dt.log 2>&1 & echo $! > " dt-pidfile))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss); --detach
+;; leads a new session in the same process, so the pid stays the daemon's.
+(started! (pid-of-file dt-pidfile))
 (wait-for dt-sock)
 (define dt-pid (trim (file-text dt-pidfile)))
 (define dt-sid (sid-of dt-pid (string-append here "/dtsid.txt")))
@@ -189,7 +193,8 @@
           (list 'said (file-text answer-file)))
       'answered)
 
-(system (string-append "kill " dt-pid " 2>/dev/null; sleep 1"))
+(signal! (pid-of-file dt-pidfile) "TERM")
+(system "sleep 1")
 
 ;; ---- D-2 TWIN: a foreground serve stays where it was ---------------------
 (define fg-sock (string-append sock-here "/fg.sock"))
@@ -197,6 +202,7 @@
 (system (string-append (env-prefix "") " scheme --script " daemon
                        " serve " store " --socket " fg-sock
                        " > " here "/fg.log 2>&1 & echo $! > " fg-pidfile))
+(started! (pid-of-file fg-pidfile))
 (wait-for fg-sock)
 (define fg-pid (trim (file-text fg-pidfile)))
 (define fg-sid (sid-of fg-pid (string-append here "/fgsid.txt")))
@@ -205,7 +211,8 @@
       (if (string=? fg-sid mine) 'same-as-the-caller (list fg-sid 'not mine))
       'same-as-the-caller)
 
-(system (string-append "kill " fg-pid " 2>/dev/null; sleep 1"))
+(signal! (pid-of-file fg-pidfile) "TERM")
+(system "sleep 1")
 
 ;; ---- D-2b `--detach` with no `--log` refuses, and says what serve takes --
 ;;

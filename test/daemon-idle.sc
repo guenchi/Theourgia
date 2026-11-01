@@ -1495,6 +1495,10 @@
         "    elif op == 'exists': e.write('(exists \"%s\" %s)\\n' % (arg, '#t' if os.path.lexists(arg) else '#f')); e.flush()"
         "p.stdin.close()"
         "try: p.wait(timeout=30)"
+        ;; NOT A BARE SEND: p.kill() signals the process this Popen started
+        ;; and has not yet reaped, never a pid read from elsewhere, so the
+        ;; handle holds the identity and the verified-send rule
+        ;; (test/signal-send.ss) is met by construction.
         "except subprocess.TimeoutExpired: p.kill()"
         "t.join(5)")))
   'replace)

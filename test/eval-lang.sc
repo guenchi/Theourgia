@@ -38,6 +38,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -1039,9 +1040,12 @@
         (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
         "--store " (quoted store) " --wire < " (quoted in) " > " (quoted out) " 2> " (quoted (string-append out ".err"))
         " & echo $! > " (quoted pidf))
-    (list (within 5000 (lambda () (let ((t (text-of-file pidf))) (and (> (string-length t) 1) (string->number (substring t 0 (- (string-length t) 1)))))))
+    ;; THE PID IS REGISTERED AT ITS FIRST READ (test/signal-send.ss), right
+    ;; after the spawn, so a later stop reaches this process or nothing.
+    (list (started! (within 5000 (lambda () (let ((t (text-of-file pidf))) (and (> (string-length t) 1) (string->number (substring t 0 (- (string-length t) 1))))))))
           out)))
-(define (alive? pid) (and pid (= 0 (sh "kill -0 " (number->string pid) " 2>/dev/null"))))
+;; alive? is test/signal-send.ss's: kill -0 of an integer pid above 1, #f for
+;; anything else.
 ;; -> the wall clock when the process was seen gone, or #f
 (define (ended-at pid ms) (within ms (lambda () (and (not (alive? pid)) (wall-ms)))))
 (define (answer-in out) (guard (e (#t 'UNREADABLE)) (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d))))
@@ -1187,14 +1191,14 @@
                     (string-append "echo $$ > " rp "; touch " ready "; exec sleep 31.5")
                     "--lang" "shell" "--timeout-ms" "60000"))
              (ready-seen (within 15000 (lambda () (file-exists? ready))))
-             (runner (let ((t (text-of-file rp))) (and (> (string-length t) 1) (string->number (substring t 0 (- (string-length t) 1))))))
+             (runner (started! (let ((t (text-of-file rp))) (and (> (string-length t) 1) (string->number (substring t 0 (- (string-length t) 1)))))))
              (target-core (and (car a) (has-substring? (sh-out "ps -o command= -p " (number->string (car a))) "core.sc")))
-             (_ (when (car a) (sh "kill -9 " (number->string (car a)))))
+             (_ (when (car a) (signal! (car a) "9")))
              (gone (ended-at (car a) 5000))
              (runner-after-kill (alive? runner))
              (third (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo third" "--lang" "shell" "--timeout-ms" "1500"))
              (runner-after-third (alive? runner)))
-        (when runner (sh "kill " (number->string runner) " 2>/dev/null"))
+        (when runner (signal! runner "TERM"))
         (list (and ready-seen #t) (and runner #t) target-core (and gone #t) runner-after-kill runner-after-third
               (head-of third) (has-substring? (format "~s" third) "third")))
       '(#t #t #t #t #t #t ok #t))

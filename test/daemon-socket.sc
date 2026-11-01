@@ -44,6 +44,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -123,9 +124,13 @@
               "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
               "scheme --script ../theourgiad.sc serve " here "/store --socket " path
               " > " out " 2>&1 & echo $! > " here "/pid )"))
+    ;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the
+    ;; stop below reaches this daemon or, if it has already exited, nothing.
+    (started! (pid-of-file (string-append here "/pid")))
     (system "sleep 4")
     (let ((said (file-text out)))
-      (system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1"))
+      (signal! (pid-of-file (string-append here "/pid")) "TERM")
+      (system "sleep 1")
       said)))
 
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
@@ -206,13 +211,15 @@
               "THEOURGIA_INJECT=on THEOURGIA_HOLD='bind:" rel "' "
               "scheme --script ../theourgiad.sc serve " here "/store --socket " path
               " > " out " 2>&1 & echo $! > " here "/pid )"))
+    (started! (pid-of-file (string-append here "/pid")))
     (let wait ((i 0))
       (unless (or (file-exists? (string-append rel ".held")) (>= i 300))
         (system "sleep 0.05") (wait (+ i 1))))
     (system (string-append "chmod 500 " path ".d/ && touch " rel))
     (system "sleep 3")
     (let ((said (file-text out)))
-      (system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1; chmod 700 " path ".d/"))
+      (signal! (pid-of-file (string-append here "/pid")) "TERM")
+      (system (string-append "sleep 1; chmod 700 " path ".d/"))
       said)))
 
 (want "DS-3 a start that cannot bind never announces that it is serving"

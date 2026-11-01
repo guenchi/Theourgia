@@ -41,6 +41,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -256,6 +257,11 @@
                         (else (sleep-ms 50) (up (+ k 1)))))))
       (unless (eq? came 'up)
         (tagged-start-report (string-append "the daemon tagged " tag " comes up and creates its socket") came))
+      ;; THE DAEMON'S OWN PID FILE, written before serve makes the socket, is
+      ;; read and registered (test/signal-send.ss) when the socket appears,
+      ;; before any row can stop the daemon. Both files are removed before
+      ;; every start, so a second start of this runner registers its own pid.
+      (when (eq? came 'up) (started! (pid-of-file pf)))
       (list st sk rn lg pf rc came))))
 
 ;; up or never-came-up, as start-tagged-daemon! saw it
@@ -266,11 +272,10 @@
     (and (> (string-length text) 0)
          (string->number (substring text 0 (string-length text))))))
 
+;; -> 'sent, or 'already-gone (with signal!'s NOTE) when the pid is not the
+;; daemon registered at its start.
 (define (signal-tagged! d name)
-  (let ((pid (tagged-pid d)))
-    (and pid
-         (begin (system (string-append "kill -" name " " (number->string pid)))
-                'sent))))
+  (signal! (tagged-pid d) name))
 
 ;; NEVER: WAITS FOR THE EXIT CODE, WITH A BOUND, and says which of the two
 ;; things happened. "It did not exit" and "it exited with 0" are

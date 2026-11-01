@@ -42,6 +42,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -224,6 +225,9 @@
 (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                        "scheme --script ../theourgiad.sc serve " store " --socket " socket
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/serve.pid )"))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the stop at
+;; the end reaches this daemon or, if it has already exited, nothing.
+(started! (pid-of-file (string-append here "/serve.pid")))
 (system "sleep 5")
 
 (define via-daemon
@@ -268,7 +272,8 @@
             (if (contains? mcp-text "x6C49") 'STILL-ESCAPING 'no-escapes))
       '(raw-in-the-json no-escapes))
 
-(system (string-append "kill $(cat " here "/serve.pid) 2>/dev/null; sleep 1"))
+(signal! (pid-of-file (string-append here "/serve.pid")) "TERM")
+(system "sleep 1")
 
 ;; ---- U6: what it saves, in bytes ----------------------------------------------
 ;;

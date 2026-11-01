@@ -61,6 +61,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -186,8 +187,11 @@
     (sh "env THEOURGIA_TRACE=1 THEOURGIA_INJECT=on THEOURGIA_PROBE=off " env " "
         "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
         " sh -c 'scheme --script " rn " > " lg " 2>&1' &")
+    ;; THE DAEMON'S OWN PID FILE, written before serve makes the socket, is read
+    ;; and registered (test/signal-send.ss) when the socket appears, before any
+    ;; row can stop the daemon.
     (let up ((k 0))
-      (cond ((file-exists? sk) (list st sk rn lg pf))
+      (cond ((file-exists? sk) (started! (pid-of-file pf)) (list st sk rn lg pf))
             ((or (> k 600) (contains? (file-text lg) "Exception")) (list 'no-daemon (file-text lg)))
             (else (sleep-ms 50) (up (+ k 1)))))))
 (define (daemon? d) (and (pair? d) (string? (car d))))
@@ -339,13 +343,23 @@ while (my $c = $srv->accept) {
 (define (start-stub! mode)
   (let ((sk (string-append sockets "/stub-" mode ".sock")))
     (if (member sk stubs) sk (start-stub-at! sk mode))))
+;; THE STUB'S PID FILE COMES AFTER ITS SOCKET: the stub binds, then writes
+;; <sk>.pid, so the socket alone does not say the file is there. The file is
+;; waited for after the socket and its pid registered (test/signal-send.ss);
+;; the stub never exits on its own, so it is alive at that read.
+(define (stub-registered! sk)
+  (let wait ((k 0))
+    (let ((pid (pid-of-file (string-append sk ".pid"))))
+      (cond (pid (started! pid))
+            ((> k 100) #f)
+            (else (sleep-ms 50) (wait (+ k 1)))))))
 (define (start-stub-at! sk mode)
   (sh "rm -f " sk " " sk ".pid " sk ".frames; perl " stub-script " " sk " " mode " " replies " " (number->string trailing-byte-ms) " > /dev/null 2>&1 &")
   (set! stubs (cons sk stubs))
-  (let up ((k 0)) (cond ((file-exists? sk) sk) ((> k 100) #f) (else (sleep-ms 50) (up (+ k 1))))))
+  (let up ((k 0)) (cond ((file-exists? sk) (stub-registered! sk) sk) ((> k 100) #f) (else (sleep-ms 50) (up (+ k 1))))))
 (define (stop-stubs!)
-  (for-each (lambda (sk) (let ((t (file-text (string-append sk ".pid"))))
-                           (when (> (string-length t) 0) (sh "kill " t " 2>/dev/null"))))
+  (for-each (lambda (sk) (let ((pid (pid-of-file (string-append sk ".pid"))))
+                           (when pid (signal! pid "TERM"))))
             stubs))
 
 (start-scheduler
@@ -437,7 +451,7 @@ while (my $c = $srv->accept) {
              (_ (sleep-ms 500))
              (second (cli-bg! "" "insert" "--under" "root" "--title" "refused" "--store" st "--socket" (d-sock d)))
              (_ (sleep-ms 500))
-             (_ (sh "kill -TERM " (number->string (d-pid d))))
+             (_ (signal! (d-pid d) "TERM"))
              (two (cli-result second 30000))
              (log (d-log d)))
         ;; NOTE: EACH TICKET'S OWN association-cleared, the executed export's and
@@ -845,9 +859,9 @@ while (my $c = $srv->accept) {
                        (format "(import (chezscheme) (theourgia client))
 (define hits 0)
 (register-signal-handler ~a (lambda (s) (set! hits (+ hits 1))))
-(system (format \"( i=0; while [ $i -lt 12 ] && kill -USR1 ~~a 2>/dev/null; do sleep 0.5; i=$((i+1)); done ) > /dev/null 2>&1 &\" (get-process-id)))
+~a
 (let ((o (call! ~s ~a))) (write (list o hits)))"
-                               signo sk frame-form))))
+                               signo (signal-loop-text "USR1" 12 0.5) sk frame-form))))
            (read-row
             (lambda (r)
               (let* ((v (car r)) (o (and (pair? v) (car v))))

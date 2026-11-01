@@ -967,9 +967,10 @@
   (system (string-append "touch " d "/.sock.lock"))
   (system (string-append "perl -e 'use Fcntl qw(:flock); open(my $f, \">>\", $ARGV[0]) or die; flock($f, LOCK_EX) or die; sleep 20' "
                          (quoted (string-append s "/lock")) " > /dev/null 2>&1 & echo $! > " holder-pid))
+  (started! (pid-of-file holder-pid))
   (system "sleep 0.5")
   (let ((r (serve-direct "" s (list "--socket" sock))))
-    (system (string-append "kill -TERM $(cat " holder-pid ") 2>/dev/null"))
+    (signal! (pid-of-file holder-pid) "TERM")
     (want "P2-busy the store's lock held elsewhere past the budget: store-busy passed through with the reservation's written and the attempt clause, then store-actor-down, rc 75"
           (list (car r) (mask-pid (cadr r)))
           (list 75 (list (list 'error 'store-busy (list 'path (string-append s "/lock")) (list 'written (reservation-written sock)) '(attempt #f))
@@ -1351,12 +1352,14 @@
   (system (string-append "mkdir -p " kd " && touch " kd "/.socket.lock"))
   (let* ((r (client-read (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=bind:" rel) s))
          (a (cadr r))
-         (p (let ((c (and (list? a) (assq 'pid (filter pair? a))))) (and c (cadr c))))
+         ;; THE PID THE ANSWER NAMES is registered at that answer, while the
+         ;; daemon is held before its bind and expected alive.
+         (p (started! (let ((c (and (list? a) (assq 'pid (filter pair? a))))) (and c (cadr c)))))
          (alive (and (integer? p) (pid-alive? p)))
          (is-daemon (and (integer? p) (equal? (serve-pids s) (list p)))))
     (touch! rel)
     (let* ((bound (wait-until-file sock 5000))
-           (stopped (begin (when (integer? p) (system (string-append "kill -TERM " (number->string p))))
+           (stopped (begin (when (integer? p) (signal! p "TERM"))
                            (let loop ((k 0))
                              (cond ((not (file-exists? sock)) #t)
                                    ((>= k 50) #f)

@@ -61,6 +61,7 @@
      (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -1257,6 +1258,9 @@
 (define w8i-log (string-append root "/w8i-daemon.log"))
 (sh "THEOURGIA_TRACE=1 THEOURGIA_RUN=" (quoted run-dir) " scheme --script " (quoted (string-append script-dir "/../theourgiad.sc"))
     " serve " (quoted w8i) " > " (quoted w8i-log) " 2>&1 < /dev/null & echo $! > " (quoted (string-append root "/w8i.pid")))
+;; $! IS REGISTERED RIGHT AFTER THE SPAWN (test/signal-send.ss), so the stop
+;; after W8i reaches this daemon or, if it has already exited, nothing.
+(started! (pid-of-file (string-append root "/w8i.pid")))
 (want "W8i the daemon is listening"
       (wait-for (lambda () (pair? (filter (lambda (f) (string-has? f ".sock")) (files-under-any run-dir)))) 30) #t)
 (define (w8i-ask n . args) (apply via-daemon (string-append root "/w8i-" (number->string n) ".out") args))
@@ -1272,7 +1276,8 @@
       (w8i-ask 3 "read" block "--working" "--writer" F "--store" w8i) 'first)
 (want "W8i the requests were served by the daemon"
       (and (contains? w8i-log "write") #t) #t)
-(sh "kill $(cat " (quoted (string-append root "/w8i.pid")) ") 2>/dev/null; sleep 1; rm -rf " (quoted run-dir))
+(signal! (pid-of-file (string-append root "/w8i.pid")) "TERM")
+(sh "sleep 1; rm -rf " (quoted run-dir))
 
 ;; ---- W8f, restore: a revoked draft is not put back as a foreign name -----
 ;;

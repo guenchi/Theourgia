@@ -80,6 +80,7 @@
                                      (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -245,8 +246,11 @@
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
+    ;; THE DAEMON'S OWN PID FILE, written before serve makes the socket, is read
+    ;; and registered (test/signal-send.ss) when the socket appears, before any
+    ;; row can stop the daemon.
     (let up ((k 0))
-      (cond ((file-exists? sk) (list st sk rn lg pf rc))
+      (cond ((file-exists? sk) (started! (pid-of-file pf)) (list st sk rn lg pf rc))
             ((> k 400)
              (printf "NOT A READING: the daemon ~a never created its socket in 20 s~%~a~%" t (file-text lg))
              (exit 2))
@@ -259,15 +263,6 @@
     (and (> (string-length text) 0) (string->number text))))
 (define (stop-daemon! d)
   (system (string-append "pkill -f " (list-ref d 2) " 2>/dev/null")))
-;; Sends SIGTERM, the drain, and waits for the exit code.
-(define (drain-daemon! d)
-  (let ((pid (d-pid d)))
-    (when pid (system (string-append "kill -TERM " (number->string pid))))
-    (let wait ((k 0))
-      (let ((text (file-text (list-ref d 5))))
-        (cond ((> (string-length text) 0) 'exited)
-              ((> k 200) 'still-running)
-              (else (sleep-ms 50) (wait (+ k 1))))))))
 
 ;; ---- asking -------------------------------------------------------------------
 
@@ -1551,7 +1546,7 @@
         (mirror! d "mirrordr" 1 '() '(put ((kind . section) (title . "in flight") (parent . root) (ord . 40))))
         (poke! d)
         (let wait ((k 0)) (unless (or (file-exists? (string-append release ".held")) (> k 200)) (sleep-ms 50) (wait (+ k 1))))
-        (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
+        (signal! (d-pid d) "TERM")
         (sleep-ms 200)
         (system (string-append "touch " release))
         (sleep-ms 300)
@@ -1589,7 +1584,7 @@
         (let wait ((k 0)) (unless (or (contains? (d-log d) "(trace write-pending") (> k 100)) (sleep-ms 50) (wait (+ k 1))))
         (want "ENDING-02 the resuming reader's replay blocks: the daemon traces (write-pending conn) before the drain"
               (contains? (d-log d) "(trace write-pending") #t)
-        (let ((pid (d-pid d))) (when pid (system (string-append "kill -TERM " (number->string pid)))))
+        (signal! (d-pid d) "TERM")
         (sleep-ms 300)
         (send b '(resume))
         ;; UNTIL THE CLOSE, not until a count: the retained frames may include

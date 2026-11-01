@@ -78,6 +78,7 @@
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax caught
   (syntax-rules ()
     ((_ e0)
@@ -456,11 +457,11 @@
 (want "AP-4 PATH the session keeps no prefix after a partial write, and its next append validates in full"
       (and (pair? ap-4) (cdr ap-4)) '(#f (validated-in-full)))
 
-;; The child whose pid PIDF holds, stopped only while that pid still runs the
-;; child's program: a child that has finished may have had its pid reused.
+;; The child whose pid PIDF holds, stopped through signal! (test/signal-send.ss):
+;; only while that pid is still the process registered at its spawn, since a
+;; child that has finished may have had its pid reused.
 (define (stop-child! pidf)
-  (system (string-append "p=$(cat " pidf " 2>/dev/null); [ -n \"$p\" ] && ps -p $p -o command= 2>/dev/null | grep -q -- "
-                         child-path " && kill -9 $p 2>/dev/null")))
+  (signal! (pid-of-file pidf) "9"))
 
 ;; A child under CLOCK parked at BARRIER; ACTION runs while it waits; then it
 ;; is released and its answer read. never-parked when it never got there.
@@ -479,13 +480,15 @@
     (system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_BARRIER=" barrier ":" fifo
                            " scheme --script " child-path " < /dev/null > /dev/null 2> " trace
                            " & echo $! > " pidf))
+    (started! (pid-of-file pidf))
     (if (not (wait-for trace (lambda (p) (has-substring? (text-of p) (string-append "(trace barrier " barrier " #f)"))) 1200))
         (begin (stop-child! pidf) 'never-parked)
         (begin
           (action)
           (system (string-append "( trap '' PIPE; while :; do printf x > " fifo "; done ) > /dev/null 2>&1 & echo $! > " feeder))
+          (started! (pid-of-file feeder))
           (let ((got (if (wait-for answer-path file-exists? 1200) (answer) 'no-answer)))
-            (system (string-append "kill -9 $(cat " feeder ") 2>/dev/null"))
+            (signal! (pid-of-file feeder) "9")
             (when (eq? got 'no-answer) (stop-child! pidf))
             got)))))
 

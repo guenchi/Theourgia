@@ -1459,8 +1459,9 @@
 ;; the write completed and to `no` when it did not within BOUND seconds
 ;; (or failed). A completed write is not proof that the holder has read
 ;; the byte, only that a reader had the fifo open. On `no` it also kills
-;; the holder, whose pid is in the shell variable PID-VAR (set by
-;; `<var>=$!` right after the holder is started).
+;; the holder, whose pid is in the shell variable PID-VAR and its start
+;; instant in PID-VAR followed by `at` (both set by (started-text PID-VAR)
+;; right after the holder is started).
 ;;
 ;; NOTE: THE WRITE IS THE HANDSHAKE. An open for writing blocks until a
 ;; reader opens the fifo, so the byte can only go to the holder. P4 used
@@ -1486,11 +1487,20 @@
 ;; The gate is opened write-only WITHOUT O_CREAT, so a gate that is not
 ;; there fails and reads `no`, rather than becoming an ordinary file that
 ;; any write completes into.
-;; There is no second process holding a pid to signal later, so nothing
-;; can be sent to a pid that has been reused. The holder's pid is the one
-;; numeric pid used: a kill after an expiry assumes it is still the
-;; holder, as every `kill $!` in the tree does; a reuse needs the holder
-;; to die early and the pid space to wrap within the bound.
+;; There is no second process holding a pid to signal later. The holder's
+;; pid is the one numeric pid used, and its kill after an expiry is checked
+;; as test/signal-send.ss's signal! checks a send: the holder's start
+;; instant (ps lstart) is read right after it is started, and the kill is
+;; sent only while the pid answers kill -0 and still has that instant, the
+;; comparison and the kill on one line. A holder that died early and whose
+;; pid was reused within the bound is not signalled.
+;;
+;; (started-text pid-var) -> the shell text that records the holder just
+;; started with `&`: its pid in PID-VAR and its start instant in PID-VAR
+;; followed by `at`. Written right after the `&`, while the holder is
+;; certainly running.
+(define (started-text pid-var)
+  (string-append pid-var "=$!; " pid-var "at=$(ps -o lstart= -p $" pid-var "); "))
 (define (release-text gate pid-var bound)
   (unless (and (string? pid-var) (> (string-length pid-var) 0)
                (for-all (lambda (c) (and (char<=? #\a c) (char<=? c #\z))) (string->list pid-var)))
@@ -1501,7 +1511,8 @@
   (string-append
     "if perl -MFcntl -e 'alarm shift; sysopen(my $f, shift, O_WRONLY) or exit 1; print $f \"x\"; close($f) or exit 1' "
     (number->string bound) " '" gate "' 2>/dev/null; "
-    "then released=yes; else released=no; kill $" pid-var " 2>/dev/null; fi; "))
+    "then released=yes; else released=no; "
+    "[ -n \"$" pid-var "at\" ] && kill -0 $" pid-var " 2>/dev/null && [ \"$(ps -o lstart= -p $" pid-var ")\" = \"$" pid-var "at\" ] && kill $" pid-var " 2>/dev/null; fi; "))
 ;; -> the text after "<NAME> " on the first line of REPORT that starts
 ;; with it, or #f when no line does
 (define (report-text report name)
@@ -1546,15 +1557,15 @@
         "sh -c 'echo \"(theourgia barrier stub)\" >&2; "
         (if opens? (string-append "head -c 1 " gate " > /dev/null") "exec sleep 600")
         "' 2> '" trace "' &\n"
-        "hp=$!; echo $hp > '" pidf "'\n"
+        (started-text "hp") "echo $hp > '" pidf "'; echo \"$hpat\" > '" pidf ".at'\n"
         (release-text gate "hp" 2) "\n"
         "wait\n"
         "echo RELEASED $released\n"))
     (let* ((t0 (real-time))
            (out (sh (string-append
                       "perl -e 'alarm 30; exec @ARGV' sh '" runner "'; echo RC $?; "
-                      "hp=$(cat '" pidf "'); "
-                      "if kill -0 $hp 2>/dev/null; then echo ALIVE yes; kill $hp; else echo ALIVE no; fi; "
+                      "hp=$(cat '" pidf "'); hpat=$(cat '" pidf ".at'); "
+                      "if kill -0 $hp 2>/dev/null; then echo ALIVE yes; [ -n \"$hpat\" ] && [ \"$(ps -o lstart= -p $hp)\" = \"$hpat\" ] && kill $hp; else echo ALIVE no; fi; "
                       "perl -MFcntl -e 'sysopen(my $f, $ARGV[0], O_RDONLY|O_NONBLOCK) or do { print \"STRANDED unknown\\n\"; exit 0 }; "
                       "select(undef, undef, undef, 0.5); my $n = sysread($f, my $b, 1); "
                       "print \"STRANDED \", (defined $n ? ($n > 0 ? \"yes\" : \"no\") : ($!{EAGAIN} ? \"yes\" : \"unknown\")), \"\\n\"' '" gate "'")))
@@ -1582,7 +1593,7 @@
           ;; still running -- which is how the reader's output came out
           ;; empty.
           "THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
-          "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & hp=$!; "
+          "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & " (started-text "hp")
           (trace-wait-text '("barrier") ht poll-bound)
           "env -u THEOURGIA_INJECT THEOURGIA_TRACE=1 scheme --script " cli
           "  outline --store " d4b " > " qo " 2> " qt " & "
@@ -1636,7 +1647,7 @@
           "rm -f " gate " " ht " " qt "; mkfifo " gate "; "
           "THEOURGIA_INJECT=on " env
           "THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
-          "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & hp=$!; "
+          "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & " (started-text "hp")
           (trace-wait-text '("barrier") ht poll-bound)
           "THEOURGIA_INJECT=on " env "THEOURGIA_TRACE=1 scheme --script " hold-path
           "  " d4c " > /dev/null 2> " qt " & "
@@ -1817,7 +1828,7 @@
         (so (string-append scratch "/second.out")))
     (sh (string-append
           "rm -f " gate " " fo " " so "; mkfifo " gate "; "
-          "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & fp=$!; "
+          "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & " (started-text "fp")
           (file-wait-text fo poll-bound)
           "env -u THEOURGIA_INJECT scheme --script " cli
           "  insert --under root --title Second --store " d9 " > " so " 2>/dev/null; "

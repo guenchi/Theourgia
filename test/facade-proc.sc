@@ -44,6 +44,7 @@
                              (condition-message e) e))))
        e0))))
 (include "expected.ss")
+(include "signal-send.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect) (with-expected label expect (x) (want-1 label (caught got) (caught x))))))
@@ -108,22 +109,34 @@
 ;; listed is then ended and waited for, by pid, with a bound. A list that
 ;; could not be read is said, and the whole bound is waited out.
 ;;
+;; THE SENDER IS THE CALLER'S. (end-and-wait! maybe-pids send!) sends each
+;; signal as (send! pid sig): a row that started its process itself and
+;; registered the pid passes signal! (test/signal-send.ss), so every STOP,
+;; TERM and CONT is checked; the rows on library workers pass library-send!.
+;;
 ;; A #f AMONG THE PIDS IS A WORKER WHOSE OS PID IS NOT KNOWN (never
 ;; started, or already exited and reaped): its children cannot be listed,
 ;; so that too is said and the whole bound is waited out (codex r10 C1).
-(define (end-and-wait! maybe-pids)
+;; library-send!: NOT THROUGH signal!. Its pids are the library's worker
+;; handles' own and the children listed while those are STOPped, so a pid
+;; cannot be reused between the listing and the TERM; the handle's guard is
+;; the library's to document, and the brief keeps library handles out of
+;; slice B. signal-audit's SA-3 names this one send (census rows 84-86).
+(define (library-send! pid sig)
+  (system (string-append "kill -" sig " " (number->string pid) " 2>/dev/null")))
+(define (end-and-wait! maybe-pids send!)
   (define pids (filter number? maybe-pids))
   (define unknown (not (for-all number? maybe-pids)))
   (when unknown
     (printf "P-08: a worker has no OS pid in the library; waiting out the bound\n"))
-  (for-each (lambda (pid) (system (string-append "kill -STOP " (number->string pid) " 2>/dev/null"))) pids)
+  (for-each (lambda (pid) (send! pid "STOP")) pids)
   (let* ((lists (map children-of pids))
          (unread (not (for-all list? lists)))
          (all (append pids (apply append (filter list? lists)))))
     (when unread
       (printf "P-08: the children of a worker could not be listed; waiting out the bound\n"))
-    (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null"))) all)
-    (for-each (lambda (pid) (system (string-append "kill -CONT " (number->string pid) " 2>/dev/null"))) pids)
+    (for-each (lambda (pid) (send! pid "TERM")) all)
+    (for-each (lambda (pid) (send! pid "CONT")) pids)
     ;; NEVER: ROUNDS THAT RUN OUT ARE SAID. The loop used to end in
     ;; silence with a process still there, and only the runner's LEFT IN
     ;; GROUP, after the fixture, said anything; that stays the guard, and
@@ -165,11 +178,11 @@
       (system "sleep 0.05")
       (wait (+ k 1))))
   (let* ((ready (file-exists? (string-append f ".ready")))
-         (pid (guard (e (#t #f)) (call-with-input-file f read)))
+         (pid (started! (guard (e (#t #f)) (call-with-input-file f read))))
          (said (if (integer? pid)
-                   (with-output-to-string (lambda () (end-and-wait! (list pid))))
+                   (with-output-to-string (lambda () (end-and-wait! (list pid) signal!)))
                    "")))
-    (when (integer? pid) (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
+    (when (integer? pid) (signal! pid "KILL"))
     (system (string-append "rm -f " f " " f ".ready"))
     (unless (in? said "still running after TERM")
       (printf "   ROUNDS-1: end-and-wait! said ~s for pid ~s\n" said pid))
@@ -356,6 +369,10 @@
         (let ((ref (receive (after 5000 'none) (`(spawned ,r) r))))
           (want "P-06 a worker killed by signal reports that signal"
                 (begin
+                  ;; NOT A BARE SEND: worker-kill! signals the process the
+                  ;; handle REF started, never a pid read from elsewhere, so
+                  ;; the handle holds the identity and the verified-send
+                  ;; rule (test/signal-send.ss) is met by construction.
                   (worker-kill! ref 9)
                   (let wait ()
                     (receive
@@ -439,7 +456,8 @@
                 ;; itself off the list (codex r10 C1). A ref that never
                 ;; arrived, or has no pid, is #f, and end-and-wait! says so.
                 (end-and-wait! (list (and big-ref (proc-pid (worker-ref-proc big-ref)))
-                                     (and small-ref (proc-pid (worker-ref-proc small-ref)))))
+                                     (and small-ref (proc-pid (worker-ref-proc small-ref))))
+                               library-send!)
                 (when big-ref (worker-close! big-ref))
                 (when small-ref (worker-close! small-ref)))
               (receive
