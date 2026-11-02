@@ -1,1 +1,1 @@
-()
+((describe "import-code's catalogue description: the symbols import cuts as split-suggest --symbols does, moves its ends, names the symbol in a start's refusal, and prints its four clauses without --wire"))

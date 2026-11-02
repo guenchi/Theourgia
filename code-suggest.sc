@@ -579,19 +579,34 @@
   ;;     and is judged by what follows it. A blank line between two
   ;;     top-level definitions still is the top level. A line of spaces or
   ;;     tabs only is a blank line here.
+  ;;
+  ;; WHERE CODE BEGINS AT THE TOP LEVEL is the third element of the answer:
+  ;; the start of every line the scan judged top level, not continuing the
+  ;; statement before it, and holding code -- not blank, and not a line
+  ;; that starts a comment (the lines a comment run above a definition is
+  ;; made of). In a fence profile, every non-blank line outside a fence.
+  ;; The import moves an editor's end to the first of these at or after
+  ;; it (import-symbol-cuts); the judgment is the scan's, made once here.
+  ;; -> (<boundaries> <warnings> <code-lines>)
   (define (suggest-boundaries entry bytes . rest)
     (define starts (and (pair? rest) (car rest)))
     (define strict (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
     (define not-top-level '())
+    (define code-lines '())
+    ;; THE STARTS ARE ASKED ONCE A LINE, so they are a table: a list searched
+    ;; on every line makes a file of n starts cost n times its lines.
+    (define start-table
+      (and starts (let ((h (make-eqv-hashtable))) (for-each (lambda (n) (hashtable-set! h n #t)) starts) h)))
+    (define (start? offset) (and start-table (hashtable-ref start-table offset #f)))
     (define (definition? offset trimmed)
-      (if starts (and (memv offset starts) #t) (definition-name entry trimmed)))
+      (if starts (start? offset) (definition-name entry trimmed)))
     (define (symbol-not-top-level! offset)
-      (when (and starts (memv offset starts))
+      (when (start? offset)
         (set! not-top-level (cons (list 'symbol-not-top-level (list 'at offset)) not-top-level))))
     (call/cc
       (lambda (return)
         (define (fallback reason offset)
-          (return (list '(0) (list (list 'code reason 'byte-offset offset)))))
+          (return (list '(0) (list (list 'code reason 'byte-offset offset)) '())))
         (let* ((profile (language-property entry 'suggest-only #f))
                (get (lambda (k default) (language-property profile k default)))
                (kind (get 'top-level #f))
@@ -666,24 +681,31 @@
           ;; end of such a run, a start the scanner does not see at the top
           ;; level -- whichever scan judged it. A top-level line is outside
           ;; every comment, so the comment depth is not asked here.
+          ;; A COMMENT LINE starts with a line comment, a block comment or one
+          ;; of the profile's prefix lines: a run of them above a definition
+          ;; goes with it, and none of them is where code begins.
+          (define (comment-line? trimmed)
+            (or (at-any trimmed 0 (comment-prefixes entry))
+                (and block (string-prefix-at? trimmed (car block) 0))
+                (exists (lambda (p) (regex-match p trimmed)) prefix-patterns)))
           (define (decide-line! offset line trimmed top? continues?)
             (unless top? (symbol-not-top-level! offset))
             (when strict
               (when continues? (symbol-not-top-level! offset))
               (when (string=? kind "indent")
                 (cond ((string=? trimmed "")
-                       (when (and starts (memv offset starts)) (set! blank-starts (cons offset blank-starts))))
+                       (when (start? offset) (set! blank-starts (cons offset blank-starts))))
                       (else
                        (unless (string=? line trimmed) (for-each symbol-not-top-level! blank-starts))
                        (set! blank-starts '())))))
+            (when (and top? (not continues?) (not (string=? trimmed "")) (not (comment-line? trimmed)))
+              (set! code-lines (cons offset code-lines)))
             (cond
               ((and top? (definition? offset trimmed))
                (let ((start (or pending offset)))
                  (when (> start (car boundaries)) (set! boundaries (cons start boundaries))))
                (set! pending #f))
-              ((and top? (or (at-any trimmed 0 (comment-prefixes entry))
-                             (and block (string-prefix-at? trimmed (car block) 0))
-                             (exists (lambda (p) (regex-match p trimmed)) prefix-patterns)))
+              ((and top? (comment-line? trimmed))
                (unless pending (set! pending offset)))
               ((and top? (string=? trimmed "")) (set! pending #f))
               (top? (set! pending #f))))
@@ -816,8 +838,10 @@
                          (when (and run (char=? (car run) (car fence)) (>= (cadr run) (cadr fence))
                                     (string=? (trim-left (caddr run)) "")) (set! fence #f)))
                         (run (symbol-not-top-level! offset) (set! fence run))
-                        ((definition? offset trimmed)
-                         (when (> offset (car boundaries)) (set! boundaries (cons offset boundaries))))))
+                        (else
+                         (unless (string=? trimmed "") (set! code-lines (cons offset code-lines)))
+                         (when (and (definition? offset trimmed) (> offset (car boundaries)))
+                           (set! boundaries (cons offset boundaries))))))
                     (begin
                       (decide-line! offset line trimmed top? continues?)
                       (scan-line line offset)
@@ -838,7 +862,8 @@
           (list (filter (lambda (n) (or (= n 0) (> n prefix))) (reverse boundaries))
                 (if strict
                     (list-sort (lambda (a b) (< (cadadr a) (cadadr b))) (reverse not-top-level))
-                    (reverse not-top-level)))))))
+                    (reverse not-top-level))
+                (reverse code-lines))))))
 
   ;; ---- the symbols file ---------------------------------------------------
   ;;
@@ -984,41 +1009,54 @@
                 (let ((h (symbols-header (cons 'symbols (cddr d)))))
                   (and h (list (cadr p) (car h))))))))
 
-  ;; THE CUTS A FIRST IMPORT MAKES FROM ONE FILE'S SECTION. Every start is a
-  ;; cut, and every end is taken to the start of the line after it (an end
-  ;; already there stays), so what follows a symbol on its last line stays
-  ;; with it. Between two symbols, and before the first and after the last,
-  ;; what is left is a block of its own: the blocks are the file's bytes cut
-  ;; at those places, and they run together to the file. A cut AT the
-  ;; protected prefix's end is dropped, the prefix staying with the first
-  ;; block, as split-suggest drops one.
+  ;; THE CUTS A FIRST IMPORT MAKES FROM ONE FILE'S SECTION. ONE SUPPLIER OF
+  ;; CUTS: the starts are put to the language's scanner (suggest-boundaries,
+  ;; strict), and its boundaries are the start cuts, as split-suggest's for
+  ;; the same symbols -- the run of comment lines above a definition goes
+  ;; with it, and a cut at the protected prefix's end is dropped, the prefix
+  ;; staying with the first block. The ENDS are the import's addition: what
+  ;; follows a symbol up to the next block is a block of its own only when it
+  ;; holds code. An end is taken to the first line start at or after it where
+  ;; the scanner sees code begin at the top level (its third element: not
+  ;; blank, not a comment line, not inside a statement, a string or a
+  ;; bracket); if that is the next block's start or the file's end, or there
+  ;; is none, the end is no cut, and the symbol's block runs to there. So
+  ;; blank lines, and a comment the next definition does not take, go with
+  ;; the block above, as split-suggest has them. The blocks are the file's
+  ;; bytes cut at those places, and they run together to the file.
   ;;
-  ;; NEVER: A CUT THE SCANNER DOES NOT SEE AT THE TOP LEVEL IS REFUSED, not
-  ;; moved and not dropped. After the section's own checks (checked-symbols),
-  ;; the first failure in this order is raised for the file:
+  ;; NEVER: AN END IS NEVER A REFUSAL, AND A START THE SCANNER DOES NOT SEE
+  ;; AT THE TOP LEVEL IS, not moved and not dropped. An editor's range for
+  ;; `const { a } = require('x') as {` ends after the name, inside the
+  ;; statement; the start is the editor's claim of a definition. After the
+  ;; section's own checks (checked-symbols), the first failure in this order
+  ;; is raised for the file:
   ;;   symbols-unchecked (reason no-language-entry | no-suggest-profile):
   ;;     no scanner can say what is top level in this file;
-  ;;   symbols-in-prefix (at <byte>): a cut inside the shebang, coding line
+  ;;   symbols-in-prefix (at <byte>): a start inside the shebang, coding line
   ;;     or byte-order mark;
   ;;   symbols-unscanned (reason <r>) (at <byte>): the scanner cannot follow
   ;;     the file -- unbalanced, an unclosed quote, a token it cannot judge;
-  ;;   symbols-not-top-level (at <byte>): the first cut inside a body, a
-  ;;     string, a block comment or an open bracket.
+  ;;   symbols-not-top-level (at <byte>) (symbol "<name>"): the first start
+  ;;     inside a body, a string, a block comment or an open bracket, with
+  ;;     the name the symbols file gave it.
   ;;
   ;; A BLOCK CUT AT A SYMBOL THAT THE LANGUAGE DOES NOT NAME TAKES THE
   ;; SYMBOL'S NAME AS ITS TITLE. A block's name is derived from its source
-  ;; (text-properties, as the view derives it), and where it is derived it
-  ;; stays in charge: a title stored there would outrank it and keep the
-  ;; first import's name after an edit renamed the definition. So the
-  ;; editor's name is the block's title only where the derivation answers
-  ;; nothing (a class, a const, an export default the definition patterns
-  ;; do not read). The first block holds the protected prefix, and its
+  ;; (text-properties, as the view derives it, past the comment lines it
+  ;; begins with), and where it is derived it stays in charge: a title
+  ;; stored there would outrank it and keep the first import's name after an
+  ;; edit renamed the definition. So the editor's name is the block's title
+  ;; only where the derivation answers nothing (a class, a const, an export
+  ;; default the definition patterns do not read). A block's symbol is the
+  ;; first one that starts within it: the block may begin at the comment
+  ;; run above it. The first block holds the protected prefix, and its
   ;; symbol is the LAST one that starts within the prefix or at its end: a
   ;; symbol starting inside the prefix names the header matter there (a
   ;; shebang, a header comment), and the definition the block carries is
-  ;; the one that starts where the prefix ends. Every other block holds at
-  ;; most one start, its own first byte. A block that does not start at a
-  ;; symbol, and a symbol named "", gets #f.
+  ;; the one that starts where the prefix ends; with none there, it is the
+  ;; first one in the block. A block that holds no start (what an end cut
+  ;; leaves), and a symbol named "", gets #f.
   ;; -> (<cuts> <titles>): the cuts, 0 and the file's size included, and
   ;;    for each block they make, in order, its title or #f.
   (define (import-symbol-cuts section bytes entry)
@@ -1030,30 +1068,57 @@
                                (cond ((= i size) size)
                                      ((= 10 (bytevector-u8-ref bytes i)) (+ i 1))
                                      (else (loop (+ i 1))))))))
-           (inner (let loop ((ns (list-sort < (append (map car symbols) (map (lambda (s) (line-after (cadr s))) symbols))))
-                             (out '()))
-                    (cond ((null? ns) (reverse out))
-                          ((or (= (car ns) 0) (= (car ns) size) (and (pair? out) (= (car ns) (car out)))) (loop (cdr ns) out))
-                          (else (loop (cdr ns) (cons (car ns) out))))))
            (prefix (source-prefix-size bytes)))
       (cond ((not entry) (symbols-refusal 'symbols-unchecked '(reason no-language-entry)))
             ((not (usable-profile? entry)) (symbols-refusal 'symbols-unchecked '(reason no-suggest-profile))))
-      (cond ((find (lambda (n) (< n prefix)) inner) => (lambda (n) (symbols-refusal 'symbols-in-prefix (list 'at n)))))
-      (let* ((cuts (filter (lambda (n) (> n prefix)) inner))
-             (scan (suggest-boundaries entry bytes cuts #t))
+      (cond ((find (lambda (n) (< 0 n prefix)) (map car symbols))
+             => (lambda (n) (symbols-refusal 'symbols-in-prefix (list 'at n)))))
+      (let* ((scan (suggest-boundaries entry bytes (filter (lambda (n) (> n prefix)) (map car symbols)) #t))
              (said (cadr scan)))
         (cond
           ((and (pair? said) (eq? (caar said) 'code))
            (symbols-refusal 'symbols-unscanned (list 'reason (cadr (car said))) (list 'at (cadddr (car said)))))
-          ((pair? said) (symbols-refusal 'symbols-not-top-level (cadr (car said)))))
-        (let* ((all (append (list 0) cuts (list size)))
-               (title (lambda (from to)
-                        (let* ((at (filter (lambda (s) (if (= from 0) (<= (car s) prefix) (= (car s) from))) symbols))
-                               (sym (and (pair? at) (car (reverse at)))))
-                          (and sym (not (string=? (cadddr sym) ""))
-                               (not (car (text-properties entry (byte-slice bytes from to))))
-                               (cadddr sym))))))
-          (list all (map title (reverse (cdr (reverse all))) (cdr all)))))))
+          ((pair? said)
+           (let ((at (cadr (cadr (car said)))))
+             (symbols-refusal 'symbols-not-top-level (list 'at at)
+                              (list 'symbol (cadddr (find (lambda (s) (= (car s) at)) symbols)))))))
+        ;; ONE PASS EACH: the symbols, their ends, the code lines, the start
+        ;; cuts and the blocks all ascend, so every search resumes where the
+        ;; one before it stopped; a search from the head for each symbol
+        ;; makes a file of n symbols cost n times its lines.
+        (let* ((starts (cdr (car scan)))
+               (lines (list->vector (caddr scan)))
+               (cuts (list->vector starts))
+               (skip (lambda (v i keep?)
+                       (let loop ((i i))
+                         (if (and (< i (vector-length v)) (keep? (vector-ref v i))) (loop (+ i 1)) i))))
+               (ends (let loop ((ss symbols) (ci 0) (bi 0) (out '()))
+                       (if (null? ss) (reverse out)
+                           (let* ((e (line-after (cadr (car ss))))
+                                  (ci (skip lines ci (lambda (c) (< c e))))
+                                  (bi (skip cuts bi (lambda (b) (<= b (car (car ss))))))
+                                  (t (and (< ci (vector-length lines)) (vector-ref lines ci)))
+                                  (next (if (< bi (vector-length cuts)) (vector-ref cuts bi) size)))
+                             (loop (cdr ss) ci bi (if (and t (> t prefix) (< t next)) (cons t out) out))))))
+               (all (let loop ((ns (list-sort < (append (list 0 size) starts ends))) (out '()))
+                      (cond ((null? ns) (reverse out))
+                            ((and (pair? out) (= (car ns) (car out))) (loop (cdr ns) out))
+                            (else (loop (cdr ns) (cons (car ns) out))))))
+               (at-prefix (let ((in (filter (lambda (s) (<= (car s) prefix)) symbols)))
+                            (and (pair? in) (car (reverse in)))))
+               (titles (let loop ((bs all) (ss symbols) (out '()))
+                         (if (or (null? bs) (null? (cdr bs))) (reverse out)
+                             (let* ((from (car bs)) (to (cadr bs))
+                                    (ss (let drop ((ss ss)) (if (and (pair? ss) (< (car (car ss)) from)) (drop (cdr ss)) ss)))
+                                    (sym (cond ((and (= from 0) at-prefix) at-prefix)
+                                               ((and (pair? ss) (< (car (car ss)) to)) (car ss))
+                                               (else #f))))
+                               (loop (cdr bs) ss
+                                     (cons (and sym (not (string=? (cadddr sym) ""))
+                                                (not (car (text-properties entry (byte-slice bytes from to))))
+                                                (cadddr sym))
+                                           out)))))))
+          (list all titles)))))
 
   ;; WITHOUT A PROFILE THE SCANNER CAN FOLLOW -- no language entry, or an
   ;; entry with no suggest profile -- the editor's starts are the only

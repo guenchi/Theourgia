@@ -18,7 +18,11 @@
 ;; same cuts makes; a file that carries markers follows them; a file whose
 ;; cuts the scanner does not see at the top level is not imported and is
 ;; listed with its refusal. Every expected src below is a slice of the row's
-;; own text at numbers a setup row pins against that text.
+;; own text at numbers a setup row pins against that text. The starts are cut
+;; as split-suggest cuts them, a comment run above a definition going with
+;; it; an end is a cut only where code no symbol covers begins before the
+;; next block (code-symbols-import.sc rows the ends), so the rows that test
+;; the scanner's strict judgments put a START where the judgment is asked.
 ;;
 ;; Imports run through core.sc, on the local route (THEOURGIA_LOCAL=1) and
 ;; through a daemon; what they wrote is read from the store in process,
@@ -182,7 +186,8 @@
 (define two-symbols (list (sym 0 32 'function "alpha") (sym 33 64 'function "beta")))
 (define two-blocks (list (slice two 0 33) (slice two 33 65)))
 ;; GAPS: a comment before, a blank line between, a comment after. The blocks
-;; are the comment, alpha, the blank line, beta and the last comment.
+;; are the comment with alpha (the comment run above it) and the blank line,
+;; then beta and the last comment: no code lies between, so no end cuts.
 (define gaps "// header\nfunction alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 2;\n}\n// trailer\n")
 (want "IS0 setup: GAPS's offsets (alpha, its brace, beta, its brace, the trailer, the length)"
       (list (offset-of gaps "function alpha") (offset-of gaps "}\n\n") (offset-of gaps "function beta")
@@ -211,10 +216,10 @@
 (let* ((c (case! (list (cons "g.js" gaps))
                  (section "g.js" gaps (sym 10 42 'function "alpha") (sym 44 75 'function "beta"))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS2 the comment before, the blank line between and the comment after are blocks of their own, cut at 10, 43, 44 and 76"
+  (want "IS2 the comment before joins alpha, the blank line between and the comment after go with the block above: one cut, at 44"
         (list (car a) (files-of (car c)))
-        (list 'ok (list (list "g.js" (slice gaps 0 10) (slice gaps 10 43) (slice gaps 43 44) (slice gaps 44 76) (slice gaps 76 87)))))
-  (want "IS2 the five blocks run together to the file's bytes"
+        (list 'ok (list (list "g.js" (slice gaps 0 44) (slice gaps 44 87)))))
+  (want "IS2 the two blocks run together to the file's bytes"
         (apply string-append (cdr (assoc "g.js" (files-of (car c)))))
         gaps))
 
@@ -225,9 +230,9 @@
                  (string-append (section "a.js" two (sym 19 30 'variable "inner") (sym 33 64 'function "beta"))
                                 (apply section "b.js" two two-symbols))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS3 a.js is refused symbols-not-top-level at 19 and listed; no block holds it; b.js is imported cut at 33"
+  (want "IS3 a.js is refused symbols-not-top-level at 19, naming inner, and listed; no block holds it; b.js is imported cut at 33"
         (list (car a) (clause a 'symbols-refused) (files-of (car c)))
-        (list 'ok '(("a.js" (error symbols-not-top-level (at 19)))) (list (cons "b.js" two-blocks)))))
+        (list 'ok '(("a.js" (error symbols-not-top-level (at 19) (symbol "inner")))) (list (cons "b.js" two-blocks)))))
 
 ;; ---- IS3b: a section whose digest is not the file's refuses that file ---------------
 ;; a.js's header carries the digest of other bytes; the section's own checks
@@ -305,9 +310,9 @@
                                 (section "o.js" open-text (sym 0 30 'function "alpha") (sym 32 63 'function "beta"))
                                 (apply section "b.js" two two-symbols))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS4d CONTROL one answer: n.js refused symbols-not-top-level at 19 and not held; o.js imported whole; b.js cut at 33"
+  (want "IS4d CONTROL one answer: n.js refused symbols-not-top-level at 19, naming inner, and not held; o.js imported whole; b.js cut at 33"
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
-        (list 'ok '(("n.js" (error symbols-not-top-level (at 19))))
+        (list 'ok '(("n.js" (error symbols-not-top-level (at 19) (symbol "inner"))))
               '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64))))
               (list (cons "b.js" two-blocks) (list "o.js" open-text)))))
 (let* ((c (case! (list (cons "b.js" two)) (apply section "b.js" two two-symbols)))
@@ -385,25 +390,26 @@
         (list (car a) (clause a 'symbols-refused) (files-of (car c)))
         (list 'ok '(("missing.js" (error symbols-no-file))) (list (cons "a.js" two-blocks)))))
 
-;; ---- IS10: a cut inside a body that only the normalised end makes ---------------
+;; ---- IS10: an end inside a body is moved, not refused ----------------------------
 ;; Both starts are at the top level; alpha's end, one line short, at the end
 ;; of `function alpha() {`, is taken to the start of the line after it, 19,
-;; which is inside alpha's braces. A scanner asked only about the starts
-;; would pass this file.
+;; which is inside alpha's braces. It moves on to where the scanner sees
+;; code begin at the top level, beta's line, the next block's start, so it
+;; is no cut: a.js is cut as b.js.
 (let* ((c (case! (list (cons "a.js" two) (cons "b.js" two))
                  (string-append (section "a.js" two (sym 0 18 'function "alpha") (sym 33 64 'function "beta"))
                                 (apply section "b.js" two two-symbols))))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS10 an end one line short puts the cut at 19, inside alpha's body: a.js is refused symbols-not-top-level at 19; b.js imports"
-        (list (car a) (clause a 'symbols-refused) (map car (files-of (car c))))
-        (list 'ok '(("a.js" (error symbols-not-top-level (at 19)))) '("b.js"))))
+  (want "IS10 an end one line short, at 19 inside alpha's body, moves to beta's start: nothing refused, a.js cut at 33 as b.js"
+        (list (car a) (clause a 'symbols-refused) (files-of (car c)))
+        (list 'ok #f (list (cons "a.js" two-blocks) (cons "b.js" two-blocks)))))
 
 ;; ---- IS11: what the scanner's state says is still inside -------------------------
-;; PY-BLANK: f's end, one line short, is taken to the blank line inside its
-;; body (19); the blank line has no indentation, and the line after it does.
-;; ARROW: inc's end at the end of its first line is taken to the line of its
-;; expression body (19), and the line before ends in =>. DEF: f's end at the
-;; end of `def f():` is taken to its indented body (9).
+;; PY-BLANK: a start on the blank line inside f's body (19); the blank line
+;; has no indentation, and the line after it does. ARROW: a start on the
+;; line of inc's expression body (19), and the line before ends in =>. DEF:
+;; a start on the indented body of `def f():` (9). Each start is refused, by
+;; its name.
 (define py-blank "def f():\n    a = 1\n\n    return a\n\ndef g():\n    return 2\n")
 (define arrow "const inc = (x) =>\n  x + 1;\nfunction g() {\n  return 2;\n}\n")
 (define def-colon "def f():\n    return 1\n")
@@ -419,15 +425,15 @@
                      (string-append (apply section name text (caddr c)) (apply section "b.js" two two-symbols))))
            (a (local (car k) "import-code" (cadr k) "--symbols" (caddr k))))
       (want (string-append "IS11 " (cadddr c) ": " name " is refused symbols-not-top-level at "
-                           (number->string (list-ref c 4)) ", not imported; b.js imports")
+                           (number->string (list-ref c 4)) ", naming body, not imported; b.js imports")
             (list (car a) (clause a 'symbols-refused) (map car (files-of (car k))))
-            (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at (list-ref c 4))))) '("b.js")))))
-  (list (list "f.py" py-blank (list (sym 0 18 'function "f") (sym 34 55 'function "g"))
-              "a blank line inside a Python body, the next line indented" 19)
-        (list "inc.js" arrow (list (sym 0 18 'variable "inc") (sym 28 56 'function "g"))
-              "an arrow function's expression body on the next line, after =>" 19)
-        (list "d.py" def-colon (list (sym 0 8 'function "f"))
-              "the line after def f():, its indented body" 9)))
+            (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at (list-ref c 4)) '(symbol "body")))) '("b.js")))))
+  (list (list "f.py" py-blank (list (sym 0 18 'function "f") (sym 19 33 'variable "body") (sym 34 55 'function "g"))
+              "a start on a blank line inside a Python body, the next line indented" 19)
+        (list "inc.js" arrow (list (sym 0 18 'variable "inc") (sym 19 27 'variable "body") (sym 28 56 'function "g"))
+              "a start on an arrow function's expression body on the next line, after =>" 19)
+        (list "d.py" def-colon (list (sym 0 8 'function "f") (sym 9 21 'variable "body"))
+              "a start on the line after def f():, its indented body" 9)))
 
 ;; ---- IS12: boundaries the stricter test still takes --------------------------------
 ;; A blank line between two top-level Python definitions; a comment line
@@ -445,13 +451,13 @@
     (let* ((name (car c)) (text (cadr c))
            (k (case! (list (cons name text)) (apply section name text (caddr c))))
            (a (local (car k) "import-code" (cadr k) "--symbols" (caddr k))))
-      (want (string-append "IS12 CONTROL " (cadddr c) ": " name " imports, cut where the symbols say")
+      (want (string-append "IS12 CONTROL " (cadddr c) ": " name " imports, cut as split-suggest cuts")
             (list (car a) (clause a 'symbols-refused) (files-of (car k)))
             (list 'ok #f (list (cons name (map (lambda (r) (slice text (car r) (cadr r))) (list-ref c 4))))))))
   (list (list "g.py" py-gap (list (sym 0 21 'function "f") (sym 23 44 'function "g"))
-              "a blank line between two top-level definitions" '((0 22) (22 23) (23 45)))
+              "a blank line between two top-level definitions, which goes with f" '((0 23) (23 45)))
         (list "c.js" comment-end (list (sym 12 40 'function "f"))
-              "a comment line ending in . before a definition" '((0 12) (12 41)))
+              "a comment line ending in . before a definition, which joins it" '((0 41)))
         (list "s.js" string-end (list (sym 0 8 'variable "x") (sym 9 37 'function "f"))
               "a line ending in a string that holds :" '((0 9) (9 38)))))
 
@@ -539,25 +545,25 @@
       (one-file "p.sh" "echo a\\|\nf() { :; }\n" (sym 0 8 'variable "e") (sym 9 20 'function "f"))
       (list 'ok #f (list (list "p.sh" "echo a\\|\n" "f() { :; }\n"))))
 ;; A LINE OF SPACES IS BLANK, judged by the next non-blank line.
-(want "IS20 a line of spaces before top-level code is the top level: the cut at it is taken"
-      (one-file "w.py" "def f():\n    return 1\n    \ndef g():\n    return 2\n" (sym 0 21 'function "f") (sym 27 48 'function "g"))
+(want "IS20 a line of spaces before top-level code is the top level: a start at it is taken"
+      (one-file "w.py" "def f():\n    return 1\n    \ndef g():\n    return 2\n" (sym 0 21 'function "f") (sym 22 26 'variable "pad") (sym 27 48 'function "g"))
       (list 'ok #f (list (list "w.py" "def f():\n    return 1\n" "    \n" "def g():\n    return 2\n"))))
-(want "IS20 CONTROL a line of spaces before indented code is inside: refused at it"
-      (one-file "v.py" "def f():\n    a = 1\n    \n    return a\n" (sym 0 18 'function "f"))
-      (list 'ok (list (list "v.py" '(error symbols-not-top-level (at 19)))) '()))
+(want "IS20 CONTROL a line of spaces before indented code is inside: a start at it is refused"
+      (one-file "v.py" "def f():\n    a = 1\n    \n    return a\n" (sym 0 18 'function "f") (sym 19 23 'variable "pad"))
+      (list 'ok (list (list "v.py" '(error symbols-not-top-level (at 19) (symbol "pad")))) '()))
 ;; COMMENTS, PROSE AND ORDER.
 (want "IS21 a token before an inline line comment continues: the code is read without its comment"
-      (one-file "c.js" "const x = 1 + // note\n  2;\nfunction f() {\n}\n" (sym 0 21 'variable "x") (sym 27 44 'function "f"))
-      (list 'ok (list (list "c.js" '(error symbols-not-top-level (at 22)))) '()))
+      (one-file "c.js" "const x = 1 + // note\n  2;\nfunction f() {\n}\n" (sym 0 21 'variable "x") (sym 22 26 'variable "two") (sym 27 44 'function "f"))
+      (list 'ok (list (list "c.js" '(error symbols-not-top-level (at 22) (symbol "two")))) '()))
 (want "IS22 a cut inside a block comment opened after an operator is refused by the comment, before any token test"
-      (one-file "k.js" "const y = 1 + /* note\n more */ 2;\nfunction f() {\n}\n" (sym 0 21 'variable "y") (sym 34 51 'function "f"))
-      (list 'ok (list (list "k.js" '(error symbols-not-top-level (at 22)))) '()))
+      (one-file "k.js" "const y = 1 + /* note\n more */ 2;\nfunction f() {\n}\n" (sym 0 21 'variable "y") (sym 22 33 'variable "more") (sym 34 51 'function "f"))
+      (list 'ok (list (list "k.js" '(error symbols-not-top-level (at 22) (symbol "more")))) '()))
 (want "IS23 Markdown is prose: a line ending in : before a heading does not continue"
       (one-file "m.md" "Example:\n# Next\ntext\n" (sym 0 8 'string "Example") (sym 9 21 'string "Next"))
       (list 'ok #f (list (list "m.md" "Example:\n" "# Next\ntext\n"))))
-(want "IS24 two blank-line cuts inside a body: the refusal names the first in the file, 19"
-      (one-file "o.py" "def f():\n    a = 1\n\n\n    return a\n" (sym 0 18 'function "f") (sym 20 33 'variable "rest"))
-      (list 'ok (list (list "o.py" '(error symbols-not-top-level (at 19)))) '()))
+(want "IS24 two blank-line starts inside a body: the refusal names the first in the file, 19"
+      (one-file "o.py" "def f():\n    a = 1\n\n\n    return a\n" (sym 0 18 'function "f") (sym 19 20 'variable "gap") (sym 20 33 'variable "rest"))
+      (list 'ok (list (list "o.py" '(error symbols-not-top-level (at 19) (symbol "gap")))) '()))
 
 ;; ---- IS25-IS29: the ellipsis, the escape's literal, a comment's close, the tokens --
 (want "IS25 a stub-style def ending in Python's ... does not continue: the next definition's cut is taken"
@@ -567,7 +573,7 @@
 ;; the escape takes the second backslash and the pipe is real.
 (want "IS26 a shell line ending in \\\\| ends in a real pipe and continues: the cut after it is refused"
       (one-file "r.sh" "echo \\\\|\nf() { :; }\n" (sym 0 8 'variable "e") (sym 9 20 'function "f"))
-      (list 'ok (list (list "r.sh" '(error symbols-not-top-level (at 9)))) '()))
+      (list 'ok (list (list "r.sh" '(error symbols-not-top-level (at 9) (symbol "f")))) '()))
 (want "IS26 a shell line ending in \\\\ ends in a literal backslash and does not continue: the cut after it is taken"
       (one-file "b.sh" "echo \\\\\nf() { :; }\n" (sym 0 7 'variable "e") (sym 8 19 'function "f"))
       (list 'ok #f (list (list "b.sh" "echo \\\\\n" "f() { :; }\n"))))
@@ -577,26 +583,27 @@
 ;; and S8b are the full rows.)
 (want "IS27 a JavaScript line ending in + and a block comment continues: the cut at f, its operand, is refused"
       (one-file "z.js" "const z = 1 + /* note */\nfunction f() {\n}\n" (sym 0 24 'variable "z") (sym 25 42 'function "f"))
-      (list 'ok (list (list "z.js" '(error symbols-not-top-level (at 25)))) '()))
-;; THE TOKENS THEMSELVES: each continues, and the cut after it is refused.
+      (list 'ok (list (list "z.js" '(error symbols-not-top-level (at 25) (symbol "f")))) '()))
+;; THE TOKENS THEMSELVES: each continues, and a start on the line after it is
+;; refused.
 (want "IS28 the shell's |, && and || continue"
-      (list (one-file "l.sh" "ls |\nwc -l\nf() { :; }\n" (sym 0 4 'variable "ls") (sym 11 22 'function "f"))
-            (one-file "t.sh" "true &&\nfalse\nf() { :; }\n" (sym 0 7 'variable "t") (sym 14 25 'function "f"))
-            (one-file "o.sh" "false ||\ntrue\nf() { :; }\n" (sym 0 8 'variable "o") (sym 14 25 'function "f")))
-      (list (list 'ok (list (list "l.sh" '(error symbols-not-top-level (at 5)))) '())
-            (list 'ok (list (list "t.sh" '(error symbols-not-top-level (at 8)))) '())
-            (list 'ok (list (list "o.sh" '(error symbols-not-top-level (at 9)))) '())))
+      (list (one-file "l.sh" "ls |\nwc -l\nf() { :; }\n" (sym 0 4 'variable "ls") (sym 5 10 'variable "wc") (sym 11 22 'function "f"))
+            (one-file "t.sh" "true &&\nfalse\nf() { :; }\n" (sym 0 7 'variable "t") (sym 8 13 'variable "false") (sym 14 25 'function "f"))
+            (one-file "o.sh" "false ||\ntrue\nf() { :; }\n" (sym 0 8 'variable "o") (sym 9 13 'variable "true") (sym 14 25 'function "f")))
+      (list (list 'ok (list (list "l.sh" '(error symbols-not-top-level (at 5) (symbol "wc")))) '())
+            (list 'ok (list (list "t.sh" '(error symbols-not-top-level (at 8) (symbol "false")))) '())
+            (list 'ok (list (list "o.sh" '(error symbols-not-top-level (at 9) (symbol "true")))) '())))
 (want "IS29 a binary - and a : continue"
-      (list (one-file "m.js" "const m = 1 -\n  2;\nfunction f() {\n}\n" (sym 0 13 'variable "m") (sym 19 36 'function "f"))
-            (one-file "n.js" "const t = c ? a :\n  b;\nfunction f() {\n}\n" (sym 0 17 'variable "t") (sym 23 40 'function "f")))
-      (list (list 'ok (list (list "m.js" '(error symbols-not-top-level (at 14)))) '())
-            (list 'ok (list (list "n.js" '(error symbols-not-top-level (at 18)))) '())))
+      (list (one-file "m.js" "const m = 1 -\n  2;\nfunction f() {\n}\n" (sym 0 13 'variable "m") (sym 14 18 'variable "two") (sym 19 36 'function "f"))
+            (one-file "n.js" "const t = c ? a :\n  b;\nfunction f() {\n}\n" (sym 0 17 'variable "t") (sym 18 22 'variable "b") (sym 23 40 'function "f")))
+      (list (list 'ok (list (list "m.js" '(error symbols-not-top-level (at 14) (symbol "two")))) '())
+            (list 'ok (list (list "n.js" '(error symbols-not-top-level (at 18) (symbol "b")))) '())))
 
 ;; IS30: RUST'S OPEN RANGE CONTINUES. Only "..." (Python's ellipsis) ends a line;
-;; "0.." at a line's end is the range operator, and the cut after it is inside.
-(want "IS30 a Rust line ending in the range 0.. continues: the cut after it is refused"
-      (one-file "r.rs" "const R: Range = 0..\n10;\nfn f() {\n}\n" (sym 0 20 'constant "R") (sym 25 36 'function "f"))
-      (list 'ok (list (list "r.rs" '(error symbols-not-top-level (at 21)))) '()))
+;; "0.." at a line's end is the range operator, and a start after it is inside.
+(want "IS30 a Rust line ending in the range 0.. continues: a start after it is refused"
+      (one-file "r.rs" "const R: Range = 0..\n10;\nfn f() {\n}\n" (sym 0 20 'constant "R") (sym 21 24 'variable "ten") (sym 25 36 'function "f"))
+      (list 'ok (list (list "r.rs" '(error symbols-not-top-level (at 21) (symbol "ten")))) '()))
 ;; IS31: WHAT THE ESCAPE MADE LITERAL IS ASKED OF ITS OWN LINE ONLY. The first
 ;; line ends in an escaped "|" at index 6, the second in a real "|" at the same
 ;; index: the first cut is taken, the second refused. (A multi-character escape
@@ -605,7 +612,7 @@
 ;; character.)
 (want "IS31 an escaped | on one line does not make the next line's | at the same index a literal"
       (one-file "x.sh" "echo \\|\necho a|\nf() { :; }\n" (sym 0 7 'variable "e1") (sym 8 15 'variable "e2") (sym 16 27 'function "f"))
-      (list 'ok (list (list "x.sh" '(error symbols-not-top-level (at 16)))) '()))
+      (list 'ok (list (list "x.sh" '(error symbols-not-top-level (at 16) (symbol "f")))) '()))
 
 ;; IS32: IN A PARENTHESISED LANGUAGE NO OPERATOR CONTINUES A LINE. "-", "+" and
 ;; "." are identifier characters in Scheme; a top-level datum ending in one is
@@ -638,7 +645,7 @@
     (stop-daemon! store)
     (want "IS9 through the daemon: the split answers ok, the refusal lists x.js, the malformed file is refused whole"
           (list state (car a1) (car a2) (clause a2 'symbols-refused) a3)
-          (list 'up 'ok 'ok '(("x.js" (error symbols-not-top-level (at 19)))) '(error symbols-malformed (line 1))))
+          (list 'up 'ok 'ok '(("x.js" (error symbols-not-top-level (at 19) (symbol "inner")))) '(error symbols-malformed (line 1))))
     (want "IS9 CONTROL: the daemon served the three imports -- none in its trace before, three after"
           (list served-before served-after)
           '(0 3))
@@ -653,7 +660,7 @@
 ;; TS: a class, an interface, an arrow const and a function, a blank line
 ;; between each. TypeScript's definition patterns name the interface and
 ;; the function; the class and the const they do not. The blocks are Beta,
-;; a blank line, Gamma, a blank line, delta, a blank line and epsilon.
+;; Gamma, delta and epsilon, each blank line with the block above it.
 (define ts "export class Beta {\n  x = 1;\n}\n\nexport interface Gamma {\n  y: number;\n}\n\nexport const delta = (n: number) => n + 1;\n\nexport function epsilon(): number {\n  return 2;\n}\n")
 (want "IS33 setup: TS's offsets (Beta, its brace, Gamma, its brace, delta, its semicolon, epsilon, its brace, the length)"
       (list (offset-of ts "export class Beta") (offset-of ts "}\n\nexport interface") (offset-of ts "export interface Gamma")
@@ -685,17 +692,17 @@
 
 (let* ((c (ts-case! "Beta"))
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
-  (want "IS34 a symbol-cut TS file: the outline reads Beta, Gamma (derived), delta, epsilon (derived), the gaps typescript:N"
+  (want "IS34 a symbol-cut TS file: the outline reads Beta, Gamma (derived), delta, epsilon (derived), no gap block"
         (list (car a) (titles-of (car c)))
-        '(ok ("a.ts" "Beta" "typescript:2" "Gamma" "typescript:4" "delta" "typescript:6" "epsilon")))
-  (want "IS35 the title FIELD is stored on Beta and delta only: not where the name is derived, not on a gap"
+        '(ok ("a.ts" "Beta" "Gamma" "delta" "epsilon")))
+  (want "IS35 the title FIELD is stored on Beta and delta only: not where the name is derived"
         (title-fields-of (car c) "a.ts")
-        '("Beta" #f #f #f "delta" #f #f))
+        '("Beta" #f "delta" #f))
   (let* ((ids (setup (children-of (car c) "a.ts")))
-         (zeta (setup (rpc-dispatch (car c) (list 'set (list-ref ids 6) "src" "export function zeta(): number {\n  return 2;\n}\n") "test")))
+         (zeta (setup (rpc-dispatch (car c) (list 'set (list-ref ids 3) "src" "export function zeta(): number {\n  return 2;\n}\n") "test")))
          (kappa (setup (rpc-dispatch (car c) (list 'set (list-ref ids 0) "src" "export class Kappa {\n  x = 1;\n}\n") "test"))))
     (want "IS36 epsilon's block renamed to zeta and committed: the outline reads zeta, no stored title shadows it"
-          (list (car zeta) (list-ref (titles-of (car c)) 7))
+          (list (car zeta) (list-ref (titles-of (car c)) 4))
           '(ok "zeta"))
     (want "IS37 Beta's block renamed to Kappa and committed: the outline still reads Beta, the first import's title (documented: a title does not follow src)"
           (list (car kappa) (list-ref (titles-of (car c)) 1))
@@ -705,7 +712,7 @@
        (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
   (want "IS38 a class symbol named \"\": its block has no title and reads typescript:1; delta still has one"
         (list (car a) (list-ref (titles-of (car c)) 1) (title-fields-of (car c) "a.ts"))
-        '(ok "typescript:1" (#f #f #f #f "delta" #f #f))))
+        '(ok "typescript:1" (#f #f "delta" #f))))
 
 (let* ((c (case! (list (cons "a.ts" ts)) #f))
        (a (local (car c) "import-code" (cadr c))))
@@ -748,9 +755,12 @@
 ;; operand (Go inserts no semicolon after "+"). Each refusing row is red on
 ;; the scan that took a block comment's close, or a comment line, as the end
 ;; of the statement.
+;; the refusal names the symbol starting at NEEDLE, read back from its line
 (define (refused-at-line name text needle . symbols)
-  (list (apply one-file name text symbols)
-        (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at (offset-of text needle))))) '())))
+  (let* ((at (offset-of text needle))
+         (s (find (lambda (d) (= (cadr d) at)) (map (lambda (l) (read (open-input-string l))) symbols))))
+    (list (apply one-file name text symbols)
+          (list 'ok (list (list name (list 'error 'symbols-not-top-level (list 'at at) (list 'symbol (list-ref s 4))))) '()))))
 (define (two-syms text first-name second-needle second-name)
   (list (sym 0 (offset-of text "\n") 'variable first-name)
         (sym (offset-of text second-needle) (bytes-of text) 'function second-name)))
@@ -781,22 +791,21 @@
     (want "IS45 a line ending in + (Go, C) or | (shell), then a comment-only line: the definition after it is still the operand, the cut refused"
           (map car rows) (map cadr rows))))
 ;; CONTROLS: a complete statement before a comment, on its line or on the
-;; next, does not continue, and the cut after it is taken.
+;; next, does not continue, and the start after it is taken; a comment line
+;; directly above f goes with it.
 (let ((g "var z = 1 /* done. */\nfunc f() {\n}\n")
       (c "int z = 1; /* done. */\nint f(void) {\n}\n")
       (e "var z = 1\n/* The end. */\nfunc f() {\n}\n")
       (h "true\n# note\nf() { :; }\n"))
-  (want "IS46 CONTROL a complete statement then /* done. */ (Go, C), then /* The end. */ on its own line (Go), then a shell comment line: each cut taken"
+  (want "IS46 CONTROL a complete statement then /* done. */ (Go, C), then /* The end. */ on its own line (Go), then a shell comment line: each start taken, the comment line with f"
         (list (apply one-file "d.go" g (two-syms g "z" "func f" "f"))
               (apply one-file "d.c" c (two-syms c "z" "int f" "f"))
               (one-file "e.go" e (sym 0 (offset-of e "\n") 'variable "z") (sym (offset-of e "func f") (bytes-of e) 'function "f"))
               (one-file "e.sh" h (sym 0 (offset-of h "\n") 'variable "t") (sym (offset-of h "f()") (bytes-of h) 'function "f")))
         (list (list 'ok #f (list (list "d.go" (slice g 0 (offset-of g "func f")) (slice g (offset-of g "func f") (bytes-of g)))))
               (list 'ok #f (list (list "d.c" (slice c 0 (offset-of c "int f")) (slice c (offset-of c "int f") (bytes-of c)))))
-              (list 'ok #f (list (list "e.go" (slice e 0 (+ 1 (offset-of e "\n"))) (slice e (+ 1 (offset-of e "\n")) (offset-of e "func f"))
-                                       (slice e (offset-of e "func f") (bytes-of e)))))
-              (list 'ok #f (list (list "e.sh" (slice h 0 (+ 1 (offset-of h "\n"))) (slice h (+ 1 (offset-of h "\n")) (offset-of h "f()"))
-                                       (slice h (offset-of h "f()") (bytes-of h))))))))
+              (list 'ok #f (list (list "e.go" (slice e 0 (+ 1 (offset-of e "\n"))) (slice e (+ 1 (offset-of e "\n")) (bytes-of e)))))
+              (list 'ok #f (list (list "e.sh" (slice h 0 (+ 1 (offset-of h "\n"))) (slice h (+ 1 (offset-of h "\n")) (bytes-of h))))))))
 
 (system (string-append "rm -rf '" root "'; rm -f '" socket "'"))
 (printf "\n~a failures\nrows: ~a\nimport-symbols complete\n" bad rows)

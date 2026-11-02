@@ -127,9 +127,9 @@
         (ss-bounds (string-append a b "(define c #\\λ)\n"))
         (list 0 (byte-count a) (+ (byte-count a) (byte-count b)))))
 (let ((a "#\\\\\n"))
-  (want "CS-5 the strict symbols path: a #\\\\ line does not continue, and b's start is accepted with no warning"
+  (want "CS-5 the strict symbols path: a #\\\\ line does not continue, and b's start is accepted with no warning, code beginning on both lines"
         (scan "scheme" (string-append a "(define b 2)\n") (list (byte-count a)))
-        (list (list 0 (byte-count a)) '())))
+        (list (list 0 (byte-count a)) '() (list 0 (byte-count a)))))
 (let ((a "(define a #\\(x)\n"))
   (want "CS-5b #\\( is one character: x) closes the define, two boundaries"
         (ss-bounds (string-append a "(define b 2)\n")) (list 0 (byte-count a))))
@@ -151,9 +151,10 @@
               (ss-bounds (string-append c1 "#| #\\( |#\n(define b 2)\n")))
         (list '(unbalanced) (list 0 (byte-count s1)) (list 0 (byte-count s2)) (list 0 (byte-count c1)))))
 (let* ((a "(define a #\\( )\n") (text (string-append a "(define b 2)\n")))
-  (want "CS-8 the chez runner entry cuts CS-1's text as the scheme entry does: (0 N), no warning"
+  (want "CS-8 the chez runner entry cuts CS-1's text as the scheme entry does: (0 N), no warning, code beginning on both lines"
         (list (scan "chez" text) (scan "scheme" text))
-        (list (list (list 0 (byte-count a)) '()) (list (list 0 (byte-count a)) '()))))
+        (list (list (list 0 (byte-count a)) '() (list 0 (byte-count a)))
+              (list (list 0 (byte-count a)) '() (list 0 (byte-count a))))))
 
 ;; A LIBRARY'S BODY: the first opener met with an empty stack is read for its
 ;; head; `library` designates that frame, and the definitions at its first

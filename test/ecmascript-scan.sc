@@ -614,6 +614,8 @@
                 (and (= 1 (length w)) (let ((o (cadddr (car w)))) (and (memv o (cdr slashes)) #t)))))
         '((0) #t #t)))
 ;; LINEAR: the 4N file costs at most six times the N file, both cut at f.
+;; The cuts and warnings are compared; the code-line offsets that follow
+;; them grow with the file and are not.
 ;; THE BOUND IS A GUARD, NOT A MEASUREMENT: a linear scan reads 4 and a
 ;; quadratic one 16, so 6 leaves half again for noise and still tells the
 ;; two apart. THE MEDIAN OF THREE ALTERNATING PAIRS decides it, so one
@@ -628,7 +630,7 @@
        (timed (lambda (t)
                 (let ((b (string->utf8 t)))
                   (let* ((t0 (real-time)) (r (suggest-boundaries entry b)) (t1 (real-time)))
-                    (list r (- t1 t0))))))
+                    (list (list (car r) (cadr r)) (- t1 t0))))))
        (pairs (let loop ((k 0) (out '()))
                 (if (= k 3) (reverse out) (let* ((r1 (timed t1)) (r4 (timed t4))) (loop (+ k 1) (cons (cons r1 r4) out))))))
        (median (lambda (xs) (list-ref (list-sort < xs) 1)))

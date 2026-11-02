@@ -147,7 +147,15 @@
   ;; whole answer at the first line that is not a hit), so there the two
   ;; travel only in --wire.
   (define kept-clauses '(incomplete via stale))
-  (define kept-after-items '(incomplete))
+  ;; NEVER: A FILE LEFT OUT IS NOT LEFT OUT IN SILENCE. An import's items
+  ;; are its writes, so a file it skipped, or whose symbols it ignored,
+  ;; refused or could not use, is in no item: a run that refused every file
+  ;; printed nothing, as a run with nothing to do does. Its clauses follow
+  ;; the items, one line each as the wire writes it: import-code's and
+  ;; import --datum's `skipped`, and import-code's three of --symbols. uses
+  ;; prints its skipped counts the same way. No reader takes these answers'
+  ;; lines as hits.
+  (define kept-after-items '(incomplete skipped symbols-ignored symbols-imported-whole symbols-refused))
   ;; NEVER: EVERY HIT LEFT OUT IS NOT NO HIT. A search, grep or whereis
   ;; whose every hit was in a superseded or refuted block printed nothing,
   ;; as one that matched nothing does. With no item left, the excluded

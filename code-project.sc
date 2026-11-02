@@ -113,8 +113,9 @@
   ;; cut at a symbol the language's definition patterns do not name carries
   ;; the symbol's name as its title. A file that
   ;; carries markers follows them and nothing else, so identity is proved
-  ;; by markers alone, and is listed as symbols-ignored. A file whose cuts
-  ;; are refused is not imported at all, and is listed with its refusal as
+  ;; by markers alone, and is listed as symbols-ignored. A file whose
+  ;; starts are refused (an end is never refused: it moves) is not
+  ;; imported at all, and is listed with its refusal as
   ;; symbols-refused, as is a section that names no text file the walk
   ;; found; the rest of the import goes on.
   ;;

@@ -1077,7 +1077,8 @@ The live code blocks that use a name, compared whole and exactly (case matters,
 `library` is the nearest enclosing library block, else the file block of a text file
 whose header names a library (its id), or `none`. `skipped` counts the
 blocks in scope that could not be read, by reason, and is there only when there are
-some. With `--under <id>` the blocks in that block's subtree, the block included (an
+some; without `--wire` it is printed after the uses too, one line, as the wire
+writes it. With `--under <id>` the blocks in that block's subtree, the block included (an
 unknown id answers `unknown-id`).
 
 **It is not find-references.** A use is listed whether or not anything defines the
@@ -3007,7 +3008,8 @@ exactly); every other file the directory walk returns (it does not
 enter a name that starts with a dot) is listed, in the order it was walked,
 in the answer's skipped clause, which is there only when something
 was skipped. A file the reader refuses is named in the refusal's path
-clause. Text mode, without `--datum`, skips a file that is not UTF-8 text
+clause. Without `--wire` the skipped clause is printed after the items
+too, one line, as the wire writes it. Text mode, without `--datum`, skips a file that is not UTF-8 text
 or that holds a NUL byte, and lists it in the same skipped clause; it is
 decided by the bytes, not the name, so a source file in a legacy 8-bit
 encoding or in UTF-16 is skipped and listed, not imported, unless its
@@ -3022,10 +3024,10 @@ markers a text file is imported as one block; `split-suggest` writes a
 review copy with marker lines, and importing that copy splits it.
 `--symbols <symbols-file>` takes the manual step out of a FIRST import: a
 file the symbols file names, and that carries no marker line, is split at
-its symbols into code blocks under its file block: the same cuts as a
-marked import of those cuts, and a block cut at a symbol that the
-language's definition patterns do not name carries the symbol's name as its
-title. A file the symbols file does not name
+its symbols into code blocks under its file block: the cuts
+`split-suggest --symbols` gives those symbols, as a marked import of those
+cuts would split it, and a block cut at a symbol that the language's
+definition patterns do not name carries the symbol's name as its title. A file the symbols file does not name
 imports as before. A file that carries marker lines -- one `export-code`
 wrote, whose file block exists, or a review copy -- follows its markers and
 nothing else: identity is proved by markers alone, and names and order
@@ -3036,9 +3038,9 @@ one, nothing else is stored: the derived name follows later edits. Where
 they derive none (in TypeScript, a class or a const; in JavaScript or
 TypeScript, an `export default` of anything but a function), the block's
 title is the editor's name for the symbol at the first import, and like
-any title it is not updated by later edits. A block that does
-not start at a symbol (what comes before the first, between two, or after
-the last), and one whose symbol is named `""`, gets no title.
+any title it is not updated by later edits. A block that holds no
+symbol's start (code no symbol covers, between two), and one whose symbol
+is named `""`, gets no title.
 
 The symbols file is `split-suggest`'s, one section per file: each section
 is a header that names its file by its path under `<dir>`, as the walk
@@ -3047,30 +3049,40 @@ spells it, then that file's symbol lines.
     (symbols (path "<path>") (digest "<sha256 of the file>") (source (vscode "<version>" "<languageId>")) (top-level #t))
     (symbol <start> <end> <kind> "<name>")
 
-Every start is a cut, and every end is taken to the first line start at
-or after it, or the file's end, so what follows a symbol on its last line
-stays with it; an end already at a line start or at the file's end stays
-where it is. Ends
-are normalised and starts are not: a start must already be the first byte
-of its line, or the file is refused `symbols-not-a-line-start`. What
-lies before the first symbol, between two, or after the last is a block of
-its own: the blocks' bytes run together to the file. A cut at the end of
-the protected prefix (a shebang, a coding line, a byte-order mark) is
-dropped, the prefix staying with the first block.
+The starts are cut as `split-suggest` cuts them: the language's scanner
+takes each as a definition, the run of comment lines directly above it
+goes with it (a blank line ends the run), and a cut at the end of the
+protected prefix (a shebang, a coding line, a byte-order mark) is
+dropped, the prefix staying with the first block. A start must already be
+the first byte of its line, or the file is refused
+`symbols-not-a-line-start`. An END is the import's own: it is taken to the
+first line start at or after it where the scanner sees code begin at the
+top level -- not a blank line, not a comment line, not inside a statement,
+a string or a bracket -- so what follows a symbol on its last line, and the
+rest of a statement an editor's range stops inside (`const { a } =
+require('x') as {` ends after the name), stay with it. What lies between
+there and the next block is a block of its own, and holds code; when the
+next block's start or the file's end comes first, the end is no cut, and
+the symbol's block runs to there. So the blank lines after a definition,
+and a comment no definition takes, go with the block above, as
+`split-suggest` has them, and what lies before the first symbol is a block
+of its own unless a comment run joins it to the first. The blocks' bytes
+run together to the file.
 
 A file's section is checked with the file, as `split-suggest` checks its
 symbols file (`symbols-stale`, `symbols-empty`, `symbols-past-end`,
 `symbols-not-a-boundary`, `symbols-unordered`, `symbols-overlap`,
-`symbols-not-a-line-start`), and then every cut is put to the language's
-scanner. The first failure, in this order, refuses that file:
+`symbols-not-a-line-start`), and then every start is put to the
+language's scanner; an end is never refused. The first failure, in this order, refuses that file:
 `(error symbols-unchecked (reason no-language-entry | no-suggest-profile))`
 when no scanner can say what is top level in it; `(error symbols-in-prefix
-(at <n>))` for a cut inside the protected prefix; `(error
+(at <n>))` for a start inside the protected prefix; `(error
 symbols-unscanned (reason <r>) (at <n>))` when the scanner cannot follow
 the file (`unbalanced`, `unclosed-quote`, `lexically-uncertain`, and in
 JavaScript `opener` and `self-close`); and
-`(error symbols-not-top-level (at <n>))` for the first cut inside a body,
-a string, a block comment or an open bracket. Two more cuts are inside: one
+`(error symbols-not-top-level (at <n>) (symbol "<name>"))` for the first
+start inside a body, a string, a block comment or an open bracket, with the
+name the symbols file gave that symbol. Two more starts are inside: one
 after a line whose code ends in a continuation token (`=>`, `=`, `+`, `-`,
 `*`, `/`, `.`, `,`, `(`, `[`, `{`, `&&`, `||`, `?`, `:`, or the language's
 escape, `\` in Python; in the shell only `|`, `&&`, `||` and `\`, since `/`,
@@ -3114,7 +3126,8 @@ such a file as imported, one block, without saying why its symbols were
 not used.
 
 The three clauses are there only when they list something, and only on an
-answer that succeeded, as `skipped` is.
+answer that succeeded, as `skipped` is; like it, each is printed after the
+items without `--wire` too, so a run that refused every file says so.
 
 The symbols file itself is read before the directory, and a file that
 cannot be read as sections refuses the request: `(error symbols-malformed
