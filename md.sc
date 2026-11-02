@@ -26,14 +26,14 @@
 ;;
 ;;   md-split / md-join    the byte ranges of section 2.4
 ;;   md->blocks / blocks->md   the document AST of section 2.1
-;;   md-refs               the reference lexer
+;;   md-ref-nodes          the references the parser found, in document order
 (library (theourgia md)
   (export md-split md-join
           doc-front doc-src doc-sections
           section-level section-title section-heading-src section-src
           make-section section?
-          md->blocks blocks->md md-refs)
-  (import (rnrs base) (rnrs control) (rnrs lists)
+          md->blocks blocks->md md-ref-nodes)
+  (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs unicode) (rnrs records syntactic) (rnrs io ports))
 
   (define-record-type doc
@@ -321,42 +321,93 @@
              (else #f))))
         (else #f))))
 
+  ;; SPANS ARE BYTE OFFSETS INTO THE SRC THE TOP CALL WAS GIVEN. Every block
+  ;; node and every reference carries (span <start> <end>), half-open, in the
+  ;; UTF-8 encoding of that src, after the node's scalar elements and before
+  ;; its children. A block's span runs from the start of its first line to
+  ;; the end of its last line's terminator, container prefixes and interior
+  ;; lines included; a reference's from the first byte of `[[` to the byte
+  ;; after `]]`, read from the cursor before escapes and entities are
+  ;; decoded.
+  ;;
+  ;; THE ORIGIN MAP. Each line of the string a taker walks has a PLACE, a
+  ;; vector (start next content): the start and next-start of the top src's
+  ;; line it came from, and the top byte offset of its own first character.
+  ;; A quote or a list recurses on a joined child string, as it always has,
+  ;; and hands the recursion the places of the lines it kept, each content
+  ;; offset moved past the prefix it stripped; so a quote in a list in a
+  ;; quote maps to the top src, never to the string it was handed.
+  (define (char-width c)
+    (let ((n (char->integer c)))
+      (cond ((< n #x80) 1) ((< n #x800) 2) ((< n #x10000) 3) (else 4))))
+
+  (define (utf8-width text from to)
+    (let loop ((i from) (k 0))
+      (if (>= i to) k (loop (+ i 1) (+ k (char-width (string-ref text i)))))))
+
+  (define (top-places text ls)
+    (let ((out (make-vector (vector-length ls))))
+      (let loop ((i 0) (b 0))
+        (if (= i (vector-length ls))
+            out
+            (let* ((l (vector-ref ls i))
+                   (next (+ b (utf8-width text (car l) (caddr l)))))
+              (vector-set! out i (vector b next b))
+              (loop (+ i 1) next))))))
+
+  ;; KEPT is a list of (place . stripped-bytes), one per line handed down.
+  (define (child-places kept)
+    (list->vector
+      (map (lambda (k)
+             (let ((p (car k)))
+               (vector (vector-ref p 0) (vector-ref p 1) (+ (vector-ref p 2) (cdr k)))))
+           kept)))
+
+  (define (lines-span places i j)
+    (list 'span (vector-ref (vector-ref places i) 0) (vector-ref (vector-ref places j) 1)))
+
   (define (md->blocks text)
     (let ((ls (list->vector (lines-of text))))
-      (let loop ((i 0) (out '()))
-        (if (>= i (vector-length ls))
-            (reverse out)
-            (let* ((l (vector-ref ls i))
-                   (s (line-text text l)))
-              (cond
-                ((blank? s) (loop (+ i 1) out))
-                ((fence-at text (car l) (cadr l))
-                 (let-values (((node next) (take-fence text ls i)))
-                   (loop next (cons node out))))
-                ((hr-line? s) (loop (+ i 1) (cons '(hr) out)))
-                ((starts-with? (trim-left s) ">")
-                 (let-values (((node next) (take-quote text ls i)))
-                   (loop next (cons node out))))
-                ((list-marker s)
-                 (let-values (((node next) (take-list text ls i)))
-                   (loop next (cons node out))))
-                ;; FOUR SPACES IS AN INDENTED CODE BLOCK, and v1 keeps it
-                ;; whole rather than pretending to understand it.
-                ((>= (indent-of s) 4)
-                 (let-values (((node next) (take-raw text ls i)))
-                   (loop next (cons node out))))
-                ;; A TABLE, AN HTML BLOCK OR A FOOTNOTE: recognised only
-                ;; well enough to be kept whole.
-                ((or (starts-with? (trim-left s) "|")
-                     (starts-with? (trim-left s) "<")
-                     (starts-with? (trim-left s) "[^"))
-                 (let-values (((node next) (take-raw text ls i)))
-                   (loop next (cons node out))))
-                (else
-                 (let-values (((node next) (take-para text ls i)))
-                   (loop next (cons node out))))))))))
+      (blocks-of text ls (top-places text ls) (string->utf8 text))))
 
-  (define (take-fence text ls i)
+  ;; SRC is the top src's bytes, which a raw-md node's text is sliced from.
+  (define (blocks-of text ls places src)
+    (let loop ((i 0) (out '()))
+      (if (>= i (vector-length ls))
+          (reverse out)
+          (let* ((l (vector-ref ls i))
+                 (s (line-text text l)))
+            (cond
+              ((blank? s) (loop (+ i 1) out))
+              ((fence-at text (car l) (cadr l))
+               (let-values (((node next) (take-fence text ls places i)))
+                 (loop next (cons node out))))
+              ((hr-line? s) (loop (+ i 1) (cons (list 'hr (lines-span places i i)) out)))
+              ((starts-with? (trim-left s) ">")
+               (let-values (((node next) (take-quote text ls places src i)))
+                 (loop next (cons node out))))
+              ((list-marker s)
+               (let-values (((node next) (take-list text ls places src i)))
+                 (loop next (cons node out))))
+              ;; FOUR SPACES IS AN INDENTED CODE BLOCK, and v1 keeps it
+              ;; whole rather than pretending to understand it. It is code,
+              ;; so its refs clause is empty.
+              ((>= (indent-of s) 4)
+               (let-values (((node next) (take-raw text ls places src i #f)))
+                 (loop next (cons node out))))
+              ;; A TABLE, AN HTML BLOCK OR A FOOTNOTE: recognised only
+              ;; well enough to be kept whole, its references found.
+              ((or (starts-with? (trim-left s) "|")
+                   (starts-with? (trim-left s) "<")
+                   (starts-with? (trim-left s) "[^"))
+               (let-values (((node next) (take-raw text ls places src i #t)))
+                 (loop next (cons node out))))
+              (else
+               (let-values (((node next) (take-para text ls places i)))
+                 (loop next (cons node out)))))))))
+
+  ;; AN UNCLOSED FENCE RUNS TO THE END: its span ends at the last line's.
+  (define (take-fence text ls places i)
     (let* ((l (vector-ref ls i))
            (open (fence-at text (car l) (cadr l)))
            (head (trim-right (trim-left (line-text text l))))
@@ -366,12 +417,12 @@
       (let loop ((j (+ i 1)) (body '()))
         (cond
           ((>= j (vector-length ls))
-           (values (list 'code fence lang (join-lines (reverse body))) j))
+           (values (list 'code fence lang (join-lines (reverse body)) (lines-span places i (- j 1))) j))
           (else
            (let* ((m (vector-ref ls j))
                   (f (fence-at text (car m) (cadr m))))
              (if (and f (char=? (car f) (car open)) (>= (cdr f) (cdr open)))
-                 (values (list 'code fence lang (join-lines (reverse body))) (+ j 1))
+                 (values (list 'code fence lang (join-lines (reverse body)) (lines-span places i j)) (+ j 1))
                  (loop (+ j 1) (cons (line-text text m) body)))))))))
 
 ;; NEWLINES BETWEEN THE LINES, NOT AFTER THE LAST ONE. Appending one
@@ -387,57 +438,91 @@
               (apply string-append (reverse out))
               (loop (cdr xs) (cons (car xs) (cons "\n" out)))))))
 
-  (define (take-quote text ls i)
-    (let loop ((j i) (body '()))
+  ;; The child string is the lines with `>` and one space taken off; each
+  ;; kept line's place moves past the bytes taken.
+  (define (take-quote text ls places src i)
+    (let loop ((j i) (body '()) (kept '()))
       (if (or (>= j (vector-length ls))
               (not (starts-with? (trim-left (line-text text (vector-ref ls j))) ">")))
-          (values (cons 'quote (md->blocks (join-lines (reverse body)))) j)
-          (let* ((s (trim-left (line-text text (vector-ref ls j))))
-                 (rest (substring s 1 (string-length s))))
+          (let* ((child (join-lines (reverse body)))
+                 (cls (list->vector (lines-of child))))
+            (values (cons* 'quote (lines-span places i (- j 1))
+                           (blocks-of child cls (child-places (reverse kept)) src))
+                    j))
+          (let* ((l (vector-ref ls j))
+                 (whole (line-text text l))
+                 (s (trim-left whole))
+                 (rest (substring s 1 (string-length s)))
+                 (spaced (and (> (string-length rest) 0) (char=? (string-ref rest 0) #\space)))
+                 (taken (+ (- (string-length whole) (string-length s)) 1 (if spaced 1 0))))
             (loop (+ j 1)
-                  (cons (if (and (> (string-length rest) 0)
-                                 (char=? (string-ref rest 0) #\space))
-                            (substring rest 1 (string-length rest))
-                            rest)
-                        body))))))
+                  (cons (if spaced (substring rest 1 (string-length rest)) rest) body)
+                  (cons (cons (vector-ref places j) (utf8-width text (car l) (+ (car l) taken))) kept))))))
 
   ;; ONE LEVEL OF LIST, ITEMS SPLIT AT THE MARKERS. Continuation lines
   ;; belong to the item above them; a blank line ends the list unless the
-  ;; next line is another marker.
-  (define (take-list text ls i)
+  ;; next line is another marker. An item is a list of (text taken index):
+  ;; the rest of the line it keeps, the bytes of the marker or indentation
+  ;; it took off the front, and the line's index here. A blank line is in no
+  ;; item, and the blank this consumes after the last item is in no node:
+  ;; the list's span ends at the last line an item kept.
+  (define (take-list text ls places src i)
     (let* ((first (list-marker (line-text text (vector-ref ls i))))
            (ordered? (car first))
            (start (cadr first)))
+      (define (entry j chars)
+        (let ((l (vector-ref ls j)))
+          (list (substring text (+ (car l) chars) (cadr l)) (utf8-width text (car l) (+ (car l) chars)) j)))
       (let loop ((j i) (items '()) (current '()))
         (define (flush)
           (if (null? current) items (cons (reverse current) items)))
+        (define (done next)
+          (values (make-list-node ordered? start (reverse (flush)) places src) next))
         (cond
-          ((>= j (vector-length ls))
-           (values (make-list-node ordered? start (reverse (flush))) j))
+          ((>= j (vector-length ls)) (done j))
           (else
            (let* ((s (line-text text (vector-ref ls j)))
                   (m (list-marker s)))
              (cond
                ((and m (or (null? current) #t) (not (= j i)) (not (null? current))
                      (eq? (car m) ordered?))
-                (loop (+ j 1) (flush) (list (substring s (caddr m) (string-length s)))))
-               (m (loop (+ j 1) items
-                        (cons (substring s (caddr m) (string-length s)) current)))
+                (loop (+ j 1) (flush) (list (entry j (caddr m)))))
+               (m (loop (+ j 1) items (cons (entry j (caddr m)) current)))
                ((blank? s)
                 (if (and (< (+ j 1) (vector-length ls))
                          (list-marker (line-text text (vector-ref ls (+ j 1)))))
                     (loop (+ j 1) items current)
-                    (values (make-list-node ordered? start (reverse (flush))) (+ j 1))))
+                    (done (+ j 1))))
                ((>= (indent-of s) 2)
-                (loop (+ j 1) items (cons (trim-left s) current)))
-               (else
-                (values (make-list-node ordered? start (reverse (flush))) j)))))))))
+                (loop (+ j 1) items (cons (entry j (- (string-length s) (string-length (trim-left s)))) current)))
+               (else (done j)))))))))
 
-  (define (make-list-node ordered? start items)
-    (append (list 'list ordered? (or start 1))
-            (map (lambda (lines) (cons 'item (md->blocks (join-lines lines)))) items)))
+  (define (make-list-node ordered? start items places src)
+    (define (item-node lines)
+      (let* ((child (join-lines (map car lines)))
+             (cls (list->vector (lines-of child))))
+        (cons* 'item (lines-span places (caddr (car lines)) (caddr (car (reverse lines))))
+               (blocks-of child cls
+                          (child-places (map (lambda (e) (cons (vector-ref places (caddr e)) (cadr e))) lines))
+                          src))))
+    (append (list 'list ordered? (or start 1)
+                  (lines-span places (caddr (car (car items))) (caddr (car (reverse (car (reverse items)))))))
+            (map item-node items)))
 
-  (define (take-para text ls i)
+  ;; A PARAGRAPH'S CHARACTER MAP: one top-src byte offset per character of
+  ;; the joined lines, the LF between two lines given the byte after the
+  ;; first line's content. parse-inline reads a reference's ends from it.
+  (define (inline-map text ls places i j)
+    (let loop ((k i) (out '()))
+      (if (= k j)
+          (list->vector (reverse out))
+          (let ((l (vector-ref ls k)))
+            (let chars ((c (car l)) (b (vector-ref (vector-ref places k) 2)) (out out))
+              (if (< c (cadr l))
+                  (chars (+ c 1) (+ b (char-width (string-ref text c))) (cons b out))
+                  (loop (+ k 1) (if (< (+ k 1) j) (cons b out) out))))))))
+
+  (define (take-para text ls places i)
     (let loop ((j i) (body '()))
       (if (or (>= j (vector-length ls))
               (let ((s (line-text text (vector-ref ls j))))
@@ -448,22 +533,44 @@
                              (list-marker s)
                              (starts-with? (trim-left s) ">")
                              (starts-with? (trim-left s) "|"))))))
-          (values (cons 'para (parse-inline (join-lines (reverse body)))) j)
+          (values (cons* 'para (lines-span places i (- j 1))
+                         (parse-inline (join-lines (reverse body)) (inline-map text ls places i j) 0))
+                  j)
           (loop (+ j 1) (cons (line-text text (vector-ref ls j)) body)))))
 
-  (define (take-raw text ls i)
-    (let loop ((j i) (body '()))
+  ;; RAW-MD IS VERBATIM: its text is the top src's bytes between its span's
+  ;; ends, so CRLF, a container's prefixes and the first line's prefix are
+  ;; all kept, and a last line with no terminator keeps none. Its references
+  ;; are what parse-inline finds over its lines, unless it is code.
+  (define (take-raw text ls places src i refs?)
+    (let loop ((j i))
       (if (or (>= j (vector-length ls))
               (blank? (line-text text (vector-ref ls j))))
-          (values (list 'raw-md (join-lines (reverse body))) j)
-          (loop (+ j 1) (cons (line-text text (vector-ref ls j)) body)))))
+          (let* ((sp (lines-span places i (- j 1)))
+                 (bytes (let ((o (make-bytevector (- (caddr sp) (cadr sp)))))
+                          (bytevector-copy! src (cadr sp) o 0 (- (caddr sp) (cadr sp)))
+                          o)))
+            (values (list 'raw-md (utf8->string bytes) sp
+                          (cons 'refs
+                                (if refs?
+                                    (inline-refs
+                                      (parse-inline (join-lines (let lines ((k i) (out '()))
+                                                                  (if (= k j) (reverse out)
+                                                                      (lines (+ k 1) (cons (line-text text (vector-ref ls k)) out)))))
+                                                    (inline-map text ls places i j) 0))
+                                    '())))
+                    j))
+          (loop (+ j 1)))))
 
   ;; ---- inline --------------------------------------------------------------
 
   ;; ONE LEFT-TO-RIGHT SCAN. Emphasis is matched by looking ahead for the
   ;; closing run; an opener with no closer stays literal text, which is
-  ;; what a reader sees too.
-  (define (parse-inline text)
+  ;; what a reader sees too. BYTES is the paragraph's character map and BASE
+  ;; the index in it of this string's first character: a sub-parse of
+  ;; strong, em or a link's text is handed the same map and its own base, so
+  ;; a reference inside it is spanned in the top src.
+  (define (parse-inline text bytes base)
     (let ((n (string-length text)))
       (let loop ((i 0) (plain '()) (out '()))
         (define (flush)
@@ -480,7 +587,7 @@
           ((entity-at text i)
            => (lambda (pair)
                 (loop (cdr pair) (cons (car pair) plain) out)))
-          ;; a reference: [[...]]
+          ;; a reference: [[...]], its ends the bytes of `[[` and `]]`
           ((and (char=? (string-ref text i) #\[)
                 (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\[)
                 (find-close text (+ i 2) "]]"))
@@ -488,7 +595,10 @@
                 (let* ((inner (substring text (+ i 2) close))
                        (lexeme (substring text i (+ close 2))))
                   (loop (+ close 2) '()
-                        (cons (list 'ref lexeme (ref-key inner)) (flush))))))
+                        (cons (list 'ref lexeme (ref-key inner)
+                                    (list 'span (vector-ref bytes (+ base i))
+                                          (+ (vector-ref bytes (+ base close 1)) 1)))
+                              (flush))))))
           ;; inline code: a backtick run closed by an equal run
           ((char=? (string-ref text i) #\`)
            (let* ((run (let count ((j i) (k 0))
@@ -504,19 +614,19 @@
           ((and (delim-at? text i 2) (find-delim text (+ i 2) (string-ref text i) 2))
            => (lambda (close)
                 (loop (+ close 2) '()
-                      (cons (cons 'strong (parse-inline (substring text (+ i 2) close)))
+                      (cons (cons 'strong (parse-inline (substring text (+ i 2) close) bytes (+ base i 2)))
                             (flush)))))
           ((and (delim-at? text i 1) (find-delim text (+ i 1) (string-ref text i) 1))
            => (lambda (close)
                 (loop (+ close 1) '()
-                      (cons (cons 'em (parse-inline (substring text (+ i 1) close)))
+                      (cons (cons 'em (parse-inline (substring text (+ i 1) close) bytes (+ base i 1)))
                             (flush)))))
           ;; a link: [text](href)
           ((and (char=? (string-ref text i) #\[)
                 (link-at text i))
            => (lambda (parts)
                 (loop (caddr parts) '()
-                      (cons (cons 'link (cons (cadr parts) (parse-inline (car parts))))
+                      (cons (cons 'link (cons (cadr parts) (parse-inline (car parts) bytes (+ base i 1))))
                             (flush)))))
           ;; a hard break: two spaces before a newline
           ((and (char=? (string-ref text i) #\newline)
@@ -531,7 +641,9 @@
                              (cons (trim-right (car o)) (cdr o)))))))
           (else (loop (+ i 1) (cons (string-ref text i) plain) out))))))
 
-  ;; Returns (char . next-index) for the entities the renderer emits.
+  ;; Returns (char . next-index) for the entities the renderer emits. `&#13;`
+  ;; is a CR: the printer spells a CR that an LF follows with it, since the
+  ;; two bytes would read back as one line end.
   (define (entity-at text i)
     (let ((n (string-length text)))
       (define (try name c)
@@ -540,7 +652,7 @@
              (cons c (+ i (string-length name)))))
       (and (< i n)
            (char=? (string-ref text i) #\&)
-           (or (try "&lt;" #\<) (try "&gt;" #\>) (try "&amp;" #\&)))))
+           (or (try "&lt;" #\<) (try "&gt;" #\>) (try "&amp;" #\&) (try "&#13;" #\return)))))
 
   (define (delim-at? text i k)
     (let ((n (string-length text)))
@@ -623,81 +735,187 @@
   ;; back gives the same AST. That is what the escaping is for: a
   ;; paragraph whose text begins "# " must not come out as a heading, and
   ;; a literal asterisk must not come out as emphasis.
+  ;;
+  ;; A PRINTED BLOCK IS A LIST OF PIECES: (line . "<text>"), written with an
+  ;; LF after it and prefixed or indented by every container around it, or
+  ;; (raw . "<bytes>"), a raw-md node's text, written as it is. A raw-md's
+  ;; bytes already carry the prefixes and the marker the source had, so no
+  ;; ancestor touches them; a hand-built raw-md inside a hand-built quote
+  ;; carries its own `> ` for the same reason. Spans are not printed.
   (define (blocks->md blocks)
-    (let loop ((bs blocks) (out '()))
-      (if (null? bs)
-          (apply string-append (reverse out))
-          (loop (cdr bs)
-                (cons (block->md (car bs))
-                      (if (null? out) out (cons "\n" out)))))))
+    (apply string-append
+           (map (lambda (p) (if (eq? (car p) 'line) (string-append (cdr p) "\n") (cdr p)))
+                (blocks-pieces blocks #t))))
 
-  (define (block->md b)
+  ;; Blocks of a document or a quote are separated by a blank line; an
+  ;; item's are not, since a blank line inside an item would end the list.
+  ;; TWO LISTS OF THE SAME KIND IN A ROW are separated by two blank lines:
+  ;; one would read back as a blank between two items of one list. An item
+  ;; cannot hold two such lists, its lines holding no blank line.
+  (define (blocks-pieces blocks blank-between?)
+    (define (same-kind-lists? a b)
+      (and (eq? (car a) 'list) (eq? (car b) 'list) (eq? (cadr a) (cadr b))))
+    (let loop ((bs (no-spans blocks)) (prev #f) (out '()))
+      (if (null? bs)
+          (apply append (reverse out))
+          (loop (cdr bs) (car bs)
+                (cons (block-pieces (car bs))
+                      (cond ((not (and blank-between? prev)) out)
+                            ((same-kind-lists? prev (car bs)) (cons (list (cons 'line "") (cons 'line "")) out))
+                            (else (cons (list (cons 'line "")) out))))))))
+
+  (define (no-spans xs)
+    (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'span)))) xs))
+
+  (define (block-pieces b)
     (case (car b)
-      ((para) (string-append (inline->md (cdr b)) "\n"))
-      ((hr) "---\n")
+      ((para) (map (lambda (s) (cons 'line s)) (split-at-lf (para->md (no-spans (cdr b))))))
+      ((hr) (list (cons 'line "---")))
       ((raw-md) (let ((t (cadr b)))
-                  (if (ends-with-newline? t) t (string-append t "\n"))))
+                  (list (cons 'raw (if (ends-with-newline? t) t (string-append t "\n"))))))
+      ;; A NON-EMPTY BODY IS FOLLOWED BY EXACTLY ONE LF before the closing
+      ;; fence, so a body whose last line is blank keeps it.
       ((code)
        (let ((fence (cadr b)) (lang (caddr b)) (body (cadddr b)))
-         (string-append fence lang "\n"
-                        (if (or (= 0 (string-length body)) (ends-with-newline? body))
-                            body
-                            (string-append body "\n"))
-                        fence "\n")))
-      ((quote)
-       (prefix-lines (blocks->md (cdr b)) "> "))
+         (append (list (cons 'line (string-append fence lang)))
+                 (if (= 0 (string-length body))
+                     '()
+                     (map (lambda (s) (cons 'line s))
+                          (let ((ls (split-at-lf (string-append body "\n")))) (reverse (cdr (reverse ls))))))
+                 (list (cons 'line fence)))))
+      ((quote) (prefix-lines (blocks-pieces (cdr b) #t) "> "))
       ((list)
        (let ((ordered? (cadr b)) (start (caddr b)))
-         (let loop ((items (cdddr b)) (k start) (out '()))
+         (let loop ((items (no-spans (cdddr b))) (k start) (out '()))
            (if (null? items)
-               (apply string-append (reverse out))
-               (let* ((marker (if ordered?
-                                  (string-append (number->string k) ". ")
-                                  "- "))
-                      (body (blocks->md (cdr (car items)))))
+               (apply append (reverse out))
+               (let ((marker (if ordered?
+                                 (string-append (number->string k) ". ")
+                                 "- ")))
                  (loop (cdr items) (+ k 1)
-                       (cons (indent-continuation marker body) out)))))))
-      (else (string-append ";; unknown block " (symbol->string (car b)) "\n"))))
+                       (cons (indent-continuation marker (blocks-pieces (cdr (car items)) #f)) out)))))))
+      (else (list (cons 'line (string-append ";; unknown block " (symbol->string (car b))))))))
 
-  (define (prefix-lines text prefix)
-    (let loop ((ls (lines-of text)) (out '()))
-      (if (null? ls)
-          (apply string-append (reverse out))
-          (let ((s (line-text text (car ls))))
-            (loop (cdr ls)
-                  (cons (if (blank? s)
-                            (string-append (trim-right prefix) "\n")
-                            (string-append prefix s "\n"))
-                        out))))))
+  ;; Every LF-separated segment, the last one included.
+  (define (split-at-lf s)
+    (let loop ((i 0) (from 0) (out '()))
+      (cond ((= i (string-length s)) (reverse (cons (substring s from i) out)))
+            ((char=? (string-ref s i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring s from i) out)))
+            (else (loop (+ i 1) from out)))))
+
+  ;; AN EMPTY LINE TAKES THE PREFIX TRIMMED, `>`; a line of spaces keeps the
+  ;; whole prefix and its bytes, which a reader strips back to the spaces.
+  (define (prefix-lines pieces prefix)
+    (map (lambda (p)
+           (cond ((eq? (car p) 'raw) p)
+                 ((= 0 (string-length (cdr p))) (cons 'line (trim-right prefix)))
+                 (else (cons 'line (string-append prefix (cdr p))))))
+         pieces))
 
   ;; The first line carries the marker; the rest are indented under it so
-  ;; that reading the result back puts them in the same item.
-  (define (indent-continuation marker body)
+  ;; that reading the result back puts them in the same item. A raw piece
+  ;; first carries its own marker.
+  (define (indent-continuation marker pieces)
     (let ((pad (make-string (string-length marker) #\space)))
-      (let loop ((ls (lines-of body)) (first #t) (out '()))
-        (if (null? ls)
-            (apply string-append (reverse out))
-            (let ((s (line-text body (car ls))))
-              (loop (cdr ls) #f
-                    (cons (string-append (if first marker pad) s "\n") out)))))))
+      (let loop ((ps pieces) (first #t) (out '()))
+        (if (null? ps)
+            (reverse out)
+            (let ((p (car ps)))
+              (loop (cdr ps) #f
+                    (cons (if (eq? (car p) 'raw) p (cons 'line (string-append (if first marker pad) (cdr p))))
+                          out)))))))
 
-  (define (inline->md xs)
-    (let loop ((xs xs) (out '()))
-      (if (null? xs)
-          (apply string-append (reverse out))
-          (loop (cdr xs) (cons (one-inline->md (car xs)) out)))))
+  ;; A PARAGRAPH IS SPELLED AS CHARACTERS, EACH MARKED BY WHETHER A TEXT
+  ;; STRING EMITTED IT, so that the rules below touch text and nothing a
+  ;; delimiter, a code span, a reference's lexeme or a hard break wrote. The
+  ;; four spellings, in this order: a CR whose next emitted byte is an LF is
+  ;; `&#13;`; on a line an LF of the text ends, the last space of a trailing
+  ;; run of two or more is escaped; then each line is judged as the parser
+  ;; reads a line, on the bytes now emitted: one that is blank, or indented
+  ;; four or more with a first character a text wrote, takes a backslash at
+  ;; index 0, and otherwise a marker at its first character after spaces and
+  ;; tabs is escaped. One line-start escape per line, and never a backslash
+  ;; before the entity's `&`. An indented line a code span or a lexeme
+  ;; begins is left alone: the parser keeps such a line in the paragraph, and
+  ;; a backslash there would be read back as part of the code or the lexeme.
+  (define (para->md xs)
+    (list->string (map car (escape-line-starts (spell-hard-breaks (spell-crs (inline-chars xs)))))))
 
-  (define (one-inline->md x)
+  (define (chars-of s text?) (map (lambda (c) (cons c text?)) (string->list s)))
+
+  (define (inline-chars xs) (apply append (map one-inline-chars xs)))
+
+  (define (one-inline-chars x)
     (cond
-      ((string? x) (escape-text x))
-      ((eq? (car x) 'em) (string-append "*" (inline->md (cdr x)) "*"))
-      ((eq? (car x) 'strong) (string-append "**" (inline->md (cdr x)) "**"))
-      ((eq? (car x) 'code) (fence-inline (cadr x)))
+      ((string? x) (chars-of (escape-text x) #t))
+      ((eq? (car x) 'em) (append (chars-of "*" #f) (inline-chars (cdr x)) (chars-of "*" #f)))
+      ((eq? (car x) 'strong) (append (chars-of "**" #f) (inline-chars (cdr x)) (chars-of "**" #f)))
+      ((eq? (car x) 'code) (chars-of (fence-inline (cadr x)) #f))
       ((eq? (car x) 'link)
-       (string-append "[" (inline->md (cddr x)) "](" (cadr x) ")"))
-      ((eq? (car x) 'ref) (cadr x))
-      ((eq? (car x) 'br) "  \n")
-      (else "")))
+       (append (chars-of "[" #f) (inline-chars (cddr x)) (chars-of (string-append "](" (cadr x) ")") #f)))
+      ((eq? (car x) 'ref) (chars-of (cadr x) #f))
+      ((eq? (car x) 'br) (chars-of "  \n" #f))
+      (else '())))
+
+  ;; A text CR that an LF follows, or that ends the paragraph (the printer's
+  ;; LF follows it), would read back as a CRLF line end.
+  (define (spell-crs cs)
+    (let loop ((cs cs) (out '()))
+      (cond ((null? cs) (reverse out))
+            ((and (char=? (caar cs) #\return) (cdar cs)
+                  (or (null? (cdr cs)) (char=? (car (cadr cs)) #\newline)))
+             (loop (cdr cs) (append (reverse (chars-of "&#13;" #t)) out)))
+            (else (loop (cdr cs) (cons (car cs) out))))))
+
+  ;; Two spaces before an LF read as a hard break, so a text LF after a run
+  ;; of two or more spaces gets the run's last space escaped.
+  (define (spell-hard-breaks cs)
+    (let loop ((cs cs) (out '()))
+      (cond ((null? cs) (reverse out))
+            ((and (char=? (caar cs) #\newline) (cdar cs)
+                  (pair? out) (char=? (caar out) #\space) (cdar out)
+                  (pair? (cdr out)) (char=? (car (cadr out)) #\space))
+             (loop (cdr cs) (cons (car cs) (cons (car out) (cons (cons #\\ #t) (cdr out))))))
+            (else (loop (cdr cs) (cons (car cs) out))))))
+
+  (define (escape-line-starts cs)
+    (let loop ((cs cs) (line '()) (out '()))
+      (cond ((null? cs) (append (reverse out) (escape-line (reverse line))))
+            ((char=? (caar cs) #\newline)
+             (loop (cdr cs) '() (append (cons (car cs) (reverse (escape-line (reverse line)))) out)))
+            (else (loop (cdr cs) (cons (car cs) line) out)))))
+
+  (define (escape-line line)
+    (let* ((s (list->string (map car line)))
+           (p (let skip ((i 0)) (if (and (< i (string-length s)) (memv (string-ref s i) '(#\space #\tab))) (skip (+ i 1)) i)))
+           (at (lambda (k) (append (take line k) (list (cons #\\ #t)) (list-tail line k)))))
+      (cond
+        ((blank? s) (at 0))
+        ((>= (indent-of s) 4) (if (cdar line) (at 0) line))
+        ((and (< p (string-length s)) (cdr (list-ref line p)) (marker-at s p)) => at)
+        (else line))))
+
+  (define (take xs k) (if (= k 0) '() (cons (car xs) (take (cdr xs) (- k 1)))))
+
+  ;; Where a line read from P would start a block of another kind, the index
+  ;; to escape, or #f: a bullet, an ordered marker (its `.` or `)`), a quote,
+  ;; a tilde fence, an hr, a table.
+  (define (marker-at s p)
+    (let* ((n (string-length s)) (c (string-ref s p)))
+      (cond
+        ((and (memv c '(#\- #\+)) (< (+ p 1) n) (char=? (string-ref s (+ p 1)) #\space)) p)
+        ((char-numeric? c)
+         (let digits ((i p))
+           (cond ((and (< i n) (char-numeric? (string-ref s i))) (digits (+ i 1)))
+                 ((and (< i n) (memv (string-ref s i) '(#\. #\)))
+                       (or (= (+ i 1) n) (char=? (string-ref s (+ i 1)) #\space)))
+                  i)
+                 (else #f))))
+        ((char=? c #\>) p)
+        ((char=? c #\|) p)
+        ((and (char=? c #\~) (<= (+ p 3) n) (string=? (substring s p (+ p 3)) "~~~")) p)
+        ((and (memv c '(#\- #\_ #\*)) (hr-line? s)) p)
+        (else #f))))
 
   ;; A CODE SPAN IS FENCED BY A RUN LONGER THAN ANY RUN INSIDE IT, so a
   ;; span containing backticks still comes back as one span.
@@ -717,9 +935,10 @@
 
   ;; THE ESCAPES ARE THE ONES THAT CHANGE THE PARSE. A backslash before
   ;; the character is CommonMark's own escape and reads back as the
-  ;; character itself; the leading "# " of a paragraph is escaped for the
+  ;; character itself; the leading "# " of a string is escaped for the
   ;; same reason -- unescaped it becomes a heading, which would move the
-  ;; text out of the block it belongs to.
+  ;; text out of the block it belongs to. The line-start escapes are the
+  ;; paragraph's (para->md), since a string may start mid-line.
   (define (escape-text s)
     (let ()
       (let-values (((port get) (open-string-output-port)))
@@ -738,68 +957,38 @@
                    (put-char port #\\) (put-char port c) (loop (+ i 1)))
                   (else (put-char port c) (loop (+ i 1))))))))))
 
-  ;; ---- the reference lexer (A2) --------------------------------------------
+  ;; ---- the references (A2) -------------------------------------------------
 
-  ;; REFERENCES ARE FOUND BY LEXING, NOT BY WALKING THE AST, because they
-  ;; also have to be found inside raw-md -- the nodes the parser did not
-  ;; understand. Code is where they must NOT be found: fenced blocks,
-  ;; indented blocks and inline spans all quote their contents.
-  (define (md-refs text)
-    (let* ((ls (lines-of text))
-           (n (string-length text)))
-      (let loop ((ls ls) (fence #f) (out '()))
-        (if (null? ls)
-            (reverse out)
-            (let* ((l (car ls))
-                   (start (car l)) (content-end (cadr l))
-                   (s (line-text text l))
-                   (f (fence-at text start content-end)))
-              (cond
-                (fence
-                 (loop (cdr ls)
-                       (if (and f (char=? (car f) (car fence)) (>= (cdr f) (cdr fence)))
-                           #f
-                           fence)
-                       out))
-                (f (loop (cdr ls) f out))
-                ((>= (indent-of s) 4) (loop (cdr ls) #f out))
-                (else (loop (cdr ls) #f (append (reverse (line-refs text start content-end))
-                                                out)))))))))
+  ;; THE PARSER IS THE ONE SUPPLIER OF REFERENCES. A raw-md node carries the
+  ;; references parse-inline finds over its lines, so the parser reaches
+  ;; what it does not take apart, and code is decided once, by the parser:
+  ;; a fence (a quoted one too), indented code, a code span (one that spans
+  ;; lines too) and an escaped `\[[` hold none. The answer is every
+  ;; reference node of md->blocks of TEXT, `(ref <lexeme> <key> (span s e))`,
+  ;; in document order.
+  (define (md-ref-nodes text) (tree-refs (md->blocks text)))
 
-  ;; Within one line: skip inline code spans, collect [[...]].
-  (define (line-refs text start end)
-    (let loop ((i start) (out '()))
-      (cond
-        ((>= i end) (reverse out))
-        ((char=? (string-ref text i) #\`)
-         (let* ((run (let count ((j i) (k 0))
-                       (if (and (< j end) (char=? (string-ref text j) #\`))
-                           (count (+ j 1) (+ k 1))
-                           k)))
-                (close (let scan ((j (+ i run)))
-                         (cond
-                           ((>= j end) #f)
-                           ((char=? (string-ref text j) #\`)
-                            (let ((r (let count ((k j) (m 0))
-                                       (if (and (< k end) (char=? (string-ref text k) #\`))
-                                           (count (+ k 1) (+ m 1))
-                                           m))))
-                              (if (= r run) j (scan (+ j r)))))
-                           (else (scan (+ j 1)))))))
-           (if close (loop (+ close run) out) (loop (+ i run) out))))
-        ((and (char=? (string-ref text i) #\[)
-              (< (+ i 1) end)
-              (char=? (string-ref text (+ i 1)) #\[))
-         (let ((close (let scan ((j (+ i 2)))
-                        (cond ((>= (+ j 1) end) #f)
-                              ((and (char=? (string-ref text j) #\])
-                                    (char=? (string-ref text (+ j 1)) #\])) j)
-                              (else (scan (+ j 1)))))))
-           (if close
-               (loop (+ close 2)
-                     (cons (list i (substring text i (+ close 2))
-                                 (ref-key (substring text (+ i 2) close)))
-                           out))
-               (loop (+ i 1) out))))
-        (else (loop (+ i 1) out)))))
+  ;; Through para inlines (em, strong, a link's text), quote and item
+  ;; children, and raw-md's refs clause.
+  (define (tree-refs blocks)
+    (apply append
+           (map (lambda (b)
+                  (case (car b)
+                    ((para) (inline-refs (cdr b)))
+                    ((quote) (tree-refs (no-spans (cdr b))))
+                    ((list) (apply append (map (lambda (it) (tree-refs (no-spans (cdr it)))) (no-spans (cdddr b)))))
+                    ((raw-md) (let ((r (find (lambda (x) (and (pair? x) (eq? (car x) 'refs))) (cddr b))))
+                                (if r (cdr r) '())))
+                    (else '())))
+                blocks)))
+
+  (define (inline-refs xs)
+    (apply append
+           (map (lambda (x)
+                  (cond ((not (pair? x)) '())
+                        ((eq? (car x) 'ref) (list x))
+                        ((memq (car x) '(em strong)) (inline-refs (cdr x)))
+                        ((eq? (car x) 'link) (inline-refs (cddr x)))
+                        (else '())))
+                xs)))
 )

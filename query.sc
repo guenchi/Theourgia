@@ -75,7 +75,7 @@
           (only (theourgia store) library-locator located-library-name file-header defs-index defs-index-build-count
                 search-state field-strings search-keyword-hook)
           (only (theourgia languages) language-catalogue-generation)
-          (only (theourgia md) md-refs)
+          (only (theourgia md) md-ref-nodes)
           (only (theourgia name-use) name-use-table import-library-name library-name-proper live-kind)
           (only (theourgia field-reading) field-of field-missing?)
           (only (theourgia wire) storable-encode sexpr->string-extended string->sexpr-extended)
@@ -1647,7 +1647,7 @@
                                                 (and (string? to) (hashtable-ref live to #f)
                                                      (not (hashtable-ref seen t #f))
                                                      (begin (hashtable-set! seen t #t) t))))
-                                            (apply append (map (lambda (text) (map caddr (md-refs text)))
+                                            (apply append (map (lambda (text) (map caddr (md-ref-nodes text)))
                                                                (field-strings (session-state S) from (row S from) 'src))))))
                              ids))))
         ((library) (filter values (map (lambda (id) (and (eq? (kind-symbol S id) 'library)

@@ -128,7 +128,7 @@
     ("after-edits.sexp" "92d2937c99d73ea0359eec434b0424cc1a6dd81c81a11c059e356580cc2a5ac7")
     ("events.sexp" "2cbbceaf51672fcdf168dbfafa0e3920e4b363bfc3aad8777da75db388c58dd2")
     ("expected.py" "05f6b5c329ad613931edf595aec5ea08a096cc48a20113cd5e19b75af1142a36")
-    ("dump.ss" "f65191865b5db222bb6d94b2e466414137eb3d021d5301f448b2269a79ac3c35")))
+    ("dump.ss" "82546ec2eea4c9507185081ef4ed18907d11c2ad1d0e81054d34f6763d2d664d")))
 
 (printf "== A1: the corpus and the expected list ==\n")
 (if private?

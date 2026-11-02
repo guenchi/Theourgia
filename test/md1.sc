@@ -180,15 +180,31 @@
     (cons "an ordered list that does not start at one"
           '((list #t 3 (item (para "three")) (item (para "four")))))
     (cons "a quote" '((quote (para "quoted"))))
-    (cons "a rule" '((hr)))
-    (cons "raw markdown holding a reference"
-          '((raw-md "| a | b |\n| [[x]] | 2 |")))
-    (cons "an indented code block kept whole"
-          '((raw-md "    [[not a ref]]")))))
+    (cons "a rule" '((hr)))))
+;; A PARSED TREE CARRIES SPANS, which a hand-built one has no bytes for: the
+;; parsed side is compared with every (span ...) removed.
+(define (erase x)
+  (cond ((pair? x) (map erase (filter (lambda (y) (not (and (pair? y) (eq? (car y) 'span)))) x)))
+        (else x)))
 (want "every AST survives being printed and read back"
-      (map car (filter (lambda (p) (not (equal? (cdr p) (md->blocks (blocks->md (cdr p))))))
+      (map car (filter (lambda (p) (not (equal? (cdr p) (erase (md->blocks (blocks->md (cdr p)))))))
                        asts))
       '())
+;; RAW-MD IS VERBATIM, so its two cases are written out rather than erased:
+;; printed, a raw-md text with no terminator gains the printer's LF, and read
+;; back it is the slice of the printed bytes, that LF included, with its
+;; span and its references. The text's length and bytes are asserted apart,
+;; so a span ending at the content's end, before the LF, is red.
+(want "raw markdown holding a reference: printed, read back as the text with its LF, its span and its reference"
+      (md->blocks (blocks->md '((raw-md "| a | b |\n| [[x]] | 2 |"))))
+      '((raw-md "| a | b |\n| [[x]] | 2 |\n" (span 0 24) (refs (ref "[[x]]" "x" (span 12 17))))))
+(want "raw markdown holding a reference: the text read back is 24 bytes, the last an LF"
+      (let ((t (cadr (car (md->blocks (blocks->md '((raw-md "| a | b |\n| [[x]] | 2 |"))))))))
+        (list (bytevector-length (string->utf8 t)) (string-ref t (- (string-length t) 1))))
+      '(24 #\newline))
+(want "an indented code block kept whole: read back as its text with its LF, its span, and no reference"
+      (md->blocks (blocks->md '((raw-md "    [[not a ref]]"))))
+      '((raw-md "    [[not a ref]]\n" (span 0 18) (refs))))
 ;; AND THE MARKDOWN IS WHAT A READER WOULD WRITE. Equality above is
 ;; satisfied by any printer whose reader undoes it -- including one that
 ;; escaped every character. This pins the text for the case that matters.
@@ -200,32 +216,37 @@
       "plain words here\n")
 
 (printf "== A2: which bracket pairs are references ==\n")
+;; THE PARSER'S REFERENCE NODES, each (ref <lexeme> <key> (span s e)), read
+;; here as (<start> <lexeme> <key>): on this ASCII text a span's start is the
+;; character offset the lexer answered.
+(define (refs-at text)
+  (map (lambda (r) (list (cadr (cadddr r)) (cadr r) (caddr r))) (md-ref-nodes text)))
 (want "the .md form and the bare form share a key, and keep their lexemes"
-      (md-refs "see [[foo]] and [[foo.md]]\n")
+      (refs-at "see [[foo]] and [[foo.md]]\n")
       '((4 "[[foo]]" "foo") (16 "[[foo.md]]" "foo")))
 ;; A MULTISET, NOT A SET. Two occurrences of one target are two entries;
 ;; an implementation that deduplicated would report one and the corpus
 ;; count would be quietly low.
 (want "the same target twice is two entries"
-      (md-refs "[[a]] then [[a]] again\n")
+      (refs-at "[[a]] then [[a]] again\n")
       '((0 "[[a]]" "a") (11 "[[a]]" "a")))
 (want "code of every kind quotes its contents"
-      (list (md-refs "```\n[[no]]\n```\n")
-            (md-refs "~~~\n[[no]]\n~~~\n")
-            (md-refs "    [[no]]\n")
-            (md-refs "text `[[no]]` more\n")
-            (md-refs "| a | `[[no]]` |\n"))
+      (list (refs-at "```\n[[no]]\n```\n")
+            (refs-at "~~~\n[[no]]\n~~~\n")
+            (refs-at "    [[no]]\n")
+            (refs-at "text `[[no]]` more\n")
+            (refs-at "| a | `[[no]]` |\n"))
       '(() () () () ()))
 (want "CONTROL: the same lines outside code are found"
-      (list (length (md-refs "[[no]]\n"))
-            (length (md-refs "text [[no]] more\n"))
-            (length (md-refs "| a | [[no]] |\n")))
+      (list (length (refs-at "[[no]]\n"))
+            (length (refs-at "text [[no]] more\n"))
+            (length (refs-at "| a | [[no]] |\n")))
       '(1 1 1))
 (want "a display form keeps its lexeme and resolves to the target"
-      (md-refs "[[ent:abc|Display Name]]\n")
+      (refs-at "[[ent:abc|Display Name]]\n")
       '((0 "[[ent:abc|Display Name]]" "ent:abc")))
 (want "one quoted and one real on the same line"
-      (md-refs "`[[no]]` but [[yes]]\n")
+      (refs-at "`[[no]]` but [[yes]]\n")
       '((13 "[[yes]]" "yes")))
 
 (printf "== the parser is not allowed to give up on everything ==\n")

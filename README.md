@@ -366,25 +366,66 @@ the heading line, which are fields. A `src` stored as bytes
 is read as `--md` reads it. A deleted block, and a block of any other kind,
 answers `(ast #f)`; a block of those kinds whose `src` is not text (bytes that are not
 UTF-8, or a value in conflict) answers `(ast #f (note src-not-text))`. The block
-nodes are `(para <inline> ...)`, `(list <ordered?> <start> (item <block> ...)
-...)`, `(code <fence> <lang> "<text>")`, `(quote <block> ...)`, `(hr)` and
-`(raw-md "<text>")`, which keeps whole what the parser does not take apart (a
+nodes are `(para (span s e) <inline> ...)`, `(list <ordered?> <start> (span s e)
+(item (span s e) <block> ...) ...)`, `(code <fence> <lang> "<text>" (span s e))`,
+`(quote (span s e) <block> ...)`, `(hr (span s e))` and `(raw-md "<text>" (span s
+e) (refs <ref> ...))`, which keeps whole what the parser does not take apart (a
 table, an HTML block, a footnote, a four-space indented code block). The inline
 nodes are strings, `(em <inline> ...)`, `(strong <inline> ...)`, `(code
 "<text>")`, `(link "<href>" <inline> ...)`, `(br)` and a reference, `(ref
-"<lexeme>" "<key>" <target>)`: the lexeme as written (`[[X|shown]]`), the key
-with a `|display` part dropped and a trailing `.md` removed, and the target the
-id of the LIVE block it names, or `#f`. A target is resolved in the state the
-answer was read from by two spellings, each with a leading `ent:` removed: the
-bracket text with its `.md` kept, then the key; so `[[X]]`, `[[X.md]]`,
-`[[X|shown]]` and `[[ent:X]]` all name a live `X`, and a block whose id itself
-ends in `.md` is still reached. A deleted block is never a target. Nothing
-inside code, a code span or `raw-md` is a reference. The tree printed back as
-markdown, a reference by its lexeme, parses to the same tree.
+"<lexeme>" "<key>" <target> (span s e))`: the lexeme as written (`[[X|shown]]`),
+the key with a `|display` part dropped and a trailing `.md` removed, and the
+target the id of the LIVE block it names, or `#f`. A target is resolved in the
+state the answer was read from by two spellings, each with a leading `ent:`
+removed: the bracket text with its `.md` kept, then the key; so `[[X]]`,
+`[[X.md]]`, `[[X|shown]]` and `[[ent:X]]` all name a live `X`, and a block whose
+id itself ends in `.md` is still reached. A deleted block is never a target. In
+text, `&lt;`, `&gt;`, `&amp;` and `&#13;` read as `<`, `>`, `&` and a CR.
 
-**The grammar grows**, and a reader of `--ast` pins the shape it read: source
-spans on every node are coming (a reference's fourth element after the
-target), and resolution by a document's name as well as by id.
+**Spans.** Every block node and every reference carries one `(span <start>
+<end>)`: half-open byte offsets into the UTF-8 encoding of the block's `src`,
+never into a part of it. It comes right after the node's scalar elements and
+before its children, so a reader that knows a node's arity finds it at a fixed
+place, and one that does not takes the first element headed `span`. A block's
+span runs from the start of its first line to the end of its last line's
+terminator, container prefixes (a quote's `> `, an item's marker and
+indentation) and interior lines included, and a last line with no terminator
+ends at the end of `src`. A blank line between two blocks is in neither; one
+between two items of a list is in the list and in neither item. A child's span
+lies within its parent's. A reference's span runs from the first byte of `[[`
+to the byte after `]]`, counted on the `src` as written, before escapes and
+entities are decoded, so a reference that crosses a line inside a quote covers
+the `> ` between. Strings, `em`, `strong`, `code`, `link` and `br` carry none.
+
+**`raw-md` is verbatim**: its text is exactly the bytes of its span, CRLF and
+every container prefix kept, and a last line with no terminator keeps none. Its
+`(refs ...)` are the references in it, found as in a paragraph and resolved the
+same way; an indented code block's is empty. Nothing inside code -- a fence, a
+fence in a quote, indented code, a code span, one that spans lines included --
+and nothing after a backslash is a reference. The printer writes a `raw-md`
+text as it is, so one built by hand inside a hand-built quote or item carries
+its own `> ` or marker.
+
+**Printed back**, a reference by its lexeme and the spans left out, a parsed
+tree parses to the same tree, spans set aside and each `raw-md` text given a
+final LF if it had none. The printer escapes what would read as something else:
+a line that is blank, or indented four or more where text begins the line,
+takes a backslash first (one a code span or a reference's lexeme begins is left
+as it is, since the parser keeps it in the paragraph), a marker
+at a line's first character after spaces and tabs (a bullet, an ordered
+marker's `.` or `)`, `>`, `~~~`, an hr, `|`) is escaped, the last space of two
+or more before a line end inside a paragraph is escaped, and a CR an LF follows
+is written `&#13;`. Two lists of the same kind in a row are printed with two
+blank lines between them, at the top level and in a quote, so they read back as
+two. There are two known exceptions. An item whose line carries a marker of the
+other kind before its own (`- a` then `  1. - b`) parses to an item holding a
+nested list that no print spells back, and reads back as two items. And an `em`
+or `strong` holding a literal `*` or `_`, or nested in another, may not print
+back: the parser's own defect, since find-delim takes a delimiter after a
+backslash and closes at the first eligible run.
+
+**The grammar grows**, and a reader of `--ast` pins the shape it read:
+resolution by a document's name as well as by id is to come.
 
 **`--working` reads the writer's own view**: the committed store with that
 writer's drafts laid over the blocks they cover. `--writer` names whose;
@@ -458,6 +499,9 @@ sentence, and nothing removes it but editing the sentence. Each line says which 
 came from, and they are never merged: you can unlink an edge, you cannot unlink a
 sentence. Text references are derived at read time rather than stored as edges,
 because materialising them would give one fact two suppliers that can then disagree.
+A text reference is a reference node of the block's parsed `src`, as `read --ast`
+answers it, a `raw-md`'s included: one inside code, a code span that spans lines
+included, or after a backslash, is none.
 
 A block's own out-edges are not references to it; those are part of what `read`
 returns about the block.
@@ -5544,6 +5588,7 @@ them at all.**
 | `THEOURGIA_A1_CORPUS` | `test/a1-import.sc` reads another Markdown corpus than the in-tree synthetic one (`test/a1/corpus`); the sha256 pins are then not checked. Set by an out-of-tree script that runs the same rows on a private corpus and prints only verdicts and counts. Read only by `test/` |
 | `THEOURGIA_A1_EXPECTED` | the directory holding that corpus's expected lists, written by `test/a1/expected.py`; `test/a1` when unset. Read only by `test/` |
 | `THEOURGIA_SEED_STORE` | a store, such as a split mirror's `store/`, that `test/drafts-tools.sc`'s SEED-2 copies, adopts, and writes a draft into and commits, on the copy only; unset, the row prints SKIP and runs nothing. Read only by `test/` |
+| `THEOURGIA_MD_CORPUS_STORE` | a frozen copy of a private Markdown store that `test/ast-spans.sc` copies into its scratch root and reads at the cut its header pins: SP-5c's round trip over every Markdown block and SP-8's `refs` cost. Diagnostics name block ids and byte offsets, never text. Unset, those rows print SKIP and how to make the copy, and the in-tree corpus half still runs. Read only by `test/` |
 | `THEOURGIA_MCP_X8` | `1` makes `test/mcp-shell.sc` run X8, eval past the socket's 30 s answer deadline (about 33 s of sleep); without it the row prints SKIP and runs nothing. Read only by `test/` |
 | `THEOURGIA_ROUND_TRIP` | `1` makes `test/tree-round-trip.sc` run: the whole tree, split at its definitions, imported, exported and imported again -- about nineteen minutes, past the runner's per-fixture limit; without it the row prints SKIP and runs nothing. Read only by `test/` |
 | `THEOURGIA_INSERT_COST` | `1` makes `test/insert-cost.sc` import 3500 files, 7000 blocks, under `THEOURGIA_TIMING=1` and print the per-window series at 1000, 3000 and 7000 intents; without it that part prints SKIP and only the seam's cheap rows run. The curve needs the seam expanded in: a run from source, or a build made with `THEOURGIA_TIMING=1`. Read only by `test/` |

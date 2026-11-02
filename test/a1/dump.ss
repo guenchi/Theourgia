@@ -26,7 +26,7 @@
 ;; places, and compared with the expected list, by the fixture.
 
 (import (chezscheme) (theourgia store) (theourgia reduce) (theourgia trace)
-        (only (theourgia md) md-refs))
+        (only (theourgia md) md-ref-nodes))
 
 (define store (cadr (command-line)))
 
@@ -58,8 +58,9 @@
 
 ;; THE PRODUCT IS ASKED ONLY ABOUT THE BLOCKS SOME TEXT NAMES. Asking
 ;; `store-refs` of every block made the dump quadratic in blocks -- each call
-;; lexes every block's text. Each block's
-;; src is lexed once here with the product's own lexer (md.sc md-refs); a key
+;; parses every block's text. Each block's
+;; src is parsed once here for its references with the product's own supplier
+;; (md.sc md-ref-nodes); a key
 ;; that is a block id is a candidate target; the product's `refs` then
 ;; answers for each candidate, so the edges are still the product's.
 (define id-set
@@ -78,7 +79,7 @@
                         (let ((k (caddr r)))
                           (when (and (string? k) (hashtable-ref id-set k #f))
                             (hashtable-set! t k #t))))
-                      (md-refs text)))))
+                      (md-ref-nodes text)))))
       ids)
     (list-sort string<? (vector->list (hashtable-keys t)))))
 

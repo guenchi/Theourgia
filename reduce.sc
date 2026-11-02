@@ -2240,18 +2240,24 @@
 
   ;; A PARSED TREE WITH EVERY REFERENCE'S TARGET FILLED IN. TREE is a list
   ;; of md.sc block nodes, as md->blocks answers it, and the answer is the
-  ;; same list with each `(ref <lexeme> <key>)` replaced by `(ref <lexeme>
-  ;; <key> <target>)`, the target resolved in R. Every node that holds
-  ;; inlines or blocks is visited: para, the inline children of em, strong
-  ;; and link (after the href), quote's blocks and each list item's blocks.
-  ;; code, hr and raw-md are leaves, and the scalar slots (ordered?, start,
-  ;; fence, lang, href) keep their positions. md.sc's printer reads a ref
-  ;; by its lexeme, so the longer node prints as the shorter one did.
+  ;; same list with each `(ref <lexeme> <key> (span s e))` replaced by `(ref
+  ;; <lexeme> <key> <target> (span s e))`, the target resolved in R and
+  ;; placed before the span; a ref with no span, as a hand-built tree has
+  ;; it, takes the target last. Every node that holds inlines or blocks is
+  ;; visited: para, the inline children of em, strong and link (after the
+  ;; href), quote's blocks, each list item's blocks, and a raw-md's refs
+  ;; clause. code and hr are leaves, and the scalar slots (ordered?, start,
+  ;; fence, lang, href) and every span keep their positions. md.sc's printer
+  ;; reads a ref by its lexeme, so the longer node prints as the shorter one
+  ;; did.
   (define (ast-with-targets r tree)
+    (define (span? x) (and (pair? x) (eq? (car x) 'span)))
     (define (inline x)
       (cond ((not (pair? x)) x)
-            ((and (eq? (car x) 'ref) (= (length x) 3))
+            ((and (eq? (car x) 'ref) (list? x) (= (length x) 3))
              (list 'ref (cadr x) (caddr x) (resolve-ref-target r (cadr x) (caddr x))))
+            ((and (eq? (car x) 'ref) (list? x) (= (length x) 4) (span? (cadddr x)))
+             (list 'ref (cadr x) (caddr x) (resolve-ref-target r (cadr x) (caddr x)) (cadddr x)))
             ((memq (car x) '(em strong)) (cons (car x) (map inline (cdr x))))
             ((and (eq? (car x) 'link) (pair? (cdr x))) (cons* 'link (cadr x) (map inline (cddr x))))
             (else x)))
@@ -2263,6 +2269,9 @@
             ((eq? (car x) 'quote) (cons 'quote (map node (cdr x))))
             ((and (eq? (car x) 'list) (>= (length x) 3))
              (cons* 'list (cadr x) (caddr x) (map item (cdddr x))))
+            ((eq? (car x) 'raw-md)
+             (cons 'raw-md (map (lambda (c) (if (and (pair? c) (eq? (car c) 'refs)) (cons 'refs (map inline (cdr c))) c))
+                                (cdr x))))
             (else x)))
     (map node tree))
 

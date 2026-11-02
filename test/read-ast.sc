@@ -18,8 +18,10 @@
 ;; The answer is `(ok (block <id> <entries> (hash <h>) (ast <node> ...))
 ;; <validity> <receipt>)`: the entries are the plain read's record after its
 ;; id, the hash is the block's version, and the tree is md->blocks of a doc
-;; or section's src with every `(ref <lexeme> <key>)` given a fourth
-;; element, the id of the LIVE block it names in the state read, or #f.
+;; or section's src with every `(ref <lexeme> <key> (span s e))` given its
+;; target before the span, the id of the LIVE block it names in the state
+;; read, or #f. RA-1, RA-3 and RA-6 compare trees with their spans written
+;; out; RA-2, RA-4, RA-7 and RA-8 compare with spans erased (erase-spans).
 ;;
 ;; EXPECTED VALUES ARE WRITTEN OUT. The trees below are literals, not
 ;; md->blocks called in a row, and every id, hash and cut in them is bound
@@ -102,10 +104,28 @@
     (block-id (car e) (cdr e))))
 (define (last-seq answer)
   (cdr (car (reverse (events-of answer)))))
-;; Targets erased: every four-element ref back to md.sc's three.
+;; Targets erased, by shape: a resolved ref is (ref <lexeme> <key> <target>
+;; [(span s e)]), md.sc's is (ref <lexeme> <key> [(span s e)]), so the
+;; element after the key goes when it is not a span.
+(define (span? x) (and (pair? x) (eq? (car x) 'span)))
 (define (erase x)
-  (cond ((and (pair? x) (eq? (car x) 'ref) (list? x) (= (length x) 4)) (list 'ref (cadr x) (caddr x)))
+  (cond ((and (pair? x) (eq? (car x) 'ref) (list? x) (>= (length x) 4) (not (span? (cadddr x))))
+         (cons* 'ref (cadr x) (caddr x) (cddddr x)))
         ((pair? x) (cons (erase (car x)) (erase (cdr x))))
+        (else x)))
+;; Spans erased: every (span s e) element of a list, at any depth; a pair
+;; that is not a list (a record's (deleted . #t)) is walked as a pair.
+(define (erase-spans x)
+  (cond ((list? x) (map erase-spans (filter (lambda (y) (not (span? y))) x)))
+        ((pair? x) (cons (erase-spans (car x)) (erase-spans (cdr x))))
+        (else x)))
+;; Each raw-md text without a final LF given one, as the printer writes it.
+(define (terminate x)
+  (cond ((and (pair? x) (eq? (car x) 'raw-md) (pair? (cdr x)) (string? (cadr x)))
+         (let ((s (cadr x)))
+           (cons* 'raw-md (if (and (> (string-length s) 0) (char=? (string-ref s (- (string-length s) 1)) #\newline)) s (string-append s "\n"))
+                  (map terminate (cddr x)))))
+        ((pair? x) (map terminate x))
         (else x)))
 ;; The read-ast lines a thunk's run writes to the trace.
 (define (read-ast-lines thunk)
@@ -245,13 +265,23 @@
 (define c-now (reduce-applied-cut st))
 (define (h id) (block-hash st id))
 (define (record-entries id) (cdr (state-read st id)))
-(define ast-doc `((para "Intro " ,(ref A A) ".")))
+;; SPANS ARE WRITTEN OUT in ast-doc, ast1, ast3 and RA-6's trees, whose rows
+;; are about the tree (RA-1, RA-3, RA-6); they are byte offsets into each
+;; block's src, and a block id's length is LA. The rows about resolution and
+;; the envelope (RA-2, RA-4, RA-7, RA-8) compare with spans erased, and ast2
+;; has none.
+(define la (string-length (lex A)))
+(define (ref-at id target s e) (list 'ref (lex id) id target (list 'span s e)))
+(define ast-doc `((para (span 0 ,(+ 8 la)) "Intro " ,(ref-at A A 6 (+ 6 la)) ".")))
+;; THE RAW-MD IS WRITTEN OUT: its text the src's bytes, the final LF
+;; included, its span and its empty refs clause.
 (define ast1
-  `((para "Para with " (em "em") ", " (strong "strong") ", " (code "code") ", " (link "http://x" "a link") ", and " ,(ref A A) ".")
-    (list #f 1 (item (para "one")) (item (para "two")))
-    (code "```" "scheme" "(f x)")
-    (quote (para "quoted"))
-    (raw-md "| a | b |\n|---|---|")))
+  `((para (span 0 ,(+ 62 la)) "Para with " (em "em") ", " (strong "strong") ", " (code "code") ", " (link "http://x" "a link") ", and " ,(ref-at A A 60 (+ 60 la)) ".")
+    (list #f 1 (span ,(+ 63 la) ,(+ 75 la)) (item (span ,(+ 63 la) ,(+ 69 la)) (para (span ,(+ 63 la) ,(+ 69 la)) "one"))
+          (item (span ,(+ 69 la) ,(+ 75 la)) (para (span ,(+ 69 la) ,(+ 75 la)) "two")))
+    (code "```" "scheme" "(f x)" (span ,(+ 76 la) ,(+ 96 la)))
+    (quote (span ,(+ 97 la) ,(+ 106 la)) (para (span ,(+ 97 la) ,(+ 106 la)) "quoted"))
+    (raw-md "| a | b |\n|---|---|\n" (span ,(+ 107 la) ,(+ 127 la)) (refs))))
 (define ast2
   `((para "r " ,(ref A A)
           " " (ref ,(string-append "[[" A ".md]]") ,A ,A)
@@ -265,9 +295,9 @@
     (list #f 1 (item (para "item " ,(ref A A))))
     (para (em "e " ,(ref A A)) " " (strong "s " ,(ref A A)))))
 (define ast3
-  `((code "```" "" ,(lex A))
-    (raw-md ,(string-append "    " (lex A) " indented"))
-    (para "span " (code ,(lex A)) " and " ,(ref A A))))
+  `((code "```" "" ,(lex A) (span 0 ,(+ 9 la)))
+    (raw-md ,(string-append "    " (lex A) " indented\n") (span ,(+ 10 la) ,(+ 24 (* 2 la))) (refs))
+    (para (span ,(+ 25 (* 2 la)) ,(+ 38 (* 4 la))) "span " (code ,(lex A)) " and " ,(ref-at A A (+ 37 (* 3 la)) (+ 37 (* 4 la))))))
 (define (block-form id ast) (append (list 'block id) (record-entries id) (list (list 'hash (h id)) (cons 'ast ast))))
 (define (one-answer id ast) `(ok ,(block-form id ast) (cut ,c-now) (versions ((,id . ,(h id))))))
 ;; THE SUBTREE WALK LEAVES A DELETED CHILD OUT: read --recursive of DOC lists
@@ -319,7 +349,7 @@
 ;; ---- RA-2 resolution ----------------------------------------------------------------------
 
 (want "RA-2 [[A]] [[A.md]] [[A|shown]] [[ent:A]] [[gone]] [[ent:gone]] [[D]] [[K]]: A A A A #f #f #f K, and in a quote, a list item, em and strong"
-      (cdr (assq 'ast (cddr (cadr (run 'read S2 "--ast")))))
+      (erase-spans (cdr (assq 'ast (cddr (cadr (run 'read S2 "--ast"))))))
       ast2)
 (want "RA-2 the walk fills targets in a constructed link, a list item and a quote"
       (ast-with-targets st `((para (link "u" "a " (ref ,(lex A) ,A)))
@@ -329,7 +359,7 @@
         (list #t 3 (item (para ,(ref A A))))
         (quote (para (ref "[[gone]]" "gone" #f)))))
 (want "RA-2 an id ending in .md: [[<id>]] [[ent:<id>]] [[<id>.md]] resolve to it, [[<writer>]] does not"
-      (cdr (assq 'ast (cddr (cadr (run3 'read RR "--ast")))))
+      (erase-spans (cdr (assq 'ast (cddr (cadr (run3 'read RR "--ast"))))))
       `((para (ref ,(string-append "[[" W3 ".md]]") ,W3 ,T805)
               " " (ref ,(string-append "[[ent:" W3 ".md]]") ,(string-append "ent:" W3) ,T805)
               " " (ref ,(string-append "[[" W3 ".md.md]]") ,(string-append W3 ".md") ,T805)
@@ -353,10 +383,11 @@
             (map (lambda (r) (cdr (assq 'id r))) (cdr (cadr (run 'read DOC "--recursive")))))
       (list doc-ids doc-ids))
 (want "RA-4 the whole answer: each item's entries, hash and tree; versions the live items' hashes; then the cut"
-      (run 'read DOC "--ast" "--recursive")
-      `(ok (items ,@(map item-form doc-ids doc-asts))
-           (versions ,(map (lambda (id) (cons id (h id))) (list DOC S S2 S3)))
-           (cut ,c-now)))
+      (erase-spans (run 'read DOC "--ast" "--recursive"))
+      (erase-spans
+        `(ok (items ,@(map item-form doc-ids doc-asts))
+             (versions ,(map (lambda (id) (cons id (h id))) (list DOC S S2 S3)))
+             (cut ,c-now))))
 
 ;; ---- RA-5 hash ----------------------------------------------------------------------------
 
@@ -410,10 +441,10 @@
       (list (ast-of run DEC)
             (let ((t (clause (run 'read DD "--recursive" "--md") 'text)))
               (and t (string? (cadr t)) (> (string-count (cadr t) (string-append "We rule " (lex A) ".")) 0))))
-      `((ast (para "We rule " ,(ref A A) ".")) #t))
+      `((ast (para (span 0 ,(+ 10 la)) "We rule " ,(ref-at A A 8 (+ 8 la)) ".")) #t))
 (want "RA-6 a doc whose src is bytes that are not UTF-8 answers (ast #f (note src-not-text)); UTF-8 bytes are parsed"
       (list (ast-of run BV) (ast-of run BU))
-      '((ast #f (note src-not-text)) (ast (para "Hi"))))
+      '((ast #f (note src-not-text)) (ast (para (span 0 3) "Hi"))))
 (want "RA-6 a section whose src is in conflict answers (ast #f (note src-not-text)), its fields printing the conflict form"
       (let ((b (cadr (runc 'read CS "--ast"))))
         (list (assq 'ast (cddr b))
@@ -432,13 +463,13 @@
       (let ((b (cadr (run 'read U "--ast"))))
         (list (let ((e (entry b 'hash))) (and e (pair? (cadr e)) (car (cadr e))))
               (entry b 'ast)))
-      '(unavailable (ast (para "plain"))))
+      '(unavailable (ast (para (span 0 6) "plain"))))
 
 ;; ---- RA-7 round trip ----------------------------------------------------------------------
 
 (want "RA-7 the answered tree printed as markdown and parsed again is the same tree, targets erased on both sides"
       (map (lambda (id)
-             (let ((t (cdr (assq 'ast (cddr (cadr (run 'read id "--ast"))))))) (equal? (md->blocks (blocks->md (erase t))) (erase t))))
+             (let ((t (cdr (assq 'ast (cddr (cadr (run 'read id "--ast"))))))) (equal? (erase-spans (md->blocks (blocks->md (erase t)))) (erase-spans (terminate (erase t))))))
            (list DOC S S2 S3))
       '(#t #t #t #t))
 (want "RA-7 the node kinds, written out"
@@ -452,11 +483,11 @@
       (map (lambda (o) '(error bad-request incompatible-ast-options)) (iota 4)))
 (want "RA-8 --ast --cut <tag> answers the tree at the cut, and its cut"
       (let ((a (run 'read QC "--ast" "--cut" "t1")) (b (run 'read QC "--ast")))
-        (list (cdr (assq 'ast (cddr (cadr a)))) (clause a 'cut) (cdr (assq 'ast (cddr (cadr b)))) (clause b 'cut)))
+        (list (erase-spans (cdr (assq 'ast (cddr (cadr a))))) (clause a 'cut) (erase-spans (cdr (assq 'ast (cddr (cadr b))))) (clause b 'cut)))
       (list '((para "before")) (list 'cut cut-t1) '((para "after")) (list 'cut (reduce-applied-cut (state)))))
 (want "RA-8 --ast --cut resolves at the cut: X live then and deleted since, Y created since"
-      (list (cdr (assq 'ast (cddr (cadr (run 'read R "--ast" "--cut" "t1")))))
-            (cdr (assq 'ast (cddr (cadr (run 'read R "--ast"))))))
+      (list (erase-spans (cdr (assq 'ast (cddr (cadr (run 'read R "--ast" "--cut" "t1"))))))
+            (erase-spans (cdr (assq 'ast (cddr (cadr (run 'read R "--ast")))))))
       (list `((para "x " ,(ref X X) " y " ,(ref Y #f)))
             `((para "x " ,(ref X #f) " y " ,(ref Y Y)))))
 (want "RA-8 --recursive --ast is --ast --recursive, an items answer"
