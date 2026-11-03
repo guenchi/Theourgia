@@ -814,7 +814,10 @@ whole with its own span. The coordinates are the file's RAW bytes -- its childre
 run together, what `export-code --raw` writes -- so a range read off a raw export, or a
 diff of one, means the same bytes here. Give exactly one view, as `export-code`: `--writer
 <name>` (that writer's working view, which is the head when it has no drafts; the answer
-adds `(working #t)`) or `--cut <cut>`, a tag or a cut literal. And exactly one range:
+adds `(working #t)`) or `--cut <cut>`, a tag or a cut literal. And at most one range;
+with none, the answer is every block the file is made of, in file order, zero-length
+blocks included, their spans tiling the file from 0 to its length (the file block itself
+is not an item, as it never is):
 
 - `--bytes s:e`, the half-open interval [s, e), 0 <= s <= e <= the file's length;
 - `--lines a:b`, 1-based and inclusive, from the start of line a to the end of line b with
@@ -3851,9 +3854,11 @@ directory (`landing-freeze ... --tree <dir>` refuses that):
   discarded. Every structural draft the writer holds must be one this
   export accounts for -- the version its sidecar recorded, or the one this
   sync writes -- or the sync is refused `draft-changed`, naming the file,
-  the key and the remedy: an add or delete undone in the export after its
-  sync, or another export's newer draft, is resolved by exporting again,
-  and a delete is undone by `discard delete-<holder>`. Once a writer holds
+  the key and the remedy: another export's newer draft is resolved by
+  exporting again, and a delete undone in the export after its sync by
+  `discard delete-<holder>`. An add undone in the same export after its
+  sync is not refused: the sync recorded the add, so the next one discards
+  its draft. Once a writer holds
   structural drafts, one export of it is live at a time;
 - a changed file: `file-mode` (its git mode is not 100644; and any
   recorded file that became executable on disk, its bytes changed or not:
@@ -3862,7 +3867,7 @@ directory (`landing-freeze ... --tree <dir>` refuses that):
 - a touched block: `stale` (its committed hash moved since the export, or
   the draft it carried stands on another version), `draft-changed` (the
   writer's slot holds a version that is neither the recorded one nor the one
-  this sync would write: another write under the same writer),
+  this sync would write: another write under the same writer from elsewhere),
   `non-text-block`.
 
 Once every check has passed, a write the store still refuses stops the sync
@@ -3880,6 +3885,16 @@ write and is skipped, so a second run over the same files succeeds and
 writes nothing:
 
     (ok (files-changed <n>) (writes <n>) (written (block <id> (version <v>)) ...) (skipped <id> ...))
+
+A sync that completes its plan records it, whether or not it wrote anything:
+it rewrites the sidecar as a fresh export of the same cut would record the
+synced directory (a pristine copy of each changed file's synced bytes, the
+blocks' spans over them, a draft clause on each block it wrote or found held,
+an entry for each added file), each pristine copy renamed into place whole and
+the sidecar last. Until that rename the old sidecar and its pristine copies are
+as they were, so a sync that died part way is retried from them: what it wrote
+is skipped, and the retry records. So the same directory can be edited and
+synced again; export again only after a write under the writer from elsewhere.
 
 A stale block is not fixed by exporting again: a fresh export still projects
 a draft at the cut it was written on. Move the writer's drafts onto the new
@@ -4815,7 +4830,10 @@ one that finishes sooner has already ended.
 `<cut>` is always the cut the evaluation actually used -- it is the
 coordinate the run can be repeated from, and "at some cut" is not one.
 Without `--working` the writer position is `#f` and the draft table is
-empty; the cut is still the committed state that was read.
+empty; the cut is still the committed state that was read. With it,
+`<drafts>` is `((<id> . <version>) ...)`, one pair per draft, in Scheme
+and in every other language alike: the drafts' bytes are what the
+evaluation read, not part of its answer.
 
 NEVER: **`--working` is PINNED by default.** The view stands on the state the
 writer's OWN drafts record -- the join of their cuts -- so a commit

@@ -242,8 +242,10 @@
   ;;
   ;; SPEC: (bytes s e), the half-open [s, e); (lines a b), 1-based and
   ;; inclusive, from the start of line a to the end of line b with its LF;
-  ;; or (hunk <text>), one unified-diff hunk whose OLD side is used. A file
-  ;; ending in LF has no empty last line: "a\n" is one line, "" none.
+  ;; or (hunk <text>), one unified-diff hunk whose OLD side is used; or
+  ;; (whole), every block the file is made of, zero-length ones included, in
+  ;; file order, each with its own span (the file block itself is not one).
+  ;; A file ending in LF has no empty last line: "a\n" is one line, "" none.
   ;; -> (ok (items (block <id> <start> <end>) ...)); refusals: unknown-path,
   ;; not-a-text-file, the exporter's own for a file it would not write,
   ;; range-outside (bounds first, before any block rule), not-a-hunk,
@@ -262,8 +264,11 @@
                          (if (null? es) (reverse out)
                              (let ((end (+ at (bytevector-length (cadr (car es))))))
                                (loop (cdr es) end (cons (list 'source (car (car es)) at end 0 '()) out))))))
-               (range (spec-range bytes spec)))
-          (list 'ok (cons 'items (locate-pieces pieces (bytevector-length bytes) (car range) (cdr range))))))))
+               (items (if (eq? (car spec) 'whole)
+                          (map (lambda (p) (list 'block (cadr p) (caddr p) (cadddr p))) pieces)
+                          (let ((range (spec-range bytes spec)))
+                            (locate-pieces pieces (bytevector-length bytes) (car range) (cdr range))))))
+          (list 'ok (cons 'items items))))))
 
   ;; THE BLOCKS A RANGE TOUCHES, EACH WHOLE: -> ((block <id> <start> <end>)
   ;; ...) in document order, with each block's own span, for 0 <= s <= e <= len.

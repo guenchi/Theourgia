@@ -12,9 +12,9 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 
-;; locate <path> (--writer W | --cut C) (--bytes s:e | --lines a:b | --hunk):
+;; locate <path> (--writer W | --cut C) [--bytes s:e | --lines a:b | --hunk]:
 ;; the blocks a range of a text file's raw bytes touches, each whole with its
-;; span. Files are built with known block texts (a split import, each block
+;; span, and with no range every block of the file (LC-10). Files are built with known block texts (a split import, each block
 ;; then written), and every answer is compared with spans the fixture adds up
 ;; from those texts. LC-5 sets locate's empty-range rule beside
 ;; projection-range's opposite one on the same pieces; LC-8 TRIAL is the trial's
@@ -200,6 +200,45 @@
   (want "LC-7 a range across the boundary answers the zero-length block strictly inside it"
         (items-of (loc st "z.sc" "--bytes" "7:11"))
         sp))
+
+;; ---- LC-10 no range: every block of the file -----------------------------------
+;; THE BASE ANSWERS THE USAGE FORM to each of these.
+(printf "== LC-10: no range ==\n")
+(want "LC-10 with no range, every block of the file in file order, each with its span, tiling the file"
+      (items-of (loc ab "m.sc"))
+      ab-spans)
+(want "LC-10 the answer is a range answer's: ok, its items and the cut it served; --writer gives the same blocks"
+      (let ((a (loc ab "m.sc")) (w (ask ab 'locate "m.sc" "--writer" "w2")))
+        (list (car a) (and (clause-of a 'cut) #t) (equal? (items-of w) (items-of a)) (clause-of w 'working)))
+      '(ok #t #t (working #t)))
+(let* ((st (blocks-store! "z2.sc" '("l1\nl2\nl3\n" "" "l4\nl5\nl6\n"))) (sp (begin (ask st 'tag "t0") (spans st "z2.sc"))))
+  (want "LC-10 a zero-length block is an item of its own, in its place"
+        (items-of (loc st "z2.sc"))
+        sp))
+(want "LC-10 a path no file holds is refused unknown-path, as a ranged call refuses it"
+      (loc ab "nowhere.sc")
+      '(error unknown-path "nowhere.sc"))
+;; THE ANSWER IS THE HOLDER'S CHILDREN, every one, not a query over [0, length):
+;; zero-length blocks at either end are items too, and the holder never is
+(for-each
+  (lambda (row)
+    (let* ((path (car row)) (st (blocks-store! path (cadr row))) (sp (begin (ask st 'tag "t0") (spans st path))))
+      (want (string-append "LC-10 " (caddr row) ": the items are the file's children, each with its span")
+            (list (items-of (loc st path)) (and (member (file-at st path) (map cadr (items-of (loc st path)))) #t))
+            (list sp #f))))
+  '(("e0.sc" ("" "l1\nl2\n") "an empty block at 0")
+    ("e1.sc" ("l1\nl2\n" "") "an empty block at the end")
+    ("e2.sc" ("only\n") "a one-block file")
+    ("e3.sc" ("" "") "a file all of whose blocks are empty")))
+(want "LC-10 the whole file as a range answers what no range answers, the same items"
+      (list (equal? (items-of (loc ab "m.sc" "--bytes" "0:18")) (items-of (loc ab "m.sc"))) (items-of (loc ab "m.sc" "--bytes" "0:18")))
+      (list #t ab-spans))
+(let* ((d (fresh-store!)) (st (store-in d)))
+  (ask st 'tag "pre")
+  (split-import! d "later.sc" "(define x 1)\n")
+  (want "LC-10 at a cut from before the file was imported, no range is unknown-path there, though the file is at head"
+        (list (ask st 'locate "later.sc" "--cut" "pre") (car (ask st 'locate "later.sc" "--writer" "w9")))
+        '((error unknown-path "later.sc") ok)))
 
 ;; ---- refusals ----------------------------------------------------------------
 (printf "== refusals, the view, the receipt ==\n")

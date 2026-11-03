@@ -57,13 +57,18 @@
 ;;     then export again and re-apply, since a fresh export of an old draft
 ;;     still projects the draft's old cut);
 ;;   draft-changed (W's slot for the block holds a version that is neither
-;;     the one the export recorded nor the one this sync would write: another
-;;     write under W, which the protocol forbids; and for a structural draft,
-;;     one this export does not account for: an add or delete undone in the
-;;     export after its sync, or another export's newer draft. The answer
-;;     names the file, the key and the remedy: export again, and a delete is
-;;     undone by `discard delete-<holder>`. Once a writer holds structural
-;;     drafts, one export of it is live at a time);
+;;     the one the sidecar records -- the export's, or the last sync's, which
+;;     records what it wrote -- nor the one this sync would write: another
+;;     write under W from elsewhere, which the protocol forbids; and for a structural draft,
+;;     one this export does not account for: a delete undone in the export
+;;     after its sync, or another export's newer draft. An add undone in the
+;;     same export after its sync is not one: the sidecar records the add,
+;;     so the next sync discards its draft. The answer names the file, the
+;;     key and the remedy: export again, and a delete is undone by
+;;     `discard delete-<holder>`. A second sync of the same export
+;;     is not such a write: export again only after a write under W from
+;;     elsewhere. Once a writer holds structural drafts, one export of it is
+;;     live at a time);
 ;;   non-text-block (the slot's text cannot be read as text).
 ;;
 ;; FILES ADDED AND REMOVED ARE STRUCTURAL DRAFTS (working.sc): a file on
@@ -78,6 +83,10 @@
 ;; a freeze run now would freeze those older drafts, not the directory. A
 ;; coder who tested the directory freezes with landing-freeze's --tree <dir>,
 ;; which refuses a frozen tree other than the directory (tree-differs).
+;;
+;; A SYNC RECORDS WHAT IT WROTE in the sidecar, as a fresh export of the same
+;; cut would (see `record-sync!`): the next sync of this directory diffs
+;; against the synced bytes and reads the drafts it wrote as recorded.
 ;;
 ;; A RETRY WRITES NOTHING. A block whose slot already holds exactly the
 ;; version this sync would write -- sha256 of the new bytes, the based-on
@@ -104,7 +113,8 @@
         (only (theourgia languages) language-for-path)
         (only (theourgia log) store-id-of)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) entry-bytes entry-name-type directory-entries path-executable?))
+        (only (theourgia ffi) entry-bytes entry-name-type directory-entries path-executable?
+              overwrite-entry! rename-over!))
 
 (define (refuse kind . details) (raise (cons 'error (cons kind details))))
 ;; the blocks written so far, for a failure after the first write to say
@@ -359,6 +369,103 @@
                           (not (bytevector=? (cdr t) (slice old (cadr b) (caddr b))))))
             texts)))
 
+;; ---- recording a sync ---------------------------------------------------------------------
+;;
+;; A SYNC THAT COMPLETES ITS PLAN RECORDS WHAT IT WROTE, as a fresh
+;; edit-export of the export's cut would record the synced directory, so a
+;; second sync of the same export reads its own drafts as recorded ones. It
+;; records whether or not this run wrote anything: a retry that skips every
+;; write still refreshes a sidecar a crash before the rename left behind. For a changed file: a
+;; new pristine copy holding the synced bytes, their sha256, each block's span
+;; over them, and a draft clause (version, based-on, cut) on every block this
+;; sync wrote or found already held; a block it did not touch keeps its
+;; clause. An added file gets a new entry (its version and the cut its draft
+;; stands on); a kept new file whose bytes changed gets its new version and
+;; pristine. A removed file and a gone new file keep their entries, so a
+;; retry is still a skip. The pristine copies are written first, each under
+;; its own content's name and renamed into it whole, so a name the old
+;; sidecar uses is never seen half-written; the sidecar comes last, under a
+;; temporary name renamed into place. Until that rename the old sidecar and
+;; its pristine copies are as they were, and a sync that dies before it is
+;; retried from them: the slots it wrote already hold this sync's versions,
+;; which the retry skips, and the retry records.
+(define (new-pristine! side bytes)
+  (let* ((name (string-append "sync-" (hash-of bytes) ".bytes"))
+         (path (string-append side "/pristine/" name)))
+    (overwrite-entry! (string-append path ".tmp") bytes)
+    (rename-over! (string-append path ".tmp") path)
+    name))
+(define (record-sync! side plan structural-plan touched changed added news on-disk structural-cut)
+  (let* ((d (read (open-string-input-port (utf8->string (entry-bytes (string-append side "/SIDECAR.sexp"))))))
+         (drafted (make-hashtable string-hash string=?))
+         (texts (make-hashtable string-hash string=?))
+         (planned (lambda (rel)
+                    (find (lambda (p) (and (memq (car p) '(new skip)) (equal? (cadr p) rel))) structural-plan)))
+         ;; (new <path> <pid> <bytes> <v>) and (skip <path> new <pid> <v>) both hold V fourth
+         (planned-version (lambda (p) (list-ref p 4)))
+         (block? (lambda (c) (and (pair? c) (eq? (car c) 'block))))
+         (file-entry
+           (lambda (e bytes)
+             (let* ((name (new-pristine! side bytes))
+                    (fields (cddr e))
+                    (blocks
+                      (let loop ((bs (filter block? fields)) (at 0) (out '()))
+                        (if (null? bs)
+                            (begin
+                              (unless (= at (bytevector-length bytes))
+                                (refuse 'record-failed (list 'file (cadr e)) '(reason spans)))
+                              (reverse out))
+                            (let* ((b (car bs)) (id (cadr b)) (span (clause (cddr b) 'span))
+                                   (text (hashtable-ref texts id #f))
+                                   (len (if text (bytevector-length text) (- (caddr span) (cadr span))))
+                                   (dr (hashtable-ref drafted id #f))
+                                   (kept (filter (lambda (c) (not (memq (car c) '(span draft)))) (cddr b)))
+                                   (old (clause (cddr b) 'draft)))
+                              (loop (cdr bs) (+ at len)
+                                    (cons (append (list 'block id (list 'span at (+ at len))) kept
+                                                  (cond (dr (list (list 'draft (list 'version (car dr))
+                                                                        (list 'based-on (cadr dr)) (list 'cut (caddr dr)))))
+                                                        (old (list old))
+                                                        (else '())))
+                                          out)))))))
+               (append (list 'file (cadr e))
+                       (map (lambda (c)
+                              (case (car c)
+                                ((pristine) (list 'pristine name))
+                                ((sha256) (list 'sha256 (hash-of bytes)))
+                                (else c)))
+                            (filter (lambda (c) (not (block? c))) fields))
+                       blocks))))
+         (new-entry
+           (lambda (rel bytes version cut)
+             (list 'new rel (list 'version version) (list 'sha256 (hash-of bytes))
+                   (list 'pristine (new-pristine! side bytes)) (list 'cut cut)))))
+    (for-each (lambda (p)
+                (case (car p)
+                  ((write) (hashtable-set! drafted (cadr p) (list (list-ref p 5) (cadddr p) (list-ref p 6))))
+                  ((skip) (hashtable-set! drafted (cadr p) (list (caddr p) (cadddr p) (list-ref p 4))))
+                  (else #f)))
+              plan)
+    (for-each (lambda (t) (hashtable-set! texts (car t) (cadr t))) touched)
+    (let* ((clauses
+             (map (lambda (c)
+                    (cond
+                      ((and (pair? c) (eq? (car c) 'file) (assoc (cadr c) changed))
+                       (file-entry c (cdr (assoc (cadr c) on-disk))))
+                      ((and (pair? c) (eq? (car c) 'new) (assoc (cadr c) on-disk)
+                            (let ((n (assoc (cadr c) news)))
+                              (and n (not (bytevector=? (list-ref n 4) (cdr (assoc (cadr c) on-disk)))))))
+                       (new-entry (cadr c) (cdr (assoc (cadr c) on-disk)) (planned-version (planned (cadr c)))
+                                  (cadr (clause (cddr c) 'cut))))
+                      (else c)))
+                  (cdr d)))
+           (additions
+             (map (lambda (f) (new-entry (car f) (cdr f) (planned-version (planned (car f))) structural-cut))
+                  added))
+           (tmp (string-append side "/SIDECAR.sexp.tmp")))
+      (overwrite-entry! tmp (string->utf8 (format "~s\n" (cons 'edit-export (append clauses additions)))))
+      (rename-over! tmp (string-append side "/SIDECAR.sexp")))))
+
 ;; ---- the sync -----------------------------------------------------------------------------
 
 (define (sync store dir writer)
@@ -445,7 +552,8 @@
                                    (unless (and (reduction? at-cut) (equal? (block-hash at-cut id) (caddr t)))
                                      (refuse 'bad-sidecar (list 'block id) '(reason committed-not-at-cut))))))
                            touched))
-               ;; ((<id> <new bytes> <based-on> <cut-text> <version>) ...) to write, and the skipped ids
+               ;; (write <id> <new bytes> <based-on> <cut-text> <version> <cut>) to write and
+               ;; (skip <id> <version> <based-on> <cut>) already held
                (plan
                  (map (lambda (t)
                         (let* ((id (car t)) (new (cadr t)) (committed (caddr t)) (draft (cadddr t))
@@ -463,11 +571,11 @@
                               (refuse 'non-text-block (list 'block id) (list 'answer a)))
                             (let* ((p (cadr a)) (kind (cadr p)) (held (list-ref p 4)))
                               (cond
-                                ((and (eq? kind 'working) (equal? held version)) (list 'skip id))
+                                ((and (eq? kind 'working) (equal? held version)) (list 'skip id version based-on at))
                                 ((and (eq? kind 'working) draft (equal? held (car draft)))
-                                 (list 'write id new based-on (format "~s" at) version))
+                                 (list 'write id new based-on (format "~s" at) version at))
                                 ((and (eq? kind 'committed) (not draft))
-                                 (list 'write id new based-on (format "~s" at) version))
+                                 (list 'write id new based-on (format "~s" at) version at))
                                 (else (refuse 'draft-changed (list 'block id) (list 'held held)
                                               (list 'recorded (and draft (car draft))))))))))
                       touched))
@@ -483,9 +591,9 @@
                               (unless (reduction? at) (refuse 'cut-unavailable (list 'cut cut)))
                               (reduce-applied-cut at))))
                ;; READ ON EVERY SYNC, not only when a path is classified: a
-               ;; structural draft this export does not show (an undone add or
-               ;; delete, or another export's) is refused below, never left
-               ;; standing under an ok
+               ;; structural draft this export does not show (an undone delete, or
+               ;; another export's) is refused below, never left standing
+               ;; under an ok
                (live (let ((a (working-structural store state writer)))
                        (unless (and (pair? a) (eq? (car a) 'ok)) (refuse 'structural-refused (list 'answer a)))
                        (caddr a)))
@@ -523,11 +631,12 @@
           ;; nothing. A new file the export wrote is its sidecar entry; a new
           ;; file on disk the sidecar does not record holds at most this sync's
           ;; version; a removed file's delete likewise; a delete of a file the
-          ;; export did not write was there when it was made. Anything else --
-          ;; an undone add or delete, or another export's newer draft -- is
-          ;; refused, and the remedy is a fresh export (a delete is undone by
-          ;; `discard delete-<holder>`): one live export per writer once
-          ;; structural drafts exist.
+          ;; export did not write was there when it was made. An add this export's
+          ;; sync recorded and that is gone again is a gone new file, discarded
+          ;; below. Anything else -- an undone delete, or another export's newer
+          ;; draft -- is refused, and the remedy is a fresh export (a delete is
+          ;; undone by `discard delete-<holder>`): one live export per writer
+          ;; once structural drafts exist.
           ;; (new <path> <pid> <bytes> <v>), (delete <path> <holder> <v>) and
           ;; (skip <path> <kind> <key> <v>) each carry the version predicted
           (let* ((predicted (lambda (kind key)
@@ -607,6 +716,7 @@
                    (set! written (cons (list 'discarded (cadr p)) written))))
                 (else #f)))
             structural-plan)
+          (record-sync! side plan structural-plan touched changed added news on-disk structural-cut)
           (list 'ok (list 'files-changed (length changed)) (list 'files-added (length added))
                 (list 'files-removed (length removed)) (list 'writes (length written))
                 (cons 'written (reverse written))

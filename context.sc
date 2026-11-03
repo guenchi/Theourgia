@@ -118,8 +118,9 @@
   (export context-verb
           ;; users-clause and reserved-users, excluded-clause and
           ;; reserved-excluded are exported for the fixture's rows on the
-          ;; counter cap (test/context-users.sc), not as an interface.
-          users-clause reserved-users excluded-clause reserved-excluded)
+          ;; counter cap (test/context-users.sc), and title-from for the rows
+          ;; on an entry's title (test/scheme-definers.sc), not as an interface.
+          users-clause reserved-users excluded-clause reserved-excluded title-from)
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
@@ -240,12 +241,36 @@
               (hashtable-set! kept id r)
               r)))))
 
+  ;; AN ENTRY'S TITLE: the block's title when it has one, else its name (a
+  ;; symbol or a string as its text, a list of names by its first), else "".
+  ;; A code block imported by its definitions carries a name and no title,
+  ;; and its name is the VIEW's: derived from the source, not a stored field.
+  ;; It is taken from the block's record as the read handler answers it
+  ;; (RECORDS, kept for the request), so the store still reads a block in its
+  ;; one place, and only for a code block with no title. Any other kind's
+  ;; name is its stored field: the view gives such a block as stored.
+  (define (head-title records id row)
+    (let ((t (text-field row 'title)))
+      (title-from t (and (= (string-length t) 0)
+                         (if (eq? (field-value row 'kind) 'code)
+                             (let ((r (records id)))
+                               (and (pair? r) (list? r) (assq 'fields r) (field-value r 'name)))
+                             (field-value row 'name))))))
+  ;; -> TITLE when it is not empty, else the text of NAME, else ""
+  (define (title-from title name)
+    (cond ((> (string-length title) 0) title)
+          ((symbol? name) (symbol->string name))
+          ((string? name) name)
+          ((and (pair? name) (symbol? (car name))) (symbol->string (car name)))
+          ((and (pair? name) (string? (car name))) (car name))
+          (else "")))
+
   ;; ONE ENTRY AT A LEVEL. The identity clauses, the whys, the validity when it
   ;; is not valid, the names for code, then the level's own clause.
   (define (entry state records id version whys validity level)
     (let* ((row (state-read state id))
            (kind (let ((k (field-value row 'kind))) (if (symbol? k) k 'none)))
-           (head (list id (list 'kind kind) (list 'title (text-field row 'title))
+           (head (list id (list 'kind kind) (list 'title (head-title records id row))
                        (list 'version version) (list 'level level))))
       (append head whys (if validity (list validity) '()) (names-of row)
               (case level

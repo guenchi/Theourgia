@@ -27,7 +27,8 @@
         (only (theourgia store) open-and-reduce)
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia log) writer-directory)
-        (only (theourgia ffi) path-stat))
+        (only (theourgia ffi) path-stat)
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define bad 0)
 (define rows 0)
@@ -255,6 +256,12 @@
         (in-order (head-of (export-answer! s1 dir "we4")) (file-exists? (string-append dir ".edit/SIDECAR.sexp"))))
       '((error export-exists) #f))
 
+;; the version a sync's answer names first, and a sidecar block's draft version
+(define (written-version a) (let ((w (clause-of a 'written))) (and w (pair? (cdr w)) (value-of (cadr w) 'version))))
+(define (draft-clause-version bb)
+  (let ((d (and bb (assq 'draft (cddr bb))))) (and d (cadr (assq 'version (cdr d))))))
+(define (hex-of bv) (bytevector->hex (sha256 bv)))
+
 ;; ---- ET-5..ET-9: edits that sync ----------------------------------------------------------
 (printf "== ET-5..ET-9: edits that sync ==\n")
 (let ((dir (edit-dir s1 "e5")))
@@ -283,14 +290,31 @@
 (let ((dir (edit-dir s1 "e8")))
   (export! s1 dir "we8")
   (edit! (string-append dir "/a.sc") "a1\n" "A1\n")
-  (let* ((first (sync! s1 dir "we8"))
+  (let* ((exported (file-bytes (string-append dir ".edit/SIDECAR.sexp")))
+         (first (sync! s1 dir "we8"))
          (before (stat-or-absent (draft-file s1 "we8" (A 0))))
          (second (sync! s1 dir "we8"))
          (after (stat-or-absent (draft-file s1 "we8" (A 0)))))
-    (want "ET-8 run twice: the second run succeeds, makes no write call and names the block skipped; the draft file is untouched"
+    ;; THE FIRST SYNC RECORDED WHAT IT WROTE, so the second sees no change
+    ;; (the base: files-changed 1, the block skipped)
+    (want "ET-8 run twice: the second run succeeds and makes no write call, seeing no change; the draft file is untouched"
           (list (head-of first) (value-of first 'writes) (head-of second) (value-of second 'writes)
-                (cdr (clause-of second 'skipped)) (and (pair? before) (equal? before after)))
-          (list 'ok 1 'ok 0 (list (A 0)) #t))))
+                (value-of second 'files-changed) (cdr (clause-of second 'skipped)) (and (pair? before) (equal? before after)))
+          (list 'ok 1 'ok 0 0 '() #t))
+    ;; A RETRY: the sidecar as the export left it, as after a sync that died
+    ;; before its rename; the slot holds this sync's own version, so a skip
+    (write-bytes! (string-append dir ".edit/SIDECAR.sexp") exported)
+    (let* ((retry (sync! s1 dir "we8"))
+           (refreshed (draft-clause-version (sidecar-block (sidecar-of dir) "a.sc" (A 0)))))
+      (want "ET-8 a retry under the export's sidecar writes nothing, names the block skipped, and still records the sync"
+            (list (head-of retry) (value-of retry 'writes) (cdr (clause-of retry 'skipped))
+                  (and refreshed (equal? refreshed (cadr (projection-of s1 "we8" (A 0))))))
+            (list 'ok 0 (list (A 0)) #t))
+      (edit! (string-append dir "/a.sc") "A1\n" "A1\nagain\n")
+      (let ((further (sync! s1 dir "we8")))
+        (want "ET-8 after that retry a further edit of the same block syncs"
+              (in-order (head-of further) (value-of further 'writes) (draft-text s1 "we8" (A 0)))
+              (list 'ok 1 "a0\nA1\nagain\na2\na3\n"))))))
 (let ((dir1 (edit-dir s1 "e9a")) (dir2 (edit-dir s1 "e9b")))
   (export! s1 dir1 "we9")
   (edit! (string-append dir1 "/a.sc") "b2\n" "b2\nmore\nlines\n")
@@ -305,6 +329,147 @@
                       (head-of a) (value-of a 'writes) (drafts-of s1 "we9"))
             (list '(drafts 1) '(12 35) #t 'ok 1
                   (sorted-pairs (cons (A 1) "b0\nb1\nb2\nmore\nlines\nb3\n") (cons (A 3) "d0\nD1\nd2\nd3\n")))))))
+
+;; ---- ER-1..ER-5: the same export synced again ----------------------------------------------------
+;; A SYNC RECORDS WHAT IT WROTE in the sidecar, as a fresh export of the same
+;; cut would, so the directory can be edited and synced again; THE BASE
+;; refuses the second sync draft-changed (ER-1, ER-5) and leaves a revert
+;; unseen (ER-4).
+(printf "== ER-1..ER-5: a second sync of the same export ==\n")
+(let ((dir (edit-dir s1 "r1")))
+  (export! s1 dir "wr1")
+  (edit! (string-append dir "/a.sc") "b1\n" "b1\nextra\n")
+  (let* ((first (sync! s1 dir "wr1")) (side (sidecar-of dir)) (bb (sidecar-block side "a.sc" (A 1))))
+    (want "ER-2 after a sync the sidecar records it: the block's draft clause holds the version written, the pristine copy the synced bytes, the spans tile them"
+          (list (and (written-version first) (equal? (draft-clause-version bb) (written-version first)))
+                (guard (e (#t 'absent))
+                  (equal? (file-bytes (string-append dir ".edit/pristine/" (pristine-name side "a.sc")))
+                          (file-bytes (string-append dir "/a.sc"))))
+                (map (lambda (k) (let ((b (sidecar-block side "a.sc" (A k)))) (and b (cdr (assq 'span (cddr b))))))
+                     '(0 1 2 3)))
+          '(#t #t ((0 12) (12 30) (30 42) (42 54))))
+    (edit! (string-append dir "/a.sc") "extra\n" "extra2\n")
+    (let ((second (sync! s1 dir "wr1")))
+      (want "ER-1 export, edit, sync, edit the same block again, sync: ok, one write, the block's draft the second sync's"
+            (in-order (head-of second) (value-of second 'writes) (drafts-of s1 "wr1")
+                      (equal? (cadr (projection-of s1 "wr1" (A 1))) (written-version second)))
+            (list 'ok 1 (list (cons (A 1) "b0\nb1\nextra2\nb2\nb3\n")) #t)))
+    ;; CONTROL, as on the base: a write under the writer from elsewhere is still
+    ;; another write, refused naming the version it holds
+    (ask (st-of s1) 'write (A 1) "b0\nelsewhere\n" "--writer" "wr1")
+    (let ((elsewhere (cadr (projection-of s1 "wr1" (A 1)))))
+      (edit! (string-append dir "/a.sc") "extra2\n" "extra3\n")
+      (let ((third (sync! s1 dir "wr1")))
+        (want "ER-3 CONTROL a write under the writer from elsewhere still refuses draft-changed, holding the elsewhere version"
+              (in-order (head-of third) (equal? (value-of third 'held) elsewhere) (drafts-of s1 "wr1"))
+              (list '(error draft-changed) #t (list (cons (A 1) "b0\nelsewhere\n"))))))))
+(let ((dir (edit-dir s1 "r4")))
+  (export! s1 dir "wr4")
+  (edit! (string-append dir "/a.sc") "b1\n" "B1\n")
+  (sync! s1 dir "wr4")
+  (edit! (string-append dir "/a.sc") "B1\n" "b1\n")
+  (let ((a (sync! s1 dir "wr4")))
+    (want "ER-4 a block put back to its exported text is synced back: the writer's view of it is the directory's again"
+          (in-order (head-of a) (list-ref (projection-of s1 "wr4" (A 1)) 4))
+          (list 'ok "b0\nb1\nb2\nb3\n"))))
+(let ((dir (edit-dir s1 "r5")))
+  (export! s1 dir "wr5")
+  (write-file! (string-append dir "/n.sc") "n0\n")
+  (let* ((first (sync! s1 dir "wr5")) (v1 (structural-version-of s1 "wr5" "n.sc")))
+    (edit! (string-append dir "/n.sc") "n0\n" "n0\nn1\n")
+    (let* ((second (sync! s1 dir "wr5")) (v2 (structural-version-of s1 "wr5" "n.sc")))
+      (want "ER-5 an added file edited and synced again writes a new version of its draft"
+            (list (head-of first) (head-of second) (structural-of s1 "wr5") (and v1 v2 (not (equal? v1 v2))))
+            '(ok ok ((new "n.sc")) #t))
+      ;; A KEPT NEW FILE WHOSE BYTES CHANGED: its entry is the one a fresh export would write now
+      (let* ((side (sidecar-of dir)) (entry (sidecar-new side "n.sc"))
+             (field (lambda (k) (and entry (let ((c (assq k (cddr entry)))) (and c (cadr c))))))
+             (bytes (file-bytes (string-append dir "/n.sc"))))
+        (want "ER-5 the sidecar's entry for the new file holds its second version, the bytes' hash and a pristine copy of them"
+              (list (and v2 (equal? (field 'version) v2)) (equal? (field 'sha256) (hex-of bytes))
+                    (guard (e (#t 'absent)) (equal? (file-bytes (string-append dir ".edit/pristine/" (field 'pristine))) bytes)))
+              '(#t #t #t)))
+      (let ((retry (sync! s1 dir "wr5")))
+        (want "ER-5 and an unchanged retry of it writes nothing, the draft its second version"
+              (list (head-of retry) (value-of retry 'writes) (equal? (structural-version-of s1 "wr5" "n.sc") v2))
+              '(ok 0 #t))))))
+
+;; ER-6: what the recorded sidecar holds, after an early block grew and a later
+;; one was edited in the SAME export (ET-9's sequence without a second export)
+(let ((dir (edit-dir s1 "r6")))
+  (export! s1 dir "wr6")
+  (let ((exported (sidecar-of dir)))
+    (edit! (string-append dir "/a.sc") "a1\n" "a1\nlonger\n")
+    (sync! s1 dir "wr6")
+    (edit! (string-append dir "/a.sc") "d1\n" "D1\n")
+    (let* ((a (sync! s1 dir "wr6")) (side (sidecar-of dir)) (f (sidecar-file side "a.sc"))
+           (pristine (guard (e (#t #f)) (file-bytes (string-append dir ".edit/pristine/" (pristine-name side "a.sc")))))
+           (b3 (sidecar-block side "a.sc" (A 3))) (d3 (and b3 (assq 'draft (cddr b3))))
+           (cut (cadr (assq 'cut (cdr exported)))))
+      (want "ER-6 an early block grew, then a later one was edited, in one export: both drafts right"
+            (in-order (head-of a) (value-of a 'writes) (drafts-of s1 "wr6"))
+            (list 'ok 1 (sorted-pairs (cons (A 0) "a0\na1\nlonger\na2\na3\n") (cons (A 3) "d0\nD1\nd2\nd3\n"))))
+      (want "ER-6 the recorded pristine is the synced bytes with their hash; the spans tile it; the draft clause names based-on, cut and version"
+            (list (and pristine (equal? pristine (file-bytes (string-append dir "/a.sc"))))
+                  (and pristine (equal? (cadr (assq 'sha256 (cddr f))) (hex-of pristine)))
+                  (map (lambda (k) (let ((b (sidecar-block side "a.sc" (A k)))) (and b (cdr (assq 'span (cddr b)))))) '(0 1 2 3))
+                  (and d3 (equal? (cadr (assq 'version (cdr d3))) (cadr (projection-of s1 "wr6" (A 3)))))
+                  (and d3 (equal? (cadr (assq 'based-on (cdr d3))) (cadr (assq 'committed (cddr b3)))))
+                  (and d3 (equal? (cadr (assq 'cut (cdr d3))) cut)))
+            '(#t #t ((0 19) (19 31) (31 43) (43 55)) #t #t #t))
+      (want "ER-6 the entries of files it did not change are the export's, and the export's pristine copy is still there"
+            (list (equal? (sidecar-file side "b.sc") (sidecar-file exported "b.sc"))
+                  (equal? (sidecar-file side "x.sc") (sidecar-file exported "x.sc"))
+                  (let ((old (pristine-name exported "a.sc")))
+                    (guard (e (#t #f))
+                      (equal? (hex-of (file-bytes (string-append dir ".edit/pristine/" old)))
+                              (cadr (assq 'sha256 (cddr (sidecar-file exported "a.sc"))))))))
+            '(#t #t #t)))))
+;; ER-7: a sync that died after a subset of its writes, before recording
+(let ((dir (edit-dir s1 "r7")))
+  (export! s1 dir "wr7")
+  (let ((exported (file-bytes (string-append dir ".edit/SIDECAR.sexp"))))
+    (edit! (string-append dir "/a.sc") "b1\n" "B1\n")
+    (sync! s1 dir "wr7")
+    (write-bytes! (string-append dir ".edit/SIDECAR.sexp") exported)
+    (edit! (string-append dir "/a.sc") "c1\n" "C1\n")
+    (let ((a (sync! s1 dir "wr7")))
+      (want "ER-7 after a sync that wrote one block and died, the next writes the rest and skips what was written"
+            (in-order (head-of a) (map cadr (cdr (clause-of a 'written))) (cdr (clause-of a 'skipped)) (drafts-of s1 "wr7")
+                      (and (draft-clause-version (sidecar-block (sidecar-of dir) "a.sc" (A 1))) #t))
+            (list 'ok (list (A 2)) (list (A 1))
+                  (sorted-pairs (cons (A 1) "b0\nB1\nb2\nb3\n") (cons (A 2) "c0\nC1\nc2\nc3\n")) #t)))))
+;; ER-8..ER-10: a retry after each structural kind, and after a mixed sync
+(let ((dir (edit-dir s1 "r8")))
+  (export! s1 dir "wr8")
+  (sh "rm " (quoted (string-append dir "/b.sc")))
+  (let* ((a (sync! s1 dir "wr8")) (retry (sync! s1 dir "wr8")))
+    (want "ER-8 a removal synced, then an unchanged retry: ok, nothing written, the delete draft kept"
+          (list (head-of a) (head-of retry) (value-of retry 'writes) (structural-of s1 "wr8"))
+          (list 'ok 'ok 0 (list (list 'delete (file-at (st-of s1) "b.sc")))))))
+(let ((dir (edit-dir s1 "r9")))
+  (export! s1 dir "wr9")
+  (write-file! (string-append dir "/v.sc") "v\n")
+  (sync! s1 dir "wr9")
+  (sh "rm " (quoted (string-append dir "/v.sc")))
+  (let* ((a (sync! s1 dir "wr9")) (retry (sync! s1 dir "wr9")))
+    (want "ER-9 a new file synced, removed, synced, then an unchanged retry: ok throughout, no draft left"
+          (list (head-of a) (head-of retry) (value-of retry 'writes) (structural-of s1 "wr9"))
+          '(ok ok 0 ()))))
+(let ((dir (edit-dir s1 "r10")))
+  (export! s1 dir "wr10")
+  (edit! (string-append dir "/a.sc") "a2\n" "A2\n")
+  (write-file! (string-append dir "/m.sc") "m\n")
+  (sh "rm " (quoted (string-append dir "/b.sc")))
+  (let* ((a (sync! s1 dir "wr10")) (retry (sync! s1 dir "wr10")))
+    (edit! (string-append dir "/m.sc") "m\n" "m\nm2\n")
+    (let ((after (sync! s1 dir "wr10")))
+      (want "ER-10 a text edit, a new file and a removal in one sync; an unchanged retry writes nothing; then the new file edited syncs"
+            (list (head-of a) (value-of a 'writes) (head-of retry) (value-of retry 'writes) (head-of after) (value-of after 'writes)
+                  (drafts-of s1 "wr10") (structural-of s1 "wr10"))
+            (list 'ok 3 'ok 0 'ok 1 (list (cons (A 0) "a0\na1\nA2\na3\n"))
+                  (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
+                             (list (list 'new "m.sc") (list 'delete (file-at (st-of s1) "b.sc")))))))))
 
 ;; ---- ET-10..ET-20: refusals, each writing nothing ---------------------------------------------
 (printf "== ET-10..ET-20: refusals, each writing nothing ==\n")
@@ -451,15 +616,23 @@ n3
 ")
   (sync! s1 dir "we15")
   (sh "rm " (quoted (string-append dir "/u.sc")))
+  ;; THE FIRST SYNC RECORDED THE NEW FILE, so its removal from the same export
+  ;; is a new file the export accounts for, gone: discarded (the base:
+  ;; draft-changed, the draft kept)
   (let ((a (sync! s1 dir "we15")))
-    (want "SN-5 an add undone in the same export refuses draft-changed and keeps the draft; a fresh export's removal discards it"
-          (in-order (head-of a) (clause-of a 'key) (structural-of s1 "we15")
-                    (begin (export! s1 dir2 "we15")
-                           (sh "rm " (quoted (string-append dir2 "/u.sc")))
-                           (head-of (sync! s1 dir2 "we15")))
-                    (structural-of s1 "we15"))
-          (list '(error draft-changed) (list 'key (if provisional-id (provisional-id "u.sc") "none"))
-                '((new "u.sc")) 'ok '()))))
+    (want "SN-5 an add undone in the same export discards the draft, as the sidecar now records the add"
+          (in-order (head-of a) (structural-of s1 "we15") (and (clause-of a 'written) (cdr (clause-of a 'written))))
+          (list 'ok '() (list (list 'discarded "u.sc"))))))
+(let ((dir (edit-dir s1 "s15f")) (dir2 (edit-dir s1 "s15g")))
+  (export! s1 dir "we15f")
+  (write-file! (string-append dir "/u.sc") "u\n")
+  (sync! s1 dir "we15f")
+  (want "SN-5 a fresh export's removal of a new file discards its draft"
+        (in-order (begin (export! s1 dir2 "we15f")
+                         (sh "rm " (quoted (string-append dir2 "/u.sc")))
+                         (head-of (sync! s1 dir2 "we15f")))
+                  (structural-of s1 "we15f"))
+        '(ok ())))
 ;; AN UNDONE DELETE: b.sc removed and synced, then its bytes put back
 (let* ((dir (edit-dir s1 "s16")) (h (file-at (st-of s1) "b.sc")))
   (export! s1 dir "we16")

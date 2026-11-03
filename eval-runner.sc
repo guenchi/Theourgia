@@ -447,8 +447,13 @@
                   (append answer
                           (list (list 'lang (string->symbol lang))
                                 (cons 'projection (cdr exported))
+                                ;; THE DRAFT TABLE IS THE SCHEME PATH'S, (<id> . <version>)
+                                ;; per draft (eval-worker.sc): the drafts' bytes are the
+                                ;; projection's, and the answer does not carry them again.
                                 (list 'working-view (and working (cadr working))
                                       (and seen (reduce-applied-cut seen))
-                                      (if working (cadddr working) '()))))
+                                      (if working
+                                          (map (lambda (d) (cons (car d) (cadr d))) (cadddr working))
+                                          '()))))
                   answer))))))
 )

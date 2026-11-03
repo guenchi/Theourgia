@@ -208,6 +208,18 @@
         (let ((t (cadr (or (clause-of w 'stdout) '(stdout "")))))
           (list (has-substring? t "fdraft") (has-substring? t "fpublished")))
         (list #t #f)))
+;; THE DRAFT TABLE IS ONE SHAPE ON BOTH PATHS: (<id> . <version>) per draft.
+;; The base's runner path answered each draft whole, its bytes included.
+(let* ((runner (ask ON P "true\n" "--lang" "shell" "--working" "--writer" "w3"))
+       (scheme (ask "" P "1\n" "--working" "--writer" "w3"))
+       (table (lambda (a) (let ((c (clause-of a 'working-view))) (and c (= (length c) 4) (cadddr c))))))
+  (want "L2 a runner's working-view table is the Scheme path's: one (<id> . <version>) per draft, no bytes, the clause under 300 characters"
+        (list (table runner)
+              (and (list? (table runner))
+                   (for-all (lambda (e) (and (pair? e) (string? (car e)) (string? (cdr e)))) (table runner)))
+              (map car (or (table runner) '()))
+              (< (string-length (format "~s" (clause-of runner 'working-view))) 300))
+        (list (table scheme) #t (list f-id) #t)))
 
 ;; ---- L3: the limits, the signal, the interpreter, the ready boundary ----------
 (let ((a (ask ON S "sleep 5\n" "--lang" "shell" "--timeout-ms" "1000")))

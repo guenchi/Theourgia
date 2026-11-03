@@ -2460,13 +2460,15 @@
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
       ;; A RANGE OF A FILE TO THE BLOCKS HOLDING IT (landing-files.sc, locate-file),
       ;; in one writer's working view or at a cut, as export-code's views are.
-      ;; One of --bytes, --lines and --hunk; a malformed span is the usage form.
+      ;; At most one of --bytes, --lines and --hunk, and none answers every
+      ;; block of the file; a malformed span is the usage form.
       (cons 'locate
             (lambda (store actor args req options state writer cwd)
               (let* ((w (argument-option options "--writer")) (c (argument-option options "--cut"))
                      (b (argument-option options "--bytes")) (l (argument-option options "--lines"))
                      (h (argument-option options "--hunk"))
-                     (spec (cond ((not (= 1 (length (filter values (list b l h))))) #f)
+                     (spec (cond ((null? (filter values (list b l h))) (list 'whole))
+                                 ((not (= 1 (length (filter values (list b l h))))) #f)
                                  (b (let ((r (parse-span b))) (and r (list 'bytes (car r) (cdr r)))))
                                  (l (let ((r (parse-span l))) (and r (list 'lines (car r) (cdr r)))))
                                  (else (list 'hunk h)))))

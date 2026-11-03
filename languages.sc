@@ -134,9 +134,21 @@
           ;; only entries with a reader and a header
           (reader #t) (header #t)
           (def-heads
+            ;; THE R6RS AND CHEZ DEFINERS THAT BIND A NAME AT THE TOP LEVEL, each by
+            ;; its bound name (a record type, a structure and a values form by the
+            ;; first name they bind); define-checked is a contract library's definer.
             ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
               "^\\(define\\s+([^\\s()\\[\\]\";]+)"
-              "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"))
+              "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-checked\\s+\\(([^\\s()\\[\\]\";]+)"
+              "^\\(define-record-type\\s+\\(([^\\s()\\[\\]\";]+)"
+              "^\\(define-record-type\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-condition-type\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-values\\s+\\(([^\\s()\\[\\]\";]+)"
+              "^\\(define-enumeration\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-integrable\\s+\\(([^\\s()\\[\\]\";]+)"
+              "^\\(define-integrable\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-structure\\s+\\(([^\\s()\\[\\]\";]+)"))
           (name-capture 1)
           (suggest-only
             ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
@@ -397,9 +409,19 @@
                     (env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")
                           ("CHEZSCHEMELIBEXTS" ".sc:.ss:.sls:.scm")))))
            (def-heads
+             ;; as scheme's: the same definers
              ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
                "^\\(define\\s+([^\\s()\\[\\]\";]+)"
-               "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"))
+               "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-checked\\s+\\(([^\\s()\\[\\]\";]+)"
+               "^\\(define-record-type\\s+\\(([^\\s()\\[\\]\";]+)"
+               "^\\(define-record-type\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-condition-type\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-values\\s+\\(([^\\s()\\[\\]\";]+)"
+               "^\\(define-enumeration\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-integrable\\s+\\(([^\\s()\\[\\]\";]+)"
+               "^\\(define-integrable\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-structure\\s+\\(([^\\s()\\[\\]\";]+)"))
            (name-capture 1)
            (suggest-only
              ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
