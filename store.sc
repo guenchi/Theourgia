@@ -2615,7 +2615,11 @@
             (if (eq? verdict (quote usable))
                 (begin
                   (hold-point! (quote read-cut-before-replay))
-                  (let ((past (replay store (cadr resolved) #f)))
+                  ;; THE RESTRICTED REPLAY, a seam phase of its own: one line per
+                  ;; read at a cut, so a test can count the reductions a verb
+                  ;; makes (scope reduces once per run, not once per root); bare
+                  ;; when THEOURGIA_TIMING is unset.
+                  (let ((past (timed 'cut-replay (replay store (cadr resolved) #f))))
                     (if (cut-covers? (reduce-applied-cut past)
                                      (filter (lambda (e) (> (cdr e) 0)) (cadr resolved)))
                         past

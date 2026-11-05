@@ -1758,6 +1758,11 @@
    unrelated a
    "a daemon's answer envelope, read as data from bytes in memory: an unreadable one is answered transport-unknown (unreadable-answer)"
    (e (#t #f)))
+  ("channel.sc" (scope-read at-state) 1 guard
+   ((incomplete-reduction? e))
+   conservative a
+   "scope's one state at a literal cut is loaded outside the read verb's declaration (scope is no dispatcher verb), so a writer it cannot read raises incomplete-reduction there; #f sends every root to the routed read, declared incomplete-accepted, which answers the store as before: the readable cut with its incomplete clause, or the refusal with it (test/scope-once.sc SO-10)"
+   (e ((incomplete-reduction? e) #f)))
   ("client.sc" (plain-datum) 1 guard
    (#t)
    unrelated a

@@ -40,7 +40,10 @@
 ;; call starts without it.
 
 (library (theourgia channel)
-  (export scope-verb collect-verb review-results-verb collect-into-verb)
+  (export scope-verb collect-verb review-results-verb collect-into-verb
+          ;; scope-state-read is exported for the rows comparing it with a
+          ;; routed read (test/scope-once.sc), not as an interface.
+          scope-state-read)
   (import (rnrs)
           (only (chezscheme) format getenv putenv current-directory iota list-head)
           (only (theourgia rpc) rpc-dispatch-parsed)
@@ -49,8 +52,8 @@
                 unknown-outcome)
           (only (theourgia ffi) entry-type read-entry)
           (only (theourgia landing-files) file-new-intents)
-          (only (theourgia store) with-store-write judgement-refusal?)
-          (only (theourgia reduce) state-read state-outline outline-subtree state-datum
+          (only (theourgia store) with-store-write judgement-refusal? store-state-at-cut incomplete-reduction?)
+          (only (theourgia reduce) reduction? state-read state-outline outline-subtree state-datum
                 caller-payload-reason caller-fields-reason reserved-relation-names
                 block-creation event-actor state-put-events block-id state-event-past cut-covers?
                 state-field-contested? state-block-ids))
@@ -69,10 +72,16 @@
   ;; sends everything here, as it does for the command line.
   ;; SOCKET, when given, is the one the caller named for this store
   ;; (`--socket`), in place of the default path.
+  ;; WHETHER A REQUEST IS ANSWERED IN THIS PROCESS: when THEOURGIA_LOCAL=1, or
+  ;; when no socket is at SOCKET (the one given, else the store's). routed
+  ;; asks it, and so does scope-read before reducing the store itself.
+  (define (local-route? store socket)
+    (or (equal? (getenv "THEOURGIA_LOCAL") "1")
+        (eq? (entry-type (if (string? socket) socket (socket-path store))) 'absent)))
   (define (routed store verb args actor . socket-given)
     (define (here) (rpc-dispatch-parsed store verb (parse-arguments verb args) actor #f #f))
     (let ((socket (if (and (pair? socket-given) (string? (car socket-given))) (car socket-given) (socket-path store))))
-      (if (or (equal? (getenv "THEOURGIA_LOCAL") "1") (eq? (entry-type socket) 'absent))
+      (if (local-route? store socket)
           (here)
           (let ((outcome (call! socket
                                 (request-frame store verb args
@@ -339,14 +348,39 @@
                    (list (cons 'id (piece-origin pid k)) (cons 'origin (piece-origin pid k))
                          (cons 'position (cons pid (+ k 1))) (cons 'fields (cadddr i))))
                  (cdr intents) (iota (length (cdr intents)))))))
+  ;; ONE ROOT'S RECURSIVE READ FROM A STATE IN HAND: the read handler's own
+  ;; answer, as a routed `read <root> --cut <cut> --recursive` gives it, the
+  ;; state supplied instead of reduced again.
+  (define (scope-state-read store actor root state)
+    (rpc-dispatch-parsed store 'read (parse-arguments 'read (list root "--recursive")) actor state #f))
+  ;; THE STORE IS REDUCED ONCE PER SCOPE, NOT ONCE PER ROOT. At a literal cut
+  ;; the state is obtained once, by the function a read at a cut obtains it
+  ;; with (store.sc, store-state-at-cut: the cut judged usable, one
+  ;; restricted replay, the served cut asked again), and every root is read
+  ;; from it. A cut that is not a literal (a tag), or one that function
+  ;; refuses, takes the routed read per root, whose answer (the tag resolved
+  ;; by the first read's receipt, the refusal) is the one the store gives.
+  ;; ONLY WHERE A ROUTED READ WOULD BE ANSWERED HERE: with a daemon serving
+  ;; the store, each root is read through it as before.
+  ;; NOT FOR A STORE MISSING A WRITER: this load is not made under the read
+  ;; verb's declaration (scope is no dispatcher verb), so a writer it cannot
+  ;; read raises incomplete-reduction here, where a routed read, declared
+  ;; incomplete-accepted, serves the readable cut with its incomplete clause
+  ;; or refuses with it. On that raise the roots take the routed read.
   (define (scope-read store socket actor dir cut roots for . candidate)
+    (define at-state
+      (and (local-route? store socket)
+           (pair? (text-datum (cut-text cut)))
+           (let ((s (guard (e ((incomplete-reduction? e) #f)) (store-state-at-cut store #f (cut-text cut)))))
+             (and (reduction? s) s))))
     (let loop ((rs roots) (at cut) (got '()))
       (if (null? rs)
           (apply scope-plan store socket actor dir (cut-text at) (reverse got) roots for candidate)
           (let ((a (let ((n (and (pair? candidate) (car candidate) (assoc (car rs) (freeze-news (car candidate))))))
-                     (if n
-                         (list 'ok (cons 'items (new-records n)))
-                         (routed store 'read (list (car rs) "--cut" (cut-text at) "--recursive") actor socket)))))
+                     (cond
+                       (n (list 'ok (cons 'items (new-records n))))
+                       (at-state (scope-state-read store actor (car rs) at-state))
+                       (else (routed store 'read (list (car rs) "--cut" (cut-text at) "--recursive") actor socket))))))
             (if (not (ok? a))
                 a
                 (let ((items (clause a 'items)) (c (clause a 'cut)))
