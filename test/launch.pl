@@ -16,7 +16,7 @@
 # THE ENVIRONMENT THIS FILE READS, DECLARED, for docs-check.sc's
 # DOC-3 and its TWIN, as in run-fixtures.sh: it reads no THEOURGIA_* name,
 # and names none.
-# ENVIRONMENT READ:
+# ENVIRONMENT READ: LAUNCH_TEST_REAP_MISS
 # ENVIRONMENT NAMED, NOT READ:
 #
 # ONE LAUNCH, AND THE WHOLE OF ITS PROCESS GROUP (the launcher design,
@@ -39,6 +39,14 @@
 # and never forwarded to the command; the suite's runner never passes it. An
 # unknown name or mode is refused before the fork.
 #
+# LAUNCH_TEST_REAP_MISS=timeout|error is a hook of the suite's own launcher,
+# read by launch-self.sc's rows and nothing else: the anchor's bounded reap
+# answers no status at once, as on a D2 timeout, or with errno ECHILD, as on
+# a waitpid error, so the result's handling of a reap that misses can be
+# measured. Unset, or any other value, the reap is unchanged. The watcher
+# reads it once and removes it from the environment before its first fork,
+# so neither the anchor nor the command inherits it.
+#
 # This process is the WATCHER, W. It stays in its caller's process group.
 # It forks the ANCHOR, A, which leads a new group G and forks the COMMAND,
 # C, so the command is in G but does not lead it. W owns everything about
@@ -48,7 +56,8 @@
 #
 # W exits with the fixture's status: C's exit code; 128+n if a signal n
 # ended C; 127 if the exec failed with ENOENT and 126 for any other exec
-# failure; 142 if the time limit ended the launch; 128+n if W itself was
+# failure, and 126 too when the anchor's reap answers no status (a note
+# says why); 142 if the time limit ended the launch; 128+n if W itself was
 # asked to stop by signal n. It writes the result file by a checked write,
 # close and rename, with these lines in this order:
 #
@@ -133,6 +142,8 @@ if (defined $opt{'fault-setpgid'}) {
     $fault_anchor_late = (defined $fmode && $fmode eq 'anchor-late') ? 1 : 0;
   }
 }
+
+my $reap_miss = delete $ENV{LAUNCH_TEST_REAP_MISS};
 
 my $W = $$;
 my $start = now();
@@ -330,6 +341,7 @@ sub census_run {
   # ps runs in a group of its own, so one that does not finish is ended
   # with whatever it started.
   POSIX::setpgid($pid, $pid);
+  # own child, not reaped: the pid is held, and so is the group it leads
   kill 'KILL', -$pid unless $eof;
   my $st;
   my $reaped = 0;
@@ -346,6 +358,7 @@ sub census_run {
   # NEVER AN UNBOUNDED REAP: a ps that will not be reaped is left, and
   # this census is unknown.
   unless ($reaped) {
+    # own child, not reaped: the pid is held, and so is the group it leads
     kill 'KILL', -$pid; kill 'KILL', $pid;
     # A ps that ran into the deadline is also the one left unreaped (the reap
     # window ends at the same deadline), and "did not finish" is the cause:
@@ -494,6 +507,13 @@ POSIX::sigprocmask(POSIX::SIG_BLOCK(), $blocked, $orig_mask) or push @notes, "wa
 
 pipe(my $go_r, my $go_w) or finish(126, 'unknown', []);
 pipe(my $note_r, my $note_w) or finish(126, 'unknown', []);
+# THE END PIPE: A keeps its write end open for its whole life and never
+# writes to it, so the read end turns readable with EOF at the instant A
+# exits, zombie or not. W watches it instead of reaping A, and so stops G
+# while A, unreaped, still holds the pgid (a reaped A frees pid G for any
+# process to take, and a process that then leads a group G would receive
+# the stop).
+pipe(my $end_r, my $end_w) or finish(126, 'unknown', []);
 # The anchor-late injection's own pipe: W writes one byte on it after its
 # first read of the group, and the anchor waits for that byte (or the pipe's
 # end) before its setpgid(0,0). It exists only under that mode.
@@ -511,6 +531,7 @@ if ($A == 0) {
   # ---- the anchor ----------------------------------------------------------
   close $go_w;
   close $note_r;
+  close $end_r;
   # A SETS ITS OWN GROUP, AND SAYS SO WHEN IT CANNOT. W makes the same call
   # from its side; the two race, and W's errno alone cannot say which side
   # failed. On this path nothing reaches the note pipe before A's call has
@@ -555,6 +576,11 @@ if ($A == 0) {
   POSIX::_exit(126) unless defined $C;
   if ($C == 0) {
     # ---- the command -------------------------------------------------------
+    # FIRST, THE END PIPE'S WRITE END: C inherited it at the fork, and C may
+    # block before its exec (an open of --out on a FIFO with no reader) or be
+    # stopped there; holding it would keep W from seeing A's end. Close-on-exec
+    # closes it at the exec anyway.
+    close $end_w;
     for my $no (@catchable) {
       POSIX::sigaction($no, POSIX::SigAction->new('DEFAULT', POSIX::SigSet->new, 0));
     }
@@ -581,6 +607,7 @@ if ($A == 0) {
 # ---- the watcher -------------------------------------------------------------
 close $go_r;
 close $note_w;
+close $end_w;
 close $late_r if $fault_anchor_late;
 $SIG{PIPE} = 'IGNORE';
 my $G = $A;
@@ -651,6 +678,8 @@ my $reap_errno;
 sub reap_anchor_bounded {
   my ($until) = @_;
   $reap_errno = undef;
+  return undef if defined $reap_miss && $reap_miss eq 'timeout';
+  if (defined $reap_miss && $reap_miss eq 'error') { $reap_errno = POSIX::ECHILD(); return undef; }
   while (now() < $until) {
     my $w = waitpid($A, POSIX::WNOHANG());
     return $? if $w == $A;
@@ -696,11 +725,19 @@ if ($anchor_gone) {
 my $go_open = 1;
 sub release_closed { if ($go_open) { close $go_w; $go_open = 0; } }
 
+# A REAP THAT ANSWERS NO STATUS is said: no answer within D2, or the waitpid
+# error. Never decoded as an exit.
+sub reap_miss_note {
+  return defined $reap_errno ? "anchor reap: waitpid " . errno_text($reap_errno)
+                             : "anchor reap: no answer within D2";
+}
+
 sub stopped_launch {
   my ($status) = @_;
   release_closed();
   my @s = stop_group($G, 1);
-  reap_anchor_bounded(now() + $D2);
+  my $rst = reap_anchor_bounded(now() + $D2);
+  push @notes, reap_miss_note() unless defined $rst;
   read_anchor_notes();
   finish($status, $s[0], $s[1] || []);
 }
@@ -718,23 +755,28 @@ release_closed();
 POSIX::sigprocmask(POSIX::SIG_SETMASK(), $orig_mask);
 
 # ---- the wait: the command's end, a stop request, or the time limit ---------
-my $ast;
+#
+# A'S END IS SEEN ON THE END PIPE, NOT REAPED: EOF on end_r is A's exit, and A
+# stays a zombie holding G through the grace and the stop below. The select's
+# 50 ms is the loop's old sleep, so the stop request and the deadline are
+# checked as often as before.
+my $end_rin = '';
+vec($end_rin, fileno($end_r), 1) = 1;
 while (1) {
-  my $w = waitpid($A, POSIX::WNOHANG());
-  if ($w == $A) { $ast = $?; last; }
   stopped_launch(128 + $stop_signal) if $stop_signal;
   stopped_launch(142) if now() >= $deadline;
-  Time::HiRes::sleep(0.05);
+  my $rout;
+  my $n = select($rout = $end_rin, undef, undef, 0.05);
+  next if $n <= 0;
+  my $got = sysread($end_r, my $buf, 1);
+  next if !defined $got && $!{EINTR};
+  last;
 }
+close $end_r;
 read_anchor_notes();
-
-my $status;
-if ($ast & 127) {
-  push @notes, "ANCHOR DIED by signal " . ($ast & 127);
-  $status = 128 + ($ast & 127);
-} else {
-  $status = $ast >> 8;
-}
+# THE STATUS'S NOTE KEEPS ITS PLACE: it is said after the anchor's own notes
+# and before whatever the grace and the stop add, as when A was reaped here.
+my $status_note_at = scalar @notes;
 
 # ---- the grace, then G is stopped on every path -------------------------------
 #
@@ -747,6 +789,23 @@ my @q = quiet_by($G, now() + $GRACE);
 my $grace_unknown = $q[0] eq 'unknown';
 my $left = ($q[0] eq 'occupied' && @{ $q[1] }) ? $q[1] : [];
 my @s = stop_group($G, $grace_unknown || @$left);
+
+# ---- A is reaped after the stop, and supplies the status and nothing else ---
+#
+# A is a zombie, so the reap answers at once. The cleanup above is computed
+# without it. A reap that answers no status (D2 passed, or waitpid failed) is
+# status 126, the launcher's own failure, with its note; never exit 0.
+my $ast = reap_anchor_bounded(now() + $D2);
+my $status;
+if (!defined $ast) {
+  splice(@notes, $status_note_at, 0, reap_miss_note());
+  $status = 126;
+} elsif ($ast & 127) {
+  splice(@notes, $status_note_at, 0, "ANCHOR DIED by signal " . ($ast & 127));
+  $status = 128 + ($ast & 127);
+} else {
+  $status = $ast >> 8;
+}
 finish($status, 'unknown', []) if $grace_unknown || $s[0] eq 'unknown';
 finish($status, 'survivor', $s[1]) if $s[0] eq 'survivor';
 finish($status, 'left', $left) if @$left;

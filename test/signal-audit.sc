@@ -212,6 +212,13 @@
 ;; after it. A line holding `ps -o lstart=` is the inline check of generated
 ;; shell text, not a bare send.
 ;;
+;; PERL'S SENDS ARE READ TOO: `kill '<NAME>',`, `kill "<NAME>",` and `kill
+;; <NAME> =>`, each followed by a target, `-$x`, `$x` or a number, and each
+;; also inside parentheses, `kill('<NAME>', ...)` or `kill ('<NAME>', ...)`.
+;; None is the shell's shape, so launch.pl's four sends went unread until
+;; this rule. NOT READ, STATED: a signal given by number or by a variable
+;; (`kill 9, $pid`, `kill $sig, $pid`); no file of the scan sends that way.
+;;
 ;; NEVER: A SPLICED SIGNAL IS A SEND. The rule first read only a signal
 ;; written out, so daemon-e1's `"kill -" name` passed every row unseen while
 ;; its file's entry was being written (found 11-01 by the base reading of the
@@ -222,6 +229,40 @@
 ;; "$(ps -o lstart= ...)" = ... ] && kill -9 $1`). Split across two lines, the
 ;; send is read as bare and its file's row goes red; it cannot pass unseen.
 (define (word-char? c) (or (char-alphabetic? c) (char-numeric? c) (memv c '(#\_ #\. #\-))))
+(define (perl-target-at? line j)
+  (let* ((len (string-length line))
+         (j (let scan ((j j)) (if (and (< j len) (char=? (string-ref line j) #\space)) (scan (+ j 1)) j)))
+         (j (if (and (< j len) (char=? (string-ref line j) #\-)) (+ j 1) j)))
+    (and (< j len)
+         (let ((c (string-ref line j)))
+           (or (char=? c #\$) (char-numeric? c))))))
+(define (signal-name-end line j)
+  (let ((len (string-length line)))
+    (let scan ((k j))
+      (if (and (< k len) (char-upper-case? (string-ref line k))) (scan (+ k 1)) k))))
+(define (perl-send-at? line after)
+  (let* ((len (string-length line))
+         (skip (lambda (j) (let scan ((j j)) (if (and (< j len) (char=? (string-ref line j) #\space)) (scan (+ j 1)) j))))
+         (s0 (skip after))
+         (paren (and (< s0 len) (char=? (string-ref line s0) #\()))
+         (s (if paren (skip (+ s0 1)) s0)))
+    (and (> s after)
+         (< s len)
+         (let ((c (string-ref line s)))
+           (cond
+             ((memv c '(#\' #\"))
+              (let ((e (signal-name-end line (+ s 1))))
+                (and (> e (+ s 1))
+                     (< (+ e 1) len)
+                     (char=? (string-ref line e) c)
+                     (char=? (string-ref line (+ e 1)) #\,)
+                     (perl-target-at? line (+ e 2)))))
+             ((char-upper-case? c)
+              (let ((e (signal-name-end line s)))
+                (and (<= (+ e 3) len)
+                     (string=? (substring line e (+ e 3)) " =>")
+                     (perl-target-at? line (+ e 3)))))
+             (else #f))))))
 (define (bare-sends-in line)
   (let loop ((i 0) (n 0))
     (let ((k (index-of line "kill" i)))
@@ -246,6 +287,7 @@
             (loop after
                   (if (and (or (= k 0) (not (word-char? (string-ref line (- k 1)))))
                            (or spliced
+                               (perl-send-at? line after)
                                (and (not (string=? flag " -0"))
                                     (> spaces-end flag-end)
                                     (< spaces-end len)
@@ -263,6 +305,21 @@
                  "(system (string-append \"kill -\" name \" \" (number->string pid)))"
                  "(sh \"kill -l USR1 > \" out \" 2>/dev/null\")"))
       '(1 1 0))
+
+;; CONTROL, perl: the two spellings perl sends with, each read once, and the
+;; same send on a comment line, which code-lines drops. Red on a rule that
+;; reads only the shell's spelling (0), or only the first of perl's (1).
+(want "SA-3 CONTROL perl's `kill 'NAME', target` and `kill NAME => target` are bare sends, a comment line is none"
+      (apply + (map bare-sends-in
+                    (filter (lambda (l) (not (comment-line? l)))
+                            '("    kill 'TERM', -$g;" "  kill TERM => $pid;" "  # kill 'KILL', -$g;"))))
+      2)
+;; CONTROL, perl's other spellings: the signal's name double-quoted, and the
+;; call in parentheses with either quote. Red on a rule that reads only the
+;; single-quoted name after a space (1: the shell's rule reads the `"`).
+(want "SA-3 CONTROL perl's `kill \"NAME\", target` and `kill('NAME', target)` are bare sends"
+      (map bare-sends-in '("    kill \"TERM\", -$g;" "  kill('KILL', $pid);" "  kill( \"INT\", -$g );" "  kill ('TERM', $pid);"))
+      '(1 1 1 1))
 
 ;; THE SENDS LEFT, NAMED. Each: census row, why it stays, the text that marks
 ;; its line, and how many lines carry that text. A send added to one of
@@ -293,7 +350,7 @@
      (73 "SELF: the evaluated shell program signalling itself" "\"kill -TERM $$\\n\"" 1))
     ("f3-wire-utf8.sc")
     ("facade-proc.sc"
-     (84 "library handle: library-send!, end-and-wait!'s sender for the library's worker pids (rows 84-86)" "(string-append \"kill -\" sig" 1))
+     (85 "children: child-send!, end-and-wait!'s TERM to the children listed while their parent is held stopped, confirmed through its sender (row 85)" "(string-append \"kill -\" sig" 1))
     ("fold-failure.sc")
     ("liveness.sc")
     ("liveness-streams.sc")
@@ -301,7 +358,12 @@
     ("opener-route.sc")
     ("ownership.sc")
     ("smoke-shortwrite-nb.sc")
-    ("startup-ratio.sc")))
+    ("startup-ratio.sc")
+    ("launch.pl"
+     (99 "own child, not reaped: the pid is held (census_run's ps child, rows 99 and 100)" "kill 'KILL', -$pid" 2)
+     (101 "G's leader held: sent before the reap (stop_group's TERM)" "kill 'TERM', -$g" 1)
+     (102 "G's leader held: sent before the reap (stop_group's KILL)" "kill 'KILL', -$g" 1))
+    ("run-fixtures.sh")))
 
 ;; The checked sends that must be there, per file, and the lookups by ps that
 ;; feed them: each the text of the form and the least number of lines that
@@ -329,7 +391,8 @@
     ("detach.sc" ("(signal! " 2) ("(started! " 2))
     ("eval-lang.sc" ("(signal! " 2) ("(started! " 2))
     ("f3-wire-utf8.sc" ("(signal! " 1) ("(started! " 1))
-    ("facade-proc.sc" ("(signal! " 1) ("(started! " 1) ("(end-and-wait! (list pid) signal!)" 1))
+    ("facade-proc.sc" ("(signal! " 1) ("(started! " 1) ("(end-and-wait! (list pid) checked-send!)" 1)
+                      ("(worker-kill! " 3))
     ("fold-failure.sc" ("(signal! " 2) ("(started! " 1))
     ("liveness.sc" ("(signal-loop-text " 1) ("(signal! " 2) ("(started! " 2))
     ("liveness-streams.sc" ("(signal-loop-text " 1) ("(signal! " 1) ("(started! " 1))
@@ -337,7 +400,9 @@
     ("opener-route.sc" ("(signal! " 1) ("(started! " 1))
     ("ownership.sc" ("(signal! " 1) ("(started! " 1))
     ("smoke-shortwrite-nb.sc" ("(signal! " 1) ("(started! " 1))
-    ("startup-ratio.sc" ("(signal! " 1) ("(for-each started! " 1))))
+    ("startup-ratio.sc" ("(signal! " 1) ("(for-each started! " 1))
+    ("launch.pl")
+    ("run-fixtures.sh" ("kill_if_same " 7) ("bps -o lstart=" 3))))
 
 (printf "SA-3 covers ~a files\n" (length remainders))
 
@@ -562,6 +627,301 @@
   (want "SA-7 the self-signalling loop sends nothing when ps reads no start instant, and signals the program with the real ps"
         (list shimmed (and (integer? real) (>= real 1)))
         '(0 #t)))
+
+;; ---- SA-8: the runner's own sends, run ------------------------------------------
+;;
+;; The runner's functions are cut from run-fixtures.sh between its `SA-8 CUT`
+;; marker lines, as SA-4 includes signal-send.ss, and run in sh against real
+;; processes, so what is read is the runner's own text. A region that is not
+;; there reads #f, and every row that needs it is red.
+(define runner-text (call-with-input-file "run-fixtures.sh" get-string-all))
+(define (runner-cut name)
+  (let* ((b (string-append "# ---- SA-8 CUT " name " BEGIN"))
+         (e (string-append "# ---- SA-8 CUT " name " END ----"))
+         (i (index-of runner-text b 0))
+         (j (and i (index-of runner-text e i))))
+    (and i j (substring runner-text i j))))
+(define (text-lines text)
+  (let loop ((i 0) (start 0) (acc '()))
+    (cond ((= i (string-length text)) (reverse (if (> i start) (cons (substring text start i) acc) acc)))
+          ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring text start i) acc)))
+          (else (loop (+ i 1) start acc)))))
+(define cut-helpers (runner-cut "helpers"))
+(define cut-stop-probe (runner-cut "stop_probe"))
+(define cut-on-signal (runner-cut "on_signal"))
+(define cut-count-leaks (runner-cut "count_leaks"))
+(define cut-probe (runner-cut "probe"))
+(printf "SA-8 cuts: helpers ~a, stop_probe ~a, on_signal ~a, count_leaks ~a, probe ~a\n"
+        (and cut-helpers #t) (and cut-stop-probe #t) (and cut-on-signal #t)
+        (and cut-count-leaks #t) (and cut-probe #t))
+;; (sh-script name text ...) writes the script; (sh-out name) reads what it
+;; printed, stdout and stderr together.
+(define (sh-script name . parts)
+  (call-with-output-file (string-append here "/" name ".sh")
+    (lambda (p) (for-each (lambda (s) (put-string p s) (newline p)) parts))
+    'truncate))
+(define (sh-run-all names)
+  (system (apply string-append
+                 (append (map (lambda (n) (format "sh ~a/~a.sh > ~a/~a.out 2>&1 < /dev/null & " here n here n)) names)
+                         '("wait")))))
+(define (sh-out name) (command-text (string-append "cat " here "/" name ".out")))
+(define (result-of text)
+  (let ((i (index-of text "RESULT " 0)))
+    (and i (guard (e (#t #f)) (read (open-input-string (substring text (+ i 7) (string-length text))))))))
+;; Every pid a script names on a `PID <n> <instant>` line is ended here if it
+;; is still that process, through signal!: a row whose send was refused
+;; leaves its sleeper. THE INSTANT IS THE SCRIPT'S, read where it acquired
+;; the pid (signal-send.ss: register where the process starts), and the pair
+;; is registered with started-at!; a pid read here, minutes later, and
+;; registered now would pass signal!'s check for whatever holds it. A line
+;; with no instant registers nothing, and signal! sends nothing.
+(define (end-named-pids text)
+  (for-each
+    (lambda (line)
+      (when (and (>= (string-length line) 4) (string=? (substring line 0 4) "PID "))
+        (let* ((in (open-input-string (substring line 4 (string-length line))))
+               (n (guard (e (#t #f)) (read in)))
+               (instant (and (integer? n) (signal-send-trim (get-string-all-or-empty in)))))
+          (when (integer? n)
+            (started-at! n instant)
+            (when (alive? n) (signal! n "KILL"))))))
+    (text-lines text)))
+(define (get-string-all-or-empty in)
+  (let ((t (get-string-all in))) (if (eof-object? t) "" t)))
+
+;; SA-8a kill_if_same, on a real `sleep 30`: a wrong instant (the recorded
+;; text's first character altered), a wrong command (its last word altered)
+;; and an empty identity are not signalled; a child that exited before its
+;; record has an empty identity and is not signalled; the recorded identity
+;; is, and the sleeper goes. Red on the base: no function.
+(when cut-helpers
+  (sh-script "sa8a" cut-helpers
+    "sleep 30 > /dev/null 2>&1 &"
+    "p=$!"
+    "echo \"PID $p $(ps -o lstart= -p \"$p\")\""
+    "id=$(bps -o lstart= -o command= -p \"$p\")"
+    "st() { if alive \"$1\"; then echo alive; else echo gone; fi; }"
+    "kill_if_same \"$p\" \"X${id#?}\" TERM; sleep 0.3; r1=$(st \"$p\")"
+    "kill_if_same \"$p\" \"${id%30}31\" TERM; sleep 0.3; r2=$(st \"$p\")"
+    "kill_if_same \"$p\" \"\" TERM; sleep 0.3; r3=$(st \"$p\")"
+    "true & q=$!; wait \"$q\"; qid=$(bps -o lstart= -o command= -p \"$q\"); kill_if_same \"$q\" \"$qid\" TERM; r5=$?"
+    "kill_if_same \"$p\" \"$id\" TERM; s4=$?"
+    "n=0; while alive \"$p\" && [ \"$n\" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done; r4=$(st \"$p\")"
+    "case \"$id\" in *'sleep 30') i=read ;; *) i=unread ;; esac"
+    "case \"$qid\" in '') qi=empty ;; *) qi=read ;; esac"
+    "echo \"RESULT ($i $r1 $r2 $r3 $qi $r5 $s4 $r4)\""))
+;; SA-8b the first record validated: a record whose command lacks the marker
+;; is dropped and said, and nothing is sent; with the marker it is kept, and
+;; the send goes.
+(when cut-helpers
+  (sh-script "sa8b" cut-helpers
+    "sleep 30 > /dev/null 2>&1 &"
+    "p=$!"
+    "echo \"PID $p $(ps -o lstart= -p \"$p\")\""
+    "record_identity bad \"$p\" \"NOT-ITS-COMMAND\" \"the sleeper\""
+    "kill_if_same \"$p\" \"$bad\" TERM; sleep 0.3"
+    "if alive \"$p\"; then a1=alive; else a1=gone; fi"
+    "record_identity good \"$p\" \"sleep 30\" \"the sleeper\""
+    "kill_if_same \"$p\" \"$good\" TERM"
+    "n=0; while alive \"$p\" && [ \"$n\" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done"
+    "if alive \"$p\"; then a2=alive; else a2=gone; fi"
+    "case \"$bad\" in '') b=empty ;; *) b=set ;; esac"
+    "case \"$good\" in '') g=empty ;; *) g=set ;; esac"
+    "echo \"RESULT ($b $a1 $g $a2)\""))
+
+;; SA-8c THE PROBE HANDOFF: the subshell and stop_probe, cut, run with a bps
+;; that sleeps 3 s on every call, and a child that ignores TERM, so only
+;; stop_probe's KILL ends it. The child is the cut's own `scheme --script
+;; <run_root>/.probe.ss &` with `scheme` a function that execs a perl ignoring
+;; TERM with those arguments, so its command carries the marker the record
+;; validates (a sh that execs sleep would show `sleep 30`, without it).
+;; TRAP: TERM to the parent; its trap sends one TERM and exits, so the parent
+;; is gone within 7 s of its TERM (the TERM goes after one bps, 3 s: within
+;; 10 s of stop_probe's call), and stop_probe then finishes the child. KILLED:
+;; the parent is KILLed once .probe-id exists, so the trap never runs, and
+;; stop_probe finishes the child by its identity. UNPUBLISHED: .probe-id is
+;; removed before stop_probe, which answers 1 and says the child was not owned.
+(define (probe-script name before-stop)
+  (sh-script name cut-helpers cut-stop-probe
+    "bps() { sleep 3; perl -e 'alarm shift; exec { \"ps\" } \"ps\", @ARGV; exit 127' 5 \"$@\"; }"
+    "scheme() { exec perl -e '$SIG{TERM} = \"IGNORE\"; sleep 30' -- \"$@\"; }"
+    (format "run_root=~a/~a.root; mkdir -p \"$run_root\"" here name)
+    "runner_command=$(ps -o command= -p $$)"
+    cut-probe
+    "n=0; while [ ! -s \"$run_root/.probe-id\" ] && [ \"$n\" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done"
+    "if [ -s \"$run_root/.probe-id\" ]; then idw=written; else idw=missing; fi"
+    "child=$(cat \"$run_root/.probe-pid\" 2>/dev/null); echo \"PID $child $(ps -o lstart= -p \"$child\")\""
+    "pp=$probe_parent"
+    "gone_ps() { st=$(ps -o stat= -p \"$1\" 2>/dev/null); case \"$st\" in ''|Z*) return 0 ;; esac; return 1; }"
+    (format "( s=$(mono); while ! gone_ps \"$pp\"; do sleep 0.05; done; echo $(($(mono) - s)) > \"$run_root/parent-ms\" ) &")
+    "poller=$!"
+    before-stop
+    "s=$(mono); stop_probe; rc=$?; took=$(($(mono) - s))"
+    "wait \"$poller\""
+    "if gone_ps \"$child\"; then cg=gone; else cg=alive; fi"
+    "echo \"RESULT ($idw $rc $(cat \"$run_root/parent-ms\") $cg $took)\""))
+;; SA-8e THE CLEANUP SENDS ONLY TO THE PROCESS A SCRIPT ACQUIRED: a script
+;; prints a PID line with a wrong instant for a live sleeper of its own. The
+;; cleanup must send nothing to it (alive after); the script then ends it
+;; itself, by its own record, once the row's go file exists. The sleeper and
+;; the script's wait are 300 s: the cleanup runs after the slowest script, and
+;; a sleeper that ended by itself before it would read as a send.
+(when cut-helpers
+  (sh-script "sa8e" cut-helpers
+    "sleep 300 > /dev/null 2>&1 &"
+    "p=$!"
+    "id=$(bps -o lstart= -o command= -p \"$p\")"
+    "echo \"PID $p Mon Jan  1 00:00:00 2001\""
+    "echo \"SLEEPER $p\""
+    (format "( n=0; while [ ! -e ~a/sa8e.go ] && [ \"$n\" -lt 6000 ]; do sleep 0.05; n=$((n + 1)); done; kill_if_same \"$p\" \"$id\" TERM ) > /dev/null 2>&1 < /dev/null &" here)
+    "echo \"RESULT (started)\""))
+;; SA-8f record_identity's 1 s IS A DEADLINE: under a ps on PATH that never
+;; answers (each call execs a 30 s sleep), the record is dropped and said within
+;; 1 s plus one read. Red on a loop that counts reads under bps's 5 s alarm
+;; (20 reads, about 100 s).
+(when cut-helpers
+  (sh-script "sa8f" cut-helpers
+    "sleep 30 > /dev/null 2>&1 &"
+    "p=$!"
+    "echo \"PID $p $(ps -o lstart= -p \"$p\")\""
+    "id=$(bps -o lstart= -o command= -p \"$p\")"
+    (format "mkdir -p ~a/sa8f-shim; printf '#!/bin/sh\\nexec sleep 30\\n' > ~a/sa8f-shim/ps; chmod +x ~a/sa8f-shim/ps" here here here)
+    "s=$(mono)"
+    (format "said=$(PATH=~a/sa8f-shim:$PATH; record_identity rec \"$p\" \"sleep 30\" \"the sleeper\"; printf 'REC[%s]' \"$rec\")" here)
+    "took=$(($(mono) - s))"
+    "echo \"$said\""
+    "kill_if_same \"$p\" \"$id\" TERM"
+    "echo \"RESULT ($took)\""))
+(define probe-cuts (and cut-helpers cut-stop-probe cut-probe #t))
+(when probe-cuts
+  (probe-script "sa8c-trap" ":")
+  (probe-script "sa8c-killed" "kill -KILL \"$pp\"")
+  (probe-script "sa8c-unpublished" "rm -f \"$run_root/.probe-id\""))
+
+;; SA-8d count_leaks, cut, WITH THE ACTUAL POST-STOP FLAGS. snapshot and
+;; carrying_token are shims: one that finds this script's own pid as a
+;; token carrier, one that finds none, one whose snapshot fails. UNOWNED:
+;; probe_done=1, probe_unowned=1, env_visible=0, no baseline. NO-BASELINE:
+;; probe_done=1, probe_unowned=0, env_visible=0, no baseline, called
+;; directly and through on_signal (its stop_probe a stub that answers 0).
+;; BEFORE (the v1.8 note): probe_done=0, as on an early refusal: the count by
+;; token stands, with no verdict. Each run is asserted to print its
+;; evidence, the root count, its verdict and leaked=1 (BEFORE: no verdict,
+;; leaked=0), and never the by-name line or a shell numeric diagnostic.
+(define (leak-script name snap flags via-signal?)
+  (apply sh-script name
+    (append
+      (list cut-helpers cut-count-leaks)
+      (if via-signal? (list cut-on-signal "stop_probe() { return 0; }") '())
+      (list
+        "count_run_root() { echo 0; }"
+        "run_root_before=0; real_run_root=/nonexistent; token=TOKEN; snap_dir=/nonexistent"
+        "echo \"SELF $$\""
+        (case snap
+          ((found) "snapshot() { return 0; }; carrying_token() { echo \"$$\"; }")
+          ((none) "snapshot() { return 0; }; carrying_token() { return 0; }")
+          (else "snapshot() { return 1; }; carrying_token() { return 0; }"))
+        flags
+        "env_visible=0; unset schemes_before")
+      (if via-signal?
+          (list "tracked_w=''; probe_parent=1; last_ran=x"
+                "trap 'echo \"leaked=$leaked\"' EXIT"
+                "on_signal 143")
+          (list "count_leaks" "echo \"leaked=$leaked\"")))))
+(define leak-cases
+  ;; (name snapshot flags via-signal? verdict-text leaked)
+  `(("sa8d-unowned-found" found "probe_done=1; probe_unowned=1" #f "LEAK COUNT NOT TAKEN: the probe child was not owned at its end" "leaked=1")
+    ("sa8d-unowned-none" none "probe_done=1; probe_unowned=1" #f "LEAK COUNT NOT TAKEN: the probe child was not owned at its end" "leaked=1")
+    ("sa8d-nobase-found" found "probe_done=1; probe_unowned=0" #f "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-nobase-none" none "probe_done=1; probe_unowned=0" #f "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-nobase-failed" failed "probe_done=1; probe_unowned=0" #f "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-signal-found" found "probe_done=0; probe_unowned=0" #t "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-signal-none" none "probe_done=0; probe_unowned=0" #t "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-signal-failed" failed "probe_done=0; probe_unowned=0" #t "LEAK COUNT NOT TAKEN: the by-name count has no baseline" "leaked=1")
+    ("sa8d-before-none" none "probe_done=0; probe_unowned=0" #f #f "leaked=0")))
+(define leak-cuts (and cut-helpers cut-count-leaks cut-on-signal #t))
+(when leak-cuts
+  (for-each (lambda (c) (leak-script (car c) (cadr c) (caddr c) (cadddr c))) leak-cases))
+
+(sh-run-all (append (if cut-helpers '("sa8a" "sa8b" "sa8e" "sa8f") '())
+                    (if probe-cuts '("sa8c-trap" "sa8c-killed" "sa8c-unpublished") '())
+                    (if leak-cuts (map car leak-cases) '())))
+(for-each (lambda (n) (end-named-pids (sh-out n)))
+          '("sa8a" "sa8b" "sa8c-trap" "sa8c-killed" "sa8c-unpublished" "sa8e" "sa8f"))
+(let* ((out (if cut-helpers (sh-out "sa8e") ""))
+       (k (index-of out "SLEEPER " 0))
+       (p (and k (guard (e (#t #f)) (read (open-input-string (substring out (+ k 8) (string-length out)))))))
+       (alive-after (and (integer? p) (alive? p)))
+       (gone (and (integer? p)
+                  (begin (system (string-append "touch " here "/sa8e.go")) (gone-within? p 5)))))
+  (printf "SA-8e sleeper ~a alive after the cleanup ~a, gone after go ~a\n" p alive-after gone)
+  (want "SA-8e the cleanup sends nothing to a pid whose printed instant is not its own; the script's own send ends it"
+        (list (integer? p) alive-after gone)
+        '(#t #t #t)))
+(let* ((out (if cut-helpers (sh-out "sa8f") ""))
+       (took (result-of out)))
+  (printf "SA-8f said ~s\n" out)
+  (want "SA-8f under a ps that never answers, record_identity drops the record and says so within 1 s plus one read"
+        (list (has? out "REC[]") (has? out "the sleeper: start identity not read")
+              (and (pair? took) (integer? (car took)) (< (car took) 2500)))
+        '(#t #t #t)))
+
+(let ((a (and cut-helpers (result-of (sh-out "sa8a")))))
+  (printf "SA-8a read ~s\n" a)
+  (want "SA-8a kill_if_same: a wrong instant, a wrong command, an empty identity and an exited child are not signalled; the recorded identity is"
+        a
+        '(read alive alive alive empty 1 0 gone)))
+(let ((send-lines (if cut-helpers
+                      (filter (lambda (l) (has? l "kill \"-$3\"")) (text-lines cut-helpers))
+                      '())))
+  (want "SA-8a the send and the identity comparison are one line"
+        (list (length send-lines) (for-all (lambda (l) (has? l "bps -o lstart=")) send-lines))
+        '(1 #t)))
+(let* ((out (if cut-helpers (sh-out "sa8b") ""))
+       (b (result-of out)))
+  (printf "SA-8b read ~s\n" b)
+  (want "SA-8b a first record without the marker is dropped and said, and not signalled; with it, kept and signalled"
+        (list b (has? out "the sleeper: start identity not read (pid ") (has? out "shows another command), not signalled"))
+        '((empty alive set gone) #t #t)))
+(let* ((outs (map (lambda (n) (if probe-cuts (sh-out n) "")) '("sa8c-trap" "sa8c-killed" "sa8c-unpublished")))
+       (rs (map result-of outs)))
+  (printf "SA-8c read ~s\n" rs)
+  (want "SA-8c TRAP the parent is gone within 7 s of its TERM, the child after, .probe-id written before the wait"
+        (let ((r (car rs)))
+          (and (list? r) (= (length r) 5)
+               (list (car r) (cadr r) (and (integer? (caddr r)) (< (caddr r) 10000)) (cadddr r))))
+        '(written 0 #t gone))
+  (want "SA-8c KILLED the parent KILLed before its trap ran, stop_probe finishes the child by its identity"
+        (let ((r (cadr rs)))
+          (and (list? r) (= (length r) 5) (list (car r) (cadr r) (cadddr r))))
+        '(written 0 gone))
+  (want "SA-8c UNPUBLISHED no .probe-id: stop_probe answers 1 and says the child was not owned"
+        (let ((r (caddr rs)))
+          (and (list? r) (= (length r) 5)
+               (list (car r) (cadr r) (has? (caddr outs) "probe child ") (has? (caddr outs) ": not owned at the end, left to end by itself"))))
+        '(written 1 #t #t)))
+(for-each
+  (lambda (c)
+    (let* ((name (car c)) (snap (cadr c)) (verdict (list-ref c 4)) (leaked (list-ref c 5))
+           (out (if leak-cuts (sh-out name) ""))
+           (self (let ((k (index-of out "SELF " 0)))
+                   (and k (guard (e (#t #f)) (read (open-input-string (substring out (+ k 5) (string-length out))))))))
+           (evidence (case snap
+                       ((found) (and self (has? out (format "LEAKED-PROCESSES: ~a -- " self))
+                                     (has? out (format "\n  ~a " self))))
+                       ((none) (has? out "processes: none carrying this run's token TOKEN is left running"))
+                       (else (has? out "LEAK COUNT NOT TAKEN: the process snapshots under")))))
+      (printf "SA-8d ~a said ~s\n" name out)
+      (want (format "SA-8d ~a: the evidence, the root count, ~a, ~a, no by-name line, no numeric diagnostic"
+                    name (if verdict "the verdict" "no verdict") leaked)
+            (list evidence
+                  (has? out "real run root: 0 before, 0 after")
+                  (if verdict (has? out verdict) (not (has? out "LEAK COUNT NOT TAKEN")))
+                  (has? out leaked)
+                  (has? out "scheme processes before")
+                  (has? out "integer expression expected"))
+            '(#t #t #t #t #f #f))))
+  leak-cases)
 
 (system (string-append "rm -rf " here))
 

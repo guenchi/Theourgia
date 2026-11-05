@@ -82,7 +82,7 @@ facade-exports 7 10 9e05c07ece915e2512139e7b47dc4744
 facade-ffi 72 79 f39802074ae6f49e138e978ca77d5b72
 facade-gate 35 94 05a9a8979aec9b5b54a779d66ab5af84
 facade-net 31 34 fd1e5e9a1ecfe4db9424412c3437e9be
-facade-proc 20 23 faa3ef39cffeca875944e04be23fe4f9
+facade-proc 24 32 d5aa21c4b8e93f66c458a75fe5ed4457
 facade-record 71 74 d7ce8d8bf430cf82e09be424b5ccd176
 facade-sched 16 19 77f85499430faf05d6bf8e09c158d013
 facades 23 26 31b540e99bde33432063a8ff37af3342
@@ -96,7 +96,7 @@ import-symbols 79 84 c956a0e588570115ac8da009f8ec2f23
 inode-detect - 6 5f3885335fab923d2f53a53f5e7cf4d1
 insert-cost 3 9 35ed7181adc792ac90ee699806a085b9
 io-yield 24 31 4d4567cb356bc518330bc49238ffa5f8
-launch-self 29 40 6277e8bf5ed7d6cadb52eb93a1e5b805
+launch-self 37 60 a5409603442fa7ffe9cd2b82750ff543
 link-barrier - 5 bd754df7e84e11bd8aa956ec543b784e
 liveness 41 48 123be0ed156afc6fbf456e2862dd498a
 liveness-streams 16 20 9e31f2613e800d2dcffb7744c64c879e
@@ -180,7 +180,7 @@ scheme-definers 19 25 73dfb350e0fec2043d05b4caba297859
 scope-model 13 19 3cecaeb1c475debe3164a66df20d2b9a
 scope-once 18 29 febcf864621429514bc20ee9c9a06c5c
 session-advance 61 71 4564bfeef2c307f00b296370cf23be36
-signal-audit 70 82 b4cbf0139036a8a96ee3a924b28589b5
+signal-audit 93 125 1b09ba595b6e8fe0744d7185d68c922d
 since-contract 57 60 5f0385a577fc331100dca7ce193de5de
 smoke-crc32 - 9 7995b0255470cdef541c5e2aef31e412
 smoke-shortwrite - 4 f00f08055256b64c8ef4117ccdb07b56

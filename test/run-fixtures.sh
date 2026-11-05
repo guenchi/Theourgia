@@ -172,13 +172,18 @@ tracked_id=""
 tracked_result=""
 launch_n=0
 probe_parent=""
+probe_parent_id=""
+tracked_w_id=""
 aborted=0
 abort_reason=""
 left_group=0
+# ---- SA-8 CUT helpers BEGIN (signal-audit.sc runs this region in sh) ----
 # EVERY ps THE RUNNER CALLS IS BOUNDED: an alarm that exec keeps ends a ps
 # that does not return, and the caller reads its failure.
+# bps_alarm, when set, shortens the bound for one read: a caller with a
+# deadline of its own passes it inside its command substitution.
 bps() {
-  perl -e 'alarm shift; exec { "ps" } "ps", @ARGV; exit 127' 5 "$@"
+  perl -e 'alarm shift; exec { "ps" } "ps", @ARGV; exit 127' "${bps_alarm:-5}" "$@"
 }
 bpgrep() {
   perl -e 'alarm shift; exec { "pgrep" } "pgrep", @ARGV; exit 127' 5 "$@"
@@ -232,6 +237,59 @@ wait_gone() {
   done
   return 0
 }
+# A PROCESS THE RUNNER SIGNALS IS THE PROCESS IT STARTED. The shell reaps a
+# background child the moment it exits, so a $! read seconds or minutes
+# earlier can name a pid the system has since given to another process. Each
+# `&` the runner later signals records the child's identity at once, its
+# start instant and its command line together (`ps -o lstart= -o command=`),
+# and every send compares it again first.
+# record_identity <variable> <pid> <marker> <name>: sets <variable> to the
+# pid's identity when its command holds <marker> (the run's token in a
+# watcher's --id, the probe's script path, the runner's own command line);
+# otherwise to nothing, said once, and that pid is never signalled. An empty
+# marker validates nothing, so it records nothing.
+# THE READ MAY COME BEFORE THE CHILD'S EXEC: a `&` child is a fork of the
+# runner and shows the runner's command line until it execs, so a read
+# without the marker is repeated while the pid exists, until 1 s has passed,
+# before it is dropped. lstart is the fork's instant and does not move at the
+# exec. THE 1 s IS A DEADLINE, NOT A COUNT: each read is under a 1 s alarm and
+# the clock is read after it, so a ps that stalls ends the wait within 1 s
+# plus one read. A clock that cannot be read allows that one read only.
+record_identity() {
+  ri_id=""
+  if [ -n "$3" ]; then
+    ri_now=$(mono)
+    case "$ri_now" in ""|*[!0-9]*) ri_now="" ;; esac
+    ri_end=$((${ri_now:-0} + 1000))
+    while :; do
+      ri_id=$(bps_alarm=1 bps -o lstart= -o command= -p "$2" 2>/dev/null)
+      case "$ri_id" in *"$3"*) break ;; esac
+      [ -n "$ri_now" ] || break
+      ri_now=$(mono)
+      case "$ri_now" in ""|*[!0-9]*) break ;; esac
+      [ "$ri_now" -ge "$ri_end" ] && break
+      kill -0 "$2" 2>/dev/null || break
+      sleep 0.05
+    done
+  fi
+  case "$ri_id" in
+    "") echo "$4: start identity not read, not signalled" ;;
+    *"$3"*) [ -n "$3" ] || ri_id="" ;;
+    *) echo "$4: start identity not read (pid $2 shows another command), not signalled"; ri_id="" ;;
+  esac
+  eval "$1=\$ri_id"
+}
+# kill_if_same <pid> <identity> <signal>: sends only when both are recorded,
+# the pid exists and its identity is still the one recorded. THE COMPARISON
+# AND THE SEND ARE ONE LINE (signal-audit's exemption is by line). WHAT IT
+# DOES NOT CLOSE, stated: between the comparison and the kill builtin the pid
+# can still end, be reaped and be taken by any process, and that interval is
+# bounded only by scheduling; this shell has no send bound to an identity,
+# and the runner has no owner process to route its stops through.
+kill_if_same() {
+  [ -n "$1" ] && [ -n "$2" ] && kill -0 "$1" 2>/dev/null && [ "$(bps -o lstart= -o command= -p "$1" 2>/dev/null)" = "$2" ] && kill "-$3" "$1" 2>/dev/null
+}
+# ---- SA-8 CUT helpers END ----
 # THE RESULT OF ONE LAUNCH (launcher design L6). Accepted only if the file
 # is there, names this launch on its first line and ends with "end";
 # anything else is RESULT NOT READ, which keeps the roots and launches
@@ -291,9 +349,11 @@ run_tracked() {
   perl ./launch.pl --limit "$rt_secs" --out "$rt_out" --result "$tracked_result" \
        --id "$tracked_id" --census-pid "$$" -- "$@" < /dev/null &
   tracked_w=$!
+  record_identity tracked_w_id "$tracked_w" "--id $tracked_id" "the watcher of $tracked_name"
   wait "$tracked_w"
   rt_st=$?
   tracked_w=""
+  tracked_w_id=""
   last_ran=$tracked_name
   rt_was_aborted=$aborted
   if read_result "$tracked_result" "$tracked_id" "$tracked_name" && [ -n "$rr_status" ]; then
@@ -315,18 +375,53 @@ run_tracked() {
   fi
   return "$rt_st"
 }
-# THE PROBE IS STOPPED THE SAME BOUNDED WAY: TERM, a bounded poll, KILL.
+# ---- SA-8 CUT stop_probe BEGIN ----
+# THE PROBE IS STOPPED THE SAME BOUNDED WAY: TERM, a bounded poll, KILL, each
+# send by the identity recorded at its start. The parent's wait is 7 s, so a
+# bps its trap holds to its 5 s alarm cannot outlast it.
+# THEN ITS CHILD, BY THE IDENTITY ON DISK: the subshell wrote the child's pid
+# to .probe-pid and its validated identity to .probe-id before its wait, and
+# the child is init's once the parent is gone, so it is finished here: TERM,
+# 5 s, KILL, 2 s, each by identity. It is never `wait`ed.
+# ANSWERS WHETHER IT OWNED THE END: 0 when the parent is gone and the child is
+# seen gone; 1 when the child could not be finished (no identity published
+# for a child that may be running, an identity that no longer matches, or
+# still alive after the KILL), said once.
 stop_probe() {
   [ -n "$probe_parent" ] || return 0
-  kill -TERM "$probe_parent" 2>/dev/null
-  if ! wait_gone "$probe_parent" 5; then
-    kill -KILL "$probe_parent" 2>/dev/null
+  kill_if_same "$probe_parent" "$probe_parent_id" TERM
+  if ! wait_gone "$probe_parent" 7; then
+    kill_if_same "$probe_parent" "$probe_parent_id" KILL
     wait_gone "$probe_parent" 2
   fi
+  sp_parent_gone=1
   # NEVER AN UNBOUNDED WAIT: only a probe seen to be gone is waited for.
-  alive "$probe_parent" || wait "$probe_parent" 2>/dev/null
+  if alive "$probe_parent"; then sp_parent_gone=0; else wait "$probe_parent" 2>/dev/null; fi
   probe_parent=""
+  probe_parent_id=""
+  sp_pid=$(cat "$run_root/.probe-pid" 2>/dev/null)
+  sp_id=$(cat "$run_root/.probe-id" 2>/dev/null)
+  sp_owned=1
+  if [ -z "$sp_id" ]; then
+    case "$sp_pid" in ""|*[!0-9]*) sp_owned=0 ;; *) alive "$sp_pid" && sp_owned=0 ;; esac
+  elif alive "$sp_pid"; then
+    if [ "$(bps -o lstart= -o command= -p "$sp_pid" 2>/dev/null)" != "$sp_id" ]; then
+      sp_owned=0
+    else
+      kill_if_same "$sp_pid" "$sp_id" TERM
+      if ! wait_gone "$sp_pid" 5; then
+        kill_if_same "$sp_pid" "$sp_id" KILL
+        wait_gone "$sp_pid" 2 || sp_owned=0
+      fi
+    fi
+  fi
+  if [ "$sp_owned" = 0 ] || [ "$sp_parent_gone" = 0 ]; then
+    echo "probe child ${sp_pid:-?}: not owned at the end, left to end by itself"
+    return 1
+  fi
+  return 0
 }
+# ---- SA-8 CUT stop_probe END ----
 # A SIGNAL TO THE RUNNER (launcher design L7): the running launch is
 # stopped through its watcher, with a bound; the probe is stopped; this
 # run's processes are still counted, so a leaver is reported on this path
@@ -344,7 +439,7 @@ W_STOP_WAIT=$((W_STOP_BOUND + 5))
 # outlived the bound, and a monotonic clock that could not be read, so the
 # wait never counted at all.
 stop_watcher() {
-  kill -TERM "$tracked_w" 2>/dev/null
+  kill_if_same "$tracked_w" "$tracked_w_id" TERM
   wait_gone "$tracked_w" "$W_STOP_WAIT"
   sw_rc=$?
   if [ "$sw_rc" = 0 ]; then
@@ -352,7 +447,7 @@ stop_watcher() {
     read_result "$tracked_result" "$tracked_id" "$tracked_name"
     return 0
   fi
-  kill -KILL "$tracked_w" 2>/dev/null
+  kill_if_same "$tracked_w" "$tracked_w_id" KILL
   wait_gone "$tracked_w" 2
   alive "$tracked_w" || wait "$tracked_w" 2>/dev/null
   keep_roots=1
@@ -364,6 +459,7 @@ stop_watcher() {
     keep_reason="the watcher of $tracked_name did not stop within $W_STOP_WAIT s"
   fi
 }
+# ---- SA-8 CUT on_signal BEGIN ----
 on_signal() {
   trap '' INT TERM HUP
   echo "SIGNALLED: stopping the running launch and the probe, counting this run's processes, then removing its roots"
@@ -382,10 +478,16 @@ on_signal() {
     stop_watcher
     tracked_w=""
   fi
-  stop_probe
+  # A PROBE STILL RUNNING IS STOPPED, AND THE FLAGS SET FROM ITS ANSWER, as on
+  # the main path; one already stopped there keeps the flags it has.
+  if [ -n "$probe_parent" ]; then
+    if stop_probe; then probe_unowned=0; else probe_unowned=1; fi
+    probe_done=1
+  fi
   if type count_leaks > /dev/null 2>&1; then count_leaks; fi
   exit "$1"
 }
+# ---- SA-8 CUT on_signal END ----
 trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
@@ -488,7 +590,9 @@ carrying_token() {
 # end of the run and also on the signal path (launcher design L7), where
 # a leaver must be reported too. Before the probe has finished it still
 # counts by token, and says what that cannot see.
+# ---- SA-8 CUT count_leaks BEGIN ----
 probe_done=0
+probe_unowned=0
 run_root_before=""
 count_leaks() {
   sleep 3
@@ -506,8 +610,15 @@ count_leaks() {
   fi
   # THE LEAKED LINE NAMES WHAT IT COUNTED, pids on the line and each command
   # below it, so a reader can check them rather than trust a number.
-  if [ "$probe_done" != 1 ]; then
-    echo "leak count: by this run's token, before the probe had finished; a process whose environment this platform hides is not counted"
+  # THE TOKEN PATH TAKES EVERY RUN WITHOUT A USABLE COUNT OF ITS OWN: a probe
+  # not finished, a probe child not owned at its end, or a by-name count
+  # with no baseline. The by-name branch below is reached only with one.
+  if [ "$probe_done" != 1 ] || [ "$probe_unowned" = 1 ] || { [ "$env_visible" = 0 ] && [ -z "$schemes_before" ]; }; then
+    if [ "$probe_done" != 1 ]; then
+      echo "leak count: by this run's token, before the probe had finished; a process whose environment this platform hides is not counted"
+    else
+      echo "leak count: by this run's token, with no count of its own to use; a process whose environment this platform hides is not counted"
+    fi
     if snapshot && found=$(carrying_token); then
       left_pids=$(printf '%s\n' "$found" | tr '\n' ' ' | sed 's/ *$//')
       if [ -n "$left_pids" ]; then
@@ -521,6 +632,16 @@ count_leaks() {
       fi
     else
       echo "LEAK COUNT NOT TAKEN: the process snapshots under $snap_dir could not be taken or read; whatever is still running was not looked at"
+      leaked=1
+    fi
+    # THE VERDICTS, ADDED AFTER THE EVIDENCE: an empty token snapshot cannot
+    # say that a process whose environment is hidden is gone. Neither applies
+    # before the probe has finished (an early refusal), whose count stands.
+    if [ "$probe_done" = 1 ] && [ "$probe_unowned" = 1 ]; then
+      echo "LEAK COUNT NOT TAKEN: the probe child was not owned at its end; whatever is still running was not looked at"
+      leaked=1
+    elif [ "$probe_done" = 1 ] && [ "$env_visible" = 0 ] && [ -z "$schemes_before" ]; then
+      echo "LEAK COUNT NOT TAKEN: the by-name count has no baseline (the run ended before it was taken); whatever is still running was not looked at"
       leaked=1
     fi
   elif [ "$env_visible" = 1 ]; then
@@ -567,6 +688,7 @@ count_leaks() {
     fi
   fi
 }
+# ---- SA-8 CUT count_leaks END ----
 # A REFUSAL BEFORE THE END STILL COUNTS WHAT THIS RUN LEFT (launcher
 # design L8): the refusal is printed, the count runs, and a leak or a
 # member left in a group -- ranked above the remaining refusals -- decides
@@ -622,16 +744,32 @@ env_visible=0
 # running would be counted "before" in the fallback and hide one leak.
 # The pid is written to a temporary file and moved into place, so a read
 # sees all of it or none.
+#
+# THE CHILD IS HANDED TO stop_probe BY ITS IDENTITY ON DISK: the subshell
+# records its child's identity (validated by the script's path) and writes
+# it to .probe-id beside .probe-pid, tmp and mv, before its wait. Its TERM
+# trap does one thing, a kill_if_same TERM with the identity it holds (none
+# recorded yet: no send), and exits without waiting; stop_probe finishes the
+# child.
 echo "(sleep (make-time 'time-duration 0 30))" > "$run_root/.probe.ss"
+runner_command=$(bps -o command= -p "$$" 2>/dev/null)
+# ---- SA-8 CUT probe BEGIN ----
 (
   child=""
-  trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi; exit 0' TERM
+  child_id=""
+  trap 'kill_if_same "$child" "$child_id" TERM; exit 0' TERM
   scheme --script "$run_root/.probe.ss" &
   child=$!
+  record_identity child_id "$child" "$run_root/.probe.ss" "the probe child"
   echo "$child" > "$run_root/.probe-pid.tmp" && mv "$run_root/.probe-pid.tmp" "$run_root/.probe-pid"
+  if [ -n "$child_id" ]; then
+    printf '%s\n' "$child_id" > "$run_root/.probe-id.tmp" && mv "$run_root/.probe-id.tmp" "$run_root/.probe-id"
+  fi
   wait "$child"
 ) &
 probe_parent=$!
+record_identity probe_parent_id "$probe_parent" "$runner_command" "the probe"
+# ---- SA-8 CUT probe END ----
 probe_pid=""
 tries=0
 # A SNAPSHOT THAT FAILS IS NOT "NOT VISIBLE YET". Only a probe that could
@@ -655,9 +793,12 @@ while [ "$tries" -lt 10 ] && [ "$env_visible" = 0 ]; do
     *" $probe_pid "*) env_visible=1 ;;
   esac
 done
-stop_probe
+# THE TWO FLAGS FROM stop_probe's ANSWER: probe_done says it ran to its end,
+# probe_unowned that the child was not owned there. An unowned probe takes no
+# by-name baseline: its child may still be one of the schemes counted.
+if stop_probe; then probe_unowned=0; else probe_unowned=1; fi
 probe_done=1
-if [ "$env_visible" = 0 ]; then
+if [ "$env_visible" = 0 ] && [ "$probe_unowned" = 0 ]; then
   schemes_before=$(bpgrep -x scheme 2>/dev/null | wc -l | tr -d " ")
 fi
 

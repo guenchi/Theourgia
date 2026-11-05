@@ -443,6 +443,224 @@
                (filter (lambda (l) (starts-with? l "note census retried: ")) ls))
           '(#t))))
 
+(printf "== C2: A's end is seen on the end pipe, not reaped ==\n")
+;; W NO LONGER REAPS A WHEN IT ENDS. It sees A's end as EOF on the end pipe,
+;; and A stays a zombie, holding G's pgid, through the grace and the stop;
+;; A is reaped after, and gives the status. These rows read that order from
+;; outside: A's zombie during the grace, the status and cleanup unchanged, no
+;; wait added, and the reap's two misses (LAUNCH_TEST_REAP_MISS, a hook of
+;; launch.pl's read by these rows only) as status 126 with a note.
+;;
+;; (fields-of line k): the first k whitespace-separated fields of LINE, then
+;; the rest of it; #f when it has fewer than k.
+(define (fields-of line k)
+  (let ((len (string-length line)))
+    (let loop ((i 0) (k k) (acc '()))
+      (let ((a (let skip ((j i)) (if (and (< j len) (char-whitespace? (string-ref line j))) (skip (+ j 1)) j))))
+        (if (= k 0)
+            (reverse (cons (substring line a len) acc))
+            (let ((b (let scan ((j a)) (if (and (< j len) (not (char-whitespace? (string-ref line j)))) (scan (+ j 1)) j))))
+              (and (> b a) (loop b (- k 1) (cons (substring line a b) acc)))))))))
+(define (ps-text args)
+  (let* ((p (process (string-append "perl -e 'alarm shift; exec { \"ps\" } \"ps\", @ARGV; exit 127' 5 "
+                                    args " 2>/dev/null")))
+         (t (get-string-all (car p))))
+    (close-port (car p))
+    (close-port (cadr p))
+    (if (eof-object? t) "" t)))
+;; ((pid ppid pgid stat command instant) ...) of every process, one bounded ps
+;; read. THE INSTANT IS THE SAME LISTING'S (lstart, the 24-character field
+;; signal-send-listing cuts), so a process this listing identifies is
+;; registered with it (started-at!), not with a later read of its pid.
+(define (ps-table)
+  (filter values
+          (map (lambda (line)
+                 (let ((f (fields-of line 4)))
+                   (and f (string->number (car f))
+                        (>= (string-length (list-ref f 4)) 24)
+                        (let ((rest (list-ref f 4)))
+                          (list (string->number (car f)) (string->number (cadr f))
+                                (string->number (caddr f)) (cadddr f)
+                                (signal-send-trim (substring rest 24 (string-length rest)))
+                                (signal-send-trim (substring rest 0 24)))))))
+               (lines-of (ps-text "-A -ww -o pid= -o ppid= -o pgid= -o stat= -o lstart= -o command=")))))
+;; The state ps prints for PID, trimmed; "" when it prints none.
+(define (stat-of pid)
+  (let ((f (fields-of (ps-text (string-append "-o stat= -p " (number->string pid))) 1)))
+    (if f (car f) "")))
+(define (run-w-env d limit command env)
+  (let ((t0 (now-ms)))
+    (sh "cd " d " && { " env "perl " launcher-path
+        " --limit " (number->string limit)
+        " --out " d "/out --result " d "/result --id L" (number->string n)
+        " -- " command " < /dev/null > " d "/w.log 2>&1; echo $? > " d "/w.rc; }")
+    (list (read-datum (string-append d "/w.rc")) (- (now-ms) t0))))
+
+;; LS-N A'S ZOMBIE DURING THE GRACE. The command leaves a scheme sleeping 30 s,
+;; its script path carrying this row's token, and exits 0. The row finds the
+;; sleeper by that token, reads G from its pgid, and while the sleeper is
+;; alive (checked on the same turn) polls G's state for up to 2 s: it must
+;; begin with Z, A ended and not reaped. Red on the base, whose wait loop
+;; reaps A at once: ps prints nothing for G. Then the result reads as on the
+;; base: status 0, the sleeper left in the group (and ended by the stop).
+(let* ((d (case!))
+       (tok (string-append "lsn-" (number->string (get-process-id)) "-" (number->string n)))
+       (ss (string-append d "/" tok ".ss")))
+  (spit! ss "(sleep (make-time 'time-duration 0 30))\n")
+  (start-w d 30 (string-append "sh -c 'scheme --script " ss " & exit 0'"))
+  (let* ((found (let poll ((k 0))
+                  (let ((ps (command-processes (lambda (c) (and (starts-with? c "scheme") (contains? c tok))))))
+                    (cond ((pair? ps) (car ps))
+                          ((> k 100) #f)
+                          (else (sleep (make-time 'time-duration 20000000 0)) (poll (+ k 1)))))))
+         (sp (and found (started-at! (car found) (cdr found))))
+         (g (and sp (let ((f (fields-of (ps-text (string-append "-o pgid= -p " (number->string sp))) 1)))
+                      (and f (string->number (car f))))))
+         (seen (and g (let poll ((k 0) (last 'none))
+                        (let ((alive (alive? sp)) (st (stat-of g)))
+                          (cond ((not alive) (list 'sleeper-gone last))
+                                ((starts-with? st "Z") #t)
+                                ((> k 40) (list 'not-z st))
+                                (else (sleep (make-time 'time-duration 50000000 0)) (poll (+ k 1) st)))))))
+         (done (await (string-append d "/w.rc") 30))
+         (res (result-of d)))
+    (when (and sp (alive? sp)) (signal! sp "KILL"))
+    (printf "   LS-N: sleeper ~a registered at the listing's instant ~s, G ~a, A's state ~s, result ~s\n"
+            sp (and found (cdr found)) g seen res)
+    (want "LS-N A is a zombie holding G through the grace; the status and cleanup are the base's: 0, left with the sleeper"
+          (list (integer? sp) (integer? g) seen done (read-datum (string-append d "/w.rc"))
+                (and res (caddr res)) (and res (cadddr res))
+                (and res (integer? sp)
+                     (exists (lambda (m) (starts-with? m (string-append (number->string sp) " "))) (list-ref res 4))))
+          '(#t #t #t #t 0 0 "left" #t))))
+
+;; LS-N2 NO WAIT ADDED: a command that ends at once with nothing left is clean,
+;; with its status, and W ends within D2 + 1 s of it. Red on a census that
+;; counts A's zombie as a member: survivor, not clean.
+(let* ((d (case!))
+       (r (run-w d 30 "true")))
+  (want "LS-N2 a command that ends at once with nothing left: clean, status 0, W within D2 + 1 s"
+        (list (car r) (status-and-cleanup d) (< (cadr r) 6000))
+        '(0 (#t 0 "clean") #t)))
+
+;; LS-N3 C CLOSES THE END PIPE FIRST. --out is a FIFO with no reader, so C
+;; blocks in its open of stdout, before its exec, still launch.pl's perl. The
+;; row finds A (ppid W, its own group), waits until it sees C in that state
+;; (ppid A, launch.pl in its command, sleeping, on two polls 100 ms apart),
+;; then KILLs A. W must end within GRACE + D2 + 1 s of the KILL with status
+;; 137, A's KILL read from its reap. Red on a C that keeps the end pipe's
+;; write end: W sees no EOF and runs to its limit (20 s), 142. The base reaps
+;; A at once and is green here: a mutant row, not red-first. A is registered
+;; with the instant of the listing that found it.
+(define a-instant #f)
+(let* ((d (case!))
+       (fifo (string-append d "/fifo")))
+  (sh "mkfifo " fifo)
+  (sh "cd " d " && { perl " launcher-path
+      " --limit 20 --out " fifo " --result " d "/result --id L" (number->string n)
+      " -- sleep 30 < /dev/null > " d "/w.log 2>&1 & echo $! > " d "/w.pid; wait $!; echo $? > " d "/w.rc; }"
+      " > /dev/null 2>&1 &")
+  (let* ((up (await (string-append d "/w.pid") 10))
+         (w (read-datum (string-append d "/w.pid")))
+         (a (and (integer? w)
+                 (let poll ((k 0))
+                   (let ((e (find (lambda (e) (and (eqv? (cadr e) w) (eqv? (caddr e) (car e)))) (ps-table))))
+                     (cond (e (set! a-instant (list-ref e 5)) (started-at! (car e) (list-ref e 5)))
+                           ((> k 20) #f)
+                           (else (pause-tenths 1) (poll (+ k 1))))))))
+         (c-blocked? (lambda ()
+                       (exists (lambda (e) (and (eqv? (cadr e) a) (contains? (list-ref e 4) "launch.pl")
+                                                (starts-with? (cadddr e) "S")))
+                               (ps-table))))
+         (c-seen (and a (let poll ((k 0) (prev #f))
+                          (let ((now (c-blocked?)))
+                            (cond ((and prev now) #t)
+                                  ((> k 20) #f)
+                                  (else (pause-tenths 1) (poll (+ k 1) now)))))))
+         (sent (and c-seen (signal! a "KILL")))
+         (t0 (now-ms))
+         (done (await (string-append d "/w.rc") 25))
+         (took (- (now-ms) t0))
+         (res (result-of d)))
+    (printf "   LS-N3: W ~a, A ~a registered at its listing's instant ~s, C seen ~a, W ended ~a ms after the KILL, result ~s\n"
+            w a a-instant c-seen took res)
+    (want "LS-N3 C blocked before its exec: A KILLed, W ends within GRACE + D2 + 1 s, status 137, cleanup as read"
+          (list up (integer? a) c-seen sent done (< took 8000)
+                (read-datum (string-append d "/w.rc")) (and res (caddr res)) (and res (cadddr res)))
+          '(#t #t #t sent #t #t 137 137 "left"))))
+
+;; LS-N4, LS-N5 A REAP THAT ANSWERS NO STATUS: the hook makes the bounded reap
+;; miss, as on a D2 timeout and as on a waitpid error. The status is 126 with
+;; the note, never 0, and cleanup is still computed: clean. Red on a W that
+;; decodes the missing status as an exit 0.
+(for-each
+  (lambda (m)
+    (let* ((d (case!))
+           (r (run-w-env d 30 "true" (string-append "LAUNCH_TEST_REAP_MISS=" (car m) " ")))
+           (res (result-of d)))
+      (printf "   ~a: result ~s\n" (cadr m) res)
+      (want (format "~a LAUNCH_TEST_REAP_MISS=~a: status 126, the note \"~a\", cleanup clean" (cadr m) (car m) (caddr m))
+            (list (car r) (and res (caddr res)) (and res (cadddr res))
+                  (and res (exists (lambda (x) (starts-with? x (caddr m))) (list-ref res 5))))
+            '(126 126 "clean" #t))))
+  '(("timeout" "LS-N4" "anchor reap: no answer within D2")
+    ("error" "LS-N5" "anchor reap: waitpid ")))
+
+;; LS-N8 THE HOOK IS NOT INHERITED: W reads LAUNCH_TEST_REAP_MISS and removes it
+;; from the environment before its first fork, so the command does not see
+;; it, as --fault-setpgid is never forwarded. Red on a W that leaves it set.
+(let* ((d (case!))
+       (r (run-w-env d 30 (string-append "sh -c 'echo \"[${LAUNCH_TEST_REAP_MISS-unset}]\" > " d "/env.txt'")
+                     "LAUNCH_TEST_REAP_MISS=timeout "))
+       (seen (slurp (string-append d "/env.txt"))))
+  (printf "   LS-N8: the command saw ~s\n" seen)
+  (want "LS-N8 the command does not inherit LAUNCH_TEST_REAP_MISS, and the hook still acts: status 126"
+        (list (car r) seen)
+        '(126 "[unset]\n")))
+
+;; LS-N6 THE MISS WITH A MEMBER LEFT: status 126, and cleanup is the grace's,
+;; left with the sleeper (ended by the stop). Red on a W that takes the
+;; stop's answer as the cleanup: clean.
+(let* ((d (case!))
+       (r (run-w-env d 30 (string-append "sh -c 'sleep 30 & echo $! > " d "/d.pid; exit 0'")
+                     "LAUNCH_TEST_REAP_MISS=timeout "))
+       (dp (started! (read-datum (string-append d "/d.pid"))))
+       (res (result-of d)))
+  (stop-pid! (string-append d "/d.pid"))
+  (printf "   LS-N6: result ~s\n" res)
+  (want "LS-N6 a reap miss with a member left in the grace: status 126, cleanup left with that member"
+        (list (car r) (and res (caddr res)) (and res (cadddr res))
+              (and res (integer? dp)
+                   (exists (lambda (m) (starts-with? m (string-append (number->string dp) " "))) (list-ref res 4))))
+        '(126 126 "left" #t)))
+
+;; LS-N7 THE MISS WITH AN UNKNOWN GRACE: a ps shim that hangs on its first two
+;; calls (the grace's census and its one retry) and is the real ps after, so
+;; the grace is unknown while the stop's censuses answer and the stop is
+;; clean. Status 126, cleanup unknown. Red on a W that takes the stop's
+;; answer as the cleanup: clean. (LS-13's shim never recovers, so it makes the
+;; stop unknown too and cannot tell that mutant.)
+(let* ((d (case!))
+       (shim (string-append d "/shim"))
+       (real-ps (let ((f (string-append d "/real-ps")))
+                  (sh "command -v ps > " f)
+                  (car (lines-of (slurp f))))))
+  (sh "mkdir -p " shim)
+  (spit! (string-append shim "/ps")
+         (string-append "#!/bin/sh\n"
+                        "c=" d "/ps.count\n"
+                        "n=$(cat \"$c\" 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" > \"$c\"\n"
+                        "if [ \"$n\" -le 2 ]; then exec sleep 100; fi\n"
+                        "exec " real-ps " \"$@\"\n"))
+  (sh "chmod +x " shim "/ps")
+  (let* ((r (run-w-env d 30 "true" (string-append "LAUNCH_TEST_REAP_MISS=timeout PATH=" shim ":$PATH ")))
+         (res (result-of d))
+         (calls (read-datum (string-append d "/ps.count"))))
+    (printf "   LS-N7: ps calls ~a, result ~s\n" calls res)
+    (want "LS-N7 a reap miss after an unknown grace and a clean stop: status 126, cleanup unknown"
+          (list (car r) (and res (caddr res)) (and res (cadddr res)) (and (integer? calls) (> calls 2)))
+          '(126 126 "unknown" #t))))
+
 (printf "== the anchor's group: an error is not a state ==\n")
 ;; W'S SETPGID ERRNO IS NOT THE ANCHOR'S STATE. Whatever setpgid answered, W
 ;; reads the anchor's group back: its own group means the launch goes on,

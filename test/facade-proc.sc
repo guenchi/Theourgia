@@ -109,34 +109,118 @@
 ;; listed is then ended and waited for, by pid, with a bound. A list that
 ;; could not be read is said, and the whole bound is waited out.
 ;;
-;; THE SENDER IS THE CALLER'S. (end-and-wait! maybe-pids send!) sends each
-;; signal as (send! pid sig): a row that started its process itself and
-;; registered the pid passes signal! (test/signal-send.ss), so every STOP,
-;; TERM and CONT is checked; the rows on library workers pass library-send!.
+;; THE SENDER IS THE CALLER'S, AND IT ANSWERS. (end-and-wait! maybe-pids
+;; send!) sends each signal to a worker as (send! pid sig), and send! answers
+;; #t when the signal was sent to the process it holds, #f otherwise. A row
+;; that started its process itself and registered the pid passes
+;; checked-send! (signal! of test/signal-send.ss, its answer read as #t/#f);
+;; the rows on library workers pass (handle-sender pairs), which maps each
+;; worker pid back to the handle it was read from and sends through
+;; worker-kill!, so the library's handle holds the identity.
 ;;
 ;; A #f AMONG THE PIDS IS A WORKER WHOSE OS PID IS NOT KNOWN (never
 ;; started, or already exited and reaped): its children cannot be listed,
 ;; so that too is said and the whole bound is waited out (codex r10 C1).
-;; library-send!: NOT THROUGH signal!. Its pids are the library's worker
-;; handles' own and the children listed while those are STOPped, so a pid
-;; cannot be reused between the listing and the TERM; the handle's guard is
-;; the library's to document, and the brief keeps library handles out of
-;; slice B. signal-audit's SA-3 names this one send (census rows 84-86).
-(define (library-send! pid sig)
+;;
+;; A WORKER IS HELD ONLY WHEN THE STOP IS CONFIRMED THROUGH ITS SENDER. #t
+;; from the STOP means sent, not stopped: the kernel stops the target when it
+;; next runs. So ps is polled (the pid-state rule, for 2 s: held-state) until the
+;; state begins with T, and then the sender is asked (send! pid "0"), which
+;; answers #t only while the process it holds is alive (for a handle: the
+;; child 'running and the handle alive, the library's own guard). T sampled
+;; first and #t answered after means the pid at the sample was that process,
+;; stopped; a bare T is never taken as proof. A stopped process reaps
+;; nothing, so from the confirmation on no listed child's pid is released
+;; before its TERM, and every send to a child precedes the CONT. EXCLUDED,
+;; STATED: a CONT, KILL or tracer from outside between the confirmation and
+;; the TERM; nothing in the suite sends to a worker's pid but this. A worker
+;; not held is said ("P-09: ...") and its children are not listed; the whole
+;; bound is waited out, as for a #f pid.
+;;
+;; THE SIGNAL NUMBERS ARE THE PLATFORM'S, read from `kill -l`, as liveness.sc
+;; reads USR1's; "0" is the liveness probe and sends nothing.
+(define (signal-number sig)
+  (if (string=? sig "0")
+      0
+      (guard (e (#t #f))
+        (let* ((p (process (string-append "kill -l " sig " 2>/dev/null")))
+               (t (get-string-all (car p))))
+          (close-port (car p))
+          (close-port (cadr p))
+          (and (string? t) (string->number (signal-send-trim t)))))))
+(define (handle-sender pairs)
+  (lambda (pid sig)
+    (let ((r (assv pid pairs))
+          (n (signal-number sig)))
+      (and r n (worker-kill! (cdr r) n) #t))))
+(define (checked-send! pid sig)
+  (eq? (signal! pid sig) 'sent))
+;; child-send!: NOT THROUGH A HANDLE. Its pids are the children listed while
+;; their parent is held stopped (confirmed as above), so a child that exits
+;; stays a zombie and its pid cannot be reused before the TERM. signal-audit's
+;; SA-3 names this one send (census row 85, the children).
+(define (child-send! pid sig)
   (system (string-append "kill -" sig " " (number->string pid) " 2>/dev/null")))
+;; One ps read of a pid's state under an alarm of SECS seconds; "" when ps
+;; answered nothing or failed. THE SHELL EXECS perl: a shell left waiting for
+;; an alarm-killed child prints its job message, which would be read as the state.
+(define (pid-stat pid secs)
+  (guard (e (#t ""))
+    (let* ((p (process (string-append
+                         "exec perl -e 'alarm shift; exec { \"ps\" } \"ps\", @ARGV; exit 127' "
+                         (number->string secs) " -o stat= -p "
+                         (number->string pid) " 2>/dev/null")))
+           (t (get-string-all (car p))))
+      (close-port (car p))
+      (close-port (cadr p))
+      (if (string? t) (signal-send-trim t) ""))))
+;; held-state: 'held, or (not-held <state>), or 'exited (T seen, then the
+;; sender's liveness answered #f).
+;; THE 2 s IS A DEADLINE, NOT A COUNT OF READS: each read's alarm is what is
+;; left of it, rounded up to whole seconds (at least 1), and the clock is read
+;; after each read, so a ps that stalls ends the poll within 2 s plus one read.
+(define (held-state pid send!)
+  (let ((end (+ (real-time) 2000)))
+    (let poll ()
+      (let* ((left (- end (real-time)))
+             (st (pid-stat pid (max 1 (quotient (+ left 999) 1000)))))
+        (cond
+          ((and (> (string-length st) 0) (char=? (string-ref st 0) #\T))
+           (if (send! pid "0") 'held 'exited))
+          ((>= (real-time) end) (list 'not-held (if (string=? st "") "none read" st)))
+          (else (system "sleep 0.05") (poll)))))))
 (define (end-and-wait! maybe-pids send!)
   (define pids (filter number? maybe-pids))
   (define unknown (not (for-all number? maybe-pids)))
   (when unknown
     (printf "P-08: a worker has no OS pid in the library; waiting out the bound\n"))
-  (for-each (lambda (pid) (send! pid "STOP")) pids)
-  (let* ((lists (map children-of pids))
+  (let* ((sent (filter (lambda (pid) (send! pid "STOP")) pids))
+         (held (filter
+                 (lambda (pid)
+                   (if (not (memv pid sent))
+                       (begin
+                         (printf "P-09: worker ~a not held at STOP; its children cannot be listed\n" pid)
+                         #f)
+                       (let ((h (held-state pid send!)))
+                         (cond
+                           ((eq? h 'held) #t)
+                           ((eq? h 'exited)
+                            (printf "P-09: worker ~a exited during the stop's confirmation; its children cannot be listed\n" pid)
+                            #f)
+                           (else
+                            (printf "P-09: worker ~a not held at STOP (state ~a); its children cannot be listed\n" pid (cadr h))
+                            #f)))))
+                 pids))
+         (unheld (not (= (length held) (length pids))))
+         (lists (map children-of held))
          (unread (not (for-all list? lists)))
-         (all (append pids (apply append (filter list? lists)))))
+         (children (apply append (filter list? lists)))
+         (all (append sent children)))
     (when unread
       (printf "P-08: the children of a worker could not be listed; waiting out the bound\n"))
-    (for-each (lambda (pid) (send! pid "TERM")) all)
-    (for-each (lambda (pid) (send! pid "CONT")) pids)
+    (for-each (lambda (pid) (send! pid "TERM")) sent)
+    (for-each (lambda (pid) (child-send! pid "TERM")) children)
+    (for-each (lambda (pid) (send! pid "CONT")) sent)
     ;; NEVER: ROUNDS THAT RUN OUT ARE SAID. The loop used to end in
     ;; silence with a process still there, and only the runner's LEFT IN
     ;; GROUP, after the fixture, said anything; that stays the guard, and
@@ -145,7 +229,7 @@
     ;; `let` the two are evaluated in no promised order, and a pid read
     ;; before the wait is reported although it ended during it.
     (let* ((rounds (let wait ((k 0))
-                    (if (or (> k 100) (and (not unread) (not unknown) (for-all pid-gone? all)))
+                    (if (or (> k 100) (and (not unread) (not unknown) (not unheld) (for-all pid-gone? all)))
                         k
                         (begin (system "sleep 0.05") (wait (+ k 1))))))
           (left (filter (lambda (pid) (not (pid-gone? pid))) all)))
@@ -180,7 +264,7 @@
   (let* ((ready (file-exists? (string-append f ".ready")))
          (pid (started! (guard (e (#t #f)) (call-with-input-file f read))))
          (said (if (integer? pid)
-                   (with-output-to-string (lambda () (end-and-wait! (list pid) signal!)))
+                   (with-output-to-string (lambda () (end-and-wait! (list pid) checked-send!)))
                    "")))
     (when (integer? pid) (signal! pid "KILL"))
     (system (string-append "rm -f " f " " f ".ready"))
@@ -192,6 +276,81 @@
                 (in? said "still running after TERM")
                 (and (integer? pid) (in? said (string-append " " (number->string pid)))))
           '(#t #t #t #t))))
+
+;; ---- P-09 a STOP that is not confirmed holds nothing ---------------------
+;;
+;; Two rows on a worker the row started itself, a shell with a sleeper child,
+;; and a stub sender that sends nothing. NOT HELD: the stub answers #t to the
+;; STOP, the shell is never stopped, ps never shows T. EXITED: the row stops
+;; the shell itself through signal!, so ps shows T, and the stub answers #t to
+;; the STOP and #f to the liveness ask. Either way the line is said, no TERM
+;; reaches the child (alive after, then ended by the row), and the bound is
+;; waited out. Red on an end-and-wait! that lists on the STOP's #t alone (the
+;; first) or on T alone (the second): the child is sent TERM.
+(define (said-has? text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) #t)
+            (else (loop (+ i 1)))))))
+(define (p09-stub-row label stop-first? stub expected-line)
+  (let* ((f (string-append scratch-base "/p09-" label "-" (number->string (get-process-id)) ".pid"))
+         (fc (string-append f ".child")))
+    (system (string-append "sh -c 'sleep 30 & echo $! > " fc ".tmp; mv " fc ".tmp " fc "; wait' > /dev/null 2>&1 & echo $! > " f))
+    (let wait ((k 0))
+      (unless (or (file-exists? fc) (> k 200))
+        (system "sleep 0.05")
+        (wait (+ k 1))))
+    (let* ((w (started! (pid-of-file f)))
+           (c (started! (pid-of-file fc)))
+           (stopped (and stop-first? (integer? w)
+                         (eq? (signal! w "STOP") 'sent)
+                         (let poll ((k 0))
+                           (let ((st (pid-stat w 5)))
+                             (cond ((and (> (string-length st) 0) (char=? (string-ref st 0) #\T)) #t)
+                                   ((> k 40) #f)
+                                   (else (system "sleep 0.05") (poll (+ k 1))))))))
+           (t0 (real-time))
+           (said (if (integer? w)
+                     (with-output-to-string (lambda () (end-and-wait! (list w) stub)))
+                     ""))
+           (took (- (real-time) t0))
+           (child-alive (and (integer? c) (not (pid-gone? c)))))
+      (when (integer? c) (signal! c "KILL"))
+      (when (integer? w) (signal! w "KILL"))
+      (system (string-append "rm -f " f " " fc))
+      (printf "   P-09 ~a: end-and-wait! said ~s in ~a ms\n" label said took)
+      (want (string-append "P-09 " label ": the line is said, the child is not sent TERM, the bound is waited out")
+            (list (integer? w) (integer? c) (if stop-first? stopped #t)
+                  (said-has? said (format expected-line w))
+                  child-alive
+                  (>= took 5000))
+            '(#t #t #t #t #t #t)))))
+;; P-09 BOUND: under a ps on PATH that never answers (each call execs a 30 s
+;; sleep), held-state still answers not-held within 2 s plus one read. Red on
+;; a poll that counts reads under a 5 s alarm (41 of them, about 205 s).
+(let* ((f (string-append scratch-base "/p09-bound-" (number->string (get-process-id)) ".pid"))
+       (shim (string-append scratch-base "/p09-bound-shim-" (number->string (get-process-id))))
+       (old-path (getenv "PATH")))
+  (system (string-append "sleep 30 > /dev/null 2>&1 & echo $! > " f))
+  (system (string-append "mkdir -p " shim " && printf '#!/bin/sh\\nexec sleep 30\\n' > " shim "/ps && chmod +x " shim "/ps"))
+  (let* ((w (started! (pid-of-file f)))
+         (t0 (real-time))
+         (h (begin (putenv "PATH" (string-append shim ":" old-path))
+                   (let ((r (and (integer? w) (held-state w (lambda (pid sig) #t)))))
+                     (putenv "PATH" old-path)
+                     r)))
+         (took (- (real-time) t0)))
+    (when (integer? w) (signal! w "KILL"))
+    (system (string-append "rm -rf " f " " shim))
+    (printf "   P-09 BOUND: held-state answered ~s in ~a ms under a ps that never answers\n" h took)
+    (want "P-09 BOUND held-state under a ps that never answers: not-held within 2 s plus one read"
+          (list (integer? w) h (< took 4000))
+          '(#t (not-held "none read") #t))))
+(p09-stub-row "NOT-HELD" #f (lambda (pid sig) #t)
+              "P-09: worker ~a not held at STOP (state ")
+(p09-stub-row "EXITED" #t (lambda (pid sig) (not (string=? sig "0")))
+              "P-09: worker ~a exited during the stop's confirmation; its children cannot be listed")
 
 (define (digits-of t)
   (let* ((n (string-length t))
@@ -385,6 +544,45 @@
                 '(0 9))
           (receive (after 3000 'no-down) (`#(DOWN ,w ,r) 'down))))
 
+      ;; ---- P-09 a worker ended and reaped before the stop ---------------
+      ;;
+      ;; Its pid is read from its handle, the worker is ended through the
+      ;; handle and its exit awaited, and then end-and-wait! gets the old pid
+      ;; and the handle sender: the STOP answers #f (the handle's child is no
+      ;; longer running), so the line is said, nothing but the STOP is sent,
+      ;; and the bound is waited out as for a #f pid. Red on an end-and-wait!
+      ;; that ignores the STOP's answer and lists anyway: no line.
+      (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "sleep 30") '() main)))
+        (let* ((ref (receive (after 5000 'none) (`(spawned ,r) r)))
+               (os (and (worker-ref? ref) (proc-pid (worker-ref-proc ref))))
+               (ended (and (worker-ref? ref)
+                           (begin
+                             (worker-kill! ref 9)
+                             (let wait ()
+                               (receive
+                                 (after 6000 'no-exit)
+                                 (`(worker-exit ,r ,st ,sg) (if (eq? r ref) sg (wait)))
+                                 (`(worker-out ,r ,s ,bv) (wait))
+                                 (`(worker-eof ,r ,s) (wait))
+                                 (`(worker-error ,r ,s ,n) (wait)))))))
+               (sent '())
+               (inner (handle-sender (list (cons os ref))))
+               (send! (lambda (p s) (set! sent (cons s sent)) (inner p s)))
+               (t0 (real-time))
+               (said (if (integer? os)
+                         (with-output-to-string (lambda () (end-and-wait! (list os) send!)))
+                         ""))
+               (took (- (real-time) t0)))
+          (receive (after 3000 'no-down) (`#(DOWN ,w ,r) 'down))
+          (printf "   P-09 REAPED: end-and-wait! said ~s in ~a ms\n" said took)
+          (want "P-09 REAPED a worker ended and reaped before the stop is not held: said, only the STOP sent, the bound waited out"
+                (list (integer? os) ended
+                      (and (integer? os)
+                           (said-has? said (format "P-09: worker ~a not held at STOP; its children cannot be listed" os)))
+                      (reverse sent)
+                      (>= took 5000))
+                '(#t 9 #t ("STOP") #t))))
+
       ;; ---- P-07 one completion per returned write ---------------------
       ;;
       ;; NOTE: igropyr ANSWERS #f FOR A WRITE IT CANNOT EVEN ATTEMPT, without
@@ -455,9 +653,11 @@
                 ;; the child printed: a child slow to print it would take
                 ;; itself off the list (codex r10 C1). A ref that never
                 ;; arrived, or has no pid, is #f, and end-and-wait! says so.
-                (end-and-wait! (list (and big-ref (proc-pid (worker-ref-proc big-ref)))
-                                     (and small-ref (proc-pid (worker-ref-proc small-ref))))
-                               library-send!)
+                (let ((big-os (and big-ref (proc-pid (worker-ref-proc big-ref))))
+                      (small-os (and small-ref (proc-pid (worker-ref-proc small-ref)))))
+                  (end-and-wait! (list big-os small-os)
+                                 (handle-sender (filter car (list (cons big-os big-ref)
+                                                                  (cons small-os small-ref))))))
                 (when big-ref (worker-close! big-ref))
                 (when small-ref (worker-close! small-ref)))
               (receive
