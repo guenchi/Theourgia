@@ -8,13 +8,34 @@
   '(("scheme" "f" "x" "m") ("javascript" "f" "C" "inc") ("typescript" "Shape" "Count" "f")
     ("typescriptreact" "Props" "Screen" "Row") ("javascriptreact" "Screen" "Panel" "Row")
     ("python" "f" "C" "answer") ("go" "f" "Count" "M") ("rust" "f" "Thing" "Thing")
-    ("c" "f" "g" "Point") ("java" "C" "I" "E") ("shell" "f" "g" "h")
+    ("c" "f" "g" "Point") ("java" "C" "I" "E") ("shell" "f" "g" "h") ("perl" "f" "Foo::bar" "Foo")
     ("markdown" "Alpha" "Beta" "Gamma") ("chez" "f" "x" "m")))
 (for-each (lambda (entry)
             (let ((name (language-property entry 'lang #f)))
               (want (string-append "CT-05 " name " three definition heads")
                     (map (lambda (s) (definition-name entry s)) (language-property entry 'name-vectors '()))
                     (cdr (assoc name expected))))) (language-table))
+;; THE PERL ENTRY, asked by name: the loop above asks only the entries the
+;; table has, so it cannot be red on a table without perl. A head is a sub or
+;; a package at column 0, named by its spelling, `::` included; an indented
+;; sub, a sub stored in a variable and an anonymous sub are not heads.
+(define perl (language-for-name 'perl))
+(want "CT-05 perl three definition heads: a sub, a qualified sub, a package"
+      (and perl (map (lambda (s) (definition-name perl s)) (language-property perl 'name-vectors '())))
+      '("f" "Foo::bar" "Foo"))
+(want "CT-05 perl heads: a one-line sub, a forward declaration and a package block are named; an indented sub, `my $sub = sub`, an anonymous sub and `sub` alone are not"
+      (and perl (map (lambda (s) (definition-name perl s))
+                     '("sub three { 3 }" "sub four;" "package Foo {" "  sub f {" "my $sub = sub { 1 };" "sub { 1 }" "sub")))
+      '("three" "four" "Foo" #f #f #f #f))
+(want "CT-05 perl: .pl, .pm and .t are perl files, the entry has no runner and no suggest-only profile, and its line-suggest stops at __END__ and __DATA__"
+      (list (map (lambda (p) (let ((e (language-for-path p))) (and e (language-property e 'lang #f)))) '("a.pl" "a.pm" "a.t"))
+            (and perl (language-runner perl)) (and perl (language-property perl 'suggest-only #f))
+            (and perl (language-property perl 'line-suggest #f)))
+      '(("perl" "perl" "perl") #f #f ((stop-lines ("__END__" "__DATA__")))))
+(want "CT-05 shell keeps its suggest-only profile and gains an empty line-suggest"
+      (let ((sh (language-for-name 'shell)))
+        (list (and (language-property sh 'suggest-only #f) #t) (language-property sh 'line-suggest #f)))
+      '(#t ()))
 (define scheme (language-for-name 'scheme))
 (want "CT-14 dangerous numeric text remains only text" (definition-name scheme "#e1e99999999") #f)
 (want "CT-14 numeric-looking binding does not enter a numeric reader" (definition-name scheme "(define #e1e99999999 1)") "#e1e99999999")

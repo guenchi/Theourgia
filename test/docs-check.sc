@@ -662,6 +662,16 @@
         (list (and sec (contains? sec "(insert (\"--under\" <id>)") #t)
               (and sec (contains? (squashed sec) "Without --under the block goes under root.") #t)))
       '(#t #t))
+;; split-suggest's section states the line scan's kind, its limit, that the
+;; checked routes do not use it, and that an import cuts by it too.
+(want "split-suggest's README section states the shell and Perl line reading, the heredoc limit, that --symbols never uses it, and that import-git and a draft's commit cut by it"
+      (let ((sec (readme-section "### `split-suggest`")))
+        (and sec (map (lambda (s) (contains? (squashed sec) s))
+                      '("is read line by line instead: a definition is a line that begins, at column 0,"
+                        "a head written inside a heredoc, a multi-line string or POD is taken as written and is a cut."
+                        "`--symbols` and `import-code --symbols` never use it"
+                        "A shell or Perl file that `import-git` adds or changes, or that a commit of a draft creates, is cut into blocks the same way."))))
+      '(#t #t #t #t))
 (want "export-code's README section says it writes the text-mode files by default, and (files 0) when there are none"
       (let ((sec (readme-section "### `export-code`")))
         (and sec (contains? (squashed sec) "Without `--datum` it writes the text-mode files -- the blocks `import-code` made without `--datum`; a store with no text-mode files answers `(ok (files 0))`.") #t))

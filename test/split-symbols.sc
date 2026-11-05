@@ -338,6 +338,22 @@
         (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
         '((0 24) ((symbol-not-top-level (at 19)) (symbol-kinds function variable function)))))
 
+;; S17: WITH SYMBOLS, SHELL TEXT IS THE LEXICAL SCAN'S, NOT THE LINE SCAN'S. The
+;; line scan serves split-suggest without symbols only; here the heredoc is a
+;; token the lexical scan cannot follow, so the file is one block with that
+;; warning, where the line scan would have cut at a, fake and b.
+(define s17 "a() {\n  cat <<EOF\nfake() {\nEOF\n}\nb() {\n  :\n}\n")
+(define s17-source '(vscode "1.138.0" "shellscript"))
+(want "S17 setup: the text's offsets (the heredoc, b, the length)"
+      (list (offset-of s17 "<<") (offset-of s17 "b()") (bytevector-length (string->utf8 s17)))
+      '(12 33 45))
+(let ((r (suggest "s17.sh" s17 (lines (header (digest-of s17) s17-source)
+                                      (symbol-line 0 32 'function "a")
+                                      (symbol-line 33 45 'function "b")))))
+  (want "S17 a shell file with symbols falls back at its heredoc as the lexical scan does: one block, lexically-uncertain at 12"
+        (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
+        '((0) ((code lexically-uncertain byte-offset 12) (symbol-kinds function function)))))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsplit-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

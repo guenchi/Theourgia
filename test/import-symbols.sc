@@ -264,8 +264,9 @@
         (list 'ok #f '(("o.js" (error symbols-unscanned (reason unbalanced) (at 64))))
               (list (cons "b.js" two-blocks) (list "o.js" open-text)))))
 ;; A .vue FILE HAS NO LANGUAGE ENTRY, so no scanner can say what is top level
-;; in it. (no-suggest-profile, the other reason, cannot be reached from this
-;; table: every language entry has a profile the scanner can follow.)
+;; in it. A .pl file has an entry with no suggest-only profile (its line scan
+;; is suggestion only, never evidence a start is at the top level): the other
+;; reason, no-suggest-profile (IS4p below).
 (define tsx "export const A = () => <div/>;\nexport function B() {}\n")
 (let* ((c (case! (list (cons "x.vue" tsx) (cons "b.js" two))
                  (string-append (section "x.vue" tsx (sym 0 (offset-of tsx "\nexport function") 'variable "A")
@@ -276,6 +277,16 @@
         (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
         (list 'ok #f '(("x.vue" (error symbols-unchecked (reason no-language-entry))))
               (list (cons "b.js" two-blocks) (list "x.vue" tsx)))))
+(define pl-text "sub a {\n  return 1;\n}\n__END__\nsub b { 2 }\n")
+(let* ((c (case! (list (cons "x.pl" pl-text) (cons "b.js" two))
+                 (string-append (section "x.pl" pl-text (sym 0 (offset-of pl-text "\n__END__") 'function "a")
+                                         (sym (offset-of pl-text "sub b") (- (bytes-of pl-text) 1) 'function "b"))
+                                (apply section "b.js" two two-symbols))))
+       (a (local (car c) "import-code" (cadr c) "--symbols" (caddr c))))
+  (want "IS4p a .pl with symbols is unchecked (no suggest profile) and imported whole, listed in symbols-imported-whole, its bytes equal; a start after __END__ is not a refusal; b.js is cut at 33"
+        (list (car a) (clause a 'symbols-refused) (clause a 'symbols-imported-whole) (files-of (car c)))
+        (list 'ok #f '(("x.pl" (error symbols-unchecked (reason no-suggest-profile))))
+              (list (cons "b.js" two-blocks) (list "x.pl" pl-text)))))
 ;; THE SAME TEXT IN A .tsx FILE IS CHECKED: the tsx entry's scan follows JSX,
 ;; so the symbols at A and B are checked and the file is cut at its top-level
 ;; def-head lines, with neither clause in the answer.

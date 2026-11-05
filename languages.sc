@@ -378,8 +378,28 @@
                ;; only these continue a shell line (code-suggest.sc, strict)
                (continuation-tokens ("|" "&&" "||"))
                (fallback "whole-file-with-warning") (prefix-lines ())))
+           ;; WITHOUT STARTS THE FILE IS READ LINE BY LINE (code-suggest.sc,
+           ;; the line scan): a heredoc, a $(...) or a case no longer makes it
+           ;; one block. The brace profile above stays for the checked routes,
+           ;; which are given starts.
+           (line-suggest ())
            (name-vectors
              ("f() { :; }" "function g { :; }" "function h() { :; }")))
+         ;; PERL HAS NO LEXICAL PROFILE: symbols given for a perl file are
+         ;; unchecked (no-suggest-profile). Without them the line scan cuts at
+         ;; a sub or a package at column 0 and stops at a line that is exactly
+         ;; __END__ or __DATA__. A definer pattern, not a parser: nothing after
+         ;; the name is read. The identifier spells a qualified name as one
+         ;; token, as the heads capture it, so Foo::bar() uses sub Foo::bar.
+         ((lang "perl") (extensions ("pl" "pm" "t"))
+           (identifier "[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*") (line-comment "#")
+           (block-comment #f)
+           (def-heads
+             ("^sub\\s+([A-Za-z_][A-Za-z0-9_:]*)"
+               "^package\\s+([A-Za-z_][A-Za-z0-9_:]*)"))
+           (name-capture 1)
+           (line-suggest ((stop-lines ("__END__" "__DATA__"))))
+           (name-vectors ("sub f { 1 }" "sub Foo::bar {" "package Foo;")))
          ((lang "markdown") (extensions ("md" "markdown")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment #f)
            (block-comment ("<!--" "-->"))
            (def-heads

@@ -3298,6 +3298,20 @@ top-level ones are, at the start of their line, and the library's name,
 patterns' rule only: with `--symbols`, a start inside the library is still
 `symbol-not-top-level`.
 
+A shell file (`.sh`, `.bash`) or a Perl file (`.pl`, `.pm`, `.t`) is read
+line by line instead: a definition is a line that begins, at column 0, with
+one of the language's definition heads (`f() {`, `function f`; `sub f`,
+`package F`), the comment lines directly above it go with it, and in Perl a
+line that is exactly `__END__` or `__DATA__` ends the reading, that line and
+the rest staying in the last block. No bracket, quote or heredoc is
+followed, so a head written inside a heredoc, a multi-line string or POD is
+taken as written and is a cut. This reading is a suggestion only: `--symbols`
+and `import-code --symbols` never use it, so a shell file's symbols are
+checked by the shell's lexical profile as before, and a Perl file's are
+`symbols-unchecked (reason no-suggest-profile)`. A shell or Perl file that
+`import-git` adds or changes, or that a commit of a draft creates, is cut
+into blocks the same way.
+
 With `--symbols`, the cuts come from a list of the file's top-level
 symbols that an editor collected, in place of the definition patterns.
 Only the question "does a definition start on this line" changes hands:

@@ -556,6 +556,18 @@
                           (when (> (length now) 32) (give-up (list 'fallback 'lexically-uncertain ln i)))
                           (scan now)))))))))))
 
+  ;; A LINE'S TEXT, for every scan. The file was found to be UTF-8 whole and a
+  ;; line is cut at a line feed, so its bytes are UTF-8 too; but utf8->string
+  ;; drops a byte-order mark at the start of what it decodes, and a line inside
+  ;; a file can begin with one: U+FEFF there is a character like any other. It
+  ;; is kept as that character, so the text re-encodes to the line's bytes and
+  ;; every offset taken from it is an offset on disk.
+  (define (line-text b)
+    (if (and (>= (bytevector-length b) 3)
+             (= (bytevector-u8-ref b 0) #xEF) (= (bytevector-u8-ref b 1) #xBB) (= (bytevector-u8-ref b 2) #xBF))
+        (string-append (string #\xFEFF) (line-text (byte-slice b 3 (bytevector-length b))))
+        (safe-utf8 b)))
+
   ;; STRICT, the optional argument after `starts`, is the import's test of a
   ;; cut (import-symbol-cuts); split-suggest does not ask it. Two more lines
   ;; are then not at the top level, as the scanner's state reads them:
@@ -591,6 +603,13 @@
   (define (suggest-boundaries entry bytes . rest)
     (define starts (and (pair? rest) (car rest)))
     (define strict (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
+    ;; THE LINE SCAN IS TAKEN WHEN THERE ARE NO STARTS -- exactly #f: a list,
+    ;; the empty one included, is starts -- and the entry has `line-suggest`,
+    ;; whose options, an empty list included, are then the scan's. Without
+    ;; starts is split-suggest without symbols and landing-files' file-pieces
+    ;; (a file's first cut into blocks): the line scan is suggestion only, and
+    ;; the routes that are given starts never see it.
+    (define line-options (and (not starts) (language-property entry 'line-suggest #f)))
     (define not-top-level '())
     (define code-lines '())
     ;; THE STARTS ARE ASKED ONCE A LINE, so they are a table: a list searched
@@ -598,8 +617,13 @@
     (define start-table
       (and starts (let ((h (make-eqv-hashtable))) (for-each (lambda (n) (hashtable-set! h n #t)) starts) h)))
     (define (start? offset) (and start-table (hashtable-ref start-table offset #f)))
-    (define (definition? offset trimmed)
-      (if starts (start? offset) (definition-name entry trimmed)))
+    ;; The line scan matches a def-head against the RAW line, so a head is a
+    ;; definition only at column 0; the lexical scan, which knows the nesting,
+    ;; matches the line without its indentation.
+    (define (definition? offset line trimmed)
+      (cond (starts (start? offset))
+            (line-options (definition-name entry line))
+            (else (definition-name entry trimmed))))
     (define (symbol-not-top-level! offset)
       (when (start? offset)
         (set! not-top-level (cons (list 'symbol-not-top-level (list 'at offset)) not-top-level))))
@@ -701,7 +725,7 @@
             (when (and top? (not continues?) (not (string=? trimmed "")) (not (comment-line? trimmed)))
               (set! code-lines (cons offset code-lines)))
             (cond
-              ((and top? (definition? offset trimmed))
+              ((and top? (definition? offset line trimmed))
                (let ((start (or pending offset)))
                  (when (> start (car boundaries)) (set! boundaries (cons start boundaries))))
                (set! pending #f))
@@ -748,7 +772,7 @@
                          (when (and (null? stack) (eq? designation 'unattempted)) (set! head ""))
                          (set! stack (cons (string-ref p 1) stack)) (loop (+ i 1))))
                       ((exists (lambda (p) (char=? c (string-ref p 1))) pairs)
-                       (unless (and (pair? stack) (char=? c (car stack))) (fallback 'unbalanced (+ offset i)))
+                       (unless (and (pair? stack) (char=? c (car stack))) (fallback 'unbalanced (+ offset (bytevector-length (string->utf8 (substring line 0 i))))))
                        (head-end!)
                        (code! i) (set! stack (cdr stack))
                        (when (and (null? stack) (eq? designation 'designated)) (set! designation 'done))
@@ -783,7 +807,7 @@
                           (else (loop (+ i 1))))))))
             (let* ((rows (byte-lines (byte-slice bytes prefix (bytevector-length bytes))))
                    (offsets (map (lambda (row) (+ prefix (car row))) rows))
-                   (lines (map (lambda (row) (safe-utf8 (byte-slice bytes (+ prefix (car row)) (+ prefix (cadr row))))) rows))
+                   (lines (map (lambda (row) (line-text (byte-slice bytes (+ prefix (car row)) (+ prefix (cadr row))))) rows))
                    (judged (ecmascript-judgments lines (get 'type-syntax #f) (get 'annex-b-comments #f) continuation? (get 'jsx #f))))
               (when (and (pair? judged) (eq? (car judged) 'fallback))
                 (let ((ln (caddr judged)) (ch (cadddr judged)))
@@ -796,7 +820,24 @@
                   (let ((j (vector-ref judged k)))
                     (decide-line! (car os) (car ls) (trim-left (car ls)) (car j) (cdr j)))
                   (loop (cdr os) (cdr ls) (+ k 1))))))
-          (unless (usable-profile? entry)
+          ;; THE LINE SCAN: every line after the protected prefix is decided by
+          ;; the same decide-line!, at the top level and continuing nothing,
+          ;; since no bracket, quote or heredoc is followed: nothing is
+          ;; lexically uncertain, unbalanced or unclosed. A line that equals one
+          ;; of the options' `stop-lines` ends the scan -- the line as
+          ;; byte-lines gives it, without the CR of a CRLF, so a second CR is
+          ;; the line's own -- and neither it nor any line after it is read:
+          ;; they stay in the block begun before them.
+          (define (line-pass)
+            (let ((stops (language-property line-options 'stop-lines '())))
+              (let loop ((rows (byte-lines (byte-slice bytes prefix (bytevector-length bytes)))))
+                (when (pair? rows)
+                  (let* ((offset (+ prefix (car (car rows))))
+                         (line (line-text (byte-slice bytes offset (+ prefix (cadr (car rows)))))))
+                    (unless (member line stops)
+                      (decide-line! offset line (trim-left line) #t #f)
+                      (loop (cdr rows))))))))
+          (unless (or line-options (usable-profile? entry))
             (fallback 'unknown-profile 0))
           ;; NEVER: A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT. The whole
           ;; file is tested without its mark, and an offset found in the
@@ -809,16 +850,18 @@
                 (let loop ((i 0))
                   (when (< i (string-length s))
                     (if (string-prefix-at? s token i) (fallback 'lexically-uncertain (+ (mark-length bytes) (bytevector-length (string->utf8 (substring s 0 i)))))
-                        (loop (+ i 1))))))) (get 'global-uncertain-tokens '()))
-          ;; the ecmascript profiles take their own scan; every other profile
-          ;; the table scan below, line by line, and its end-of-file check
-          (if (equal? (get 'lexer #f) "ecmascript")
-              (ecmascript-pass)
-              (begin
+                        (loop (+ i 1))))))) (if line-options '() (get 'global-uncertain-tokens '())))
+          ;; the line scan, when it is taken; the ecmascript profiles their own
+          ;; scan; every other profile the table scan below, line by line, and
+          ;; its end-of-file check
+          (cond
+            (line-options (line-pass))
+            ((equal? (get 'lexer #f) "ecmascript") (ecmascript-pass))
+            (else
           (for-each
             (lambda (row)
               (let* ((offset (+ prefix (car row)))
-                     (line (safe-utf8 (byte-slice bytes offset (+ prefix (cadr row)))))
+                     (line (line-text (byte-slice bytes offset (+ prefix (cadr row)))))
                      (trimmed (trim-left line))
                      ;; the first level of a designated body form counts as the
                      ;; top level for the regex supplier only: supplied starts
@@ -840,7 +883,7 @@
                         (run (symbol-not-top-level! offset) (set! fence run))
                         (else
                          (unless (string=? trimmed "") (set! code-lines (cons offset code-lines)))
-                         (when (and (definition? offset trimmed) (> offset (car boundaries)))
+                         (when (and (definition? offset line trimmed) (> offset (car boundaries)))
                            (set! boundaries (cons offset boundaries))))))
                     (begin
                       (decide-line! offset line trimmed top? continues?)
