@@ -548,6 +548,24 @@ a red that says its own name rather than a confident wrong number. **It does not
 replace the verdict**: whether a mutant was caught is settled by the failures,
 and a stale row baseline cannot make that wrong.
 
+The table's third column is a line count, and it is the count of the runner's
+own output: `wc -l` of `<name>.out`, which `launch.pl` writes with the fixture's
+standard error merged into its standard output. A count taken with standard
+error apart is short by the fixture's standard-error lines, and many fixtures
+have one: a process announces `(theourgia machine-home ...)` on standard error
+when `THEOURGIA_HOME` is set, and the runner unsets it, but a fixture that gives
+its stores a home of its own sets it. So a line count is taken through
+`launch.pl`, or from a suite run. Some counts also move while the fixture stays
+the same, which is why a differing line count is printed and does not refuse:
+`datum-self` prints one line per own source, so it grows with the tree;
+`liveness` prints an `LV-6` line for each entry that
+`change-stream-guard-expect.sexp` lists, and a second one when that entry is
+outline or describe, so it moves with that file; and
+`log15` and `runner-self` print `NOTE <signal> to <pid> not sent: already gone`
+when a process has exited before a signal was sent to it, which depends on
+timing. A count that differs on those four at a gate is expected and is not
+chased; the md5 and the row count are the columns that refuse.
+
 ## Two rows that were green for reasons unrelated to what they assert
 
 Both were found because an unrelated change perturbed the surrounding code, not
