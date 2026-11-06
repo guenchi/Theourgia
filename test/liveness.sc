@@ -688,7 +688,15 @@ while (my $c = $srv->accept) {
             '(ok failed 4 2)))
 
     ;; ---- LV-14 an unrelated cached writer's death is not this request's -----------------
-    (let* ((n (files-for 8000))
+    ;; NOTE: THE EXPORT IS SIZED BY A COUNT, NOT BY files-for. An exported
+    ;; file costs mostly CPU, and more as the export grows (measured: about
+    ;; 11 ms a file at 843 files, 15 at 3100 and 19 at 5000, on a machine
+    ;; whose flush calibration reads 10 ms). A size taken from the flush
+    ;; calibration is far too large where flushes are cheap: at 1.6 ms a
+    ;; flush the row exported 5000 files and outlasted its own wait. 1500
+    ;; files outlast the kill, a command line that has taken up to 5.2 s to
+    ;; return under load.
+    (let* ((n 1500)
            (st (fresh-store! n))
            (d (start-daemon! st (string-append test-clocks " THEOURGIA_FAULT=writer-raise-second@conn"))))
       (unless (daemon? d) (not-a-reading! "LV-14" d))
@@ -718,8 +726,6 @@ while (my $c = $srv->accept) {
                    (`(eof ,r) (send me (list 'lv14 'eof phase)))))))))
         (receive (after 10000 #f) (`(lv14 cached) #t))
         (sleep-ms 300)
-        ;; the cached writer's SECOND request kills it, from another connection
-        (cli "" "drafts" "--writer" "w1" "--store" st "--socket" (d-sock d))
         ;; THE ORDER IS THE DAEMON'S OWN: this process is blocked while the
         ;; command line runs, so a time this side takes says nothing. In the
         ;; daemon's trace the export's connection records the cached writer's
@@ -728,10 +734,23 @@ while (my $c = $srv->accept) {
         ;; request's wait writes keepalives, so the DOWN reached that wait,
         ;; not write-answer's: executing-done is traced after the store loop
         ;; has sent the answer, so the interval alone does not say which.
-        ;; The export's is the one pending version-2 request here.
-        (let* ((a (receive (after 40000 '(lv14 nothing))
-                    (`(lv14 ,tag . ,rest) (if (eq? tag 'answer) rest (cons tag rest)))))
-               (r (and (pair? a) (string? (car a)) (car a)))
+        ;; The export's is the one pending version-2 request here. The times
+        ;; printed below are a red reading's diagnostics, not that proof.
+        ;; The first binding is the kill: the cached writer's SECOND request,
+        ;; from another connection.
+        (let* ((kill-run (cli "" "drafts" "--writer" "w1" "--store" st "--socket" (d-sock d)))
+               (killed-at (real-time))
+               ;; NOTE: THE CAP GUARDS AGAINST A DEAD ACTOR; IT IS NOT THE ROW'S
+               ;; CLOCK. The actor's own 30 s without a byte is the progress
+               ;; clock, and a keepalive every 400 ms resets it. 1500 files at
+               ;; the worst cost measured, 19 ms a file, take 28.5 s; the cap is
+               ;; about six times that.
+               (a (receive (after 180000 '(nothing))
+                    (`(lv14 ,tag . ,rest) (cons tag rest))))
+               ;; an answer carries the time the actor read it; anything else
+               ;; is timed where it is received here
+               (arrived (if (eq? (car a) 'answer) (caddr a) (real-time)))
+               (r (and (eq? (car a) 'answer) (string? (cadr a)) (cadr a)))
                ;; the export's executor finishes on its own clock, whenever the
                ;; answer came: wait for its executing-done before reading
                (log (let wait ((k 0))
@@ -754,8 +773,21 @@ while (my $c = $srv->accept) {
                 window #t)
           (want "LV-14 and the export's wait went on after it: a keepalive follows the DOWN before the executing-done"
                 went-on #t)
+          ;; ONE LINE ALWAYS, so that a red row reads itself. For an answer,
+          ;; answer-wait-ms is the actor's read time relative to the kill's
+          ;; return (the actor does not run while the command line blocks
+          ;; this process); a value near zero cannot tell an answer buffered
+          ;; during that call from one arriving just after it. For any other
+          ;; shape it is the receipt time here. The order is the daemon
+          ;; trace's, the two wants above.
+          (printf "lv14: n ~a cli-ms ~a answer-wait-ms ~a a ~a\n"
+                  n (caddr kill-run) (- arrived killed-at)
+                  (if (eq? (car a) 'answer)
+                      "answer"
+                      (apply string-append (symbol->string (car a))
+                             (map (lambda (x) (format " ~a" x)) (cdr a)))))
           (want "LV-14 a cached writer that dies during this connection's export is not its terminal: the export answers ok"
-                (and (string? r) (contains? r "(ok (files")) #t)))
+                (if (and (string? r) (contains? r "(ok (files")) #t a) #t)))
       (stop-daemon! d))
 
     ;; ---- LV-6b the retry at version 1 -------------------------------------------------
