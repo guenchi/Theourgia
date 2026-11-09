@@ -29,7 +29,9 @@ jobs:
       matrix:
         runner: [macos-latest]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    # 240: the suite alone took 2 h 26 to 2 h 47 min on this runner in
+    # 2026-11 (runs 42135204106, 42177742733); 180 left the verdict unrun.
+    timeout-minutes: 240
     defaults:
       run:
         shell: bash
@@ -162,11 +164,17 @@ jobs:
           date '+suite end %H:%M:%S'
           echo "suite rc: $(cat suite.rc)"
           tail -60 suite.log
-          # EACH NOT-GREEN FIXTURE AGAIN, ALONE: fresh roots, a 900 s limit,
-          # outside the runner. Evidence for the classification, not the
-          # classification itself.
+          # EACH NOT-GREEN FIXTURE NOT IN KNOWN-RED AGAIN, ALONE: fresh roots,
+          # a 900 s limit, outside the runner. Evidence for the classification,
+          # not the classification itself. A fixture listed in known-red.txt is
+          # judged on the development machine whatever it answers alone, so it
+          # is not rerun here: seven reruns of up to 900 s each put three runs
+          # of 2026-11 past the job cap before the verdict (ruling 2026-11-09).
           mkdir -p "$W/rerun"
           for fx in $(grep '^RED ' suite.log | awk '{print $2}'); do
+            if awk -F'\t' -v f="$fx" '$1==f' harness/known-red.txt | grep -q .; then
+              echo "rerun $fx: not run, listed in known-red.txt"; continue
+            fi
             f="$W/lib/theourgia/test/$fx.sc"; runner="scheme --script"
             [ -f "$f" ] || { f="$W/lib/theourgia/test/$fx.py"; runner="python3"; }
             root=$(mktemp -d "$W/testroot/rerun.XXXXXX"); sock=$(mktemp -d /tmp/ths.XXXXXX)
