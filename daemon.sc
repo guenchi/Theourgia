@@ -3199,7 +3199,7 @@
                 (argument-option nodes "--cut")
                 #t))))
 
-;; AN EXPORT OF THE PRESENT, committed or --working: answered from the
+  ;; AN EXPORT OF THE PRESENT, committed or --working: answered from the
   ;; publication made current first, as an export at a cut is. It reads the
   ;; state through reduction-for (the published object, unsealed) and the
   ;; working view builds on that state when the drafts' cut is its cut.
