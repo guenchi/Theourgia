@@ -953,6 +953,20 @@
          (startup-report! (state-attempt st) (combine-report answer (state-main-record st))))
        (report-quietly '(exiting (reason store-actor-down)))
        (leave st 75))
+      ;; THE LISTENER COULD NOT PUBLISH ITS SOCKET (listener-loop): the start
+      ;; is refused as claim-public!'s refusal is, one report through
+      ;; combine-report with main's record and exit 75 -- serve-path-occupied
+      ;; for an entry found at the path, the table's answer for the condition
+      ;; symlink! raised. It is the start's one report: the listener sends it
+      ;; before `bound`, so no `serving` line was written. The listener's
+      ;; death that follows is never processed.
+      (`(publish-refused (path ,p) (reason ,r) ,c)
+       (guard (e (#t (trace-event! 'startup-report-failed #f #f)))
+         (startup-report! (state-attempt st)
+                          (combine-report (or (and c (classify-failure c '()))
+                                              `(error serve-path-occupied (path ,p)))
+                                          (state-main-record st))))
+       (leave st 75))
       (`(bound ,ident)
        (state-bound-set! st ident)
        (cond
@@ -2858,21 +2872,26 @@
       ;; THE PUBLIC LINK IS PUBLISHED AFTER THE BIND, so a client that finds it
       ;; finds a socket behind it. symlink(2) never replaces: an entry made at
       ;; the public path since the startup cleared it is left there, the
-      ;; private socket is unlinked again, and the listener dies, which main
-      ;; reports as listener-down.
-      ;; The refusal is traced here, so a reader of the trace can tell a
-      ;; publish collision from a bind failure; both exit as listener-down.
-      ;; A symlink! that raises (the directory not writable, say) is refused
-      ;; the same way, its errno the reason, and the private socket is
-      ;; unlinked through cleanup-step!, so a failure there is logged, and
-      ;; only while it is still the socket bound. Its identity is read before
-      ;; the publish, so a failure to read it leaves nothing published.
+      ;; private socket is unlinked again, and main is told why before the
+      ;; listener dies: (publish-refused (path P) (reason R) <condition or #f>).
+      ;; Main writes the start report from it and exits as claim-public!'s
+      ;; refusal does -- serve-path-occupied for an entry found there, the
+      ;; table's answer for a symlink! that raised (the directory not
+      ;; writable, say). A bind failure still ends as listener-down.
+      ;; The refusal is traced here, its errno the reason when symlink!
+      ;; raised, and the private socket is unlinked through cleanup-step!, so
+      ;; a failure there is logged, and only while it is still the socket
+      ;; bound. Its identity is read before the publish, so a failure to read
+      ;; it leaves nothing published.
       (let* ((bound-ident (entry-identity private))
-             (published (guard (e ((fs-error? e) (fs-error-errno e))) (symlink! target socket))))
+             (published (guard (e ((fs-error? e) e)) (symlink! target socket))))
         (unless (eq? published 'created)
-          (trace-event! 'publish-refused `(path ,socket) `(reason ,published))
-          (cleanup-step! private (lambda () (unlink-made! private bound-ident)))
-          (raise `(error serve-path-occupied (path ,socket))))
+          (let ((reason (if (fs-error? published) (fs-error-errno published) published)))
+            (trace-event! 'publish-refused `(path ,socket) `(reason ,reason))
+            (cleanup-step! private (lambda () (unlink-made! private bound-ident)))
+            (send main-pid (list 'publish-refused (list 'path socket) (list 'reason reason)
+                                 (and (fs-error? published) published)))
+            (raise `(error serve-path-occupied (path ,socket)))))
         ;; BOUND IS THE PRIVATE FILE'S NAME, THE LINK'S TEXT AND BOTH
         ;; IDENTITIES: the exit unlinks each while it is still that entry.
         (send main-pid (list 'bound (list private target bound-ident (entry-identity socket)))))

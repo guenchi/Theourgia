@@ -569,7 +569,15 @@
 ;;
 ;; Held at the bind, after the start cleared the public path: an entry made
 ;; there now is not replaced. The listener's publish is refused and traced,
-;; its private socket unlinked, and the daemon exits listener-down, 75.
+;; its private socket unlinked, and main reports the start refused as
+;; claim-public! refuses it, serve-path-occupied naming the path, exit 75 --
+;; not listener-down, which it was.
+;; -> the first (error ...) datum of TEXT, cut to its first N elements
+(define (first-error text n)
+  (let ((e (find (lambda (d) (and (pair? d) (eq? (car d) 'error))) (datums text))))
+    (if e (head-of e n) 'no-error)))
+(define (clause-in d name)
+  (and (pair? d) (list? d) (find (lambda (c) (and (pair? c) (eq? (car c) name))) (cdr d))))
 (let* ((d (fresh-dir "pp"))
        (rel (string-append here "/pp-rel"))
        (pid (launch! "pp" d store "s" "" (string-append "THEOURGIA_TRACE=1 " (hold-env "bind" rel))))
@@ -579,10 +587,10 @@
        (_ (release! rel))
        (rc (rc-wait "pp"))
        (text (file-text (string-append here "/pp.out"))))
-  (want "W5p2 a publish refused after the bind: traced publish-refused, then listener-down, exit 75"
+  (want "W5p2 a publish refused after the bind: traced publish-refused, the start reported serve-path-occupied naming the path, not listener-down, exit 75"
         (list reached rc (text-has? text "(trace publish-refused (path s) (reason exists))")
-              (text-has? text "(exiting (reason listener-down))"))
-        '(#t 75 #t #t))
+              (first-error text 3) (text-has? text "(exiting (reason listener-down))"))
+        '(#t 75 #t (error serve-path-occupied (path "s")) #f))
   (want "W5p2 the entry found at the socket path is kept, and no private socket is left"
         (list (kind (string-append d "/s")) (file-text (string-append d "/s")) (names (string-append d "/s.d." pt)))
         '(regular "mine\n" (".endpoint"))))
@@ -591,7 +599,9 @@
 ;;
 ;; The socket's directory made unwritable during the bind hold: symlink(2)
 ;; fails EACCES. Refused and traced the same way, its errno the reason, and
-;; the private socket unlinked.
+;; the private socket unlinked; the start is reported by the table's answer
+;; for the symlink that failed -- incomplete, since the start had made its
+;; namespace by then, the failure under `failed` -- not listener-down.
 (let* ((d (fresh-dir "p3"))
        (rel (string-append here "/p3-rel"))
        (pid (launch! "p3" d store "s" "" (string-append "THEOURGIA_TRACE=1 " (hold-env "bind" rel))))
@@ -602,10 +612,15 @@
        (rc (rc-wait "p3"))
        (_ (sh (string-append "chmod 700 " d)))
        (text (file-text (string-append here "/p3.out"))))
-  (want "W5p3 a publish that fails EACCES after the bind: traced with reason 13, listener-down, exit 75"
+  (want "W5p3 a publish that fails EACCES after the bind: traced with reason 13, the start reported by the table (the symlink's op, path and errno), not listener-down, exit 75"
         (list reached rc (text-has? text "(trace publish-refused (path s) (reason 13))")
+              (let ((e (first-error text 99)))
+                (and (pair? e)
+                     (list (head-of e 2)
+                           (let ((f (or (clause-in e 'failed) e)))
+                             (list (clause-in f 'op) (clause-in f 'path) (clause-in f 'errno))))))
               (text-has? text "(exiting (reason listener-down))"))
-        '(#t 75 #t #t))
+        '(#t 75 #t ((error incomplete) ((op symlink) (path "s") (errno 13))) #f))
   (want "W5p3 and the private socket is unlinked: only the marker is left in the namespace"
         (list (names (string-append d "/s.d." pt)) (kind (string-append d "/s")))
         '((".endpoint") absent)))

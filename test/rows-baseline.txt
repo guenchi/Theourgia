@@ -42,7 +42,7 @@ crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 74 79 ce6de47cc4f3b023746a65667ed02bcc
 daemon-idle 124 132 d8284e5750007ed15a7e0db5648e2f98
 daemon-link-gate 38 41 cea34b20543f41532539d2f004f9967b
-daemon-namespace 118 122 bf0890eb8f45fa1e4cf0cae2b2dcd791
+daemon-namespace 118 122 d7c85715e225bd61331810ef386a3627
 daemon-session 27 37 4792ae8b130ff43bfffe26bbb9c092c0
 daemon-socket 13 19 41340dde0cd776315a9d7622b8afa717
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
