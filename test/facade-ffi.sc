@@ -545,6 +545,26 @@
       (list (recorded (lambda () (unlink! (under "f100a-gone"))))
             (entry-type (under "f100a-gone")))
       (list (list (list 'unlink (under "f100a-gone"))) 'absent))
+;; AN ABSENT ENTRY IS THE DELETION'S AIM: unlink! of a name that is not
+;; there returns, raising nothing and noting nothing. Every other failure
+;; raises durable-error, op unlink, with the path and the errno: a file in a
+;; directory at 500 stays, and nothing is noted.
+(want "PRIM-10b unlink! of an absent path returns, raises nothing and notes nothing"
+      (list (class-of (lambda () (unlink! (under "f100a-never-there"))))
+            (recorded (lambda () (unlink! (under "f100a-never-there")))))
+      (list 'returned '()))
+(mkdir-p! (under "f100a-sealed"))
+(touch! (under "f100a-sealed/kept") "k\n")
+(chmod! (under "f100a-sealed") "500")
+(let ((raised (guard (e ((fs-error? e) (list (fs-error-op e) (fs-error-target e) (fs-error-errno e)))
+                        (#t (list 'other e)))
+                (unlink! (under "f100a-sealed/kept"))
+                'returned))
+      (rec (recorded (lambda () (unlink! (under "f100a-sealed/kept"))))))
+  (chmod! (under "f100a-sealed") "700")
+  (want "PRIM-10c unlink! of a file in a directory at 500 raises durable-error naming unlink, the path and EACCES, notes nothing, and the file stays"
+        (list raised rec (bytes-of (under "f100a-sealed/kept")))
+        (list (list 'unlink (under "f100a-sealed/kept") EACCES) '() "k\n")))
 (touch! (under "f100a-trunc") "abcdef\n")
 (want "PRIM-11 a successful ftruncate! is noted as (truncate p)"
       (let ((fd (fd-open (under "f100a-trunc") '(write))))

@@ -172,7 +172,8 @@
 ;;;                                       whatever occupies the name
 ;;;   rename-over!        rename          durable-error
 ;;;   link!               link            durable-error; 'exists on EEXIST
-;;;   unlink!             unlink          durable-error
+;;;   unlink!             unlink          durable-error; an absent entry
+;;;                                       (ENOENT) is silent
 ;;;   file-is-socket? real-path           #f for any failure (their
 ;;;                                       handlers are not converted yet)
 ;;;   path-case-sensitive?  pathconf; `unknown` for any failure, not
@@ -773,6 +774,11 @@
   ;; nothing when it could not delete, so a failed unlink read as a
   ;; done one. A failure raises durable-error with the errno; success is
   ;; noted.
+  ;; AN ABSENT ENTRY IS SILENT: the name is gone, which is what the deletion
+  ;; is for, so ENOENT removes nothing, notes nothing, traces nothing and
+  ;; raises nothing. Every caller asks about absence before it unlinks; a
+  ;; removal by someone else between that question and the unlink is not a
+  ;; failure of this one.
   ;; The injected unlink-fail stands where the syscall would and skips it,
   ;; so it removes nothing and notes nothing.
   (define (unlink! path)
@@ -784,10 +790,13 @@
                         (values -1 injected)
                         (let ((rc (c-unlink path)))
                           (values rc (and (< rc 0) (errno))))))))
-      (when (< rc 0) (raise (fs-err 'unlink path code)))
-      (note! (list 'unlink path))
-      (trace-event! 'unlink path #f)
-      path))
+      (cond
+        ((and (< rc 0) (eqv? code ENOENT)) path)
+        ((< rc 0) (raise (fs-err 'unlink path code)))
+        (else
+         (note! (list 'unlink path))
+         (trace-event! 'unlink path #f)
+         path))))
 
   ;; symlink(2): LINK-PATH is created as a symbolic link whose text is
   ;; TARGET, exactly as given (a relative target resolves against the link's

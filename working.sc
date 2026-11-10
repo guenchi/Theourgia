@@ -34,14 +34,14 @@
                 remember-unreadable-notes! unreadable-behind
                 directory-entry-durable! present-or-unreadable-skip?
                 ownership-table ownership-passed-over? ownership-foreign-beside-owned?)
-          (only (theourgia answers) with-written classify-failure)
+          (only (theourgia answers) with-written classify-failure failure-clauses)
           (only (theourgia arguments) working-id?)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
                 hold-point!
                 entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
-                unreadable-entry-reason fs-error? fs-error-op fs-error-errno)
+                unreadable-entry-reason)
           (only (theourgia datum-code) datum-source-read))
 
   ;; NEVER: A DRAFT OR A DIRECTORY THIS PROCESS CANNOT READ IS NOT ONE THAT IS
@@ -1816,21 +1816,21 @@
                 #f))
           #f)))
 
+  ;; A FAILURE THE TABLE CLASSIFIES IS NAMED IN THE TABLE'S CLAUSES: a
+  ;; durable-error as (op) (path) (reason) (errno), an unreadable-entry as
+  ;; (path) (reason) (errno), exactly as the table would answer it, under
+  ;; this clause's own name. Anything else keeps the path asked about and a
+  ;; reason of its own.
   (define (cleanup-failed path failure)
+    (let ((clauses (failure-clauses failure)))
+      (if clauses (cons 'cleanup-failed clauses) (cleanup-failed-text path failure))))
+  (define (cleanup-failed-text path failure)
     (list 'cleanup-failed
-          (list 'path (if (unreadable-entry? failure) (unreadable-entry-path failure) path))
+          (list 'path path)
           (list 'reason
-                (cond ((unreadable-entry? failure) (unreadable-entry-reason failure))
-                      ((fs-error? failure)
-                       (let ((op (fs-error-op failure)) (n (fs-error-errno failure)))
-                         (string-append (cond ((symbol? op) (symbol->string op))
-                                              ((string? op) op)
-                                              (else "an operation"))
-                                        " failed, errno "
-                                        (if (number? n) (number->string n) "unknown"))))
-                      ((and (condition? failure) (message-condition? failure))
-                       (condition-message failure))
-                      (else "the cleanup failed")))))
+                (if (and (condition? failure) (message-condition? failure))
+                    (condition-message failure)
+                    "the cleanup failed"))))
 
   ;; An answer with the cleanup clause, when there is one, at its end.
   (define (with-cleanup answer failed)

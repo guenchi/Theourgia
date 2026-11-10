@@ -180,7 +180,12 @@
                   (text-of s w A)
                   (and c (list? c) (assq 'path (cdr c)) #t)
                   (and c (list? c) (assq 'reason (cdr c)) #t)))
-          '(ok "draft text" #t #t))))
+          '(ok "draft text" #t #t))
+    ;; THE CLAUSE IS THE TABLE'S: the unlink's durable-error named as the
+    ;; table names one, op, path, reason and errno, under cleanup-failed.
+    (want "U10 cleanup failing at deletion names the failed unlink in the table's clauses: op unlink, the draft file, the system's reason and its errno"
+          (clause-in a 'cleanup-failed)
+          (list 'cleanup-failed '(op unlink) (list 'path (draft-file s w A)) '(reason "Permission denied") '(errno 13)))))
 ;; AT LOCK ACQUISITION: draft.lock present and unopenable.
 (let* ((sw (fresh-store!)) (s (car sw)) (w (cadr sw))
        (A (insert s w "A"))
