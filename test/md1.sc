@@ -280,6 +280,77 @@
         (list n raw (<= (* 100 raw) (* 20 n))))
       (list 7 1 #t))
 
+;; A BACKTICK RUN WITH A BACKTICK AFTER IT ON ITS LINE OPENS NO FENCE.
+;; CommonMark: the info string of a backtick fence holds no backtick, so
+;; "```x()```" is a code span. The splitter and the block parser ask the
+;; same fence-at, so one such line taken for an opener hid every heading
+;; after it from the splitter and every block after it from the parser.
+;; Inside an open fence the same line, taken for a closer, ended the block
+;; early; it is now a line of the block's text.
+(printf "== a one-line backtick run is a span, and a heading-shaped line ends a paragraph ==\n")
+(define (no-span b) (cons (car b) (cddr b)))
+(want "MD-1a the splitter: a one-line backtick run leaves the heading after it a section"
+      (map cadr (caddr (shape "# A\n```refusal()```\n\n# B\nbody\n")))
+      '("A" "B"))
+(want "MD-1b the refs: a reference after a one-line backtick run is found"
+      (map caddr (md-ref-nodes "```x()```\n\nsee [[other]]\n"))
+      '("other"))
+(want "MD-1c the parser: a paragraph holding a one-line backtick run is one paragraph with a code span"
+      (map no-span (md->blocks "before\n```refusal()```\nafter\n"))
+      '((para "before\n" (code "refusal()") "\nafter")))
+(want "MD-1d CONTROL: a backtick fence with an info string still opens, and a tilde fence's info may hold a backtick"
+      (list (map car (md->blocks "```scheme\n(+ 1 2)\n```\n"))
+            (caddr (car (md->blocks "```scheme\n(+ 1 2)\n```\n")))
+            (map car (md->blocks "~~~ a`b\nx\n~~~\n")))
+      '((code) "scheme" (code)))
+(want "MD-1e the parser: inside an open backtick fence a one-line backtick run is a line of the block, which ends at its real closer"
+      (let ((bs (md->blocks "```\nbefore\n```x()```\nafter\n```\ntail\n")))
+        (list (map car bs) (cadddr (car bs))))
+      '((code para) "before\n```x()```\nafter"))
+(want "MD-1f the splitter: inside an open backtick fence a one-line backtick run closes nothing, so the heading-shaped line after it is not a section and the heading after the real closer is"
+      (map cadr (caddr (shape "# A\n```\n```x()```\n# not a heading\n```\n# B\nbody\n")))
+      '("A" "B"))
+;; A HEADING-SHAPED LINE IN A BLOCK'S TEXT ENDS THE PARAGRAPH BEFORE IT.
+;; md->blocks has no heading node (headings are sections, split out
+;; first), so the line stays a paragraph of its own; what changes is that a
+;; code span can no longer cross it.
+(want "MD-2a a heading-shaped line is a paragraph of its own between two others"
+      (map no-span (md->blocks "a\n# h\nb\n"))
+      '((para "a") (para "# h") (para "b")))
+(want "MD-2b a code span does not cross a heading-shaped line"
+      (map no-span (md->blocks "Call `unfinished\n# Heading `refusal`\n"))
+      '((para "Call `unfinished") (para "# Heading " (code "refusal"))))
+(want "MD-2c CONTROL: a hash with no space after it continues the paragraph"
+      (map no-span (md->blocks "a\n#b\n"))
+      '((para "a\n#b")))
+;; THE PRINTER ESCAPES EVERY LINE THE PARSER WOULD SPLIT AT, and a list
+;; item keeps a heading-shaped line inside its paragraph: an item's
+;; paragraphs cannot be printed apart (a blank line ends the list). Each row
+;; is the parse with spans erased, and whether printing it and parsing the
+;; print gives the same tree.
+(define (erase-spans x)
+  (if (pair? x)
+      (map erase-spans (filter (lambda (y) (not (and (pair? y) (eq? (car y) 'span)))) x))
+      x))
+(define (round-trip src)
+  (let ((t (erase-spans (md->blocks src))))
+    (list t (equal? t (erase-spans (md->blocks (blocks->md (md->blocks src))))))))
+(want "MD-2d an escaped heading-shaped line inside a paragraph is printed escaped, so the paragraph round trips"
+      (round-trip "a\n\\# h\nb\n")
+      '(((para "a\n# h\nb")) #t))
+(want "MD-2e the same inside a list item"
+      (round-trip "- a\n  \\# h\n  b\n")
+      '(((list #f 1 (item (para "a\n# h\nb")))) #t))
+(want "MD-2f the same inside a quote"
+      (round-trip "> a\n> \\# h\n> b\n")
+      '(((quote (para "a\n# h\nb"))) #t))
+(want "MD-2g in a list item a heading-shaped line continues the paragraph: one item with one paragraph, as c8c08c9 parsed it, and it round trips"
+      (round-trip "- a\n  # h\n  b\n")
+      '(((list #f 1 (item (para "a\n# h\nb")))) #t))
+(want "MD-2h in a quote a heading-shaped line is a paragraph of its own between two others, and the three round trip"
+      (round-trip "> a\n> # h\n> b\n")
+      '(((quote (para "a") (para "# h") (para "b"))) #t))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "md1 complete\n")

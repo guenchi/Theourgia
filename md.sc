@@ -73,6 +73,12 @@
   ;; splitter cuts a new section in the middle of a code block, and the
   ;; two halves are then exported around a heading line that the file
   ;; never contained.
+  ;; A BACKTICK RUN WITH A BACKTICK AFTER IT ON ITS LINE IS NO FENCE
+  ;; (CommonMark: a backtick fence's info string holds no backtick), so
+  ;; "```x()```" is a code span. The splitter, the block parser and the
+  ;; paragraph all ask here; taken for an opener that never closes, one
+  ;; such line hid every later heading from the splitter and every later
+  ;; block from the parser. A tilde fence's info string may hold one.
   (define (fence-at text start end)
     (let loop ((i start) (indent 0))
       (cond
@@ -85,7 +91,11 @@
                        (if (and (< j end) (char=? (string-ref text j) c))
                            (count (+ j 1) (+ k 1))
                            k))))
-           (and (>= run 3) (cons c run))))
+           (and (>= run 3)
+                (not (and (char=? c #\`)
+                          (let scan ((k (+ i run)))
+                            (and (< k end) (or (char=? (string-ref text k) #\`) (scan (+ k 1)))))))
+                (cons c run))))
         (else #f))))
 
   ;; ---- headings ------------------------------------------------------------
@@ -368,10 +378,13 @@
 
   (define (md->blocks text)
     (let ((ls (list->vector (lines-of text))))
-      (blocks-of text ls (top-places text ls) (string->utf8 text))))
+      (blocks-of text ls (top-places text ls) (string->utf8 text) #t)))
 
   ;; SRC is the top src's bytes, which a raw-md node's text is sliced from.
-  (define (blocks-of text ls places src)
+  ;; APART? says what the container can print: #t when two of its
+  ;; paragraphs can be printed apart (a blank line between them), which is
+  ;; what lets a heading-shaped line end a paragraph (take-para).
+  (define (blocks-of text ls places src apart?)
     (let loop ((i 0) (out '()))
       (if (>= i (vector-length ls))
           (reverse out)
@@ -403,7 +416,7 @@
                (let-values (((node next) (take-raw text ls places src i #t)))
                  (loop next (cons node out))))
               (else
-               (let-values (((node next) (take-para text ls places i)))
+               (let-values (((node next) (take-para text ls places i apart?)))
                  (loop next (cons node out)))))))))
 
   ;; AN UNCLOSED FENCE RUNS TO THE END: its span ends at the last line's.
@@ -447,7 +460,7 @@
           (let* ((child (join-lines (reverse body)))
                  (cls (list->vector (lines-of child))))
             (values (cons* 'quote (lines-span places i (- j 1))
-                           (blocks-of child cls (child-places (reverse kept)) src))
+                           (blocks-of child cls (child-places (reverse kept)) src #t))
                     j))
           (let* ((l (vector-ref ls j))
                  (whole (line-text text l))
@@ -501,10 +514,14 @@
     (define (item-node lines)
       (let* ((child (join-lines (map car lines)))
              (cls (list->vector (lines-of child))))
+        ;; AN ITEM'S PARAGRAPHS CANNOT BE PRINTED APART: a blank line ends
+        ;; the list (take-list), so two paragraphs of one item would print
+        ;; as one. A heading-shaped line therefore does not end a paragraph
+        ;; here, and a code span may cross it inside an item.
         (cons* 'item (lines-span places (caddr (car lines)) (caddr (car (reverse lines))))
                (blocks-of child cls
                           (child-places (map (lambda (e) (cons (vector-ref places (caddr e)) (cadr e))) lines))
-                          src))))
+                          src #f))))
     (append (list 'list ordered? (or start 1)
                   (lines-span places (caddr (car (car items))) (caddr (car (reverse (car (reverse items)))))))
             (map item-node items)))
@@ -522,13 +539,22 @@
                   (chars (+ c 1) (+ b (char-width (string-ref text c))) (cons b out))
                   (loop (+ k 1) (if (< (+ k 1) j) (cons b out) out))))))))
 
-  (define (take-para text ls places i)
+  ;; A HEADING-SHAPED LINE ENDS A PARAGRAPH, and is a paragraph of its own:
+  ;; this AST has no heading node (headings are sections, split out before
+  ;; a body is parsed), so the line is kept as text, but a code span may not
+  ;; cross it, as it may not cross a heading in the file the section came
+  ;; from. Only where the container's paragraphs can be printed apart
+  ;; (APART?, blocks-of); elsewhere the line continues the paragraph.
+  (define (take-para text ls places i apart?)
     (let loop ((j i) (body '()))
       (if (or (>= j (vector-length ls))
               (let ((s (line-text text (vector-ref ls j))))
                 (or (blank? s)
                     (and (> j i)
-                         (or (fence-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))
+                         (or (and apart?
+                                  (or (heading-at text (car (vector-ref ls i)) (cadr (vector-ref ls i)))
+                                      (heading-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))))
+                             (fence-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))
                              (hr-line? s)
                              (list-marker s)
                              (starts-with? (trim-left s) ">")
@@ -899,7 +925,8 @@
 
   ;; Where a line read from P would start a block of another kind, the index
   ;; to escape, or #f: a bullet, an ordered marker (its `.` or `)`), a quote,
-  ;; a tilde fence, an hr, a table.
+  ;; a tilde fence, an hr, a table, a heading-shaped start (heading-at's own
+  ;; test, so the printer escapes every line the parser would split at).
   (define (marker-at s p)
     (let* ((n (string-length s)) (c (string-ref s p)))
       (cond
@@ -915,6 +942,7 @@
         ((char=? c #\|) p)
         ((and (char=? c #\~) (<= (+ p 3) n) (string=? (substring s p (+ p 3)) "~~~")) p)
         ((and (memv c '(#\- #\_ #\*)) (hr-line? s)) p)
+        ((heading-at s p n) p)
         (else #f))))
 
   ;; A CODE SPAN IS FENCED BY A RUN LONGER THAN ANY RUN INSIDE IT, so a
