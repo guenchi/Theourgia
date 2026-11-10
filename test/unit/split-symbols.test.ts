@@ -46,7 +46,7 @@ import {
   symbolsFileText,
   topLevelSymbols
 } from '../../src/split-symbols';
-import { CliTransport } from '../../src/transport';
+import { CliTransport, TransportError } from '../../src/transport';
 import { answerOf, initWire, isSym, parseAnswers } from '../../src/wire';
 import { FakeCore } from '../support/fake';
 import { IGNORED_DURABILITY } from '../support/ignored-durability';
@@ -180,19 +180,35 @@ interface Rig {
   deps: SplitDeps;
   written: Array<{ path: string; text: string }>;
   removed: string[];
+  review: string;
+  placed: string[];
+  discarded: string[];
 }
 
+/*
+ * THE SCRIPTED ANSWERS NAME THE REVIEW THE RIG HANDS OUT: `@REVIEW@` is
+ * replaced by that path, quoted as a string datum, so an answer that
+ * names the path the request sent is the ordinary case and any other
+ * path is written out in full.
+ */
 const OK_ANSWER =
-  '(ok (working-path "/r/split.js.review-1") (boundaries (0 30)) (warnings ((symbol-kinds function function))) ' +
+  '(ok (working-path "@REVIEW@") (boundaries (0 30)) (warnings ((symbol-kinds function function))) ' +
   '(cuts-from (vscode "1.2.3" "javascript")))\n';
 
+function datumString(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 function rig(text: string, symbols: unknown, answer = OK_ANSWER, rc = 0): Rig {
-  const core = new FakeCore([{ match: ['split-suggest'], stdout: answer, rc }]);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-split-'));
+  const review = path.join(dir, 'review', 'split.js');
+  const core = new FakeCore([{ match: ['split-suggest'], stdout: answer.split('@REVIEW@').join(datumString(review)), rc }]);
   const file = path.join(dir, 'split.js');
   fs.writeFileSync(file, text);
   const written: Array<{ path: string; text: string }> = [];
   const removed: string[] = [];
+  const placed: string[] = [];
+  const discarded: string[] = [];
   const doc = {
     uri: 'file:///split.js',
     fsPath: file,
@@ -235,9 +251,16 @@ function rig(text: string, symbols: unknown, answer = OK_ANSWER, rc = 0): Rig {
     removeSymbols: (p) => {
       removed.push(p);
       fs.rmSync(p, { force: true });
+    },
+    reviewPath: (source) => {
+      placed.push(source);
+      return review;
+    },
+    discardReview: (p) => {
+      discarded.push(p);
     }
   };
-  return { core, file, doc, deps, written, removed };
+  return { core, file, doc, deps, written, removed, review, placed, discarded };
 }
 
 const JS = '// one\nfunction alpha() {}\n\nfunction beta() {}\n';
@@ -271,11 +294,13 @@ describe('P1 P3 the command saves, reads back, collects, asks again, and sends',
     ]);
     const sent = splits(r.core);
     assert.strictEqual(sent.length, 1);
-    assert.deepStrictEqual(sent[0].slice(0, 4), ['split-suggest', r.file, '--symbols', r.written[0].path]);
+    assert.deepStrictEqual(sent[0].slice(0, 6), ['split-suggest', r.file, '--output', r.review, '--symbols', r.written[0].path]);
     assert.deepStrictEqual(r.removed, [r.written[0].path]);
     assert.strictEqual(fs.existsSync(r.written[0].path), false, 'the symbols file is still there');
+    assert.deepStrictEqual(r.placed, [r.file], 'the review was not asked for once, for this source');
+    assert.deepStrictEqual(r.discarded, [], 'the review of a split was discarded');
     assert.ok(outcome.done === 'split');
-    assert.strictEqual(outcome.review, '/r/split.js.review-1');
+    assert.strictEqual(outcome.review, r.review);
     assert.match(outcome.notice, /2 blocks proposed, cuts from \(vscode "1\.2\.3" "javascript"\); warnings \(\(symbol-kinds function function\)\)/);
   });
 
@@ -314,6 +339,7 @@ describe('P1 P3 the command saves, reads back, collects, asks again, and sends',
     assert.strictEqual(r.removed.length, 1, 'the half-written file was not handed to the removal');
     assert.strictEqual(fs.existsSync(r.removed[0]), false, 'the half-written file is still there');
     assert.deepStrictEqual(splits(r.core), []);
+    assert.deepStrictEqual(r.discarded, [r.review], 'the review path of a request that failed was not discarded');
   });
 
   it('stops with "could not save" when the save fails, and sends nothing', async () => {
@@ -324,6 +350,7 @@ describe('P1 P3 the command saves, reads back, collects, asks again, and sends',
     assert.deepStrictEqual(outcome, { done: 'stopped', why: COULD_NOT_SAVE });
     assert.deepStrictEqual(splits(r.core), []);
     assert.deepStrictEqual(r.written, []);
+    assert.deepStrictEqual(r.placed, [], 'a review path was asked for by a split that stopped before sending');
   });
 
   it('stops with "changed while collecting" when the document moves during collection, and sends nothing', async () => {
@@ -357,10 +384,10 @@ describe('P2 with no symbols the split runs without --symbols', () => {
   afterEach(() => r?.core.dispose());
 
   it('sends the file alone, writes no symbols file, and says the cuts came from the patterns', async () => {
-    r = rig(JS, [], '(ok (working-path "/r/x") (boundaries (0)) (warnings ()) (cuts-from regex))\n');
+    r = rig(JS, [], '(ok (working-path "@REVIEW@") (boundaries (0)) (warnings ()) (cuts-from regex))\n');
     const outcome = await runSplit(r.doc, r.deps);
     assert.ok(outcome.done === 'split', shown(outcome));
-    assert.deepStrictEqual(splits(r.core).map((q) => q.slice(0, 2)), [['split-suggest', r.file]]);
+    assert.deepStrictEqual(splits(r.core).map((q) => q.slice(0, 4)), [['split-suggest', r.file, '--output', r.review]]);
     assert.ok(!splits(r.core)[0].includes('--symbols'));
     assert.deepStrictEqual(r.written, []);
     assert.strictEqual(outcome.notice, '1 block proposed, cuts from regex; no warnings');
@@ -400,6 +427,24 @@ describe('P4 a refused split is shown as the core said it, and not sent again', 
     const notice = splitRefusalNotice(outcome.refusal);
     assert.ok(notice.includes('(error symbols-stale (digest-expected "aa") (digest-found "bb"))'), notice);
     assert.ok(notice.includes(SETTINGS_REFUSALS['symbols-stale']), notice);
+    assert.deepStrictEqual(r.discarded, [r.review], 'the review path of a refused split was not discarded');
+  });
+
+  /*
+   * THE REVIEW IS TAKEN ONLY FROM WHERE IT WAS ASKED FOR. The command opens
+   * the review it is answered and later removes that review's directory;
+   * a path the core chose itself is neither opened nor kept.
+   */
+  it('takes no review the core wrote anywhere but at --output, and discards the one it asked for', async () => {
+    r = rig(JS, [], '(ok (working-path "/elsewhere/split.js") (boundaries (0)) (warnings ()) (cuts-from regex))\n');
+    await assert.rejects(runSplit(r.doc, r.deps), (e: unknown) => {
+      assert.ok(e instanceof TransportError, String(e));
+      assert.strictEqual(e.failure, 'unreadable');
+      assert.match(e.message, /a review file other than the .* it was sent/);
+      return true;
+    });
+    assert.strictEqual(splits(r.core).length, 1);
+    assert.deepStrictEqual(r.discarded, [r.review]);
   });
 
   it('holds a sentence for each of the eight kinds, in the settings family', () => {
@@ -481,6 +526,7 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
   it('answers the boundaries at the line starts, the comment attached, with cuts-from naming the editor', async () => {
     store = await RealStore.make();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-split-real-'));
+    const reviews = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-split-reviews-'));
     const text = '// one\nfunction alpha() {\n  return 1;\n}\n\n// two\nfunction beta() {\n  return 2;\n}\n';
     const file = path.join(dir, 'split.js');
     fs.writeFileSync(file, text);
@@ -507,11 +553,23 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
         fs.writeFileSync(p, t);
         written.push(p);
       },
-      removeSymbols: (p) => fs.rmSync(p, { force: true })
+      removeSymbols: (p) => fs.rmSync(p, { force: true }),
+      reviewPath: (source) => {
+        fs.mkdirSync(path.join(reviews, 'one'), { recursive: true });
+        return path.join(reviews, 'one', path.basename(source));
+      },
+      discardReview: (p) => fs.rmSync(path.dirname(p), { recursive: true, force: true })
     });
     assert.strictEqual(outcome.done, 'split', shown(outcome));
     assert.ok(outcome.done === 'split');
     assert.strictEqual(written.length, 1);
+    /*
+     * THE REVIEW IS AT --output, AND NOTHING IS LEFT BESIDE THE SOURCE: its
+     * directory holds the source alone, the symbols file having been
+     * removed and no review or temporary file written there.
+     */
+    assert.strictEqual(outcome.review, path.join(reviews, 'one', 'split.js'));
+    assert.deepStrictEqual(fs.readdirSync(dir), ['split.js'], 'something was left beside the source');
     assert.match(
       outcome.notice,
       new RegExp(`^2 blocks proposed, cuts from \\(vscode "9\\.9\\.9" "javascript"\\); warnings .*symbol-kinds function function`)
@@ -524,6 +582,7 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
     const from = form === null ? null : form.value('cuts-from');
     assert.ok(from !== null && from.read && isSym(from.value, 'regex'), `the twin without --symbols did not say regex: ${answer.text}`);
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(reviews, { recursive: true, force: true });
   });
 
   /*
@@ -564,7 +623,12 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
           fs.writeFileSync(p, t);
           written.push(t);
         },
-        removeSymbols: (p) => fs.rmSync(p, { force: true })
+        removeSymbols: (p) => fs.rmSync(p, { force: true }),
+        reviewPath: (source) => {
+          fs.mkdirSync(path.join(dir, 'review'), { recursive: true });
+          return path.join(dir, 'review', path.basename(source));
+        },
+        discardReview: (p) => fs.rmSync(path.dirname(p), { recursive: true, force: true })
       }
     );
     assert.deepStrictEqual(written[0].trimEnd().split('\n').slice(1), [

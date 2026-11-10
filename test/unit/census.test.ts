@@ -465,8 +465,16 @@ const AT_LEAST: Array<[string, number]> = [
    * offsets and the symbols file (6), the command's steps (6), the empty
    * list (1), the refusals and their census (5), and a real core (3: the
    * third a first-line symbol in a file with a byte-order mark).
+   * 21 -> 22 with the review written at --output: the cell that takes no
+   * review the core wrote anywhere else.
    */
-  ['split-symbols.test.ts', 21],
+  ['split-symbols.test.ts', 22],
+  /*
+   * ADDED with the review written at --output: where a review is placed
+   * (2), its removal when no tab shows it (3), and the activation sweep (4,
+   * the last on real session records).
+   */
+  ['split-reviews.test.ts', 9],
   /*
    * ADDED with the supply commands: collecting (13), the supply file (4), the
    * answers (5), the command's steps (40), and on a real core (3).

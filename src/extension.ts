@@ -65,6 +65,7 @@ import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, re
 import { HOVER_COMMANDS, HoverPlace, HoverService, blockAt as hoverBlockAt, hoverMarkdown, isSchemeLang, listEntries, nameUnder, readsSchemeNames } from './hover';
 import { blockLang, datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
 import { projectionNameFor } from './projection-name';
+import { ReviewRemovalFailure, SplitReviews } from './split-reviews';
 import { runSplit, savedText, splitRefusalNotice } from './split-symbols';
 import { ImportSource, importReport, runImport } from './import-symbols';
 import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
@@ -1252,6 +1253,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    */
   const importScratch = scratchUnder(path.join(storage, 'import'));
   /*
+   * THE REVIEW FILES OF SPLITS (src/split-reviews.ts): one directory per
+   * split under this window's session, removed when no tab shows its
+   * review; the reviews of windows that are gone are removed here, once.
+   */
+  const splitReviews = new SplitReviews(path.join(storage, 'split'), sessionId, (id) => sessions.livenessById(id));
+  function reportReviewRemovals(failed: ReviewRemovalFailure[]): void {
+    for (const { directory, error } of failed) {
+      vscode.window.showWarningMessage(`Theourgia: the split review directory ${directory} could not be removed: ${String(error)}`);
+    }
+  }
+  try {
+    reportReviewRemovals(splitReviews.sweep().failed);
+  } catch (e) {
+    vscode.window.showWarningMessage(`Theourgia: the split reviews of closed windows could not be listed: ${String(e)}`);
+  }
+  /*
    * THE TEXT A RESTORED DATUM TAB IS GIVEN: the datum export of the store its
    * address names, which DocumentTexts has compared with the configured one.
    */
@@ -1328,7 +1345,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             files.makeDirectory(symbolsDirectory);
             files.writeText(written, text);
           },
-          removeSymbols: removeSymbolsFile
+          removeSymbols: removeSymbolsFile,
+          reviewPath: (source) => splitReviews.place(source),
+          discardReview: (review) => reportReviewRemovals(splitReviews.discard(review))
         }
       );
     } catch (e) {
@@ -1347,8 +1366,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showInformationMessage(`Theourgia: ${outcome.notice}; the review is at ${outcome.review}.`);
       return;
     }
-    const review = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.review));
-    await vscode.window.showTextDocument(review, { preview: false });
+    let review: vscode.TextDocument;
+    try {
+      review = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.review));
+      await vscode.window.showTextDocument(review, { preview: false });
+    } catch (e) {
+      reportReviewRemovals(splitReviews.discard(outcome.review));
+      reportFailure(e);
+      return;
+    }
+    splitReviews.opened(review.uri.fsPath);
     vscode.window.showInformationMessage(`Theourgia: ${outcome.notice}.`);
   }
 
@@ -2915,6 +2942,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (closed.uri.scheme === DOCUMENT_SCHEME) {
         views.forget(closed.uri);
       }
+    }),
+    /*
+     * A SPLIT'S REVIEW GOES WITH THE LAST TAB THAT SHOWS IT, in any group
+     * and on either side of a diff. What is shown is read from the tabs as
+     * they are after the change, not from the event's list of closed tabs,
+     * so a review still open in another tab or group stays.
+     */
+    vscode.window.tabGroups.onDidChangeTabs(() => {
+      const shown = new Set<string>();
+      for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+          const input = tab.input;
+          if (input instanceof vscode.TabInputText) {
+            shown.add(input.uri.fsPath);
+          } else if (input instanceof vscode.TabInputTextDiff) {
+            shown.add(input.original.fsPath);
+            shown.add(input.modified.fsPath);
+          }
+        }
+      }
+      reportReviewRemovals(splitReviews.closed((file) => shown.has(file)).failed);
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),

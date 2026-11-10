@@ -576,7 +576,10 @@ settings.
 
 **Suggest a split of a source file.** On a source file on disk (not a block's own file), "Theourgia:
 Suggest a Split of This File" asks the core's `split-suggest` where the file could be divided into
-blocks, and opens the review file the core writes; nothing is recorded. The cuts come from the
+blocks, and opens the review file the core writes; nothing is recorded. The review is written in this
+extension's storage (`--output`), under the source file's own name, never beside the source; it is
+removed when the last tab showing it closes, and the reviews of a window that closed first are removed
+when a later window starts. The cuts come from the
 editor's own symbols for the file -- the top-level ones the language's symbol provider gives, sent as
 `--symbols` -- and the message beside the review says so (`cuts from (vscode "<version>"
 "<languageId>")`), with the core's warnings; with no symbols (no provider, or none yet) the core's own

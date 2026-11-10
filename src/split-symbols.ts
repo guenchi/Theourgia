@@ -18,7 +18,9 @@
  * A SPLIT OF A SOURCE FILE, CUT WHERE THE EDITOR'S SYMBOLS START.
  *
  * The core's `split-suggest <file>` proposes where a file could be divided
- * into blocks and writes the proposal as a review file; it records nothing.
+ * into blocks; it records nothing. This extension sends `--output <path>`,
+ * a path in its own storage, and the core writes the proposal there as the
+ * review file: nothing is written beside the user's source.
  * With `--symbols <file>` the question "does a definition start on this
  * line" is answered by a list of the file's top-level symbols instead of
  * the language's definition patterns. The editor has that list: its symbol
@@ -419,6 +421,15 @@ export interface SplitDocument {
  * the write as well as the request. `removeSymbols` is given that path
  * whether or not the file came to exist.
  */
+/*
+ * `reviewPath` names the file the core is to write the review to, sent as
+ * `--output`: a path no other split uses, under the source's own name so
+ * that the review opens in the source's language. It is asked for only
+ * when a request is about to be sent. `discardReview` is given that path
+ * when the request ends in anything but a split -- a refusal, a failure,
+ * an answer this client cannot read -- whether or not the file came to
+ * exist.
+ */
 export interface SplitDeps {
   client: Client;
   editorVersion: string;
@@ -427,6 +438,8 @@ export interface SplitDeps {
   symbolsPath(): string;
   writeSymbols(path: string, text: string): void;
   removeSymbols(path: string): void;
+  reviewPath(source: string): string;
+  discardReview(review: string): void;
 }
 
 export type SplitOutcome =
@@ -448,7 +461,13 @@ export const CHANGED_WHILE_COLLECTING = 'the file changed while its symbols were
  * positions from one text with bytes from another. With no symbols the
  * split runs without `--symbols`, and the answer says the cuts came from
  * the language's patterns. The symbols file is removed however the request
- * ends.
+ * ends, and the review's path is discarded unless the request ends in a
+ * split.
+ *
+ * NEVER: A REVIEW ANYWHERE BUT WHERE IT WAS ASKED FOR IS NOT TAKEN. The
+ * caller opens the review and later removes the directory it names; a
+ * path the core chose itself would be opened from wherever it is and
+ * never removed, or removed from a directory this extension does not own.
  */
 export async function runSplit(doc: SplitDocument, deps: SplitDeps): Promise<SplitOutcome> {
   if (doc.isDirty()) {
@@ -468,30 +487,42 @@ export async function runSplit(doc: SplitDocument, deps: SplitDeps): Promise<Spl
   if (doc.isDirty() || doc.version() !== version || doc.text() !== saved.text) {
     return { done: 'stopped', why: CHANGED_WHILE_COLLECTING };
   }
-  let args = [doc.fsPath];
-  let written: string | null = null;
-  let answer: Answer;
+  const review = deps.reviewPath(doc.fsPath);
+  let kept = false;
   try {
-    if (symbols.length > 0) {
-      written = deps.symbolsPath();
-      deps.writeSymbols(written, symbolsFileText(digestOf(bytes), deps.editorVersion, doc.languageId, symbols));
-      args = [doc.fsPath, '--symbols', written];
+    let args = [doc.fsPath, '--output', review];
+    let written: string | null = null;
+    let answer: Answer;
+    try {
+      if (symbols.length > 0) {
+        written = deps.symbolsPath();
+        deps.writeSymbols(written, symbolsFileText(digestOf(bytes), deps.editorVersion, doc.languageId, symbols));
+        args = [doc.fsPath, '--output', review, '--symbols', written];
+      }
+      answer = await deps.client.request('split-suggest', args);
+    } finally {
+      if (written !== null) {
+        deps.removeSymbols(written);
+      }
     }
-    answer = await deps.client.request('split-suggest', args);
+    const read = readSplitAnswer(answer);
+    if (!read.ok) {
+      return { done: 'refused', refusal: read.refusal, argv: ['split-suggest', ...args] };
+    }
+    if (read.review !== review) {
+      throw new TransportError('unreadable', `the core answered the split with a review file other than the ${review} it was sent`, answer.text);
+    }
+    kept = true;
+    return {
+      done: 'split',
+      review: read.review,
+      boundaries: read.boundaries,
+      notice: splitNotice(read, left),
+      argv: ['split-suggest', ...args]
+    };
   } finally {
-    if (written !== null) {
-      deps.removeSymbols(written);
+    if (!kept) {
+      deps.discardReview(review);
     }
   }
-  const read = readSplitAnswer(answer);
-  if (!read.ok) {
-    return { done: 'refused', refusal: read.refusal, argv: ['split-suggest', ...args] };
-  }
-  return {
-    done: 'split',
-    review: read.review,
-    boundaries: read.boundaries,
-    notice: splitNotice(read, left),
-    argv: ['split-suggest', ...args]
-  };
 }

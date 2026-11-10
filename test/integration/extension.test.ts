@@ -416,6 +416,7 @@ describe('the extension inside an editor', function () {
       'a stand-in module is loaded in the editor host'
     );
     const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'theourgia-split-'));
+    const reviews = fs.mkdtempSync(path.join(require('os').tmpdir(), 'theourgia-split-reviews-'));
     const text = '// one\nfunction alpha() {\n  return 1;\n}\n\n// two\nfunction beta() {\n  return 2;\n}\n';
     const file = path.join(dir, 'split.js');
     fs.writeFileSync(file, text);
@@ -450,7 +451,12 @@ describe('the extension inside an editor', function () {
           fs.writeFileSync(p, t);
           written.push(t);
         },
-        removeSymbols: (p) => fs.rmSync(p, { force: true })
+        removeSymbols: (p) => fs.rmSync(p, { force: true }),
+        reviewPath: (source) => {
+          fs.mkdirSync(path.join(reviews, 'one'), { recursive: true });
+          return path.join(reviews, 'one', path.basename(source));
+        },
+        discardReview: (p) => fs.rmSync(path.dirname(p), { recursive: true, force: true })
       }
     );
     assert.strictEqual(
@@ -473,13 +479,26 @@ describe('the extension inside an editor', function () {
     assert.deepStrictEqual(outcome.boundaries, [0, Buffer.byteLength(text.slice(0, text.indexOf('// two')))], 'the second block does not start at its comment');
     /*
      * AND THE COMMAND ITSELF, from the palette's point of view: the review
-     * file the core wrote for this source is what it opens.
+     * file the core wrote for this source is what it opens, under the
+     * source's own name in a directory of this extension's own, and
+     * nothing is left beside the source. Closing the review's tab removes
+     * that directory.
      */
     await vscode.window.showTextDocument(document);
     await vscode.commands.executeCommand('theourgia.suggestSplit');
     const shown = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
-    assert.ok(shown.startsWith(`${file}.review-`), `the command opened ${shown}`);
+    assert.notStrictEqual(shown, file, 'the command opened no review');
+    assert.strictEqual(path.basename(shown), 'split.js', `the command opened ${shown}`);
+    assert.strictEqual(path.basename(path.dirname(path.dirname(path.dirname(shown)))), 'split', `the command opened ${shown}`);
+    assert.ok(fs.existsSync(shown), `the review ${shown} is not there`);
+    assert.deepStrictEqual(fs.readdirSync(dir), ['split.js'], 'something was left beside the source');
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    await until(
+      () => `the review's directory ${path.dirname(shown)} was removed when its tab closed`,
+      async () => !fs.existsSync(path.dirname(shown))
+    );
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(reviews, { recursive: true, force: true });
   });
 
   it('opens a block into a markdown buffer holding its heading and body', async () => {

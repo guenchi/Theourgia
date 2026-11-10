@@ -552,6 +552,16 @@ export class Sessions {
     return this.livenessOfSessionNow(sessionId);
   }
 
+  /*
+   * THE SAME QUESTION, FOR A CALLER OUTSIDE THIS FILE that keeps files of
+   * its own per window: the split reviews (src/split-reviews.ts). A record
+   * that is missing or will not read is answered as cannot-tell, never as
+   * dead; what the caller does with that is the caller's to say.
+   */
+  public livenessById(sessionId: string): Liveness {
+    return this.livenessOfSessionNow(sessionId);
+  }
+
   private livenessOfSessionNow(sessionId: string): Liveness {
     const read = this.identityOf(sessionId);
     if (!read.known) {

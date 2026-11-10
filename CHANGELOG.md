@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+* Suggest a Split: the review file is written in this extension's storage,
+  under the source file's own name, one directory per split, by sending
+  `split-suggest --output`; nothing is left beside the source. The review
+  is removed when the last tab showing it closes, and the reviews a closed
+  window left behind are removed when a later window starts, never those of
+  a window that is still open. This needs a core that writes its temporary
+  file beside the output (theourgia de6212c or later): an earlier core
+  writes it beside the source and links it to the output, which fails for a
+  source on another volume or drive than this extension's storage.
+
 ## 1.1.1 — 2026-10-09
 
 * Import with Symbols: a folder or a source file is imported into the

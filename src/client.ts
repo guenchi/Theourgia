@@ -337,8 +337,9 @@ const KNOWN_VERBS = new Set([
   'diff',
   'conflicts',
   /*
-   * `split-suggest` writes a review file and no record, so it is not in
-   * ALWAYS_WRITE_VERBS; its answer is one datum.
+   * `split-suggest` writes no record, so it is not in ALWAYS_WRITE_VERBS;
+   * it writes a review file only where `--output` asks, which this
+   * extension always sends, to its own storage. Its answer is one datum.
    */
   'split-suggest',
   /*
