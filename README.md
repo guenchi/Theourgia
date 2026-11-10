@@ -2895,6 +2895,16 @@ current `<seq>` minus the one the join of the committed drafts' cuts holds
 for it, or the whole of `<seq>` when the baseline holds none. `<seq>` in
 `behind` is a position, not a count; read `behind-records` for a count.
 
+A commit that landed then removes the drafts it committed. When that
+cleanup fails, the commit has still landed: the answer stays `ok` and ends
+with `(cleanup-failed ...)`. A failure the answers table classifies carries
+the table's clauses, `(cleanup-failed (op unlink) (path <file>) (reason
+<the system's text>) (errno <e>))` for a draft file that could not be
+removed, and `(path ..) (reason ..) (errno ..)` with no `op` for one that
+could not be read. Any other failure says `(path ..) (reason ..)`. A draft
+file that is already gone is not a failure.
+
+
 PREMISES: **what a reader was given is checked when its result is accepted.**
 Every committed write -- `insert`, `set`, `move`, `del`, `link`, `unlink`,
 `tag`, `batch`, `commit`, `import-code`, `import-md`, `def` and `template
