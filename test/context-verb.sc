@@ -1610,6 +1610,53 @@
 (printf "NOTE CW-8 commit ~a; committed version of U ~a; --working premise ~a; equal ~a\n"
         (car cw-commit) (ver cw-s cwU) (premise-of cw-a cwU) (equal? (ver cw-s cwU) (premise-of cw-a cwU)))
 
+;; ---- NV: a name reached through a helper table ---------------------------------------------------------
+;;
+;; THE TREE'S OWN TWO FILES: rpc.sc, whose dispatch-helper hands verbs the
+;; dispatcher's helpers by name, and context.sc, which takes reduction-for
+;; that way and imports nothing of rpc, split at their definitions and
+;; imported into a fresh store. Asked
+;; about context.sc's file with --names reduction-for, the assembler finds no
+;; definition in its scope and looks one hop through the registered helper
+;; tables: rpc's dispatch-helper uses the name and has its definition in
+;; scope. `derived`, a definition of rpc.sc that context.sc names in a
+;; comment only and no table reaches, has no definition still.
+(define nv-s (fresh-store!))
+(define nv-src (string-append root "/nv-src"))
+;; each file split at its definitions first, as the code store's import was
+(system (string-append "mkdir -p '" nv-src "'"))
+(for-each (lambda (f) (run nv-s 'split-suggest (string-append "../" f) "--output" (string-append nv-src "/" f)))
+          '("rpc.sc" "context.sc"))
+(define nv-import (run nv-s 'import-code nv-src))
+(define (nv-def name lib)
+  (let ((a (run nv-s 'query (format "(def ?d ~s ~s)" lib name))))
+    (and (ok? a) (let ((items (cdr (clause a 'items)))) (and (pair? items) (cadr (car items)))))))
+(define nv-file
+  (let ((st (state-of nv-s)))
+    (find (lambda (id) (let* ((r (state-read st id)) (e (and r (assq 'path (cdr (assq 'fields r))))))
+                         (and e (equal? (cdr e) "context.sc"))))
+          (state-block-ids st))))
+(define nv-table (nv-def "dispatch-helper" "(theourgia rpc)"))
+(define nv-reduction-for (nv-def "reduction-for" "(theourgia rpc)"))
+(define nv-a (ctx nv-s nv-file 20000 "--names" "reduction-for" "--names" "derived"))
+(want "NV THE CONSTRUCTION: both files imported; context.sc's file, rpc's dispatch-helper and reduction-for found"
+      (list (ok? nv-import) (string? nv-file) (string? nv-table) (string? nv-reduction-for))
+      '(#t #t #t #t))
+(want "NV-1 a name context.sc reaches through rpc's dispatch-helper answers via the table and the definition, not no-definition"
+      (let ((asked (clause nv-a 'asked)))
+        (and asked (list (find (lambda (c) (and (pair? c) (eq? (car c) 'via))) (cdr asked))
+                         (let ((nd (find (lambda (c) (and (pair? c) (eq? (car c) 'no-definition))) (cdr asked))))
+                           (and nd (member "reduction-for" (cdr nd)) #t)))))
+      (list (list 'via "reduction-for" nv-table nv-reduction-for) #f))
+(want "NV-2 a name in a comment only, which no table reaches, still answers no-definition"
+      (let ((asked (clause nv-a 'asked)))
+        (and asked (find (lambda (c) (and (pair? c) (eq? (car c) 'no-definition))) (cdr asked))))
+      '(no-definition "derived"))
+(want "NV-3 the answer fits its budget"
+      (let ((b (clause nv-a 'budget)))
+        (and b (let ((t (assq 'tokens (cdr b))) (u (assq 'used (cdr b)))) (and t u (<= (cadr u) (cadr t))))))
+      #t)
+
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-verb complete\n" rows bad)
 (exit (if (= bad 0) 0 1))

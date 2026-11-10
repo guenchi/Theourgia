@@ -94,8 +94,9 @@
 ;;; first two are entered and the fold is said in `folded`; the others stay
 ;;; free for a later step. A name the caller gives with --names is entered
 ;;; whole, ahead of everything else preferred, and never folded; `asked`
-;;; says which given names are defined only in hard blocks and which have no
-;;; definition at all.
+;;; says which given names are defined only in hard blocks, which are
+;;; reached through a registered helper table (`via`, the table and the
+;;; definition it hands out), and which have no definition at all.
 ;;;
 ;;; WITH --working THE VIEW IS THE REQUEST WRITER'S WORKING VIEW, the one
 ;;; `read --working` and `export-code --working` read: the committed state
@@ -120,7 +121,8 @@
           ;; reserved-excluded are exported for the fixture's rows on the
           ;; counter cap (test/context-users.sc), and title-from for the rows
           ;; on an entry's title (test/scheme-definers.sc), not as an interface.
-          users-clause reserved-users excluded-clause reserved-excluded title-from)
+          users-clause reserved-users excluded-clause reserved-excluded title-from
+          register-helper-table!)
   (import (rnrs) (rnrs mutable-pairs)
           (only (theourgia arguments) argument-option argument-option-list)
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
@@ -583,14 +585,16 @@
                                         (list (list 'more (- n-others 20) (list 'bytes (fold-left + 0 costs))))
                                         '()))))))
            ;; THE ASKED CLAUSE AT AN UPPER BOUND, from the request and the hard
-           ;; set alone: every given name as having no definition, and as
-           ;; defined in every hard block. What the clause does not use goes
-           ;; back to the preferred material once the hard blocks are in.
+           ;; set alone: every given name as having no definition, as defined
+           ;; in every hard block, and as reached through every helper table
+           ;; that reaches it. What the clause does not use goes back to the
+           ;; preferred material once the hard blocks are in.
            (reserved-asked
              (if (null? names)
                  '()
                  (list (append (list 'asked (cons 'names names))
                                (apply append (map (lambda (n) (map (lambda (h) (list 'in-hard n h)) order)) names))
+                               (apply append (map (lambda (n) (map (lambda (r) (cons* 'via n r)) (helper-vias S n))) names))
                                (list (cons 'no-definition names))))))
            (base (lambda (tokens)
                    (append (list 'ok (list 'for (identity t)))
@@ -753,6 +757,34 @@
 
   ;; ---- the preferred material ------------------------------------------------------------------
 
+;; ---- the helper tables ----------------------------------------------------------------------
+  ;;
+  ;; A NAME REACHED THROUGH A TABLE IS NOT A NAME WITH NO DEFINITION. A verb
+  ;; library that takes the dispatcher's helpers by name -- (dispatch-helper
+  ;; 'reduction-for) -- never imports them, so the name is in its text and no
+  ;; definition of it is in its scope. A HELPER TABLE is a definition that
+  ;; hands out such names, registered here by its library and name as the
+  ;; def rows give them; asked a name with no definition in T's scope, the
+  ;; assembler looks one hop through each: a table that uses the name and has
+  ;; a definition of it in its own scope (def-for) answers
+  ;; (via <name> <table block> <definition block>) in place of no-definition.
+  ;; Nothing is admitted for it: the clause names the blocks, the budget is
+  ;; spent as before. A name no table reaches stays no-definition.
+  (define helper-tables (list (list "(theourgia rpc)" "dispatch-helper")))
+  ;; registers the table NAME of LIBRARY (both as a def row writes them, the
+  ;; library as its datum's text) for every later request
+  (define (register-helper-table! library name)
+    (unless (member (list library name) helper-tables)
+      (set! helper-tables (append helper-tables (list (list library name))))))
+  ;; -> ((<table block> <definition block>) ...) for NAME, in table order, then by id
+  (define (helper-vias S name)
+    (apply append
+           (map (lambda (tbl)
+                  (list-sort (lambda (a b) (or (string<? (car a) (car b))
+                                               (and (string=? (car a) (car b)) (string<? (cadr a) (cadr b)))))
+                             (unique (rows-of S `(and (def ?tb ,(car tbl) ,(cadr tbl)) (def-for ?tb ,name ?d))))))
+                helper-tables)))
+
   ;; -> #(<steps> <name use consulted> <folded groups> <asked clause or #f>),
   ;; each step (<counter> <section> <levels allowed> <candidates> <label>
   ;; [fold]), a candidate (<id> <why> ...). A candidate is never a hard block
@@ -788,8 +820,12 @@
                                       (map (lambda (p) (map (lambda (d) (list 'in-hard (car p) d))
                                                             (filter (lambda (d) (member d (cdr p))) order)))
                                            named))
-                               (let ((none (map car (filter (lambda (p) (null? (cdr p))) named))))
-                                 (if (null? none) '() (list (cons 'no-definition none)))))))
+                               (let* ((none (map car (filter (lambda (p) (null? (cdr p))) named)))
+                                      (via (map (lambda (n) (cons n (helper-vias S n))) none))
+                                      (still (map car (filter (lambda (v) (null? (cdr v))) via))))
+                                 (append
+                                   (apply append (map (lambda (v) (map (lambda (r) (cons* 'via (car v) r)) (cdr v))) via))
+                                   (if (null? still) '() (list (cons 'no-definition still))))))))
            ;; 1: the definitions of the names each hard code block in force uses.
            (code (filter (lambda (h) (and (eq? (field-value (state-read view h) 'kind) 'code) (in-force? h))) order))
            (uses (if (null? code) '()
