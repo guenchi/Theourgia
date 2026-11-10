@@ -410,6 +410,11 @@
             (loop (cdr is) (cons (move-structural! store writer at (car is)) out)))))))
 
 ;; the block drafts judged moved or rebased, written: -> their records
+;; EACH WRITE NAMES THE VERSION JUDGED (`--expect`), so a draft the writer
+;; edited since the judgement is refused draft-changed under the write's own
+;; draft lock and stands as edited; the freeze stops there, the block named
+;; (rebase-refused), and is not made. Without it the edit was overwritten
+;; and the record still said rebased or moved.
 (define (bring-blocks! store writer at judged)
   (fold-right
     (lambda (j records)
@@ -417,9 +422,12 @@
         (if (eq? (car verdict) 'current)
             records
             (let* ((to (if (eq? (car verdict) 'rebased) (caddr verdict) (caddr d)))
-                   (a (rpc-dispatch store (list 'write id "-" "--writer" writer "--rebase"
-                                                "--based-on" to "--working-cut" (format "~s" at))
-                                    actor #f #f (lambda () (cadr verdict)) #f)))
+                   (a (begin
+                        (hold-point! 'freeze-before-rebase)
+                        (rpc-dispatch store (list 'write id "-" "--writer" writer "--rebase"
+                                                  "--based-on" to "--working-cut" (format "~s" at)
+                                                  "--expect" (cadr d))
+                                      actor #f #f (lambda () (cadr verdict)) #f))))
               (unless (and (pair? a) (eq? (car a) 'ok))
                 (refuse 'rebase-refused (list 'block id) (list 'answer a)))
               (cons (if (eq? (car verdict) 'rebased)

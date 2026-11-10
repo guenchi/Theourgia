@@ -1322,8 +1322,8 @@
       ;; silence.
       (list 'write '(write <block> <bytes> ["--writer" <name>] ["--based-on" <version>]
                            ["--working-cut" <cut>] ["--working-parent-writer" <name>]
-                           ["--working-parent" <version>] ["--rebase"])
-            "Save a draft of a block in a writer's own space, without committing it." #t 'daemon)
+                           ["--working-parent" <version>] ["--rebase"] ["--expect" <version>])
+            "Save a draft of a block in a writer's own space, without committing it. With --expect, only while the writer's draft of the block is that version; otherwise the write is refused draft-changed, naming the version there, and nothing is written." #t 'daemon)
       (list 'restore '(restore <version> ["--writer" <name>])
             "Take an earlier version of a draft back into a writer's space." #f 'daemon)
       (list 'commit commit-usage
@@ -1712,10 +1712,11 @@
                   (working-write! store state writer
                                   (car args) (cadr args) (argument-option options "--rebase")
                                   (argument-option options "--based-on") (argument-option options "--working-cut")
-                                  (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
+                                  (argument-option options "--working-parent-writer") (argument-option options "--working-parent")
+                                  (argument-option options "--expect"))
                   (usage '(write <block> <bytes> ["--writer" <name>] ["--based-on" <version>]
                      ["--working-cut" <cut>] ["--working-parent-writer" <name>]
-                     ["--working-parent" <version>] ["--rebase"])))))
+                     ["--working-parent" <version>] ["--rebase"] ["--expect" <version>])))))
       ;; `write --restore <version>` IS ITS OWN SHAPE, not `write` with a
       ;; flag: it takes a version and no bytes, and the bytes come from
       ;; the log. Folding it into `write` would make the two-argument

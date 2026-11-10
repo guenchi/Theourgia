@@ -411,6 +411,21 @@
           (let ((past (fold-at-cut (lambda () (open-and-reduce store latest)))))
             (and (or (reduction? past) (fold-failure? past)) past))))))
 
+  ;; THE DRAFT A WRITE WAS TOLD TO REPLACE (`--expect <version>`), asked
+  ;; under the draft lock the write then takes: -> #f when the writer's live
+  ;; draft of ID is that version, or the refusal naming the one there is
+  ;; (none when the draft was discarded or consumed since). A caller that
+  ;; judged a draft and then rewrites it -- landing-freeze's rebase -- passes
+  ;; the version it judged, so an edit made in between is never overwritten
+  ;; under an answer that says the judged draft was moved.
+  (define (draft-changed-refusal store writer id expected)
+    (let* ((state (obtain-state store #f #f))
+           (old (entry-at store writer id))
+           (live (and old (not (consumed? store state old)) old)))
+      (and (not (and live (equal? (list-ref live 4) expected)))
+           (list 'error 'draft-changed (list 'block id) (list 'expected expected)
+                 (list 'current (if live (list-ref live 4) 'none))))))
+
   (define (working-write! store state supplied id bytes rebase? . provenance)
     (needing-writer supplied (lambda ()
     (well-formed-first
@@ -425,6 +440,7 @@
                (cut-text (and (pair? provenance) (pair? (cdr provenance)) (cadr provenance)))
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
                (parent-version (and (>= (length provenance) 4) (list-ref provenance 3)))
+               (expected (and (>= (length provenance) 5) (list-ref provenance 4)))
                (historical (and hash cut-text
                  (let ((parsed (parse-cut cut-text)))
                    (and parsed (fold-at-cut (lambda () (open-and-reduce store parsed)))))))
@@ -524,6 +540,7 @@
                (or (with-draft-lock store writer
                      (lambda ()
                        (or (foreign-writer-refusal store writer)
+                           (and expected (draft-changed-refusal store writer id expected))
                            (begin (atomic-write! (path-for store writer id) (encode entry) 'working) #f))))
                    (list 'ok (list 'saved id) (list 'writer writer)
                          (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5)))))))))))))))

@@ -121,7 +121,7 @@
         ((import-code) '("--symbols"))
         ((def) '("--under"))
         ((commit) '("--writer" "--working-version" "--working-new" "--working-delete"))
-        ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
+        ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent" "--expect"))
         ;; NOTE: `restore` IS IN THIS GROUP BECAUSE ITS HANDLER READS
         ;; `--writer`, and it was not. The token then parsed as a
         ;; POSITIONAL: `restore <version> --writer w1` arrived with three

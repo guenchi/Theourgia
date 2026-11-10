@@ -1207,6 +1207,39 @@
               (and seen (caddr seen)) (equal? (entry-of m6 m-pid) seen)))
       (list '(#t #t) 1 '(error structural-move-refused) m-pid '(error structural-changed) #t #t
             (string->utf8 m6-text) #t))
+;; A BLOCK DRAFT EDITED AFTER THE JUDGEMENT: b.txt's draft is judged moved (an
+;; unrelated commit moved the cut); at freeze-before-rebase, before its write
+;; --rebase, the coder writes it again. The write names the version judged,
+;; finds the edit's, and is refused; the freeze stops naming the block, is not
+;; made, and the draft keeps the edited text at its own version.
+(define re-st (imported-store!))
+(define re-b (block-of re-st "b.txt"))
+(draft! re-st re-b "two, drafted\n")
+(define re-judged (draft-facts re-st re-b))
+(unrelated-commit! re-st)
+(define re-freeze (string-append root "/re-freeze"))
+(define re-run (held-freeze re-st re-freeze "rebase-edited" "freeze-before-rebase"
+                            (lambda (d) (draft! re-st re-b "two, edited while held\n") (draft-facts re-st re-b))))
+(want "ST-R1 a block draft edited at freeze-before-rebase: the freeze is refused rebase-refused naming the block, its answer draft-changed (expected the judged version, current the edit's), nothing frozen, and the draft keeps the edit"
+      (let ((a (list-ref re-run 2)) (seen (list-ref re-run 4)))
+        (list (list (car re-run) (cadr re-run)) (list-ref re-run 3) a
+              (file-exists? re-freeze) (draft-facts re-st re-b) (list-ref seen 3)))
+      (list '(#t #t) 1
+            (list 'error 'rebase-refused (list 'block re-b)
+                  (list 'answer (list 'error 'draft-changed (list 'block re-b)
+                                      (list 'expected (car re-judged)) (list 'current (car (list-ref re-run 4))))))
+            #f (list-ref re-run 4) "two, edited while held\n"))
+;; and with no edit at the hold the same freeze moves the draft and is made
+(define rc-st (imported-store!))
+(define rc-b (block-of rc-st "b.txt"))
+(draft! rc-st rc-b "two, drafted\n")
+(unrelated-commit! rc-st)
+(define rc-freeze (string-append root "/rc-freeze"))
+(define rc-run (held-freeze rc-st rc-freeze "rebase-control" "freeze-before-rebase" (lambda (d) #t)))
+(want "ST-R1 CONTROL: the same freeze with nothing done at the hold answers ok, the draft moved onto the applied cut with its text"
+      (list (list (car rc-run) (cadr rc-run)) (list-ref rc-run 3) (head-of (list-ref rc-run 2))
+            (equal? (caddr (draft-facts rc-st rc-b)) (cut-of rc-st)) (cadddr (draft-facts rc-st rc-b)))
+      (list '(#t #t) 0 'ok #t "two, drafted\n"))
 ;; THE STAGE IS INSIDE THE LOCK: a write of the same writer's draft begun at
 ;; structural-move-before-write waits for the move, and lands after it
 (define m6b (imported-store!))

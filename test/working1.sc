@@ -205,5 +205,30 @@
 (want "WS-19 explicit stale --based-on is additive" (kind (call 'set a "src" "bad" "--based-on" h0)) 'stale-baseline)
 (want "WS-26 unsafe writer paths are refused" (kind (call 'write a "bad" "--writer" "../bad")) 'bad-request)
 (want "WS-26 absence falls back to committed" (call 'read b "--working" "--writer" "draft002") '(ok (text "unrelated")))
+;; A WRITE TOLD WHICH DRAFT IT REPLACES (`--expect <version>`): a caller
+;; that read a draft, judged it and rewrites it -- landing-freeze's rebase --
+;; must not overwrite an edit the same writer made in between. The edit
+;; stands, nothing is written, and the refusal names both versions.
+(define (version-of answer) (and (ok? answer) (cadr (assq 'version (filter pair? (cdr answer))))))
+(define x-judged (version-of (call 'write b "X-judged")))
+(define x-edited (version-of (call 'write b "X-edited")))
+(define x-before (snapshot (string-append store "/writers")))
+(define x-refused (call 'write b "X-rebased" "--rebase" "--based-on" (hash b) "--working-cut" (cut-text) "--expect" x-judged))
+(want "WX-1 write --rebase --expect <the judged version> after the draft was edited is refused draft-changed, naming the block, the version expected and the edit's"
+      x-refused (list 'error 'draft-changed (list 'block b) (list 'expected x-judged) (list 'current x-edited)))
+(want "WX-1 the refused write leaves the log's files byte-identical" (snapshot (string-append store "/writers")) x-before)
+(want "WX-1 the refused write leaves the edited draft's text" (call 'read b "--working") '(ok (text "X-edited")))
+(want "WX-1 the refused write leaves the edited draft's version" (list-ref (cadr (call 'read b "--working-info")) 4) x-edited)
+(want "WX-2 write --rebase --expect <the version there> writes"
+      (ok? (call 'write b "X-rebased" "--rebase" "--based-on" (hash b) "--working-cut" (cut-text) "--expect" x-edited)) #t)
+(want "WX-2 and the draft is the rebased text" (call 'read b "--working") '(ok (text "X-rebased")))
+(define x-rebased (list-ref (cadr (call 'read b "--working-info")) 4))
+(want "WX-3 a plain write with --expect <the version there> writes"
+      (ok? (call 'write b "X-plain" "--expect" x-rebased)) #t)
+(call 'discard b)
+(want "WX-4 --expect when the writer holds no draft of the block is refused, current none"
+      (call 'write b "X-gone" "--expect" x-rebased)
+      (list 'error 'draft-changed (list 'block b) (list 'expected x-rebased) (list 'current 'none)))
+(want "WX-4 and no draft is written" (call 'read b "--working") '(ok (text "unrelated")))
 (printf "~a failures\nworking1 complete\n" failures)
 (exit (if (= failures 0) 0 1))
