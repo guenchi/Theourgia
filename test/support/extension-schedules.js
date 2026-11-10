@@ -113,7 +113,10 @@ const vs = {
  RelativePattern:class{constructor(base,pattern){this.base=base;this.pattern=pattern;}},
  Position:class{constructor(line,character){this.line=line;this.character=character;}},
  Location:class{constructor(uri,range){this.uri=uri;this.range=range;}},
- window:{createStatusBarItem:()=>statusItem,createTextEditorDecorationType:options=>({options,dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
+ // The editor's tabs, which a split's review is removed with: none is shown
+ // here and none closes, so no review is removed by a cell of this file.
+ TabInputText:class{constructor(uri){this.uri=uri;}},TabInputTextDiff:class{constructor(original,modified){this.original=original;this.modified=modified;}},
+ window:{tabGroups:{all:[],onDidChangeTabs:()=>disposable},createStatusBarItem:()=>statusItem,createTextEditorDecorationType:options=>({options,dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
   // no cell could tell a warning from an alarm. The other editor double was

@@ -284,6 +284,15 @@ export function emptyDirectory(directory: string): void {
 }
 
 /*
+ * A DIRECTORY REMOVED WITH EVERYTHING IN IT; nothing to do when it is not
+ * there. For a directory this extension owns: a split's review
+ * (src/split-reviews.ts).
+ */
+export function removeTree(directory: string): void {
+  fs.rmSync(directory, { recursive: true, force: true });
+}
+
+/*
  * WHETHER A PATH IS A FILE INSIDE A DIRECTORY, at any depth.
  *
  * NEVER: A RELATIVE PATH STARTING WITH `..` TAKEN FOR ONE OUTSIDE. `..` is

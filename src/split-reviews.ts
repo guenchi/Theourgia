@@ -44,33 +44,24 @@
  */
 
 import { randomUUID } from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
-import { insideDirectory } from './fsops';
+import { insideDirectory, nodeFileOps, removeTree } from './fsops';
 import { Liveness } from './sessions';
 
 export interface ReviewDisk {
   makeDirectory(directory: string): void;
   /*
-   * The names in a directory; none when it does not exist.
+   * The names in a directory; none when it does not exist, and a failure
+   * for any other reason it cannot be read.
    */
   list(directory: string): string[];
   removeTree(directory: string): void;
 }
 
 export const nodeReviewDisk: ReviewDisk = {
-  makeDirectory: (directory) => fs.mkdirSync(directory, { recursive: true }),
-  list: (directory) => {
-    try {
-      return fs.readdirSync(directory);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-        return [];
-      }
-      throw e;
-    }
-  },
-  removeTree: (directory) => fs.rmSync(directory, { recursive: true, force: true })
+  makeDirectory: (directory) => nodeFileOps.makeDirectory(directory),
+  list: (directory) => nodeFileOps.list(directory),
+  removeTree: (directory) => removeTree(directory)
 };
 
 /*
@@ -138,13 +129,15 @@ export class SplitReviews {
     return path.dirname(directory) === this.mine() && insideDirectory(this.mine(), directory) ? directory : null;
   }
 
-  private remove(directory: string, failed: ReviewRemovalFailure[]): boolean {
+  /*
+   * A failure is added to `failed`, which the caller hands to the user;
+   * whether this removal worked is whether `failed` grew.
+   */
+  private remove(directory: string, failed: ReviewRemovalFailure[]): void {
     try {
       this.disk.removeTree(directory);
-      return true;
     } catch (error) {
       failed.push({ directory, error });
-      return false;
     }
   }
 
@@ -184,8 +177,12 @@ export class SplitReviews {
       }
       this.shown.delete(review);
       const directory = this.directoryOf(review);
-      if (directory !== null && this.remove(directory, failed)) {
-        removed.push(review);
+      if (directory !== null) {
+        const before = failed.length;
+        this.remove(directory, failed);
+        if (failed.length === before) {
+          removed.push(review);
+        }
       }
     }
     return { removed, failed };
@@ -210,7 +207,11 @@ export class SplitReviews {
       }
       if (!gone) {
         out.kept.push(directory);
-      } else if (this.remove(directory, out.failed)) {
+        continue;
+      }
+      const before = out.failed.length;
+      this.remove(directory, out.failed);
+      if (out.failed.length === before) {
         out.removed.push(directory);
       }
     }
