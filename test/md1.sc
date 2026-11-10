@@ -280,6 +280,41 @@
         (list n raw (<= (* 100 raw) (* 20 n))))
       (list 7 1 #t))
 
+;; A BACKTICK RUN WITH A BACKTICK AFTER IT ON ITS LINE OPENS NO FENCE.
+;; CommonMark: the info string of a backtick fence holds no backtick, so
+;; "```x()```" is a code span. The splitter and the block parser ask the
+;; same fence-at, so one such line taken for an opener hid every heading
+;; after it from the splitter and every block after it from the parser.
+(printf "== a one-line backtick run is a span, and a heading-shaped line ends a paragraph ==\n")
+(define (no-span b) (cons (car b) (cddr b)))
+(want "MD-1a the splitter: a one-line backtick run leaves the heading after it a section"
+      (map cadr (caddr (shape "# A\n```refusal()```\n\n# B\nbody\n")))
+      '("A" "B"))
+(want "MD-1b the refs: a reference after a one-line backtick run is found"
+      (map caddr (md-ref-nodes "```x()```\n\nsee [[other]]\n"))
+      '("other"))
+(want "MD-1c the parser: a paragraph holding a one-line backtick run is one paragraph with a code span"
+      (map no-span (md->blocks "before\n```refusal()```\nafter\n"))
+      '((para "before\n" (code "refusal()") "\nafter")))
+(want "MD-1d CONTROL: a backtick fence with an info string still opens, and a tilde fence's info may hold a backtick"
+      (list (map car (md->blocks "```scheme\n(+ 1 2)\n```\n"))
+            (caddr (car (md->blocks "```scheme\n(+ 1 2)\n```\n")))
+            (map car (md->blocks "~~~ a`b\nx\n~~~\n")))
+      '((code) "scheme" (code)))
+;; A HEADING-SHAPED LINE IN A BLOCK'S TEXT ENDS THE PARAGRAPH BEFORE IT.
+;; md->blocks has no heading node (headings are sections, split out
+;; first), so the line stays a paragraph of its own; what changes is that a
+;; code span can no longer cross it.
+(want "MD-2a a heading-shaped line is a paragraph of its own between two others"
+      (map no-span (md->blocks "a\n# h\nb\n"))
+      '((para "a") (para "# h") (para "b")))
+(want "MD-2b a code span does not cross a heading-shaped line"
+      (map no-span (md->blocks "Call `unfinished\n# Heading `refusal`\n"))
+      '((para "Call `unfinished") (para "# Heading " (code "refusal"))))
+(want "MD-2c CONTROL: a hash with no space after it continues the paragraph"
+      (map no-span (md->blocks "a\n#b\n"))
+      '((para "a\n#b")))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "md1 complete\n")

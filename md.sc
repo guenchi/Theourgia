@@ -73,6 +73,12 @@
   ;; splitter cuts a new section in the middle of a code block, and the
   ;; two halves are then exported around a heading line that the file
   ;; never contained.
+  ;; A BACKTICK RUN WITH A BACKTICK AFTER IT ON ITS LINE IS NO FENCE
+  ;; (CommonMark: a backtick fence's info string holds no backtick), so
+  ;; "```x()```" is a code span. The splitter, the block parser and the
+  ;; paragraph all ask here; taken for an opener that never closes, one
+  ;; such line hid every later heading from the splitter and every later
+  ;; block from the parser. A tilde fence's info string may hold one.
   (define (fence-at text start end)
     (let loop ((i start) (indent 0))
       (cond
@@ -85,7 +91,11 @@
                        (if (and (< j end) (char=? (string-ref text j) c))
                            (count (+ j 1) (+ k 1))
                            k))))
-           (and (>= run 3) (cons c run))))
+           (and (>= run 3)
+                (not (and (char=? c #\`)
+                          (let scan ((k (+ i run)))
+                            (and (< k end) (or (char=? (string-ref text k) #\`) (scan (+ k 1)))))))
+                (cons c run))))
         (else #f))))
 
   ;; ---- headings ------------------------------------------------------------
@@ -522,13 +532,20 @@
                   (chars (+ c 1) (+ b (char-width (string-ref text c))) (cons b out))
                   (loop (+ k 1) (if (< (+ k 1) j) (cons b out) out))))))))
 
+  ;; A HEADING-SHAPED LINE ENDS A PARAGRAPH, and is a paragraph of its own:
+  ;; this AST has no heading node (headings are sections, split out before
+  ;; a body is parsed), so the line is kept as text, but a code span may not
+  ;; cross it, as it may not cross a heading in the file the section came
+  ;; from.
   (define (take-para text ls places i)
     (let loop ((j i) (body '()))
       (if (or (>= j (vector-length ls))
               (let ((s (line-text text (vector-ref ls j))))
                 (or (blank? s)
                     (and (> j i)
-                         (or (fence-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))
+                         (or (heading-at text (car (vector-ref ls i)) (cadr (vector-ref ls i)))
+                             (heading-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))
+                             (fence-at text (car (vector-ref ls j)) (cadr (vector-ref ls j)))
                              (hr-line? s)
                              (list-marker s)
                              (starts-with? (trim-left s) ">")

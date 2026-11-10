@@ -394,13 +394,14 @@
 ;; session's ruling before the freeze. A listed entry that round-trips is
 ;; red, and an unlisted failure is red.
 (define known-a1 '())
-;; THE MEMORY COPY'S KNOWN LIST: 57 srcs of one shape, emphasis-delimiter, the
+;; THE MEMORY COPY'S KNOWN LIST: 58 srcs of one shape, emphasis-delimiter, the
 ;; parser's own defect: find-delim takes a delimiter after a backslash, and closes
 ;; at the first eligible run, so an em or strong holding a literal * or _, or
 ;; one nested in another, cannot be printed back. Each entry is the src's
 ;; first differing top-level node and that node's span. Seven were put in
 ;; this family because the row holds them to their differing node and span,
-;; not because their shape was read.
+;; not because their shape was read. Two (23a and 239) open with a heading
+;; line, which is a paragraph of its own, so they differ at node 1.
 (define known-memory
   '(("xq56ijd1.127" emphasis-delimiter (3 (span 512 554)))
     ("xq56ijd1.196" emphasis-delimiter (5 (span 876 1092)))
@@ -418,7 +419,8 @@
     ("xq56ijd1.wa" emphasis-delimiter (2 (span 479 629)))
     ("xq56ijd1.14i" emphasis-delimiter (5 (span 696 1055)))
     ("xq56ijd1.21k" emphasis-delimiter (1 (span 35 2575)))
-    ("xq56ijd1.23a" emphasis-delimiter (0 (span 0 515)))
+    ("xq56ijd1.239" emphasis-delimiter (1 (span 109 438)))
+    ("xq56ijd1.23a" emphasis-delimiter (1 (span 53 515)))
     ("xq56ijd1.268" emphasis-delimiter (1 (span 61 932)))
     ("xq56ijd1.26b" emphasis-delimiter (0 (span 0 3553)))
     ("xq56ijd1.26c" emphasis-delimiter (0 (span 0 1142)))
