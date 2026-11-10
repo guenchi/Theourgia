@@ -221,7 +221,14 @@
               ;; stay in front of them.
               (unless (or header same-order?)
                 (for-each (lambda (k) (emit! (list 'move k parent previous)) (set! previous k)) omitted))))) inputs)
-      (list intents baselines memberships (apply append (map (lambda (i) (list-ref i 4)) inputs))
+      ;; EVERY WARNING NAMES ITS FILE: the reader gives a position inside
+      ;; the file it read, and an import reads many, so the input's relative
+      ;; path goes beside the position, after the warning's kind.
+      (list intents baselines memberships
+            (apply append (map (lambda (i)
+                                 (map (lambda (w) (cons* (car w) (cadr w) (list 'path (car i)) (cddr w)))
+                                      (list-ref i 4)))
+                               inputs))
             (map (lambda (i) (list (car i) (list-ref i 5))) inputs)
             (list 'skipped skipped)
             (list 'claimants claims)

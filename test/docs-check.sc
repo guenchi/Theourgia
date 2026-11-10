@@ -594,7 +594,7 @@
 ;; what is said. What the answer does
 ;; is held by `datum-import.sc`'s COMMENTS rows, not here.
 (define datum-comment-phrase
-  "the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither")
+  "the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its file, line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither")
 
 (define (squashed text)
   (let loop ((cs (string->list text)) (space #f) (out '()))

@@ -3051,7 +3051,7 @@ lost blocks only. The clause is absent when there is nothing to name.
 Reads a directory of source into the store. `--datum` reads it as data --
 one block per top-level form -- rather than as text. With `--datum`, the
 whole-line ; comments directly above a form become its doc; a ; comment
-inside a form is dropped, and the answer warns with its line and column. A
+inside a form is dropped, and the answer warns with its file, line and column. A
 #| |# block comment, and any comment inside a datum discarded with #;, is
 dropped with neither. With `--datum`, only Scheme files are read: those the
 language table gives to Scheme by extension (ss, sc, scm, sls, matched

@@ -143,10 +143,21 @@
     (rpc-dispatch store '(init) "test")
     (write! (string-append input "/lib.sc") text)
     (rpc-dispatch store (list 'import-code input "--datum") "test")))
-(want "COMMENTS-1 GUARD (green on the base): import-code --datum of a comment inside a form answers one internal-comment warning with its line and column"
+(want "COMMENTS-1 import-code --datum of a comment inside a form answers one internal-comment warning with its file, line and column"
       (warnings-of (import-one! "f19-inner"
                                 "(library (demo inner)\n  (export f)\n  (import (rnrs))\n  (define (f x)\n    ;; inside a form\n    (+ x 1)))\n"))
-      '((warning internal-comment (byte-offset 73) (line 5) (column 5))))
+      '((warning internal-comment (path "lib.sc") (byte-offset 73) (line 5) (column 5))))
+;; TWO FILES, ONE OF THEM WARNING: the warning names the file it is in, not
+;; only a line and column that either file could have.
+(let* ((area (string-append root "/f143")) (store (string-append area "/store")) (input (string-append area "/input")))
+  (mkdir-p! (string-append input "/sub"))
+  (rpc-dispatch store '(init) "test")
+  (write! (string-append input "/quiet.sc") "(library (demo quiet)\n  (export q)\n  (import (rnrs))\n  (define (q) 1))\n")
+  (write! (string-append input "/sub/loud.sc")
+          "(library (demo loud)\n  (export f)\n  (import (rnrs))\n  (define (f x)\n    ;; inside a form\n    (+ x 1)))\n")
+  (want "COMMENTS-3 a datum import of two files, one warning: the warning names the file that warns"
+        (warnings-of (rpc-dispatch store (list 'import-code input "--datum") "test"))
+        '((warning internal-comment (path "sub/loud.sc") (byte-offset 72) (line 5) (column 5)))))
 (want "COMMENTS-2 GUARD TWIN (green on the base): a comment only above the form answers no warning"
       (warnings-of (import-one! "f19-lead"
                                 ";; leading comment\n(library (demo lead)\n  (export g)\n  (import (rnrs))\n  (define (g x) (* x 2)))\n"))
