@@ -1846,7 +1846,6 @@
   ;; declared" (a plan amendment): a caller that says nothing is
   ;; refused an incomplete load and is unchanged on a complete one.
   (define (log-open store . declaration)
-    (trace-event! 'log-open store #f)
     (open-load store 'acquire-shared (and (pair? declaration) (car declaration))))
 
   (define (log-open-in-session store . declaration)
@@ -1873,7 +1872,13 @@
   ;; snapshot failure after that is told refused as well, and the request's
   ;; answer is that refusal carrying the notes. The check only raises; the
   ;; handler does the rest.
+  ;; EVERY LOAD TRACES `log-open`, HERE AND NOWHERE ELSE. The trace used to
+  ;; be log-open's own line, so the session's entries -- log-open-in-session,
+  ;; log-begin and a session's reload! -- loaded the log without it, and a
+  ;; row counting loads by the trace counted only the readers'. One
+  ;; supplier: no caller of open-load can load without the line.
   (define (open-load store lock-context declaration)
+    (trace-event! 'log-open store #f)
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
     (let ((owned (vector #f)))

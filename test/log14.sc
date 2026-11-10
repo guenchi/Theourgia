@@ -575,7 +575,7 @@
                          (else (dedupe (cdr l) (cons (car l) acc))))))
       (list-sort string<?
                  '("apply" "catch-up" "catch-up-path" "copy" "create" "enter-critical" "flock" "frame"
-                   "fsync" "parse" "registry-check" "registry-write" "rename"
+                   "fsync" "log-open" "parse" "registry-check" "registry-write" "rename"
                    "unlock" "write")))
 ;; DEDUPLICATION THROWS AWAY THE THING THAT MATTERS. `apply` appearing
 ;; somewhere in the set was satisfied by delivery emitting it, which is
@@ -609,6 +609,45 @@
               (for-all (lambda (f) (and (integer? (caddr f)) (> (caddr f) 0))) movers)
               (for-all (lambda (f) (eq? (caddr f) #f)) still)))
       (list #t #t #t))
+
+(printf "== L24(m): every entry into a load traces log-open, once ==\n")
+;; THE TRACE IS open-load's OWN, so each of the four ways in -- log-open,
+;; log-open-in-session, log-begin and a session's reload -- emits it once.
+;; It used to be log-open's line alone, and the session's three loaded
+;; without it.
+;; -> the number of `log-open` trace lines THUNK emits
+(define (log-opens-during thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-error-port p))
+      (trace-enable! #t)
+      (guard (e (#t (trace-enable! #f) (raise e))) (thunk))
+      (trace-enable! #f))
+    (length (filter (lambda (l) (has-substring? l "(trace log-open "))
+                    (lines-of (get-output-string p))))))
+(build!)
+(want "L24(m) a load through log-open traces log-open once"
+      (log-opens-during (lambda () (load-commit! (log-open d))))
+      1)
+(want "L24(m) a load through log-open-in-session traces log-open once"
+      (log-opens-during (lambda () (log-open-in-session d)))
+      1)
+(want "L24(m) a session's begin traces log-open once"
+      (log-opens-during (lambda () (log-end! (log-begin d (lambda args 'applied)))))
+      1)
+;; THE RELOAD: the other writer publishes a second segment between the
+;; session's begin and its append, so the append finds the versions
+;; changed and reloads the store before it writes.
+(build!)
+(want "L24(m) a session's reload, when another writer published after its begin, traces log-open once"
+      (parameterize ((log-clock (lambda () fixed-ts)))
+        (let ((s (log-begin d (lambda args 'applied))))
+          (put! (wpath M 2) (rec 2 (+ 1757300000000 2) '() '(put "m.2" ())))
+          (publish! 1 2)
+          (let ((n (log-opens-during (lambda () (append-one! s '(put "w.3" ()))))))
+            (guard (e (#t (if #f #f))) (session-commit! s))
+            (log-end! s)
+            n)))
+      1)
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

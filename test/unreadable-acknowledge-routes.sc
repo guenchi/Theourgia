@@ -992,6 +992,22 @@
           (list (car r) (incomplete-paths (cadr r)) (length (trace-lines-with st "published "))
                 (- opens-after opens-before))
           (list 0 (list (mirror-dir st)) 1 0))))
+;; U4b-witness-session: THE WITNESS SEES A SESSION'S LOAD. The rows above
+;; read "no log-open line" as "no fresh load"; that holds only if every load
+;; traces. A write through the daemon loads in its session (log-begin), and
+;; its answer's notes come from that load: the count must move, and the
+;; mirror the load could not read is named.
+(let* ((c (daemon-store! no-reload)) (st (car c)))
+  (client no-reload "outline" "--store" st)
+  (chmod! "000" (mirror-dir st))
+  (let* ((opens-before (log-opens st))
+         (r (client no-reload "insert" "--under" "root" "--title" "Through-session" "--store" st))
+         (opens-after (log-opens st)))
+    (chmod! "700" (mirror-dir st))
+    (stop-daemon! st)
+    (want "U4b-witness-session a write through the daemon loads in its session: the log-open count moves, and the answer names the unreadable mirror"
+          (list (> (- opens-after opens-before) 0) (has-substring? (format "~s" (cadr r)) (mirror-dir st)))
+          (list #t #t))))
 ;; U4b-older-segment and U4b-after: an OLDER segment is not fingerprinted, so
 ;; the read that triggers the probe (the outside commit changed the local
 ;; writer) is one behind and says nothing; once the reload has published,
