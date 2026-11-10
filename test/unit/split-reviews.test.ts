@@ -94,12 +94,12 @@ describe('a split review goes with the last tab that shows it', () => {
     fs.writeFileSync(gone, 'b');
     reviews.opened(kept);
     reviews.opened(gone);
-    const first = reviews.closed((file) => file === kept);
+    const first = reviews.closed([kept]);
     assert.deepStrictEqual(first, { removed: [gone], failed: [] });
     assert.strictEqual(fs.existsSync(path.dirname(gone)), false, 'the closed review\'s directory is still there');
     assert.strictEqual(fs.existsSync(kept), true, 'the review still shown was removed');
-    assert.deepStrictEqual(reviews.closed((file) => file === kept), { removed: [], failed: [] }, 'a removed review was removed again');
-    assert.deepStrictEqual(reviews.closed(() => false).removed, [kept]);
+    assert.deepStrictEqual(reviews.closed([kept]), { removed: [], failed: [] }, 'a removed review was removed again');
+    assert.deepStrictEqual(reviews.closed([]).removed, [kept]);
     assert.strictEqual(fs.existsSync(path.dirname(kept)), false);
   });
 
@@ -108,8 +108,48 @@ describe('a split review goes with the last tab that shows it', () => {
     const placed = reviews.place('/src/a.js');
     fs.writeFileSync(placed, 'a');
     reviews.opened(path.join(os.tmpdir(), 'not-mine', 'u', 'a.js'));
-    assert.deepStrictEqual(reviews.closed(() => false), { removed: [], failed: [] });
+    assert.deepStrictEqual(reviews.closed([]), { removed: [], failed: [] });
     assert.strictEqual(fs.existsSync(placed), true);
+  });
+
+  /*
+   * ONE FILE, TWO SPELLINGS. The editor hands a review back as a Uri's
+   * fsPath, which on Windows writes the drive letter in lower case; the
+   * review was placed under the storage path as given. Read with Windows'
+   * rules on any system, through a disk that only records.
+   */
+  it('takes a Windows path back with its drive letter in another case as the review it placed, and removes it', () => {
+    const made: string[] = [];
+    const gone: string[] = [];
+    const disk: ReviewDisk = {
+      makeDirectory: (d) => {
+        made.push(d);
+      },
+      list: () => [],
+      removeTree: (d) => {
+        gone.push(d);
+      }
+    };
+    const reviews = new SplitReviews('C:\\Users\\u\\storage\\split', 'me', () => ALIVE, disk, 'win32');
+    const review = reviews.place('D:\\work\\src\\Split.js');
+    assert.ok(review.startsWith('C:\\Users\\u\\storage\\split\\me\\'), review);
+    assert.ok(review.endsWith('\\Split.js'), review);
+    const back = 'c' + review.slice(1);
+    reviews.opened(back);
+    assert.deepStrictEqual(reviews.closed([back.toUpperCase()]).removed, [], 'a review still shown, spelled in other case, was removed');
+    assert.deepStrictEqual(reviews.closed([]).removed, [back]);
+    assert.deepStrictEqual(gone.map((d) => d.toLowerCase()), [made[0].toLowerCase()]);
+  });
+
+  it('never takes a path with .. in it for one of its own reviews', () => {
+    const reviews = new SplitReviews(root, 'me', () => ALIVE);
+    const review = reviews.place('/src/a.js');
+    const sneaky = path.join(path.dirname(review), '..', '..', 'x', 'a.js');
+    fs.mkdirSync(path.join(root, 'x'), { recursive: true });
+    reviews.opened(sneaky);
+    assert.deepStrictEqual(reviews.closed([]).removed, []);
+    assert.deepStrictEqual(reviews.discard(path.join(root, 'me', '..', 'a.js')), []);
+    assert.ok(fs.existsSync(path.join(root, 'x')) && fs.existsSync(path.join(root, 'me')), 'a directory reached through .. was removed');
   });
 
   it('reports a removal that failed, throws nothing, and does not try it again', () => {
@@ -122,10 +162,10 @@ describe('a split review goes with the last tab that shows it', () => {
     const reviews = new SplitReviews(root, 'me', () => ALIVE, disk);
     const review = reviews.place('/src/a.js');
     reviews.opened(review);
-    const outcome = reviews.closed(() => false);
+    const outcome = reviews.closed([]);
     assert.deepStrictEqual(outcome.removed, []);
     assert.deepStrictEqual(outcome.failed.map((f) => [f.directory, String(f.error)]), [[path.dirname(review), 'Error: EACCES']]);
-    assert.deepStrictEqual(reviews.closed(() => false), { removed: [], failed: [] });
+    assert.deepStrictEqual(reviews.closed([]), { removed: [], failed: [] });
     assert.strictEqual(reviews.discard(review).length, 1, 'a failed discard was not reported');
   });
 });

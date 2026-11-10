@@ -471,10 +471,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['split-symbols.test.ts', 22],
   /*
    * ADDED with the review written at --output: where a review is placed
-   * (2), its removal when no tab shows it (3), and the activation sweep (4,
-   * the last on real session records).
+   * (2), its removal when no tab shows it (5: two of them a Windows path
+   * spelled in another case and a path with `..`), and the activation sweep
+   * (4, the last on real session records).
    */
-  ['split-reviews.test.ts', 9],
+  ['split-reviews.test.ts', 11],
   /*
    * ADDED with the supply commands: collecting (13), the supply file (4), the
    * answers (5), the command's steps (40), and on a real core (3).

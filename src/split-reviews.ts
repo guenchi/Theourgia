@@ -45,7 +45,7 @@
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import { insideDirectory, nodeFileOps, removeTree } from './fsops';
+import { nodeFileOps, removeTree } from './fsops';
 import { Liveness } from './sessions';
 
 export interface ReviewDisk {
@@ -96,17 +96,43 @@ export function sessionIsGone(liveness: Liveness): boolean {
 }
 
 export class SplitReviews {
-  private readonly shown = new Set<string>();
+  /*
+   * The reviews opened here, by their canonical form (`same`), each with
+   * the path as `place` made it.
+   */
+  private readonly shown = new Map<string, string>();
+  private readonly paths: path.PlatformPath;
 
+  /*
+   * `platform` is the one whose path rules apply: the host's, except in a
+   * cell that reads a Windows pair on another system.
+   */
   constructor(
     private readonly root: string,
     private readonly sessionId: string,
     private readonly liveness: (sessionId: string) => Liveness,
-    private readonly disk: ReviewDisk = nodeReviewDisk
-  ) {}
+    private readonly disk: ReviewDisk = nodeReviewDisk,
+    private readonly platform: NodeJS.Platform = process.platform
+  ) {
+    this.paths = platform === 'win32' ? path.win32 : path.posix;
+  }
+
+  /*
+   * NEVER: TWO SPELLINGS OF ONE FILE TAKEN FOR TWO FILES. A review's path
+   * comes back from the editor as a Uri's fsPath, which on Windows spells
+   * the drive letter in lower case whatever the path it was made from;
+   * comparing the strings as they came would find no review of this
+   * window, and none would be removed when its tab closed. Both sides of
+   * every comparison go through this: normalised, and on Windows, whose
+   * file names are compared without case, folded to lower case.
+   */
+  private same(file: string): string {
+    const normal = this.paths.normalize(file);
+    return this.platform === 'win32' ? normal.toLowerCase() : normal;
+  }
 
   private mine(): string {
-    return path.join(this.root, this.sessionId);
+    return this.paths.join(this.root, this.sessionId);
   }
 
   /*
@@ -114,19 +140,22 @@ export class SplitReviews {
    * the file does not.
    */
   public place(source: string): string {
-    const directory = path.join(this.mine(), randomUUID());
+    const directory = this.paths.join(this.mine(), randomUUID());
     this.disk.makeDirectory(directory);
-    return path.join(directory, path.basename(source));
+    return this.paths.join(directory, this.paths.basename(source));
   }
 
   /*
-   * THE DIRECTORY OF A REVIEW THIS WINDOW PLACED, OR NULL. A path from
+   * THE DIRECTORY OF A REVIEW THIS WINDOW PLACED, OR NULL: the review's
+   * parent, when that parent's parent is this window's directory. The
+   * path is normalised first, so a `..` cannot make the root or another
+   * window's directory look like one of this window's. A path from
    * anywhere else -- another window's, or one this extension did not
    * make -- is never removed by this window.
    */
   private directoryOf(review: string): string | null {
-    const directory = path.dirname(review);
-    return path.dirname(directory) === this.mine() && insideDirectory(this.mine(), directory) ? directory : null;
+    const directory = this.paths.dirname(this.paths.normalize(review));
+    return this.same(this.paths.dirname(directory)) === this.same(this.mine()) ? directory : null;
   }
 
   /*
@@ -158,24 +187,32 @@ export class SplitReviews {
    */
   public opened(review: string): void {
     if (this.directoryOf(review) !== null) {
-      this.shown.add(review);
+      this.shown.set(this.same(review), review);
     }
   }
 
   /*
-   * THE TABS CHANGED. Every review opened here that `stillShown` no longer
-   * answers for has its directory removed, and is forgotten whether or not
-   * the removal worked: a failure is reported once, and the sweep of a
-   * later activation tries again.
+   * THE TABS CHANGED. `shownNow` is every file a tab shows after the
+   * change. Every review opened here that is not among them has its
+   * directory removed, and is forgotten whether or not the removal worked.
+   *
+   * NOTE: A FAILED REMOVAL IS NOT TRIED AGAIN WHILE THIS WINDOW LIVES. It
+   * is reported once. The sweep skips this window's own directory and
+   * removes another window's only when that window is gone, so the
+   * directory goes at the first activation after this window has closed.
    */
-  public closed(stillShown: (file: string) => boolean): { removed: string[]; failed: ReviewRemovalFailure[] } {
+  public closed(shownNow: Iterable<string>): { removed: string[]; failed: ReviewRemovalFailure[] } {
+    const still = new Set<string>();
+    for (const file of shownNow) {
+      still.add(this.same(file));
+    }
     const removed: string[] = [];
     const failed: ReviewRemovalFailure[] = [];
-    for (const review of [...this.shown]) {
-      if (stillShown(review)) {
+    for (const [key, review] of [...this.shown]) {
+      if (still.has(key)) {
         continue;
       }
-      this.shown.delete(review);
+      this.shown.delete(key);
       const directory = this.directoryOf(review);
       if (directory !== null) {
         const before = failed.length;
@@ -198,7 +235,7 @@ export class SplitReviews {
       if (name === this.sessionId) {
         continue;
       }
-      const directory = path.join(this.root, name);
+      const directory = this.paths.join(this.root, name);
       let gone = false;
       try {
         gone = sessionIsGone(this.liveness(name));

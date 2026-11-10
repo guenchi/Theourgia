@@ -2950,19 +2950,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * so a review still open in another tab or group stays.
      */
     vscode.window.tabGroups.onDidChangeTabs(() => {
-      const shown = new Set<string>();
+      const shown: string[] = [];
       for (const group of vscode.window.tabGroups.all) {
         for (const tab of group.tabs) {
           const input = tab.input;
           if (input instanceof vscode.TabInputText) {
-            shown.add(input.uri.fsPath);
+            shown.push(input.uri.fsPath);
           } else if (input instanceof vscode.TabInputTextDiff) {
-            shown.add(input.original.fsPath);
-            shown.add(input.modified.fsPath);
+            shown.push(input.original.fsPath, input.modified.fsPath);
           }
         }
       }
-      reportReviewRemovals(splitReviews.closed((file) => shown.has(file)).failed);
+      reportReviewRemovals(splitReviews.closed(shown).failed);
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),
