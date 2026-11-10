@@ -269,11 +269,6 @@
    unrelated a
    "the progress sink is in-memory bookkeeping (a request's counter); a raise in it is traced as progress-failed and the unit of work it counts stands"
    (e (#t (trace-event! (quote progress-failed) #f #f))))
-  ("project.sc" (export-md-view) 1 guard
-   ((unreadable-entry? e) (fs-error? e))
-   refuse a
-   "export-md: a target whose listing, directory creation or file write fails -- the unreadable-entry and the door's durable-error this guard catches -- answers (error unreadable (path ...) (reason ...) (written ...)), not internal (the durable clause replaced an i/o-error clause when the writes went through the door). Filed as REFUSE, and it differs from that category's definition (refused before any mutation) in one way: files already written to the export target stay there, and (written ...) names them. export-md does not write the store"
-   (e ((unreadable-entry? e) (raise (unwritten (unreadable-entry-path e) (unreadable-entry-reason e) written))) ((fs-error? e) (raise (unwritten (fs-error-target e) (durable-failure-reason e) written)))))
   ("code-project.sc" (answer) 1 guard
    ((and (list? e) (pair? e) (eq? (car e) (quote error))))
    unrelated a

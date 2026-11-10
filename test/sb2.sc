@@ -235,8 +235,9 @@
 ;; files written so far named in the answer"). Two documents, one at the top
 ;; and one under a sub-directory at mode 500 (see below); whichever the
 ;; export reaches first,
-;; the answer's `written` must be exactly the files that are on disk
-;; afterwards, and `path` the file it could not write.
+;; the files the answer's `written` record names must be exactly the files
+;; that are on disk afterwards, and the failed write's `path` the file it
+;; could not write.
 (let* ((s (fresh-store!))
        (target (string-append root "/partial"))
        (sub (string-append target "/sub")))
@@ -260,15 +261,34 @@
     (chmod! "700" sub)
     (let ((on-disk (filter (lambda (f) (file-exists? (string-append target "/" f)))
                            '("a.md" "sub/b.md")))
-          (named (let ((w (and (pair? e) (list? e)
-                               (find (lambda (x) (and (pair? x) (eq? (car x) 'written))) (cdr e)))))
-                   (and w (cadr w)))))
-      (want "TARGET-3 export-md stopped at a file it cannot write names the files it had already written, and they are exactly the ones on disk"
-            (list (head e) (and (pair? (cdr e)) (cadr e))
-                  (and (string? (field e 'path)) (contains? (field e 'path) "sub/b.md"))
-                  on-disk
-                  (and (list? named) (equal? named on-disk)))
-            '(error unreadable #t ("a.md") #t)))))
+          (clause (lambda (name)
+                    (and (pair? e) (list? e)
+                         (find (lambda (x) (and (pair? x) (eq? (car x) name))) (cdr e)))))
+          ;; an entry of the record names its path second; anything else in a
+          ;; written clause (the old shape's relative names) is read as it is,
+          ;; so a different answer is a red row, not a raise
+          (entry-path (lambda (x) (if (and (pair? x) (pair? (cdr x))) (cadr x) x)))
+          (relative (lambda (p)
+                      (let ((n (+ 1 (string-length target))))
+                        (if (and (string? p) (> (string-length p) n)) (substring p n (string-length p)) p)))))
+      ;; THE TABLE'S ANSWER (answers.sc): a failure after something was
+      ;; written is incomplete, the failure's own clauses under `failed` and
+      ;; the request's mutation record under `written`, whose entries name
+      ;; absolute paths; the files they name are exactly the ones on disk.
+      (let* ((failed (clause 'failed))
+             (written (clause 'written))
+             (named (and written (list? (cadr written))
+                         (let loop ((es (cadr written)) (out '()))
+                           (cond ((null? es) (reverse out))
+                                 ((member (relative (entry-path (car es))) out) (loop (cdr es) out))
+                                 (else (loop (cdr es) (cons (relative (entry-path (car es))) out))))))))
+        (want "TARGET-3 export-md stopped at a file it cannot write answers the table's incomplete: the failed write's op, path, reason and errno, and a written record naming exactly the files on disk"
+              (list (head e) (and (pair? (cdr e)) (cadr e))
+                    (and failed (map car (cdr failed)))
+                    (and failed (let ((p (assq 'path (cdr failed)))) (and p (contains? (cadr p) "sub/b.md"))))
+                    on-disk
+                    (equal? named on-disk))
+              '(error incomplete (op path reason errno) #t ("a.md") #t))))))
 
 (system (string-append "chmod -R u+rwx " root " 2>/dev/null; rm -rf " root))
 (printf "\n~a failures\nrows: ~a\nsb2 complete\n" bad rows)
