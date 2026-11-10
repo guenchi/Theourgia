@@ -1,6 +1,7 @@
 #!r6rs
 (import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi)
-        (theourgia log) (theourgia code-project) (theourgia code-markers) (theourgia languages))
+        (theourgia log) (theourgia code-project) (theourgia code-markers) (theourgia languages)
+        (only (theourgia digest) sha256 bytevector->hex))
 (define bad 0)
 (define (want name got expected)
   (if (equal? got expected) (printf "ok ~a\n" name)
@@ -287,5 +288,23 @@
     (want "T6 PIN an invalid header in a.txt is refused before an unreadable b.txt is read, as on the base"
           (list (answer-head a) (answer-clause a 'reason))
           '((error projection-invalid) (reason invalid-header)))))
+;; THE INTENTS AN IMPORT BUILDS, PINNED BY DIGEST: a fixed tree of four files
+;; on a fresh store (no header, so no store's ids in them), captured, and the
+;; written form of the intents hashed. The capture keeps its intents newest
+;; first and reverses them once; the order and every (from <k>) index must be
+;; what appending one at a time gave. The digest is the one read on the tree
+;; before that change.
+(let* ((dir (string-append root "/digest")) (store (string-append dir "/store")) (input (string-append dir "/input")))
+  (mkdir-p! (string-append input "/pkg"))
+  (for-each (lambda (f) (write! (string-append input "/" (car f)) (string->utf8 (cadr f))))
+            '(("a.py" "# first\ndef f():\n  pass\n\ndef g():\n  return 2\n\nclass C:\n  pass\n")
+              ("b.scm" "(define (h x) x)\n\n(define (k y)\n  (h y))\n")
+              ("pkg/c.py" "def u():\n  pass\n\n\ndef v():\n  pass\n")
+              ("notes.txt" "plain text, one block\n")))
+  (rpc-dispatch store '(init) "test")
+  (let ((intents (car (capture-import store input #f #f))))
+    (want "CT-DIGEST the intents a fixed four-file tree captures: their count and the sha256 of their written form, as before the capture kept them newest first"
+          (list (length intents) (bytevector->hex (sha256 (string->utf8 (format "~s" intents)))))
+          '(8 "8b6803ffe7f556f1074c944cb0eb1ac69f298221552ff376675f8e3f81be48bb"))))
 (printf "~a failures\ncode-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

@@ -164,11 +164,16 @@
                        (directory-files dir)))
            (skipped (map car (filter (lambda (f) (not (or (caddr f) (assoc (car f) refused)))) files)))
            (inputs (map caddr (filter caddr files)))
-           (seen-files '()) (seen-ids '()) (baselines '()) (memberships '()) (intents '()))
-      (define (emit! x) (set! intents (append intents (list x))) (- (length intents) 1))
+           (seen-files '()) (seen-ids (make-hashtable string-hash string=?)) (baselines '()) (memberships '())
+           (intents '()) (emitted 0))
+      ;; THE INTENTS ARE KEPT NEWEST FIRST AND COUNTED, and reversed once at
+      ;; the end: an intent's index is the count before it. Appending to the
+      ;; whole list and measuring it per intent made an import quadratic in
+      ;; its intents. The ids seen are a table for the same reason.
+      (define (emit! x) (set! intents (cons x intents)) (set! emitted (+ emitted 1)) (- emitted 1))
       (define (check-id! state id file old)
-        (when (member id seen-ids) (projection-failure 'duplicate-id (list 'ids (list id))))
-        (set! seen-ids (cons id seen-ids))
+        (when (hashtable-contains? seen-ids id) (projection-failure 'duplicate-id (list 'ids (list id))))
+        (hashtable-set! seen-ids id #t)
         (cond ((not (state-read state id)) (projection-failure 'foreign-file (list 'ids (list id))))
               ((not (alive? state id)) (projection-failure 'tombstone (list 'ids (list id))))
               ((not (member id old)) (projection-failure 'foreign-file (list 'ids (list id))))
@@ -225,7 +230,7 @@
                             (emit! (if entry (list 'set id 'lang (string->symbol (language-property entry 'lang #f))) (list 'set id 'lang))))
                           (unless unchanged-order? (emit! (list 'move id parent previous)))
                           (set! previous id))))) entries)))) inputs)
-      (list intents baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs)
+      (list (reverse intents) baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs)
             (list 'skipped skipped)
             (list 'symbols-ignored (reverse ignored))
             (list 'symbols-imported-whole (reverse whole))
