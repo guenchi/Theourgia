@@ -400,7 +400,11 @@
            (name-capture 1)
            (line-suggest ((stop-lines ("__END__" "__DATA__"))))
            (name-vectors ("sub f { 1 }" "sub Foo::bar {" "package Foo;")))
+         ;; PROSE: a markdown block is read for names only inside its code
+         ;; spans and fenced code blocks (name-use.sc, prose-code-text); its
+         ;; words are not uses of anything.
          ((lang "markdown") (extensions ("md" "markdown")) (identifier "[A-Za-z_][A-Za-z0-9_]*") (line-comment #f)
+           (prose #t)
            (block-comment ("<!--" "-->"))
            (def-heads
              ("^#\\s+(.+?)\\s*#*$"

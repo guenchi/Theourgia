@@ -1102,7 +1102,12 @@ strings included** and keywords too: the answer says `(lexing whole-text)`. A to
 starts where the pattern first matches, so in `9abc` the token is `abc`, and is
 the longest match there whatever the pattern's alternation order prefers, read up to 4096 characters (a longer one is read as more
 than one). A block whose language has no entry answers
-`(name-use none (reason no-language))`.
+`(name-use none (reason no-language))`. A block of a PROSE language (the
+table's `(prose #t)`: markdown) is read the same way over its code only --
+its code spans (a run of backticks closed by a run of the same length) and
+its fenced code blocks (``` or ~~~) -- so a word in its prose is not a use:
+a README paragraph that says "refusal" does not use a `(define refusal
+...)`, and one that writes `` `refusal` `` does.
 
 A library block, a program's included, answers its imports, each spec reduced to the
 library it names (`only`, `except`, `prefix`, `rename`, `for` and the `library`
@@ -1517,7 +1522,9 @@ definitions included, since T is in its own unit -- it lists the live code
 blocks outside the unit (`(hard T ?u unit _)`) that use the name, by the
 same name-use table `uses` reads: syntactic, and the view's own, the
 committed one without `--working` and the working view with it. They are
-ordered by name, then id; a block that uses two of the names is listed
+ordered by name; under a name the code blocks come first and the blocks of
+a prose language (markdown) after, each part by id, and `of` counts both;
+a block that uses two of the names is listed
 under each; `library` and `mode` are as `uses` gives them. `of` is how many
 there are, `listed` how many the budget admitted, so `(listed 0) (of 0)`
 says there are none and `(listed 0) (of <n>)` that the budget cut them;

@@ -60,7 +60,7 @@
 (library (theourgia name-use)
   (export names-verb uses-verb block-name-use name-use-table datum-uses text-uses
           import-library-name library-name-proper live-kind register-name-use-form! default-identifier-pattern
-          name-use-rule-fires?)
+          name-use-rule-fires? prose-block?)
   (import (rnrs)
           (only (theourgia arguments) argument-option)
           (only (theourgia reduce) state-read state-block-ids state-field-contested?)
@@ -602,8 +602,76 @@
                     ((not text) (none 'unreadable-code))
                     ((language-property entry 'reader #f) (text-reading text entry (in-library-file? state id)))
                     (else
-                     (answer (text-uses text (language-property entry 'identifier default-identifier-pattern))
+                     (answer (text-uses (if (language-property entry 'prose #f) (prose-code-text text) text)
+                                        (language-property entry 'identifier default-identifier-pattern))
                              '() '() '(syntactic (lexing whole-text)) 'text))))))))
+
+  ;; A WORD IN PROSE IS NOT A USE. A block of a prose language (the table's
+  ;; `prose` property: markdown) names a thing only where it writes code:
+  ;; inside a code span (a run of backticks, closed by a run of the same
+  ;; length) or a fenced code block (``` or ~~~ at a line's start, closed by
+  ;; a fence of the same character at least as long). -> that code, each
+  ;; piece on a line of its own, and nothing of the prose around it. Before
+  ;; this, every word of a README paragraph was a use, and a test's local
+  ;; `(define refusal ...)` had the README's every mention of a refusal as
+  ;; its users.
+  (define (prose-code-text text)
+    (let ((lines (prose-lines text)))
+      (let loop ((ls lines) (fence #f) (out '()))
+        (if (null? ls)
+            (apply string-append (reverse out))
+            (let* ((l (car ls)) (f (fence-of l)))
+              (cond
+                ((and fence f (char=? (car f) (car fence)) (>= (cdr f) (cdr fence)) (blank-after? l (cdr f)))
+                 (loop (cdr ls) #f out))
+                (fence (loop (cdr ls) fence (cons (string-append l "\n") out)))
+                (f (loop (cdr ls) f out))
+                (else (loop (cdr ls) #f (append (reverse (code-spans l)) out)))))))))
+  (define (prose-lines text)
+    (let loop ((i 0) (start 0) (out '()))
+      (cond ((= i (string-length text)) (reverse (cons (substring text start i) out)))
+            ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
+            (else (loop (+ i 1) start out)))))
+  ;; -> (<fence char> . <length>) when LINE opens or closes a fence: three or
+  ;; more backticks or tildes after at most three spaces, else #f
+  (define (fence-of line)
+    (let* ((n (string-length line))
+           (i (let skip ((i 0)) (if (and (< i n) (< i 3) (char=? (string-ref line i) #\space)) (skip (+ i 1)) i))))
+      (and (< i n) (memv (string-ref line i) '(#\` #\~))
+           (let* ((c (string-ref line i))
+                  (j (let run ((j i)) (if (and (< j n) (char=? (string-ref line j) c)) (run (+ j 1)) j))))
+             (and (>= (- j i) 3) (cons c (- j i)))))))
+  ;; a closing fence has nothing after its run but spaces
+  (define (blank-after? line run)
+    (let* ((n (string-length line))
+           (i (let skip ((i 0)) (if (and (< i n) (char=? (string-ref line i) #\space)) (skip (+ i 1)) i))))
+      (for-all (lambda (c) (char=? c #\space)) (string->list (substring line (min n (+ i run)) n)))))
+  ;; -> the code spans of LINE, each followed by a newline
+  (define (code-spans line)
+    (let ((n (string-length line)))
+      (define (run-end i) (if (and (< i n) (char=? (string-ref line i) #\`)) (run-end (+ i 1)) i))
+      (define (closing from len)
+        (let find ((i from))
+          (cond ((>= i n) #f)
+                ((char=? (string-ref line i) #\`)
+                 (let ((e (run-end i))) (if (= (- e i) len) i (find e))))
+                (else (find (+ i 1))))))
+      (let loop ((i 0) (out '()))
+        (cond
+          ((>= i n) (reverse out))
+          ((char=? (string-ref line i) #\`)
+           (let* ((e (run-end i)) (c (closing e (- e i))))
+             (if c
+                 (loop (run-end c) (cons (string-append (substring line e c) "\n") out))
+                 (loop e out))))
+          (else (loop (+ i 1) out))))))
+
+  ;; -> #t when block ID of STATE is of a prose language (`prose-code-text`)
+  (define (prose-block? state id)
+    (let* ((row (state-read state id))
+           (lang (and row (field-of row 'lang)))
+           (entry (and (or (symbol? lang) (string? lang)) (language-for-name lang))))
+      (and entry (language-property entry 'prose #f) #t)))
 
   ;; A TEXT READ AS FORMS (reader.sc): the names are the union of what each
   ;; form uses, each walked as a datum block's body is, and the contract says
