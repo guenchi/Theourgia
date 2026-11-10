@@ -40,9 +40,9 @@ context-verb 127 132 1b491b98f76b5fe665b4dbd3c28a3ca7
 crash 15 19 7dc2d98b549e4f3cbbef2f17820a2c6a
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
 daemon-e1 74 79 ce6de47cc4f3b023746a65667ed02bcc
-daemon-idle 124 132 d8284e5750007ed15a7e0db5648e2f98
+daemon-idle 124 132 ff0d592b94a06a9ca7c1b6bd5802eafc
 daemon-link-gate 38 41 cea34b20543f41532539d2f004f9967b
-daemon-namespace 118 122 ac1568deef9b2f298a28b5ca043feac1
+daemon-namespace 118 122 5d7bdd588089db6ed5eda6ca5418cc00
 daemon-session 27 37 4792ae8b130ff43bfffe26bbb9c092c0
 daemon-socket 13 19 41340dde0cd776315a9d7622b8afa717
 datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87

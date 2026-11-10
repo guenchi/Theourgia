@@ -5379,7 +5379,9 @@ attempt is decided, a late connection is registered but reads nothing, so
 its request is answered only after the resume (or refused `draining`, below)
 -- the wait is the rest of the grace and the rebind. An unlink that fails
 cancels the attempt at once, `(idle-cancelled (reason unlink-failed
-<errno>))`, the link left and the daemon serving. A resume that cannot
+<errno>))`, the link left and the daemon serving; `<errno>` is the errno's
+name (`EACCES`), the number only for one the platform's row does not name,
+here and in `resume-failed`'s `(link <errno>)`. A resume that cannot
 happen -- the socket path taken by something else meanwhile, which is left
 as it is, or the bind or the publish failing, or the runtime having retired
 the listener -- drains the daemon: the late requests are answered `(error
@@ -5449,7 +5451,7 @@ case rule), the daemon's pid and the
 directory's name. The marker is the reservation, and it outlives the daemon:
 a controlled exit unlinks only the private socket, while it is still the
 socket this daemon bound (by device and inode), and the public link (a
-failure of either is logged `(cleanup-failed <path> <errno>)` and the exit
+failure of either is logged `(cleanup-failed <path> <errno>)`, the errno by its name, and the exit
 goes ahead; the listener's close on a drain also unlinks the private name,
 as closing a bound pipe does, whatever is at that name in the daemon's own
 directory by then), so `<socket>.d` and `<socket>.d.<pid>/.endpoint` stay until the

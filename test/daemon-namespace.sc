@@ -735,7 +735,7 @@
           (list said reached gone (rc-of "l6")
                 (and (member '(exiting (reason second-signal)) ds) #t)
                 (find (lambda (x) (eq? (car x) 'cleanup-failed)) ds))
-          (list 'serving #t #t 75 #t (list 'cleanup-failed (string-append "s.d/" pt) 13)))
+          (list 'serving #t #t 75 #t (list 'cleanup-failed (string-append "s.d/" pt) 'EACCES)))
     (want "W5l6 the public link is gone, the private socket remains"
           (list (kind (string-append d "/s")) private-left)
           '(absent other))

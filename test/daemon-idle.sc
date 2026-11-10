@@ -524,7 +524,7 @@
   (want "W5k the unlink refused: the attempt cancelled, logged with the errno, the link kept, the daemon answers"
         (list (line-of "w5u" 'idle-cancelled) (kind (string-append d "/s")) (alive? pid)
               (ask (string-append d "/s")))
-        '((idle-cancelled (reason unlink-failed 13)) link #t ok))
+        '((idle-cancelled (reason unlink-failed EACCES)) link #t ok))
   (sh (string-append "chmod 755 " d))
   (want "W5k the directory restored, a later window exits normally"
         (list (gone-within? pid 8) (and (idle-exit-line "w5u") #t))
@@ -921,7 +921,7 @@
       (resume-fails "w5tb"
                     (lambda (d pt) (sh (string-append "chmod 555 " d)))
                     (lambda (d pt) (sh (string-append "chmod 755 " d))))
-      '(serving (answer draining) #t 75 (idle-exit (reason resume-failed (link 13))) (".endpoint") #t))
+      '(serving (answer draining) #t 75 (idle-exit (reason resume-failed (link EACCES))) (".endpoint") #t))
 
 ;; ---- W5e2: an adapter that dies before its report ------------------------------------------
 ;;
