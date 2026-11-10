@@ -2325,10 +2325,8 @@
   ;; buffer.
 
   (define ENOTDIR (platform-number 'ENOTDIR))
-  (define EISDIR (platform-number 'EISDIR))
   (define ELOOP (platform-number 'ELOOP))
   (define EOVERFLOW (platform-number 'EOVERFLOW))
-  (define ENAMETOOLONG (platform-number 'ENAMETOOLONG))
 
   ;; TWO FIELDS, TWO READERS. The REASON is the system's own message, for a
   ;; person reading `check` -- which file, and why, in the words the system
