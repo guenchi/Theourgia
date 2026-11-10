@@ -307,17 +307,45 @@
 ;; (error eval-worker-unavailable (reason no-ready)), and that is a different
 ;; fact from an answer that came back without naming its limit. Both used to
 ;; read UNNAMED, so a red row could not say which had happened.
-(define (limit-reading out limit-text)
-  (cond ((contains? out limit-text) 'named-the-limit)
-        ((contains? out "(error eval-worker-unavailable (reason no-ready))") 'no-ready)
-        (else 'UNNAMED)))
+;; BY THE CLAUSE OF THE PARSED ANSWER, as eval-supervisor.sc's copy reads it:
+;; the answer is the first datum of the output headed ok or error, and the
+;; limit clause is looked for among its clauses with equal?. A substring
+;; test was satisfied by any text holding the clause's spelling -- a stdout
+;; that printed it, or another clause containing it.
+(define (answer-datum out)
+  (guard (e (#t #f))
+    (let ((port (open-string-input-port out)))
+      (let loop ()
+        (let ((d (read port)))
+          (cond ((eof-object? d) #f)
+                ((and (pair? d) (memq (car d) '(ok error))) d)
+                (else (loop))))))))
+(define (clauses-of d)
+  (if (list? d) (filter pair? (cdr d)) '()))
+(define (limit-reading out limit-clause)
+  (let ((d (answer-datum out)))
+    (cond ((member limit-clause (clauses-of d)) 'named-the-limit)
+          ((and d (eq? (car d) 'error) (pair? (cdr d)) (eq? (cadr d) 'eval-worker-unavailable)
+                (member '(reason no-ready) (clauses-of d)))
+           'no-ready)
+          (else 'UNNAMED))))
+(want "I5-1 a reading for (limit 2048) is not satisfied by an ok answer whose stdout prints (limit 2048)"
+      (limit-reading "(ok (values (3)) (stdout \"(limit 2048)\") (stderr \"\"))\n" '(limit 2048))
+      'UNNAMED)
+(want "I5-2 a reading for (limit 1) is not satisfied by an answer naming (limit 10)"
+      (limit-reading "(error eval-limit (resource time) (limit 10))\n" '(limit 1))
+      'UNNAMED)
+(want "I5-3 CONTROL: the answer naming (limit 2048) reads named-the-limit, and no-ready reads no-ready"
+      (list (limit-reading "(error eval-limit (resource output) (limit 2048))\n" '(limit 2048))
+            (limit-reading "(error eval-worker-unavailable (reason no-ready))\n" '(limit 2048)))
+      '(named-the-limit no-ready))
 
 ;; ---- EV-09 the output quota ---------------------------------------------------
 (want "EV-09 an unbounded printer meets the output quota, and the answer is complete (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (evaluate "(let loop () (display \"0123456789\") (loop))"
                            "--output-bytes" "2048" "--timeout-ms" "8000")))
         (list (if (contains? out "(resource output)") 'quota (list 'said out))
-              (limit-reading out "(limit 2048)")
+              (limit-reading out '(limit 2048))
               (if (= (count-lines out) 1) 'one-line 'TORN)))
       '(quota named-the-limit one-line))
 
@@ -455,7 +483,7 @@
 (want "EV-03 a worker that allocates without printing meets the memory budget (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (evaluate grow "--memory-bytes" "268435456" "--timeout-ms" "10000")))
         (list (if (contains? out "(resource memory)") 'memory (list 'said out))
-              (limit-reading out "(limit 268435456)")))
+              (limit-reading out '(limit 268435456))))
       '(memory named-the-limit))
 
 (want "EV-03 a worker that prints before allocating meets it too, and the print survives"

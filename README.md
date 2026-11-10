@@ -5202,7 +5202,9 @@ against the budget -- and whether it had the kept session.
 
 A `--socket` given by hand is not given a directory. An empty one answers
 `(error bad-socket-path (reason empty))`. One whose directory does not
-exist answers `(error socket-dir-missing (dir <dir>))`. Both exit 2,
+exist answers `(error socket-dir-missing (dir <dir>))`; one whose
+directory is there but cannot be searched answers `(error
+socket-dir-unreadable (dir <dir>) (reason <r>) (errno <e>))`. All exit 2,
 before `--detach` and before anything is created. Only the default
 socket's directory is made by the daemon. A socket path, given or derived,
 with no room after it for the daemon's private name (`.d/` and ten digits,

@@ -598,6 +598,22 @@
       (let ((a (ensure-daemon! (absent-argv absent9) absent9 (string-append sock-here "/no-such-dir/x.sock"))))
         (and (pair? a) (list (car a) (cadr a))))
       '(error socket-dir-missing))
+;; A SOCKET'S DIRECTORY THAT IS THERE BUT CANNOT BE SEARCHED, under a parent
+;; that can: stat of the directory succeeds, and the start is still refused
+;; by name, with the reason and errno an unreadable entry carries; a
+;; directory that can be used is not refused.
+(let ((closed (string-append sock-here "/closed-dir")) (open (string-append sock-here "/open-dir")))
+  (system (string-append "mkdir -p " closed " " open " && chmod 000 " closed))
+  (let ((direct (socket-dir-refusal (string-append closed "/x.sock")))
+        (start (ensure-daemon! (absent-argv absent9) absent9 (string-append closed "/x.sock")))
+        (usable (socket-dir-refusal (string-append open "/x.sock"))))
+    (system (string-append "chmod 700 " closed))
+    (want "C2 a socket in a directory that cannot be searched (its parent can) is refused socket-dir-unreadable, naming the directory, reason and errno; the start answers the same"
+          (list direct (and (pair? start) (list-head start (min 3 (length start)))))
+          (list (list 'error 'socket-dir-unreadable (list 'dir closed) '(reason "Permission denied") '(errno EACCES))
+                (list 'error 'socket-dir-unreadable (list 'dir closed))))
+    (want "C2 CONTROL a socket in a directory that can be used is not refused"
+          usable #f)))
 ;; RESIDUE IS KEPT: what an earlier start left under <run>/<key> -- a lock,
 ;; a log, anything else -- is neither removed nor changed by a start the
 ;; client refuses.

@@ -47,7 +47,7 @@
                 unix-socket-connect fd-read fd-close write-all!
                 monotonic-ms socket-send-within! socket-read-within socket-expired? theourgia-silence-ms
                 spawn-detached! spawn-piped! child-wait! trace-event! fs-error? fs-error-errno
-                unreadable-entry? unreadable-entry-path unreadable-entry-reason
+                unreadable-entry? unreadable-entry-path unreadable-entry-reason unreadable-entry-errno
                 entry-type read-entry entry-name-type mkdir-exclusive!
                 ;; The pid wait, the hold seam, the record.
                 waitpid-status hold-point! theourgia-fault
@@ -872,6 +872,13 @@
   ;;       -> (error unreadable (path <p>) (reason <r>)), R1's naming; it
   ;;          is not "missing", and saying so would send the caller looking
   ;;          for a directory that is there.
+  ;;   the directory itself there but not searchable (its parent is)
+  ;;       -> (error socket-dir-unreadable (dir <dir>) (reason <r>) (errno <e>)):
+  ;;          stat of the directory succeeds through a searchable parent,
+  ;;          so the directory is asked through itself, `<dir>/.`, and the
+  ;;          unreadable entry that raises is answered with the reason and
+  ;;          errno the unreadable answers carry. It used to be admitted,
+  ;;          and the bind inside it failed later.
   (define (socket-dir-refusal socket)
     (let ((dir (dirname-of socket)))
       (guard (e ((unreadable-entry? e)
@@ -879,7 +886,12 @@
                        (list 'path (unreadable-entry-path e))
                        (list 'reason (unreadable-entry-reason e)))))
         (if (eq? (entry-type dir) 'directory)
-            #f
+            (guard (e ((unreadable-entry? e)
+                       (list 'error 'socket-dir-unreadable (list 'dir dir)
+                             (list 'reason (unreadable-entry-reason e))
+                             (list 'errno (unreadable-entry-errno e)))))
+              (entry-type (string-append dir "/."))
+              #f)
             (list 'error 'socket-dir-missing (list 'dir dir))))))
 
   ;; THE ONE ANSWER TO "IS THERE A STORE HERE", asked by this client before it
