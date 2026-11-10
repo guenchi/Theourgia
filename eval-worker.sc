@@ -97,16 +97,18 @@
 ;; clause): a script may redefine an imported name, a compiled program may not.
 (define protocol-port (standard-output-port))
 
+;; -> VALUE's text as the protocol writes it, one printer for the answer and
+;; for the value limit that measures it (value-problem)
+(define (written-text value)
+  (call-with-string-output-port
+    (lambda (port)
+      (parameterize ((print-graph #f) (print-length #f)
+                     (print-level #f) (print-unicode #f)
+                     (print-gensym #f))
+        (write value port)))))
+
 (define (say-datum! value)
-  (put-bytevector protocol-port
-                  (string->utf8
-                    (call-with-string-output-port
-                      (lambda (port)
-                        (parameterize ((print-graph #f) (print-length #f)
-                                       (print-level #f) (print-unicode #f)
-                                       (print-gensym #f))
-                          (write value port)
-                          (newline port))))))
+  (put-bytevector protocol-port (string->utf8 (string-append (written-text value) "\n")))
   (flush-output-port protocol-port))
 
 ;; ---- the user's two streams, framed -----------------------------------------
@@ -223,6 +225,13 @@
 ;; -> #f when the value can be written back as data, or the kind of problem:
 ;; procedure, port, cycle, size, unsupported. One rule for what the worker
 ;; returns and for what the source raises.
+;; THE SIZE IS THE WRITTEN TEXT'S: once the walk finds nothing that cannot
+;; be written, the value's text as the answer would carry it, in UTF-8
+;; bytes, is held to the output limit. The walk's own bounds (nodes, depth,
+;; one string's length) stop a structure before it is written at all; they
+;; let through a value whose text is longer than any of its parts -- a
+;; 10,000-character symbol at a limit of 128.
+
 (define (value-problem value)
   (let ((active (make-eq-hashtable)) (count 0))
     (call/cc
@@ -245,7 +254,7 @@
             ((or (null? x) (boolean? x) (number? x) (char? x) (symbol? x)) (values))
             (else (refuse 'unsupported))))
         (visit value 0)
-        #f))))
+        (and (> (bytevector-length (string->utf8 (written-text value))) output-limit) 'size)))))
 
 (define (limited-value? value index)
   (let ((problem (value-problem value)))

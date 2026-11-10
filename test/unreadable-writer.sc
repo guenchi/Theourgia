@@ -869,17 +869,29 @@
 ;; core.sc eval runs through eval-supervise and a worker, not rpc dispatch;
 ;; it is driven the way test/eval-local.sc drives it, with stdout read as
 ;; the answer and stderr kept apart.
+;; THE ANSWER IS THE WHOLE OF STDOUT AND THE EXIT AGREES WITH IT: one datum
+;; and nothing after it, and the exit 0 for an ok answer, 1 for a refusal.
+;; Anything else is answered (not-one-answer (rc <n>) (stdout <data>)), which
+;; no row expects: reading only the first datum let a second line, or an
+;; exit that contradicted the answer, pass.
 (define (eval-answer store source . flags)
   (let ((out (string-append root "/eval.out"))
         (err (string-append root "/eval.err")))
-    (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval '" source "' --store " store
-                           " --wire " (apply string-append (map (lambda (f) (string-append f " ")) flags))
-                           "> " out " 2> " err))
-    (let ((d (guard (e (#t (eof-object))) (call-with-port (open-input-file out) read))))
-      (if (eof-object? d)
-          (list 'no-answer (let ((t (call-with-port (open-input-file err) get-string-all)))
-                             (if (eof-object? t) "" (substring t (max 0 (- (string-length t) 200)) (string-length t)))))
-          d))))
+    (let* ((status (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval '" source "' --store " store
+                                          " --wire " (apply string-append (map (lambda (f) (string-append f " ")) flags))
+                                          "> " out " 2> " err)))
+           (rc (if (> status 255) (quotient status 256) status))
+           (data (guard (e (#t (list 'UNREADABLE)))
+                   (call-with-port (open-input-file out)
+                     (lambda (p) (let loop ((acc '())) (let ((d (read p))) (if (eof-object? d) (reverse acc) (loop (cons d acc))))))))))
+      (cond
+        ((null? data)
+         (list 'no-answer (let ((t (call-with-port (open-input-file err) get-string-all)))
+                            (if (eof-object? t) "" (substring t (max 0 (- (string-length t) 200)) (string-length t))))))
+        ((and (= (length data) 1) (pair? (car data))
+              (= rc (if (eq? (car (car data)) 'ok) 0 1)))
+         (car data))
+        (else (list 'not-one-answer (list 'rc rc) (list 'stdout data)))))))
 (let* ((s (fresh-store!))
        (local (begin (ask s 'insert "--under" "root" "--title" "A") (local-writer s)))
        (dir (wdir s local)))

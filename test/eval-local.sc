@@ -381,6 +381,32 @@
         (list (car r) (cadr r) (and (caddr r) (<= (caddr r) 128)) (cadddr r)))
       '(error output #t (truncated #t)))
 
+;; ---- EV-09c a value is held to the limit by its written text ----------------------
+;; The limit counts the bytes of the value's text as the answer carries it,
+;; for a returned value and a raised one, and the refusal is the one each
+;; already had: eval-value (kind size) for a returned value, eval-exception
+;; (reason unwritable-value) (type too-large) for a raised one. A symbol is
+;; one node and no string, so the walk's own bounds let it through.
+(define (value-reading source)
+  (let* ((a (answer-of (evaluate source "--output-bytes" "128" "--timeout-ms" "8000")))
+         (clauses (if (pair? a) (cdr a) '())))
+    (list (and (pair? a) (car a)) (and (pair? clauses) (car clauses))
+          (let ((v (clause-in clauses 'values)))
+            (and v (pair? (cadr v)) (symbol? (car (cadr v))) (string-length (symbol->string (car (cadr v))))))
+          (clause-in clauses 'kind) (clause-in clauses 'type))))
+(want "EV-09c a returned 10,000-character symbol at limit 128 is refused eval-value, kind size"
+      (value-reading "(string->symbol (make-string 10000 #\\a))")
+      '(error eval-value #f (kind size) #f))
+(want "EV-09c a returned symbol whose text is exactly the limit, 128 bytes, is answered"
+      (value-reading "(string->symbol (make-string 128 #\\a))")
+      '(ok (values (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)) 128 #f #f))
+(want "EV-09c one byte over, 129, is refused eval-value, kind size"
+      (value-reading "(string->symbol (make-string 129 #\\a))")
+      '(error eval-value #f (kind size) #f))
+(want "EV-09c TWIN raised: a raised 10,000-character symbol at limit 128 is refused eval-exception, too-large"
+      (value-reading "(raise (string->symbol (make-string 10000 #\\a)))")
+      '(error eval-exception #f (kind raised) (type too-large)))
+
 ;; ---- EV-14 a refused limit names the option and why ---------------------------
 ;;
 ;; One row per numeric option: zero, a negative, text, a fraction, a number
