@@ -608,7 +608,9 @@
 ;; AND THE LIBRARY'S IMPORTS ARE PINNED: a print or read delegated to a
 ;; helper would need a name from a library this list does not hold. The one
 ;; reader it holds is (theourgia reader), the bounded one this tree writes,
-;; which imports (rnrs) alone and never calls the system reader.
+;; which imports (rnrs) alone and never calls the system reader; the one
+;; markdown parser, (theourgia md)'s md->blocks, for a prose block's code,
+;; imports (rnrs) libraries alone and names no reader or printer either.
 (define library-imports
   (call-with-input-file "../name-use.sc"
     (lambda (p) (let loop () (let ((x (read p)))
@@ -627,6 +629,7 @@
         (only (theourgia languages) language-for-name language-property)
         (only (theourgia regex) regex-compile regex-match-at)
         (only (theourgia reader) read-forms read-library-piece reader-failure? reader-failure-reason library-name-proper)
+        (only (theourgia md) md->blocks)
         (only (theourgia extensions) names-usage uses-usage)
         (only (theourgia field-reading) field-of field-missing?)))
 (want "U24b CONTROL: the spy reads the library (it finds the walk and the verbs)"
