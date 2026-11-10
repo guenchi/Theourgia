@@ -3679,11 +3679,17 @@ two machines is a separate design.
 The `lock` file is part of the store and is never recreated except by
 `init`. If a checkout lacks it, a read in the calling process answers
 `absent` on the lock's path, and so does a plain command, which starts no
-daemon and answers in process. A daemon's start fails: `serve` itself
-answers `(error store-busy (path <store>/lock) ...)`, and the MCP shell's
-start relays it as `(error serve-start-failed (kind store-busy) ...)`. Both
-are misleading -- nobody holds the store, the lock file is missing. Either
-way, `touch <store>/lock` restores it.
+daemon and answers in process. A daemon answers by the same table: a
+daemon already running when the file goes answers a request that takes the
+lock `(error absent (path <store>/lock) ...)`, and a start fails with
+`serve` answering `(error incomplete (failed (path <store>/lock) (reason
+...) (errno ENOENT)) (written ...))` -- incomplete because the start had
+already made its socket's files, which `written` lists -- relayed by the
+MCP shell's start as `(error serve-start-failed (kind incomplete) ...)`.
+Only a lock somebody holds is `store-busy`; a lock file that cannot be
+opened or locked for another reason is answered by the same table
+(`unreadable` with its errno). Either way, `touch <store>/lock` restores
+it.
 
 ## Publishing a landing
 
@@ -5527,7 +5533,11 @@ as any request on it would.
 
 **`(error store-busy (path <path>))`** is an answer, not a crash: a
 request waited for the store's lock past its five-second budget because
-something else was holding it. That is an ordinary state of the world.
+something else was holding it. That is an ordinary state of the world. A
+lock file that is missing, or cannot be opened, is not busy: it is
+answered at once by the table the calling process answers it with --
+`absent` or `unreadable` on the lock's path, `incomplete` when something
+was already written.
 
 **While a daemon serves a store, write through it.** The daemon answers
 reads from the state it last folded and published; it does not watch the

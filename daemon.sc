@@ -587,6 +587,7 @@
         (let attempt ((wait 5))
           (let ((l (ask-main main-pid (list 'lock-take path mode) 'lock-answer)))
             (cond
+              ((and (pair? l) (eq? (car l) 'raised)) (raise (cadr l)))
               ((not (eq? l 'busy)) l)
               ((>= (real-time) deadline)
                ;; NEVER: RAISED AS AN ANSWER, not as a crash: the conn turns
@@ -1069,10 +1070,18 @@
        (watch-loop st))
       ;; NEVER: OPEN AND FLOCK HAPPEN HERE, IN A HANDLER THAT DOES NOT YIELD,
       ;; and with LOCK_NB, so this process never waits for anything.
+      ;; NEVER: ONLY CONTENTION IS BUSY. lock-try-acquire! answers #f for a
+      ;; lock somebody holds and raises for anything else (a lock file that
+      ;; is absent, or cannot be opened or flocked); the raise is handed
+      ;; back as (raised <condition>) and raised again by the asker, so the
+      ;; table answers it there as it does in process, `absent` on the
+      ;; lock's path. Every raise used to read as busy, and a store whose
+      ;; lock file was missing waited out the budget and was answered
+      ;; store-busy.
       (`(lock-take ,path ,mode ,who ,tok)
-       (let ((l (guard (e (#t #f)) (lock-try-acquire! path mode))))
-         (when l (state-locks-set! st (cons (cons who l) (state-locks st))))
-         (send who (list 'lock-answer tok (if l l 'busy))))
+       (let ((l (guard (e (#t (list 'raised e))) (lock-try-acquire! path mode))))
+         (unless (or (not l) (pair? l)) (state-locks-set! st (cons (cons who l) (state-locks st))))
+         (send who (list 'lock-answer tok (or l 'busy))))
        (watch-loop st))
       ;; NEVER: AND SO DO THE CLOSE AND THE FORGETTING, in one handler: there
       ;; is no instant at which the descriptor is shut and the table

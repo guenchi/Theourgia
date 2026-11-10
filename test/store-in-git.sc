@@ -23,11 +23,12 @@
 ;; left behind; the missing-lock row is the one that starts a daemon on
 ;; purpose, through theourgia.sc, and that start fails.
 ;;
-;; THE DAEMON'S ANSWER FOR A MISSING LOCK IS PINNED AS MEASURED, AND IT IS A
-;; MISNAMING: the start answers kind store-busy, which says somebody else
-;; holds the store, while the lock file is in fact absent. The base answered
-;; the same. The in-process read answers absent, which is right. The rows
-;; pin the daemon's answer so a change to it is seen, not to endorse it.
+;; THE DAEMON'S ANSWER FOR A MISSING LOCK IS THE IN-PROCESS TABLE'S: absent
+;; on the lock's path, and at a start, which has already made its socket's
+;; files, incomplete with that failure under `failed`. It used to be
+;; store-busy, which says somebody else holds the store, because the daemon
+;; read every failure to take the lock as contention and waited out its
+;; budget; only contention is busy now.
 ;;
 ;; git runs with the global and system configuration shut out
 ;; (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1): an excludes file
@@ -184,8 +185,9 @@
 ;; `absent` on the lock's path. A plain command starts no daemon, so the
 ;; thin client's read answers the same, in process, and leaves no daemon. A
 ;; daemon is started by an opener (serve-for.ss); its start refuses, on a
-;; fresh run root and on a pre-created one alike, with the refusal it writes
-;; to its log (see the note at the top of the file).
+;; fresh run root and on a pre-created one alike, by the in-process table: the
+;; lock's path absent, and incomplete because the start had made its socket's
+;; files by then (see the note at the top of the file).
 (let* ((h (home! "g1")) (s (string-append root "/g1/store")))
   (sh "mkdir -p " (quoted s))
   (ask h s "init")
@@ -218,9 +220,9 @@
           (list (car r) (head-of a) (clause-of a 'path) (daemons-for s))
           (list 1 '(error absent) (list 'path (string-append s "/lock")) 'none)))
   (let ((d (serve-start h s run)))
-    (want "G1 an opener's start on a fresh run root refuses store-busy on the lock's path, AS MEASURED (a misnaming carried from the base)"
-          (list (head-of d) (clause-of d 'path))
-          (list '(error store-busy) (list 'path (string-append s "/lock"))))))
+    (want "G1 an opener's start on a fresh run root refuses by the in-process table: the lock's path absent (ENOENT), incomplete because the start had already made its socket's files"
+          (list (head-of d) (let ((f (clause-of d 'failed))) (and f (list (clause-of f 'path) (clause-of f 'errno)))))
+          (list '(error incomplete) (list (list 'path (string-append s "/lock")) '(errno ENOENT))))))
 (let* ((h (home! "g1p")) (s (string-append root "/g1p/store")) (run (string-append sock-base "/sg-p")))
   (sh "mkdir -p " (quoted s) " " (quoted run))
   (ask h s "init")
@@ -232,9 +234,37 @@
           (list (car r) (head-of a) (clause-of a 'path) (daemons-for s))
           (list 1 '(error absent) (list 'path (string-append s "/lock")) 'none)))
   (let ((d (serve-start h s run)))
-    (want "G1 an opener's start with the startup directory and lock pre-created refuses store-busy on the lock's path, AS MEASURED (a misnaming carried from the base)"
-          (list (head-of d) (clause-of d 'path))
-          (list '(error store-busy) (list 'path (string-append s "/lock"))))))
+    (want "G1 an opener's start with the startup directory and lock pre-created refuses by the in-process table: the lock's path absent (ENOENT), incomplete because the start had already made its socket's files"
+          (list (head-of d) (let ((f (clause-of d 'failed))) (and f (list (clause-of f 'path) (clause-of f 'errno)))))
+          (list '(error incomplete) (list (list 'path (string-append s "/lock")) '(errno ENOENT))))))
+
+;; A RUNNING DAEMON WHOSE LOCK FILE GOES AWAY: a write through it takes the
+;; lock at request time, and is answered absent on the lock's path, as in
+;; process -- not store-busy after the lock budget. The daemon is stopped by
+;; its pid at the end of the row.
+(define (daemon-pids store)
+  (let ((t (sh-out "pgrep -f " (quoted (string-append "[t]heourgiad.sc serve " store)) " || true")))
+    (filter (lambda (x) (> (string-length x) 0))
+            (let loop ((cs (string->list t)) (cur '()) (out '()))
+              (cond ((null? cs) (reverse (cons (list->string (reverse cur)) out)))
+                    ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+                    (else (loop (cdr cs) (cons (car cs) cur) out)))))))
+(define (client-write home store run)
+  (let ((out (string-append root "/g1w.out")))
+    (let ((rc (sh "THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted run)
+                  " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc insert --under root --title Late --text late --store "
+                  (quoted store) " --wire > " (quoted out) " 2> /dev/null < /dev/null")))
+      (list rc (guard (e (#t 'UNREADABLE)) (call-with-input-file out read))))))
+(let* ((h (home! "g1r")) (s (string-append root "/g1r/store")) (run (string-append sock-base "/sg-r")))
+  (sh "mkdir -p " (quoted s) " " (quoted run))
+  (ask h s "init")
+  (let ((d (serve-start h s run)))
+    (sh "rm -f " (quoted (string-append s "/lock")))
+    (let* ((r (client-write h s run)) (a (cadr r)))
+      (want "G1 a running daemon whose store lost its lock file: a write through it answers absent on the lock's path, rc 1"
+            (list (string? d) (daemons-for s) (car r) (head-of a) (clause-of a 'path))
+            (list #t 'running 1 '(error absent) (list 'path (string-append s "/lock"))))))
+  (for-each (lambda (pid) (sh "kill " pid " 2>/dev/null")) (daemon-pids s)))
 
 ;; ---- G2: what init keeps out, and what `git add <store>` stages --------------------
 (define gitignore-lines
