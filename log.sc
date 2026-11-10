@@ -100,7 +100,7 @@
           segment-version-readable?
           log-append-guard!
           barrier-artefacts barrier-required run-barrier! publish-durable?
-          uncertain-path uncertain-derived uncertain-load uncertain-write!
+          uncertain-path uncertain-derived uncertain-load uncertain-write! uncertain-cache-failure
           enumerate-segment-files
           read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment
@@ -4458,22 +4458,35 @@
   ;; path and the reason are not lost behind the bare symbol: they go to
   ;; the trace, as (uncertain-cache-unreadable (<path> . <reason>)).
   (define (uncertain-cached store writer)
+    (car (uncertain-cache-reading store writer)))
+  ;; -> the unreadable-entry condition behind an `unreadable` uncertain
+  ;; cache, or #f: the cache file, or the writer's own entries, could not be
+  ;; read. A cache that reads and does not parse names no entry, and has
+  ;; none. A request's verdict answers the condition through the table
+  ;; (store.sc, request-verdict); uncertain-cached's callers get the symbol.
+  (define (uncertain-cache-failure store writer)
+    (cdr (uncertain-cache-reading store writer)))
+  ;; -> (<what uncertain-cached answers> . <condition or #f>), one reading
+  ;; for both
+  (define (uncertain-cache-reading store writer)
     (let ((path (uncertain-path store writer)))
       (guard (e ((unreadable-entry? e)
                  (trace-event! 'uncertain-cache-unreadable
                                (cons (unreadable-entry-path e) (unreadable-entry-reason e)) #f)
-                 'unreadable))
+                 (cons 'unreadable e)))
         (let ((p (discover-prefix store writer 'held-exclusive)))
           (if (eq? (discovery-origin p) 'unreadable)
-              (let ((detail (log-error-detail (unreadable-note p))))
+              (let* ((detail (log-error-detail (unreadable-note p)))
+                     (field (lambda (k) (let ((e (assq k detail))) (and e (cdr e))))))
                 (trace-event! 'uncertain-cache-unreadable
-                              (cons (cdr (assq 'path detail)) (cdr (assq 'reason detail))) #f)
-                'unreadable)
+                              (cons (field 'path) (field 'reason)) #f)
+                (cons 'unreadable (make-unreadable-entry (field 'path) (field 'reason) (field 'errno))))
               (let ((bytes (read-entry path)))
-                (and (not (eq? bytes 'absent))
-                     (let ((d (guard (e (#t 'unreadable))
-                                (string->sexpr-extended (utf8->string bytes)))))
-                       (if (and (list? d) (for-all uncertain-interval? d)) d 'unreadable)))))))))
+                (cons (and (not (eq? bytes 'absent))
+                           (let ((d (guard (e (#t 'unreadable))
+                                      (string->sexpr-extended (utf8->string bytes)))))
+                             (if (and (list? d) (for-all uncertain-interval? d)) d 'unreadable)))
+                      #f)))))))
 
   ;; `(<intervals> <integrity or #f>)`. The intervals are what a caller
   ;; must test against; the integrity is what the store must report.

@@ -4267,7 +4267,13 @@ reason wherever it finds a new way to be unsure:
   request is in it.
 - **metadata unreadable** — `(uncertain-cache unreadable)`,
   `(retirement-unreadable <writer>)`, `(chain-unreadable)`: something the answer
-  depends on could not be read.
+  depends on could not be read. `(uncertain-cache unreadable)` is answered for a
+  writer's uncertain cache that reads and does not parse. When the cache, or
+  the writer's own directory or files, cannot be read at all, nothing has been
+  written and the store can say so: the request -- a `commit` as much as a
+  tracked write -- is refused by the table every verb answers such an entry
+  with, `(error unreadable (path <p>) (reason <r>) (errno <e>))` (or `absent`,
+  or `incomplete` once something was written).
 - **evidence that does not add up**, for a batch — `(receipt-absent)`,
   `(receipt-coverage <i>)`, `(receipt-unlinked <event>)`,
   `(item-index-missing <event>)`, `(plan-order <indices>)`,

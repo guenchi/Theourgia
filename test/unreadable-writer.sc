@@ -29,7 +29,8 @@
         (only (theourgia rpc) rpc-dispatch rpc-ok?)
         (theourgia log)
         (only (theourgia wire) encode-record)
-        (only (theourgia incomplete) incomplete-accepted))
+        (only (theourgia incomplete) incomplete-accepted)
+        (only (theourgia reduce) block-id))
 
 (define bad 0)
 (define rows 0)
@@ -315,7 +316,18 @@
 (printf "== U2c: a readable local writer beside an unreadable mirror ==\n")
 ;; CONTROL: a tracked write needs its cursor (without one it is refused as
 ;; bad-request req-without-cursor); on a store with nothing unreadable it
-;; commits, so `unknown` below is about the unreadable mirror.
+;; commits, so the refusal below is about the unreadable mirror.
+;; THE TRACKED WRITE IS REFUSED BY THE TABLE, NAMING WHAT COULD NOT BE READ:
+;; the mirror's directory, or at 400 (listable, not searchable) its
+;; owner.sexp. It used to answer `unknown (uncertain-cache unreadable)`,
+;; which says the store cannot tell whether the request ran; here it can --
+;; nothing was written.
+;; -> (<head> <the path clause>) of an answer
+(define (head-and-path a)
+  (if (and (pair? a) (list? a) (pair? (cdr a)))
+      (list (list (car a) (cadr a))
+            (let ((p (find (lambda (c) (and (pair? c) (eq? (car c) 'path))) (cdr a)))) p))
+      a))
 (let* ((s (fresh-store!))
        (local (begin (ask s 'insert "--under" "root" "--title" "A") (local-writer s)))
        (end (end-of s local))
@@ -339,15 +351,50 @@
                                    "--cursor" (string-append local ":" (number->string after-untracked)))))
              (after-tracked (caught (end-of s local))))
         (chmod! "700" mdir)
-        (want (format "U2c mode ~a: mirror reported unreadable; untracked write commits; tracked write is unknown and commits nothing" mode)
+        (want (format "U2c mode ~a: mirror reported unreadable; untracked write commits; tracked write is refused unreadable naming what could not be read, and commits nothing" mode)
               (list (if (and (pair? seen) (not (eq? (car seen) 'RAISED))) (car seen) seen)
                     (if (rpc-ok? untracked) 'committed (list 'answered (if (pair? untracked) (car untracked) untracked)))
                     (and (number? after-untracked) (- after-untracked before))
-                    (if (contains? (format "~s" tracked) "unknown") 'unknown
-                        (list 'answered (if (pair? tracked) (car tracked) tracked)))
+                    (head-and-path tracked)
                     (and (number? after-tracked) (number? after-untracked) (- after-tracked after-untracked)))
-              '(unreadable committed 1 unknown 0)))))
+              (list 'unreadable 'committed 1
+                    (list '(error unreadable)
+                          (list 'path (if (string=? mode "400") (string-append mdir "/owner.sexp") mdir)))
+                    0)))))
   '("000" "400" "100"))
+
+(printf "== U2d: commit beside an unreadable mirror ==\n")
+;; A COMMIT IS A TRACKED REQUEST, and is refused the same way: by the table,
+;; naming the mirror's directory, with nothing written; once the directory
+;; is readable again the same commit lands. A cache file that reads and does
+;; not parse names no entry, and still answers unknown.
+(define (draft-and-commit-store!)
+  (let* ((s (fresh-store!))
+         (w (local-writer s))
+         (a (let ((r (ask s 'insert "--under" "root" "--title" "A" "--text" "old")))
+              (let ((ev (car (cadr (assq 'events (cdr r)))))) (block-id (car ev) (cdr ev))))))
+    (list s w a)))
+(let* ((c (draft-and-commit-store!)) (s (car c)) (w (cadr c)) (a (caddr c)))
+  (publish-mirror! s)
+  (ask s 'write a "new" "--writer" w)
+  (let ((mdir (wdir s M)) (before (end-of s w)))
+    (chmod! "000" mdir)
+    (let ((refused (caught (ask s 'commit a "--writer" w))))
+      (chmod! "700" mdir)
+      (want "U2d commit with the mirror's directory at 000 is refused unreadable, naming the directory, and writes nothing"
+            (list (head-and-path refused) (- (end-of s w) before))
+            (list (list '(error unreadable) (list 'path mdir)) 0))
+      (want "U2d CONTROL the same commit with the directory readable again commits, and its records land"
+            (let ((r (caught (ask s 'commit a "--writer" w)))) (list (rpc-ok? r) (> (- (end-of s w) before) 0)))
+            '(#t #t)))))
+(let* ((c (draft-and-commit-store!)) (s (car c)) (w (cadr c)) (a (caddr c)))
+  (publish-mirror! s)
+  (ask s 'write a "new" "--writer" w)
+  (call-with-output-file (uncertain-path s M) (lambda (p) (display "(not intervals" p)) 'replace)
+  (let ((r (caught (ask s 'commit a "--writer" w))))
+    (want "U2d a mirror's uncertain cache that reads and does not parse names no entry: commit still answers unknown (uncertain-cache unreadable)"
+          (and (pair? r) (list? r) (list-head r (min 3 (length r))))
+          '(error unknown (uncertain-cache unreadable)))))
 
 (printf "== U9: publish's candidate path ==\n")
 (let* ((s (fresh-store!))

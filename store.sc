@@ -66,13 +66,13 @@
                 store-id-of adopt! registry-inside-store?
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
-                uncertain-load run-barrier! retired-successor retired-of
+                uncertain-load uncertain-cache-failure run-barrier! retired-successor retired-of
                 session-commit! session-pending-count-set! note-written-for!
                 session-dry-clone session-dry?
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
-          (only (theourgia answers) with-written failure-kind failure-clauses condition-text)
+          (only (theourgia answers) with-written failure-kind failure-clauses condition-text classify-failure)
           (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
@@ -3443,6 +3443,22 @@
         ((null? rs) #f)
         ((eq? (cadr (car rs)) 'unreadable) (car rs))
         (else (loop (cdr rs))))))
+  ;; WHAT AN UNREADABLE CACHE COULD NOT READ, ANSWERED BY ITS NAME. When a
+  ;; writer's uncertain cache is unreadable because an entry -- the cache
+  ;; file, or the writer's own directory or files -- could not be read, the
+  ;; absence is established: nothing has been written, and the request is
+  ;; refused by the table every verb answers such an entry with (absent,
+  ;; unreadable, or incomplete once something was written). `unknown` is the
+  ;; word for an outcome the store cannot establish, and it stays for a cache
+  ;; that reads and does not parse, which names no entry.
+  ;; -> (refused <answer>) or #f
+  (define (blocking-entry-refusal store)
+    (let loop ((ws (store-writers store)))
+      (and (pair? ws)
+           (let ((c (uncertain-cache-failure store (car ws))))
+             (if c
+                 (list 'refused (classify-failure c (mutation-record)))
+                 (loop (cdr ws)))))))
 
   (define (request-verdict store req delivered plan-size . marks)
     (guard (e (#t (list 'unknown (list 'evidence-unavailable (failure-text e)))))
@@ -3455,8 +3471,10 @@
            (loaded (store-intervals store))
            (successors (store-successors store (car after))))
       (cond
+        ;; the entry behind an unreadable cache is looked for only once a
+        ;; cache is unreadable: each look is a discovery per writer
         ((blocking-uncertainty store)
-         => (lambda (why) (list 'unknown why)))
+         => (lambda (why) (or (blocking-entry-refusal store) (list 'unknown why))))
         ((cadr successors)
          => (lambda (why) (list 'unknown why)))
         ;; A REQUEST OF SEVERAL INTENTS IS A BATCH, AND A BATCH IS ASKED
@@ -4652,6 +4670,7 @@
        (barrier-for store (cadr verdict))
        (list 'ok (list 'replay #t) (list 'event (cadr verdict))))
       ((complete) (cons 'error (cons 'incomplete-request (cdr verdict))))
+      ((refused) (cadr verdict))
       ((unknown) (cons 'error (cons 'unknown (cdr verdict))))
       ((req-mismatch) (cons 'error (cons 'req-mismatch (cdr verdict))))
       ((resolved-executed) (cons 'error (cons 'resolved-executed (cdr verdict))))
