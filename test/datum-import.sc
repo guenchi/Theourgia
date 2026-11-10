@@ -1,6 +1,7 @@
 #!r6rs
 (import (chezscheme) (theourgia store) (theourgia rpc) (theourgia reduce) (theourgia ffi)
-        (theourgia code-project) (theourgia code-markers) (theourgia languages) (theourgia log) (theourgia datum-code))
+        (theourgia code-project) (theourgia code-markers) (theourgia languages) (theourgia log) (theourgia datum-code)
+        (only (theourgia wire) decode-line) (only (theourgia digest) sha256 bytevector->hex))
 (define bad 0)
 (define (want label got expected)
   (if (equal? got expected) (printf "ok ~a\n" label)
@@ -659,6 +660,56 @@
     (want "U8 PIN a headed file of another store, where the writers cannot be read, is refused foreign-store, not unreadable"
           (list (answer-head a) (answer-clause a 'reason))
           '((error projection-invalid) (reason foreign-store)))))
+
+;; THE INTENTS A DATUM IMPORT BUILDS, PINNED BY WHAT IT WROTE: three files on
+;; a fresh store (two libraries and a program under a subdirectory, no
+;; header, so no store's ids in them) imported, and the writer's records read
+;; back, one per intent in the order the capture made them. The capture keeps
+;; its intents newest first and reverses them once; the order, every parent
+;; (the (from <k>) an intent named, resolved) and every ord must be what
+;; appending one at a time gave. The values are the ones read on the tree
+;; before that change; the writer's generated name is read as W.
+(let* ((dir (string-append root "/digest")) (store (string-append dir "/store")) (input (string-append dir "/input")))
+  (mkdir-p! (string-append input "/sub"))
+  (rpc-dispatch store '(init) "test")
+  (write! (string-append input "/a.sc") "(library (a) (export x y) (import (rnrs))\n;; x docs\n(define x 1)\n(define y 2))\n")
+  (write! (string-append input "/b.sc") "(library (b) (export z) (import (rnrs)) (define z 3))\n")
+  (write! (string-append input "/sub/c.sc") "(import (rnrs))\n(define c 4)\n(display c)\n")
+  (rpc-dispatch store (list 'import-code input "--datum") "test")
+  (let* ((w (car (store-writers store)))
+         (lines (lambda (bv)
+                  (let loop ((start 0) (i 0) (out '()))
+                    (cond ((= i (bytevector-length bv)) (reverse out))
+                          ((= (bytevector-u8-ref bv i) 10)
+                           (let ((l (make-bytevector (+ 1 (- i start)))))
+                             (bytevector-copy! bv start l 0 (+ 1 (- i start)))
+                             (loop (+ i 1) (+ i 1) (cons l out))))
+                          (else (loop start (+ i 1) out))))))
+         (payloads (map (lambda (l) (list-ref (decode-line l) 5))
+                        (apply append
+                               (map (lambda (seg)
+                                      (lines (call-with-port (open-file-input-port (string-append (writer-directory store w) "/" (segment-file-name seg)))
+                                               get-bytevector-all)))
+                                    (enumerate-segment-files store w)))))
+         (masked (lambda (text)
+                   (let ((n (string-length w)))
+                     (let loop ((i 0) (out '()))
+                       (cond ((> (+ i n) (string-length text)) (apply string-append (reverse (cons (substring text i (string-length text)) out))))
+                             ((string=? (substring text i (+ i n)) w) (loop (+ i n) (cons "W" out)))
+                             (else (loop (+ i 1) (cons (string (string-ref text i)) out)))))))))
+    (want "DI-DIGEST the records a fixed three-file datum import writes: their count and the sha256 of their written form, as before the capture kept its intents newest first"
+          (list (length payloads) (bytevector->hex (sha256 (string->utf8 (masked (format "~s" payloads))))))
+          '(8 "6ab067be6227a9d6715a42df1abd87a6bfeee2d3530d8fa2f5d64cedeaf287fa"))
+    (want "DI-ORDER those records in order: each block's path or body, its parent and its ord"
+          (map (lambda (p)
+                 (let ((fs (cadr p)))
+                   (list (cond ((assq 'path fs) => cdr) (else (cdr (assq 'body fs))))
+                         (masked (format "~a" (cdr (assq 'parent fs))))
+                         (cdr (assq 'ord fs)))))
+               payloads)
+          '(("a.sc" "root" 0) ((define x 1) "W.1" 0) ((define y 2) "W.1" 1)
+            ("b.sc" "root" 1) ((define z 3) "W.4" 0)
+            ("sub/c.sc" "root" 2) ((define c 4) "W.6" 0) ((display c) "W.6" 1)))))
 
 (printf "~a failures\ndatum-import complete\n" bad)
 (exit (if (zero? bad) 0 1))
