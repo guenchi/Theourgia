@@ -531,6 +531,48 @@
       (if (file-exists? marker) (list 'called-python (file-text marker)) 'no-python)
       'no-python)
 
+;; ---- F-17 the environment's writer goes in the envelope -------------------
+;; A VERB ANSWERS THE SAME ON BOTH ROUTES WHEN THE WRITER COMES FROM
+;; THEOURGIA_WRITER. The envelope carried only a command-line `--writer`,
+;; so `outline --working` with the variable set answered writer-required
+;; through the daemon and the working view under THEOURGIA_LOCAL=1. A
+;; `--writer` on the command line still wins over the variable, on both.
+;; The daemon is the one F-10 started on A. THEOURGIA_TRACE=1 on the client
+;; tells the routes apart: a forwarded request loads nothing here, so its
+;; standard error has no log-open line; a local one has.
+;; -> (<the answer datum> <whether the client loaded the store>)
+(define f17-n 0)
+(define (f17! extra args)
+  (set! f17-n (+ f17-n 1))
+  (let ((out (string-append here "/f17-" (number->string f17-n) ".out"))
+        (err (string-append here "/f17-" (number->string f17-n) ".err")))
+    (system (string-append (env-prefix (string-append "THEOURGIA_TRACE=1 " extra))
+                           " scheme --script ../core.sc " args " --wire > " out " 2> " err " < /dev/null"))
+    (list (guard (e (#t 'UNREADABLE)) (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d)))
+          (contains? (file-text err) "(trace log-open "))))
+(define f17-id
+  (let* ((a (car (f17! "THEOURGIA_LOCAL=1" (string-append "outline --store " store-a))))
+         (t (and (pair? a) (eq? (car a) 'ok) (cadr (assq 'text (cdr a))))))
+    (and (string? t) (> (string-length t) 2)
+         (let loop ((i 2)) (if (or (= i (string-length t)) (char=? (string-ref t i) #\space)) (substring t 2 i) (loop (+ i 1)))))))
+(f17! "" (string-append "write " f17-id " 'text of w1' --writer w1 --store " store-a))
+(f17! "" (string-append "write " f17-id " 'text of w2' --writer w2 --store " store-a))
+(define f17-daemon (f17! "THEOURGIA_WRITER=w1" (string-append "outline --store " store-a " --working")))
+(define f17-local (f17! "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=w1" (string-append "outline --store " store-a " --working")))
+(want "F-17 outline --working with THEOURGIA_WRITER=w1: forwarded, the daemon answers what the local route answers, the working view of w1"
+      (list (cadr f17-daemon) (cadr f17-local) (equal? (car f17-daemon) (car f17-local))
+            (let ((a (car f17-daemon)))
+              (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) 'working))) (cdr a)))))
+      '(#f #t #t (working "w1")))
+(want "F-17 read --working with THEOURGIA_WRITER=w1 reads w1's draft on both routes"
+      (list (f17! "THEOURGIA_WRITER=w1" (string-append "read " f17-id " --working --store " store-a))
+            (car (f17! "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=w1" (string-append "read " f17-id " --working --store " store-a))))
+      '(((ok (text "text of w1")) #f) (ok (text "text of w1"))))
+(want "F-17 --writer w2 on the command line wins over THEOURGIA_WRITER=w1 on both routes"
+      (list (f17! "THEOURGIA_WRITER=w1" (string-append "read " f17-id " --working --writer w2 --store " store-a))
+            (car (f17! "THEOURGIA_LOCAL=1 THEOURGIA_WRITER=w1" (string-append "read " f17-id " --working --writer w2 --store " store-a))))
+      '(((ok (text "text of w2")) #f) (ok (text "text of w2"))))
+
 (system (string-append "pkill -f \"theourgiad.sc serve " store-a "\" 2>/dev/null"))
 (wait-gone! serve-verb-pid)
 

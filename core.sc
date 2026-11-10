@@ -237,8 +237,11 @@
   ;; NOTE: THE WRITER AND THE MODE COME FROM THE SAME PARSE the verb's own
   ;; arguments came from. `--writer` stays in `resolved` as well, because
   ;; a per-call writer still overrides the envelope's on the other side;
-  ;; what the envelope carries is the identity this PROCESS is bound to,
-  ;; which today is only what the command line said.
+  ;; what the envelope carries is the identity this PROCESS is bound to:
+  ;; the command line's `--writer`, else THEOURGIA_WRITER, as the local
+  ;; route reads it (environment-writer). With only the command line's, a
+  ;; verb that took its writer from the variable answered writer-required
+  ;; through the daemon and the working view in process.
   ((later '(theourgia sched) 'start-scheduler)
     (lambda ()
       (let ((outcome
@@ -254,7 +257,7 @@
                         ;; it.
                         (request-frame store verb (argument-strings resolved)
                                        (list (cons 'actor actor)
-                                             (cons 'writer (argument-option resolved "--writer"))
+                                             (cons 'writer (or (argument-option resolved "--writer") (environment-writer)))
                                              (cons 'cwd (current-directory))
                                              (cons 'mode (if wire? 'wire 'human))))
                         datum-line?
