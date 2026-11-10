@@ -3246,16 +3246,21 @@ there) before any `del`, which is permanent.
 
     (split-suggest <file> ("--output" <review-file>) ("--symbols" <symbols-file>))
 
-Proposes where a file could be split into blocks. It writes no record;
-what it produces is the review file. The answer is `(ok (working-path <review-file>) (boundaries (<n>
-...)) (warnings (...)) (cuts-from <supplier>))`: the byte offsets where the
+Proposes where a file could be split into blocks. It writes no record,
+and nothing beside the file: what it produces is the review text, the file
+with a block marker before each proposed block, carried in the answer. The
+answer is `(ok (text "<review text>") (boundaries (<n> ...)) (warnings (...))
+(cuts-from <supplier>))`, and with `--output <review-file>` the text is also
+written there and the answer begins `(ok (working-path <review-file>) ...`:
+the byte offsets where the
 blocks start, and which supplier chose them -- `regex` when the language's
 definition patterns did, or the symbols file's source. A file that begins
 with a UTF-8 byte-order mark is cut as it would be without one, and every
 boundary, and the offset of an uncertain token, counts the mark. With
 `--symbols`, the file's first line starts at byte 0, not after the mark,
 so a symbol starting at byte 3 is refused `symbols-not-a-line-start`.
-Without `--output`, the review file is written beside the file as `<file>.review-<pid>-<ms>-<n><ext>`. An existing file is never overwritten: an `--output` that exists is refused `(error projection-invalid (reason output-exists))`. A file that changed while it was being scanned is refused `input-changed`.
+Without `--output` nothing is written anywhere, so a file in a directory that
+cannot be written is answered as any other. An existing file is never overwritten: an `--output` that exists is refused `(error projection-invalid (reason output-exists))`; the temporary the write goes through is made beside the output, not beside the file. A file that changed while it was being scanned is refused `input-changed`.
 
 The definition patterns are looked for at the top level, outside strings,
 comments and brackets, as the language's profile reads them. A token the

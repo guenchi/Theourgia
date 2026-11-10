@@ -34,12 +34,16 @@
     (let* ((name (car row)) (ext (cadr row)) (outer (caddr row)) (tail (cadddr row))
            (a (suggest ext (string-append outer tail))))
       (want (string-append "CT-03 " name " nested head stays in outer block") (boundaries a) (list 0 (byte-count outer)))
-      (let ((path (result-value a 'working-path)))
-        (when path
-          (want "CT-20 review copy recovers exact source bytes"
-                (apply append (map (lambda (e) (bytevector->u8-list (cadr e)))
-                                   (cadr (projection-decode (language-for-path path) (read-code-bytes path)))))
-                (bytevector->u8-list (string->utf8 (string-append outer tail))))))))
+      ;; THE REVIEW TEXT IS IN THE ANSWER (nothing is written beside the
+      ;; input); decoded, its pieces run together are the source, and an
+      ;; answer without it is red here, not skipped.
+      (want "CT-20 the answer's review text recovers exact source bytes"
+            (let ((text (result-value a 'text)))
+              (and text
+                   (apply append (map (lambda (e) (bytevector->u8-list (cadr e)))
+                                      (cadr (projection-decode (language-for-path (string-append "review." ext))
+                                                               (string->utf8 text)))))))
+            (bytevector->u8-list (string->utf8 (string-append outer tail))))))
   '(("javascript" "js" "function outer() {\nfunction inner() {}\n}\n" "function next() {}\n")
     ("python" "py" "class C:\n  def method(self):\n    pass\n" "def next():\n  pass\n")
     ("go" "go" "func outer() {\nfunc inner() {}\n}\n" "func next() {}\n")
@@ -233,10 +237,11 @@
               (suggest-boundaries (language-for-name lang) bytes (car starts) #t)
               (suggest-boundaries (language-for-name lang) bytes))))
 ;; the review copy's pieces run together, as bytes
-(define (decoded a)
-  (caught (let ((path (result-value a 'working-path)))
-            (and path (apply append (map (lambda (e) (bytevector->u8-list (cadr e)))
-                                         (cadr (projection-decode (language-for-path path) (read-code-bytes path)))))))))
+(define (decoded a ext)
+  (caught (let ((text (result-value a 'text)))
+            (and text (apply append (map (lambda (e) (bytevector->u8-list (cadr e)))
+                                         (cadr (projection-decode (language-for-path (string-append "review." ext))
+                                                                  (string->utf8 text)))))))))
 (define (u8s s) (bytevector->u8-list (string->utf8 s)))
 
 (define sh-a "a() {\n  cat <<EOF\nsome text\nEOF\n}\n")
@@ -248,7 +253,7 @@
       (list (list 0 (off sh1 "a()") (off sh1 "b()") (off sh1 "function c")) '() (code-line-starts sh1)))
 (let ((a (suggest "sh" sh1)))
   (want "LS-1 the same through split-suggest: the cuts, no warning, and the review copy's pieces run together are the file"
-        (list (boundaries a) (result-value a 'warnings) (equal? (decoded a) (u8s sh1)))
+        (list (boundaries a) (result-value a 'warnings) (equal? (decoded a "sh") (u8s sh1)))
         (list (list 0 (off sh1 "a()") (off sh1 "b()") (off sh1 "function c")) '() #t)))
 (want "LS-1b the shell row CT-04 used to pin, a heredoc opened in a one-line function, is cut at b"
       (boundaries (suggest "sh" "a() { cat <<END; }\nb() { :; }\n"))
@@ -278,7 +283,7 @@
       (list pl-cuts '() (code-line-starts (substring pl 0 (off pl "__END__")))))
 (let ((a (suggest "pl" pl)))
   (want "LS-5 the same through split-suggest, the review copy's pieces run together are the file, its tail in the last piece"
-        (list (boundaries a) (result-value a 'warnings) (equal? (decoded a) (u8s pl)))
+        (list (boundaries a) (result-value a 'warnings) (equal? (decoded a "pl") (u8s pl)))
         (list pl-cuts '() #t)))
 (want "LS-5 file-pieces cuts the perl file as split-suggest does: six pieces, the last from `sub four;` to the end, __END__ and its tail included"
       (caught (map utf8->string (vector->list (file-pieces "x.pl" (string->utf8 pl)))))
@@ -303,7 +308,7 @@
             (scan-raw "perl" (string->utf8 t))
             (list (caddr row) '() (cadddr row)))
       (want (string-append "LS-6 " name ": through split-suggest the same cuts, and the review copy's pieces run together are the file")
-            (list (boundaries a) (equal? (decoded a) (u8s t)))
+            (list (boundaries a) (equal? (decoded a "pl") (u8s t)))
             (list (caddr row) #t))))
   (list (list "a marker on the first line makes the file one block"
               (string-append "__END__\n" after-marker) '(0) '())

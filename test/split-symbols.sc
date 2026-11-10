@@ -20,7 +20,9 @@
 ;; row's own text, not read from the scanner; a setup row pins those numbers
 ;; against the text so a change to the text cannot move them silently.
 (import (chezscheme) (theourgia rpc) (theourgia ffi)
-        (only (theourgia languages) register-language!)
+        (only (theourgia languages) register-language! language-for-path)
+        (only (theourgia code-markers) projection-decode)
+        (only (theourgia code-project) read-code-bytes)
         (only (theourgia digest) sha256 bytevector->hex))
 
 (define bad 0)
@@ -77,6 +79,35 @@
       (list a before after))))
 (define (clause a key)
   (let ((p (and (pair? a) (list? a) (assq key (filter pair? (cdr a)))))) (and p (cadr p))))
+
+;; ---- S0: nothing is written beside the input -------------------------------------
+;; The input's directory is made read-only: split-suggest without --output
+;; answers ok with the review text, which decodes to the file, and the
+;; directory lists the same entries after. With --output the text is written
+;; where asked, and the input's directory still lists the same.
+(let* ((d (case-dir!)) (path (string-append d "/s0.js"))
+       (text "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 2;\n}\n"))
+  (write! path text)
+  (let ((before (listing d)))
+    (system (string-append "chmod 555 " d))
+    (let* ((a (rpc-dispatch store (list 'split-suggest path) "test"))
+           (after (listing d)))
+      (system (string-append "chmod 755 " d))
+      (want "S0 split-suggest on an input in a read-only directory: ok, its review text decodes to the file, the directory lists the same entries"
+            (list (car a) (clause a 'boundaries)
+                  (let ((t (clause a 'text)))
+                    (and t (apply string-append
+                                  (map (lambda (e) (utf8->string (cadr e)))
+                                       (cadr (projection-decode (language-for-path path) (string->utf8 t)))))))
+                  (clause a 'working-path) (equal? before after))
+            (list 'ok '(0 34) text #f #t))))
+  (let* ((out-dir (case-dir!)) (out (string-append out-dir "/s0.review.js")) (before (listing d))
+         (a (rpc-dispatch store (list 'split-suggest path "--output" out) "test")))
+    (want "S0 with --output the review text is written where asked, the answer names it, and nothing appears beside the input"
+          (list (car a) (clause a 'working-path)
+                (let ((t (clause a 'text))) (and t (file-exists? out) (equal? (read-code-bytes out) (string->utf8 t))))
+                (equal? before (listing d)) (listing out-dir))
+          (list 'ok out #t #t '("s0.review.js")))))
 
 ;; ---- S1: agreement ---------------------------------------------------------------
 ;; Three functions, the second with two comment lines above it. The editor's
