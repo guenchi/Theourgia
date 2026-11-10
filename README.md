@@ -1559,14 +1559,22 @@ instead. A name given with `--names` is never folded.
 THE NAMES ASKED FOR. T's scope for `--names` is T's own when T is code, and
 when T is any other block (a file block, say) that of every code block
 under it: what their files import and define. `(asked (names <n> ...)
-(in-hard <n> <block>) ... [(no-definition <n> ...)])` follows `folded`: a
-name defined in a hard block -- T itself, or a block of T's unit -- is
-`in-hard`, since a hard block is never entered as preferred material, and
-only a name with no definition in scope at all is `no-definition`. The
-clause is reserved with the envelope at its largest, every name in every
-hard block and every name without a definition, and what it does not use is
-given back to the preferred material. Names are not hard blocks: nothing
-enters the receipt.
+(in-hard <n> <block>) ... (via <n> <table> <definition>) ...
+[(no-definition <n> ...)])` follows `folded`: a name defined in a hard
+block -- T itself, or a block of T's unit -- is `in-hard`, since a hard
+block is never entered as preferred material. A name with no definition in
+scope is looked for one hop through the registered HELPER TABLES, the
+definitions that hand names out by name (rpc.sc's `dispatch-helper`, which
+gives a verb library `reduction-for` and `working-state` without an
+import): a table that uses the name and has a definition of it in its own
+scope answers `(via <n> <table block> <definition block>)`; nothing more is
+admitted for it. Only a name no table reaches is `no-definition`. A library
+registers a table with context.sc's `register-helper-table!` (its library
+and name as the def rows write them). The clause is reserved with the
+envelope at its largest, every name in every hard block, through every
+table that reaches it, and without a definition, and what it does not use
+is given back to the preferred material. Names are not hard blocks:
+nothing enters the receipt.
 
 An entry is shown at a level: `identity`, `(<id> (kind <k>) (title "<t>")
 (version <h>) (level identity) <why> ... [(validity ...)] [(names <n>
