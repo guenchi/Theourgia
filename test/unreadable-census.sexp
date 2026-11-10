@@ -421,7 +421,7 @@
    (#t)
    conservative a
    "a controlled exit's two unlinks (the private socket, the public link) are attempted independently; a failure of either is logged (cleanup-failed <path> <errno>) and neither delays nor changes the exit"
-   (e (#t (report-quietly (list (quote cleanup-failed) path (cond ((fs-error? e) (fs-error-errno e)) ((unreadable-entry? e) (unreadable-entry-errno e)) (else (quote unknown))))))))
+   (e (#t (report-quietly (list (quote cleanup-failed) path (cond ((fs-error? e) (errno-name (fs-error-errno e))) ((unreadable-entry? e) (errno-name (unreadable-entry-errno e))) (else (quote unknown))))))))
   ("daemon.sc" (sweep-residue!) 1 guard
    ((or (fs-error? e) (unreadable-entry? e)))
    conservative a

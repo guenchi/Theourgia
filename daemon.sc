@@ -101,7 +101,7 @@
                 write-one! with-mutation-record mutation-record theourgia-stage
                 entry-name-type read-link symlink! directory-entries rmdir! mkdir-exclusive! read-entry
                 real-path path-case-sensitive? fd-open fd-close write-all! fs-error? fs-error-errno
-                file-create-exclusive! entry-identity)
+                file-create-exclusive! entry-identity errno-name)
           (only (theourgia answers) classify-failure combine-report condition-text))
 
   ;; ---- where a daemon lives ---------------------------------------------
@@ -1395,11 +1395,13 @@
         (cleanup-step! socket
           (lambda () (unlink-made! socket (cadddr bound)))))))
 
+  ;; THE ERRNO IS LOGGED BY ITS NAME, as every answer's (errno ..) clause
+  ;; is: the one table (ffi errno-name) spells it.
   (define (cleanup-step! path thunk)
     (guard (e (#t (report-quietly
                     (list 'cleanup-failed path
-                          (cond ((fs-error? e) (fs-error-errno e))
-                                ((unreadable-entry? e) (unreadable-entry-errno e))
+                          (cond ((fs-error? e) (errno-name (fs-error-errno e)))
+                                ((unreadable-entry? e) (errno-name (unreadable-entry-errno e)))
                                 (else 'unknown))))))
       (thunk)))
 
@@ -3102,9 +3104,11 @@
   ;; failures, which raise with libuv's error text and no number (a failed
   ;; bind: `(error 'uv-pipe-bind "permission denied")`), that text; otherwise
   ;; unknown.
+  ;; An errno by its name (ffi errno-name), as the answers spell it; the
+  ;; idle and resume log lines print what this answers.
   (define (errno-of e)
-    (cond ((fs-error? e) (fs-error-errno e))
-          ((unreadable-entry? e) (unreadable-entry-errno e))
+    (cond ((fs-error? e) (errno-name (fs-error-errno e)))
+          ((unreadable-entry? e) (errno-name (unreadable-entry-errno e)))
           ((and (condition? e) (message-condition? e)) (condition-message e))
           (else 'unknown)))
 
