@@ -2643,12 +2643,13 @@
               ;; fold made before the lock was taken is how two writers
               ;; come to disagree about what was there.
               (if (executing? main-pid ticket)
-                  (let ((answer (if (or (cut-read? parsed) (published-read? parsed))
+                  (let ((answer (if (or (cut-read? parsed) (published-read? parsed) (published-export? parsed))
                                     ;; A READ AT A CUT IS JUDGED AGAINST THE
                                     ;; PUBLICATION, made current first when the
                                     ;; disk has moved past it, and reached the one
                                     ;; way the published state is read; so is a
-                                    ;; published read (query, context).
+                                    ;; published read (query, context) and an
+                                    ;; export of the present (export-md).
                                     (begin
                                       (refresh-if-behind! store)
                                       ;; THE KEPT SESSION'S PROVIDER, installed at the first published read
@@ -3196,6 +3197,23 @@
            (and (list? nodes)
                 (not (and (pair? nodes) (eq? 'error (car nodes))))
                 (argument-option nodes "--cut")
+                #t))))
+
+;; AN EXPORT OF THE PRESENT, committed or --working: answered from the
+  ;; publication made current first, as an export at a cut is. It reads the
+  ;; state through reduction-for (the published object, unsealed) and the
+  ;; working view builds on that state when the drafts' cut is its cut.
+  ;; Handed no state, every export-md loaded the store again: once for the
+  ;; committed export, twice for --working (the request's state, then the
+  ;; view's base). -> #t or #f
+  (define (published-export? request)
+    (and (pair? request)
+         (eq? (car request) 'export-md)
+         (for-all string? (cdr request))
+         (let ((nodes (parse-arguments (car request) (cdr request))))
+           (and (list? nodes)
+                (not (and (pair? nodes) (eq? 'error (car nodes))))
+                (not (argument-option nodes "--cut"))
                 #t))))
 
   ;; NEVER: THE ENVELOPE'S WRITER NAMES A WRITER TOO, and it is asked here,

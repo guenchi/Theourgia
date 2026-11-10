@@ -1281,6 +1281,16 @@
   ;; draft reads as that draft. A writer with no drafts has an empty
   ;; baseline and gets the current state, as eval does.
   ;;
+  ;; NEVER: THE STATE IN HAND IS NOT LOADED AGAIN. The current state is the
+  ;; one this request obtained (a daemon's publication, or the load a
+  ;; process without one makes anyway), and a baseline whose cut is that
+  ;; state's applied cut -- every component the same, both ways -- is that
+  ;; state. Only a baseline at another cut opens the log for it. The view
+  ;; used to open the store again for every --working request, the empty
+  ;; baseline included: a full load per call through a daemon that held
+  ;; the state already (one per context --working, two per export-md
+  ;; --working on a store whose load takes seconds).
+  ;;
   ;; NOTE: THE DRAFTS AND THE BASELINE ARE TAKEN UNDER ONE LOCK, so the cut
   ;; is the join of exactly the drafts that are overlaid. Taking them under
   ;; two locks, as the eval route does, lets a write land between the two.
@@ -1331,7 +1341,11 @@
                    (structural (cdr both))
                    (cut (cut-join (entries-cut entries) (structural-cut structural)))
                    (drafts (map entry-draft entries))
-                   (base (if (null? cut) (open-and-reduce store) (open-and-reduce store cut))))
+                   (base (if (or (null? cut)
+                                 (let ((now (reduce-applied-cut state)))
+                                   (and (cut-covers? cut now) (cut-covers? now cut))))
+                             state
+                             (open-and-reduce store cut))))
               (if (not (reduction? base))
                   (list 'error 'working-unavailable (list 'reason 'unavailable-cut) (list 'cut cut))
                   (let ((fields (draft-fields base drafts)))
