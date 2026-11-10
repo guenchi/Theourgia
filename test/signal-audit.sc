@@ -359,6 +359,7 @@
     ("ownership.sc")
     ("smoke-shortwrite-nb.sc")
     ("startup-ratio.sc")
+    ("store-in-git.sc")
     ("launch.pl"
      (99 "own child, not reaped: the pid is held (census_run's ps child, rows 99 and 100)" "kill 'KILL', -$pid" 2)
      (101 "G's leader held: sent before the reap (stop_group's TERM)" "kill 'TERM', -$g" 1)
@@ -401,6 +402,7 @@
     ("ownership.sc" ("(signal! " 1) ("(started! " 1))
     ("smoke-shortwrite-nb.sc" ("(signal! " 1) ("(started! " 1))
     ("startup-ratio.sc" ("(signal! " 1) ("(for-each started! " 1))
+    ("store-in-git.sc" ("(serve-processes " 2) ("(signal-processes! " 2))
     ("launch.pl")
     ("run-fixtures.sh" ("kill_if_same " 7) ("bps -o lstart=" 3))))
 

@@ -240,15 +240,16 @@
 
 ;; A RUNNING DAEMON WHOSE LOCK FILE GOES AWAY: a write through it takes the
 ;; lock at request time, and is answered absent on the lock's path, as in
-;; process -- not store-busy after the lock budget. The daemon is stopped by
-;; its pid at the end of the row.
-(define (daemon-pids store)
-  (let ((t (sh-out "pgrep -f " (quoted (string-append "[t]heourgiad.sc serve " store)) " || true")))
-    (filter (lambda (x) (> (string-length x) 0))
-            (let loop ((cs (string->list t)) (cur '()) (out '()))
-              (cond ((null? cs) (reverse (cons (list->string (reverse cur)) out)))
-                    ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
-                    (else (loop (cdr cs) (cons (car cs) cur) out)))))))
+;; process -- not store-busy after the lock budget. The daemon is stopped at
+;; the end of the row through signal-send.ss: found by the store word after
+;; `serve` (another store whose path begins with this one's is not touched)
+;; and signalled only while it is the process the listing recorded.
+(include "signal-send.ss")
+(define (stop-daemon! store)
+  (signal-processes! (serve-processes store) "TERM")
+  (let wait ((k 0))
+    (when (and (< k 120) (pair? (serve-pids store))) (sh "sleep 0.05") (wait (+ k 1))))
+  (signal-processes! (serve-processes store) "KILL"))
 (define (client-write home store run)
   (let ((out (string-append root "/g1w.out")))
     (let ((rc (sh "THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted run)
@@ -264,7 +265,7 @@
       (want "G1 a running daemon whose store lost its lock file: a write through it answers absent on the lock's path, rc 1"
             (list (string? d) (daemons-for s) (car r) (head-of a) (clause-of a 'path))
             (list #t 'running 1 '(error absent) (list 'path (string-append s "/lock"))))))
-  (for-each (lambda (pid) (sh "kill " pid " 2>/dev/null")) (daemon-pids s)))
+  (stop-daemon! s))
 
 ;; ---- G2: what init keeps out, and what `git add <store>` stages --------------------
 (define gitignore-lines

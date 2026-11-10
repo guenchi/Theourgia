@@ -19,7 +19,7 @@
 ;; client-socket, daemon-e1, daemon-socket, detach, eval-lang, f3-wire-utf8,
 ;; facade-proc, fold-failure, liveness, liveness-streams, mcp-shell,
 ;; opener-route, ownership, smoke-shortwrite-nb, startup-ratio) or found by ps
-;; (change-stream-client, entry-split, read-at-cut,
+;; (change-stream-client, entry-split, read-at-cut, store-in-git,
 ;; unreadable-acknowledge-routes, unreadable-routes).
 ;;
 ;; NEVER: A SIGNAL TO A PID THAT WAS NOT VERIFIED. A pid is reused once its
