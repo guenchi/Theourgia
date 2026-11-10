@@ -489,6 +489,32 @@
              (list-sort string<? (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'use))) (cdr (assq 'items (cdr u))))))))
       (list-sort string<? (list caller in-span in-fence refusal-def)))
 
+;; A CODE SPAN IS A PARAGRAPH'S, AND A BACKTICK FENCE HAS NO BACKTICK AFTER ITS
+;; RUN (found in review): in a store of its own, a span broken across a line
+;; is a use, and ```refusal()``` on one line is a span, not a fence opener, so
+;; refusal is used there and the prose after it is not.
+(define S6b (string-append root "/s6b"))
+(rpc-dispatch S6b '(init) "test")
+(define (run6b . args) (rpc-dispatch S6b args "test"))
+(define (md6b title src)
+  (let ((a (run6b 'insert "--under" "root" "--title" title)))
+    (let ((id (new-id a)))
+      (run6b 'set id "kind" "code") (run6b 'set id "lang" "markdown") (run6b 'set id "src" src)
+      id)))
+(define (uses6b name)
+  (let ((u (run6b 'uses name)))
+    (if (and (pair? u) (eq? (car u) 'ok))
+        (list-sort string<? (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'use))) (cdr (assq 'items (cdr u))))))
+        u)))
+(define multi-span (md6b "multi-span" "Call `refusal\n()` here.\n"))
+(define inline-run (md6b "inline-run" "```refusal()```\n\nordinary prose\n"))
+(want "PR-4 a code span broken across two lines of one paragraph is a use"
+      (and (member multi-span (uses6b "refusal")) #t)
+      #t)
+(want "PR-5 ```refusal()``` on one line is a code span, not a fence opener: refusal is a use there, and the prose after it is not"
+      (list (and (member inline-run (uses6b "refusal")) #t) (and (member inline-run (uses6b "ordinary")) #t))
+      '(#t #f))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-users complete\n" rows bad)
 (exit (if (= bad 0) 0 1))
