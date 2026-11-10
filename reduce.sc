@@ -130,7 +130,10 @@
   ;; blocks-rev -- alist of id to block, NEWEST FIRST (one cons per block made);
   ;;              block-index is the same blocks by id, and block-forward the
   ;;              creation-order alist, cached (see reduction-blocks)
-  ;; links    -- list of (from rel to event-id)
+  ;; links-rev -- list of (from rel to event-id), NEWEST FIRST (one cons per
+  ;;              link); links-forward the oldest-first list, cached (see
+  ;;              reduction-links); links-out and links-in the same links by
+  ;;              their from and their to, each newest first
   ;; tags     -- alist of name to list of (cut . event-id)
   ;; pasts    -- alist of event-id to that event's causal past, newest first;
   ;;             pasts-index is the same by event-id
@@ -147,7 +150,7 @@
   ;;             candidates
   (define-record-type reduction
     (fields (mutable blocks-rev)
-            (mutable links)
+            (mutable links-rev)
             (mutable tags)
             (mutable pasts)
             (mutable applied)
@@ -179,7 +182,11 @@
             ;; the version a new file's block is named by (block-hash answers
             ;; it), and, for each block of a deleted file the view hides, that
             ;; file's holder (view-hidden-holder).
-            (mutable view-facts reduction-view-facts view-facts-set!)))
+            (mutable view-facts reduction-view-facts view-facts-set!)
+            ;; the links, kept beside links-rev (see reduction-links)
+            (mutable links-forward)
+            (mutable links-out)
+            (mutable links-in)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
   ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
@@ -193,6 +200,32 @@
           (reduction-block-forward-set! r forward)
           forward)))
   (define (make-block-index) (make-hashtable equal-hash equal?))
+
+  ;; THE LINKS IN THE ORDER THEY WERE MADE, as every reader that observes
+  ;; order reads them (state-edges, state->rows, the facts): the reverse of
+  ;; links-rev, kept until the next link is made or removed. A block's own
+  ;; links are found by id through links-out (by from) and links-in (by
+  ;; to), so a read of one block does not walk every link the store holds,
+  ;; and making a link is one cons, not a copy of the list.
+  (define (reduction-links r)
+    (or (reduction-links-forward r)
+        (let ((forward (reverse (reduction-links-rev r))))
+          (reduction-links-forward-set! r forward)
+          forward)))
+  (define (make-links-index) (make-hashtable equal-hash equal?))
+  (define (links-reset! r)
+    (reduction-links-rev-set! r '())
+    (reduction-links-forward-set! r '())
+    (reduction-links-out-set! r (make-links-index))
+    (reduction-links-in-set! r (make-links-index)))
+  (define (link-add! r l)
+    (reduction-links-rev-set! r (cons l (reduction-links-rev r)))
+    (reduction-links-forward-set! r #f)
+    (hashtable-update! (reduction-links-out r) (car l) (lambda (ls) (cons l ls)) '())
+    (hashtable-update! (reduction-links-in r) (caddr l) (lambda (ls) (cons l ls)) '()))
+  ;; -> the links from ID, or to ID, oldest first
+  (define (links-from r id) (reverse (hashtable-ref (reduction-links-out r) id '())))
+  (define (links-to r id) (reverse (hashtable-ref (reduction-links-in r) id '())))
   (define (blocks-reset! r)
     (reduction-blocks-rev-set! r '())
     (reduction-block-index-set! r (make-block-index))
@@ -726,7 +759,8 @@
   (define (reduce-empty)
     (make-reduction '() '() '() '() '() (make-pending-queue) '() (empty-notes) '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
-                    (make-empty-structure) #f #f))
+                    (make-empty-structure) #f #f
+                    '() (make-links-index) (make-links-index)))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -748,7 +782,7 @@
                          (cons (car p) copy)))
                      (reduction-blocks-rev r))))
       (make-reduction rev
-                      (reduction-links r) (reduction-tags r) (reduction-pasts r)
+                      (reduction-links-rev r) (reduction-tags r) (reduction-pasts r)
                       (reduction-applied r) (pq-copy (reduction-pending r)) (reduction-trace r)
                       (notes-copy (reduction-noted r)) (reduction-history r)
                       (admission-copy (reduction-admission-index r))
@@ -760,7 +794,11 @@
                       (structure-copy (reduction-structure r))
                       ;; a copy of a working view is one too
                       (reduction-overlay? r)
-                      (reduction-view-facts r))))
+                      (reduction-view-facts r)
+                      ;; the link lists are shared, the tables by id copied
+                      (reduction-links-forward r)
+                      (hashtable-copy (reduction-links-out r) #t)
+                      (hashtable-copy (reduction-links-in r) #t))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
@@ -1110,7 +1148,7 @@
     (let ((records (reverse (reduction-history r))))
       (blocks-reset! r)
       (reduction-structure-set! r (make-empty-structure))
-      (reduction-links-set! r '())
+      (links-reset! r)
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r (make-decls-table))
       (reduction-declared-rules-set! r (make-decls-table))
@@ -2013,17 +2051,20 @@
   ;; in its past and leaves concurrent ones -- so a link one writer never
   ;; saw is not silently undone by an unlink another writer issued.
   (define (do-link! r event-id args)
-    (reduction-links-set!
-      r (append (reduction-links r)
-                (list (list (car args) (cadr args) (caddr args) event-id)))))
+    (link-add! r (list (car args) (cadr args) (caddr args) event-id)))
 
+  ;; THE LINKS AN UNLINK REMOVES ARE ALL LINKS FROM ITS FROM: when none
+  ;; goes, nothing is rebuilt.
   (define (do-unlink! r event-id past args)
-    (let ((from (car args)) (rel (cadr args)) (to (caddr args)))
-      (reduction-links-set!
-        r (remp (lambda (l)
-                  (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)
-                       (past-covers? past (car (cadddr l)) (cdr (cadddr l)))))
-                (reduction-links r)))))
+    (let* ((from (car args)) (rel (cadr args)) (to (caddr args))
+           (gone? (lambda (l)
+                    (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)
+                         (past-covers? past (car (cadddr l)) (cdr (cadddr l)))))))
+      (when (exists gone? (hashtable-ref (reduction-links-out r) from '()))
+        (reduction-links-rev-set! r (remp gone? (reduction-links-rev r)))
+        (reduction-links-forward-set! r #f)
+        (hashtable-update! (reduction-links-out r) from (lambda (ls) (remp gone? ls)) '())
+        (hashtable-update! (reduction-links-in r) to (lambda (ls) (remp gone? ls)) '()))))
 
   (define (do-tag! r event-id past args)
     (let* ((name (car args))
@@ -2321,7 +2362,7 @@
 
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
-                      (filter (lambda (l) (equal? (caddr l) id)) (reduction-links r)))))
+                      (links-to r id))))
       (list-sort (lambda (x y)
                    (if (string=? (car x) (car y))
                        (string<? (symbol->string (cdr x)) (symbol->string (cdr y)))
@@ -2517,7 +2558,7 @@
 
   (define (block-edges r id)
     (let ((pairs (map (lambda (l) (cons (cadr l) (caddr l)))
-                      (filter (lambda (l) (equal? (car l) id)) (reduction-links r)))))
+                      (links-from r id))))
       ;; THE LOGICAL EDGE SET: one entry per (rel, to) however many link
       ;; events produced it, and no event ids. Two libraries that agree
       ;; on the edges must agree on the token even if they took different
@@ -3519,8 +3560,8 @@
   ;; can survive, and each says when that writer stated the edge.
   (define (state-link-events r from rel to)
     (map cadddr
-         (filter (lambda (l) (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)))
-                 (reduction-links r))))
+         (filter (lambda (l) (and (eq? (cadr l) rel) (equal? (caddr l) to)))
+                 (links-from r from))))
 
   ;; THE IDS OF THE BLOCKS THIS STATE HOLDS ALIVE, a deleted block left out,
   ;; in the order the reduction made them. Nothing else of the block.
@@ -3751,7 +3792,7 @@
                (blk-tomb-set! b (cdr (assq 'tomb body)))
                (blk-fields-set! b (cdr (assq 'fields body)))
                (blk-position-set! b (cdr (assq 'position body)))))
-            ((link) (reduction-links-set! r (append (reduction-links r) (list (cadr row)))))
+            ((link) (link-add! r (cadr row)))
             ((tag)
              (reduction-tags-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-tags r))))
