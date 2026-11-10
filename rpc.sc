@@ -1863,7 +1863,11 @@
                       ((argument-option options "--working")
                        (working-export store state writer
                          (lambda (view) ((project-entry 'export-md-view) (car args) view (argument-option options "--with-ids")))))
-                      (else ((project-entry 'export-md) store (car args) (argument-option options "--with-ids")))))))))
+                      ;; THE STATE THE REQUEST HOLDS, a daemon's publication,
+                      ;; or a load where there is none: open-and-reduce
+                      ;; here loaded the store again beside it.
+                      (else ((project-entry 'export-md-view) (car args) (lambda () (reduction-for store state))
+                                                             (argument-option options "--with-ids")))))))))
       (cons 'adopt
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
