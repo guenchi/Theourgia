@@ -612,7 +612,7 @@
        (rc (rc-wait "p3"))
        (_ (sh (string-append "chmod 700 " d)))
        (text (file-text (string-append here "/p3.out"))))
-  (want "W5p3 a publish that fails EACCES after the bind: traced with reason 13, the start reported by the table (the symlink's op, path and errno), not listener-down, exit 75"
+  (want "W5p3 a publish that fails EACCES after the bind: traced with reason 13, the start reported by the table (the symlink's op, path and errno by its name), not listener-down, exit 75"
         (list reached rc (text-has? text "(trace publish-refused (path s) (reason 13))")
               (let ((e (first-error text 99)))
                 (and (pair? e)
@@ -620,7 +620,7 @@
                            (let ((f (or (clause-in e 'failed) e)))
                              (list (clause-in f 'op) (clause-in f 'path) (clause-in f 'errno))))))
               (text-has? text "(exiting (reason listener-down))"))
-        '(#t 75 #t ((error incomplete) ((op symlink) (path "s") (errno 13))) #f))
+        '(#t 75 #t ((error incomplete) ((op symlink) (path "s") (errno EACCES))) #f))
   (want "W5p3 and the private socket is unlinked: only the marker is left in the namespace"
         (list (names (string-append d "/s.d." pt)) (kind (string-append d "/s")))
         '((".endpoint") absent)))

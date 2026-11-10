@@ -711,5 +711,21 @@
             ("b.sc" "root" 1) ((define z 3) "W.4" 0)
             ("sub/c.sc" "root" 2) ((define c 4) "W.6" 0) ((display c) "W.6" 1)))))
 
+;; A SOURCE FILE THE IMPORT CANNOT READ is refused by the table, its errno by
+;; the name every route's answer gives it.
+(let* ((dir (string-append root "/unreadable")) (store (string-append dir "/store")) (input (string-append dir "/input"))
+       (f (string-append input "/a.sc")))
+  (mkdir-p! input)
+  (rpc-dispatch store '(init) "test")
+  (write! f "(library (a) (export x) (import (rnrs)) (define x 1))\n")
+  (system (string-append "chmod 000 '" f "'"))
+  (let ((a (rpc-dispatch store (list 'import-code input "--datum") "test")))
+    (system (string-append "chmod 644 '" f "'"))
+    (want "DI-EACCES a datum import of a source file at 000 is refused unreadable naming the file, its errno EACCES"
+          (list (and (pair? a) (car a)) (and (pair? a) (pair? (cdr a)) (cadr a))
+                (and (list? a) (assq 'path (filter pair? (cdr a))))
+                (and (list? a) (assq 'errno (filter pair? (cdr a)))))
+          (list 'error 'unreadable (list 'path f) '(errno EACCES)))))
+
 (printf "~a failures\ndatum-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

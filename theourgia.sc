@@ -58,7 +58,7 @@
         ;; already brings ffi into this program's closure; (theourgia
         ;; answers) is one small library that does no filesystem work.
         (only (theourgia ffi) with-mutation-record mutation-record hold-point! ignore-sigpipe!)
-        (only (theourgia answers) classify-failure))
+        (only (theourgia answers) classify-failure errno-clause))
 
 ;; ---- what the client itself understands ---------------------------------
 ;;
@@ -505,9 +505,9 @@
     ((eq? 'no-daemon (car outcome))
      (if start
          (start)
-         (refuse (list 'error 'connect-failed
-                       (list 'errno (cadr outcome))
-                       '(carried-out no)))))
+         (refuse (append (list 'error 'connect-failed)
+                         (errno-clause (cadr outcome))
+                         (list '(carried-out no))))))
     ;; A SILENT DAEMON KEEPS ITS WINDOW AND HOW LONG IT RAN (unknown-outcome).
     (else
      (refuse (unknown-outcome outcome)))))

@@ -63,7 +63,7 @@
         ;; filesystem condition raised inside a request is answered by the
         ;; table (point 7).
         (only (theourgia refusal) refusal-result-json refusal-error-json)
-        (only (theourgia answers) classify-failure)
+        (only (theourgia answers) classify-failure errno-clause)
         (theourgia json)
         (theourgia arguments))
 
@@ -619,9 +619,9 @@
       ((eq? 'no-daemon (car outcome))
        (if start
            (start)
-           (list 'not-sent (list 'error 'connect-failed
-                                 (list 'errno (cadr outcome))
-                                 '(carried-out no)))))
+           (list 'not-sent (append (list 'error 'connect-failed)
+                                   (errno-clause (cadr outcome))
+                                   (list '(carried-out no))))))
       ;; THE TRANSPORT'S OWN WORDS TRAVEL WITH THE LOSS, so a silent daemon
       ;; reaches the agent with its window and how long it ran.
       (else (list 'transport-lost (cdr outcome)))))
@@ -808,7 +808,7 @@
                                    stdin-path answer-path diag-path)))
       (if (not pid)
           (begin (remove-call-files! dir (list stdin-path answer-path diag-path))
-                 (list 'not-sent (list 'error 'spawn-failed (list 'errno spawn-errno))))
+                 (list 'not-sent (append (list 'error 'spawn-failed) (errno-clause spawn-errno))))
           (let ((ending (await-child pid budget)))
             (let ((outcome (outcome-of ending answer-path diag-path)))
               (remove-call-files! dir (list stdin-path answer-path diag-path))

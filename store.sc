@@ -72,7 +72,7 @@
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
-          (only (theourgia answers) with-written failure-kind failure-clauses condition-text classify-failure)
+          (only (theourgia answers) with-written failure-kind failure-clauses condition-text classify-failure errno-clause)
           (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
@@ -3567,8 +3567,13 @@
               (if (log-error-writer e) (list (list 'writer (log-error-writer e))) '())
               (if (log-error-segment e) (list (list 'segment (log-error-segment e))) '())
               (if (and (pair? detail) (pair? (car detail)))
-                  (map (lambda (p) (list (car p) (cdr p))) detail)
+                  (detail-clauses detail)
                   '()))))
+  ;; A DETAIL'S PAIRS AS CLAUSES, its errno written as every answer writes
+  ;; one (answers.sc errno-clause): the name, and no clause for none.
+  (define (detail-clauses detail)
+    (apply append (map (lambda (p) (if (eq? (car p) 'errno) (errno-clause (cdr p)) (list (list (car p) (cdr p)))))
+                       detail)))
   ;; WHAT A COMMIT'S FAILURE WAS, as the clause answered beside `unknown`:
   ;; (failed <kind> <clause> ...). The classes are tried in order and no
   ;; condition is in two of them:
@@ -5462,7 +5467,7 @@
             (if (log-error-offset e) (list (list 'offset (log-error-offset e))) '())
             (let ((d (log-error-detail e)))
               (if (and (pair? d) (pair? (car d)))
-                  (map (lambda (p) (list (car p) (cdr p))) d)
+                  (detail-clauses d)
                   '()))))
 
   ;; THE INNER READ CANNOT BE ALLOWED TO KEEP THE OUTER SESSION OPEN. The

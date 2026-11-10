@@ -586,7 +586,7 @@
                             (and (>= (string-length t) (string-length sfx))
                                  (string=? (substring t (- (string-length t) (string-length sfx)) (string-length t)) sfx)))))
                    (and (assq 'reason (cddr f)) #t))))
-      (list 'failed 'unwritable '(op fsync) (list 'errno EIO) #t #t))
+      (list 'failed 'unwritable '(op fsync) '(errno EIO) #t #t))
 ;; CB-2 THE MACHINE LOCK BUSY AT THE COMMIT. The commit raises the writer's
 ;; written frontier under the machine lock AFTER the barriers, so a lock
 ;; busy there fails a commit whose bytes are flushed. The daemon's lock
@@ -649,7 +649,7 @@
       (list (commit-failure (make-unreadable-entry "/p" "No such file or directory" 'ENOENT))
             (commit-failure (vector 'durable-error 'fsync (cons "/s/000001.sexp" EIO))))
       (list '(failed absent (path "/p") (reason "No such file or directory") (errno ENOENT))
-            (list 'failed 'unwritable '(op fsync) '(path "/s/000001.sexp") '(reason "Input/output error") (list 'errno EIO))))
+            (list 'failed 'unwritable '(op fsync) '(path "/s/000001.sexp") '(reason "Input/output error") '(errno EIO))))
 (want "CB-3 commit-failure: a raised refusal keeps its kind and clauses as raised (the lock strategy's store-busy)"
       (commit-failure '(error store-busy (path "/h/lock")))
       '(failed store-busy (path "/h/lock")))

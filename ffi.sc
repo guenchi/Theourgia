@@ -380,7 +380,7 @@
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version path-stat fd-stat real-path
-          fs-error? fs-error-op fs-error-target fs-error-errno errno-text
+          fs-error? fs-error-op fs-error-target fs-error-errno errno-text errno-name
           theourgia-fault theourgia-fault-armed? theourgia-send-buffer theourgia-read-chunk theourgia-probe-off? theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event! trace-line-sink trace-line-sink-set!
@@ -409,7 +409,7 @@
           (only (igropyr util) string-contains?)
           (only (theourgia platform-numbers)
                 platform-number platform-field platform-field-present?
-                platform-struct-size platform-struct-value platform-type-size)
+                platform-struct-size platform-struct-value platform-type-size platform-row)
           (theourgia trace))
 
   ;; ---- a platform's struct fields, at the row's offsets and sizes ----------
@@ -2332,7 +2332,7 @@
 
   ;; TWO FIELDS, TWO READERS. The REASON is the system's own message, for a
   ;; person reading `check` -- which file, and why, in the words the system
-  ;; used. The ERRNO is a name when this file knows one and the number
+  ;; used. The ERRNO is a name when the errno table knows one and the number
   ;; otherwise, for code comparing a failure with the one it caused, so
   ;; that no errno is ever reported as nothing.
   (define c-strerror (foreign-procedure "strerror" (int) string))
@@ -2344,19 +2344,39 @@
   ;; the table itself. What a missing errno MEANS depends on the step; the
   ;; table in (theourgia answers) says so for a write.
   (define (errno-text code) (if code (c-strerror code) "no errno"))
-  (define (errno-reason code)
+  ;; THE ERRNO TABLE, ONE FOR EVERY ANSWER: each errno the platform's row
+  ;; measures (platform-numbers, the constants named E...), by number, to
+  ;; its name. Two names for one number (EAGAIN and EWOULDBLOCK) give the
+  ;; one the row lists first. Every `(errno ..)` clause an answer carries is
+  ;; written through errno-name, so one failure has one spelling whichever
+  ;; route answers it: unreadable-entry's field and durable-error's number
+  ;; print alike.
+  ;; a constant's name is an errno's when it is E and capitals or digits
+  (define (errno-symbol? name)
+    (let ((t (symbol->string name)))
+      (and (> (string-length t) 1)
+           (char=? (string-ref t 0) #\E)
+           (for-all (lambda (c) (or (char-upper-case? c) (char-numeric? c))) (string->list t)))))
+  (define errno-table
+    (let ((constants (find (lambda (d) (and (pair? d) (eq? (car d) 'constants))) (platform-row))))
+      (let loop ((cs (if constants (cdr constants) '())) (out '()))
+        (cond
+          ((null? cs) (reverse out))
+          ((and (pair? (car cs)) (symbol? (caar cs)) (pair? (cdar cs)) (fixnum? (cadar cs))
+                (errno-symbol? (caar cs)) (not (assv (cadar cs) out)))
+           (loop (cdr cs) (cons (cons (cadar cs) (caar cs)) out)))
+          (else (loop (cdr cs) out))))))
+  ;; -> the name of an errno: a name as it is, a number the table knows by
+  ;; its name, any other number as it is, and #f for no errno (a caller
+  ;; then writes no clause).
+  (define (errno-name code)
     (cond
-      ((eqv? code EACCES) 'EACCES)
-      ((eqv? code EIO) 'EIO)
-      ((eqv? code ELOOP) 'ELOOP)
-      ((eqv? code EOVERFLOW) 'EOVERFLOW)
-      ((eqv? code ENAMETOOLONG) 'ENAMETOOLONG)
-      ((eqv? code EMFILE) 'EMFILE)
-      ((eqv? code EPERM) 'EPERM)
-      ((eqv? code ENOENT) 'ENOENT)
-      ((eqv? code ENOTDIR) 'ENOTDIR)
-      ((eqv? code EISDIR) 'EISDIR)
+      ((symbol? code) code)
+      ((and (fixnum? code) (assv code errno-table)) => cdr)
       (else code)))
+  ;; An unreadable-entry's errno field: the table's name, the number when
+  ;; the table has none.
+  (define (errno-reason code) (errno-name code))
 
   (define (absence-errno? code) (or (eqv? code ENOENT) (eqv? code ENOTDIR)))
 

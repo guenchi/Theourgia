@@ -185,7 +185,7 @@
     ;; table names one, op, path, reason and errno, under cleanup-failed.
     (want "U10 cleanup failing at deletion names the failed unlink in the table's clauses: op unlink, the draft file, the system's reason and its errno"
           (clause-in a 'cleanup-failed)
-          (list 'cleanup-failed '(op unlink) (list 'path (draft-file s w A)) '(reason "Permission denied") '(errno 13)))))
+          (list 'cleanup-failed '(op unlink) (list 'path (draft-file s w A)) '(reason "Permission denied") '(errno EACCES)))))
 ;; AT LOCK ACQUISITION: draft.lock present and unopenable.
 (let* ((sw (fresh-store!)) (s (car sw)) (w (cadr sw))
        (A (insert s w "A"))

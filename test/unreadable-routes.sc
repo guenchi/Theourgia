@@ -468,7 +468,7 @@
     (stop-daemon! "P1-a" s)
     (want "P1-a a publish whose writer directory cannot be made answers unwritable (op mkdir) with errno 13, rc 1"
           r (list 1 (list 'error 'unwritable '(op mkdir) (list 'path (string-append w "/" M))
-                          (list 'reason denied) (list 'errno EACCES))))))
+                          (list 'reason denied) '(errno EACCES))))))
 
 ;; P1-b (dir-fsync with entries; PR-02). The four entries share one
 ;; temporary name, `<W>/publish.tmp-<n>-<n>`.
@@ -492,7 +492,7 @@
     (want "P1-b a publish whose directory flush fails after the link answers incomplete with the four entries, one temporary name"
           (list (car r) (publish-tmp? tmp wd)
                 (if (and tmp (equal? a (list 'error 'incomplete
-                                         (list 'failed '(op dir-fsync) (list 'path wd) '(reason "Input/output error") (list 'errno EIO))
+                                         (list 'failed '(op dir-fsync) (list 'path wd) '(reason "Input/output error") '(errno EIO))
                                          (list 'written (list (list 'create tmp) (list 'write tmp)
                                                               (list 'link tmp (string-append wd "/000001.sexp"))
                                                               (list 'unlink tmp))))))
@@ -908,7 +908,7 @@
     (want "P9-b a socket directory at 500: ONE datum, unwritable (op create) naming the lock, errno 13, rc 75, no PANIC"
           (list (car r) (let ((ds (cadr r))) (and (= 1 (length ds)) (car ds))) (has-panic? (caddr r)))
           (list 75 (list 'error 'unwritable '(op create) (list 'path (string-append d "/.sock.lock")) (list 'reason denied)
-                         (list 'errno EACCES) '(attempt #f))
+                         '(errno EACCES) '(attempt #f))
                 #f))))
 ;; (c, D6) the lock file pre-created at 000: it cannot be opened, which is not
 ;; contention -- the table's unreadable, not serve-busy.
@@ -1195,7 +1195,7 @@
     (restore-run!)
     (want "P6-unwritable a run root at 555: the client's own failure, unwritable (op mkdir) naming the key directory, errno 13, rc 75, under 1 s"
           (list (car r) (cadr r) (< (cadddr r) 1000))
-          (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path (resolved-name kd)) (list 'reason denied) (list 'errno EACCES))
+          (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path (resolved-name kd)) (list 'reason denied) '(errno EACCES))
                 #t))))
 ;; P6-exited: the daemon's log open fails (open-fail@report); the client's
 ;; stdout is the exited answer, its stderr the daemon's inherited line.
@@ -1430,7 +1430,7 @@
 (define (a-record-expected s tmp)
   (let ((wd (string-append s "/writers/mirrora1")))
     (list 'error 'incomplete
-          (list 'failed '(op dir-fsync) (list 'path wd) '(reason "Input/output error") (list 'errno EIO))
+          (list 'failed '(op dir-fsync) (list 'path wd) '(reason "Input/output error") '(errno EIO))
           (list 'written (list (list 'create tmp) (list 'write tmp)
                                (list 'link tmp (string-append wd "/000001.sexp"))
                                (list 'unlink tmp))))))
