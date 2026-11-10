@@ -1295,6 +1295,25 @@
                                        (filter (lambda (id) (eq? (parent-of XW3 id) 'root)) (outline-order XW3)))))
                           (list (and (member PID os) #t) (and (member HA os) #t) (and (member HB os) #t)))))
       '(ok (#t #t #t)))
+;; A FREEZE'S NEW FILE IS IN THE SCOPE WHATEVER ROOTS ARE NAMED: the roots name
+;; the changed block alone, and the file the freeze adds is copied beside it,
+;; its text found by a grep of the scope and listed by the answer under its
+;; copy's id. A freeze that adds no file answers no new-files clause.
+(define X17 (string-append root "/scoped-new-named"))
+(define S17 (scope-run MF "author" X17 "--freeze" FZ2 "--roots" HB "--for" "codex"))
+(define (grep-ids store text)
+  (let ((a (run store "codex" 'grep text)))
+    (and (pair? a) (eq? (car a) 'ok)
+         (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'match))) (cdr (assq 'items (cdr a))))))))
+(want "CR-26 a freeze's new file is scoped with only the changed block named: the new file's text and the draft's are each found by grep, and the answer lists the file under its copy's id"
+      (in-order (car S17)
+                (safely (let ((h (copy-in X17 PID))) (list (field-of X17 h 'path) (equal? (clause S17 'new-files) (list (list "c.sc" h))))))
+                (safely (let ((ids (grep-ids X17 "(define c1 1)"))) (and (pair? ids) (equal? (field-of X17 (car ids) 'origin) (piece-of 0)))))
+                (safely (let ((ids (grep-ids X17 "two, frozen"))) (and (pair? ids) (equal? (field-of X17 (car ids) 'origin) CB)))))
+      '(ok ("c.sc" #t) #t #t))
+(want "CR-26 TWIN: a freeze that adds no file answers no new-files clause; --roots all lists the file it adds"
+      (in-order (car SF) (clause SF 'new-files) (car SW3) (safely (map car (clause SW3 'new-files))))
+      '(ok #f ok ("c.sc")))
 ;; THE RESULTS, MADE COMPLETE A PIECE AT A TIME: each step reads the first gap.
 ;; The author changes b.txt's copy (not a proposal: not the reader's), and the
 ;; reader writes a note at the root about a.txt's copy (a result, not a verdict).
