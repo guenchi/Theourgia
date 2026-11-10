@@ -53,7 +53,7 @@
                 waitpid-status hold-point! theourgia-fault
                 with-mutation-record mutation-record)
           (only (theourgia platform-numbers) platform-number)
-          (only (theourgia answers) classify-failure)
+          (only (theourgia answers) classify-failure errno-clause)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
 
@@ -479,9 +479,8 @@
                            (if (no-daemon-errno? code)
                                (list 'no-daemon code)
                                (list 'not-sent
-                                     (list 'error 'connect-failed
-                                           (list 'path path)
-                                           (list 'errno code)))))))
+                                     (append (list 'error 'connect-failed (list 'path path))
+                                             (errno-clause code)))))))
                 (unix-socket-connect path silence-window-ms))))
       (if (pair? fd)
           fd
@@ -537,9 +536,8 @@
            (left (lambda () (- (+ last silence-window-ms) (monotonic-ms))))
            (unsent (guard (e ((and (fs-error? e) (= sent 0))
                               (list 'not-sent
-                                    (list 'error 'write-failed
-                                          (list 'path path)
-                                          (list 'errno (fs-error-errno e)))))
+                                    (append (list 'error 'write-failed (list 'path path))
+                                            (errno-clause (fs-error-errno e)))))
                              ((socket-expired? e) (silent-outcome start)))
                      (socket-send-within! fd frame left (lambda (n) (set! sent n) (set! last (monotonic-ms))))
                      #f)))
@@ -712,9 +710,8 @@
   (define (call-child! argv frame)
     (let-values (((pid in out) (spawn-piped! argv '(("THEOURGIA_LOCAL" . "1")))))
       (if (not pid)
-          (list 'not-sent (list 'error 'child-start-failed
-                                (list 'program (car argv))
-                                (list 'errno in)))
+          (list 'not-sent (append (list 'error 'child-start-failed (list 'program (car argv)))
+                                  (errno-clause in)))
           ;; NOTE: THE STEP HAS THE SOCKET'S NAME, so `close-fail@client` arms
           ;; the closes of the child's pipe ends as it arms the socket's.
           (parameterize ((theourgia-stage 'client))
@@ -733,9 +730,8 @@
                        ;; ANY OTHER FAILED WRITE IS CLASSIFIED AS THE SOCKET'S IS
                        ;; (exchange-on): nothing went out, so nothing ran; once a
                        ;; byte has gone, the outcome is unknown.
-                       ((= sent 0) (list 'not-sent (list 'error 'write-failed
-                                                         (list 'path "frame-child")
-                                                         (list 'errno failed))))
+                       ((= sent 0) (list 'not-sent (append (list 'error 'write-failed (list 'path "frame-child"))
+                                                           (errno-clause failed))))
                        (else (list 'transport-error failed)))))
               (close-child-end out)
               (trace-event! 'frame-child-exit pid (child-wait! pid))
@@ -887,9 +883,9 @@
                        (list 'reason (unreadable-entry-reason e)))))
         (if (eq? (entry-type dir) 'directory)
             (guard (e ((unreadable-entry? e)
-                       (list 'error 'socket-dir-unreadable (list 'dir dir)
-                             (list 'reason (unreadable-entry-reason e))
-                             (list 'errno (unreadable-entry-errno e)))))
+                       (append (list 'error 'socket-dir-unreadable (list 'dir dir)
+                                     (list 'reason (unreadable-entry-reason e)))
+                               (errno-clause (unreadable-entry-errno e)))))
               (entry-type (string-append dir "/."))
               #f)
             (list 'error 'socket-dir-missing (list 'dir dir))))))

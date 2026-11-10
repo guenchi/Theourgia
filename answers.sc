@@ -38,15 +38,15 @@
 ;;;        any other named outcome's does
 ;;;   anything else -> #f (the caller keeps its own answer for it)
 ;;; An unreadable-entry's clauses carry no `op` (its reason is strerror
-;;; text and names no verb; ruling D2). THE errno CLAUSE CARRIES WHAT THE
-;;; CONDITION CARRIES: a durable-error's is a NUMBER (13); an
-;;; unreadable-entry's is a NAME for the ten codes ffi's errno-reason knows
-;;; (EACCES, EIO, ELOOP, EOVERFLOW, ENAMETOOLONG, EMFILE, EPERM, ENOENT,
-;;; ENOTDIR, EISDIR), the NUMBER for any other (EROFS reads 30), and #f
-;;; from one site only, ffi's chez-unreadable! when Chez's condition has no
-;;; class (its one caller is close-unwritten-port!; no row can make a Chez
-;;; port close fail). Unifying the forms is open. (written ()) never appears:
-;;; the first three kinds carry no written clause at all.
+;;; text and names no verb; ruling D2). THE errno CLAUSE HAS ONE SPELLING:
+;;; ffi's errno-name, the platform's name for the errno where its row has one
+;;; (EACCES, EROFS), the number for any other, whichever condition carries
+;;; it, a durable-error's number or an unreadable-entry's field. A condition
+;;; with no errno has no errno clause: a durable-error's short write, and
+;;; ffi's chez-unreadable! when Chez's condition has no class (its one caller
+;;; is close-unwritten-port!; no row can make a Chez port close fail).
+;;; (written ()) never appears: the first three kinds carry no written
+;;; clause at all.
 ;;;
 ;;; THE AGGREGATION RULE (combine-report answer entries): a record made
 ;;; later (a process's own entries, a boot's) is added to an answer made
@@ -59,12 +59,12 @@
 ;;; own terms).
 
 (library (theourgia answers)
-  (export classify-failure combine-report with-written condition-text failure-kind failure-clauses)
+  (export classify-failure combine-report with-written condition-text failure-kind failure-clauses errno-clause)
   (import (chezscheme)
           (only (theourgia ffi)
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 unreadable-entry-errno
-                fs-error? fs-error-op fs-error-target fs-error-errno errno-text)
+                fs-error? fs-error-op fs-error-target fs-error-errno errno-text errno-name)
           (only (theourgia incomplete) incomplete-reduction? incomplete-reduction-answer))
 
   (define absence-errnos '(ENOENT ENOTDIR))
@@ -73,15 +73,18 @@
   (define (failure-clauses c)
     (cond
       ((unreadable-entry? c)
-       (list (list 'path (unreadable-entry-path c))
-             (list 'reason (unreadable-entry-reason c))
-             (list 'errno (unreadable-entry-errno c))))
+       (append (list (list 'path (unreadable-entry-path c))
+                     (list 'reason (unreadable-entry-reason c)))
+               (errno-clause (unreadable-entry-errno c))))
       ((fs-error? c)
-       (list (list 'op (fs-error-op c))
-             (list 'path (fs-error-target c))
-             (list 'reason (reason-of (fs-error-op c) (fs-error-errno c)))
-             (list 'errno (fs-error-errno c))))
+       (append (list (list 'op (fs-error-op c))
+                     (list 'path (fs-error-target c))
+                     (list 'reason (reason-of (fs-error-op c) (fs-error-errno c))))
+               (errno-clause (fs-error-errno c))))
       (else #f)))
+  ;; -> ((errno <name>)), or no clause for no errno
+  (define (errno-clause code)
+    (if code (list (list 'errno (errno-name code))) '()))
 
 ;; A durable-error's reason: strerror's text for its errno. With no errno,
   ;; a write's failure is a short write (write-one!, write-all!); any other

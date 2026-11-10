@@ -30,7 +30,8 @@
         (only (theourgia client) next-attempt-token select-report)
         ;; The shell refusal's helper rows (H6).
         (only (theourgia refusal) refusal-object refusal-result-json refusal-error-json)
-        (only (theourgia json) string->json json->string json-ref*))
+        (only (theourgia json) string->json json->string json-ref*)
+        (only (theourgia platform-numbers) platform-number platform-row))
 
 (define bad 0)
 (define rows 0)
@@ -105,12 +106,12 @@
 (want "H1 unreadable-entry EACCES, empty record -> unreadable"
       (classify-failure (unreadable-at "/p" 'EACCES denied) '())
       (list 'error 'unreadable '(path "/p") (list 'reason denied) '(errno EACCES)))
-(want "H1 durable-error mkdir 13, empty record -> unwritable with op, the reason strerror's"
+(want "H1 durable-error mkdir 13, empty record -> unwritable with op, the reason strerror's, the errno by its name"
       (classify-failure (durable 'mkdir "/p" EACCES) '())
-      (list 'error 'unwritable '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES)))
-(want "H1 durable-error dir-fsync 5, empty record -> unwritable (op dir-fsync)"
+      (list 'error 'unwritable '(op mkdir) '(path "/p") (list 'reason denied) '(errno EACCES)))
+(want "H1 durable-error dir-fsync 5, empty record -> unwritable (op dir-fsync), the errno by its name"
       (classify-failure (durable 'dir-fsync "/d" EIO) '())
-      (list 'error 'unwritable '(op dir-fsync) '(path "/d") (list 'reason "Input/output error") (list 'errno EIO)))
+      (list 'error 'unwritable '(op dir-fsync) '(path "/d") (list 'reason "Input/output error") '(errno EIO)))
 (for-each
   (lambda (c)
     (let ((failure (car c)) (clauses (cdr c)))
@@ -120,16 +121,42 @@
   (list (list (unreadable-at "/p" 'ENOENT no-such) "ENOENT" '(path "/p") (list 'reason no-such) '(errno ENOENT))
         (list (unreadable-at "/p" 'ENOTDIR "Not a directory") "ENOTDIR" '(path "/p") '(reason "Not a directory") '(errno ENOTDIR))
         (list (unreadable-at "/p" 'EACCES denied) "EACCES" '(path "/p") (list 'reason denied) '(errno EACCES))
-        (list (durable 'mkdir "/p" EACCES) "durable mkdir" '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES))
-        (list (durable 'dir-fsync "/d" EIO) "durable dir-fsync" '(op dir-fsync) '(path "/d") '(reason "Input/output error") (list 'errno EIO))))
+        (list (durable 'mkdir "/p" EACCES) "durable mkdir" '(op mkdir) '(path "/p") (list 'reason denied) '(errno EACCES))
+        (list (durable 'dir-fsync "/d" EIO) "durable dir-fsync" '(op dir-fsync) '(path "/d") '(reason "Input/output error") '(errno EIO))))
 ;; A durable-error with no errno is a short write (found in review):
 ;; the table answers it with a reason of its own instead of raising.
-(want "H1 durable write with errno #f (a short write), empty record -> unwritable, reason \"short write\", errno #f"
+(want "H1 durable write with errno #f (a short write), empty record -> unwritable, reason \"short write\", and no errno clause"
       (classify-failure (durable 'write "/p" #f) '())
-      '(error unwritable (op write) (path "/p") (reason "short write") (errno #f)))
-(want "H1 durable create with errno #f (a Chez condition with no mapped errno), empty record -> unwritable, reason \"no errno\" (found in review)"
+      '(error unwritable (op write) (path "/p") (reason "short write")))
+(want "H1 durable create with errno #f (a Chez condition with no mapped errno), empty record -> unwritable, reason \"no errno\", and no errno clause (found in review)"
       (classify-failure (durable 'create "/p" #f) '())
-      '(error unwritable (op create) (path "/p") (reason "no errno") (errno #f)))
+      '(error unwritable (op create) (path "/p") (reason "no errno")))
+;; ONE SPELLING FOR AN ERRNO (ffi's errno-name, the platform row's table):
+;; a number the table knows prints its name whichever condition carries it,
+;; the platform row's first name for a number two names share, and a number
+;; it does not know prints as the number.
+(define erofs (platform-number 'EROFS))
+(want "H1 EROFS prints EROFS from either condition: a durable-error's number and an unreadable-entry's field"
+      (list (assq 'errno (cddr (classify-failure (durable 'write "/p" erofs) '())))
+            (assq 'errno (cddr (classify-failure (unreadable-at "/p" erofs "Read-only file system") '()))))
+      '((errno EROFS) (errno EROFS)))
+(want "H1 a number the table does not know prints as the number; a name prints as itself"
+      (list (assq 'errno (cddr (classify-failure (durable 'write "/p" 9999) '())))
+            (errno-name 'EACCES) (errno-name #f))
+      '((errno 9999) EACCES #f))
+(let* ((constants (cdr (find (lambda (d) (and (pair? d) (eq? (car d) 'constants))) (platform-row))))
+       (errnos (filter (lambda (c) (let ((t (symbol->string (car c))))
+                                     (and (> (string-length t) 1) (char=? (string-ref t 0) #\E) (fixnum? (cadr c)))))
+                       constants))
+       (first-name (lambda (n) (car (find (lambda (c) (eqv? (cadr c) n)) errnos)))))
+  (want "H1 every errno the platform row measures prints the row's first name for its number"
+        (filter (lambda (c) (not (eq? (errno-name (cadr c)) (first-name (cadr c))))) errnos)
+        '())
+  (want "H1 CONTROL the row measures the errnos the rows above name, EAGAIN and EWOULDBLOCK sharing one number"
+        (list (> (length errnos) 20) (and (assq 'EROFS errnos) #t)
+              (eqv? (cadr (assq 'EAGAIN errnos)) (cadr (assq 'EWOULDBLOCK errnos)))
+              (errno-name (cadr (assq 'EWOULDBLOCK errnos))))
+        '(#t #t #t EAGAIN)))
 (want "H1 what the table does not classify answers #f (the caller keeps its own answer)"
       (list (classify-failure (make-message-condition "x") '()) (classify-failure 'boom h-record))
       '(#f #f))

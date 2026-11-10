@@ -4297,6 +4297,18 @@ reason wherever it finds a new way to be unsure:
 A store that answered `ok` to any of these would be guessing, and the whole point
 of holding a request id is to not have to.
 
+A filesystem failure is answered by one table (`answers.sc`) whichever
+verb meets it: `(error absent (path <p>) (reason <r>) (errno <e>))` or
+`(error unreadable ...)` with the same clauses for a step that reads,
+`(error unwritable (op <o>) (path <p>) (reason <r>) (errno <e>))` for one
+that writes, and `(error incomplete (failed <those clauses>) (written
+<entry> ...))` once something was written. `<e>`, here and in every other
+answer with an errno clause (`connect-failed`, `socket-dir-unreadable`,
+`detach-failed`, a commit's `cleanup-failed`), is the errno's name on this
+platform (`EACCES`, `EROFS`), the number only for an errno the platform's
+table does not name; a failure with no errno (a short write) has no errno
+clause.
+
 An answer built from history the store could not wholly read carries an
 `incomplete` clause, one entry per writer it is missing:
 

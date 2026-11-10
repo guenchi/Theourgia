@@ -143,12 +143,12 @@
    (#t)
    fact a
    "detach-failed, a named outcome: the step, the log path and the errno, with the scope's record through with-written -- the log's creation when its open failed after it (NO4b), nothing when its directory could not be searched (NO4) -- written on STDERR (E2); exit 71"
-   (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (guard (e2 (#t (trace-event! (quote detach-report-failed) #f #f))) (let ((err (current-error-port))) (write (with-written (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path) (list (quote errno) code)) (mutation-record)) err) (newline err) (flush-output-port err)))) (exit 71))))
+   (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (guard (e2 (#t (trace-event! (quote detach-report-failed) #f #f))) (let ((err (current-error-port))) (write (with-written (append (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path)) (errno-clause code)) (mutation-record)) err) (newline err) (flush-output-port err)))) (exit 71))))
   ("client.sc" (call-on-socket) 1 guard
    ((fs-error? e))
    unrelated a
    "socket"
-   (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (list (quote error) (quote connect-failed) (list (quote path) path) (list (quote errno) code))))))))
+   (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (append (list (quote error) (quote connect-failed) (list (quote path) path)) (errno-clause code))))))))
   ("client.sc" (call-on-socket) 2 guard
    ((fs-error? e))
    unrelated a
@@ -178,7 +178,7 @@
    ((and (fs-error? e) (= sent 0)) (socket-expired? e))
    unrelated a
    "socket write: a failure with nothing sent is not-sent; a send whose allowance ran out after part of the frame went is silent"
-   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e))))) ((socket-expired? e) (silent-outcome start))))
+   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (append (list (quote error) (quote write-failed) (list (quote path) path)) (errno-clause (fs-error-errno e))))) ((socket-expired? e) (silent-outcome start))))
   ("client.sc" (read-socket-answer) 1 guard
    ((socket-expired? e))
    unrelated a
@@ -223,7 +223,7 @@
    ((unreadable-entry? e))
    refuse a
    "socket-dir-refusal: the socket's directory there but not searchable through itself (<dir>/.) answers (error socket-dir-unreadable (dir ...) (reason ...) (errno ...)) before a daemon is started or anything created"
-   (e ((unreadable-entry? e) (list (quote error) (quote socket-dir-unreadable) (list (quote dir) dir) (list (quote reason) (unreadable-entry-reason e)) (list (quote errno) (unreadable-entry-errno e))))))
+   (e ((unreadable-entry? e) (append (list (quote error) (quote socket-dir-unreadable) (list (quote dir) dir) (list (quote reason) (unreadable-entry-reason e))) (errno-clause (unreadable-entry-errno e))))))
   ("client.sc" (store-absent?) 1 guard
    ((unreadable-entry? e))
    conservative a
@@ -233,7 +233,7 @@
    ((fs-error? e))
    unrelated a
    "stream socket connect, as call-on-socket's"
-   (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (list (quote error) (quote connect-failed) (list (quote path) path) (list (quote errno) code))))))))
+   (e ((fs-error? e) (let ((code (fs-error-errno e))) (if (no-daemon-errno? code) (list (quote no-daemon) code) (list (quote not-sent) (append (list (quote error) (quote connect-failed) (list (quote path) path)) (errno-clause code))))))))
   ("stream-client.sc" (stream-on) 2 guard
    ((fs-error? e))
    unrelated a
@@ -243,7 +243,7 @@
    ((and (fs-error? e) (= sent 0)) (socket-expired? e))
    unrelated a
    "stream socket write, as exchange-on's: a failure with nothing sent is not-sent; a send whose allowance ran out after part of the frame went is silent"
-   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e))))) ((socket-expired? e) (silent-since start))))
+   (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (append (list (quote error) (quote write-failed) (list (quote path) path)) (errno-clause (fs-error-errno e))))) ((socket-expired? e) (silent-since start))))
   ("stream-client.sc" (bound-receive!) 1 guard
    ((and (fs-error? e) (eqv? (fs-error-errno e) EINVAL)))
    unrelated a

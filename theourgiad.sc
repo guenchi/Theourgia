@@ -46,7 +46,7 @@
               with-mutation-record mutation-record theourgia-stage)
         ;; The table for this program's own failures, and the
         ;; aggregation rule's named-outcome half for detach-failed.
-        (only (theourgia answers) classify-failure with-written)
+        (only (theourgia answers) classify-failure with-written errno-clause)
         (only (theourgia extensions) extension-verbs))
 
 (define (later lib name)
@@ -374,10 +374,10 @@
                ;; r3, the exit-site table): 71 either way.
                (guard (e2 (#t (trace-event! 'detach-report-failed #f #f)))
                  (let ((err (current-error-port)))
-                   (write (with-written (list 'error 'detach-failed
-                                              (list 'step step)
-                                              (list 'path log-path)
-                                              (list 'errno code))
+                   (write (with-written (append (list 'error 'detach-failed
+                                                      (list 'step step)
+                                                      (list 'path log-path))
+                                                (errno-clause code))
                                         (mutation-record))
                           err)
                    (newline err)

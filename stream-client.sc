@@ -30,7 +30,8 @@
                 unix-socket-connect fd-read socket-receive-timeout!
                 theourgia-read-chunk fs-error? fs-error-errno wall-clock-ms trace-event!
                 monotonic-ms socket-send-within! socket-read-within socket-expired?)
-          (only (theourgia platform-numbers) platform-number))
+          (only (theourgia platform-numbers) platform-number)
+          (only (theourgia answers) errno-clause))
 
   (define EINVAL (platform-number 'EINVAL))
 
@@ -84,9 +85,8 @@
                                (if (no-daemon-errno? code)
                                    (list 'no-daemon code)
                                    (list 'not-sent
-                                         (list 'error 'connect-failed
-                                               (list 'path path)
-                                               (list 'errno code)))))))
+                                         (append (list 'error 'connect-failed (list 'path path))
+                                                 (errno-clause code)))))))
                     (unix-socket-connect path silence-window-ms))))
           (if (pair? fd)
               fd
@@ -100,9 +100,8 @@
                                       (left (lambda () (- (+ last silence-window-ms) (monotonic-ms))))
                                       (unsent (guard (e ((and (fs-error? e) (= sent 0))
                                                          (list 'not-sent
-                                                               (list 'error 'write-failed
-                                                                     (list 'path path)
-                                                                     (list 'errno (fs-error-errno e)))))
+                                                               (append (list 'error 'write-failed (list 'path path))
+                                                                       (errno-clause (fs-error-errno e)))))
                                                         ((socket-expired? e) (silent-since start)))
                                                 (socket-send-within! fd frame left
                                                                      (lambda (n) (set! sent n) (set! last (monotonic-ms))))

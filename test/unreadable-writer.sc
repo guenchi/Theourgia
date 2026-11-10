@@ -384,6 +384,9 @@
       (want "U2d commit with the mirror's directory at 000 is refused unreadable, naming the directory, and writes nothing"
             (list (head-and-path refused) (- (end-of s w) before))
             (list (list '(error unreadable) (list 'path mdir)) 0))
+      (want "U2d and its errno clause names EACCES, the spelling every route's answer gives it"
+            (and (pair? refused) (list? refused) (assq 'errno (filter pair? (cdr refused))))
+            '(errno EACCES))
       (want "U2d CONTROL the same commit with the directory readable again commits, and its records land"
             (let ((r (caught (ask s 'commit a "--writer" w)))) (list (rpc-ok? r) (> (- (end-of s w) before) 0)))
             '(#t #t)))))
