@@ -267,7 +267,7 @@
 ;;     baseline it named, which is neither plan's: the client's merge is an
 ;;     explicit --rebase from there.
 ;; A comparison of the cuts' largest sequence numbers instead of a covering
-;; (F42-B's scalar mutant) takes the local plan's cut in both cases.
+;; (a scalar mutant of cut-covers?) takes the local plan's cut in both cases.
 (define (two-plans mode)
   (let* ((st (string-append root "/do4e-" (symbol->string mode)))
          (init (ask st 'init))
