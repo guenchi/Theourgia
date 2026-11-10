@@ -219,6 +219,11 @@
    refuse a
    "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created"
    (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
+  ("client.sc" (socket-dir-refusal) 2 guard
+   ((unreadable-entry? e))
+   refuse a
+   "socket-dir-refusal: the socket's directory there but not searchable through itself (<dir>/.) answers (error socket-dir-unreadable (dir ...) (reason ...) (errno ...)) before a daemon is started or anything created"
+   (e ((unreadable-entry? e) (list (quote error) (quote socket-dir-unreadable) (list (quote dir) dir) (list (quote reason) (unreadable-entry-reason e)) (list (quote errno) (unreadable-entry-errno e))))))
   ("client.sc" (store-absent?) 1 guard
    ((unreadable-entry? e))
    conservative a
@@ -484,9 +489,9 @@
    (e ((and (pair? e) (eq? (quote error) (car e))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) (#t (list (quote error) (quote internal) (list (quote reason) (condition-text e))))))
   ("daemon.sc" (listener-loop) 1 guard
    ((fs-error? e))
-   conservative a
-   "socket namespace: a symlink(2) that fails outright at the publish is refused as one that found the name taken, its errno the traced reason; the private socket is unlinked and the listener dies (listener-down)"
-   (e ((fs-error? e) (fs-error-errno e))))
+   refuse a
+   "socket namespace: a symlink(2) that fails outright at the publish is kept as its condition, its errno the traced reason; the private socket is unlinked, main is sent publish-refused with the condition and writes the start report by the table, exit 75"
+   (e ((fs-error? e) e)))
   ("daemon.sc" (listener-loop stop-and-account!) 1 guard
    (#t)
    unrelated a
@@ -1097,15 +1102,15 @@
    fact a
    "uncertain-derived: (w 0 #f) for unreadable (R2b)"
    (e (#t #f)))
-  ("log.sc" (uncertain-cached) 1 guard
+  ("log.sc" (uncertain-cache-reading) 1 guard
    ((unreadable-entry? e))
    fact a
-   "uncertain-cached: the symbol unreadable; the path and the reason go to the trace as uncertain-cache-unreadable (R2b)"
-   (e ((unreadable-entry? e) (trace-event! (quote uncertain-cache-unreadable) (cons (unreadable-entry-path e) (unreadable-entry-reason e)) #f) (quote unreadable))))
-  ("log.sc" (uncertain-cached) 2 guard
+   "uncertain-cache-reading (uncertain-cached's one reading): the symbol unreadable with the condition beside it; the path and the reason go to the trace as uncertain-cache-unreadable (R2b); uncertain-cached answers the symbol, uncertain-cache-failure the condition, which request-verdict answers by the table"
+   (e ((unreadable-entry? e) (trace-event! (quote uncertain-cache-unreadable) (cons (unreadable-entry-path e) (unreadable-entry-reason e)) #f) (cons (quote unreadable) e))))
+  ("log.sc" (uncertain-cache-reading) 2 guard
    (#t)
    unrelated a
-   "uncertain-cached: guards the parse of bytes already read, and answers unreadable, not absence"
+   "uncertain-cache-reading: guards the parse of bytes already read, and answers unreadable, not absence; no condition, since nothing names an entry"
    (e (#t (quote unreadable))))
   ("log.sc" (log-publish!) 1 guard
    (#t)
@@ -1629,9 +1634,14 @@
    (e (#t (exit code))))
   ("daemon.sc" (watch-loop) 2 guard
    (#t)
-   unrelated a
-   "watch loop"
-   (e (#t #f)))
+   conservative a
+   "publish-refused: the start report for a publish the listener could not make cannot be written -- traced, not reported again; main then leaves 75, as for a startup failure"
+   (e (#t (trace-event! (quote startup-report-failed) #f #f))))
+  ("daemon.sc" (watch-loop) 3 guard
+   (#t)
+   propagate a
+   "lock-take: only contention is busy (lock-try-acquire! answers #f); any raise of the open or the flock is handed back as (raised <condition>) and raised again by the asker, whose table answers it as the calling process would"
+   (e (#t (list (quote raised) e))))
   ("theourgiad.sc" (serve-and-exit!) 2 guard
    (#t)
    conservative a
@@ -1657,7 +1667,7 @@
    conservative a
    "found in review: a stderr that cannot be written does not change detach-failed's exit 71 (NO4 closed stderr)"
    (e2 (#t (trace-event! (quote detach-report-failed) #f #f))))
-  ("daemon.sc" (watch-loop) 3 guard
+  ("daemon.sc" (watch-loop) 4 guard
    (#t)
    conservative a
    "found in review (the startup-exit design R3): a lock-drop whose release raises does not end main -- in STARTING the boot's own store lock comes back here; traced; a tripwire: no row makes an unlock or close fail"
