@@ -384,25 +384,44 @@
 ;; the write met EPIPE and the census answered unknown; on a file it lands,
 ;; and the census is clean. The shim's perl ignores SIGPIPE, so a closed
 ;; reader shows as a failed write and exit 9, not as a signal.
-(let* ((d (case!))
-       (shim (string-append d "/shim"))
-       (real-ps (let ((f (string-append d "/real-ps")))
-                  (sh "command -v ps > " f)
-                  (car (lines-of (slurp f))))))
-  (sh "mkdir -p " shim)
-  (spit! (string-append shim "/ps")
-         (string-append "#!/bin/sh\n"
-                        real-ps " \"$@\" || exit $?\n"
-                        "exec 1>&-\n"
-                        "perl -e '$SIG{PIPE} = \"IGNORE\"; print STDERR \"x\" x 1048576 or exit 9; close STDERR or exit 9; exit 0' || exit 9\n"
-                        "exit 0\n"))
-  (sh "chmod +x " shim "/ps")
-  (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
-      d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
-  (want "NOTE-4 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
-        (let ((ls (lines-of (slurp (string-append d "/result")))))
-          (list (find (lambda (l) (starts-with? l "cleanup ")) ls)
-                (filter (lambda (l) (starts-with? l "note census")) ls)))
+;; WHAT THE ROW ASSERTS IS THAT THE CENSUS ENDS CLEAN. Under load the first
+;; ps can miss its deadline and be retried (census_attempt); the retry's note
+;; is then a reading of the machine, printed beside the row, not a failure of
+;; it. Any other census note still fails it. SLOW-FIRST? seeds that case: the
+;; shim sleeps on its first call, as CENSUS RETRY's does (a PATH shim is the
+;; seam; launch.pl has none of its own for it).
+;; -> (<cleanup line> <census notes other than a retry> <retry notes>), the dir
+(define (megabyte-stderr-launch slow-first?)
+  (let* ((d (case!))
+         (shim (string-append d "/shim"))
+         (real-ps (let ((f (string-append d "/real-ps")))
+                    (sh "command -v ps > " f)
+                    (car (lines-of (slurp f))))))
+    (sh "mkdir -p " shim)
+    (spit! (string-append shim "/ps")
+           (string-append "#!/bin/sh\n"
+                          (if slow-first?
+                              (string-append "c=" d "/ps.count\n"
+                                             "n=$(cat \"$c\" 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" > \"$c\"\n"
+                                             "if [ \"$n\" -eq 1 ]; then exec sleep 100; fi\n")
+                              "")
+                          real-ps " \"$@\" || exit $?\n"
+                          "exec 1>&-\n"
+                          "perl -e '$SIG{PIPE} = \"IGNORE\"; print STDERR \"x\" x 1048576 or exit 9; close STDERR or exit 9; exit 0' || exit 9\n"
+                          "exit 0\n"))
+    (sh "chmod +x " shim "/ps")
+    (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
+        d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
+    (let* ((ls (lines-of (slurp (string-append d "/result"))))
+           (retried (filter (lambda (l) (starts-with? l "note census retried: ")) ls)))
+      (for-each (lambda (l) (printf "reading: ~a\n" l)) retried)
+      (list (find (lambda (l) (starts-with? l "cleanup ")) ls)
+            (filter (lambda (l) (and (starts-with? l "note census") (not (starts-with? l "note census retried: ")))) ls)
+            retried
+            d))))
+(let* ((r (megabyte-stderr-launch #f)) (d (cadddr r)))
+  (want "NOTE-4 GUARD a ps that writes a megabyte to stderr after closing stdout: the census ends clean, with no note but a retry's (printed as a reading)"
+        (list (car r) (cadr r))
         '("cleanup clean" ()))
   ;; NEVER: THE FILE IS REMOVED. One is made per census, beside --result; a
   ;; launch makes several, and none may be left in the directory.
@@ -413,6 +432,10 @@
                                 (and (>= (string-length l) k) (string=? (substring l 0 k) "result.census-"))))
                   (lines-of (slurp f))))
         '()))
+(let ((r (megabyte-stderr-launch #t)))
+  (want "NOTE-4 GUARD SEEDED the same with the first ps made to miss its deadline: the census ends clean, the retry's note is there and is not counted"
+        (list (car r) (cadr r) (length (caddr r)))
+        '("cleanup clean" () 1)))
 
 ;; ONE RETRY WHEN PS MISSES THE CENSUS BOUND. The shim sleeps on
 ;; its first call -- past the five-second bound -- and is the real ps on every
