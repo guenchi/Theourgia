@@ -70,6 +70,7 @@
           (only (theourgia languages) language-for-name language-property)
           (only (theourgia regex) regex-compile regex-match-at)
           (only (theourgia reader) read-forms read-library-piece reader-failure? reader-failure-reason library-name-proper)
+          (only (theourgia md) md->blocks)
           (only (theourgia extensions) names-usage uses-usage)
           (only (theourgia field-reading) field-of field-missing?))
 
@@ -607,83 +608,27 @@
                              '() '() '(syntactic (lexing whole-text)) 'text))))))))
 
   ;; A WORD IN PROSE IS NOT A USE. A block of a prose language (the table's
-  ;; `prose` property: markdown) names a thing only where it writes code:
-  ;; inside a code span (a run of backticks, closed by a run of the same
-  ;; length, within one paragraph: a span may cross a line break, not a blank
-  ;; line) or a fenced code block (``` or ~~~ at a line's start, closed by a
-  ;; fence of the same character at least as long; a backtick opener has no
-  ;; backtick after its run, so ```x``` on one line is a span, not a fence).
-  ;; -> that code, each piece on a line of its own, and nothing of the prose
-  ;; around it. Before
-  ;; this, every word of a README paragraph was a use, and a test's local
-  ;; `(define refusal ...)` had the README's every mention of a refusal as
-  ;; its users.
+  ;; `prose` property: markdown) names a thing only where it writes code: its
+  ;; code spans and its fenced code blocks, AS THE MARKDOWN PARSER READS THEM
+  ;; (md.sc, md->blocks, the parser read --ast answers from): one reading of
+  ;; markdown's structure for both, so a line ending, an escaped backtick or a
+  ;; span across a line break is judged once, there. -> that code, each piece
+  ;; on a line of its own, and nothing of the prose around it. Before this,
+  ;; every word of a README paragraph was a use, and a test's local `(define
+  ;; refusal ...)` had the README's every mention of a refusal as its users.
+  ;; md->blocks answers a fenced block as (code <fence> <info> <body> <span>)
+  ;; and an inline code span as (code <text>); every other node is walked.
   (define (prose-code-text text)
-    ;; PARA holds the paragraph's lines read so far, newest first; its spans
-    ;; are read when a blank line, a fence or the end closes it
-    (define (spans-of para out)
-      (if (null? para)
-          out
-          (append (reverse (code-spans (join-lines (reverse para)))) out)))
-    (let loop ((ls (prose-lines text)) (fence #f) (para '()) (out '()))
-      (if (null? ls)
-          (apply string-append (reverse (spans-of para out)))
-          (let* ((l (car ls)) (f (fence-of l)))
-            (cond
-              ((and fence f (char=? (car f) (car fence)) (>= (cdr f) (cdr fence)) (blank-after? l (cdr f)))
-               (loop (cdr ls) #f '() out))
-              (fence (loop (cdr ls) fence '() (cons (string-append l "\n") out)))
-              ((and f (fence-opener? l f)) (loop (cdr ls) f '() (spans-of para out)))
-              ((blank-line? l) (loop (cdr ls) #f '() (spans-of para out)))
-              (else (loop (cdr ls) #f (cons l para) out)))))))
-  (define (join-lines ls)
-    (if (null? ls) "" (fold-left (lambda (acc l) (string-append acc "\n" l)) (car ls) (cdr ls))))
-  (define (blank-line? l) (for-all (lambda (c) (memv c '(#\space #\tab))) (string->list l)))
-  ;; a backtick fence's info string holds no backtick; a tilde fence's may
-  (define (fence-opener? line f)
-    (or (char=? (car f) #\~)
-        (let* ((n (string-length line))
-               (start (let skip ((i 0)) (if (and (< i n) (char=? (string-ref line i) #\space)) (skip (+ i 1)) i))))
-          (not (memv #\` (string->list (substring line (min n (+ start (cdr f))) n)))))))
-  (define (prose-lines text)
-    (let loop ((i 0) (start 0) (out '()))
-      (cond ((= i (string-length text)) (reverse (cons (substring text start i) out)))
-            ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
-            (else (loop (+ i 1) start out)))))
-  ;; -> (<fence char> . <length>) when LINE opens or closes a fence: three or
-  ;; more backticks or tildes after at most three spaces, else #f
-  (define (fence-of line)
-    (let* ((n (string-length line))
-           (i (let skip ((i 0)) (if (and (< i n) (< i 3) (char=? (string-ref line i) #\space)) (skip (+ i 1)) i))))
-      (and (< i n) (memv (string-ref line i) '(#\` #\~))
-           (let* ((c (string-ref line i))
-                  (j (let run ((j i)) (if (and (< j n) (char=? (string-ref line j) c)) (run (+ j 1)) j))))
-             (and (>= (- j i) 3) (cons c (- j i)))))))
-  ;; a closing fence has nothing after its run but spaces
-  (define (blank-after? line run)
-    (let* ((n (string-length line))
-           (i (let skip ((i 0)) (if (and (< i n) (char=? (string-ref line i) #\space)) (skip (+ i 1)) i))))
-      (for-all (lambda (c) (char=? c #\space)) (string->list (substring line (min n (+ i run)) n)))))
-  ;; -> the code spans of TEXT (a paragraph, its lines joined), each followed by
-  ;; a newline
-  (define (code-spans line)
-    (let ((n (string-length line)))
-      (define (run-end i) (if (and (< i n) (char=? (string-ref line i) #\`)) (run-end (+ i 1)) i))
-      (define (closing from len)
-        (let find ((i from))
-          (cond ((>= i n) #f)
-                ((char=? (string-ref line i) #\`)
-                 (let ((e (run-end i))) (if (= (- e i) len) i (find e))))
-                (else (find (+ i 1))))))
-      (let loop ((i 0) (out '()))
-        (cond
-          ((>= i n) (reverse out))
-          ((char=? (string-ref line i) #\`)
-           (let* ((e (run-end i)) (c (closing e (- e i))))
-             (if c
-                 (loop (run-end c) (cons (string-append (substring line e c) "\n") out))
-                 (loop e out))))
-          (else (loop (+ i 1) out))))))
+    (apply string-append
+           (reverse
+             (let walk ((x (md->blocks text)) (out '()))
+               (cond
+                 ((not (pair? x)) out)
+                 ((and (eq? (car x) 'code) (list? x) (= (length x) 2) (string? (cadr x)))
+                  (cons (string-append (cadr x) "\n") out))
+                 ((and (eq? (car x) 'code) (list? x) (= (length x) 5) (string? (cadddr x)))
+                  (cons (string-append (cadddr x) "\n") out))
+                 (else (fold-left (lambda (acc y) (walk y acc)) out (if (list? x) x '()))))))))
 
   ;; -> #t when block ID of STATE is of a prose language (`prose-code-text`)
   (define (prose-block? state id)

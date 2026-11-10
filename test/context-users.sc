@@ -489,10 +489,11 @@
              (list-sort string<? (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'use))) (cdr (assq 'items (cdr u))))))))
       (list-sort string<? (list caller in-span in-fence refusal-def)))
 
-;; A CODE SPAN IS A PARAGRAPH'S, AND A BACKTICK FENCE HAS NO BACKTICK AFTER ITS
-;; RUN (found in review): in a store of its own, a span broken across a line
-;; is a use, and ```refusal()``` on one line is a span, not a fence opener, so
-;; refusal is used there and the prose after it is not.
+;; THE CODE IS WHAT THE MARKDOWN PARSER READS AS CODE (md.sc, md->blocks;
+;; found in review): in a store of its own, a span broken across a line is a
+;; use; a CRLF fence closes at its CRLF closer, so the prose after it is no
+;; use; an escaped backtick opens no span, while an ordinary span beside it is
+;; a use.
 (define S6b (string-append root "/s6b"))
 (rpc-dispatch S6b '(init) "test")
 (define (run6b . args) (rpc-dispatch S6b args "test"))
@@ -507,13 +508,18 @@
         (list-sort string<? (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'use))) (cdr (assq 'items (cdr u))))))
         u)))
 (define multi-span (md6b "multi-span" "Call `refusal\n()` here.\n"))
-(define inline-run (md6b "inline-run" "```refusal()```\n\nordinary prose\n"))
+(define crlf-fence (md6b "crlf-fence" "```js\r\nrefusal();\r\n```\r\nordinary prose\r\n"))
+(define escaped (md6b "escaped" "Literal \\`refusal\\` here.\n"))
+(define plain-span (md6b "plain-span" "Plain `refusal` here.\n"))
 (want "PR-4 a code span broken across two lines of one paragraph is a use"
       (and (member multi-span (uses6b "refusal")) #t)
       #t)
-(want "PR-5 ```refusal()``` on one line is a code span, not a fence opener: refusal is a use there, and the prose after it is not"
-      (list (and (member inline-run (uses6b "refusal")) #t) (and (member inline-run (uses6b "ordinary")) #t))
+(want "PR-5 a CRLF fence is closed by its CRLF closer: refusal in it is a use, and the prose after it is not"
+      (list (and (member crlf-fence (uses6b "refusal")) #t) (and (member crlf-fence (uses6b "ordinary")) #t))
       '(#t #f))
+(want "PR-6 an escaped backtick opens no span: the escaped word is no use, and an ordinary span is"
+      (list (and (member escaped (uses6b "refusal")) #t) (and (member plain-span (uses6b "refusal")) #t))
+      '(#f #t))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-users complete\n" rows bad)

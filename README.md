@@ -1104,8 +1104,8 @@ the longest match there whatever the pattern's alternation order prefers, read u
 than one). A block whose language has no entry answers
 `(name-use none (reason no-language))`. A block of a PROSE language (the
 table's `(prose #t)`: markdown) is read the same way over its code only --
-its code spans (a run of backticks closed by a run of the same length) and
-its fenced code blocks (``` or ~~~) -- so a word in its prose is not a use:
+its code spans and its fenced code blocks, as the markdown parser that
+`read --ast` answers from reads them -- so a word in its prose is not a use:
 a README paragraph that says "refusal" does not use a `(define refusal
 ...)`, and one that writes `` `refusal` `` does.
 
