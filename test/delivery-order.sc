@@ -40,6 +40,8 @@
 ;;   DO-4 working's latest-parent-cut, over those cuts: the cut that covers
 ;;        every other, wherever it stands in the list -- it gave up at the
 ;;        first pair not ordered, so (A B C) and (C A B) answered apart.
+;;        DO-4E drives it end to end: a write naming a version two plans
+;;        consumed, through a store that holds both.
 ;;   DO-5 state-revoked: one plan event per version, the smallest by
 ;;        (writer, seq) -- it kept the first met, in gate order, which is
 ;;        delivery order; drafts prints it.
@@ -59,7 +61,8 @@
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia reduce) reduce-empty reduce-apply! block-id state-put-events
               state-reserved-relation-records state-consumed? state-revoked
-              state-consumed-parent-cuts state-seen reduce-gates state-block-ids)
+              state-consumed-parent-cuts state-seen reduce-gates state-block-ids
+              reduce-applied-cut block-hash)
         (only (theourgia working) latest-parent-cut))
 
 (define bad 0)
@@ -245,6 +248,77 @@
 (want "DO-4 TWIN: with no cut covering the others it answers #f, in either order"
       (map latest-parent-cut (list (list cut-a cut-b) (list cut-b cut-a)))
       '(#f #f))
+
+;; ---- DO-4E the parent comparison, end to end ----------------------------------
+;;
+;; ONE STORE CANNOT MAKE TWO PLANS CONSUME ONE VERSION, so the second is
+;; another writer's, forged whole and published as its own segment: its plan
+;; record (the request in the actor field, the consumes clause naming the
+;; local writer's draft version) and its one member. The local writer has
+;; committed that draft (the first plan); then it writes the block again,
+;; naming that version as its parent (--working-parent-writer,
+;; --working-parent) and a baseline before the commit (--based-on at its
+;; first record, --working-cut). The draft's cut, read back with
+;; --working-info, says which parent the write took:
+;;   comparable -- the mirror's member depends on the commit, so its plan's
+;;     cut covers the commit's: the later one, the mirror's;
+;;   concurrent -- the member depends on nothing: neither cut covers the
+;;     other, there is no single parent (#f), and the write stands on the
+;;     baseline it named, which is neither plan's: the client's merge is an
+;;     explicit --rebase from there.
+;; A comparison of the cuts' largest sequence numbers instead of a covering
+;; (F42-B's scalar mutant) takes the local plan's cut in both cases.
+(define (two-plans mode)
+  (let* ((st (string-append root "/do4e-" (symbol->string mode)))
+         (init (ask st 'init))
+         (L (cadr (assq 'writer (cdr init))))
+         (ins (ask st 'insert "--under" "root" "--title" "X" "--text" "x0"))
+         (X (let ((ev (car (cadr (assq 'events (cdr ins)))))) (string-append (car ev) "." (number->string (cdr ev)))))
+         (named-cut (reduce-applied-cut (open-and-reduce st)))
+         (named-hash (block-hash (open-and-reduce st) X))
+         (w1 (ask st 'write X "v1 text" "--writer" L))
+         (v1 (cadr (assq 'version (cdr w1))))
+         (b1 (cadr (assq 'based-on (cdr w1))))
+         (c1 (ask st 'commit X "--writer" L))
+         (after-commit (reduce-applied-cut (open-and-reduce st)))
+         (M "mmmm0000")
+         (key (cons M "do4e"))
+         (record (lambda (seq actor deps payload)
+                   (encode-record seq (+ 1789000000000 seq) actor deps (storable-encode payload))))
+         (plan (record 1 (list "test" key 'plan "fpm" #f (cons M 0)) '()
+                       (list 'plan "do4e" "fpm" (cons M 0)
+                             (list (list 0 'set X 'title "M"))
+                             (list 'consumes L (list (list X v1 b1 (list (cons L 1))))))))
+         (member (record 2 (list "test" key 0 "fpm" (cons M 1) (cons M 0))
+                         (if (eq? mode 'comparable) after-commit '())
+                         (list 'set X 'title "M")))
+         (segment (let ((o (make-bytevector (+ (bytevector-length plan) (bytevector-length member)))))
+                    (bytevector-copy! plan 0 o 0 (bytevector-length plan))
+                    (bytevector-copy! member 0 o (bytevector-length plan) (bytevector-length member))
+                    o)))
+    (log-publish! st M 1 segment (segment-sha segment))
+    (let* ((cuts (state-consumed-parent-cuts (open-and-reduce st) L v1))
+           (w2 (ask st 'write X "v2 text" "--writer" L "--working-parent-writer" L "--working-parent" v1
+                    "--based-on" named-hash "--working-cut" (format "~s" named-cut)))
+           (info (ask st 'read X "--working-info" "--writer" L))
+           (p (and (pair? info) (eq? (car info) 'ok) (assq 'projection (cdr info)))))
+      (list (length cuts) (and (pair? w2) (car w2))
+            (and p (list-ref p 6)) after-commit named-cut (list (cons L 3) (cons M 2))))))
+(define-caught do4e-comparable (two-plans 'comparable))
+(define-caught do4e-concurrent (two-plans 'concurrent))
+(want "DO-4E THE CONSTRUCTION: in both stores the version has two consumed parent cuts, and the write is accepted"
+      (map (lambda (r) (and (pair? r) (list (car r) (cadr r)))) (list do4e-comparable do4e-concurrent))
+      '((2 ok) (2 ok)))
+(want "DO-4E comparable cuts: the write takes the later, the mirror's plan, which covers the commit"
+      (and (pair? do4e-comparable)
+           (let ((cut (list-ref do4e-comparable 2)))
+             (list (and (list? cut) (by-print cut)) (by-print (list-ref do4e-comparable 5)))))
+      (let ((m (and (pair? do4e-comparable) (by-print (list-ref do4e-comparable 5))))) (list m m)))
+(want "DO-4E concurrent cuts: no single parent (#f), so the write stands on the baseline it named, neither plan's cut"
+      (and (pair? do4e-concurrent)
+           (list (equal? (list-ref do4e-concurrent 2) (list-ref do4e-concurrent 4))
+                 (equal? (list-ref do4e-concurrent 2) (list-ref do4e-concurrent 3))))
+      '(#t #f))
 
 ;; ---- DO-5 state-revoked -------------------------------------------------------
 ;;
