@@ -126,7 +126,7 @@
           (only (theourgia reduce) state-read block-hash reduce-applied-cut state-field-contested? relation-kind)
           (only (theourgia project) subtree-ids)
           (only (theourgia store) search-state distinct-query-text sealed-state? sealed-state-notes library-locator)
-          (only (theourgia name-use) name-use-table live-kind)
+          (only (theourgia name-use) name-use-table live-kind prose-block?)
           (only (theourgia markers) src-text)
           (only (theourgia log) unreadable-behind merge-unreadable incomplete-clause)
           (only (theourgia render) render-wire printed-entry)
@@ -403,6 +403,10 @@
   ;; two of the names is listed under each. The table is built only when the
   ;; unit defines a name. -> #(<entries> <skipped clause or #f>), the
   ;; skipped clause counted over the whole view, as `uses` counts it.
+  ;; UNDER EACH NAME THE CODE USERS COME FIRST, then the prose ones (a block
+  ;; of a prose language, whose uses are its code spans and fences), each
+  ;; part by id: a README that writes the name in code is a user, and is
+  ;; listed after the code that calls it; the count is of both.
   (define (unit-users S view t)
     (let ((names (list-sort string<? (unique (map caddr (rows-of S `(and (hard ,t ?u unit _) (def ?u ?lib ?name))))))))
       (if (null? names)
@@ -421,8 +425,10 @@
                             (map (lambda (id)
                                    (list 'user id (list 'name n) (list 'library (or (library-of id) 'none))
                                          (list 'mode (hashtable-ref (vector-ref table 1) id 'text))))
-                                 (list-sort string<? (filter (lambda (id) (not (member id unit)))
-                                                             (unique (hashtable-ref (vector-ref table 0) n '()))))))
+                                 (let ((ids (list-sort string<? (filter (lambda (id) (not (member id unit)))
+                                                                        (unique (hashtable-ref (vector-ref table 0) n '()))))))
+                                   (append (filter (lambda (id) (not (prose-block? view id))) ids)
+                                           (filter (lambda (id) (prose-block? view id)) ids)))))
                           names))
               (and (pair? counts) (cons 'skipped counts)))))))
 

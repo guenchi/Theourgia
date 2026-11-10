@@ -443,6 +443,52 @@
       (list (map cadr (users-list after)) (equal? (clause before 'receipt) (clause after 'receipt)))
       (list (by-id gamma lu du) #t))
 
+;; ---- PR: a word in prose is not a use -----------------------------------------------------------
+;;
+;; A STORE OF ITS OWN, so the rows above keep theirs: a file R holds refusal
+;; (JavaScript, defines refusal) and a caller of it; a file D holds three
+;; markdown blocks, made before the caller so their ids sort first: one that
+;; says the word in prose only, one that writes it in a code span, and one
+;; with it in a fenced code block. A markdown block names a thing only in
+;; its code, so the prose one is no user; the two that write it in code are
+;; users, listed after the code caller whatever their ids, and counted.
+(define S6 (string-append root "/s6"))
+(rpc-dispatch S6 '(init) "test")
+(define (run6 . args) (rpc-dispatch S6 args "test"))
+(define (titled6 t)
+  (let ((st (open-and-reduce S6)))
+    (find (lambda (id) (let* ((r (state-read st id)) (e (and r (assq 'title (cdr (assq 'fields r)))))) (and e (equal? (cdr e) t))))
+          (state-block-ids st))))
+(define (file6! title)
+  (let ((id (new-id (run6 'insert "--under" "root" "--title" title)))) (run6 'set id "kind" "file") id))
+(define (insert6! parent fields)
+  (run6 'batch (format "((insert ~s #f ~s))" parent fields))
+  (titled6 (cdr (assq 'title fields))))
+(define (md6 parent title src) (insert6! parent (list '(kind . code) '(lang . "markdown") (cons 'title title) (cons 'src src))))
+(define R6 (file6! "R"))
+(define D6 (file6! "D"))
+(define prose-only (md6 D6 "prose-only" "A refusal is answered by name; every refusal says why.\n"))
+(define in-span (md6 D6 "in-span" "Call `refusal()` to refuse a request.\n"))
+(define in-fence (md6 D6 "in-fence" "Example:\n\n```js\nrefusal();\n```\n"))
+(define refusal-def (insert6! R6 '((kind . code) (lang . "javascript") (title . "refusal") (name . refusal) (src . "function refusal() { return 1 }"))))
+(define caller (insert6! R6 '((kind . code) (lang . "javascript") (title . "caller") (src . "refusal()"))))
+(define a-refusal (run6 'context "--for" refusal-def "--budget" "100000"))
+(want "PR CONSTRUCTION: the three markdown blocks' ids sort before the caller's"
+      (list (string<? prose-only caller) (string<? in-span caller) (string<? in-fence caller))
+      '(#t #t #t))
+(want "PR-1 a markdown block that says the word in prose only is not a user of refusal"
+      (and (users-list a-refusal) (member prose-only (map cadr (users-list a-refusal))) #t)
+      #f)
+(want "PR-2 the markdown blocks that write it in a code span and in a fenced block are users, after the code caller, and (of 3) counts them all"
+      (list (map cadr (users-list a-refusal)) (users-head a-refusal))
+      (list (cons caller (list-sort string<? (list in-span in-fence)))
+            '(users (listed 3) (of 3))))
+(want "PR-3 uses refusal answers the same users: the caller and the two code-writing markdown blocks, not the prose one"
+      (let ((u (run6 'uses "refusal")))
+        (and (pair? u) (eq? (car u) 'ok)
+             (list-sort string<? (map cadr (filter (lambda (x) (and (pair? x) (eq? (car x) 'use))) (cdr (assq 'items (cdr u))))))))
+      (list-sort string<? (list caller in-span in-fence refusal-def)))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "rows: ~a\n~a failures\ncontext-users complete\n" rows bad)
 (exit (if (= bad 0) 0 1))
