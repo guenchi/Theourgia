@@ -134,8 +134,12 @@
            (skipped (filter (lambda (rel) (not (scheme-file? rel))) files))
            (inputs (map (lambda (rel) (parse-file rel (read-code-bytes (string-append dir "/" rel)))) (filter scheme-file? files)))
            (current-cache #f)
-           (intents '()) (baselines '()) (memberships '()) (seen '()) (claims '()) (kept '()))
-      (define (emit! intent) (set! intents (append intents (list intent))) (- (length intents) 1))
+           (intents '()) (emitted 0) (baselines '()) (memberships '()) (seen '()) (claims '()) (kept '()))
+      ;; THE INTENTS ARE KEPT NEWEST FIRST AND COUNTED, and reversed once at
+      ;; the end: an intent's index is the count before it. Appending to the
+      ;; whole list and measuring it per intent made an import quadratic in
+      ;; its intents, as code-project's capture was.
+      (define (emit! intent) (set! intents (cons intent intents)) (set! emitted (+ emitted 1)) (- emitted 1))
       ;; THE COMMITTED REDUCTION A RAW FILE IS RESOLVED AGAINST, loaded the
       ;; first time a file without a header asks for it and never before:
       ;; an import of headed files alone loads nothing it did not load
@@ -171,21 +175,29 @@
               (unless (and (eq? (code-field state id 'kind) 'library) (eq? (code-field state id 'mode) 'datum)) (projection-failure 'mode-mismatch))
               (set! memberships (cons (list id children) memberships))
               (for-each (lambda (b) (set! baselines (cons (list b (block-hash state b) cut) baselines))) (cons id children)))
-            (let ((claimed '()))
+            ;; THE IDS A FILE CLAIMS AND ITS LIBRARY'S CHILDREN ARE TABLES, asked
+            ;; once per entry; lists searched per entry made a file quadratic in
+            ;; its forms.
+            (let ((claimed (make-hashtable equal-hash equal?))
+                  (child? (let ((t (make-hashtable equal-hash equal?)))
+                            (for-each (lambda (c) (hashtable-set! t c #t)) children)
+                            t)))
               (for-each (lambda (e)
                           (when (and (car e) (not (eq? (car e) 'new)))
                             (unless header (projection-failure 'unavailable-cut))
-                            (when (member (car e) claimed) (projection-failure 'duplicate-id))
-                            (set! claimed (cons (car e) claimed))
+                            (when (hashtable-contains? claimed (car e)) (projection-failure 'duplicate-id))
+                            (hashtable-set! claimed (car e) #t)
                             (unless (alive? state (car e)) (projection-failure 'tombstone))
-                            (unless (member (car e) children) (projection-failure 'foreign-library)))) entries))
+                            (unless (hashtable-contains? child? (car e)) (projection-failure 'foreign-library)))) entries))
             (for-each (lambda (child)
                         (unless (and (eq? (code-field state child 'kind) 'code) (eq? (code-field state child 'mode) 'datum))
                           (projection-failure 'mode-mismatch))) children)
             (let* ((old (map (lambda (b) (list b (code-field state b 'body) (or (code-field state b 'doc) "") (datum-names (code-field state b 'body)))) children))
                    (matched (datum-match old entries))
                    (parent (or id (list 'from (emit! (list 'insert 'root #f (append '((kind . library) (mode . datum) (lang . chez)) (list (cons 'path rel)) fields))))))
-                   (omitted (filter (lambda (old-id) (not (member old-id matched))) children))
+                   (omitted (let ((held (make-hashtable equal-hash equal?)))
+                              (for-each (lambda (m) (when m (hashtable-set! held m #t))) matched)
+                              (filter (lambda (old-id) (not (hashtable-contains? held old-id))) children)))
                    (previous #f)
                    ;; A raw update keeps what it omits AFTER what it holds, so its
                    ;; order is unchanged only when the file adds nothing and the
@@ -224,7 +236,7 @@
       ;; EVERY WARNING NAMES ITS FILE: the reader gives a position inside
       ;; the file it read, and an import reads many, so the input's relative
       ;; path goes beside the position, after the warning's kind.
-      (list intents baselines memberships
+      (list (reverse intents) baselines memberships
             (apply append (map (lambda (i)
                                  (map (lambda (w) (cons* (car w) (cadr w) (list 'path (car i)) (cddr w)))
                                       (list-ref i 4)))
