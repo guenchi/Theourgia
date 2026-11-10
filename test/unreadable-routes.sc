@@ -466,7 +466,7 @@
   (let ((r (m1-run "" "../theourgia.sc" (list "publish" M "1" m1-seg "--store" s))))
     (chmod! "700" w)
     (stop-daemon! "P1-a" s)
-    (want "P1-a a publish whose writer directory cannot be made answers unwritable (op mkdir) with errno 13, rc 1"
+    (want "P1-a a publish whose writer directory cannot be made answers unwritable (op mkdir) with errno EACCES, rc 1"
           r (list 1 (list 'error 'unwritable '(op mkdir) (list 'path (string-append w "/" M))
                           (list 'reason denied) '(errno EACCES))))))
 
@@ -905,7 +905,7 @@
   (chmod! "500" d)
   (let ((r (serve-direct "" s (list "--socket" sock))))
     (chmod! "755" d)
-    (want "P9-b a socket directory at 500: ONE datum, unwritable (op create) naming the lock, errno 13, rc 75, no PANIC"
+    (want "P9-b a socket directory at 500: ONE datum, unwritable (op create) naming the lock, errno EACCES, rc 75, no PANIC"
           (list (car r) (let ((ds (cadr r))) (and (= 1 (length ds)) (car ds))) (has-panic? (caddr r)))
           (list 75 (list 'error 'unwritable '(op create) (list 'path (string-append d "/.sock.lock")) (list 'reason denied)
                          '(errno EACCES) '(attempt #f))
@@ -1193,7 +1193,7 @@
   (let ((r (client-read "" s)))
     (chmod! "755" run)
     (restore-run!)
-    (want "P6-unwritable a run root at 555: the client's own failure, unwritable (op mkdir) naming the key directory, errno 13, rc 75, under 1 s"
+    (want "P6-unwritable a run root at 555: the client's own failure, unwritable (op mkdir) naming the key directory, errno EACCES, rc 75, under 1 s"
           (list (car r) (cadr r) (< (cadddr r) 1000))
           (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path (resolved-name kd)) (list 'reason denied) '(errno EACCES))
                 #t))))
