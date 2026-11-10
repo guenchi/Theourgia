@@ -477,9 +477,12 @@
 (define (site-form s) (caddr s))
 (define (site-up s) (cadddr s))
 
+;; platform-row IS A READ TOO: the errno table (ffi.sc) takes every errno
+;; constant from the row itself, so a read of the whole row is enumerated
+;; and its definition counted with the others.
 (define table-accessors
   '(platform-number platform-field platform-field-present? platform-struct-size platform-struct-value
-    platform-type-size platform-wait-sample))
+    platform-type-size platform-wait-sample platform-row))
 (define struct-helpers '(row-uint-ref row-sint-ref row-uint-set!))
 (define (accessor-call? x)
   (and (list? x) (pair? x) (memq (car x) (append table-accessors struct-helpers)) #t))
@@ -510,6 +513,7 @@
     ("../ffi.sc" ENOTDIR (platform-number (quote ENOTDIR)))
     ("../ffi.sc" EOVERFLOW (platform-number (quote EOVERFLOW)))
     ("../ffi.sc" EPERM (platform-number (quote EPERM)))
+    ("../ffi.sc" errno-table (platform-row))
     ("../ffi.sc" EROFS (platform-number (quote EROFS)))
     ("../ffi.sc" EWOULDBLOCK (platform-number (quote EWOULDBLOCK)))
     ("../ffi.sc" FD_CLOEXEC (platform-number (quote FD_CLOEXEC)))
@@ -657,7 +661,7 @@
       (list (length read-definitions)
             (and (member '("../client.sc" ENOENT) read-definitions) (member '("../ffi.sc" ENOENT) read-definitions) #t)
             (> (symbol-count 'spawn-O_RDONLY (file-forms "../ffi.sc")) 0))
-      (list 60 #t #t))
+      (list 61 #t #t))
 
 (define (upper-name? s)
   (let ((t (symbol->string s)))
