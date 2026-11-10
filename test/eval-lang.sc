@@ -820,6 +820,23 @@
                      (prefix? (cadr a) (string-append (caddr r) "/eval-")))
                 (cadr r)))
         (list #t '())))
+;; L19e THE PAIR IS IN THE TEXT ITSELF. L19d sees the ("" . "") pair carried
+;; only through a run that fails later on the run root, after the text was
+;; built, so a launcher text that dropped the pair would leave it green. The
+;; text is asked for directly: the pair last is written "::" after the
+;; separator, so the text ends ":::", and it reads back as the same list.
+(let ((child (string-append root "/l19e-launcher-text.sc")))
+  (put! child
+        (string-append
+          "(import (chezscheme) (only (theourgia eval-runner) launcher-library-extensions))\n"
+          "(let* ((pairs (append (library-extensions) (list (cons \"\" \"\"))))\n"
+          "       (text (parameterize ((library-extensions pairs)) (launcher-library-extensions)))\n"
+          "       (n (string-length text)))\n"
+          "  (write (list (and (>= n 3) (string=? (substring text (- n 3) n) \":::\"))\n"
+          "               (equal? (parameterize ((library-extensions text)) (library-extensions)) pairs))))\n"))
+  (want "L19e the launcher's extension text carries the pair of two empty names as \"::\" and reads back as the list it was built from"
+        (datum-of (sh-out (quoted scheme-path) " --script " (quoted child) " 2>/dev/null"))
+        '(#t #t)))
 (let ((r (child-refusal "l19f" "(library-extensions (append (library-extensions) (list (cons \".sc\" \".b\\x0;d\"))))")))
   (want "L19 an extension pair whose OBJECT side holds NUL: the refusal names that side, not the source"
         (list (car r) (cadr r))

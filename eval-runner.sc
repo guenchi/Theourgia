@@ -37,7 +37,9 @@
 ;;; change the answer.
 
 (library (theourgia eval-runner)
-  (export run-foreign-eval runner-refusal)
+  (export run-foreign-eval runner-refusal
+          ;; for a test row: the CHEZSCHEMELIBEXTS text a launcher is given
+          launcher-library-extensions)
   (import (chezscheme)
           (only (theourgia client) run-root next-attempt-token)
           (only (theourgia ffi) mkdir-p! mkdir-exclusive! real-path overwrite-entry! unlink! rmdir! directory-entries
