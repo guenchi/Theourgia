@@ -202,6 +202,13 @@
   ;; main letter is written (collect-into --letter new makes it, after the
   ;; landing). `--packet <file>` writes sections under the letter copy.
   ;; `--roots all` names every top-level block of the store.
+  ;; NEVER: A FILE THE FREEZE ADDS IS IN ITS SCOPE, WHATEVER ROOTS ARE NAMED.
+  ;; A freeze's change is its drafts and its new files; roots naming the
+  ;; changed blocks left the new files out, so a reviewer's grep found no
+  ;; text of them and the review could not be made. Each new file the
+  ;; freeze adds joins the roots (after them, in the freeze's order) unless
+  ;; it is named already, and the answer lists them, `(new-files (<path>
+  ;; <copy id>) ...)`, absent when the freeze adds none.
   (define (scope-verb store actor args options cwd . socket-given)
     (let ((socket (and (pair? socket-given) (car socket-given)))
           (cut (argument-option options "--cut"))
@@ -233,9 +240,12 @@
                    ((and fz (string? cut) (not (same-cut? (text-datum cut) (freeze-cut fz))))
                     (list 'error 'bad-request '(reason freeze-cut-mismatch) (list 'cut cut) (list 'pinned-cut (freeze-cut fz))))
                    (else
-                    (let ((all (if (equal? roots '("all"))
-                                   (top-level-ids store socket actor (if fz (freeze-cut fz) (text-datum cut)) fz)
-                                   roots)))
+                    (let ((all (cond
+                                 ((equal? roots '("all"))
+                                  (top-level-ids store socket actor (if fz (freeze-cut fz) (text-datum cut)) fz))
+                                 (fz (append roots (filter (lambda (pid) (not (member pid roots)))
+                                                           (map car (freeze-news fz)))))
+                                 (else roots))))
                       (if (and (pair? all) (eq? (car all) 'error))
                           all
                           (scope-read store socket actor dir (if fz (written (freeze-cut fz)) cut) all for fz pk home)))))))))))))
@@ -600,6 +610,11 @@
                                    (list 'packet (length sections)) (list 'edges (length kept))
                                    (list 'dropped-edges (length dropped))
                                    (list 'contested-fields (length contested)))
+                             (let ((news (freeze-news fz)))
+                               (if (null? news)
+                                   '()
+                                   (list (cons 'new-files
+                                               (map (lambda (n) (list (cadr n) (cdr (assoc (car n) copy-of)))) news)))))
                              dropped contested))
                           (else
                             (let* ((main (routed store 'batch (list (written (list (list 'insert 'root #f letter)))) actor socket))

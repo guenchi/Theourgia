@@ -1968,7 +1968,11 @@ committed `src`, is written under the copy. A root that is a file the
 freeze adds is not read here: its copy is the file as the landing will
 make it (landing-files' construction): a holder whose `origin` is the
 provisional id (`new-` and 56 hex digits), and its pieces in order, piece
-K's `origin` `<provisional id>/<K>`. A root the freeze deletes is copied with `deleted` set to
+K's `origin` `<provisional id>/<K>`. Every file the freeze adds is a
+root whatever `--roots` names: a provisional id not named is added after
+the named roots, in the freeze's order, so its text is in the scope with
+the changed blocks, and the answer lists them, `(new-files (<path> <copy
+id>) ...)` after `contested-fields`, absent when the freeze adds none. A root the freeze deletes is copied with `deleted` set to
 `"proposed"`. The letter copy gets `freeze`, and NO record is written in
 this store: its cut stays the freeze's pinned cut, so the landing is not
 refused, and `collect-into --letter new` writes the letter after it. The
