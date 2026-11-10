@@ -2904,7 +2904,6 @@ removed, and `(path ..) (reason ..) (errno ..)` with no `op` for one that
 could not be read. Any other failure says `(path ..) (reason ..)`. A draft
 file that is already gone is not a failure.
 
-
 PREMISES: **what a reader was given is checked when its result is accepted.**
 Every committed write -- `insert`, `set`, `move`, `del`, `link`, `unlink`,
 `tag`, `batch`, `commit`, `import-code`, `import-md`, `def` and `template
@@ -3022,7 +3021,7 @@ resolves that by relocating them -- and `path-conflict` for a document whose
 one path the first by id is written, so which one survives does not depend on
 the order the blocks happen to come back in. A caller reading `ok` and a
 number is never being told less than the whole story.
-The directory must already exist: `export-md` and `import-md` refuse one that does not with `(error projection-invalid (reason not-a-directory) (dir <dir>))` and do not create it. A file that cannot be written stops the export with `(error unreadable (path <path>) (reason "...") (written (<path> ...)))`, which names the files already written.
+The directory must already exist: `export-md` and `import-md` refuse one that does not with `(error projection-invalid (reason not-a-directory) (dir <dir>))` and do not create it. A file that cannot be written stops the export, and the answer is the one every verb gives a filesystem failure (the table in `answers.sc`): `(error unwritable (op ..) (path <path>) (reason "...") (errno ..))`, or `(error unreadable ...)` for a path that cannot be asked about, when nothing was written yet; once a file was written, `(error incomplete (failed <those clauses>) (written <entry> ...))`, whose entries -- `(create <path>)`, `(write <path>)` and the like, absolute paths -- name what the export changed. A directory `import-md` cannot list answers `(error unreadable (path <dir>) (reason ..) (errno ..))`.
 
 A document's `path` is checked before anything is written, by the same rule
 the code projection uses: it must be relative and non-empty, with no `.`,

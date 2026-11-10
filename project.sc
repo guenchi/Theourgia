@@ -30,8 +30,7 @@
           (only (rnrs exceptions) raise guard)
           (only (theourgia ffi) mkdir-p! file-is-directory?
                 real-path path-case-sensitive? entry-type entry-bytes overwrite-entry!
-                list-entries unreadable-entry? unreadable-entry-path unreadable-entry-reason
-                fs-error? fs-error-target fs-error-errno)
+                list-entries)
           ;; NEVER: THE RULE IS SHARED, NOT COPIED. `code-safe-path?` is
           ;; `relative-safe?` in the code projection, and it already says what
           ;; a path a projection may write has to be. A second rule here --
@@ -303,33 +302,27 @@
         (lambda (doc)
           (hashtable-set! doc-key (car doc) (file-key dir (path-of (car doc)))))
         docs)
-      ;; NEVER: A FILE THAT CANNOT BE WRITTEN IS NAMED, NOT CALLED INTERNAL.
-      ;; A target directory that stats but cannot be written into --
-      ;; mode 000 passes the directory test above, which needs search only on
-      ;; its parent -- failed at the first write with a bare port error. It is
-      ;; answered in R1's words, the file and the system's reason, AND with
-      ;; the files already written: an export stopped part way has changed
-      ;; the directory, and the answer says how far.
-      (let ((written '()))
-        (for-each
-          (lambda (doc)
-            (let* ((id (car doc))
-                   (key (hashtable-ref doc-key id #f)))
-              (when (and key (not (hashtable-ref winner key #f)))
-                (hashtable-set! winner key id)
-                (let ((full (string-append dir "/" (path-of id))))
-                  (guard (e ((unreadable-entry? e)
-                             (raise (unwritten (unreadable-entry-path e)
-                                               (unreadable-entry-reason e)
-                                               written)))
-                            ((fs-error? e)
-                             (raise (unwritten (fs-error-target e)
-                                               (durable-failure-reason e)
-                                               written))))
-                    (mkdir-p! (parent-directory full))
-                    (write-file full (block-text state id recover?)))
-                  (set! written (cons (path-of id) written))))))
-          (list-sort (lambda (a b) (string<? (car a) (car b))) docs)))
+      ;; NEVER: A FILE THAT CANNOT BE WRITTEN IS NAMED, NOT CALLED INTERNAL,
+      ;; AND IN THE TABLE'S WORDS. A target directory that stats but cannot
+      ;; be written into -- mode 000 passes the directory test above, which
+      ;; needs search only on its parent -- fails at the first write. The
+      ;; door's condition is not caught here: it reaches the request's
+      ;; answer, which classifies it through answers.sc's table with the
+      ;; request's mutation record, so an export stopped part way answers
+      ;; (error incomplete (failed ..) (written <what it changed>)) and one
+      ;; that changed nothing answers the failure's own kind. This used to
+      ;; answer a shape of its own, unreadable for a write, the errno in the
+      ;; reason's text and the files written by their relative names.
+      (for-each
+        (lambda (doc)
+          (let* ((id (car doc))
+                 (key (hashtable-ref doc-key id #f)))
+            (when (and key (not (hashtable-ref winner key #f)))
+              (hashtable-set! winner key id)
+              (let ((full (string-append dir "/" (path-of id))))
+                (mkdir-p! (parent-directory full))
+                (write-file full (block-text state id recover?))))))
+        (list-sort (lambda (a b) (string<? (car a) (car b))) docs))
       (let* ((rows (state-outline state))
              (written (make-hashtable string-hash string=?))
              (parent (make-hashtable string-hash string=?))
@@ -549,24 +542,6 @@
       (cond ((<= i 0) ".")
             ((char=? (string-ref path (- i 1)) #\/) (substring path 0 (- i 1)))
             (else (loop (- i 1))))))
-
-  ;; The refusal for an export that could not write a file: R1's shape, with
-  ;; the files written before it, in the order they were written.
-  (define (unwritten path reason written)
-    (list 'error 'unreadable
-          (list 'path path)
-          (list 'reason reason)
-          (list 'written (reverse written))))
-
-  ;; A WRITE THAT THE DOOR REFUSED: the file is written through
-  ;; overwrite-entry!, so a directory that cannot be written into raises the
-  ;; door's durable-error, a value and not a condition, carrying the errno.
-  ;; Before the door the native port raised an i/o-error whose irritants
-  ;; held the system's words; that clause caught nothing once the port was
-  ;; gone, and is replaced by this one.
-  (define (durable-failure-reason e)
-    (string-append "the file could not be written, errno "
-                   (number->string (fs-error-errno e))))
 
   ;; THROUGH THE DOOR. The write replaces the file in place, as
   ;; the truncating native port did, so its inode stays; the read raises on
