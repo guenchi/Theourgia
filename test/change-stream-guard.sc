@@ -35,6 +35,11 @@
 ;; observed, so an item that changes an answer says so in the same commit,
 ;; and an entry that no longer differs (its change is in the base now) is
 ;; red until it is removed.
+;; A TRACE LINE A CHANGE MEANS TO ADD is listed the same way, as
+;; (trace-lines "<reason>" "<line>" ...), each line as GUARD-3 compares it
+;; (normalized, the store read as STORE). GUARD-3 removes exactly those
+;; lines from the new daemon's trace before its byte comparison, and is red
+;; when a listed line is not in the new trace or is already in the base's.
 ;;
 ;; EACH DAEMON IS THE ONE THAT SHIPS: its tree's own theourgiad.sc serve,
 ;; which registers the verbs from outside the core table (extensions.sc)
@@ -423,6 +428,32 @@
 (define expected-differences
   (let ((f (string-append script-dir "/change-stream-guard-expect.sexp")))
     (if (file-exists? f) (call-with-input-file f read) 'NO-EXPECTATION-FILE)))
+;; The lines every trace-lines entry lists, in the file's order.
+(define listed-trace-lines
+  (if (list? expected-differences)
+      (apply append (map (lambda (e) (if (and (pair? e) (eq? (car e) 'trace-lines) (pair? (cdr e))) (cddr e) '()))
+                         expected-differences))
+      '()))
+;; -> TEXT's lines, each without its newline
+(define (text-lines text)
+  (let loop ((cs (string->list text)) (line '()) (out '()))
+    (cond ((null? cs) (reverse (if (null? line) out (cons (list->string (reverse line)) out))))
+          ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse line)) out)))
+          (else (loop (cdr cs) (cons (car cs) line) out)))))
+;; -> TEXT without the lines that equal one of LINES, the rest byte for byte
+;; as it was: TEXT itself when LINES is empty, and a final newline kept
+;; exactly when TEXT had one
+(define (without-lines text lines)
+  (if (null? lines)
+      text
+      (let* ((kept (filter (lambda (l) (not (member l lines))) (text-lines text)))
+             (n (string-length text))
+             (final? (and (> n 0) (char=? (string-ref text (- n 1)) #\newline))))
+        (if (null? kept)
+            ""
+            (string-append (car kept)
+                           (apply string-append (map (lambda (l) (string-append "\n" l)) (cdr kept)))
+                           (if final? "\n" ""))))))
 (define (resolve d args ids)
   (map (lambda (a) (let ((e (assoc a ids))) (if e (cdr e) a))) args))
 (define (run-script d)
@@ -472,7 +503,9 @@
                                 ((and (not (equal? (cdar xs) (cdar ys))) (not (memq (caar xs) out)))
                                  (loop (cdr xs) (cdr ys) (cons (caar xs) out)))
                                 (else (loop (cdr xs) (cdr ys) out)))))
-             (listed (if (list? expected-differences) (map car expected-differences) '())))
+             (listed (if (list? expected-differences)
+                         (map car (filter (lambda (e) (not (and (pair? e) (eq? (car e) 'trace-lines)))) expected-differences))
+                         '())))
         (want "GUARD-1 the expectation file is read, and every entry gives its reason"
               (and (list? expected-differences)
                    (for-all (lambda (e) (and (pair? e) (symbol? (car e)) (pair? (cdr e)) (string? (cadr e)))) expected-differences))
@@ -574,12 +607,16 @@
                (base-set (cond ((null? (caddr tb)) 'none)
                                ((executor-pairs-hold? (caddr tb) (cadr tb)) 'paired)
                                (else (list 'unpaired (caddr tb))))))
-          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines left out, is byte for byte the base's; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
-                (list (car tb) (car tn)
-                      (if (equal? (cadr tb) (cadr tn)) 'equal (list (cadr tb) (cadr tn)))
-                      base-set
-                      (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn))))
-                (list #t #t 'equal (if (eq? base-set 'none) 'none 'paired) #t))))
+          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines and the expect file's listed trace lines left out, is byte for byte the base's; every listed line is in the new trace and not in the base's; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
+                (let ((new-trace (without-lines (cadr tn) listed-trace-lines)))
+                  (list (car tb) (car tn)
+                        (if (equal? (cadr tb) new-trace) 'equal (list (cadr tb) new-trace))
+                        (filter (lambda (l) (not (and (member l (text-lines (cadr tn)))
+                                                      (not (member l (text-lines (cadr tb)))))))
+                                listed-trace-lines)
+                        base-set
+                        (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
+                (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by
