@@ -157,7 +157,6 @@
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
 (define socket-dir (string-append socket-base "/lb-" pid-text))
 (define (socket-of name) (string-append socket-dir "/" name ".sock"))
-(system (string-append "rm -rf '" root "' '" socket-dir "'; mkdir -p '" root "/home' '" socket-dir "'"))
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 (include "load-budget-store.ss")
@@ -172,10 +171,13 @@
 ;;
 ;; LOADED AS A LIBRARY, its procedure taken from the library's own
 ;; environment: what it can reach is what its import form names, and R-1
-;; reads that form.
-(load reference-source)
-(define reference-decode-all
-  (eval 'reference-decode-all (environment '(load-budget-reference))))
+;; reads that form. Loaded inside the run's guard (below), so a reference
+;; that cannot be read or loaded ends the run through cleanup! too.
+(define reference-decode-all #f)
+(define (load-reference!)
+  (load reference-source)
+  (set! reference-decode-all
+        (eval 'reference-decode-all (environment '(load-budget-reference)))))
 
 (define (forms-of path)
   (call-with-input-file path
@@ -205,66 +207,109 @@
 ;; Product daemons: no injection build, no trace. THEOURGIA_PROBE=off only
 ;; keeps the once-a-second probe from refolding between the timed requests.
 ;;
-;; OWNED FROM THE SPAWN. The shell that starts a daemon writes its own pid
-;; and then execs scheme in its place, so the pid is the daemon's before
-;; the daemon has done anything, and the daemon is registered then: one
-;; that never becomes ready is still stopped. Stopping is a SIGTERM, then
-;; a wait for the process to be gone (a daemon drains on SIGTERM and exits
-;; later), then SIGKILL if it is still there after ten seconds. Every way
-;; out of this file -- the end, a row that raised, a daemon that never
-;; started -- goes through `cleanup!`, which removes the scratch and the
-;; socket directory only after the daemons are gone.
+;; OWNED FROM THE SPAWN. A daemon is started in the background by a shell
+;; that Chez's `process` runs, and that shell prints `$!` -- the pid of
+;; the background command, which execs scheme in place -- on the pipe this
+;; file reads before it does anything else. So the pid comes from the
+;; spawning operation, not from a file the child writes, and the daemon is
+;; registered before it has done anything: one that never becomes ready is
+;; still stopped. Stopping is a SIGTERM, a wait for the process to be gone
+;; (a daemon drains on SIGTERM and exits later), then SIGKILL and a second
+;; wait. A daemon that outlives both STAYS OWNED, and `cleanup!` then keeps
+;; the scratch and the socket directory and says so: removing a store from
+;; under a live daemon is not a cleanup. Every way out of this file -- the
+;; end, a row that raised, a daemon that never started -- goes through
+;; `cleanup!`.
 ;; -> (name store socket pid)
 (define daemons '())
+(define prepared? #f)
+;; The command name of each owned pid, read once the daemon is ready (H-1).
+(define owned-commands '())
+(define (command-of pid)
+  (let* ((p (process (string-append "ps -o comm= -p " (number->string pid))))
+         (line (get-line (car p))))
+    (close-port (car p))
+    (close-port (cadr p))
+    (if (string? line)
+        (let* ((s (trimmed line))
+               (slash (let loop ((i (- (string-length s) 1)))
+                        (cond ((< i 0) #f) ((char=? (string-ref s i) #\/) i) (else (loop (- i 1)))))))
+          (if slash (substring s (+ slash 1) (string-length s)) s))
+        'none)))
+(define (prepare!)
+  (system (string-append "rm -rf " (lb-quote root) " " (lb-quote socket-dir)
+                         "; mkdir -p " (lb-quote (string-append root "/home")) " " (lb-quote socket-dir)))
+  (set! prepared? #t))
 (define (alive? pid) (zero? (system (string-append "kill -0 " (number->string pid) " 2>/dev/null"))))
 (define (await-exit pid ms)
   (let wait ((left ms))
     (cond ((not (alive? pid)) #t)
           ((<= left 0) #f)
           (else (sleep-ms 100) (wait (- left 100))))))
+;; -> the daemons still alive, which stay in `daemons`
 (define stopped-pids '())
 (define (stop-daemons!)
-  (for-each (lambda (d)
-              (let ((pid (cadddr d)))
-                (system (string-append "kill " (number->string pid) " 2>/dev/null"))
-                (unless (await-exit pid 10000)
-                  (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null"))
-                  (await-exit pid 5000))
-                (set! stopped-pids (cons pid stopped-pids))))
-            daemons)
-  (set! daemons '()))
+  (set! daemons
+        (filter (lambda (d)
+                  (let ((pid (cadddr d)))
+                    (system (string-append "kill " (number->string pid) " 2>/dev/null"))
+                    (let ((gone (or (await-exit pid 10000)
+                                    (begin
+                                      (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null"))
+                                      (await-exit pid 5000)))))
+                      (when gone (set! stopped-pids (cons pid stopped-pids)))
+                      (not gone))))
+                daemons))
+  daemons)
+;; -> #t when everything is gone; #f, after saying what is kept, when a
+;; daemon is still alive
 (define (cleanup!)
-  (stop-daemons!)
-  (system (string-append "rm -rf '" root "' '" socket-dir "'")))
+  (let ((left (stop-daemons!)))
+    (if (null? left)
+        (begin
+          (when prepared?
+            (system (string-append "rm -rf " (lb-quote root) " " (lb-quote socket-dir))))
+          #t)
+        (begin
+          (printf "NOT CLEANED: daemon(s) ~a still alive after SIGKILL; ~a and ~a are kept~%"
+                  (map cadddr left) root socket-dir)
+          #f))))
 (define (start-daemon! name store)
   (let ((runner (string-append root "/daemon-" name ".ss"))
         (pidfile (string-append root "/daemon-" name ".pid"))
         (log (string-append root "/daemon-" name ".log"))
-        (spawnfile (string-append root "/daemon-" name ".spawn"))
         (socket-path (socket-of name)))
     (call-with-output-file runner
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
           (list "(import (chezscheme) (theourgia daemon))"
-                (string-append "(call-with-output-file \"" pidfile
-                               "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
-                (string-append "(serve \"" store "\" \"" socket-path "\")"))))
+                (format "(call-with-output-file ~s (lambda (p) (write (get-process-id) p)) 'truncate)" pidfile)
+                (format "(serve ~s ~s)" store socket-path))))
       'replace)
-    (system (string-append "env THEOURGIA_PROBE=off CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
-                           " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
-                           " sh -c 'echo $$ > " spawnfile "; exec scheme --script " runner " > " log " 2>&1' &"))
-    (let ((pid (let wait ((k 0))
-                 (let ((n (string->number (trimmed (file-text spawnfile)))))
-                   (cond (n n)
-                         ((> k 100)
-                          (printf "NOT A READING: the daemon ~a's shell wrote no pid in 5 s~%" name)
-                          (cleanup!)
-                          (exit 2))
-                         (else (sleep-ms 50) (wait (+ k 1))))))))
+    ;; THE BACKGROUND COMMAND STAYS A SIMPLE COMMAND: its redirections on it,
+    ;; nothing wrapped around it. Only then is `$!` the pid of the process
+    ;; that execs scheme; a subshell, a group or a pipeline here would make
+    ;; `$!` a shell's pid, and the daemon would be unowned again without any
+    ;; row noticing -- except H-1, which asks each owned pid's command.
+    (let ((pid (let* ((p (process (string-append
+                                   "THEOURGIA_PROBE=off CHEZSCHEMELIBDIRS=" (lb-quote (getenv "CHEZSCHEMELIBDIRS"))
+                                   " CHEZSCHEMELIBEXTS=" (lb-quote (getenv "CHEZSCHEMELIBEXTS"))
+                                   " scheme --script " (lb-quote runner) " > " (lb-quote log)
+                                   " 2>&1 < /dev/null & echo $!")))
+                      (line (get-line (car p))))
+                 (close-port (car p))
+                 (close-port (cadr p))
+                 (and (string? line) (string->number (trimmed line))))))
+      (unless pid
+        (printf "NOT A READING: the shell that starts the daemon ~a printed no pid~%" name)
+        (cleanup!)
+        (exit 2))
       (let ((d (list name store socket-path pid)))
         (set! daemons (cons d daemons))
         (let up ((k 0))
-          (cond ((and (file-exists? socket-path) (file-exists? pidfile)) d)
+          (cond ((and (file-exists? socket-path) (file-exists? pidfile))
+                 (set! owned-commands (cons (command-of pid) owned-commands))
+                 d)
                 ((> k 1200)
                  (printf "NOT A READING: the daemon ~a never created its socket in 60 s~%~a~%" name (file-text log))
                  (cleanup!)
@@ -352,6 +397,8 @@
                (cleanup!)
                (printf "rows: ~a~%~a failures~%" rows bad)
                (exit 1)))
+      (prepare!)
+      (load-reference!)
       (printf "== the reference arm imports nothing of the tree, and is the recorded one ==~%")
       (want "R-1 the reference is one library whose imports are (chezscheme) alone"
             (library-imports (forms-of reference-source))
@@ -456,7 +503,10 @@
                         judged)))
             (let-values (((ref samples) (run-rounds ops rounds bytes)))
               (let-values (((cref csamples) (run-rounds doubled control-rounds bytes)))
-                (stop-daemons!)
+                (unless (null? (stop-daemons!))
+                  (raise (condition (make-error)
+                                    (make-message-condition "a daemon outlived SIGTERM and SIGKILL")
+                                    (make-irritants-condition (map cadddr daemons)))))
                 (let* ((titles (lambda (store)
                                  (let ((o (rpc-dispatch store '(outline) "tester")))
                                    (map (lambda (row) (cons (list-ref row 1) (list-ref row 5)))
@@ -525,9 +575,10 @@
                             (judge arm (/ (minimum (cdr (assq arm csamples))) cref-min))
                             'over))
                     judged)))))))
-      (cleanup!)
-      (want "H-1 every daemon this run started is gone, and so are its scratch and its socket directory"
-            (list (filter alive? stopped-pids) (file-exists? root) (file-exists? socket-dir) (length stopped-pids))
-            (list '() #f #f 2))
+      (let ((clean (cleanup!)))
+        (want "H-1 every owned pid was a scheme process, every daemon is gone, and so are the scratch and the socket directory"
+              (list owned-commands clean daemons (filter alive? stopped-pids) (file-exists? root)
+                    (file-exists? socket-dir) (length stopped-pids))
+              (list '("scheme" "scheme") #t '() '() #f #f 2)))
       (printf "~%~a failures~%rows: ~a~%load-budget complete~%" bad rows)
       (exit (if (zero? bad) 0 1)))))

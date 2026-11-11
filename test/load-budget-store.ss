@@ -56,8 +56,16 @@
                                    "\";\n")
                     out)))))
 
+;; A path as one word of a shell command, whatever it holds: in single
+;; quotes, each single quote in it closed, escaped and reopened.
+(define (lb-quote s)
+  (let loop ((cs (string->list s)) (out '(#\')))
+    (cond ((null? cs) (list->string (reverse (cons #\' out))))
+          ((char=? (car cs) #\') (loop (cdr cs) (append (reverse (string->list "'\\''")) out)))
+          (else (loop (cdr cs) (cons (car cs) out))))))
+
 (define (lb-write-files! dir n)
-  (system (string-append "mkdir -p '" dir "'"))
+  (system (string-append "mkdir -p " (lb-quote dir)))
   (let loop ((k 0))
     (when (< k n)
       (call-with-output-file (string-append dir "/f" (number->string k) ".js")
@@ -89,8 +97,9 @@
 (define (lb-import! root files store tag)
   (let ((writer (lb-clause 'writer (lb-must (string-append "init of " tag)
                                             (rpc-dispatch store '(init) "tester")))))
-    (system (string-append "THEOURGIA_LOCAL=1 scheme --script '" lb-core "' import-code '" files
-                           "' --store '" store "' --wire > '" root "/import-" tag ".out' 2>&1 < /dev/null"))
+    (system (string-append "THEOURGIA_LOCAL=1 scheme --script " (lb-quote lb-core) " import-code " (lb-quote files)
+                           " --store " (lb-quote store) " --wire > " (lb-quote (string-append root "/import-" tag ".out"))
+                           " 2>&1 < /dev/null"))
     writer))
 
 (define (lb-generate! root records)
