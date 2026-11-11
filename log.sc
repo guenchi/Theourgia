@@ -93,6 +93,8 @@
           snapshot-write! snapshot-read snapshot-cut-supported?
           session-snapshot!
           scan-segment
+          transcript? transcript-of transcript-bytes transcript-frames
+          transcript-covered transcript-ending replay-scan transcript-extend
           atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory retired-successor retired-of
@@ -670,10 +672,20 @@
   ;; payload) and may return the symbol stop to end the scan early, in
   ;; which case the outcome describes what had been consumed.
   (define (scan-segment bv writer segment expected-seq recoverable-tail? deliver)
+    (scan-segment-from bv 0 expected-seq #f writer segment recoverable-tail? deliver))
+
+  ;; THE SAME FOLD, ENTERED PART WAY. The fold's whole state at a line
+  ;; boundary is three values: the offset, the sequence it expects there,
+  ;; and the last sequence it delivered. A caller that knows them (a
+  ;; transcript resuming where it stopped, below) continues the one fold
+  ;; from there, with no copy of the bytes after it and no offsets to
+  ;; translate; scan-segment is this at (0, its expected sequence, #f).
+  (define (scan-segment-from bv start expected-seq last-seq writer segment
+                             recoverable-tail? deliver)
     (unless (bytevector? bv)
       (assertion-violation 'scan-segment "not a bytevector" bv))
     (let ((n (bytevector-length bv)))
-      (let loop ((start 0) (expect expected-seq) (last-seq #f))
+      (let loop ((start start) (expect expected-seq) (last-seq last-seq))
         (cond
           ((>= start n) (list 'complete last-seq n))
           (else
@@ -744,6 +756,163 @@
     (let ((out (make-bytevector (- end start))))
       (bytevector-copy! bv start out 0 (- end start))
       out))
+
+  ;; ---- the transcript of a scan ---------------------------------------------
+
+  ;; WHAT A SCAN OF THESE BYTES FOUND, KEPT SO THAT IT NEED NOT BE FOUND
+  ;; AGAIN. scan-segment is a fold over its bytes and reads nothing else,
+  ;; so what it answers for any arguments is fixed by the records it
+  ;; decodes, in order, and by how the fold ends. A transcript holds those,
+  ;; and `replay-scan` answers from it what scan-segment answers for the
+  ;; same bytes.
+  ;;
+  ;; THE TRANSCRIPT IS TAKEN FROM SCAN-SEGMENT'S OWN CALLS. Where it has
+  ;; nothing recorded, replay-scan runs the fold itself (scan-segment-from,
+  ;; with the caller's arguments and a callback that records each frame
+  ;; and then asks the caller's), so the first time bytes are seen the
+  ;; answer is scan-segment's own and the transcript is a by-product. The
+  ;; line decisions stay in one place. What replay-scan adds is a second
+  ;; account of what an outcome is, built from recorded facts:
+  ;; test/replay-scan.sc holds the two to each other.
+  ;;
+  ;; A TRANSCRIPT COVERS AS FAR AS A SCAN WENT, NO FURTHER. A scan whose
+  ;; callback said stop decoded nothing past that record, and neither does
+  ;; the transcript: `covered` is the offset of the first line it has not
+  ;; decoded, and `ending` is #f until the fold reaches one. A replay that
+  ;; runs past the covered offset continues the fold from there, so nothing
+  ;; is decoded that a scan with the same callback would not decode.
+  ;;
+  ;; WHAT IS RECORDED IS WHAT THE BYTES SAY, NOT THE ARGUMENTS. A frame's
+  ;; end is the next frame's offset, or the offset the outcome names. A
+  ;; residual is recorded as one whichever `recoverable-tail?` the scan was
+  ;; asked with (a sealed segment's torn-in-sealed error names it), and
+  ;; replay turns it into either outcome. A sequence error at the FIRST
+  ;; record comes from the caller's expected sequence -- inside the bytes a
+  ;; record is only expected to follow the one before -- so it is not
+  ;; recorded: the transcript then covers offset 0 and has no ending. Any
+  ;; other error is the bytes', recorded with its kind, its offset and its
+  ;; detail as scan-segment built it.
+  ;;
+  ;; NEVER CHANGED. A replay that decodes more answers a new transcript
+  ;; beside its outcome and leaves the one it was given as it was, so a
+  ;; transcript that is shared is not changed by a reader of it.
+  ;;
+  ;;   frames   ((offset end seq ts actor deps payload) ...), in order
+  ;;   covered  the offset of the first line not decoded
+  ;;   ending   #f, (end), (residual <offset>), or
+  ;;            (error <kind> <offset> <detail>), <detail> the error's own
+  (define-record-type transcript
+    (fields bytes frames covered ending))
+
+  (define (transcript-of bv)
+    (unless (bytevector? bv)
+      (assertion-violation 'transcript-of "not a bytevector" bv))
+    (make-transcript bv '() 0 #f))
+
+  ;; The outcome scan-segment builds for an ending, after the record
+  ;; numbered `last-seq`.
+  (define (ending-outcome ending n last-seq writer segment recoverable-tail?)
+    (case (car ending)
+      ((end) (list 'complete last-seq n))
+      ((residual)
+       (let ((at (cadr ending)))
+         (if recoverable-tail?
+             (list 'torn at last-seq)
+             (list 'integrity
+                   (make-log-error 'torn-in-sealed writer segment at
+                                   (list (cons 'bytes (- n at))))
+                   last-seq at))))
+      (else
+       (let ((at (caddr ending)))
+         (list 'integrity
+               (make-log-error (cadr ending) writer segment at (cadddr ending))
+               last-seq at)))))
+
+  ;; The fold from `tr`'s covered offset, by scan-segment-from with the
+  ;; caller's arguments; its outcome is the answer, and what it decoded is
+  ;; added to the transcript. -> (values outcome transcript)
+  (define (transcript-scan tr expect last-seq writer segment recoverable-tail? deliver)
+    (let* ((bv (transcript-bytes tr))
+           (new '())
+           (pending #f)
+           (stopped? #f)
+           (record (lambda (offset seq ts actor deps payload)
+                     (when pending
+                       (set! new (cons (cons (car pending) (cons offset (cdr pending))) new)))
+                     (set! pending (list offset seq ts actor deps payload))
+                     (let ((v (deliver offset seq ts actor deps payload)))
+                       (set! stopped? (eq? v 'stop))
+                       v)))
+           (outcome (scan-segment-from bv (transcript-covered tr) expect last-seq
+                                       writer segment recoverable-tail? record))
+           (at (case (car outcome)
+                 ((complete) (caddr outcome))
+                 ((torn) (cadr outcome))
+                 (else (cadddr outcome)))))
+      (when pending
+        (set! new (cons (cons (car pending) (cons at (cdr pending))) new)))
+      (let ((ending
+              (case (car outcome)
+                ((complete) (and (not stopped?) (list 'end)))
+                ((torn) (list 'residual at))
+                (else
+                 (let ((e (cadr outcome)))
+                   (cond
+                     ((eq? (log-error-kind e) 'torn-in-sealed) (list 'residual at))
+                     ((and (eq? (log-error-kind e) 'seq) (not (caddr outcome))) #f)
+                     (else (list 'error (log-error-kind e) at (log-error-detail e)))))))))
+        (values outcome
+                (make-transcript bv (append (transcript-frames tr) (reverse new))
+                                 (if (and (not ending) (null? new)) (transcript-covered tr) at)
+                                 ending)))))
+
+  ;; Answers two values: what scan-segment answers for the transcript's
+  ;; bytes and these arguments, calling `deliver` as it would; and the
+  ;; transcript, which is a new one when the replay decoded past what the
+  ;; given one covered.
+  (define (replay-scan tr writer segment expected-seq recoverable-tail? deliver)
+    (let replay ((frames (transcript-frames tr)) (last-seq #f) (first? #t))
+      (cond
+        ((pair? frames)
+         (let* ((f (car frames)) (seq (caddr f)))
+           (cond
+             ((and first? expected-seq (not (= seq expected-seq)))
+              (values (list 'integrity
+                            (make-log-error 'seq writer segment (car f)
+                                            (list (cons 'expected expected-seq)
+                                                  (cons 'actual seq)))
+                            #f (car f))
+                      tr))
+             ((eq? 'stop (deliver (car f) seq (list-ref f 3) (list-ref f 4)
+                                  (list-ref f 5) (list-ref f 6)))
+              (values (list 'complete seq (cadr f)) tr))
+             (else (replay (cdr frames) seq #f)))))
+        ((transcript-ending tr)
+         (values (ending-outcome (transcript-ending tr) (bytevector-length (transcript-bytes tr))
+                                 last-seq writer segment recoverable-tail?)
+                 tr))
+        (else
+         (transcript-scan tr (if first? expected-seq (+ last-seq 1)) last-seq
+                          writer segment recoverable-tail? deliver)))))
+
+  ;; A TRANSCRIPT OF BYTES THAT HAVE SINCE GROWN. When `bv` begins with the
+  ;; bytes `tr` was taken from, every line `tr` decoded is a line of `bv` at
+  ;; the same offset, so the fold of `bv` stands where `tr`'s stood before
+  ;; its ending: at the end of the old bytes, at the residual (which the new
+  ;; bytes may have finished), or at the line that ended it in an error
+  ;; (which the resumed fold meets again). The answer covers that far and
+  ;; has no ending; a replay decodes the rest. #f when `bv` does not begin
+  ;; with those bytes.
+  (define (transcript-extend tr bv)
+    (let* ((old (transcript-bytes tr))
+           (n (bytevector-length old)))
+      (and (bytevector? bv)
+           (<= n (bytevector-length bv))
+           (let same ((i 0))
+             (or (= i n)
+                 (and (= (bytevector-u8-ref old i) (bytevector-u8-ref bv i))
+                      (same (+ i 1)))))
+           (make-transcript bv (transcript-frames tr) (transcript-covered tr) #f))))
 
   ;; ---- the snapshot frame --------------------------------------------------
 
