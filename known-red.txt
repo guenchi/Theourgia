@@ -43,3 +43,7 @@ change-stream-guard	^FAIL GUARD-4 .*not-a-reading WANT #t$
 # count stays at two. Green alone and on the development machine. A want that releases on the shell's
 # trace instead of a sleep is a ledger item after the tag.
 daemon-idle	^FAIL W5c inside one ensure attempt the start was retried
+# load-budget (F437 S0, 2026-11-11): LB-1 to LB-4 are ratios of fsyncs, file reads and a socket round trip
+# to an in-process reference; a hosted runner does not share the development machine's disk or scheduler.
+# LB-D (CPU against CPU) and the controls are NOT excused.
+load-budget	^FAIL LB-[1-4] the ratio is within its recorded threshold
