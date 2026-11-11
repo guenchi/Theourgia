@@ -24,7 +24,10 @@
 ;; (crc-field, encoding, padding, parse, shape), is placed at the first, a
 ;; middle and the last record, and each segment says what a scan of it
 ;; answers, so a fixture can check that the corpus is damaged as it claims
-;; before it reasons over it.
+;; before it reasons over it. A record numbered wrongly is wrong only
+;; against the sequence expected of it: with none expected, the first
+;; record's number is taken as given and the scan fails at the second, so
+;; a fixture reads where a witness fails with sequence 1 expected.
 ;;
 ;; Included, not imported: the including file imports (chezscheme),
 ;; (theourgia wire) and (theourgia crc32).

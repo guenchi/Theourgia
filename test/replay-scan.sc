@@ -21,11 +21,12 @@
 ;; and one TAKEN under each expected sequence, recoverable tail and stop of
 ;; the grid below, so that what a take under one argument records is
 ;; replayed under every other), and every combination of writer and
-;; segment, expected sequence (none,
-;; right, wrong), recoverable tail, and a callback stopping at each record
-;; in turn or never: replay-scan of the transcript makes the same callback
-;; calls as scan-segment of the bytes, and answers the same outcome, the
-;; error's every field included.
+;; segment, expected sequence (none, right, wrong), recoverable tail, and
+;; a callback stopping at each record in turn or never: replay-scan of the
+;; transcript makes the same callback calls as scan-segment of the bytes,
+;; and answers the same outcome, the error's every field included; and the
+;; transcript it answers, replayed to its end, IS the whole transcript of
+;; the bytes, whatever that replay answered (a refusal, a stop, an error).
 ;;
 ;; RS-2. For every split of every segment into a prefix and the whole, and
 ;; every transcript of the prefix (those that ended in an error included):
@@ -40,8 +41,15 @@
 ;;
 ;; RS-3. The work, read off the `parse` trace that decode-line emits once
 ;; per line it parses: a transcript taken by a replay stopped at record k
-;; (the first is 1) parses k lines; an extension parses only the lines from
-;; the offset its transcript covers.
+;; (the first is 1) parses k lines; an extension, counted from the call to
+;; transcript-extend to the end of the replay of what it answers, parses
+;; only the lines from the offset its transcript covers.
+;;
+;; WHERE A WITNESS FAILS. Each damage the corpus places at the first, a
+;; middle and the last record fails at the start of that record's line
+;; when the scan expects the corpus's first sequence (1). With no sequence
+;; expected, a record numbered wrongly at the first record is not wrong
+;; until the second; its CONTROL shows that.
 ;;
 ;; THE ERROR IS OPENED, NOT COMPARED BY equal?. A log-error is a record,
 ;; and Chez's equal? compares records by identity, so two errors built
@@ -116,10 +124,15 @@
     (let ((out (scan-segment bv writer segment expected recoverable deliver)))
       (list (opened out) (calls)))))
 
-(define (replay-reading tr writer segment expected recoverable stop-at)
+;; The reading and the transcript the replay answers.
+(define (replay-reading* tr writer segment expected recoverable stop-at)
   (let-values (((deliver calls) (recorder stop-at)))
     (let-values (((out tr*) (replay-scan tr writer segment expected recoverable deliver)))
-      (list (opened out) (calls)))))
+      (values (list (opened out) (calls)) tr*))))
+
+(define (replay-reading tr writer segment expected recoverable stop-at)
+  (let-values (((reading tr*) (replay-reading* tr writer segment expected recoverable stop-at)))
+    reading))
 
 (define (replayed tr stop-at)
   (let-values (((deliver calls) (recorder stop-at)))
@@ -197,6 +210,38 @@
                (list reason (length cs) (for-all (lambda (c) (eq? (scan-reason (cadr c)) reason)) cs))))
            '(crc-field encoding padding parse shape))
       (map (lambda (reason) (list reason 3 #t)) '(crc-field encoding padding parse shape)))
+(define (name-ends? name word)
+  (let ((n (string-length name)) (k (string-length word)))
+    (and (>= n k) (string=? (substring name (- n k) n) word))))
+(define (placed-at name)
+  (cond ((name-ends? name "-first") 1) ((name-ends? name "-middle") 2) ((name-ends? name "-last") 3) (else #f)))
+;; The offset line k (the first is 1) starts at: just after the newline
+;; that ends line k - 1.
+(define (line-start bv k)
+  (let ((n (bytevector-length bv)))
+    (let loop ((i 0) (line 1))
+      (cond ((= line k) i)
+            ((>= i n) #f)
+            ((= 10 (bytevector-u8-ref bv i)) (loop (+ i 1) (+ line 1)))
+            (else (loop (+ i 1) line))))))
+(define (failed-at bv expected)
+  (let ((out (scan-segment bv "w" 1 expected #t (lambda args 'go))))
+    (and (eq? (car out) 'integrity) (log-error-offset (cadr out)))))
+(define placed (filter (lambda (c) (placed-at (car c))) segment-corpus))
+(want "every witness placed at the first, a middle or the last record fails at that record's line, sequence 1 expected"
+      (list (length placed)
+            (filter (lambda (x) x)
+                    (map (lambda (c)
+                           (let ((want-at (line-start (cadr c) (placed-at (car c))))
+                                 (got (failed-at (cadr c) 1)))
+                             (and (not (eqv? got want-at)) (list (car c) 'want want-at 'got got))))
+                         placed)))
+      (list 42 '()))
+(want "CONTROL: with no sequence expected, seq-numbered-wrong-first fails at its second record"
+      (let ((bv (cadr (assoc "seq-numbered-wrong-first" segment-corpus))))
+        (list (failed-at bv #f) (failed-at bv 1) (line-start bv 2)))
+      (let ((bv (cadr (assoc "seq-numbered-wrong-first" segment-corpus))))
+        (list (line-start bv 2) 0 (line-start bv 2))))
 (want "each class is in the corpus"
       (map (lambda (k) (and (memq k (map caddr segment-corpus)) #t))
            '(complete torn crc frame seq))
@@ -212,7 +257,8 @@
 (printf "== RS-1: replay-scan answers what scan-segment answers ==\n")
 (define rs1-compared 0)
 (define (rs1-mismatches name bv)
-  (let ((misses '()))
+  (let ((target (transcript-content (whole (transcript-of bv))))
+        (misses '()))
     (for-each
       (lambda (tr)
         (for-each
@@ -224,13 +270,16 @@
                     (for-each
                       (lambda (stop-at)
                         (set! rs1-compared (+ rs1-compared 1))
-                        (let ((s (scan-reading bv (car ws) (cadr ws) expected recoverable stop-at))
-                              (r (replay-reading tr (car ws) (cadr ws) expected recoverable stop-at)))
-                          (unless (equal? s r)
-                            (set! misses (cons (list 'covered (transcript-covered tr)
-                                                  'expected expected 'recoverable recoverable
-                                                  'stop stop-at 'scan s 'replay r)
-                                            misses)))))
+                        (let ((s (scan-reading bv (car ws) (cadr ws) expected recoverable stop-at)))
+                          (let-values (((r tr*) (replay-reading* tr (car ws) (cadr ws) expected recoverable
+                                                                 stop-at)))
+                            (let ((t (transcript-content (whole tr*))))
+                              (unless (and (equal? s r) (equal? t target))
+                                (set! misses (cons (list 'covered (transcript-covered tr)
+                                                      'expected expected 'recoverable recoverable
+                                                      'stop stop-at 'scan s 'replay r
+                                                      'answered-transcript (equal? t target))
+                                                misses)))))))
                       (stops bv)))
                   '(#t #f)))
               (list #f (first-seq bv) (+ 7 (first-seq bv)))))
@@ -282,14 +331,20 @@
       (lambda (p)
         (for-each
           (lambda (tr)
-            (let ((ext (transcript-extend tr bv))
-                  (errored? (let ((e (transcript-ending tr))) (and e (eq? (car e) 'error)))))
+            ;; ONE TRACE INTERVAL holds the extension and the replay of what
+            ;; it answers, so a parse made by transcript-extend is counted;
+            ;; the other replays come after it (a replay leaves the
+            ;; transcript it was given as it was: a CONTROL below).
+            (let* ((ext #f)
+                   (t #f)
+                   (n (parses (lambda ()
+                                (set! ext (transcript-extend tr bv))
+                                (when ext (set! t (transcript-content (whole ext)))))))
+                   (errored? (let ((e (transcript-ending tr))) (and e (eq? (car e) 'error)))))
               (if (not ext)
                   (set! misses (cons (list 'split p 'covered (transcript-covered tr) 'not-extended) misses))
                   (let* ((a (replay-reading ext "k3m9x2qa" 7 #f #f #f))
                          (b (replay-reading ext "mirrorz9" 1 (first-seq bv) #t 1))
-                         (t #f)
-                         (n (parses (lambda () (set! t (transcript-content (whole ext))))))
                          (want-n (- all-parses (length (transcript-frames tr)))))
                     (set! rs2-extended (+ rs2-extended 1))
                     (when errored? (set! rs2-errored (+ rs2-errored 1)))
