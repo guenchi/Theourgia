@@ -45,6 +45,18 @@
 # more SKIP line, a separate gate, and two rows fewer: 111 on a folding
 # volume, 104 on one that does not fold.
 #
+# A COUNT THAT DEPENDS ON AN OPT-IN IS THE RUN'S WITH THE OPT-IN SET. A
+# standard pass sets every opt-in the development machine can satisfy, and
+# the table holds the count it reads. Five fixtures have such rows:
+# drafts-tools SEED-2 needs THEOURGIA_SEED_STORE (a split mirror of a
+# store); insert-cost's curve (three rows) needs THEOURGIA_INSERT_COST=1;
+# mcp-shell X8 needs THEOURGIA_MCP_X8=1; publish-landing PL-33 needs a
+# writable directory on another volume (THEOURGIA_TEST_OTHER_VOLUME); and
+# eval-lang RT-rust needs rustc on the path. A run without one of them is
+# refused on that fixture's count, beside the SKIP line that says what the
+# row needs. Rows whose need the machine cannot meet (eval-lang RT-go and
+# RT-java, facade-ffi FF-04) are not in the count.
+#
 # EACH LINE SAYS WHICH COLUMN IT IS ABOUT. Both lines begin `row baseline,
 # hashes:` or `row baseline, counts:` so that neither can be read as
 # covering the other. The line that refuses is the one about hashes, and it

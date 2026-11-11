@@ -566,6 +566,22 @@ when a process has exited before a signal was sent to it, which depends on
 timing. A count that differs on those four at a gate is expected and is not
 chased; the md5 and the row count are the columns that refuse.
 
+A row count that depends on an opt-in is the count of a run with the opt-in
+set. A standard pass sets every opt-in the development machine can satisfy:
+`THEOURGIA_BASE_LIBDIR` (the base tree beside its igropyr copy),
+`THEOURGIA_MD_CORPUS_STORE` (the frozen memory copy `ast-spans` names),
+`THEOURGIA_SEED_STORE` (a split mirror of a store, for `drafts-tools` SEED-2),
+`THEOURGIA_INSERT_COST=1` (`insert-cost`'s curve, three rows),
+`THEOURGIA_MCP_X8=1` (`mcp-shell` X8, a 33 s row),
+`THEOURGIA_TEST_OTHER_VOLUME` (a writable directory on another volume, for
+`publish-landing` PL-33), and `rustc` on the path (`eval-lang` RT-rust). A run
+without one of them is refused on that fixture's count, and the fixture's SKIP
+line says what the row needs. Rows whose need the machine cannot meet
+(`eval-lang` RT-go and RT-java, `facade-ffi` FF-04) are not in the count.
+`tree-round-trip` (`THEOURGIA_ROUND_TRIP=1`) runs longer than the runner's
+900 s limit, so a standard pass runs it alone, and the table holds the count
+of its SKIP.
+
 ## Two rows that were green for reasons unrelated to what they assert
 
 Both were found because an unrelated change perturbed the surrounding code, not
