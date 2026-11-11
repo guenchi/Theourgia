@@ -568,19 +568,30 @@ chased; the md5 and the row count are the columns that refuse.
 
 A row count that depends on an opt-in is the count of a run with the opt-in
 set. A standard pass sets every opt-in the development machine can satisfy:
-`THEOURGIA_BASE_LIBDIR` (the base tree beside its igropyr copy),
-`THEOURGIA_MD_CORPUS_STORE` (the frozen memory copy `ast-spans` names),
-`THEOURGIA_SEED_STORE` (a split mirror of a store, for `drafts-tools` SEED-2),
-`THEOURGIA_INSERT_COST=1` (`insert-cost`'s curve, three rows),
-`THEOURGIA_MCP_X8=1` (`mcp-shell` X8, a 33 s row),
-`THEOURGIA_TEST_OTHER_VOLUME` (a writable directory on another volume, for
-`publish-landing` PL-33), and `rustc` on the path (`eval-lang` RT-rust). A run
-without one of them is refused on that fixture's count, and the fixture's SKIP
-line says what the row needs. Rows whose need the machine cannot meet
-(`eval-lang` RT-go and RT-java, `facade-ffi` FF-04) are not in the count.
-`tree-round-trip` (`THEOURGIA_ROUND_TRIP=1`) runs longer than the runner's
-900 s limit, so a standard pass runs it alone, and the table holds the count
-of its SKIP.
+
+- `THEOURGIA_BASE_LIBDIR`, the base tree beside its igropyr copy:
+  `change-stream-guard`, `context-human`, `context-stale`, `liveness`,
+  `liveness-streams` and `outline-rows`;
+- `THEOURGIA_MD_CORPUS_STORE`, the frozen memory copy it names: `ast-spans`;
+- `THEOURGIA_SEED_STORE`, a split mirror of a store: `drafts-tools` SEED-2;
+- `THEOURGIA_INSERT_COST=1`: `insert-cost`'s curve, three rows;
+- `THEOURGIA_MCP_X8=1`: `mcp-shell` X8, a 33 s row;
+- a writable directory on another volume than the test root's: `publish-landing`
+  PL-33, which tries `THEOURGIA_TEST_OTHER_VOLUME`, then `/tmp`, `/dev/shm` and
+  `/var/tmp`, so the variable is needed only where none of those is on another
+  volume (on the development machine none is);
+- `rustc` on the path: `eval-lang` RT-rust (`node` for RT-typescript and `cc`
+  for RT-c are on the path already).
+
+A run in which one of these rows cannot run is refused on that fixture's
+count, and the fixture's own line says what the row needs: a SKIP line, or for
+`outline-rows` a NOTE line. Two kinds of row are not in the count. `eval-lang`
+RT-go and RT-java need a go toolchain and a Java runtime, which the development
+machine does not have installed; installing either adds its row to the run,
+and `eval-lang`'s count in the table moves with it. `facade-ffi` FF-04 runs
+only on FreeBSD. And `tree-round-trip` (`THEOURGIA_ROUND_TRIP=1`) runs longer
+than the runner's 900 s limit, so a standard pass runs it alone, and the
+table's line for it is the skipped run's (0 rows).
 
 ## Two rows that were green for reasons unrelated to what they assert
 

@@ -47,15 +47,15 @@
 #
 # A COUNT THAT DEPENDS ON AN OPT-IN IS THE RUN'S WITH THE OPT-IN SET. A
 # standard pass sets every opt-in the development machine can satisfy, and
-# the table holds the count it reads. Five fixtures have such rows:
-# drafts-tools SEED-2 needs THEOURGIA_SEED_STORE (a split mirror of a
-# store); insert-cost's curve (three rows) needs THEOURGIA_INSERT_COST=1;
-# mcp-shell X8 needs THEOURGIA_MCP_X8=1; publish-landing PL-33 needs a
-# writable directory on another volume (THEOURGIA_TEST_OTHER_VOLUME); and
-# eval-lang RT-rust needs rustc on the path. A run without one of them is
-# refused on that fixture's count, beside the SKIP line that says what the
-# row needs. Rows whose need the machine cannot meet (eval-lang RT-go and
-# RT-java, facade-ffi FF-04) are not in the count.
+# the table holds the count it reads. A run in which such a row cannot run
+# is refused on that fixture's count, and the fixture's own line says what
+# the row needs: a SKIP line, or for outline-rows a NOTE line. The opt-ins,
+# the rows each one gates, and the rows that are not in the count at all
+# are listed once, in test/RUN.md's section "Rows are counted, and the
+# count is compared against a reading". One line in the table is not a run
+# with its opt-in set: tree-round-trip runs past the runner's per-fixture
+# limit, so its line is the run without THEOURGIA_ROUND_TRIP (0 rows), and
+# a standard pass runs it alone.
 #
 # EACH LINE SAYS WHICH COLUMN IT IS ABOUT. Both lines begin `row baseline,
 # hashes:` or `row baseline, counts:` so that neither can be read as
