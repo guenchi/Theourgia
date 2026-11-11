@@ -68,11 +68,19 @@
 ;; ROUNDS (THEOURGIA_LOAD_BUDGET_ROUNDS, 5 unless set) is how many times
 ;; each arm runs; each run of an arm is preceded by one of the reference.
 ;;
-;; EACH TIMED ANSWER IS CHECKED. An arm that answered an error fast would
-;; read as a fast arm, so every answer is kept and LB-0 asserts that each
-;; one is what the operation should answer.
+;; EACH TIMED ANSWER IS CHECKED. An arm that answered an error, or the
+;; wrong thing, fast would read as a fast arm, so every answer is kept and
+;; LB-0 judges each after the rounds, outside the timed intervals: a read's
+;; block and version, a read at the old cut's cut, an insert's one new block
+;; holding the title it was given. Its NEGATIVE shows the judge flags a read
+;; at the present cut and an insert whose block lacks its title.
+;;
+;; AND IT LEAVES NOTHING. The daemons are owned from their spawn and stopped
+;; by pid with a bounded wait on every way out, and H-1 asserts that they,
+;; the scratch and the socket directory are gone.
 ;;
 ;; ENVIRONMENT READ: THEOURGIA_TEST_ROOT (where the stores go),
+;; THEOURGIA_TEST_SOCK (where the daemons' sockets go),
 ;; THEOURGIA_LOAD_BUDGET_RECORDS, THEOURGIA_LOAD_BUDGET_ROUNDS,
 ;; CHEZSCHEMELIBDIRS and CHEZSCHEMELIBEXTS (passed to the imports' children
 ;; and to the daemons). THEOURGIA_HOME is SET to a directory under the root.
@@ -113,7 +121,7 @@
     (lb-1 . #e6.73) (lb-2 . #e4.32) (lb-3 . #e4.52) (lb-4 . #e4.31) (lb-d . #e1.87)
     (readings (lb-1 5.834 5.854 5.776) (lb-2 3.726 3.754 3.722) (lb-3 3.876 3.932 3.894)
               (lb-4 3.714 3.744 3.639) (lb-d 1.628 1.623 1.609))
-    (reference-sha256 . "621cc82a6c8d4f5ce4f9601e4fee9acf51b5296334974e8a0f3eabb8ef4764e6")
+    (reference-sha256 . "a77e68214614c2389ceee422bdb2aa49c9f17323ce579fb3c61d5fcbe8be3d73")
     (reference-lines . 164)))
 (define (record-ref key) (cdr (assq key load-budget-record)))
 (define judged '(lb-1 lb-2 lb-3 lb-4 lb-d))
@@ -139,15 +147,26 @@
   (string-append (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                    (if (and (string? v) (> (string-length v) 0)) v "/tmp"))
                  "/load-budget-" pid-text))
-(define (socket-of name) (string-append "/tmp/lb-" pid-text "-" name ".sock"))
-(system (string-append "rm -rf '" root "' '" (socket-of "served") "' '" (socket-of "twin")
-                       "'; mkdir -p '" root "/home'"))
+;; THE SOCKETS IN A DIRECTORY OF THEIR OWN, under THEOURGIA_TEST_SOCK
+;; (which the runner keeps short enough for a socket's path; /tmp only
+;; when the file runs alone). A daemon keeps a lock file beside its socket
+;; for as long as the path exists, so the directory, not the socket, is
+;; what this file owns and removes.
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-dir (string-append socket-base "/lb-" pid-text))
+(define (socket-of name) (string-append socket-dir "/" name ".sock"))
+(system (string-append "rm -rf '" root "' '" socket-dir "'; mkdir -p '" root "/home' '" socket-dir "'"))
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 (include "load-budget-store.ss")
 
 (define (file-text path)
   (if (file-exists? path) (let ((t (call-with-input-file path get-string-all))) (if (string? t) t "")) ""))
+(define (trimmed s)
+  (let loop ((e (string-length s)))
+    (if (and (> e 0) (char-whitespace? (string-ref s (- e 1)))) (loop (- e 1)) (substring s 0 e))))
 
 ;; ---- the reference, loaded and read ---------------------------------------------
 ;;
@@ -185,18 +204,43 @@
 ;;
 ;; Product daemons: no injection build, no trace. THEOURGIA_PROBE=off only
 ;; keeps the once-a-second probe from refolding between the timed requests.
-;; -> (name store socket pid), once its socket and pid file exist.
+;;
+;; OWNED FROM THE SPAWN. The shell that starts a daemon writes its own pid
+;; and then execs scheme in its place, so the pid is the daemon's before
+;; the daemon has done anything, and the daemon is registered then: one
+;; that never becomes ready is still stopped. Stopping is a SIGTERM, then
+;; a wait for the process to be gone (a daemon drains on SIGTERM and exits
+;; later), then SIGKILL if it is still there after ten seconds. Every way
+;; out of this file -- the end, a row that raised, a daemon that never
+;; started -- goes through `cleanup!`, which removes the scratch and the
+;; socket directory only after the daemons are gone.
+;; -> (name store socket pid)
 (define daemons '())
+(define (alive? pid) (zero? (system (string-append "kill -0 " (number->string pid) " 2>/dev/null"))))
+(define (await-exit pid ms)
+  (let wait ((left ms))
+    (cond ((not (alive? pid)) #t)
+          ((<= left 0) #f)
+          (else (sleep-ms 100) (wait (- left 100))))))
+(define stopped-pids '())
 (define (stop-daemons!)
   (for-each (lambda (d)
-              (when (cadddr d)
-                (system (string-append "kill " (number->string (cadddr d)) " 2>/dev/null"))))
+              (let ((pid (cadddr d)))
+                (system (string-append "kill " (number->string pid) " 2>/dev/null"))
+                (unless (await-exit pid 10000)
+                  (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null"))
+                  (await-exit pid 5000))
+                (set! stopped-pids (cons pid stopped-pids))))
             daemons)
   (set! daemons '()))
+(define (cleanup!)
+  (stop-daemons!)
+  (system (string-append "rm -rf '" root "' '" socket-dir "'")))
 (define (start-daemon! name store)
   (let ((runner (string-append root "/daemon-" name ".ss"))
         (pidfile (string-append root "/daemon-" name ".pid"))
         (log (string-append root "/daemon-" name ".log"))
+        (spawnfile (string-append root "/daemon-" name ".spawn"))
         (socket-path (socket-of name)))
     (call-with-output-file runner
       (lambda (port)
@@ -208,18 +252,24 @@
       'replace)
     (system (string-append "env THEOURGIA_PROBE=off CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
-                           " sh -c 'scheme --script " runner " > " log " 2>&1' &"))
-    (let up ((k 0))
-      (cond ((and (file-exists? socket-path) (file-exists? pidfile)
-                  (string->number (file-text pidfile)))
-             (let ((d (list name store socket-path (string->number (file-text pidfile)))))
-               (set! daemons (cons d daemons))
-               d))
-            ((> k 1200)
-             (printf "NOT A READING: the daemon ~a never created its socket in 60 s~%~a~%" name (file-text log))
-             (stop-daemons!)
-             (exit 2))
-            (else (sleep-ms 50) (up (+ k 1)))))))
+                           " sh -c 'echo $$ > " spawnfile "; exec scheme --script " runner " > " log " 2>&1' &"))
+    (let ((pid (let wait ((k 0))
+                 (let ((n (string->number (trimmed (file-text spawnfile)))))
+                   (cond (n n)
+                         ((> k 100)
+                          (printf "NOT A READING: the daemon ~a's shell wrote no pid in 5 s~%" name)
+                          (cleanup!)
+                          (exit 2))
+                         (else (sleep-ms 50) (wait (+ k 1))))))))
+      (let ((d (list name store socket-path pid)))
+        (set! daemons (cons d daemons))
+        (let up ((k 0))
+          (cond ((and (file-exists? socket-path) (file-exists? pidfile)) d)
+                ((> k 1200)
+                 (printf "NOT A READING: the daemon ~a never created its socket in 60 s~%~a~%" name (file-text log))
+                 (cleanup!)
+                 (exit 2))
+                (else (sleep-ms 50) (up (+ k 1)))))))))
 
 (define (line-complete? bv)
   (let loop ((i 0))
@@ -272,6 +322,8 @@
 (define (r3 x) (/ (round (* 1000 x)) 1000))
 
 (define (answer-ok? a) (and (pair? a) (eq? (car a) 'ok)))
+(define (answer-clause key a)
+  (and (answer-ok? a) (let ((hit (assq key (filter pair? (cdr a))))) (and hit (cadr hit)))))
 
 ;; Each arm run ROUNDS times, each run preceded by one of the reference.
 ;; -> (values ref-samples ((arm . samples) ...)), samples in run order.
@@ -297,7 +349,7 @@
                (printf "FAIL a row raised outside its check: ")
                (display-condition c)
                (newline)
-               (stop-daemons!)
+               (cleanup!)
                (printf "rows: ~a~%~a failures~%" rows bad)
                (exit 1)))
       (printf "== the reference arm imports nothing of the tree, and is the recorded one ==~%")
@@ -343,7 +395,11 @@
              (sizes (map bytevector-length bytes))
              (block (string-append writer ".1"))
              (served-block (string-append served-writer ".1"))
-             (old-cut (format "((~s . ~a))" served-writer (div records 2))))
+             (old-cut-list (list (cons served-writer (div records 2))))
+             (old-cut (format "((~s . ~a))" served-writer (div records 2)))
+             (local-read (rpc-dispatch local (list 'read block) "tester"))
+             (twin-read (rpc-dispatch twin (list 'read block) "tester"))
+             (served-read (rpc-dispatch served (list 'read served-block) "tester")))
         (printf "generator: files ~a ms, import ~a ms, second import ~a ms, twin ~a ms; ~a segments, ~a bytes~%"
                 (cdr (assq 'files gen-ms)) (cdr (assq 'import gen-ms)) (cdr (assq 'served gen-ms))
                 (cdr (assq 'twin gen-ms)) segments (apply + sizes))
@@ -356,11 +412,9 @@
         (want "G-3 the twin lists every segment in the mirrored writer's manifest"
               (map car (or (read-manifest twin writer) '()))
               (map (lambda (i) (+ i 1)) (iota segments)))
-        (let ((a (rpc-dispatch local (list 'read block) "tester"))
-              (b (rpc-dispatch twin (list 'read block) "tester")))
-          (want "G-4 a read of the first block answers ok, and the same, from the store and from its twin"
-                (list (answer-ok? a) (equal? a b))
-                '(#t #t)))
+        (want "G-4 a read of the first block answers ok, and the same, from the store and from its twin"
+              (list (answer-ok? local-read) (equal? local-read twin-read))
+              '(#t #t))
         (want "R-3 the reference reads every line of the store whole"
               (reference-decode-all bytes)
               records)
@@ -372,17 +426,27 @@
                (twin-start-ms (- (real-time) t-twin)))
           (printf "the second daemon (the twin's) started and answered its first request in ~a ms~%" twin-start-ms)
           (want "G-5 both daemons answer" (list (answer-ok? warm-served) (answer-ok? warm-twin)) '(#t #t))
+          ;; EVERY ANSWER IS KEPT with what it should be, and judged after the
+          ;; rounds, outside every timed interval (LB-0): a read's block and
+          ;; version are the ones read before the rounds, and a read at the old
+          ;; cut answers that cut; an insert names one new block of its store,
+          ;; and that block holds the title it was given when its store is read
+          ;; after the daemons have stopped.
           (let* ((answers '())
-                 (keep! (lambda (arm a) (set! answers (cons (cons arm a) answers)) a))
+                 (keep! (lambda (arm a . title)
+                          (set! answers (cons (list arm a (and (pair? title) (car title))) answers))
+                          a))
                  (k 0)
                  (title (lambda (arm) (set! k (+ k 1)) (format "~a ~a" arm k)))
+                 (insert-into (lambda (arm send)
+                                (let ((t (title arm))) (keep! arm (send t) t))))
                  (ops
                    (list
                      (cons 'lb-1 (lambda () (keep! 'lb-1 (rpc-dispatch twin (list 'read block) "tester"))))
                      (cons 'lb-1l (lambda () (keep! 'lb-1l (rpc-dispatch local (list 'read block) "tester"))))
-                     (cons 'lb-2 (lambda () (keep! 'lb-2 (rpc-dispatch local (list 'insert "--title" (title 'lb-2)) "tester"))))
-                     (cons 'lb-3 (lambda () (keep! 'lb-3 (ask d-served 'insert "--title" (title 'lb-3)))))
-                     (cons 'lb-3t (lambda () (keep! 'lb-3t (ask d-twin 'insert "--title" (title 'lb-3t)))))
+                     (cons 'lb-2 (lambda () (insert-into 'lb-2 (lambda (t) (rpc-dispatch local (list 'insert "--title" t) "tester")))))
+                     (cons 'lb-3 (lambda () (insert-into 'lb-3 (lambda (t) (ask d-served 'insert "--title" t)))))
+                     (cons 'lb-3t (lambda () (insert-into 'lb-3t (lambda (t) (ask d-twin 'insert "--title" t)))))
                      (cons 'lb-4 (lambda () (keep! 'lb-4 (ask d-served 'read served-block "--cut" old-cut))))
                      (cons 'lb-d (lambda () (keep! 'lb-d (if (= records (lines-decoded bytes)) '(ok) '(short)))))))
                  (doubled
@@ -393,9 +457,48 @@
             (let-values (((ref samples) (run-rounds ops rounds bytes)))
               (let-values (((cref csamples) (run-rounds doubled control-rounds bytes)))
                 (stop-daemons!)
-                (want "LB-0 every timed operation answered ok"
-                      (filter (lambda (p) (not (answer-ok? (cdr p)))) answers)
-                      '())
+                (let* ((titles (lambda (store)
+                                 (let ((o (rpc-dispatch store '(outline) "tester")))
+                                   (map (lambda (row) (cons (list-ref row 1) (list-ref row 5)))
+                                        (let ((hit (and (answer-ok? o) (assq 'rows (filter pair? (cdr o))))))
+                                          (if hit (cdr hit) '()))))))
+                       (by-store (list (cons 'lb-2 (titles local)) (cons 'lb-3 (titles served))
+                                       (cons 'lb-3t (titles twin))))
+                       (core (lambda (a) (and (answer-ok? a) (list (cadr a) (answer-clause 'version a)))))
+                       (wrong
+                         (lambda (e)
+                           (let ((arm (car e)) (a (cadr e)) (t (caddr e)))
+                             (case arm
+                               ((lb-1 lb-1l)
+                                (and (not (equal? (core a) (core local-read))) 'not-the-block-read-before))
+                               ((lb-4)
+                                (cond ((not (equal? (core a) (core served-read))) 'not-the-block-read-before)
+                                      ((not (equal? (answer-clause 'cut a) old-cut-list))
+                                       (list 'cut (answer-clause 'cut a)))
+                                      (else #f)))
+                               ((lb-2 lb-3 lb-3t)
+                                (let ((new (answer-clause 'state a)))
+                                  (cond ((not (and (list? new) (= 1 (length new))))
+                                         (list 'not-one-new-block new))
+                                        ((not (equal? (cdr (or (assoc (caar new) (cdr (assq arm by-store)))
+                                                               '(#f . #f)))
+                                                      t))
+                                         (list 'not-holding-its-title (caar new) t))
+                                        (else #f))))
+                               (else (and (not (answer-ok? a)) 'not-ok)))))))
+                  (want "LB-0 every timed operation answered what it should, judged after the rounds"
+                        (filter (lambda (x) x)
+                                (map (lambda (e) (let ((w (wrong e))) (and w (list (car e) w)))) answers))
+                        '())
+                  (want "LB-0 CONTROL: the old cut is not the served store's present cut"
+                        (equal? (answer-clause 'cut served-read) old-cut-list)
+                        #f)
+                  (want "LB-0 NEGATIVE: the judge flags a read at the present cut, and an insert whose block lacks its title"
+                        (let ((an-insert (find (lambda (e) (eq? (car e) 'lb-2)) answers)))
+                          (map (lambda (e) (and (wrong e) #t))
+                               (list (list 'lb-4 served-read #f)
+                                     (list 'lb-2 (cadr an-insert) "not the title it was given"))))
+                        '(#t #t)))
                 (let ((ref-min (minimum ref)) (cref-min (minimum cref)))
                   (printf "reference: min ~a ms, median ~a ms, max ~a ms over ~a~%"
                           (ms ref-min) (ms (median ref)) (ms (apply max ref)) (length ref))
@@ -422,6 +525,9 @@
                             (judge arm (/ (minimum (cdr (assq arm csamples))) cref-min))
                             'over))
                     judged)))))))
-      (system (string-append "rm -rf '" root "' '" (socket-of "served") "' '" (socket-of "twin") "'"))
+      (cleanup!)
+      (want "H-1 every daemon this run started is gone, and so are its scratch and its socket directory"
+            (list (filter alive? stopped-pids) (file-exists? root) (file-exists? socket-dir) (length stopped-pids))
+            (list '() #f #f 2))
       (printf "~%~a failures~%rows: ~a~%load-budget complete~%" bad rows)
       (exit (if (zero? bad) 0 1)))))

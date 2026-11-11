@@ -24,8 +24,8 @@
 ;;
 ;; A `.ss` file: the fixture runner takes *.sc and *.py, so this is never
 ;; run as a fixture. load-budget.sc loads it and reads its procedure from
-;; the library's own environment; its import form, its size and its md5
-;; are pinned there.
+;; the library's own environment; its import form, its size and its
+;; sha256 are pinned there.
 ;;
 ;;   (reference-decode-all <list of segment bytevectors>) -> how many lines
 ;;   it read whole: the checksum agreed and the datum is a five-element list
