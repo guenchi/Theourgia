@@ -149,8 +149,11 @@
             (map (lambda (k) (replayed t0 k)) (iota n))
             (list (whole t0)))))
 
+;; Every field, the bytes included: a transcript whose frames, covered and
+;; ending are right over other bytes is a wrong transcript (an extension
+;; compares those bytes, and a replay never decodes the covered ones).
 (define (transcript-content tr)
-  (list (transcript-frames tr) (transcript-covered tr) (transcript-ending tr)))
+  (list (transcript-bytes tr) (transcript-frames tr) (transcript-covered tr) (transcript-ending tr)))
 
 (define writers '(("k3m9x2qa" 7) ("mirrorz9" 1)))
 
