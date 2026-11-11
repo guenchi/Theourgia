@@ -17,8 +17,11 @@
 ;; scan-segment itself.
 ;;
 ;; RS-1. Over every segment of the corpus (segment-corpus.ss), every
-;; transcript of it (none decoded yet, stopped after each record, whole),
-;; and every combination of writer and segment, expected sequence (none,
+;; transcript of it (none decoded yet, stopped after each record, whole,
+;; and one TAKEN under each expected sequence, recoverable tail and stop of
+;; the grid below, so that what a take under one argument records is
+;; replayed under every other), and every combination of writer and
+;; segment, expected sequence (none,
 ;; right, wrong), recoverable tail, and a callback stopping at each record
 ;; in turn or never: replay-scan of the transcript makes the same callback
 ;; calls as scan-segment of the bytes, and answers the same outcome, the
@@ -145,6 +148,29 @@
 
 (define (stops bv) (cons #f (iota (records-of bv))))
 
+;; TRANSCRIPTS TAKEN UNDER EVERY ARGUMENT, not only under the one set
+;; `transcripts` uses: a load takes a transcript with the expected
+;; sequence it has and, for a sealed segment, with no recoverable tail,
+;; and what such a take records (a sealed residual, a first-record
+;; sequence error that is the caller's) must replay right under every
+;; other argument. One per expected sequence (none, right, wrong),
+;; recoverable tail and stop of RS-1's grid, all under the first writer
+;; and segment: a transcript records neither.
+(define (taken-transcripts bv)
+  (apply append
+    (map (lambda (expected)
+           (apply append
+             (map (lambda (recoverable)
+                    (map (lambda (stop-at)
+                           (let-values (((deliver calls) (recorder stop-at)))
+                             (let-values (((out tr) (replay-scan (transcript-of bv) (car (car writers))
+                                                                 (cadr (car writers)) expected
+                                                                 recoverable deliver)))
+                               tr)))
+                         (stops bv)))
+                  '(#t #f))))
+         (list #f (first-seq bv) (+ 7 (first-seq bv))))))
+
 (printf "== CONTROL: the corpus is damaged as it says ==\n")
 (define (scan-class bv)
   (let ((out (scan-segment bv "w" 1 #f #t (lambda args 'go))))
@@ -209,7 +235,7 @@
                   '(#t #f)))
               (list #f (first-seq bv) (+ 7 (first-seq bv)))))
           writers))
-      (transcripts bv))
+      (append (transcripts bv) (taken-transcripts bv)))
     (let ((n (length misses)))
       (if (zero? n) '() (list n (car (reverse misses)))))))
 
