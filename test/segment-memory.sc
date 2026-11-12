@@ -1,0 +1,269 @@
+#!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; THE MEMORY OF A LOAD. A load asks a memory for the three pure
+;; computations on a segment's bytes -- the scan, the digest and the edge
+;; sequences -- and a memory answers what those answer for the same bytes,
+;; from what it remembers when the bytes are the ones it remembers. These
+;; rows hold it to that on stores small enough to count:
+;;
+;;   SM-1  a cold read decodes each record once, and a manifest-listed
+;;         segment of n records n + 2 times (its first and last lines are
+;;         decoded again for the range the manifest declares); the
+;;         callers of discover-prefix that are not loads remember nothing
+;;   SM-3  bytes that changed between two loads handed one memory are
+;;         answered as a load with no memory answers them: a middle
+;;         segment damaged, a listed segment replaced at the same length;
+;;         and bytes that grew are decoded only past what was remembered
+;;
+;; The counts are read from the trace: one `parse` per line decoded, and
+;; one `memory` event per segment a load's memory scans, naming the phase,
+;; the segment, how it was answered and how many frames it handed on.
+(import (chezscheme) (theourgia log) (theourgia trace) (theourgia reduce)
+        (theourgia store) (theourgia wire)
+        (only (theourgia digest) sha256 bytevector->hex))
+
+(define bad 0)
+(define rows-run 0)
+(define (want-1 label got expect)
+  (let ((ok (equal? got expect)))
+    (unless ok (set! bad (+ bad 1)))
+    (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
+            (if ok "" (format "   WANT ~s" expect)))))
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define root
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+(define (test-dir name)
+  (let ((path (string-append root "/" name "-" (number->string (get-process-id)))))
+    (unless (eqv? 0 (system (string-append "rm -rf '" path "' '" path "-home' && mkdir -p '" path "'")))
+      (assertion-violation 'test-dir "could not prepare the scratch directory" path))
+    path))
+
+(define W "wwwm4k2a")
+(define M "mmmn5r7b")
+
+(define (put! path bv)
+  (call-with-port (open-file-output-port path (file-options no-fail))
+    (lambda (p) (put-bytevector p bv))))
+(define (cat . bs)
+  (let* ((n (apply + (map bytevector-length bs))) (o (make-bytevector n)))
+    (let loop ((bs bs) (i 0))
+      (if (null? bs)
+          o
+          (begin (bytevector-copy! (car bs) 0 o i (bytevector-length (car bs)))
+                 (loop (cdr bs) (+ i (bytevector-length (car bs)))))))))
+(define (record w seq)
+  (encode-record seq (+ 1757300000000 seq) "agent:claude" '()
+                 (storable-encode (list 'put (list (cons 'kind 'section)
+                                                   (cons 'title (format "~a-~a" w seq)))))))
+(define (records w from to)
+  (apply cat (map (lambda (k) (record w k)) (iota* from to))))
+(define (iota* from to)
+  (if (> from to) '() (cons from (iota* (+ from 1) to))))
+(define (segment-path dir w n) (string-append dir "/writers/" w "/" (segment-file-name n)))
+
+;; THE LOCAL WRITER W HOLDS 8 RECORDS IN THREE SEGMENTS (1-3, 4-6, 7-8);
+;; with MIRROR?, the mirrored writer M holds 4 in one segment that its
+;; manifest lists, with the segment's hash and the range it holds.
+(define (build! dir mirror?)
+  (system (string-append "rm -rf '" dir "' '" dir "-home'; mkdir -p '" dir "/writers/" W "' '"
+                         dir "/writers/" M "' '" dir "/snap'"))
+  (put! (string-append dir "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
+  (put! (string-append dir "/lock") (make-bytevector 0))
+  (put! (string-append dir "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
+  (putenv "THEOURGIA_HOME" (string-append dir "-home"))
+  (let ((n (instance-install! dir))) (owner-install! dir W n))
+  (put! (segment-path dir W 1) (records W 1 3))
+  (put! (segment-path dir W 2) (records W 4 6))
+  (put! (segment-path dir W 3) (records W 7 8))
+  (if mirror?
+      (let ((seg (records M 1 4)))
+        (put! (segment-path dir M 1) seg)
+        (write-manifest! dir M (list (list 1 (bytevector->hex (sha256 seg)) 1 4))))
+      (system (string-append "rm -rf '" dir "/writers/" M "'")))
+  dir)
+
+(define (traced thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-error-port p))
+      (trace-enable! #t)
+      (guard (e (#t (trace-enable! #f) (raise e))) (thunk))
+      (trace-enable! #f))
+    (get-output-string p)))
+(define (lines-of text)
+  (let ((n (string-length text)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (cond ((>= i n) (reverse (if (> i start) (cons (substring text start i) acc) acc)))
+            ((char=? (string-ref text i) #\newline)
+             (loop (+ i 1) (+ i 1) (cons (substring text start i) acc)))
+            (else (loop (+ i 1) start acc))))))
+(define (has-prefix? s p)
+  (and (>= (string-length s) (string-length p))
+       (string=? (substring s 0 (string-length p)) p)))
+(define (parses text)
+  (length (filter (lambda (l) (has-prefix? l "(trace parse")) (lines-of text))))
+;; the memory events of a trace, each as (phase writer segment how frames)
+(define (memory-events text)
+  (map (lambda (l)
+         (let ((d (read (open-string-input-port l))))
+           (let ((s (caddr d)))
+             (list (car s) (symbol->string (cadr s)) (caddr s) (cadddr s) (cadddr d)))))
+       (filter (lambda (l) (has-prefix? l "(trace memory ")) (lines-of text))))
+
+;; A whole load: the records it delivered, (writer . seq) in order.
+(define (load! dir memory)
+  (let* ((ls (if memory (log-open-with-memory dir memory) (log-open dir)))
+         (got '()))
+    (load-deliver! ls '() (lambda (w seg off seq ts actor deps payload)
+                            (set! got (cons (cons w seq) got))))
+    (load-commit! ls)
+    (reverse got)))
+(define (all-of w from to) (map (lambda (k) (cons w k)) (iota* from to)))
+
+;; what a discovery says about where a writer stops and why
+(define (extent p)
+  (list (discovery-end-seq p)
+        (map (lambda (e) (list (log-error-kind e) (log-error-segment e) (log-error-offset e)))
+             (discovery-integrity p))))
+
+;; =============================================================================
+(printf "== SM-1: a cold read decodes each record once ==\n")
+(define local (build! (test-dir "segmem-local") #f))
+(define twin (build! (test-dir "segmem-twin") #t))
+
+(let* ((got #f)
+       (text (traced (lambda () (set! got (load! local #f))))))
+  (want "SM-1 CONTROL: the cold read of the local store delivers its 8 records in order"
+        got (all-of W 1 8))
+  (want "SM-1 a cold read of a store with no listed segment parses each record once (8 records; base 16)"
+        (parses text) 8)
+  (want "SM-1 its memory events: validation scans each segment, delivery replays it, handing on each segment's records"
+        (memory-events text)
+        (list (list 'validation W 1 'scanned 3) (list 'validation W 2 'scanned 3)
+              (list 'validation W 3 'scanned 2)
+              (list 'delivery W 1 'replayed 3) (list 'delivery W 2 'replayed 3)
+              (list 'delivery W 3 'replayed 2))))
+
+(let* ((got #f)
+       (text (traced (lambda () (set! got (load! twin #f))))))
+  (want "SM-1 CONTROL: the cold read of the twin delivers M's 4 records and W's 8"
+        (list (filter (lambda (e) (string=? (car e) M)) got)
+              (filter (lambda (e) (string=? (car e) W)) got))
+        (list (all-of M 1 4) (all-of W 1 8)))
+  (want "SM-1 with one listed segment of 4 records, that segment parses 4 + 2 (base 10), the local writer 8 (base 16)"
+        (parses text) 14)
+  (want "SM-1 the listed segment is scanned once, by validation, and replayed by delivery"
+        (filter (lambda (e) (string=? (cadr e) M)) (memory-events text))
+        (list (list 'validation M 1 'scanned 4) (list 'delivery M 1 'replayed 4))))
+
+;; THE CALLERS OF discover-prefix THAT ARE NOT LOADS are handed the memory
+;; that remembers nothing: each call decodes what it decoded before, and
+;; no memory event is traced.
+(let ((text (traced (lambda ()
+                      (discover-prefix twin W 'shared)
+                      (discover-prefix twin W 'shared)
+                      (discover-prefix twin M 'shared)))))
+  (want "SM-1 discover-prefix outside a load remembers nothing: two calls on W parse 8 each, one on M 4 + 2, no memory event"
+        (list (parses text) (length (memory-events text)))
+        (list 22 0)))
+
+;; =============================================================================
+(printf "== SM-3: what changed between two loads is answered as a load with no memory answers it ==\n")
+;; A MIDDLE SEGMENT DAMAGED BETWEEN TWO DISCOVERIES HANDED ONE MEMORY: the
+;; memory remembers it undamaged, and the second must cut W where a
+;; discovery with no memory cuts it. One byte of record 5's title is
+;; changed, the length kept, so the file reads, its checksum fails at
+;; record 5, and W stops at 4.
+(define (flip-at! path i)
+  (let ((bv (call-with-port (open-file-input-port path) get-bytevector-all)))
+    (bytevector-u8-set! bv i (if (= 65 (bytevector-u8-ref bv i)) 66 65))
+    (put! path bv)))
+(define (title-offset bv w seq)
+  (let ((needle (string->utf8 (format "~a-~a" w seq))))
+    (let loop ((i 0))
+      (cond ((> (+ i (bytevector-length needle)) (bytevector-length bv)) #f)
+            ((let same ((k 0))
+               (or (= k (bytevector-length needle))
+                   (and (= (bytevector-u8-ref bv (+ i k)) (bytevector-u8-ref needle k))
+                        (same (+ k 1)))))
+             i)
+            (else (loop (+ i 1)))))))
+
+(let* ((dir (build! (test-dir "segmem-damage") #f))
+       (memory (make-load-memory))
+       (before (extent (discover-prefix dir W 'shared memory)))
+       (path (segment-path dir W 2))
+       (_ (flip-at! path (title-offset (call-with-port (open-file-input-port path) get-bytevector-all) W 5)))
+       (after (extent (discover-prefix dir W 'shared memory)))
+       (base (extent (discover-prefix dir W 'shared))))
+  (want "SM-3 CONTROL: undamaged, W reaches 8 with no note"
+        before (list 8 '()))
+  (want "SM-3 a middle segment damaged between two discoveries handed one memory is cut where a discovery with no memory cuts it"
+        (list (equal? after base) after)
+        (list #t (list 4 (list (list 'crc 2 (bytevector-length (record W 4))))))))
+
+;; A LISTED SEGMENT REPLACED AT THE SAME LENGTH: the manifest still names
+;; the old bytes' hash, so the segment is excluded, and a digest answered
+;; from what the memory remembers would wrongly agree with the manifest.
+(let* ((dir (build! (test-dir "segmem-replace") #t))
+       (memory (make-load-memory))
+       (before (extent (discover-prefix dir M 'shared memory)))
+       (path (segment-path dir M 1))
+       (_ (flip-at! path (title-offset (call-with-port (open-file-input-port path) get-bytevector-all) M 2)))
+       (after (extent (discover-prefix dir M 'shared memory)))
+       (base (extent (discover-prefix dir M 'shared))))
+  (want "SM-3 CONTROL: as published, M reaches 4 with no note"
+        before (list 4 '()))
+  (want "SM-3 a listed segment replaced at its length between two discoveries handed one memory fails the manifest's hash as with no memory"
+        (list (equal? after base) after)
+        (list #t (list 0 (list (list 'manifest-hash 1 0))))))
+
+;; BYTES THAT GREW: W's highest segment gains record 9 between two loads
+;; handed one memory. The second decodes only the appended line, and
+;; delivers what a load with no memory delivers.
+(let* ((dir (build! (test-dir "segmem-grow") #f))
+       (memory (make-load-memory))
+       (first (load! dir memory))
+       (_ (put! (segment-path dir W 3) (cat (records W 7 8) (record W 9))))
+       (second #f)
+       (text (traced (lambda () (set! second (load! dir memory))))))
+  (want "SM-3 CONTROL: the first load delivered 8 records"
+        first (all-of W 1 8))
+  (want "SM-3 a highest segment grown between two loads handed one memory delivers what a load with no memory delivers"
+        (list (equal? second (load! dir #f)) (length second))
+        (list #t 9))
+  (want "SM-3 and decodes only the appended line: the sealed segments are replayed, the grown one extended"
+        (list (parses text) (memory-events text))
+        (list 1 (list (list 'validation W 1 'replayed 3) (list 'validation W 2 'replayed 3)
+                      (list 'validation W 3 'extended 3)
+                      (list 'delivery W 1 'replayed 3) (list 'delivery W 2 'replayed 3)
+                      (list 'delivery W 3 'replayed 3)))))
+
+(printf "\n~a failures\nrows: ~a\nsegment-memory complete\n" bad rows-run)
+(exit (if (= bad 0) 0 1))

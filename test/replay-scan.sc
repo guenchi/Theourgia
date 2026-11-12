@@ -387,6 +387,23 @@
               (transcript-extend tr (corpus-take corpus-fx3 10))
               (and (transcript-extend tr corpus-fx3) #t)))
       '(#f #f #t))
+;; THE PREFIX TEST COMPARES WORDS, then the bytes after the last whole
+;; word, so it is asked at every remainder of the old length by four: for
+;; old bytes of 40 to 43 bytes, the longer bytes extend; a byte changed
+;; at the old bytes' last, in the partial word when there is one, or at
+;; the last byte of the last whole word, refuses; one changed just past
+;; the old bytes does not.
+(want "RS-2 the prefix test at every remainder by four: longer bytes extend, a change in the last partial or last whole word refuses, one past the old bytes does not"
+      (map (lambda (n)
+             (let ((tr (transcript-of (corpus-take corpus-fx3 n)))
+                   (w (- n (mod n 4))))
+               (list (mod n 4)
+                     (and (transcript-extend tr corpus-fx3) #t)
+                     (transcript-extend tr (corpus-flip corpus-fx3 (- n 1)))
+                     (transcript-extend tr (corpus-flip corpus-fx3 (- w 1)))
+                     (and (transcript-extend tr (corpus-flip corpus-fx3 n)) #t))))
+           '(40 41 42 43))
+      '((0 #t #f #f #t) (1 #t #f #f #t) (2 #t #f #f #t) (3 #t #f #f #t)))
 (want "RS-2 CONTROL: a replay leaves the transcript it was given as it was"
       (let* ((t0 (transcript-of corpus-fx3)) (before (transcript-content t0)))
         (whole t0)

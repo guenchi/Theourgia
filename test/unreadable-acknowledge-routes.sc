@@ -226,6 +226,7 @@
     ("log.sc" "log-begin" "open-load" 1 builder)
     ("log.sc" "log-open" "open-load" 1 builder)
     ("log.sc" "log-open-in-session" "open-load" 1 builder)
+    ("log.sc" "log-open-with-memory" "open-load" 1 builder)
     ("log.sc" "reload!" "open-load" 1 builder)
     ("project.sc" "export-md" "open-and-reduce" 1 request)
     ("rpc.sc" "reduction-for" "obtain-state" 1 unsealer)

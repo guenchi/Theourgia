@@ -70,7 +70,7 @@
           store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
-          log-open log-open-in-session load-prefix load-writers load-integrity load-fingerprint
+          log-open log-open-in-session log-open-with-memory make-load-memory load-prefix load-writers load-integrity load-fingerprint
           load-unreadable load-listener-add! load-listener-remove! load-listener-of
           remember-load-unreadable! unreadable-behind incomplete-clause merge-unreadable
           load-refused? load-refused-condition tell-load-refused!
@@ -903,16 +903,191 @@
   ;; (which the resumed fold meets again). The answer covers that far and
   ;; has no ending; a replay decodes the rest. #f when `bv` does not begin
   ;; with those bytes.
+  ;;
+  ;; THIS IS THE ONE TEST OF "BEGINS WITH". A load's memory asks it of
+  ;; bytes longer than the ones it remembers, a segment at a time, so it
+  ;; compares four bytes at once: a 32-bit word is always a fixnum, so the
+  ;; comparison allocates nothing. The 0 to 3 bytes after the last whole
+  ;; word are compared one by one.
   (define (transcript-extend tr bv)
     (let* ((old (transcript-bytes tr))
            (n (bytevector-length old)))
       (and (bytevector? bv)
-           (<= n (bytevector-length bv))
-           (let same ((i 0))
-             (or (= i n)
-                 (and (= (bytevector-u8-ref old i) (bytevector-u8-ref bv i))
-                      (same (+ i 1)))))
+           (fx<= n (bytevector-length bv))
+           (let ((w (fx- n (fxand n 3))))
+             (let words ((i 0))
+               (if (fx< i w)
+                   (and (fx= (bytevector-u32-native-ref old i) (bytevector-u32-native-ref bv i))
+                        (words (fx+ i 4)))
+                   (let tail ((i w))
+                     (or (fx= i n)
+                         (and (fx= (bytevector-u8-ref old i) (bytevector-u8-ref bv i))
+                              (tail (fx+ i 1))))))))
            (make-transcript bv (transcript-frames tr) (transcript-covered tr) #f))))
+
+  ;; ---- the memory of a load -------------------------------------------------
+
+  ;; WHAT A LOAD HAS COMPUTED FROM A SEGMENT'S BYTES, AND THE ONE WAY
+  ;; validate AND DELIVERY ASK FOR IT. Three computations on a segment's
+  ;; bytes are pure -- the scan, the digest and the edge sequences -- and
+  ;; a load asks them of a memory, never of the procedures directly. Every
+  ;; memory answers what the procedures answer for the same bytes; what
+  ;; differs between memories is whether they remember, and that lives in
+  ;; the memory value, not in the load.
+  ;;
+  ;; THE BYTES ARE THE WITNESS. A load reads every byte it read without a
+  ;; memory and hands the memory what it read. An entry is used only for
+  ;; bytes EQUAL to the ones it holds (the same object, or bytevector=?),
+  ;; or, when the bytes are longer, bytes that BEGIN with them
+  ;; (transcript-extend, whose #f means "not these bytes"); its transcript
+  ;; then continues from where it stood. Any other bytes replace the entry.
+  ;; Nothing is used that was not compared.
+  ;;
+  ;; AN ENTRY CAN BE PARTIAL. Its transcript is always a state of its bytes
+  ;; (none decoded, until a scan). Its digest and its edge sequences are
+  ;; there only when a load computed them for these bytes, and the entry
+  ;; says which: a hash or a range test can end a segment before its scan,
+  ;; and the edge sequences of a segment can be #f.
+  ;;
+  ;; A LOAD MAKES ONE (make-load-memory) unless it is handed one
+  ;; (log-open-with-memory), so delivery replays what validation scanned.
+  ;; The callers of discover-prefix that are not loads pass
+  ;; `remembers-nothing`, whose scan is scan-segment itself and takes no
+  ;; transcript, so their work and their allocation are today's.
+  ;;
+  ;;   scan    (phase writer segment bytes expected-seq recoverable-tail?
+  ;;           deliver) -> what scan-segment answers, calling deliver as it
+  ;;           would; phase is validation or delivery
+  ;;   digest  (writer segment bytes) -> segment-sha of the bytes
+  ;;   edges   (writer segment bytes) -> segment-edge-seqs of the bytes
+  (define-record-type segment-memory
+    (fields scan digest edges))
+
+  (define remembers-nothing
+    (make-segment-memory
+      (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
+        (scan-segment bytes writer seg expected-seq recoverable-tail? deliver))
+      (lambda (writer seg bytes) (segment-sha bytes))
+      (lambda (writer seg bytes) (segment-edge-seqs bytes))))
+
+  (define (memory-scan m phase writer seg bytes expected-seq recoverable-tail? deliver)
+    ((segment-memory-scan m) phase writer seg bytes expected-seq recoverable-tail? deliver))
+
+  (define (memory-digest m writer seg bytes)
+    ((segment-memory-digest m) writer seg bytes))
+
+  (define (memory-edges m writer seg bytes)
+    ((segment-memory-edges m) writer seg bytes))
+
+  ;; `found` says how the entry came to hold these bytes until a scan has
+  ;; asked it: new (the bytes were not remembered), extended (they began
+  ;; with the remembered ones), or remembered (a scan has asked since).
+  (define-record-type memory-entry
+    (fields bytes (mutable transcript) (mutable found)
+            (mutable has-digest) (mutable digest)
+            (mutable has-edges) (mutable edges)))
+
+  (define (make-load-memory)
+    (let ((entries (make-hashtable equal-hash equal?)))
+      ;; The entry for these bytes: the one held when they are its bytes,
+      ;; else a new one, whose transcript is the held one extended when
+      ;; the bytes are longer and begin with the held bytes.
+      (define (entry-for writer seg bytes)
+        (let* ((key (cons writer seg))
+               (e (hashtable-ref entries key #f))
+               (held (and e (memory-entry-bytes e))))
+          (if (and held (or (eq? held bytes) (bytevector=? held bytes)))
+              e
+              (let* ((extended (and held
+                                    (fx> (bytevector-length bytes) (bytevector-length held))
+                                    (transcript-extend (memory-entry-transcript e) bytes)))
+                     (fresh (make-memory-entry bytes (or extended (transcript-of bytes))
+                                               (if extended 'extended 'new)
+                                               #f #f #f #f)))
+                (hashtable-set! entries key fresh)
+                fresh))))
+      (make-segment-memory
+        (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
+          (let* ((e (entry-for writer seg bytes))
+                 (found (memory-entry-found e))
+                 (frames 0)
+                 (counted (lambda (off seq ts actor deps payload)
+                            (set! frames (fx+ frames 1))
+                            (deliver off seq ts actor deps payload)))
+                 (outcome (degeneracy-value
+                            (replay-checked e writer seg bytes expected-seq recoverable-tail? counted)
+                            (remembered-scan e writer seg expected-seq recoverable-tail? counted))))
+            (memory-entry-found-set! e 'remembered)
+            ;; WHAT THE MEMORY DID FOR THIS SEGMENT, one event per segment
+            ;; a load scans: the phase, the segment, how it was answered
+            ;; (scanned from its first byte, extended from the remembered
+            ;; bytes, or replayed), and how many frames it handed on.
+            (trace-event! 'memory
+                          (list phase writer seg
+                                (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
+                          frames)
+            outcome))
+        (lambda (writer seg bytes)
+          (let ((e (entry-for writer seg bytes)))
+            (unless (memory-entry-has-digest e)
+              (memory-entry-digest-set! e (segment-sha bytes))
+              (memory-entry-has-digest-set! e #t))
+            (memory-entry-digest e)))
+        (lambda (writer seg bytes)
+          (let ((e (entry-for writer seg bytes)))
+            (unless (memory-entry-has-edges e)
+              (memory-entry-edges-set! e (segment-edge-seqs bytes))
+              (memory-entry-has-edges-set! e #t))
+            (memory-entry-edges e))))))
+
+  ;; The replay of the entry's transcript; what it decoded past the
+  ;; transcript is kept in the entry.
+  (define (remembered-scan e writer seg expected-seq recoverable-tail? deliver)
+    (let-values (((outcome tr) (replay-scan (memory-entry-transcript e) writer seg
+                                            expected-seq recoverable-tail? deliver)))
+      (memory-entry-transcript-set! e tr)
+      outcome))
+
+  ;; UNDER THE DEGENERACY SWITCH, EVERY REPLAY IS FOLLOWED BY scan-segment
+  ;; OF THE SAME BYTES and the two are compared: each callback call's
+  ;; arguments, in order, and the outcome, a log error by its fields. The
+  ;; scan's callback answers what the replay's callback answered at the
+  ;; same call, so a stop lands where it landed; the caller's callback is
+  ;; not called twice. A difference prints one fixed line and raises.
+  (degeneracy-definitions
+    (define replay-differs-line "degeneracy: a replay differs from scan-segment of the same bytes")
+    (define (outcome-fields outcome)
+      (map (lambda (x)
+             (if (log-error? x)
+                 (list (log-error-kind x) (log-error-writer x) (log-error-segment x)
+                       (log-error-offset x) (log-error-detail x))
+                 x))
+           outcome))
+    (define (replay-checked e writer seg bytes expected-seq recoverable-tail? deliver)
+      (let* ((replayed '())
+             (outcome (remembered-scan e writer seg expected-seq recoverable-tail?
+                        (lambda (off seq ts actor deps payload)
+                          (let ((v (deliver off seq ts actor deps payload)))
+                            (set! replayed (cons (cons (list off seq ts actor deps payload) v)
+                                                 replayed))
+                            v))))
+             (answers (reverse replayed))
+             (scanned '())
+             (fresh (scan-segment bytes writer seg expected-seq recoverable-tail?
+                      (lambda (off seq ts actor deps payload)
+                        (set! scanned (cons (list off seq ts actor deps payload) scanned))
+                        (if (pair? answers)
+                            (let ((v (cdr (car answers))))
+                              (set! answers (cdr answers))
+                              v)
+                            (if #f #f))))))
+        (unless (and (equal? (map car (reverse replayed)) (reverse scanned))
+                     (equal? (outcome-fields outcome) (outcome-fields fresh)))
+          (let ((port (console-error-port)))
+            (fprintf port "~a: writer ~s segment ~s\n" replay-differs-line writer seg)
+            (flush-output-port port))
+          (assertion-violation 'degeneracy replay-differs-line writer seg))
+        outcome)))
 
   ;; ---- the snapshot frame --------------------------------------------------
 
@@ -1303,18 +1478,27 @@
   ;; are unaffected. The early incomplete-publication answer is reached only
   ;; once the listing has succeeded: a directory that cannot be listed is
   ;; not a publication that never finished.
-  (define (discover-prefix store writer lock-context)
-    (guard (e ((unreadable-entry? e)
-               (unreadable-discovery writer (unreadable-entry-path e)
-                                     (unreadable-entry-reason e)
-                                     (unreadable-entry-errno e))))
-      (list-entries (writer-directory store writer))
-      (let ((origin (origin-of store writer)))
-        (if (eq? origin 'incomplete-publication)
-            (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f #f)
-            (validate store writer origin lock-context)))))
+  ;; A LOAD PASSES ITS MEMORY; every other caller passes none and is given
+  ;; the memory that remembers nothing, so it works as it did.
+  (define discover-prefix
+    (case-lambda
+      ((store writer lock-context)
+       (discover-prefix store writer lock-context remembers-nothing))
+      ((store writer lock-context memory)
+       (guard (e ((unreadable-entry? e)
+                  (unreadable-discovery writer (unreadable-entry-path e)
+                                        (unreadable-entry-reason e)
+                                        (unreadable-entry-errno e))))
+         (list-entries (writer-directory store writer))
+         (let ((origin (origin-of store writer)))
+           (if (eq? origin 'incomplete-publication)
+               (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f #f)
+               (validate store writer origin lock-context memory)))))))
 
-  (define (validate store writer origin lock-context)
+  ;; THE PURE COMPUTATIONS ON A SEGMENT'S BYTES -- its digest, its edge
+  ;; sequences and its scan -- are asked of MEMORY (the memory of a load,
+  ;; above); everything else reads as it did.
+  (define (validate store writer origin lock-context memory)
     (let* ((quarantine (quarantine-of store writer))
            (retired (retired-of store writer))
            ;; A RETIRED WRITER READS ITS MANIFEST EVEN WHEN IT IS LOCAL.
@@ -1515,7 +1699,7 @@
                     ;; content whose records each carry a correct CRC.
                     ;; Records inside a hash-mismatched file are repair
                     ;; EVIDENCE only: not in end-*, never delivered.
-                    ((and want (not (string=? want (segment-sha bytes))))
+                    ((and want (not (string=? want (memory-digest memory writer seg bytes))))
                      (cut! 'manifest-hash seg 0 (list (cons 'expected want)))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
@@ -1530,7 +1714,7 @@
                     ;; this segment is.
                     ((and want
                           (let ((declared (manifest-range manifest seg))
-                                (held (segment-edge-seqs bytes)))
+                                (held (memory-edges memory writer seg bytes)))
                             (not (and declared held (equal? declared held)))))
                      (cut! 'manifest-range seg 0
                             (list (cons 'declared (manifest-range manifest seg))))
@@ -1542,21 +1726,21 @@
                                        (check-retirement-offset! bytes seg retired note!)
                                        bytes))
                             (outcome
-                              (scan-segment clipped writer seg expect current?
-                                            (lambda (off seq ts actor deps payload)
-                                              ;; a record STARTING at the
-                                              ;; declared offset means the
-                                              ;; one before it ended there
-                                              (when (and roff (eqv? seg rseg)
-                                                         (= off roff))
-                                                (vector-set! probe 0 (- seq 1)))
-                                              ;; the scanner stops AFTER the
-                                              ;; record it is told to stop on,
-                                              ;; which is what makes the
-                                              ;; ceiling inclusive
-                                              (if (and ceiling (>= seq ceiling))
-                                                  'stop
-                                                  (if #f #f)))))
+                              (memory-scan memory 'validation writer seg clipped expect current?
+                                           (lambda (off seq ts actor deps payload)
+                                             ;; a record STARTING at the
+                                             ;; declared offset means the
+                                             ;; one before it ended there
+                                             (when (and roff (eqv? seg rseg)
+                                                        (= off roff))
+                                               (vector-set! probe 0 (- seq 1)))
+                                             ;; the scanner stops AFTER the
+                                             ;; record it is told to stop on,
+                                             ;; which is what makes the
+                                             ;; ceiling inclusive
+                                             (if (and ceiling (>= seq ceiling))
+                                                 'stop
+                                                 (if #f #f)))))
                             (probe-noted
                               (when (and roff (eqv? seg rseg))
                                 ;; the other way the offset can be a
@@ -1875,7 +2059,10 @@
             ;; WHICH OWNER-BEARING WRITER THIS INSTANCE OWNS (ownership-table),
             ;; read once while the load is built, so every selector that
             ;; chooses a writer to extend asks the same table.
-            ownership))
+            ownership
+            ;; THE MEMORY DISCOVERY ASKED, which delivery asks again: a
+            ;; segment delivery reads as validation read it is replayed.
+            memory))
 
   ;; THE WRITERS A LOAD IS MISSING, in the order the load holds them: what
   ;; an answer built from this load must say (K10). Three ways to be
@@ -2015,10 +2202,19 @@
   ;; declared" (a plan amendment): a caller that says nothing is
   ;; refused an incomplete load and is unchanged on a complete one.
   (define (log-open store . declaration)
-    (open-load store 'acquire-shared (and (pair? declaration) (car declaration))))
+    (open-load store 'acquire-shared (and (pair? declaration) (car declaration))
+               (make-load-memory)))
 
   (define (log-open-in-session store . declaration)
-    (open-load store 'held-exclusive (and (pair? declaration) (car declaration))))
+    (open-load store 'held-exclusive (and (pair? declaration) (car declaration))
+               (make-load-memory)))
+
+  ;; log-open with a memory the caller keeps: what this load computes from
+  ;; a segment's bytes stays in MEMORY for a later load handed the same one.
+  (define (log-open-with-memory store memory . declaration)
+    (unless (segment-memory? memory)
+      (assertion-violation 'log-open-with-memory "not a memory of a load" memory))
+    (open-load store 'acquire-shared (and (pair? declaration) (car declaration)) memory))
 
   ;; ONE EXIT HANDLER OVER THE WHOLE LOAD (found in design review). Every
   ;; condition that leaves open-load -- the metadata read, enumeration,
@@ -2046,13 +2242,13 @@
   ;; log-begin and a session's reload! -- loaded the log without it, and a
   ;; row counting loads by the trace counted only the readers'. One
   ;; supplier: no caller of open-load can load without the line.
-  (define (open-load store lock-context declaration)
+  (define (open-load store lock-context declaration memory)
     (trace-event! 'log-open store #f)
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
     (let ((owned (vector #f)))
       (guard (e (#t (open-load-refused! store e owned) (raise e)))
-        (open-load-body store lock-context declaration owned))))
+        (open-load-body store lock-context declaration owned memory))))
 
   (define (open-load-refused! store e owned)
     (dynamic-wind
@@ -2066,7 +2262,7 @@
             (vector-set! owned 0 #f)
             (guard (x (#t (if #f #f))) ((current-lock-release) lock)))))))
 
-  (define (open-load-body store lock-context declaration owned)
+  (define (open-load-body store lock-context declaration owned memory)
     (let ((meta-path (string-append store "/meta.sexp")))
       (unless (entry-present? meta-path)
         (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
@@ -2089,7 +2285,7 @@
           (vector-set! owned 0 lock)
           (let* ((writers (store-writers store))
                  (prefixes (map (lambda (w)
-                                  (cons w (discover-prefix store w lock-context)))
+                                  (cons w (discover-prefix store w lock-context memory)))
                                 writers)))
             ;; THE WINDOW RIGHT AFTER DISCOVERY, before snapshot selection, the
             ;; declaration check and the delivery barrier, for the rows that
@@ -2097,7 +2293,7 @@
             ;; side by side (D-interleave).
             (hold-point! 'after-discovery)
             (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f
-                                         (ownership-table store))))
+                                         (ownership-table store) memory)))
               ;; Only the notes that refuse this consumer refuse it -- a cut
               ;; refuses the strict declaration alone (incomplete.sc,
               ;; refusing-notes) -- and the refusal names EVERY note of the
@@ -2510,7 +2706,7 @@
               ;; promise, doing the same flushes twice and making a case
               ;; that counts them read differently for no reason the
               ;; store cares about.
-              (let ((ls (open-load store 'held-exclusive declaration)))
+              (let ((ls (open-load store 'held-exclusive declaration (make-load-memory))))
                 (let* ((selected (session-writer-of store ls))
                        (excluded (and (pair? selected) (cadr selected)))
                        (found (and (string? selected) selected))
@@ -3082,7 +3278,7 @@
   ;; against it.
   (define (reload! s)
     (let* ((store (session-store s))
-           (fresh (open-load store 'held-exclusive (session-declaration s))))
+           (fresh (open-load store 'held-exclusive (session-declaration s) (make-load-memory))))
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
@@ -7550,7 +7746,8 @@
                          ;; the discovered extent or fail -- it may not
                          ;; deliver less and call that success.
                          (let* ((outcome
-                                  (scan-segment bytes writer seg (cadr (car rs)) #t
+                                  (memory-scan (load-session-memory ls) 'delivery writer seg bytes
+                                              (cadr (car rs)) #t
                                     (lambda (off seq ts actor deps payload)
                                       ;; THE REDUCER'S RETURN VALUE MAY
                                       ;; NOT TRUNCATE DELIVERY. The

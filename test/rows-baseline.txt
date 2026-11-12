@@ -165,10 +165,10 @@ reader-creates - 7 3a6df3454f8cb62607b914f88dd6a4ab
 record-envelope 137 179 286c27322f411d6d1145b7e9631109c1
 reduce-pending 41 64 dc1234aca61e3243793f490d284bfafc
 reduce1 90 114 6d8f7fd513a9e0b8b183a70d8dea7012
-reduce2 21 30 d1b45bd90b223c36fbdaa51c34469527
+reduce2 22 31 c9600630456ac0bef79727012448a2bc
 regression 13 23 315e1cd779164286cfce83e32d718758
 relation-effects 69 72 6ffc6f9b6297d3f5dfacce5a521a8e3e
-replay-scan 207 219 6e9d1878ec6ab6418e98806723c7aac6
+replay-scan 208 220 81b25a53ead17d7b2ba3f4f3fd26d7f7
 request-actors 4 8 544c2d1f53becf5f7e341004bfff398b
 retire-race 19 23 d03dab61b44ed15817486516180caed8
 review-channel 102 109 2e84bb023345a2804c54d280f3bd4b5a
@@ -181,6 +181,7 @@ sb2 17 27 f16f876905b29ef9d5f1471559f003ac
 scheme-definers 19 25 73dfb350e0fec2043d05b4caba297859
 scope-model 13 19 3cecaeb1c475debe3164a66df20d2b9a
 scope-once 18 29 febcf864621429514bc20ee9c9a06c5c
+segment-memory 14 20 ef1b505d32c9bd9bdf22c549f5046171
 session-advance 61 71 4564bfeef2c307f00b296370cf23be36
 signal-audit 95 127 f32d37af2ae8b112fc0b9855a961521e
 since-contract 57 60 5f0385a577fc331100dca7ce193de5de
@@ -204,7 +205,7 @@ subtree 15 19 d2124efd9468aef241da1e20468aea5e
 supply 209 213 f9f9a5a03a2f964a95c34c43316d9020
 tmp-paths 49 124 05de6ac0010b480a9372869d4b4ba9e5
 tree-round-trip 0 5 aecdb9f13babca53abb3f9b0618bfd96
-unreadable-acknowledge-routes 69 78 9fd5066d3c8c1c3c1b2dded9fd4698ed
+unreadable-acknowledge-routes 69 78 11fc3cb8639612066ec0d387a8c1dce2
 unreadable-adopt 34 47 6e1360b0c68e5776dea2e985fabc85c2
 unreadable-census 42 47 8903dba92289c92d904de8913366556b
 unreadable-drafts 17 25 ada49030b8b428b7ec3d7b0e45072d76

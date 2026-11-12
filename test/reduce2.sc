@@ -392,16 +392,20 @@
 ;; outright; it does NOT catch one that seeds from the snapshot and then
 ;; replays the log from the beginning anyway, because re-delivered
 ;; records are refused as already applied and never reach the trace.
-;; Records parsed is what separates them: 20 against 22 here.
+;; Records parsed separated them, 20 against 22, until a load kept what
+;; validation decoded: delivery now replays it and parses nothing, so
+;; both read 13, and what separates them is what delivery hands on, read
+;; from the load's memory events: a resume delivers from the segment
+;; holding the cut's next record, a cold load from the first.
 ;;
 ;; BOTH READINGS ROSE BY FOUR when the manifest began declaring each
 ;; segment's first and last sequence. Opening now decodes the first and
 ;; last line of every listed segment to check that declaration against
 ;; the bytes, which is two parse events per listed segment and two
-;; listed segments in each of these stores. The gap between the two
-;; readings is what this row is about, and it did not move; the absolute
-;; numbers are re-measured rather than kept, because an expectation that
-;; survives a change in what the product does is measuring nothing.
+;; listed segments in each of these stores; the gap between the two
+;; readings did not move. The numbers are re-measured rather than kept,
+;; because an expectation that survives a change in what the product
+;; does is measuring nothing.
 ;; THE BASELINE IS MEASURED, NOT WRITTEN DOWN. Reading at a cut that
 ;; covers everything replays from the beginning by construction, so it
 ;; is the same store, the same records and no snapshot -- a constant
@@ -409,6 +413,12 @@
 (define (parse-count thunk)
   (length (filter (lambda (l) (has-substring? l "(trace parse"))
                   (lines-of (traced thunk)))))
+;; The frames delivery handed on, summed over its memory events
+;; `(trace memory (delivery <writer> <segment> <how>) <frames>)`.
+(define (delivered-frames thunk)
+  (apply + (map (lambda (l) (cadddr (read (open-string-input-port l))))
+                (filter (lambda (l) (has-substring? l "(trace memory (delivery "))
+                        (lines-of (traced thunk))))))
 ;; A TWIN STORE HOLDING THE SAME CORPUS AND NO SNAPSHOT. Reading at a
 ;; cut would have been the cheaper baseline, but that path deliberately
 ;; replays twice -- once to judge the cut and once to build the state --
@@ -423,11 +433,15 @@
               (length (reduce-trace twin))
               (length (directory-list (string-append d2 "/snap")))))
       (list #t 9 0))
-(want "resuming parses fewer records than reading the same corpus cold"
-      (let ((resume (parse-count (lambda () (open-and-reduce d))))
-            (cold (parse-count (lambda () (open-and-reduce d2)))))
+(want "with a memory, resuming and reading the same corpus cold each parse every record once, the listed segments' edge lines included"
+      (list (parse-count (lambda () (open-and-reduce d)))
+            (parse-count (lambda () (open-and-reduce d2))))
+      (list 13 13))
+(want "resuming delivers fewer frames than reading the same corpus cold: from the cut's segment, not the first"
+      (let ((resume (delivered-frames (lambda () (open-and-reduce d))))
+            (cold (delivered-frames (lambda () (open-and-reduce d2)))))
         (list (< resume cold) resume cold))
-      (list #t 20 22))
+      (list #t 7 9))
 
 (printf "== the applied frontier of a read stops before what is pending ==\n")
 ;; RULING: THE READ PATH'S APPLIED FRONTIER IS THE REDUCTION'S OWN CUT.
