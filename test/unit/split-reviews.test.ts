@@ -175,8 +175,10 @@ describe('a split review goes with the last tab that shows it', () => {
   /*
    * WHAT THE TABS SHOW, by the fields of each tab's input: a text tab, a
    * custom editor and a notebook by `uri`, a text or notebook diff by both
-   * sides, and a webview or an input with no file not at all. A review
-   * still open in a custom editor after its text tab closed is kept.
+   * sides, and a webview, an input with no file, or a resource that is
+   * not a file on disk not at all. A review still open in a custom editor
+   * after its text tab closed is kept; one whose only other tab is an
+   * untitled resource spelling the same path is removed.
    */
   it('reads every file a tab shows, in any kind of editor, and keeps a review open only in a custom editor', () => {
     const file = (fsPath: string) => ({ scheme: 'file', fsPath });
@@ -189,6 +191,8 @@ describe('a split review goes with the last tab that shows it', () => {
           { input: { original: file('/t/old.ipynb'), modified: file('/t/new.ipynb'), notebookType: 'jupyter-notebook' } },
           { input: { viewType: 'markdown.preview' } },
           { input: { uri: '/t/not-a-uri.js' } },
+          { input: { uri: { scheme: 'untitled', fsPath: '/t/untitled.js' } } },
+          { input: { original: { scheme: 'git', fsPath: '/t/a.js' }, modified: { fsPath: '/t/no-scheme.js' } } },
           { input: undefined },
           { input: null }
         ]
@@ -206,6 +210,11 @@ describe('a split review goes with the last tab that shows it', () => {
     assert.deepStrictEqual(reviews.closed(filesShownBy(customOnly)).removed, [], 'a review open in a custom editor was removed');
     assert.strictEqual(fs.existsSync(review), true);
     assert.deepStrictEqual(reviews.closed(filesShownBy([])).removed, [review]);
+    const other = reviews.place('/src/other.js');
+    fs.writeFileSync(other, 'x');
+    reviews.opened(other);
+    const virtualOnly = [{ tabs: [{ input: { uri: { scheme: 'untitled', fsPath: other } } }] }];
+    assert.deepStrictEqual(reviews.closed(filesShownBy(virtualOnly)).removed, [other], 'an untitled tab kept a closed review');
   });
 
   it('reports a removal that failed, throws nothing, and does not try it again', () => {

@@ -110,6 +110,11 @@ export interface ShownTab {
  * and `modified`. Any other input with those fields is read the same way;
  * an input with none of them (a webview, a terminal) shows no file.
  *
+ * Only a `file` resource is a file on disk. A review is opened as one
+ * (`vscode.Uri.file`); an untitled or virtual resource can spell the same
+ * fsPath without being that file, and counting it would keep a closed
+ * review's directory for as long as the other tab stays open.
+ *
  * NEVER: A REVIEW STILL OPEN IS NOT TAKEN FOR CLOSED. Naming the kinds of
  * tab that count missed every kind not named: a review reopened in a
  * custom or notebook editor was removed when its last text tab closed.
@@ -139,8 +144,8 @@ function fsPathOf(uri: unknown): string | undefined {
   if (typeof uri !== 'object' || uri === null) {
     return undefined;
   }
-  const fsPath = (uri as { fsPath?: unknown }).fsPath;
-  return typeof fsPath === 'string' ? fsPath : undefined;
+  const { scheme, fsPath } = uri as { scheme?: unknown; fsPath?: unknown };
+  return scheme === 'file' && typeof fsPath === 'string' ? fsPath : undefined;
 }
 
 export class SplitReviews {
