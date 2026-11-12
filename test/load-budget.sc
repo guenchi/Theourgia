@@ -125,8 +125,9 @@
     ;; half: a daemon's read at a cut is one restricted load that still
     ;; decodes the whole log. The window was taken at a 1-minute load of 4 to
     ;; 6; LB-D read 1.605 to 1.633 against the first reading's 1.609 to 1.628,
-    ;; so the yardstick and the decoder stand where they stood, and no arm
-    ;; spread more than 1.6% over the three runs.
+    ;; so the yardstick and the decoder stand where they stood. Each arm's
+    ;; range over its smallest reading: lb-1 0.98%, lb-2 1.32%, lb-3 2.05%
+    ;; (the largest), lb-4 0.61%, lb-d 1.74%.
     (lb-1 . #e4.85) (lb-2 . #e2.39) (lb-3 . #e2.51) (lb-4 . #e2.26) (lb-d . #e1.87)
     (readings (lb-1 4.217 4.190 4.176) (lb-2 2.052 2.076 2.049) (lb-3 2.150 2.186 2.142)
               (lb-4 1.955 1.957 1.967) (lb-d 1.620 1.605 1.633))
