@@ -27,12 +27,16 @@
 ;;         answered as a load with no memory answers them: a middle
 ;;         segment damaged, a listed segment replaced at the same length;
 ;;         and bytes that grew are decoded only past what was remembered
+;;   a load lets go of its own memory when its delivery ends, and leaves a
+;;         memory its caller handed in with the caller
+;;   SM-6  past its bound a memory scans a segment at every ask, and the
+;;         answer is the same
 ;;
 ;; The counts are read from the trace: one `parse` per line decoded, and
 ;; one `memory` event per segment a load's memory scans, naming the phase,
 ;; the segment, how it was answered and how many frames it handed on.
 (import (chezscheme) (theourgia log) (theourgia trace) (theourgia reduce)
-        (theourgia store) (theourgia wire)
+        (theourgia store) (theourgia wire) (theourgia degeneracy)
         (only (theourgia digest) sha256 bytevector->hex))
 
 (define bad 0)
@@ -264,6 +268,97 @@
                       (list 'validation W 3 'extended 3)
                       (list 'delivery W 1 'replayed 3) (list 'delivery W 2 'replayed 3)
                       (list 'delivery W 3 'replayed 3)))))
+
+;; =============================================================================
+(printf "== a load lets go of its memory when its delivery ends ==\n")
+;; A SESSION THAT IS KEPT must not keep every segment's bytes and frames:
+;; the load's own memory is dropped when its delivery ends, and a memory
+;; a caller handed in stays with the caller, not emptied.
+(define (segment-bytes dir w n)
+  (call-with-port (open-file-input-port (segment-path dir w n)) get-bytevector-all))
+(define local-bytes
+  (apply + (map (lambda (n) (bytevector-length (segment-bytes local W n))) '(1 2 3))))
+(let* ((ls (log-open local))
+       (during (load-remembered-bytes ls)))
+  (load-deliver! ls '() (lambda args (if #f #f)))
+  (let ((after (load-remembered-bytes ls)))
+    (load-commit! ls)
+    (want "a load remembers its segments' bytes until its delivery ends, and none after"
+          (list during after)
+          (list local-bytes 0))))
+(let* ((memory (make-load-memory))
+       (ls (log-open-with-memory local memory)))
+  (load-deliver! ls '() (lambda args (if #f #f)))
+  (load-commit! ls)
+  (want "a memory handed to a load is let go by the load and kept, not emptied, by its caller"
+        (list (load-remembered-bytes ls) (memory-remembered-bytes memory))
+        (list 0 local-bytes)))
+
+;; =============================================================================
+(printf "== SM-6: past its bound, a memory scans at every ask ==\n")
+;; THE BOUND COUNTS REMEMBERED BYTES. With room for W's first two segments
+;; only, the third is answered for each ask and not kept: validation and
+;; delivery each scan it, and the load answers what a load with no memory
+;; answers.
+(let* ((limit (+ (bytevector-length (segment-bytes local W 1))
+                 (bytevector-length (segment-bytes local W 2))))
+       (memory (make-load-memory limit))
+       (got #f)
+       (text (traced (lambda () (set! got (load! local memory))))))
+  (want "SM-6 a load past its memory's bound delivers what a load with no memory delivers"
+        got (load! local #f))
+  (want "SM-6 the segments within the bound are scanned once and replayed; the one past it is scanned at each ask"
+        (list (parses text) (memory-events text))
+        (list 10 (list (list 'validation W 1 'scanned 3) (list 'validation W 2 'scanned 3)
+                       (list 'validation W 3 'scanned 2)
+                       (list 'delivery W 1 'replayed 3) (list 'delivery W 2 'replayed 3)
+                       (list 'delivery W 3 'scanned 2))))
+  (want "SM-6 the memory holds no more than its bound: the two segments that fit"
+        (memory-remembered-bytes memory) limit))
+
+;; A REPLACED ENTRY GIVES ITS BYTES BACK. The bound is the store's bytes
+;; once W's highest segment has grown by record 9; the grown segment fits
+;; only if the bytes it replaces are counted out first.
+(let* ((dir (build! (test-dir "segmem-bound-grow") #f))
+       (before (apply + (map (lambda (n) (bytevector-length (segment-bytes dir W n))) '(1 2 3))))
+       (memory (make-load-memory (+ before (bytevector-length (record W 9))))))
+  (load! dir memory)
+  (put! (segment-path dir W 3) (cat (records W 7 8) (record W 9)))
+  (load! dir memory)
+  (let ((text (traced (lambda () (load! dir memory)))))
+    (want "SM-6 a segment that grew replaces its entry within the bound: the third load replays it"
+          (list (memory-remembered-bytes memory)
+                (filter (lambda (e) (eqv? (caddr e) 3)) (memory-events text)))
+          (list (+ before (bytevector-length (record W 9)))
+                (list (list 'validation W 3 'replayed 3) (list 'delivery W 3 'replayed 3))))))
+
+;; =============================================================================
+(printf "== what a load delivers is shared with its memory ==\n")
+;; NEVER A CONTRACT. A replay hands on the memory's own objects, so a
+;; consumer that changes one changes what every later replay of that entry
+;; delivers. This row shows the hazard without the degeneracy switch; under
+;; the switch the first load raises at the consumer's call (the second
+;; fixed line), the second load is not made, and the row is red by design.
+(define (actor-of-1 dir memory change?)
+  (let ((ls (log-open-with-memory dir memory)) (got #f))
+    (load-deliver! ls '() (lambda (w seg off seq ts actor deps payload)
+                            (when (= seq 1)
+                              (set! got (string-copy actor))
+                              (when change? (string-set! actor 0 #\X)))))
+    (load-commit! ls)
+    got))
+(let* ((dir (build! (test-dir "segmem-shared") #f))
+       (memory (make-load-memory))
+       (first (caught (actor-of-1 dir memory #t)))
+       (second (if (string? first) (caught (actor-of-1 dir memory #f)) 'not-loaded)))
+  (want "NEVER (the hazard, not a contract): a consumer that changes the actor it is handed changes what a later load with the same memory delivers"
+        (list first second)
+        (list "agent:claude" "Xgent:claude"))
+  (want "under the degeneracy switch, a consumer that changes a value it was delivered is named as that, never as a replay that differs"
+        (if (degeneracy-active) first 'switch-off)
+        (if (degeneracy-active)
+            (list 'RAISED "degeneracy: a consumer changed a value it was delivered")
+            'switch-off)))
 
 (printf "\n~a failures\nrows: ~a\nsegment-memory complete\n" bad rows-run)
 (exit (if (= bad 0) 0 1))

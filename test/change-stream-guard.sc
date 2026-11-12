@@ -42,6 +42,20 @@
 ;; before its byte comparison, and is red when the base's trace holds it or
 ;; the new trace holds it a different number of times than the file lists
 ;; it: an unobserved entry and a duplicated emission are both red.
+;; A TRACE LINE A CHANGE MEANS TO REMOVE is listed as
+;; (trace-lines-removed "<reason>" "<line>" ...), a line as many times as it
+;; is removed. Such a line may still be in the new trace (a change that
+;; stops one of two identical events keeps the other), so the rule is by
+;; count: with the added lines left out, the new trace must be a
+;; subsequence of the base's, and what the base holds beyond it must be
+;; exactly the listed removed lines. That is the byte comparison with the
+;; listed lines taken out of the base at the positions that make it equal;
+;; lines of equal text are interchangeable, so which occurrence counts as
+;; the removed one does not matter. A listed line whose surplus in the base
+;; is not its listed count is red, and so is any other difference.
+;; The prepared store's writer is read as WRITER in the traces: `init`
+;; names a new one on every run, and a listed line must name it the same
+;; way every time.
 ;;
 ;; EACH DAEMON IS THE ONE THAT SHIPS: its tree's own theourgiad.sc serve,
 ;; which registers the verbs from outside the core table (extensions.sc)
@@ -367,6 +381,14 @@
 (define (lib-env lib) (string-append "CHEZSCHEMELIBDIRS=" lib " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"))
 (system (string-append (lib-env this-lib) " scheme --script ../theourgia.sc init --store " prepared " > /dev/null 2>&1 < /dev/null"))
 (system (string-append (lib-env this-lib) " THEOURGIA_LOCAL=1 scheme --script ../theourgia.sc insert --title Seed --text seed --store " prepared " > /dev/null 2>&1 < /dev/null"))
+;; THE PREPARED STORE'S ONE WRITER, which the traces read as WRITER.
+(define prepared-writer
+  (let ((ws (guard (e (#t '())) (directory-list (string-append prepared "/writers")))))
+    (unless (= (length ws) 1)
+      (printf "NOT A READING: the prepared store should hold one writer, it holds ~s~%" ws)
+      (printf "change-stream-guard complete~%")
+      (exit 2))
+    (car ws)))
 ;; THE DAEMON PROGRAM, relative to a library root. The spawn in start! names
 ;; it by this define, so a reading of this file's source (entry-split's
 ;; SPAWNS) sees which program the spawn starts.
@@ -436,6 +458,13 @@
       (apply append (map (lambda (e) (if (and (pair? e) (eq? (car e) 'trace-lines) (pair? (cdr e))) (cddr e) '()))
                          expected-differences))
       '()))
+;; The lines every trace-lines-removed entry lists, in the file's order.
+(define listed-removed-lines
+  (if (list? expected-differences)
+      (apply append (map (lambda (e) (if (and (pair? e) (eq? (car e) 'trace-lines-removed) (pair? (cdr e))) (cddr e) '()))
+                         expected-differences))
+      '()))
+(define (trace-entry? e) (and (pair? e) (memq (car e) '(trace-lines trace-lines-removed)) #t))
 ;; -> how many elements of XS equal X
 (define (count-of x xs) (length (filter (lambda (y) (equal? x y)) xs)))
 ;; -> XS without its repeats, in first-seen order
@@ -464,6 +493,52 @@
             (string-append (car kept)
                            (apply string-append (map (lambda (l) (string-append "\n" l)) (cdr kept)))
                            (if final? "\n" ""))))))
+;; THE TRACE JUDGEMENT, of a BASE trace and a NEW one, with the ADDED and
+;; the REMOVED lines the expect file lists (the rule is stated at the top of
+;; this file). -> (<equal, or (base new-without-added)> <listed added lines
+;; that break their rule> <listed removed lines that break theirs>)
+(define (trace-judgement base new added removed)
+  (let* ((base-lines (text-lines base))
+         (new-lines (text-lines new))
+         (kept (filter (lambda (l) (not (member l added))) new-lines))
+         (final? (lambda (t) (and (> (string-length t) 0) (char=? (string-ref t (- (string-length t) 1)) #\newline))))
+         ;; what the base holds beyond the kept lines, or #f when they are
+         ;; not a subsequence of it
+         (surplus (let walk ((bs base-lines) (ns kept) (out '()))
+                    (cond ((null? ns) (append (reverse out) bs))
+                          ((null? bs) #f)
+                          ((equal? (car bs) (car ns)) (walk (cdr bs) (cdr ns) out))
+                          (else (walk (cdr bs) ns (cons (car bs) out)))))))
+    (list (if (and surplus
+                   (= (length surplus) (length removed))
+                   (for-all (lambda (l) (= (count-of l surplus) (count-of l removed))) surplus)
+                   (eq? (final? base) (final? new)))
+              'equal
+              (list base (without-lines new added)))
+          (filter (lambda (l) (or (member l base-lines) (not (= (count-of l new-lines) (count-of l added)))))
+                  (unique added))
+          (filter (lambda (l) (not (= (- (count-of l base-lines) (count-of l kept)) (count-of l removed))))
+                  (unique removed)))))
+;; THE JUDGEMENT ON MADE-UP TRACES, so its rule is read and not only its
+;; one reading on the daemons: a removal of a line the new trace still
+;; holds once is equal; a line listed removed once that the base holds
+;; twice beyond the new trace, a listed removal the base does not hold
+;; beyond it, an unlisted line missing from the new trace, and a listed
+;; added line the base holds, are each not.
+(want "GUARD-0e the trace judgement: a listed removal is counted, not required absent; a surplus other than the listed one, a removal not observed, an unlisted missing line and a listed added line the base holds each break it"
+      (map (lambda (c)
+             (let ((j (apply trace-judgement c)))
+               (list (eq? (car j) 'equal) (cadr j) (caddr j))))
+           (list (list "p\nq\np\nr\n" "p\nq\nm\nr\n" '("m") '("p"))
+                 (list "p\np\nq\np\n" "p\nq\n" '() '("p"))
+                 (list "p\nq\n" "p\nq\n" '() '("p"))
+                 (list "p\nq\nr\n" "p\nr\n" '() '())
+                 (list "p\nm\n" "p\nm\nm\n" '("m") '())))
+      (list (list #t '() '())
+            (list #f '() '("p"))
+            (list #f '() '("p"))
+            (list #f '() '())
+            (list #f '("m") '())))
 (define (resolve d args ids)
   (map (lambda (a) (let ((e (assoc a ids))) (if e (cdr e) a))) args))
 (define (run-script d)
@@ -514,7 +589,7 @@
                                  (loop (cdr xs) (cdr ys) (cons (caar xs) out)))
                                 (else (loop (cdr xs) (cdr ys) out)))))
              (listed (if (list? expected-differences)
-                         (map car (filter (lambda (e) (not (and (pair? e) (eq? (car e) 'trace-lines)))) expected-differences))
+                         (map car (filter (lambda (e) (not (trace-entry? e))) expected-differences))
                          '())))
         (want "GUARD-1 the expectation file is read, and every entry gives its reason"
               (and (list? expected-differences)
@@ -612,19 +687,18 @@
                           (let ((split (without-executor-lines
                                          (without-store-checks
                                            (substring (file-text (cadddr d)) before (string-length (file-text (cadddr d))))))))
-                            (list (and r w) (mask-temporaries (normalize-for d (car split))) (cdr split)))))))
+                            (list (and r w)
+                                  (mask-temporaries (normalize-for d (replace-all (car split) prepared-writer "WRITER")))
+                                  (cdr split)))))))
         (let* ((tb (trace-of b)) (tn (trace-of n))
                (base-set (cond ((null? (caddr tb)) 'none)
                                ((executor-pairs-hold? (caddr tb) (cadr tb)) 'paired)
                                (else (list 'unpaired (caddr tb))))))
-          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines and the expect file's listed trace lines left out, is byte for byte the base's; every listed line is absent from the base's trace and in the new trace exactly as many times as it is listed; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
-                (let ((new-trace (without-lines (cadr tn) listed-trace-lines)))
+          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines and the expect file's listed trace lines left out, is byte for byte the base's with the listed removed lines taken out; every listed added line is absent from the base's trace and in the new trace exactly as many times as it is listed, and the base holds every listed removed line beyond the new trace exactly as many times as it is listed; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
+                (let ((j (trace-judgement (cadr tb) (cadr tn) listed-trace-lines listed-removed-lines)))
                   (list (car tb) (car tn)
-                        (if (equal? (cadr tb) new-trace) 'equal (list (cadr tb) new-trace))
-                        (let ((new-lines (text-lines (cadr tn))) (base-lines (text-lines (cadr tb))))
-                          (filter (lambda (l) (or (member l base-lines)
-                                                  (not (= (count-of l new-lines) (count-of l listed-trace-lines)))))
-                                  (unique listed-trace-lines)))
+                        (car j)
+                        (append (cadr j) (caddr j))
                         base-set
                         (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
                 (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))))

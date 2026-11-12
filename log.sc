@@ -70,7 +70,8 @@
           store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
-          log-open log-open-in-session log-open-with-memory make-load-memory load-prefix load-writers load-integrity load-fingerprint
+          log-open log-open-in-session log-open-with-memory make-load-memory
+          memory-remembered-bytes load-remembered-bytes load-prefix load-writers load-integrity load-fingerprint
           load-unreadable load-listener-add! load-listener-remove! load-listener-of
           remember-load-unreadable! unreadable-behind incomplete-clause merge-unreadable
           load-refused? load-refused-condition tell-load-refused!
@@ -951,6 +952,9 @@
   ;;
   ;; A LOAD MAKES ONE (make-load-memory) unless it is handed one
   ;; (log-open-with-memory), so delivery replays what validation scanned.
+  ;; What a replay delivers is the memory's own objects, shared with every
+  ;; later replay of the entry: a callback is not to change them (under
+  ;; the degeneracy switch, below, one that does is named).
   ;; The callers of discover-prefix that are not loads pass
   ;; `remembers-nothing`, whose scan is scan-segment itself and takes no
   ;; transcript, so their work and their allocation are today's.
@@ -960,15 +964,30 @@
   ;;           would; phase is validation or delivery
   ;;   digest  (writer segment bytes) -> segment-sha of the bytes
   ;;   edges   (writer segment bytes) -> segment-edge-seqs of the bytes
+  ;;   held    () -> the bytes it remembers, in all
+  ;;
+  ;; A MEMORY HAS A BOUND, in remembered bytes (make-load-memory's
+  ;; argument, 256 MiB by default). Segments are remembered in the order
+  ;; they are asked for until the next would pass it; a segment that does
+  ;; not fit is answered for that one ask and not kept, so it is scanned
+  ;; at every ask, as it was before there was a memory. The bound counts the
+  ;; remembered bytes, not what their transcripts' frames hold, which is a
+  ;; multiple of them.
   (define-record-type segment-memory
-    (fields scan digest edges))
+    (fields scan digest edges held))
 
   (define remembers-nothing
     (make-segment-memory
       (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
         (scan-segment bytes writer seg expected-seq recoverable-tail? deliver))
       (lambda (writer seg bytes) (segment-sha bytes))
-      (lambda (writer seg bytes) (segment-edge-seqs bytes))))
+      (lambda (writer seg bytes) (segment-edge-seqs bytes))
+      (lambda () 0)))
+
+  (define (memory-remembered-bytes m) ((segment-memory-held m)))
+
+  ;; What a load session's memory remembers: 0 once a delivery has ended.
+  (define (load-remembered-bytes ls) (memory-remembered-bytes (load-session-memory ls)))
 
   (define (memory-scan m phase writer seg bytes expected-seq recoverable-tail? deliver)
     ((segment-memory-scan m) phase writer seg bytes expected-seq recoverable-tail? deliver))
@@ -987,24 +1006,40 @@
             (mutable has-digest) (mutable digest)
             (mutable has-edges) (mutable edges)))
 
-  (define (make-load-memory)
-    (let ((entries (make-hashtable equal-hash equal?)))
-      ;; The entry for these bytes: the one held when they are its bytes,
-      ;; else a new one, whose transcript is the held one extended when
-      ;; the bytes are longer and begin with the held bytes.
+  (define make-load-memory
+    (case-lambda
+      (() (make-load-memory (* 256 1024 1024)))
+      ((limit)
+       (unless (and (integer? limit) (exact? limit) (>= limit 0))
+         (assertion-violation 'make-load-memory "the limit must be a count of bytes" limit))
+       (make-bounded-memory limit))))
+
+  (define (make-bounded-memory limit)
+    (let ((entries (make-hashtable equal-hash equal?))
+          (held 0))
+      ;; The entry for these bytes: the one kept when they are its bytes,
+      ;; else a new one, whose transcript is the kept one extended when
+      ;; the bytes are longer and begin with the kept bytes. A replaced
+      ;; entry gives its bytes back to the limit; the new one is kept only
+      ;; when it fits.
       (define (entry-for writer seg bytes)
         (let* ((key (cons writer seg))
                (e (hashtable-ref entries key #f))
-               (held (and e (memory-entry-bytes e))))
-          (if (and held (or (eq? held bytes) (bytevector=? held bytes)))
+               (kept (and e (memory-entry-bytes e))))
+          (if (and kept (or (eq? kept bytes) (bytevector=? kept bytes)))
               e
-              (let* ((extended (and held
-                                    (fx> (bytevector-length bytes) (bytevector-length held))
+              (let* ((extended (and kept
+                                    (fx> (bytevector-length bytes) (bytevector-length kept))
                                     (transcript-extend (memory-entry-transcript e) bytes)))
                      (fresh (make-memory-entry bytes (or extended (transcript-of bytes))
                                                (if extended 'extended 'new)
                                                #f #f #f #f)))
-                (hashtable-set! entries key fresh)
+                (when e
+                  (hashtable-delete! entries key)
+                  (set! held (- held (bytevector-length kept))))
+                (when (<= (+ held (bytevector-length bytes)) limit)
+                  (hashtable-set! entries key fresh)
+                  (set! held (+ held (bytevector-length bytes))))
                 fresh))))
       (make-segment-memory
         (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
@@ -1038,7 +1073,8 @@
             (unless (memory-entry-has-edges e)
               (memory-entry-edges-set! e (segment-edge-seqs bytes))
               (memory-entry-has-edges-set! e #t))
-            (memory-entry-edges e))))))
+            (memory-entry-edges e)))
+        (lambda () held))))
 
   ;; The replay of the entry's transcript; what it decoded past the
   ;; transcript is kept in the entry.
@@ -1054,22 +1090,65 @@
   ;; scan's callback answers what the replay's callback answered at the
   ;; same call, so a stop lands where it landed; the caller's callback is
   ;; not called twice. A difference prints one fixed line and raises.
+  ;;
+  ;; AND EVERY DELIVERY IS WATCHED. What a replay hands on is the
+  ;; memory's own objects, shared with every later replay of the entry,
+  ;; so a callback must not change them. Under the switch the values are
+  ;; copied before the callback runs, the comparison reads the copies,
+  ;; and after the callback returns the values are compared with the
+  ;; copies: a callback that changed one is named in a second fixed line,
+  ;; with the writer, the segment and the sequence, and raises. The whole
+  ;; suite under the switch is then a census, by execution, of the
+  ;; callbacks that change what they are given.
+  ;;
+  ;; RECORDS ARE OPENED THROUGH THEIR TYPE, every field of the type and its
+  ;; parents, inside pairs and vectors too: equal? compares records by
+  ;; identity, and a field named by hand would leave a field added later
+  ;; uncompared.
   (degeneracy-definitions
     (define replay-differs-line "degeneracy: a replay differs from scan-segment of the same bytes")
-    (define (outcome-fields outcome)
-      (map (lambda (x)
-             (if (log-error? x)
-                 (list (log-error-kind x) (log-error-writer x) (log-error-segment x)
-                       (log-error-offset x) (log-error-detail x))
-                 x))
-           outcome))
+    (define consumer-changed-line "degeneracy: a consumer changed a value it was delivered")
+    (define (opened x)
+      (cond
+        ((pair? x) (cons (opened (car x)) (opened (cdr x))))
+        ((vector? x) (vector-map opened x))
+        ((record? x)
+         (let walk ((rtd (record-rtd x)) (fields '()))
+           (if (not rtd)
+               (cons* 'record (record-type-name (record-rtd x)) fields)
+               (walk (record-type-parent rtd)
+                     (append (let loop ((i 0) (acc '()))
+                               (if (= i (vector-length (record-type-field-names rtd)))
+                                   (reverse acc)
+                                   (loop (+ i 1)
+                                         (cons (list (vector-ref (record-type-field-names rtd) i)
+                                                     (opened ((record-accessor rtd i) x)))
+                                               acc))))
+                             fields)))))
+        (else x)))
+    ;; WHAT THE REPLAY HANDED ON, copied before the callback runs: a
+    ;; callback that changes a string, a bytevector or a vector it was
+    ;; given must not make a correct replay read as a different one.
+    (define (snapshot x)
+      (cond
+        ((pair? x) (cons (snapshot (car x)) (snapshot (cdr x))))
+        ((string? x) (string-copy x))
+        ((bytevector? x) (bytevector-copy x))
+        ((vector? x) (vector-map snapshot x))
+        (else x)))
     (define (replay-checked e writer seg bytes expected-seq recoverable-tail? deliver)
       (let* ((replayed '())
              (outcome (remembered-scan e writer seg expected-seq recoverable-tail?
                         (lambda (off seq ts actor deps payload)
-                          (let ((v (deliver off seq ts actor deps payload)))
-                            (set! replayed (cons (cons (list off seq ts actor deps payload) v)
-                                                 replayed))
+                          (let* ((args (snapshot (list off seq ts actor deps payload)))
+                                 (v (deliver off seq ts actor deps payload)))
+                            (unless (equal? (list off seq ts actor deps payload) args)
+                              (let ((port (console-error-port)))
+                                (fprintf port "~a: writer ~s segment ~s seq ~s\n"
+                                         consumer-changed-line writer seg seq)
+                                (flush-output-port port))
+                              (assertion-violation 'degeneracy consumer-changed-line writer seg seq))
+                            (set! replayed (cons (cons args v) replayed))
                             v))))
              (answers (reverse replayed))
              (scanned '())
@@ -1081,8 +1160,8 @@
                               (set! answers (cdr answers))
                               v)
                             (if #f #f))))))
-        (unless (and (equal? (map car (reverse replayed)) (reverse scanned))
-                     (equal? (outcome-fields outcome) (outcome-fields fresh)))
+        (unless (and (equal? (opened (map car (reverse replayed))) (opened (reverse scanned)))
+                     (equal? (opened outcome) (opened fresh)))
           (let ((port (console-error-port)))
             (fprintf port "~a: writer ~s segment ~s\n" replay-differs-line writer seg)
             (flush-output-port port))
@@ -1726,6 +1805,10 @@
                                        (check-retirement-offset! bytes seg retired note!)
                                        bytes))
                             (outcome
+                              ;; THIS CALLBACK KEEPS NOTHING OF WHAT IT IS HANDED: it reads
+                              ;; the offset and the sequence. The memory's objects reach it
+                              ;; first, and delivery replays them after it, so a callback here
+                              ;; that kept or changed a value would change what delivery hands on.
                               (memory-scan memory 'validation writer seg clipped expect current?
                                            (lambda (off seq ts actor deps payload)
                                              ;; a record STARTING at the
@@ -2062,7 +2145,8 @@
             ownership
             ;; THE MEMORY DISCOVERY ASKED, which delivery asks again: a
             ;; segment delivery reads as validation read it is replayed.
-            memory))
+            ;; Let go when a delivery ends (deliver-after-barrier!).
+            (mutable memory)))
 
   ;; THE WRITERS A LOAD IS MISSING, in the order the load holds them: what
   ;; an answer built from this load must say (K10). Three ways to be
@@ -2211,6 +2295,8 @@
 
   ;; log-open with a memory the caller keeps: what this load computes from
   ;; a segment's bytes stays in MEMORY for a later load handed the same one.
+  ;; What a load delivers is shared with the memory and is not to be
+  ;; changed: a later load handed the same memory delivers the same objects.
   (define (log-open-with-memory store memory . declaration)
     (unless (segment-memory? memory)
       (assertion-violation 'log-open-with-memory "not a memory of a load" memory))
@@ -7673,7 +7759,23 @@
         (lambda ()
           (unless (vector-ref finished 0)
             (when (eq? (load-session-outcome ls) 'delivering)
-              (finish-abort! ls 'delivery-escaped (vector-ref escaped 0))))))))
+              (finish-abort! ls 'delivery-escaped (vector-ref escaped 0))))
+          ;; THE LOAD LETS GO OF ITS MEMORY HERE, on every way out of a
+          ;; delivery: a session that is kept (a write session keeps its
+          ;; load) would otherwise hold every segment's bytes and decoded
+          ;; frames for its life. A memory the load made is then garbage;
+          ;; one a caller handed in stays with the caller, not emptied. A
+          ;; later delivery from the same session scans, as before there
+          ;; was a memory.
+          ;;
+          ;; THIS THUNK RUNS ONLY WHEN DELIVERY LEAVES, never when its
+          ;; process is switched out. igropyr's scheduler saves a process's
+          ;; winder list when it yields, preempted or not, empties the
+          ;; current one before the switch and restores it on resumption,
+          ;; running no winder either way (actor.sc, @yield); a killed
+          ;; process's winders are discarded unrun. finish-abort! above
+          ;; stands on the same fact.
+          (load-session-memory-set! ls remembers-nothing)))))
 
   (define (deliver-all ls cut on-deliver)
     (let loop ((ws (load-session-prefixes ls)))
