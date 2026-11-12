@@ -162,7 +162,7 @@ describe('a split review goes with the last tab that shows it', () => {
           gone.push(d);
         }
       };
-      const reviews = new SplitReviews(top, 'me', () => ALIVE, disk, platform);
+      const reviews: SplitReviews = new SplitReviews(top, 'me', () => ALIVE, disk, platform);
       const raw = [top, 'me', '..', 'a.js'].join(sep);
       assert.ok(raw.includes(`${sep}..${sep}`), `${raw} reached the cell without its ..`);
       assert.deepStrictEqual(reviews.discard(raw), []);
