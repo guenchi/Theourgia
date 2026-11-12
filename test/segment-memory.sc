@@ -91,6 +91,8 @@
 (define (iota* from to)
   (if (> from to) '() (cons from (iota* (+ from 1) to))))
 (define (segment-path dir w n) (string-append dir "/writers/" w "/" (segment-file-name n)))
+(define (segment-bytes dir w n)
+  (call-with-port (open-file-input-port (segment-path dir w n)) get-bytevector-all))
 
 ;; THE LOCAL WRITER W HOLDS 8 RECORDS IN THREE SEGMENTS (1-3, 4-6, 7-8);
 ;; with MIRROR?, the mirrored writer M holds 4 in one segment that its
@@ -149,6 +151,28 @@
     (load-commit! ls)
     (reverse got)))
 (define (all-of w from to) (map (lambda (k) (cons w k)) (iota* from to)))
+
+;; A RECORD OPENED THROUGH ITS TYPE, every field of the type and its
+;; parents, inside pairs and vectors: equal? compares records by identity,
+;; so a discovery is compared as what it holds.
+(define (opened x)
+  (cond
+    ((pair? x) (cons (opened (car x)) (opened (cdr x))))
+    ((vector? x) (vector-map opened x))
+    ((record? x)
+     (let walk ((rtd (record-rtd x)) (fields '()))
+       (if (not rtd)
+           (cons* 'record (record-type-name (record-rtd x)) fields)
+           (walk (record-type-parent rtd)
+                 (append (let loop ((i 0) (acc '()))
+                           (if (= i (vector-length (record-type-field-names rtd)))
+                               (reverse acc)
+                               (loop (+ i 1)
+                                     (cons (list (vector-ref (record-type-field-names rtd) i)
+                                                 (opened ((record-accessor rtd i) x)))
+                                           acc))))
+                         fields)))))
+    (else x)))
 
 ;; what a discovery says about where a writer stops and why
 (define (extent p)
@@ -224,12 +248,12 @@
        (before (extent (discover-prefix dir W 'shared memory)))
        (path (segment-path dir W 2))
        (_ (flip-at! path (title-offset (call-with-port (open-file-input-port path) get-bytevector-all) W 5)))
-       (after (extent (discover-prefix dir W 'shared memory)))
-       (base (extent (discover-prefix dir W 'shared))))
+       (after (discover-prefix dir W 'shared memory))
+       (base (discover-prefix dir W 'shared)))
   (want "SM-3 CONTROL: undamaged, W reaches 8 with no note"
         before (list 8 '()))
-  (want "SM-3 a middle segment damaged between two discoveries handed one memory is cut where a discovery with no memory cuts it"
-        (list (equal? after base) after)
+  (want "SM-3 a middle segment damaged between two discoveries handed one memory is cut where a discovery with no memory cuts it, the whole discovery equal"
+        (list (equal? (opened after) (opened base)) (extent after))
         (list #t (list 4 (list (list 'crc 2 (bytevector-length (record W 4))))))))
 
 ;; A LISTED SEGMENT REPLACED AT THE SAME LENGTH: the manifest still names
@@ -240,12 +264,12 @@
        (before (extent (discover-prefix dir M 'shared memory)))
        (path (segment-path dir M 1))
        (_ (flip-at! path (title-offset (call-with-port (open-file-input-port path) get-bytevector-all) M 2)))
-       (after (extent (discover-prefix dir M 'shared memory)))
-       (base (extent (discover-prefix dir M 'shared))))
+       (after (discover-prefix dir M 'shared memory))
+       (base (discover-prefix dir M 'shared)))
   (want "SM-3 CONTROL: as published, M reaches 4 with no note"
         before (list 4 '()))
-  (want "SM-3 a listed segment replaced at its length between two discoveries handed one memory fails the manifest's hash as with no memory"
-        (list (equal? after base) after)
+  (want "SM-3 a listed segment replaced at its length between two discoveries handed one memory fails the manifest's hash as with no memory, the whole discovery equal"
+        (list (equal? (opened after) (opened base)) (extent after))
         (list #t (list 0 (list (list 'manifest-hash 1 0))))))
 
 ;; BYTES THAT GREW: W's highest segment gains record 9 between two loads
@@ -269,13 +293,103 @@
                       (list 'delivery W 1 'replayed 3) (list 'delivery W 2 'replayed 3)
                       (list 'delivery W 3 'replayed 3)))))
 
+;; A LISTED SEGMENT REPUBLISHED between two loads handed one memory, with
+;; new bytes (record 5 appended), a new digest and a new range in the
+;; manifest: accepted as a load with no memory accepts it. The digest is
+;; the new bytes', never the remembered one.
+(define (publish! dir w seg)
+  (write-manifest! dir w (list (list 1 (bytevector->hex (sha256 seg)) 1 (segment-records seg)))))
+(define (segment-records bv)
+  (let loop ((i 0) (n 0))
+    (cond ((= i (bytevector-length bv)) n)
+          ((= 10 (bytevector-u8-ref bv i)) (loop (+ i 1) (+ n 1)))
+          (else (loop (+ i 1) n)))))
+(let* ((dir (build! (test-dir "segmem-republish") #t))
+       (memory (make-load-memory))
+       (first (load! dir memory))
+       (_ (let ((seg (records M 1 5))) (put! (segment-path dir M 1) seg) (publish! dir M seg)))
+       (second #f)
+       (text (traced (lambda () (set! second (load! dir memory))))))
+  (want "SM-3 a listed segment republished with new bytes, digest and range between two loads handed one memory is accepted as with no memory"
+        (list (equal? second (load! dir #f))
+              (filter (lambda (e) (string=? (car e) M)) second)
+              (filter (lambda (e) (string=? (cadr e) M)) (memory-events text)))
+        (list #t (all-of M 1 5)
+              (list (list 'validation M 1 'extended 5) (list 'delivery M 1 'replayed 5)))))
+
+;; AN ENTRY WITH A DIGEST AND NO TRANSCRIPT: a manifest naming another hash
+;; ends the segment before its scan, so the memory holds the bytes and
+;; their digest only. The manifest corrected, the next load scans the
+;; segment and delivers it.
+(let* ((dir (build! (test-dir "segmem-corrected") #t))
+       (memory (make-load-memory))
+       (seg (segment-bytes dir M 1))
+       (_ (write-manifest! dir M (list (list 1 (bytevector->hex (sha256 (records W 1 1))) 1 4))))
+       (refused (extent (discover-prefix dir M 'shared memory)))
+       (_ (publish! dir M seg))
+       (got #f)
+       (text (traced (lambda () (set! got (load! dir memory))))))
+  (want "SM-3 an entry a hash test ended before its scan is scanned by the next load once the manifest is corrected, and delivered"
+        (list refused
+              (filter (lambda (e) (string=? (car e) M)) got)
+              (filter (lambda (e) (string=? (cadr e) M)) (memory-events text)))
+        (list (list 0 (list (list 'manifest-hash 1 0)))
+              (all-of M 1 4)
+              (list (list 'validation M 1 'scanned 4) (list 'delivery M 1 'replayed 4)))))
+
+;; A HIGHEST SEGMENT SHORTENED between two loads handed one memory: the
+;; shorter bytes are not the remembered ones and do not begin a longer
+;; remembered copy, so the segment is scanned again.
+(let* ((dir (build! (test-dir "segmem-shorten") #f))
+       (memory (make-load-memory))
+       (first (load! dir memory))
+       (_ (put! (segment-path dir W 3) (records W 7 7)))
+       (second #f)
+       (text (traced (lambda () (set! second (load! dir memory))))))
+  (want "SM-3 a highest segment shortened between two loads handed one memory delivers what a load with no memory delivers, and is scanned again"
+        (list (equal? second (load! dir #f)) (length second)
+              (filter (lambda (e) (eqv? (caddr e) 3)) (memory-events text)))
+        (list #t 7 (list (list 'validation W 3 'scanned 1) (list 'delivery W 3 'replayed 1)))))
+
+;; THE SAME REMEMBERED BYTES UNDER OTHER ARGUMENTS, at the level of a load:
+;; a delivery from a cut (each segment's expected sequence and the records
+;; it hands on are delivery's, not the first load's), and a retirement
+;; marker added between two discoveries (a ceiling stops the replay where
+;; it stops a scan).
+(let* ((dir (build! (test-dir "segmem-cut") #f))
+       (memory (make-load-memory))
+       (_ (load! dir memory))
+       (from-cut (lambda (memory)
+                   (let ((ls (if memory (log-open-with-memory dir memory) (log-open dir))) (got '()))
+                     (load-deliver! ls (list (cons W 4))
+                                    (lambda (w seg off seq ts actor deps payload)
+                                      (set! got (cons (cons w seq) got))))
+                     (load-commit! ls)
+                     (reverse got))))
+       (got #f)
+       (text (traced (lambda () (set! got (from-cut memory))))))
+  (want "SM-3 a delivery from a cut, after a whole load with one memory, delivers what one with no memory delivers, from the cut's segment, replayed"
+        (list (equal? got (from-cut #f)) got
+              (filter (lambda (e) (eq? (car e) 'delivery)) (memory-events text)))
+        (list #t (all-of W 5 8)
+              (list (list 'delivery W 2 'replayed 3) (list 'delivery W 3 'replayed 2)))))
+(let* ((dir (build! (test-dir "segmem-retire") #f))
+       (memory (make-load-memory))
+       (_ (discover-prefix dir W 'shared memory))
+       (at (+ (bytevector-length (record W 4)) (bytevector-length (record W 5))))
+       (_ (put! (string-append dir "/writers/" W "/retired.sexp")
+                (string->utf8 (format "((prefix 2 ~a 5))\n" at))))
+       (after (discover-prefix dir W 'shared memory))
+       (base (discover-prefix dir W 'shared)))
+  (want "SM-3 a retirement marker added between two discoveries handed one memory stops W where a discovery with no memory stops it, the whole discovery equal"
+        (list (equal? (opened after) (opened base)) (discovery-end-seq after))
+        (list #t 5)))
+
 ;; =============================================================================
 (printf "== a load lets go of its memory when its delivery ends ==\n")
 ;; A SESSION THAT IS KEPT must not keep every segment's bytes and frames:
 ;; the load's own memory is dropped when its delivery ends, and a memory
 ;; a caller handed in stays with the caller, not emptied.
-(define (segment-bytes dir w n)
-  (call-with-port (open-file-input-port (segment-path dir w n)) get-bytevector-all))
 (define local-bytes
   (apply + (map (lambda (n) (bytevector-length (segment-bytes local W n))) '(1 2 3))))
 (let* ((ls (log-open local))

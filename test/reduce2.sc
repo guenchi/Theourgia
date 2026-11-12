@@ -413,12 +413,14 @@
 (define (parse-count thunk)
   (length (filter (lambda (l) (has-substring? l "(trace parse"))
                   (lines-of (traced thunk)))))
-;; The frames delivery handed on, summed over its memory events
-;; `(trace memory (delivery <writer> <segment> <how>) <frames>)`.
-(define (delivered-frames thunk)
-  (apply + (map (lambda (l) (cadddr (read (open-string-input-port l))))
-                (filter (lambda (l) (has-substring? l "(trace memory (delivery "))
-                        (lines-of (traced thunk))))))
+;; The segments delivery visited, each (writer segment frames), from its
+;; memory events `(trace memory (delivery <writer> <segment> <how>) <frames>)`.
+(define (delivered-segments thunk)
+  (map (lambda (l)
+         (let* ((d (read (open-string-input-port l))) (s (caddr d)))
+           (list (symbol->string (cadr s)) (caddr s) (cadddr d))))
+       (filter (lambda (l) (has-substring? l "(trace memory (delivery "))
+               (lines-of (traced thunk)))))
 ;; A TWIN STORE HOLDING THE SAME CORPUS AND NO SNAPSHOT. Reading at a
 ;; cut would have been the cheaper baseline, but that path deliberately
 ;; replays twice -- once to judge the cut and once to build the state --
@@ -437,11 +439,13 @@
       (list (parse-count (lambda () (open-and-reduce d)))
             (parse-count (lambda () (open-and-reduce d2))))
       (list 13 13))
-(want "resuming delivers fewer frames than reading the same corpus cold: from the cut's segment, not the first"
-      (let ((resume (delivered-frames (lambda () (open-and-reduce d))))
-            (cold (delivered-frames (lambda () (open-and-reduce d2)))))
-        (list (< resume cold) resume cold))
-      (list #t 7 9))
+(want "resuming delivers from the segment holding the cut's next record and skips a writer the snapshot covers: the segments delivery visited and their frames, 7 against a cold load's 9"
+      (let ((resume (delivered-segments (lambda () (open-and-reduce d))))
+            (cold (delivered-segments (lambda () (open-and-reduce d2)))))
+        (list resume cold (apply + (map caddr resume)) (apply + (map caddr cold))))
+      (list (list (list V 1 3) (list W 1 4))
+            (list (list U 1 2) (list V 1 3) (list W 1 4))
+            7 9))
 
 (printf "== the applied frontier of a read stops before what is pending ==\n")
 ;; RULING: THE READ PATH'S APPLIED FRONTIER IS THE REDUCTION'S OWN CUT.
