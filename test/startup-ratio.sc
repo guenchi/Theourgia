@@ -56,14 +56,14 @@
 ;; loaded pass is read by its minima, and its plateaus and spreads are
 ;; printed as information, never as a refusal.
 ;;
-;; BEFORE CALIBRATION, FIVE ROWS ARE RED BY DESIGN, and each says
+;; BEFORE CALIBRATION, FOUR ROWS ARE RED BY DESIGN, and each says
 ;; `uncalibrated` in its reading, so a run before the record is filled can be
-;; told from a defect: C1 (the row), C2 (the heavy tree over K), C4b (K's
-;; derivation on the recorded values), C5 (the reference's recorded size and
-;; md5) and C5b's source md5. Any other red, or one of these five reading
-;; something other than `uncalibrated`, is a defect. And with
+;; told from a defect: C2 (the heavy tree over K), C4b (K's derivation on the
+;; recorded values), C5 (the reference's recorded size and md5) and C5b's
+;; source md5; C1's reading says it too. Any other red, or one of these four
+;; reading something other than `uncalibrated`, is a defect. And with
 ;; THEOURGIA_F54_SKIP_LOAD=1 -- alone runs only; the suite never sets it --
-;; C3's three rows read `load-not-granted`, a red: the loaded pass makes the
+;; C3's two rows read `load-not-granted`, a red: the loaded pass makes the
 ;; machine fully busy, and is run only on a grant.
 ;;
 ;; ENVIRONMENT READ: THEOURGIA_TEST_ROOT (where the copies go),
@@ -71,7 +71,12 @@
 ;; directories and the igropyr/ the tree copies link to). CHEZSCHEMELIBEXTS
 ;; is SET for every start the launcher makes, never inherited.
 ;;
-;; THE CELLS. C1 the row; C2 a heavy copy of the tree (core.sc's import form
+;; SINCE THE LINE IS THE COMPILED OBJECTS' (test/startup-compiled.sc, the
+;; ruling of 2026-10-13), C1's colour and C3's absorption are printed
+;; readings of the source form, not rows; the judge, its calibration and
+;; the instrument's own checks stay rows.
+;;
+;; THE CELLS. C1 the reading; C2 a heavy copy of the tree (core.sc's import form
 ;; gains (theourgia store) and (theourgia daemon)) reads a ratio over K; C3
 ;; the load this file makes is visible, and the ratio absorbs at least half
 ;; of it (the load amendment); C4 the judge on fixed
@@ -289,9 +294,11 @@
 (want "C1 arm B's starts all exit 0 (the reference program ran)"
       (filter (lambda (s) (not (eqv? s 0))) quiet-b-status)
       '())
-(want "C1 f54-judge on ten interleaved pairs answers green"
-      (car quiet)
-      'green)
+;; A READING, NOT A ROW: the quiet ratio from source against the F54
+;; reference. The start-up line is judged on compiled objects
+;; (test/startup-compiled.sc, the ruling of 2026-10-13); the judge and its
+;; calibration stay held (C2, C4, C4b).
+(printf "C1 reading: f54-judge on ten interleaved pairs from source answers ~a\n" (car quiet))
 (want "C6 the starts were interleaved, A B then B A, never all A then all B"
       (call-with-input-file trace-path
         (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))
@@ -391,9 +398,10 @@
 (want "C3 the load was running: one busy loop per core, all alive during the loaded pass"
       (if skip-load 'load-not-granted (car c3-reading))
       busy-count)
-(want "C3 the load moved A (rA >= 1.25) and the ratio absorbed at least half of it (|rR - 1| <= (rA - 1) / 2)"
-      (if skip-load 'load-not-granted (cdr c3-reading))
-      '(#t #t))
+;; A READING, NOT A ROW: whether the ratio absorbed the load is a reading of
+;; the source form, judged nowhere now that the line is the compiled one.
+(printf "C3 reading: the load moved A (rA >= 1.25) and the ratio absorbed at least half of it: ~a\n"
+        (if skip-load 'load-not-granted (cdr c3-reading)))
 (want "C3 every busy loop is stopped"
       (if skip-load
           'load-not-granted

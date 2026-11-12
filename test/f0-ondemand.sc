@@ -272,13 +272,13 @@
 (define timings (let loop ((n 10) (out '())) (if (zero? n) out (loop (- n 1) (cons (one-call-ms) out)))))
 (define observed (median timings))
 
-(want "COST-1 starting the command line costs no more than the tree before the heavy imports"
-      (if (<= observed budget-ms)
-          'within-budget
-          (list 'median observed 'budget budget-ms 'all timings))
-      'within-budget)
-
-(printf "   (COST-1 median ~a ms over 10 runs, budget ~a ms)\n" observed budget-ms)
+;; A READING, NOT A ROW. A start from source measures the compiler as
+;; much as the start, so the start-up line is judged on compiled objects
+;; (test/startup-compiled.sc, the ruling of 2026-10-13); this median and its
+;; old budget are printed so the source form's drift stays visible.
+(printf "COST-1 reading: median ~a ms over 10 runs from source, against the old budget ~a ms (~a); judged on compiled objects in startup-compiled.sc\n"
+        observed budget-ms (if (<= observed budget-ms) 'within 'over))
+(printf "   (COST-1 all ~a)\n" timings)
 
 ;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS: files and
 ;; directories under THEOURGIA_TEST_ROOT, socket paths under

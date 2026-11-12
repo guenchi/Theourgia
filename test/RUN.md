@@ -58,7 +58,11 @@ path.
 
 NOTE: **And a timing budget belongs to one form.** COST-1's budget is a
 source-form budget. The same change measured 188 ms from source and 9 ms
-from objects; quoting the first as what a user saves would be false.
+from objects; quoting the first as what a user saves would be false. So the
+start-up line is judged on objects: `startup-compiled.sc` builds the tree and
+its base (and, with `THEOURGIA_STARTUP_ORIGIN_LIBDIR`, the origin of the
+cumulative line) and alternates their starts; COST-1 and startup-ratio's C1
+are printed readings of the source form.
 
 ## The Python fixtures are in that number, and three files are not fixtures
 
