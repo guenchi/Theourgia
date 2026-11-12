@@ -408,6 +408,17 @@
         (list (load-remembered-bytes ls) (memory-remembered-bytes memory))
         (list 0 local-bytes)))
 
+;; A LOAD THAT IS NEVER DELIVERED lets go when it ends: committed after
+;; reading its prefixes, or aborted.
+(let* ((committed (log-open local))
+       (before (load-remembered-bytes committed)))
+  (load-commit! committed)
+  (let ((aborted (log-open local)))
+    (load-abort! aborted 'not-delivered)
+    (want "a load committed without a delivery, and one aborted, remember nothing once they end"
+          (list before (load-remembered-bytes committed) (load-remembered-bytes aborted))
+          (list local-bytes 0 0))))
+
 ;; =============================================================================
 (printf "== SM-6: past its bound, a memory scans at every ask ==\n")
 ;; THE BOUND COUNTS REMEMBERED BYTES. With room for W's first two segments

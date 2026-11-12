@@ -3405,6 +3405,10 @@
         ;; excludes, so nothing short of discarding and replaying it can
         ;; be correct -- and the log layer must not deliver again until
         ;; the reducer says it has done so.
+        ;; THE FRESH LOAD KEEPS ITS MEMORY UNTIL IT IS DELIVERED: on the
+        ;; reset branch that is session-reset-done!'s delivery, which the
+        ;; reducer's reset is waited for to make; a bounded window that ends
+        ;; in a delivery, where the memory is let go.
         (if (applied-beyond? s fresh)
             (begin
               (session-reset-pending-set! s #t)
@@ -7636,6 +7640,8 @@
     (refuse-unreadable-abort! ls)
     (check-terminal! 'load-commit! ls)
     (load-session-outcome-set! ls 'committed)
+    ;; A load committed without a delivery lets go of its memory here too.
+    (load-session-memory-set! ls remembers-nothing)
     (release-load! ls)
     (load-session-state ls))
 
@@ -7654,6 +7660,8 @@
         (tell-load-refused! (load-session-store ls) cause)))
     (load-session-state-set! ls '())
     (load-session-outcome-set! ls (list 'aborted reason))
+    ;; An aborted load lets go of its memory, delivered or not.
+    (load-session-memory-set! ls remembers-nothing)
     (release-load! ls)
     (load-session-outcome ls))
 
