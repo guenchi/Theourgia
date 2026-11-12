@@ -567,6 +567,8 @@
 ;; this store has none; `lock-wait` only when another process is
 ;; actually holding the lock. `ftruncate` is absent because this
 ;; fixture's tail is sound -- log12 has the row where it appears.
+;; `memory` is the commit's load saying how its memory answered each
+;; segment it scanned.
 (want "one ordinary commit emits exactly this vocabulary"
       (list-sort string<?
                  (let dedupe ((l (list-sort string<? k-ops)) (acc '()))
@@ -575,7 +577,7 @@
                          (else (dedupe (cdr l) (cons (car l) acc))))))
       (list-sort string<?
                  '("apply" "catch-up" "catch-up-path" "copy" "create" "enter-critical" "flock" "frame"
-                   "fsync" "log-open" "parse" "registry-check" "registry-write" "rename"
+                   "fsync" "log-open" "memory" "parse" "registry-check" "registry-write" "rename"
                    "unlock" "write")))
 ;; DEDUPLICATION THROWS AWAY THE THING THAT MATTERS. `apply` appearing
 ;; somewhere in the set was satisfied by delivery emitting it, which is

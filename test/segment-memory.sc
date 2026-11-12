@@ -54,11 +54,12 @@
                              (condition-message e)
                              e))))
        e0))))
+(include "expected.ss")
 (define-syntax want
   (syntax-rules ()
     ((_ label got expect)
      (begin (set! rows-run (+ rows-run 1))
-            (want-1 label (caught got) (caught expect))))))
+            (with-expected label expect (x) (want-1 label (caught got) (caught x)))))))
 
 (define root
   (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -418,6 +419,44 @@
     (want "a load committed without a delivery, and one aborted, remember nothing once they end"
           (list before (load-remembered-bytes committed) (load-remembered-bytes aborted))
           (list local-bytes 0 0))))
+
+;; A DELIVERY ABANDONED AS A KILL ABANDONS IT. igropyr discards a killed
+;; process's winders without running them, so a load whose delivery is
+;; killed stays delivering and its after-thunk never lets go. The seam does
+;; the same in this process: during a session's redelivery (a reload, which
+;; a mirror's new segment between two appends causes), the callback empties
+;; the winder list and leaves by a continuation taken outside. The session's
+;; end then lets the memory go, whatever the load's outcome.
+(let* ((dir (build! (test-dir "segmem-killed") #t))
+       (kill? #f)
+       (escape #f)
+       (s (log-begin dir (lambda (w seg off seq . rest)
+                           (when (and kill? (string=? w M) (= seq 5))
+                             (($primitive $current-winders) '())
+                             (escape 'killed))
+                           'applied)))
+       (append-one! (lambda (payload)
+                      (let ((v (session-view s)))
+                        (session-append! s (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                                       (view-expect-seq v) "agent:claude" '() payload)))))
+       (first (append-one! '(put "w.9" ())))
+       ;; the reducer confirms the append, so the session offers a view again
+       (_ (session-applied! s (session-epoch s) (list (cons W 9))))
+       (seg2 (record M 5))
+       ;; WRITTEN AS ANOTHER PROCESS'S PUBLICATION LEAVES IT: this process's
+       ;; session is the store's active operation, so log-publish! here is refused.
+       (_ (begin
+            (put! (segment-path dir M 2) seg2)
+            (put! (string-append dir "/writers/" M "/published.sexp")
+                  (string->utf8 (format "~s\n" (list (list 1 (bytevector->hex (sha256 (records M 1 4))) 1 4)
+                                                      (list 2 (bytevector->hex (sha256 seg2)) 5 5)))))))
+       (left (call/cc (lambda (k) (set! escape k) (set! kill? #t) (append-one! '(put "w.10" ())))))
+       (ls (session-load s))
+       (during (list left (load-outcome ls) (> (load-remembered-bytes ls) 0))))
+  (log-end! s)
+  (want "a session whose load was left delivering, as a killed delivery leaves it, lets its memory go when the session ends"
+        (list during (load-remembered-bytes ls))
+        (list (list 'killed 'delivering #t) 0)))
 
 ;; =============================================================================
 (printf "== SM-6: past its bound, a memory scans at every ask ==\n")

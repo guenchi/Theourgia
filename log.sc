@@ -3135,6 +3135,11 @@
       (lambda () (if #f #f))
       (lambda ()
         (let ((ls (session-load s)))
+          ;; THE SESSION'S LOAD LETS GO OF ITS MEMORY WHATEVER ITS OUTCOME: a
+          ;; delivery whose process was killed leaves the load delivering,
+          ;; with no after-thunk run to let go, and the session's end is the
+          ;; one place left that sees it.
+          (load-session-memory-set! ls remembers-nothing)
           (when (eq? (load-outcome ls) 'open) (load-commit! ls))))
       (lambda ()
         (dynamic-wind
