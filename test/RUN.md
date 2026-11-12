@@ -580,15 +580,15 @@ set. A standard pass sets every opt-in the development machine can satisfy:
   PL-33, which tries `THEOURGIA_TEST_OTHER_VOLUME`, then `/tmp`, `/dev/shm` and
   `/var/tmp`, so the variable is needed only where none of those is on another
   volume (on the development machine none is);
-- `rustc` on the path: `eval-lang` RT-rust (`node` for RT-typescript and `cc`
-  for RT-c are on the path already).
+- `rustc` and `go` on the path: `eval-lang` RT-rust and RT-go (`node` for
+  RT-typescript and `cc` for RT-c are on the path already).
 
 A run in which one of these rows cannot run is refused on that fixture's
 count, and the fixture's own line says what the row needs: a SKIP line, or for
 `outline-rows` a NOTE line. Two kinds of row are not in the count. `eval-lang`
-RT-go and RT-java need a go toolchain and a Java runtime, which the development
-machine does not have installed; installing either adds its row to the run,
-and `eval-lang`'s count in the table moves with it. `facade-ffi` FF-04 runs
+RT-java needs a Java runtime, which the development machine does not have
+installed; installing one adds its row to the run, and `eval-lang`'s count in
+the table moves with it. `facade-ffi` FF-04 runs
 only on FreeBSD. And `tree-round-trip` (`THEOURGIA_ROUND_TRIP=1`) runs longer
 than the runner's 900 s limit, so a standard pass runs it alone, and the
 table's line for it is the skipped run's (0 rows).
