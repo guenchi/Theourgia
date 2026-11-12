@@ -1460,7 +1460,7 @@
   ;; Built only under the degeneracy switch: without it the binding is #f and
   ;; the procedure's code is not compiled into the product.
   (define identity-gates/full
-    (degeneracy-value
+    (degeneracy-value identity-gates
       (lambda (es)
         (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
           (define (status e)
@@ -1761,7 +1761,7 @@
             (let ((next (fold-left (lambda (best k) (if (position<? (slot-position j k) (slot-position j best)) k best))
                                    (car todo) (cdr todo))))
               (judgement-dirty-class-set! j (remove next (judgement-dirty-class j)))
-              (degeneracy-check
+              (degeneracy-check slot-classified-once
                 (when (hashtable-contains? classified next)
                   (assertion-violation 'degeneracy "a slot was classified twice in one run" next))
                 (hashtable-set! classified next #t))

@@ -822,9 +822,11 @@
           ;; is. Shifting both traces alike judges equal whatever counts are
           ;; picked, so the row also asserts the correspondence it relies on:
           ;; each of the three counts is its frame's payload in the base's log,
-          ;; the line's bytes after its crc. Then the NEW trace alone with its
-          ;; first parse count changed (a daemon that parsed another frame):
-          ;; that judgement is not equal.
+          ;; the line's bytes after its crc, and that the two frames shifted for the
+          ;; pid are the ones that hold it: the plan record's line holds the
+          ;; session id "w-<digits>-" twice and the next record's once. Then the
+          ;; NEW trace alone with its first parse count changed (a daemon that
+          ;; parsed another frame): that judgement is not equal.
           (let* ((frames (text-lines (file-text (string-append (car b) "/writers/" prepared-writer "/000001.sexp"))))
                  (plan-at (let find ((fs frames) (k 1))
                             (cond ((null? fs) #f) ((contains? (car fs) "(plan \"w-") k) (else (find (cdr fs) (+ k 1))))))
@@ -840,6 +842,18 @@
                                                                     ((char=? (string-ref l i) #\space) i)
                                                                     (else (find (+ i 1)))))))
                                    (and i (bytevector-length (string->utf8 (substring l (+ i 1) (string-length l)))))))))
+                 ;; -> how many session ids, "w-<digits>-" after a quote, frame K's
+                 ;; line holds; #f past the log
+                 (session-ids (lambda (k)
+                                (and k (>= k 1) (<= k (length frames))
+                                     (let ((l (list-ref frames (- k 1))))
+                                       (let count ((i 0) (n 0))
+                                         (cond ((> (+ i 4) (string-length l)) n)
+                                               ((and (string=? (substring l i (+ i 3)) "\"w-")
+                                                     (char-numeric? (string-ref l (+ i 3))))
+                                                (let ((j (digits-end l (+ i 3))))
+                                                  (count (+ j 1) (if (and (< j (string-length l)) (char=? (string-ref l j) #\-)) (+ n 1) n))))
+                                               (else (count (+ i 1) n))))))))
                  ;; -> TEXT with each parse line whose count TABLE names shifted
                  ;; by its delta (only the first such line when ONCE?), every
                  ;; other byte as it was
@@ -869,12 +883,13 @@
                            (list (cons (nth plan-at) 2) (cons (nth (+ plan-at 1)) 1)))))
             (printf "GUARD-3b frame 1's count ~s, the plan record (frame ~s) ~s, the next ~s~%"
                     (nth 1) plan-at (nth plan-at) (and plan-at (nth (+ plan-at 1))))
-            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
+            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log, and the plan record holds the session id twice and the next once; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
                   (list (and plan-at (for-all (lambda (k) (equal? (nth k) (payload k))) (list 1 plan-at (+ plan-at 1))))
+                        (and plan-at (list (session-ids plan-at) (session-ids (+ plan-at 1))))
                         (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
                         (and pid (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f)))
                         (and user (judged (cadr tb) (shifted (cadr tn) user #t))))
-                  '(#t #t #t #f)))))
+                  '(#t (2 1) #t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by

@@ -1049,7 +1049,7 @@
                  (counted (lambda (off seq ts actor deps payload)
                             (set! frames (fx+ frames 1))
                             (deliver off seq ts actor deps payload)))
-                 (outcome (degeneracy-value
+                 (outcome (degeneracy-value replay-scan
                             (replay-checked e writer seg bytes expected-seq recoverable-tail? counted)
                             (remembered-scan e writer seg expected-seq recoverable-tail? counted))))
             (memory-entry-found-set! e 'remembered)
@@ -7022,7 +7022,7 @@
                  ;; prefix: the next append validates in full (D2c).
                  (let ((outcome (guard (e (#t (session-own-prefix-set! s #f) (raise e)))
                                   (intent-timed 19 (frame-and-write! s frame p)))))
-                   (degeneracy-check (kept-prefix-compare! s store writer outcome))
+                   (degeneracy-check kept-prefix (kept-prefix-compare! s store writer outcome))
                    outcome))))))))
 
   ;; STEP 5: EVERYTHING THAT CAN REFUSE THE INPUT HAPPENS HERE, before a

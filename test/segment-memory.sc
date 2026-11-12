@@ -182,6 +182,8 @@
              (discovery-integrity p))))
 
 ;; =============================================================================
+;; THE INSTRUMENT A READING WAS TAKEN WITH, once, when any check is on
+(when (degeneracy-active) (printf "degeneracy: checks on ~s\n" (degeneracy-checks-on)))
 (printf "== SM-1: a cold read decodes each record once ==\n")
 (define local (build! (test-dir "segmem-local") #f))
 (define twin (build! (test-dir "segmem-twin") #t))
@@ -519,8 +521,8 @@
         (list first second)
         (list "agent:claude" "Xgent:claude"))
   (want "under the degeneracy switch, a consumer that changes a value it was delivered is named as that, never as a replay that differs"
-        (if (degeneracy-active) first 'switch-off)
-        (if (degeneracy-active)
+        (if (degeneracy-active replay-scan) first 'switch-off)
+        (if (degeneracy-active replay-scan)
             (list 'RAISED "degeneracy: a consumer changed a value it was delivered")
             'switch-off)))
 

@@ -557,7 +557,7 @@
                                            (list 'from (reduce-applied-cut a)) (list 'to (reduce-applied-cut b)))
                                      (marks 'case 'case-ambiguous)
                                      (marks 'normalisation 'normalisation-ambiguous))))
-                (degeneracy-check (set! result (changed-files-reference store a b pa pb result)))
+                (degeneracy-check changed-files-reference (set! result (changed-files-reference store a b pa pb result)))
                 result))))))
   (define (unique-groups gs)
     (let loop ((gs (list-sort (lambda (x y) (string<? (car x) (car y))) gs)) (out '()))

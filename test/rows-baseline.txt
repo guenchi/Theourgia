@@ -11,7 +11,7 @@ baseline-rules 34 37 7eb4a680097a8607f9d1f4da7cedeef5
 behind 41 44 329b21acc04911b4936545280a4e0ce0
 change-stream 131 164 2ee9b825adbb45108a04b34b1f24f217
 change-stream-client 21 32 c165fe770ba749eedcc6f0f6be3b7ba0
-change-stream-guard 16 24 a3660ecf318e34616b7c11d35a0dfef0
+change-stream-guard 16 24 67352f15192f879e314c8065490e0eb9
 changed-files 20 26 53bd05c23ac62cb2e3b6d11a7f4476d0
 cli-forward 25 28 6c5407a94f5be11f5df5ecb256908534
 cli1 105 131 51b305054c187f30f8f6d8bec49fe869
@@ -49,6 +49,7 @@ datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
 datum-import - 82 4dee5cd7bc67f8c48127c8c9a05574de
 datum-self 18 106 0f494adc88ab29b6652c4507523bc3ce
+degeneracy-switch 12 17 faa3e1c8501a0269b455ff8bcfc111d5
 delete-targets 6 11 653a019393e42e333291a45f9e018e40
 delivery-order 14 17 13c02eeb94258342fc083a1337f17d4f
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
@@ -181,7 +182,7 @@ sb2 17 27 f16f876905b29ef9d5f1471559f003ac
 scheme-definers 19 25 73dfb350e0fec2043d05b4caba297859
 scope-model 13 19 3cecaeb1c475debe3164a66df20d2b9a
 scope-once 18 29 febcf864621429514bc20ee9c9a06c5c
-segment-memory 29 38 187828918889ce084299d20a18101755
+segment-memory 29 38 0f718f164cb1a7068a289a7f4f2d7e45
 session-advance 61 71 4564bfeef2c307f00b296370cf23be36
 signal-audit 95 127 f32d37af2ae8b112fc0b9855a961521e
 since-contract 57 60 5f0385a577fc331100dca7ce193de5de

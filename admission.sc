@@ -202,7 +202,7 @@
         (admission-lifted-set! a lifted)
         (admission-added-set! a added)
         (admission-changed-set! a moved)
-        (degeneracy-check (judgements-compare a ids)))
+        (degeneracy-check admission-judgements (judgements-compare a ids)))
       (if #f #f)))
 
   ;; THE WHOLE JUDGEMENT BESIDE THE KEPT ONE, under the degeneracy switch only

@@ -1197,7 +1197,7 @@
       (reduction-applied-set!
         r (cons (cons writer seq)
                 (remp (lambda (e) (string=? (car e) writer)) (reduction-applied r))))
-      (degeneracy-check (structure-compare! r id))))
+      (degeneracy-check structure-per-record (structure-compare! r id))))
 
   (define (compute-past r writer seq deps)
     (let* ((direct (if (> seq 1) (cons (cons writer (- seq 1)) deps) deps)))
@@ -3158,7 +3158,7 @@
            (answer (if (equal? parent 'root)
                        (list-sort child<? (append own (cvec->list (structure-marked s) (lambda (e) #t))))
                        own)))
-      (degeneracy-check (siblings-list-compare r parent answer))
+      (degeneracy-check siblings-list (siblings-list-compare r parent answer))
       answer))
   ;; the last sibling's ord, or #f: what an insert or move with no `after` places
   ;; after
@@ -3169,7 +3169,7 @@
            (marked (and (equal? parent 'root) (cvec-last (structure-marked s) (lambda (e) #t))))
            (last (child-max own marked))
            (answer (and last (car last))))
-      (degeneracy-check (sibling-compare r parent #f answer))
+      (degeneracy-check sibling-order (sibling-compare r parent #f answer))
       answer))
   ;; (ord . next-ord) for the sibling AFTER and the one following it (next-ord #f
   ;; at the end), or #f when AFTER is not among PARENT's siblings
@@ -3195,7 +3195,7 @@
                                         (cvec-from m (cvec-lower m key) later?))))
                          (next (child-min own marked)))
                     (cons (car key) (and next (car next)))))))
-      (degeneracy-check (sibling-compare r parent after answer))
+      (degeneracy-check sibling-order (sibling-compare r parent after answer))
       answer))
 
   ;; ---- the degeneracy switch's other half: the computation the structure
@@ -3773,5 +3773,5 @@
       (unless (exists (lambda (row) (eq? 'consumed (car row))) rows)
         (rebuild-consumption-from-history! r))
       (structure-rebuild! r)
-      (degeneracy-check (structure-compare! r 'restored))
+      (degeneracy-check structure-restored (structure-compare! r 'restored))
       r)))
