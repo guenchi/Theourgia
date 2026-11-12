@@ -25,8 +25,15 @@
 ;; a callback stopping at each record in turn or never: replay-scan of the
 ;; transcript makes the same callback calls as scan-segment of the bytes,
 ;; and answers the same outcome, the error's every field included; and the
-;; transcript it answers, replayed to its end, IS the whole transcript of
-;; the bytes, whatever that replay answered (a refusal, a stop, an error).
+;; transcript it answers IS one of the transcripts of the bytes (none
+;; decoded, stopped after some record, whole), as it was answered, before
+;; anything replays it; and replayed to its end it IS the whole transcript
+;; of the bytes, whatever that replay answered (a refusal, a stop, an
+;; error). Those are the only transcripts a right replay can hand back: a
+;; refusal hands back the one it was given, a stop the one stopped at that
+;; record, and a replay that reaches the end the whole one; so a returned
+;; transcript wrong in any field is in none of them, even one that a
+;; further replay would rebuild right.
 ;;
 ;; RS-2. For every split of every segment into a prefix and the whole, and
 ;; every transcript of the prefix (those that ended in an error included):
@@ -261,6 +268,7 @@
 (define rs1-compared 0)
 (define (rs1-mismatches name bv)
   (let ((target (transcript-content (whole (transcript-of bv))))
+        (states (map transcript-content (transcripts bv)))
         (misses '()))
     (for-each
       (lambda (tr)
@@ -276,11 +284,13 @@
                         (let ((s (scan-reading bv (car ws) (cadr ws) expected recoverable stop-at)))
                           (let-values (((r tr*) (replay-reading* tr (car ws) (cadr ws) expected recoverable
                                                                  stop-at)))
-                            (let ((t (transcript-content (whole tr*))))
-                              (unless (and (equal? s r) (equal? t target))
+                            (let ((known (and (member (transcript-content tr*) states) #t))
+                                  (t (transcript-content (whole tr*))))
+                              (unless (and (equal? s r) known (equal? t target))
                                 (set! misses (cons (list 'covered (transcript-covered tr)
                                                       'expected expected 'recoverable recoverable
                                                       'stop stop-at 'scan s 'replay r
+                                                      'answered-a-transcript-of-the-bytes known
                                                       'answered-transcript (equal? t target))
                                                 misses)))))))
                       (stops bv)))
