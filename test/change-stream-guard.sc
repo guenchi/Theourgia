@@ -75,8 +75,10 @@
 ;; width (13-digit times, hashes, writer ids, the session's counter while both
 ;; daemons run one script), and the prepared store's frame, which holds the
 ;; user's name, is the same bytes in both copies. So the fixture reads each
-;; daemon's pid from its trace before any row and, when the widths differ,
-;; says NOT A READING (run it again) instead of comparing.
+;; daemon's pid from its trace before any row that reads the daemons (the
+;; made-up GUARD-0 rows come first) and, when the widths differ, says NOT A
+;; READING (run it again) instead of comparing; a suite run files that exit as
+;; a red, as it files this fixture's other NOT A READING exits.
 ;;
 ;; EACH DAEMON IS THE ONE THAT SHIPS: its tree's own theourgiad.sc serve,
 ;; which registers the verbs from outside the core table (extensions.sc)
@@ -810,22 +812,34 @@
                         (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
                 (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))
           ;; GUARD-3b THE SAME TWO TRACES AS ANOTHER MACHINE READS THEM, made up
-          ;; from this run's: the k-th parse line of the base's trace is the log's
-          ;; k-th frame (validation reads them in order), so frame 1's count and
-          ;; the counts of the plan record and the record after it are read
+          ;; from this run's: the k-th parse line of the base's trace is the base
+          ;; log's k-th frame (validation reads them in order), so frame 1's count
+          ;; and the counts of the plan record and the record after it are read
           ;; there, and every parse line of those counts is shifted in BOTH
           ;; traces: +1 on frame 1 (a user's name one letter longer), +2 on the
           ;; plan record and +1 on the next (pids one digit longer). Each is
           ;; judged against this file's listed lines as this machine's reading
-          ;; is. Then the NEW trace alone with its first parse count changed (a
-          ;; daemon that parsed another frame): that judgement is not equal.
-          (let* ((frames (text-lines (file-text (string-append (car n) "/writers/" prepared-writer "/000001.sexp"))))
+          ;; is. Shifting both traces alike judges equal whatever counts are
+          ;; picked, so the row also asserts the correspondence it relies on:
+          ;; each of the three counts is its frame's payload in the base's log,
+          ;; the line's bytes after its crc. Then the NEW trace alone with its
+          ;; first parse count changed (a daemon that parsed another frame):
+          ;; that judgement is not equal.
+          (let* ((frames (text-lines (file-text (string-append (car b) "/writers/" prepared-writer "/000001.sexp"))))
                  (plan-at (let find ((fs frames) (k 1))
                             (cond ((null? fs) #f) ((contains? (car fs) "(plan \"w-") k) (else (find (cdr fs) (+ k 1))))))
                  (count-of-line (lambda (l) (and (not (equal? (count-masked l) l))
                                                  (string->number (substring l (- (string-length (count-masked l)) 2) (- (string-length l) 1))))))
                  (counts (filter values (map count-of-line (text-lines (cadr tb)))))
                  (nth (lambda (k) (and k (>= k 1) (<= k (length counts)) (list-ref counts (- k 1)))))
+                 ;; -> the bytes of frame K's line after its first space, #f past the log
+                 (payload (lambda (k)
+                            (and k (>= k 1) (<= k (length frames))
+                                 (let* ((l (list-ref frames (- k 1)))
+                                        (i (let find ((i 0)) (cond ((= i (string-length l)) #f)
+                                                                    ((char=? (string-ref l i) #\space) i)
+                                                                    (else (find (+ i 1)))))))
+                                   (and i (bytevector-length (string->utf8 (substring l (+ i 1) (string-length l)))))))))
                  ;; -> TEXT with each parse line whose count TABLE names shifted
                  ;; by its delta (only the first such line when ONCE?), every
                  ;; other byte as it was
@@ -855,11 +869,12 @@
                            (list (cons (nth plan-at) 2) (cons (nth (+ plan-at 1)) 1)))))
             (printf "GUARD-3b frame 1's count ~s, the plan record (frame ~s) ~s, the next ~s~%"
                     (nth 1) plan-at (nth plan-at) (and plan-at (nth (+ plan-at 1))))
-            (want "GUARD-3b this run's two traces, as a machine whose user's name is one letter longer reads them and as one whose daemons' pids are one digit longer, judge equal against this file; the new trace alone with one parse count changed does not"
-                  (list (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
+            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
+                  (list (and plan-at (for-all (lambda (k) (equal? (nth k) (payload k))) (list 1 plan-at (+ plan-at 1))))
+                        (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
                         (and pid (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f)))
                         (and user (judged (cadr tb) (shifted (cadr tn) user #t))))
-                  '(#t #t #f)))))
+                  '(#t #t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by
