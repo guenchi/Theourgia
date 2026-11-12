@@ -56,6 +56,27 @@
 ;; The prepared store's writer is read as WRITER in the traces: `init`
 ;; names a new one on every run, and a listed line must name it the same
 ;; way every time.
+;; A PARSE LINE'S COUNT IS NOT A THING THE FILE CAN STATE. `(trace parse #f
+;; <n>)` counts a frame's bytes, and frames hold text whose length is the
+;; machine's: the prepared store's insert is made by the command line, whose
+;; actor is the OS user's name, and a commit's session id holds the writing
+;; daemon's pid. So a listed parse line is written with its count masked,
+;; `(trace parse #f #)`, and in the step that sets the listed lines against
+;; the traces (added lines against the new trace, removed lines against the
+;; base's surplus) a parse line of either trace is read with its count masked
+;; the same way. The surplus itself is still found on the real lines, and
+;; the byte comparison of the two traces keeps every digit. A listed parse
+;; line that carries a count is refused by name before anything is compared.
+;; THE TWO DAEMONS MUST HAVE PIDS OF ONE WIDTH. Each daemon writes its own
+;; records for the script, and the plan record of the script's commit holds
+;; its session id, "w-<pid>-<ms>-<n>", twice, the record after it once; the
+;; two traces parse those frames, so their counts agree only while the two
+;; pids have as many digits. Every other field of those frames is of fixed
+;; width (13-digit times, hashes, writer ids, the session's counter while both
+;; daemons run one script), and the prepared store's frame, which holds the
+;; user's name, is the same bytes in both copies. So the fixture reads each
+;; daemon's pid from its trace before any row and, when the widths differ,
+;; says NOT A READING (run it again) instead of comparing.
 ;;
 ;; EACH DAEMON IS THE ONE THAT SHIPS: its tree's own theourgiad.sc serve,
 ;; which registers the verbs from outside the core table (extensions.sc)
@@ -465,6 +486,21 @@
                          expected-differences))
       '()))
 (define (trace-entry? e) (and (pair? e) (memq (car e) '(trace-lines trace-lines-removed)) #t))
+;; -> LINE with a parse line's count read as "#": "(trace parse #f 113)" is
+;; "(trace parse #f #)"; any other line, and a parse line whose last token is
+;; not digits, is LINE itself
+(define (count-masked line)
+  (let ((n (string-length line)) (head "(trace parse "))
+    (if (and (> n (+ (string-length head) 1)) (string=? (substring line 0 (string-length head)) head)
+             (char=? (string-ref line (- n 1)) #\)))
+        (let back ((i (- n 2)))
+          (cond ((and (>= i 0) (char-numeric? (string-ref line i))) (back (- i 1)))
+                ((and (< i (- n 2)) (>= i 0) (char=? (string-ref line i) #\space))
+                 (string-append (substring line 0 (+ i 1)) "#)"))
+                (else line)))
+        line)))
+;; -> the listed LINES that are parse lines carrying a count
+(define (literal-count-lines lines) (filter (lambda (l) (not (equal? (count-masked l) l))) lines))
 ;; -> how many elements of XS equal X
 (define (count-of x xs) (length (filter (lambda (y) (equal? x y)) xs)))
 ;; -> XS without its repeats, in first-seen order
@@ -495,30 +531,41 @@
                            (if final? "\n" ""))))))
 ;; THE TRACE JUDGEMENT, of a BASE trace and a NEW one, with the ADDED and
 ;; the REMOVED lines the expect file lists (the rule is stated at the top of
-;; this file). -> (<equal, or (base new-without-added)> <listed added lines
-;; that break their rule> <listed removed lines that break theirs>)
+;; this file). A listed line is set against the traces' lines with a parse
+;; line's count masked on both sides; the subsequence that finds the base's
+;; surplus is walked on the real lines. -> (<equal, or (base
+;; new-without-added), or (literal-count <listed lines>) when a listed parse
+;; line carries a count> <listed added lines that break their rule> <listed
+;; removed lines that break theirs>)
 (define (trace-judgement base new added removed)
-  (let* ((base-lines (text-lines base))
-         (new-lines (text-lines new))
-         (kept (filter (lambda (l) (not (member l added))) new-lines))
-         (final? (lambda (t) (and (> (string-length t) 0) (char=? (string-ref t (- (string-length t) 1)) #\newline))))
-         ;; what the base holds beyond the kept lines, or #f when they are
-         ;; not a subsequence of it
-         (surplus (let walk ((bs base-lines) (ns kept) (out '()))
-                    (cond ((null? ns) (append (reverse out) bs))
-                          ((null? bs) #f)
-                          ((equal? (car bs) (car ns)) (walk (cdr bs) (cdr ns) out))
-                          (else (walk (cdr bs) ns (cons (car bs) out)))))))
-    (list (if (and surplus
-                   (= (length surplus) (length removed))
-                   (for-all (lambda (l) (= (count-of l surplus) (count-of l removed))) surplus)
-                   (eq? (final? base) (final? new)))
-              'equal
-              (list base (without-lines new added)))
-          (filter (lambda (l) (or (member l base-lines) (not (= (count-of l new-lines) (count-of l added)))))
-                  (unique added))
-          (filter (lambda (l) (not (= (- (count-of l base-lines) (count-of l kept)) (count-of l removed))))
-                  (unique removed)))))
+  (if (pair? (literal-count-lines (append added removed)))
+      (list (cons 'literal-count (literal-count-lines (append added removed))) '() '())
+      (let* ((base-lines (text-lines base))
+             (new-lines (text-lines new))
+             (listed? (lambda (l) (member (count-masked l) added)))
+             (kept (filter (lambda (l) (not (listed? l))) new-lines))
+             (final? (lambda (t) (and (> (string-length t) 0) (char=? (string-ref t (- (string-length t) 1)) #\newline))))
+             ;; what the base holds beyond the kept lines, or #f when they are
+             ;; not a subsequence of it
+             (surplus (let walk ((bs base-lines) (ns kept) (out '()))
+                        (cond ((null? ns) (append (reverse out) bs))
+                              ((null? bs) #f)
+                              ((equal? (car bs) (car ns)) (walk (cdr bs) (cdr ns) out))
+                              (else (walk (cdr bs) ns (cons (car bs) out))))))
+             (base-masked (map count-masked base-lines))
+             (new-masked (map count-masked new-lines))
+             (kept-masked (map count-masked kept))
+             (surplus-masked (and surplus (map count-masked surplus))))
+        (list (if (and surplus
+                       (= (length surplus) (length removed))
+                       (for-all (lambda (l) (= (count-of l surplus-masked) (count-of l removed))) surplus-masked)
+                       (eq? (final? base) (final? new)))
+                  'equal
+                  (list base (without-lines new (filter listed? new-lines))))
+              (filter (lambda (l) (or (member l base-masked) (not (= (count-of l new-masked) (count-of l added)))))
+                      (unique added))
+              (filter (lambda (l) (not (= (- (count-of l base-masked) (count-of l kept-masked)) (count-of l removed))))
+                      (unique removed))))))
 ;; THE JUDGEMENT ON MADE-UP TRACES, so its rule is read and not only its
 ;; one reading on the daemons: a removal of a line the new trace still
 ;; holds once is equal; a line listed removed once that the base holds
@@ -539,6 +586,56 @@
             (list #f '() '("p"))
             (list #f '() '())
             (list #f '("m") '())))
+;; THE MASKED MATCHING ON MADE-UP TRACES: two parse lines of any counts
+;; removed answer two listed masked lines, and one or three do not; a listed
+;; parse line with a count is refused before anything is compared; a parse
+;; line whose count changed and is not listed breaks the judgement (the
+;; traces' own comparison is not masked); a listed added parse line matches
+;; whatever its count; other lines are not masked.
+(want "GUARD-0f a listed parse line is matched with its count masked, a count is refused, the traces themselves are compared unmasked"
+      (append
+        (map (lambda (c)
+               (let ((j (apply trace-judgement c)))
+                 (list (cond ((eq? (car j) 'equal) #t)
+                             ((and (pair? (car j)) (eq? (caar j) 'literal-count)) (car j))
+                             (else #f))
+                       (cadr j) (caddr j))))
+             (list (list "p\n(trace parse #f 7)\n(trace parse #f 113)\nq\n" "p\nq\n" '() '("(trace parse #f #)" "(trace parse #f #)"))
+                   (list "p\n(trace parse #f 7)\n(trace parse #f 113)\nq\n" "p\nq\n" '() '("(trace parse #f #)"))
+                   (list "p\n(trace parse #f 7)\n(trace parse #f 113)\nq\n" "p\nq\n" '() '("(trace parse #f #)" "(trace parse #f #)" "(trace parse #f #)"))
+                   (list "p\n(trace parse #f 7)\nq\n" "p\nq\n" '() '("(trace parse #f 7)"))
+                   (list "p\n(trace parse #f 7)\n" "p\n(trace parse #f 8)\n" '() '())
+                   (list "p\n" "p\n(trace parse #f 5)\n" '("(trace parse #f #)") '())))
+        (list (map count-masked '("(trace parse #f 113)" "(trace memory (delivery WRITER 1 replayed) 12)" "(trace copy STORE/x 1638)"))))
+      (list (list #t '() '())
+            (list #f '() '("(trace parse #f #)"))
+            (list #f '() '("(trace parse #f #)"))
+            (list '(literal-count "(trace parse #f 7)") '() '())
+            (list #f '() '())
+            (list #t '() '())
+            '("(trace parse #f #)" "(trace memory (delivery WRITER 1 replayed) 12)" "(trace copy STORE/x 1638)")))
+;; -> the pid of daemon D, read from its trace: the directory its socket
+;; binds through is <socket>.d.<pid> (the daemon's first lines); #f when the
+;; trace does not name it
+(define (daemon-pid d)
+  (let* ((text (file-text (cadddr d))) (key (string-append (cadr d) ".d.")) (n (string-length key)))
+    (let find ((i 0))
+      (cond ((> (+ i n) (string-length text)) #f)
+            ((and (string=? (substring text i (+ i n)) key) (< (+ i n) (string-length text))
+                  (char-numeric? (string-ref text (+ i n))))
+             (substring text (+ i n) (digits-end text (+ i n))))
+            (else (find (+ i 1)))))))
+;; -> #f when the two daemons' pids (digit strings) are of one width, else
+;; why this run cannot be read
+(define (pid-width-refusal base-pid new-pid)
+  (cond ((not (and (string? base-pid) (string? new-pid)))
+         (format "a daemon's pid is not in its trace (base ~s, new ~s), so the widths of the two pids cannot be compared" base-pid new-pid))
+        ((= (string-length base-pid) (string-length new-pid)) #f)
+        (else (format "the two daemons' pids differ in width (base ~a, new ~a): a frame that holds a session id differs in length between the two logs; run again" base-pid new-pid))))
+(want "GUARD-0g pids of two widths refuse the run by name; pids of one width let it go on"
+      (list (pid-width-refusal "99990" "312") (pid-width-refusal "90996" "91038") (string? (pid-width-refusal #f "91038")))
+      (list "the two daemons' pids differ in width (base 99990, new 312): a frame that holds a session id differs in length between the two logs; run again"
+            #f #t))
 (define (resolve d args ids)
   (map (lambda (a) (let ((e (assoc a ids))) (if e (cdr e) a))) args))
 (define (run-script d)
@@ -581,6 +678,13 @@
            (_ (set! script (map (lambda (r) (map (lambda (a) (if (equal? a "SEED") seed a)) r)) script)))
            (b (start! "base" base-lib))
            (n (start! "new" this-lib))
+           ;; THE PIDS' WIDTHS, before any row (the header says why)
+           (_ (let ((why (pid-width-refusal (daemon-pid b) (daemon-pid n))))
+                (when why
+                  (printf "NOT A READING: ~a~%" why)
+                  (stop! b) (stop! n)
+                  (printf "change-stream-guard complete~%")
+                  (exit 2))))
            (rb (run-script b))
            (rn (run-script n)))
       (let* ((differing (let loop ((xs rb) (ys rn) (out '()))
@@ -694,14 +798,68 @@
                (base-set (cond ((null? (caddr tb)) 'none)
                                ((executor-pairs-hold? (caddr tb) (cadr tb)) 'paired)
                                (else (list 'unpaired (caddr tb))))))
-          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines and the expect file's listed trace lines left out, is byte for byte the base's with the listed removed lines taken out; every listed added line is absent from the base's trace and in the new trace exactly as many times as it is listed, and the base holds every listed removed line beyond the new trace exactly as many times as it is listed; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
+          (for-each (lambda (l)
+                      (printf "REFUSED: the expect file lists ~s with its count: a parse line's count is a frame's length, which holds the OS user's name and a daemon's pid, so it differs between machines; write it (trace parse #f #)~%" l))
+                    (literal-count-lines (append listed-trace-lines listed-removed-lines)))
+          (want "GUARD-3 a read and a commit are answered ok on both daemons, and the trace of them, Part B's executor lines and the expect file's listed trace lines (a parse line matched with its count masked) left out, is byte for byte the base's with the listed removed lines taken out; every listed added line is absent from the base's trace and in the new trace exactly as many times as it is listed, and the base holds every listed removed line beyond the new trace exactly as many times as it is listed; the base's executor lines are none (a base before Part B) or paired as the new daemon's are, and the new daemon's set (executing, executing-done, association-cleared #t) once per executed request"
                 (let ((j (trace-judgement (cadr tb) (cadr tn) listed-trace-lines listed-removed-lines)))
                   (list (car tb) (car tn)
                         (car j)
                         (append (cadr j) (caddr j))
                         base-set
                         (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
-                (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))))
+                (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))
+          ;; GUARD-3b THE SAME TWO TRACES AS ANOTHER MACHINE READS THEM, made up
+          ;; from this run's: the k-th parse line of the base's trace is the log's
+          ;; k-th frame (validation reads them in order), so frame 1's count and
+          ;; the counts of the plan record and the record after it are read
+          ;; there, and every parse line of those counts is shifted in BOTH
+          ;; traces: +1 on frame 1 (a user's name one letter longer), +2 on the
+          ;; plan record and +1 on the next (pids one digit longer). Each is
+          ;; judged against this file's listed lines as this machine's reading
+          ;; is. Then the NEW trace alone with its first parse count changed (a
+          ;; daemon that parsed another frame): that judgement is not equal.
+          (let* ((frames (text-lines (file-text (string-append (car n) "/writers/" prepared-writer "/000001.sexp"))))
+                 (plan-at (let find ((fs frames) (k 1))
+                            (cond ((null? fs) #f) ((contains? (car fs) "(plan \"w-") k) (else (find (cdr fs) (+ k 1))))))
+                 (count-of-line (lambda (l) (and (not (equal? (count-masked l) l))
+                                                 (string->number (substring l (- (string-length (count-masked l)) 2) (- (string-length l) 1))))))
+                 (counts (filter values (map count-of-line (text-lines (cadr tb)))))
+                 (nth (lambda (k) (and k (>= k 1) (<= k (length counts)) (list-ref counts (- k 1)))))
+                 ;; -> TEXT with each parse line whose count TABLE names shifted
+                 ;; by its delta (only the first such line when ONCE?), every
+                 ;; other byte as it was
+                 (shifted (lambda (text table once?)
+                            (let* ((ls (let walk ((ls (text-lines text)) (done #f) (out '()))
+                                         (if (null? ls)
+                                             (reverse out)
+                                             (let* ((l (car ls)) (v (count-of-line l)) (e (and v (not done) (assv v table))))
+                                               (if e
+                                                   (walk (cdr ls) once?
+                                                         (cons (string-append (substring l 0 (- (string-length (count-masked l)) 2))
+                                                                              (number->string (+ v (cdr e))) ")")
+                                                               out))
+                                                   (walk (cdr ls) done (cons l out)))))))
+                                   (final? (and (> (string-length text) 0)
+                                                (char=? (string-ref text (- (string-length text) 1)) #\newline))))
+                              (if (null? ls)
+                                  text
+                                  (string-append (car ls)
+                                                 (apply string-append (map (lambda (l) (string-append "\n" l)) (cdr ls)))
+                                                 (if final? "\n" ""))))))
+                 (judged (lambda (base new)
+                           (let ((j (trace-judgement base new listed-trace-lines listed-removed-lines)))
+                             (and (eq? (car j) 'equal) (null? (cadr j)) (null? (caddr j))))))
+                 (user (and (nth 1) (list (cons (nth 1) 1))))
+                 (pid (and (nth plan-at) (nth (and plan-at (+ plan-at 1)))
+                           (list (cons (nth plan-at) 2) (cons (nth (+ plan-at 1)) 1)))))
+            (printf "GUARD-3b frame 1's count ~s, the plan record (frame ~s) ~s, the next ~s~%"
+                    (nth 1) plan-at (nth plan-at) (and plan-at (nth (+ plan-at 1))))
+            (want "GUARD-3b this run's two traces, as a machine whose user's name is one letter longer reads them and as one whose daemons' pids are one digit longer, judge equal against this file; the new trace alone with one parse count changed does not"
+                  (list (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
+                        (and pid (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f)))
+                        (and user (judged (cadr tb) (shifted (cadr tn) user #t))))
+                  '(#t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by
