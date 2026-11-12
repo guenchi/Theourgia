@@ -113,14 +113,28 @@
 
 ;; ---- the record (recorded, never computed) --------------------------------------
 (define load-budget-record
-  '((base . "9af33ae")
-    (taken . "2026-11-11 18:42-18:48Z: three runs on the base's product files, 10000 records, 5 rounds")
+  '((base . "78803a7")
+    (taken . "2026-11-12 12:08-12:13Z: three runs on the base's product files, 10000 records, 5 rounds, alone")
     ;; Each threshold is the largest of the three readings times 1.15, the
     ;; readings beside it. A later step that lowers an arm records a new
     ;; threshold from its own reading.
-    (lb-1 . #e6.73) (lb-2 . #e4.32) (lb-3 . #e4.52) (lb-4 . #e4.31) (lb-d . #e1.87)
-    (readings (lb-1 5.834 5.854 5.776) (lb-2 3.726 3.754 3.722) (lb-3 3.876 3.932 3.894)
-              (lb-4 3.714 3.744 3.639) (lb-d 1.628 1.623 1.609))
+    ;;
+    ;; THE LOAD REMEMBERS WHAT IT DECODED (78803a7): every judged arm fell by
+    ;; about one decode pass (1.64 to 1.74 against LB-D's 1.62), and LB-D did
+    ;; not move, so it keeps its threshold. LB-4 fell by a whole pass, not a
+    ;; half: a daemon's read at a cut is one restricted load that still
+    ;; decodes the whole log. The window was taken at a 1-minute load of 4 to
+    ;; 6; LB-D read 1.605 to 1.633 against the first reading's 1.609 to 1.628,
+    ;; so the yardstick and the decoder stand where they stood, and no arm
+    ;; spread more than 1.6% over the three runs.
+    (lb-1 . #e4.85) (lb-2 . #e2.39) (lb-3 . #e2.51) (lb-4 . #e2.26) (lb-d . #e1.87)
+    (readings (lb-1 4.217 4.190 4.176) (lb-2 2.052 2.076 2.049) (lb-3 2.150 2.186 2.142)
+              (lb-4 1.955 1.957 1.967) (lb-d 1.620 1.605 1.633))
+    ;; THE FIRST READING, its thresholds replaced above: base 9af33ae,
+    ;; 2026-11-11 18:42-18:48Z.
+    (before (lb-1 . #e6.73) (lb-2 . #e4.32) (lb-3 . #e4.52) (lb-4 . #e4.31) (lb-d . #e1.87)
+            (readings (lb-1 5.834 5.854 5.776) (lb-2 3.726 3.754 3.722) (lb-3 3.876 3.932 3.894)
+                      (lb-4 3.714 3.744 3.639) (lb-d 1.628 1.623 1.609)))
     (reference-sha256 . "a77e68214614c2389ceee422bdb2aa49c9f17323ce579fb3c61d5fcbe8be3d73")
     (reference-lines . 164)))
 (define (record-ref key) (cdr (assq key load-budget-record)))
