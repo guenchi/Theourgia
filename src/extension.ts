@@ -65,7 +65,7 @@ import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, re
 import { HOVER_COMMANDS, HoverPlace, HoverService, blockAt as hoverBlockAt, hoverMarkdown, isSchemeLang, listEntries, nameUnder, readsSchemeNames } from './hover';
 import { blockLang, datumLanguageOf, datumNotice, datumViewOf, isDatumBlock, positionOf, recordedModeOf } from './datum-view';
 import { projectionNameFor } from './projection-name';
-import { ReviewRemovalFailure, SplitReviews } from './split-reviews';
+import { ReviewRemovalFailure, SplitReviews, filesShownBy } from './split-reviews';
 import { runSplit, savedText, splitRefusalNotice } from './split-symbols';
 import { ImportSource, importReport, runImport } from './import-symbols';
 import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
@@ -2947,21 +2947,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * A SPLIT'S REVIEW GOES WITH THE LAST TAB THAT SHOWS IT, in any group
      * and on either side of a diff. What is shown is read from the tabs as
      * they are after the change, not from the event's list of closed tabs,
-     * so a review still open in another tab or group stays.
+     * so a review still open in another tab or group stays. Every kind of
+     * editor counts, a custom or notebook editor too (filesShownBy).
      */
     vscode.window.tabGroups.onDidChangeTabs(() => {
-      const shown: string[] = [];
-      for (const group of vscode.window.tabGroups.all) {
-        for (const tab of group.tabs) {
-          const input = tab.input;
-          if (input instanceof vscode.TabInputText) {
-            shown.push(input.uri.fsPath);
-          } else if (input instanceof vscode.TabInputTextDiff) {
-            shown.push(input.original.fsPath, input.modified.fsPath);
-          }
-        }
-      }
-      reportReviewRemovals(splitReviews.closed(shown).failed);
+      reportReviewRemovals(splitReviews.closed(filesShownBy(vscode.window.tabGroups.all)).failed);
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),

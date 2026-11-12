@@ -29,7 +29,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { nodeFileOps } from '../../src/fsops';
 import { Liveness, Sessions } from '../../src/sessions';
-import { ReviewDisk, SplitReviews, nodeReviewDisk, sessionIsGone } from '../../src/split-reviews';
+import { ReviewDisk, SplitReviews, filesShownBy, nodeReviewDisk, sessionIsGone } from '../../src/split-reviews';
 
 const ALIVE: Liveness = { alive: true, because: 'identity-matches' };
 const DEAD: Liveness = { alive: false, because: 'pid-absent' };
@@ -141,15 +141,71 @@ describe('a split review goes with the last tab that shows it', () => {
     assert.deepStrictEqual(gone.map((d) => d.toLowerCase()), [made[0].toLowerCase()]);
   });
 
-  it('never takes a path with .. in it for one of its own reviews', () => {
+  /*
+   * A `..` AS IT ARRIVES. The paths are spelled out by hand, never joined
+   * or resolved, so the `..` reaches SplitReviews unread. `<root>/me/../a.js`
+   * is the shape that matters: its parent's parent spells this window's
+   * directory while its parent is the root itself. Through a disk that only
+   * records, under both systems' rules.
+   */
+  it('never takes a path with a raw .. in it for one of its own reviews, nor removes what the .. reaches', () => {
+    const cases: Array<[NodeJS.Platform, string, string]> = [
+      ['linux', '/r/storage/split', '/'],
+      ['win32', 'C:\\r\\storage\\split', '\\']
+    ];
+    for (const [platform, top, sep] of cases) {
+      const gone: string[] = [];
+      const disk: ReviewDisk = {
+        makeDirectory: () => undefined,
+        list: () => [],
+        removeTree: (d) => {
+          gone.push(d);
+        }
+      };
+      const reviews = new SplitReviews(top, 'me', () => ALIVE, disk, platform);
+      const raw = [top, 'me', '..', 'a.js'].join(sep);
+      assert.ok(raw.includes(`${sep}..${sep}`), `${raw} reached the cell without its ..`);
+      assert.deepStrictEqual(reviews.discard(raw), []);
+      reviews.opened(raw);
+      assert.deepStrictEqual(reviews.closed([]).removed, [], `${platform}: ${raw} was taken for a review`);
+      assert.deepStrictEqual(gone, [], `${platform}: a directory reached through .. was removed`);
+    }
+  });
+
+  /*
+   * WHAT THE TABS SHOW, by the fields of each tab's input: a text tab, a
+   * custom editor and a notebook by `uri`, a text or notebook diff by both
+   * sides, and a webview or an input with no file not at all. A review
+   * still open in a custom editor after its text tab closed is kept.
+   */
+  it('reads every file a tab shows, in any kind of editor, and keeps a review open only in a custom editor', () => {
+    const file = (fsPath: string) => ({ scheme: 'file', fsPath });
+    const groups = [
+      { tabs: [{ input: { uri: file('/t/text.js') } }, { input: { uri: file('/t/table.csv'), viewType: 'csv.edit' } }] },
+      {
+        tabs: [
+          { input: { uri: file('/t/book.ipynb'), notebookType: 'jupyter-notebook' } },
+          { input: { original: file('/t/a.js'), modified: file('/t/b.js') } },
+          { input: { original: file('/t/old.ipynb'), modified: file('/t/new.ipynb'), notebookType: 'jupyter-notebook' } },
+          { input: { viewType: 'markdown.preview' } },
+          { input: { uri: '/t/not-a-uri.js' } },
+          { input: undefined },
+          { input: null }
+        ]
+      }
+    ];
+    assert.deepStrictEqual(
+      filesShownBy(groups).sort(),
+      ['/t/text.js', '/t/table.csv', '/t/book.ipynb', '/t/a.js', '/t/b.js', '/t/old.ipynb', '/t/new.ipynb'].sort()
+    );
     const reviews = new SplitReviews(root, 'me', () => ALIVE);
-    const review = reviews.place('/src/a.js');
-    const sneaky = path.join(path.dirname(review), '..', '..', 'x', 'a.js');
-    fs.mkdirSync(path.join(root, 'x'), { recursive: true });
-    reviews.opened(sneaky);
-    assert.deepStrictEqual(reviews.closed([]).removed, []);
-    assert.deepStrictEqual(reviews.discard(path.join(root, 'me', '..', 'a.js')), []);
-    assert.ok(fs.existsSync(path.join(root, 'x')) && fs.existsSync(path.join(root, 'me')), 'a directory reached through .. was removed');
+    const review = reviews.place('/src/table.csv');
+    fs.writeFileSync(review, 'a,b');
+    reviews.opened(review);
+    const customOnly = [{ tabs: [{ input: { uri: file(review), viewType: 'csv.edit' } }] }];
+    assert.deepStrictEqual(reviews.closed(filesShownBy(customOnly)).removed, [], 'a review open in a custom editor was removed');
+    assert.strictEqual(fs.existsSync(review), true);
+    assert.deepStrictEqual(reviews.closed(filesShownBy([])).removed, [review]);
   });
 
   it('reports a removal that failed, throws nothing, and does not try it again', () => {

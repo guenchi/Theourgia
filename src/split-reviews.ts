@@ -95,6 +95,54 @@ export function sessionIsGone(liveness: Liveness): boolean {
   return liveness.because === 'record-missing';
 }
 
+/*
+ * A TAB AS THIS FILE READS IT: its input, of which only the fields that
+ * name files are read.
+ */
+export interface ShownTab {
+  readonly input: unknown;
+}
+
+/*
+ * THE FILES THE TABS SHOW, read from each tab's input by its fields, not
+ * by its class. A text editor, a custom editor and a notebook carry their
+ * file as `uri`; a text or notebook diff carries both sides as `original`
+ * and `modified`. Any other input with those fields is read the same way;
+ * an input with none of them (a webview, a terminal) shows no file.
+ *
+ * NEVER: A REVIEW STILL OPEN IS NOT TAKEN FOR CLOSED. Naming the kinds of
+ * tab that count missed every kind not named: a review reopened in a
+ * custom or notebook editor was removed when its last text tab closed.
+ * Reading the fields keeps a review shown by any editor this extension
+ * does not name.
+ */
+export function filesShownBy(groups: Iterable<{ readonly tabs: readonly ShownTab[] }>): string[] {
+  const shown: string[] = [];
+  for (const group of groups) {
+    for (const tab of group.tabs) {
+      const input = tab.input;
+      if (typeof input !== 'object' || input === null) {
+        continue;
+      }
+      for (const field of ['uri', 'original', 'modified']) {
+        const file = fsPathOf((input as Record<string, unknown>)[field]);
+        if (file !== undefined) {
+          shown.push(file);
+        }
+      }
+    }
+  }
+  return shown;
+}
+
+function fsPathOf(uri: unknown): string | undefined {
+  if (typeof uri !== 'object' || uri === null) {
+    return undefined;
+  }
+  const fsPath = (uri as { fsPath?: unknown }).fsPath;
+  return typeof fsPath === 'string' ? fsPath : undefined;
+}
+
 export class SplitReviews {
   /*
    * The reviews opened here, by their canonical form (`same`), each with
