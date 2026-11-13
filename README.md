@@ -5210,13 +5210,19 @@ them; any other bytes replace it. The start-up load finds the memory empty. A pr
 of the daemon other than the store process (a writer process's `write --expect`,
 `--based-on`, `--working-cut`, `--working-parent`, `restore`, `drafts`) is not handed it
 and loads with a memory of its own, as a command line does. `--memory-limit <bytes>`
-bounds it, in remembered segment bytes (default 268435456, 256 MiB): a segment is kept
-when it fits beside what is kept (an entry replaced by other bytes gives its bytes back
-first), and one that does not fit is scanned at every load, as without a memory. The heap a memory holds is its
-remembered bytes and the transcripts' frames beside them: measured on a store of 90
-segments and 58.5 MB, one full load's memory held 1.17 times its remembered bytes in
-heap (68.3 MB for 58.5 MB), so the 256 MiB default bounds about 300 MiB of heap. A value
-that is not a count is refused like `--session-size`'s. With `THEOURGIA_TRACE=1` each
+bounds it, in remembered segment bytes (default 268435456, 256 MiB; a daemon an MCP
+shell or a client starts uses the default). The bound is first come, first kept, with
+no eviction: a segment is kept when it fits beside what is kept; one that does not fit
+is not kept and is decoded at every load, twice (validation and delivery), as without a
+memory; and a kept segment that outgrows the bound is dropped (its entry gives its bytes
+back) and decoded twice per load from then on. THE HEAP A MEMORY HOLDS is its remembered
+bytes and the transcripts' frames beside them, measured on a store of 90 segments and
+58.5 MB after one full load: the memory alone holds 2.05 times its remembered bytes (120.0
+MB); while the store process also holds the reduction replayed from those frames, the two
+share most of it, and the memory adds 1.17 times (68.3 MB). A daemon whose reduction was
+seeded from a snapshot shares nothing with the memory: 2.05 times again. So the 256 MiB
+default can hold about 525 MiB of heap. A value that is not a count is refused like
+`--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
 counting the segment asks its memory answered each way. WHAT A LOAD DELIVERS IS SHARED:
 a record's actor, dependencies and encoded payload, and the strings inside them, are the

@@ -24,14 +24,19 @@
 ;;   SM-4  the second of two writes through the warm daemon decodes only the
 ;;         bytes appended since the store process's last load, and the cold
 ;;         daemon reads the store as the warm one published it
+;;   SM-4x a segment the warm daemon holds, grown since, is extended, not
+;;         scanned, and its load decodes only the appended lines (no switch)
 ;;   SM-5  a disturbance between two loads of the warm daemon (a sealed
 ;;         segment replaced at its length, a sealed segment truncated, the
 ;;         highest segment appended to by another process) is answered as the
-;;         cold daemon answers it
+;;         cold daemon answers it, the warm daemon proved to have served both
+;;         requests after it (its exact load counts, its pid still alive)
 ;;   SM-6  with --memory-limit below the log, every segment is scanned at
 ;;         every load, and the answers are the cold daemon's
 ;;   SM-7  a writer-process load (write --expect) leaves the store process's
 ;;         memory as it was, and answers as the cold daemon does
+;;   SM-9  a session no caller handed a memory (log-begin's, on the command
+;;         line) keeps none: its reload scans every segment again
 ;;   SM-8  a write session that reloads (a writer's metadata changed while it
 ;;         was parked before its append) reloads with its memory: the reload's
 ;;         load replays what the session's load scanned
@@ -225,8 +230,16 @@
 ;; WHAT A DAEMON ANSWERS FROM A LOAD: check and log are the store process's
 ;; requests, each a load (outline and read are answered from the published
 ;; value, without one)
-(define (loaded-readings)
-  (list (answer-of (through "check")) (answer-of (through "log"))))
+(define (served-readings)
+  (let* ((c (through "check")) (l (through "log")))
+    (list (list (answer-of c) (answer-of l)) (list (counts-of c) (counts-of l)))))
+(define (loaded-readings) (car (served-readings)))
+;; THE DAEMON THAT ANSWERED: a client with no daemon answers through a child of
+;; its own, so an answer alone does not say a daemon served it; a row reads the
+;; load-memory counts of the requests (one line per load the daemon ran) and
+;; that the daemon it started is still the one alive
+(define (daemon-pid) (let ((ps (daemon-pids))) (and (= 1 (length ps)) (car ps))))
+(define (alive-pid? pid) (and pid (zero? (system (string-append "kill -0 " (number->string pid) " 2>/dev/null"))) #t))
 ;; and what a reader sees of the store besides
 (define (readings)
   (append (loaded-readings)
@@ -303,6 +316,58 @@
       (equal? (decision (answer-of r3)) (decision (answer-of w3)))
       #t)
 
+;; ---- SM-4x: a segment the warm daemon holds, grown, is extended -------------------
+;;
+;; WITHOUT THE SWITCH, so the parse lines are the product's own (under it the
+;; witness scans each replayed segment again): three writes through the warm
+;; daemon on a fresh store. The first makes a new segment, the second grows it,
+;; and the third's load meets that segment grown since the store process last
+;; held it: extended, not scanned, and the lines it decodes are the ones the
+;; second write appended.
+(stop-daemon!)
+(build-store!)
+(start-daemon! "")
+(define x-id (car (ids-now)))
+(define (x-write! title req)
+  (let* ((c (cursor)) (p (format "((premise ~s ~s))" x-id (hash-of x-id))))
+    (through "set" x-id "title" title "--premises" p "--req" req "--cursor" c)))
+(define xw1 (x-write! "x1" "X1"))
+(define xs1 (highest-segment))
+(define xb1 (bytevector-length (segment-bytes xs1)))
+(define xw2 (x-write! "x2" "X2"))
+(define xs2 (highest-segment))
+(define xb2 (bytevector-length (segment-bytes xs2)))
+(define xw3-before (settled-log-length))
+(define xw3 (x-write! "x3" "X3"))
+(define xw3-text (let ((t (file-text log-path))) (substring t xw3-before (string-length t))))
+;; THE LOAD'S OWN DECODES: the parse lines between the load's log-open and its
+;; load-memory line (after it, the evidence index decodes on its own account)
+(define (load-parses text)
+  (let loop ((ls (lines-of text)) (in? #f) (n 0))
+    (cond ((null? ls) n)
+          ((has-prefix? (car ls) "(trace log-open") (loop (cdr ls) #t n))
+          ((has-prefix? (car ls) "(trace load-memory") (if in? n (loop (cdr ls) #f n)))
+          ((and in? (has-prefix? (car ls) "(trace parse")) (loop (cdr ls) #t (+ n 1)))
+          (else (loop (cdr ls) in? n)))))
+;; the lines the second write appended to the segment
+(define (lines-between bv from to)
+  (let loop ((i from) (n 0)) (if (>= i to) n (loop (+ i 1) (if (= 10 (bytevector-u8-ref bv i)) (+ n 1) n)))))
+(define (extended-events text seg)
+  (length (filter (lambda (l) (and (has-prefix? l "(trace memory (")
+                                   (let ((d (read-or-false l))) (and d (list? (caddr d)) (= 4 (length (caddr d)))
+                                                                     (eqv? (caddr (caddr d)) seg) (eq? (cadddr (caddr d)) 'extended)))))
+                  (lines-of text))))
+(define x-appended (lines-between (segment-bytes xs2) xb1 xb2))
+(printf "SM-4x writes: ~s ~s ~s; segment ~a grew ~a -> ~a bytes (~a lines); the third write's loads ~s, its load's parses ~a (the request's in all ~a), extended events ~a\n"
+        (decision (answer-of xw1)) (decision (answer-of xw2)) (decision (answer-of xw3)) xs2 xb1 xb2 x-appended
+        (counts-of xw3) (load-parses xw3-text) (parses-of xw3) (extended-events xw3-text xs2))
+(want "SM-4x the second write grew the segment the first made; the third write's load extended it (at least one extended ask, none scanned) and decoded only the lines the second write appended"
+      (list (= xs1 xs2) (> xb2 xb1)
+            (and (pair? (counts-of xw3)) (>= (list-ref (car (counts-of xw3)) 1) 1) (list-ref (car (counts-of xw3)) 3))
+            (> (extended-events xw3-text xs2) 0)
+            (= (load-parses xw3-text) x-appended))
+      (list #t #t 0 #t #t))
+
 ;; ---- SM-T: one load-memory line per load ----------------------------------------
 
 (want "SM-T every load the warm daemon ran for a write said once what its memory did"
@@ -330,24 +395,38 @@
 
 ;; ---- SM-5: disturbances between two loads of the warm daemon ---------------------
 
-(define (disturbed label disturb!)
+;; EXPECTED is the warm daemon's load-memory counts for the check and the log
+;; after the disturbance: the disturbed segment scanned (or extended), the
+;; others replayed
+(define (disturbed label expected disturb!)
   (stop-daemon!)
   (build-store!)
   (start-daemon! warm-switch)
-  (through "check")
-  (disturb!)
-  (let ((warm (loaded-readings)))
-    (start-daemon! "")
-    (let ((cold (loaded-readings)))
-      (unless (equal? warm cold) (printf "SM-5 ~a: warm ~s\n   cold ~s\n" label warm cold))
-      (want (string-append "SM-5 " label ": the warm daemon answers as a daemon started after it")
-            (equal? warm cold)
-            #t))))
+  (let ((pid (daemon-pid)))
+    (through "check")
+    (disturb!)
+    (let* ((warm (served-readings)) (alive (alive-pid? pid)))
+      (printf "SM-5 ~a: the warm daemon ~a (alive after: ~a) counted ~s\n" label pid alive (cadr warm))
+      (start-daemon! "")
+      (let ((cold (loaded-readings)))
+        (unless (equal? (car warm) cold) (printf "SM-5 ~a: warm ~s\n   cold ~s\n" label (car warm) cold))
+        (want (string-append "SM-5 " label ": the warm daemon, still the one alive, served both requests after the disturbance with these loads, and answers as a daemon started after it")
+              (list (equal? (car warm) cold) (cadr warm) alive)
+              (list #t expected #t))))))
+;; check runs two loads, its own (validation only: three asks) and the one it
+;; nests (validation and delivery: six), the nested one ending first; log one
+;; (six). The first load to see a disturbed segment scans it once; after it the
+;; memory holds the new bytes and every ask replays.
 (disturbed "a sealed segment replaced at its length"
+           '(((replayed-or-extended 6 scanned 0) (replayed-or-extended 2 scanned 1)) ((replayed-or-extended 6 scanned 0)))
            (lambda () (put! (segment-path 1) (records 1 3 "x"))))
+;; truncated, segment 2 ends the writer's readable prefix, so segment 3 is not asked
 (disturbed "a sealed segment truncated"
+           '(((replayed-or-extended 4 scanned 0) (replayed-or-extended 1 scanned 1)) ((replayed-or-extended 4 scanned 0)))
            (lambda () (let ((b (segment-bytes 2))) (put! (segment-path 2) (bytevector-prefix b (- (bytevector-length b) 7))))))
+;; appended, the highest segment is extended (counted with the replays), none scanned
 (disturbed "the highest segment appended to by another process, without the lock"
+           '(((replayed-or-extended 6 scanned 0) (replayed-or-extended 3 scanned 0)) ((replayed-or-extended 6 scanned 0)))
            (lambda () (append! (segment-path (highest-segment)) (record (+ 1 (end-seq)) "lockless"))))
 
 ;; ---- SM-6: a limit below the log ------------------------------------------------
@@ -366,11 +445,17 @@
             (for-all (lambda (c) (and (list? c) (eqv? 0 (list-ref c 1)))) (append (counts-of l1) (counts-of l2)))
             (equal? (counts-of l1) (counts-of l2)))
       '(#t #t #t))
-(define limited (loaded-readings))
+(define limited-pid (daemon-pid))
+(define limited* (served-readings))
+(define limited-alive (alive-pid? limited-pid))
+(printf "SM-6 the limited daemon ~a (alive after: ~a) counted ~s\n" limited-pid limited-alive (cadr limited*))
 (start-daemon! "")
-(want "SM-6 and its answers are a daemon's with no limit, just started"
-      (equal? limited (loaded-readings))
-      #t)
+(want "SM-6 and its answers, the limited daemon still the one alive and its loads replaying nothing, are a daemon's with no limit, just started"
+      (list (equal? (car limited*) (loaded-readings))
+            (for-all (lambda (cs) (and (pair? cs) (for-all (lambda (c) (and (list? c) (eqv? 0 (list-ref c 1)))) cs)))
+                     (cadr limited*))
+            limited-alive)
+      '(#t #t #t))
 
 ;; ---- SM-8: a write session that reloads -----------------------------------------
 ;;
@@ -440,6 +525,47 @@
             (and (= 2 (length counts8)) (list? (cadr counts8)) (list-ref (cadr counts8) 3)))
       '(#t (error refused epoch) 2 0))
 
+;; ---- SM-9: a session that no caller handed a memory keeps none ------------------
+;;
+;; A WRITE ON THE COMMAND LINE (THEOURGIA_LOCAL=1: log-begin, no daemon, no
+;; provider), parked before its append while owner.sexp's bytes change, as SM-8:
+;; its reload is a second load in the same session, and with no memory kept by
+;; the session it scans every segment again.
+(stop-daemon!)
+(build-store!)
+(define fifo9 (string-append root "/before-append-9.fifo"))
+(system (string-append "rm -f '" fifo9 "'; mkfifo '" fifo9 "'"))
+(define t9 (car (ids-now)))
+(define out9 (string-append root "/client9.out"))
+(define err9 (string-append root "/client9.err"))
+(call-with-output-file (string-append root "/client9.sh")
+  (lambda (p)
+    (put-string p (string-append (env (string-append "THEOURGIA_LOCAL=1 THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" fifo9))
+                                 "scheme --script ../core.sc set " (sh-quoted t9) " title parked9 --store " (sh-quoted store)
+                                 " --wire > " (sh-quoted out9) " 2> " (sh-quoted err9) " < /dev/null; touch " (sh-quoted (string-append out9 ".done")) "\n")))
+  'replace)
+(system (string-append "sh '" root "/client9.sh' &"))
+(define parked9
+  (let wait ((k 0))
+    (cond ((let find ((t (file-text err9)) (i 0))
+             (and (< (+ i 30) (string-length t))
+                  (or (string=? (substring t i (+ i 30)) "(trace barrier before-append #") (find t (+ i 1)))))
+           #t)
+          ((> k 600) #f)
+          (else (system "sleep 0.05") (wait (+ k 1))))))
+(when parked9
+  (append! (string-append store "/writers/" W "/owner.sexp") (string->utf8 "\n"))
+  (call-with-output-file fifo9 (lambda (p) (display "x" p)) 'append))
+(let wait ((k 0)) (unless (or (file-exists? (string-append out9 ".done")) (> k 600)) (system "sleep 0.05") (wait (+ k 1))))
+(define counts9
+  (map (lambda (l) (let ((d (read-or-false l))) (and d (caddr d))))
+       (filter (lambda (l) (has-prefix? l "(trace load-memory")) (lines-of (file-text err9)))))
+(printf "SM-9 parked ~a; its loads ~s\n" parked9 counts9)
+(want "SM-9 a command-line write parked before its append reloaded after the metadata moved, and the reload, handed no kept memory, scanned every segment again"
+      (list parked9
+            (and (pair? counts9) (list? (car (last-pair counts9))) (list-ref (car (last-pair counts9)) 3)))
+      (list #t (highest-segment)))
+
 ;; ---- SM-7: a writer-process load ------------------------------------------------
 
 (stop-daemon!)
@@ -463,9 +589,11 @@
       (list (list (list 'replayed-or-extended (highest-segment) 'scanned (highest-segment))) #t))
 (define warm-write (answer-of x1))
 (start-daemon! "")
-(want "SM-7 and the same write --expect through a daemon just started answers alike"
-      (decision (answer-of (through "write" t7 "(draft text)" "--writer" "d1" "--expect" (hash-of t7))))
-      (decision warm-write))
+(define cold-pid (daemon-pid))
+(define x2 (through "write" t7 "(draft text)" "--writer" "d1" "--expect" (hash-of t7)))
+(want "SM-7 and the same write --expect through a daemon just started answers alike, that daemon serving it (one load line, its pid alive after)"
+      (list (decision (answer-of x2)) (length (counts-of x2)) (alive-pid? cold-pid))
+      (list (decision warm-write) 1 #t))
 
 (stop-daemon!)
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
