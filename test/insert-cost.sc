@@ -97,7 +97,12 @@
          (writer (cadr (assq 'writer (cdr made))))
          (seen (assoc writer (reduce-applied-cut (open-and-reduce store))))
          (cursor (string-append writer ":" (number->string (if seen (cdr seen) 0))))
-         (child (string-append (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
+         ;; THE CURVE'S IMPORT RUNS WITHOUT THE DEGENERACY SWITCH: it is a
+         ;; timing, which the checks would only distort, and under a gate
+         ;; sibling-order's check costs an import of 7000 intents more than the
+         ;; runner's limit; TC-0, TC-1 and TC-E keep the switch.
+         (child (string-append (if (equal? tag "curve") "env -u THEOURGIA_DEGENERACY " "")
+                               (if timing "THEOURGIA_TIMING=1 " "env -u THEOURGIA_TIMING ")
                                "THEOURGIA_LOCAL=1 scheme --script ../core.sc import-code '" dir "' --store '" store "' --req IC-" tag " --cursor '" cursor "' --wire")))
     (system (if (and (pair? stamped) (car stamped))
                 (string-append "( " child " 2>&1 > '" root "/" tag ".out' < /dev/null ) | "
