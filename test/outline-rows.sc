@@ -552,11 +552,13 @@
 (want "OR-8 in outline-rows: view-of once, state-outline once, state-read and title-of not at all"
       (and rows-form (map (lambda (s) (symbol-count rows-form s)) '(view-of state-outline state-read title-of)))
       '(1 1 0 0))
-;; label-of is handed `children-of`, the lookup into the children index, and
-;; that index is built from the rows state-outline answered: one listing, one
-;; set of rows.
+;; label-of is handed `children-of`, the lookup into the children index
+;; (`children-of` reads `children`), and that index is built from the rows
+;; state-outline answered: one listing, one set of rows.
 (define (defined-as x name)
-  (cond ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) name)) x)
+  (cond ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x))
+              (or (eq? (cadr x) name) (and (pair? (cadr x)) (eq? (car (cadr x)) name))))
+         x)
         ((pair? x) (or (defined-as (car x) name) (defined-as (cdr x) name)))
         (else #f)))
 (want "OR-8 label-of is called once, with the record view-of answered and children-of, whose index is built from the rows state-outline answered"
@@ -566,7 +568,10 @@
              (list (length calls)
                    (and (= 1 (length calls)) (= 1 (length v)) (eq? (cadr (car calls)) (car v)))
                    (and (= 1 (length calls)) (= 1 (length s)) (eq? (caddr (car calls)) 'children-of)
-                        index (= 1 (symbol-count index (car s))) #t))))
+                        index (= 1 (symbol-count index (car s)))
+                        (let ((lookup (defined-as rows-form 'children-of)))
+                          (and lookup (= 1 (symbol-count lookup 'children))))
+                        #t))))
       '(1 #t #t))
 (want "OR-8b drawn once: as many rows as live blocks, no id twice, on both stores; the unnamed code block's row carries its derived label"
       (let ((cyc-live (filter (lambda (id) (not (cdr (assq 'deleted (cdr (state-read (open-and-reduce cyc-store) id))))))

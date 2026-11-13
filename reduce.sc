@@ -2396,8 +2396,7 @@
   ;; outline order; `outline-subtree` below, which collects children in row
   ;; order and from which `md-tree` and `subtree-with-root` read document
   ;; order; project.sc's `doc-sections-of`, which walks the rows with its own
-  ;; `children-of`; code-project.sc's `code-children`, whose order
-  ;; `export-code` writes the source in; and store.sc's `siblings`, whose
+  ;; `children-of`; and store.sc's `siblings`, whose
   ;; sort by ord alone is stable and so keeps this list's id order among
   ;; equal ords. A caller that filters to one parent gets that parent's rows
   ;; already in order.
@@ -3274,10 +3273,12 @@
       (degeneracy-check siblings-list (siblings-list-compare r parent answer))
       answer))
   ;; A PARENT'S CHILDREN, (ord . id) in sibling order, for a caller that walks
-  ;; many parents (an export asks it once per file): the structure's list,
-  ;; costing that parent's children. The rows of state-outline under the same
-  ;; parent are the same ids in the same order; children-list compares the two
-  ;; on every call.
+  ;; many parents (code-project.sc's `code-children`, whose order `export-code`
+  ;; writes the source in, asks it once per file): the structure's list,
+  ;; costing that parent's children (under root, every root row, sorted). The
+  ;; rows of state-outline under the same parent are the same ids in the same
+  ;; order, child<? being outline-row<? on one parent; children-list compares
+  ;; the two on every call.
   (define (state-children r parent)
     (let ((answer (structure-sibling-list r parent)))
       (work! 'children (length answer))
