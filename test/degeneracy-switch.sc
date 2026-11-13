@@ -109,13 +109,13 @@
   (apply append (map (lambda (f) (map (lambda (n) (cons f n)) (names-used (string-append tree-dir "/" f))))
                      product-files)))
 (printf "DS-1 the uses: ~s\n" uses)
-(want "DS-1 the names the switch knows are exactly the names its uses carry, read from the tree's source, and there are eleven uses"
+(want "DS-1 the names the switch knows are exactly the names its uses carry, read from the tree's source, and there are twelve uses"
       (list (list-sort symbol-list<? (let dedupe ((ns (map cdr uses)) (out '()))
                                        (cond ((null? ns) out)
                                              ((memq (car ns) out) (dedupe (cdr ns) out))
                                              (else (dedupe (cdr ns) (cons (car ns) out))))))
             (length uses))
-      (list (list-sort symbol-list<? (degeneracy-known-checks)) 11))
+      (list (list-sort symbol-list<? (degeneracy-known-checks)) 12))
 
 ;; ---- DS-2, the two checks a gate leaves out, and their witnesses ----------
 (define witnesses

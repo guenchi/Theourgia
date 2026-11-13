@@ -44,6 +44,8 @@
 ;;;   structure-restored        reduce.sc: the same, once per restore
 ;;;   siblings-list             reduce.sc: a parent's sibling list recomputed
 ;;;   sibling-order             reduce.sc: a sibling's neighbour recomputed
+;;;   path-holders              reduce.sc: a path's holders from the structure's
+;;;                             table against the walk over every block
 ;;;   replay-scan               log.sc: every replay of a remembered segment
 ;;;                             against scan-segment of the same bytes, and
 ;;;                             every delivery watched
@@ -74,7 +76,7 @@
   (import (chezscheme))
 
   (meta define degeneracy-known
-    '(structure-per-record structure-restored siblings-list sibling-order replay-scan kept-prefix
+    '(structure-per-record structure-restored siblings-list sibling-order path-holders replay-scan kept-prefix
       admission-judgements changed-files-reference slot-classified-once))
 
   ;; -> the names in TEXT, separated by commas, each a symbol; an empty name

@@ -130,7 +130,10 @@
   ;; blocks-rev -- alist of id to block, NEWEST FIRST (one cons per block made);
   ;;              block-index is the same blocks by id, and block-forward the
   ;;              creation-order alist, cached (see reduction-blocks)
-  ;; links    -- list of (from rel to event-id)
+  ;; links-rev -- list of (from rel to event-id), NEWEST FIRST (one cons per
+  ;;              link); links-forward the oldest-first list, cached (see
+  ;;              reduction-links); links-out and links-in the same links by
+  ;;              their from and their to, each newest first
   ;; tags     -- alist of name to list of (cut . event-id)
   ;; pasts    -- alist of event-id to that event's causal past, newest first;
   ;;             pasts-index is the same by event-id
@@ -147,7 +150,7 @@
   ;;             candidates
   (define-record-type reduction
     (fields (mutable blocks-rev)
-            (mutable links)
+            (mutable links-rev)
             (mutable tags)
             (mutable pasts)
             (mutable applied)
@@ -179,7 +182,11 @@
             ;; the version a new file's block is named by (block-hash answers
             ;; it), and, for each block of a deleted file the view hides, that
             ;; file's holder (view-hidden-holder).
-            (mutable view-facts reduction-view-facts view-facts-set!)))
+            (mutable view-facts reduction-view-facts view-facts-set!)
+            ;; the links, kept beside links-rev (see reduction-links)
+            (mutable links-forward)
+            (mutable links-out)
+            (mutable links-in)))
 
   ;; THE BLOCKS IN CREATION ORDER, as every enumeration that observes order
   ;; reads them (state->rows, state-block-ids, reduction-facts, the channel
@@ -193,6 +200,32 @@
           (reduction-block-forward-set! r forward)
           forward)))
   (define (make-block-index) (make-hashtable equal-hash equal?))
+
+  ;; THE LINKS IN THE ORDER THEY WERE MADE, as every reader that observes
+  ;; order reads them (state-edges, state->rows, the facts): the reverse of
+  ;; links-rev, kept until the next link is made or removed. A block's own
+  ;; links are found by id through links-out (by from) and links-in (by
+  ;; to), so a read of one block does not walk every link the store holds,
+  ;; and making a link is one cons, not a copy of the list.
+  (define (reduction-links r)
+    (or (reduction-links-forward r)
+        (let ((forward (reverse (reduction-links-rev r))))
+          (reduction-links-forward-set! r forward)
+          forward)))
+  (define (make-links-index) (make-hashtable equal-hash equal?))
+  (define (links-reset! r)
+    (reduction-links-rev-set! r '())
+    (reduction-links-forward-set! r '())
+    (reduction-links-out-set! r (make-links-index))
+    (reduction-links-in-set! r (make-links-index)))
+  (define (link-add! r l)
+    (reduction-links-rev-set! r (cons l (reduction-links-rev r)))
+    (reduction-links-forward-set! r #f)
+    (hashtable-update! (reduction-links-out r) (car l) (lambda (ls) (cons l ls)) '())
+    (hashtable-update! (reduction-links-in r) (caddr l) (lambda (ls) (cons l ls)) '()))
+  ;; -> the links from ID, or to ID, oldest first
+  (define (links-from r id) (reverse (hashtable-ref (reduction-links-out r) id '())))
+  (define (links-to r id) (reverse (hashtable-ref (reduction-links-in r) id '())))
   (define (blocks-reset! r)
     (reduction-blocks-rev-set! r '())
     (reduction-block-index-set! r (make-block-index))
@@ -726,7 +759,8 @@
   (define (reduce-empty)
     (make-reduction '() '() '() '() '() (make-pending-queue) '() (empty-notes) '() (make-admission) (make-consumption) (make-decls-table) (make-decls-table) (make-decls-table) #f
                     (make-block-index) '() (make-pasts-index)
-                    (make-empty-structure) #f #f))
+                    (make-empty-structure) #f #f
+                    '() (make-links-index) (make-links-index)))
 
   ;; A COMPLETE COPY OF A REDUCTION, for a rehearsal of a write: every
   ;; container a reduction changes in place is copied -- the blocks' records,
@@ -748,7 +782,7 @@
                          (cons (car p) copy)))
                      (reduction-blocks-rev r))))
       (make-reduction rev
-                      (reduction-links r) (reduction-tags r) (reduction-pasts r)
+                      (reduction-links-rev r) (reduction-tags r) (reduction-pasts r)
                       (reduction-applied r) (pq-copy (reduction-pending r)) (reduction-trace r)
                       (notes-copy (reduction-noted r)) (reduction-history r)
                       (admission-copy (reduction-admission-index r))
@@ -760,7 +794,11 @@
                       (structure-copy (reduction-structure r))
                       ;; a copy of a working view is one too
                       (reduction-overlay? r)
-                      (reduction-view-facts r))))
+                      (reduction-view-facts r)
+                      ;; the link lists are shared, the tables by id copied
+                      (reduction-links-forward r)
+                      (hashtable-copy (reduction-links-out r) #t)
+                      (hashtable-copy (reduction-links-in r) #t))))
 
   (define (consumption-copy c)
     (let ((by-plan (hashtable-copy (consumption-by-plan c) #t)))
@@ -1110,7 +1148,7 @@
     (let ((records (reverse (reduction-history r))))
       (blocks-reset! r)
       (reduction-structure-set! r (make-empty-structure))
-      (reduction-links-set! r '())
+      (links-reset! r)
       (reduction-tags-set! r '())
       (reduction-declared-relations-set! r (make-decls-table))
       (reduction-declared-rules-set! r (make-decls-table))
@@ -2013,17 +2051,20 @@
   ;; in its past and leaves concurrent ones -- so a link one writer never
   ;; saw is not silently undone by an unlink another writer issued.
   (define (do-link! r event-id args)
-    (reduction-links-set!
-      r (append (reduction-links r)
-                (list (list (car args) (cadr args) (caddr args) event-id)))))
+    (link-add! r (list (car args) (cadr args) (caddr args) event-id)))
 
+  ;; THE LINKS AN UNLINK REMOVES ARE ALL LINKS FROM ITS FROM: when none
+  ;; goes, nothing is rebuilt.
   (define (do-unlink! r event-id past args)
-    (let ((from (car args)) (rel (cadr args)) (to (caddr args)))
-      (reduction-links-set!
-        r (remp (lambda (l)
-                  (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)
-                       (past-covers? past (car (cadddr l)) (cdr (cadddr l)))))
-                (reduction-links r)))))
+    (let* ((from (car args)) (rel (cadr args)) (to (caddr args))
+           (gone? (lambda (l)
+                    (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)
+                         (past-covers? past (car (cadddr l)) (cdr (cadddr l)))))))
+      (when (exists gone? (hashtable-ref (reduction-links-out r) from '()))
+        (reduction-links-rev-set! r (remp gone? (reduction-links-rev r)))
+        (reduction-links-forward-set! r #f)
+        (hashtable-update! (reduction-links-out r) from (lambda (ls) (remp gone? ls)) '())
+        (hashtable-update! (reduction-links-in r) to (lambda (ls) (remp gone? ls)) '()))))
 
   (define (do-tag! r event-id past args)
     (let* ((name (car args))
@@ -2321,7 +2362,7 @@
 
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
-                      (filter (lambda (l) (equal? (caddr l) id)) (reduction-links r)))))
+                      (links-to r id))))
       (list-sort (lambda (x y)
                    (if (string=? (car x) (car y))
                        (string<? (symbol->string (cdr x)) (symbol->string (cdr y)))
@@ -2517,7 +2558,7 @@
 
   (define (block-edges r id)
     (let ((pairs (map (lambda (l) (cons (cadr l) (caddr l)))
-                      (filter (lambda (l) (equal? (car l) id)) (reduction-links r)))))
+                      (links-from r id))))
       ;; THE LOGICAL EDGE SET: one entry per (rel, to) however many link
       ;; events produced it, and no event ids. Two libraries that agree
       ;; on the edges must agree on the token even if they took different
@@ -2553,18 +2594,31 @@
   ;; them from disagreeing about what "holds a path" means.
   ;; A holder is an ALIVE block whose stored kind, mode and path are the
   ;; ones asked for: a datum library and a text file of one path are two
-  ;; different questions, not a duplicate.
+  ;; different questions, not a duplicate. Each of the three fields has
+  ;; exactly one candidate and it is not absent (holder-key, the structure's
+  ;; facts); the answer is read from the structure's holder table, kept as
+  ;; blocks change, not from a walk over every block per question (D6-1).
+  ;; ASKED WITH #F IT REFUSES: a walk read a missing field as #f, so #f matched
+  ;; every block that lacked one; no caller means that.
   ;; -> the holders' ids, sorted.
   (define (state-path-claimants r kind mode rel)
-    (list-sort string<?
-      (filter (lambda (id)
-                (let ((b (state-read r id)))
-                  (and b (not (cdr (assq 'deleted b)))
-                       (let ((fs (cdr (assq 'fields b))))
-                         (define (field k) (let ((p (assq k fs))) (and p (cdr p))))
-                         (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
-                              (equal? (field 'path) rel))))))
-              (map car (reduction-blocks r)))))
+    (unless kind (assertion-violation 'state-path-claimants "kind is #f" kind mode rel))
+    (unless mode (assertion-violation 'state-path-claimants "mode is #f" kind mode rel))
+    (unless rel (assertion-violation 'state-path-claimants "path is #f" kind mode rel))
+    (let* ((set (hashtable-ref (structure-holders (reduction-structure r)) (list kind mode rel) #f))
+           (answer (if set (list-sort string<? (vector->list (hashtable-keys set))) '())))
+      (degeneracy-check path-holders (path-holders-compare r kind mode rel answer))
+      answer))
+
+  ;; a datum's written form, the total order the holder lists are sorted in
+  (define (datum-text x) (call-with-string-output-port (lambda (p) (write x p))))
+  ;; THE PATHS THE TABLE HOLDS, each with its holders: (((kind mode path) id ...) ...),
+  ;; sorted by the key as written, for comparing the table with its walk.
+  (define (state-path-holders r)
+    (let-values (((ks vs) (hashtable-entries (structure-holders (reduction-structure r)))))
+      (list-sort (lambda (a b) (string<? (datum-text (car a)) (datum-text (car b))))
+                 (map (lambda (k set) (cons k (list-sort string<? (vector->list (hashtable-keys set)))))
+                      (vector->list ks) (vector->list vs)))))
 
   ;; THE RELATION NAMES SUPPLIED FACTS ANSWER UNDER, in one place: the
   ;; request path refuses a link or unlink carrying one (store.sc), and
@@ -2846,25 +2900,28 @@
                             out)
                       out))))))
 
-  ;; -> `((duplicate-path <rel> (ids (<id> ...))) ...)`, sorted by path, for
-  ;; every path two or more alive datum libraries, or two or more alive text
-  ;; files, hold.
+  ;; -> `((duplicate-path <rel> (ids (<id> ...))) ...)`, for every path two or
+  ;; more alive datum libraries, or two or more alive text files, hold: the
+  ;; holder table's keys of those two kinds with a string path and two or more
+  ;; holders, sorted by path and then by kind (file before library), a total
+  ;; order. (A walk sorted by path alone and left a tie between the two kinds
+  ;; in the order the blocks were made.)
   (define (state-duplicated-paths r)
-    (let loop ((ids (map car (reduction-blocks r))) (seen '()))
-      (if (pair? ids)
-          (let* ((b (state-read r (car ids)))
-                 (fs (and b (not (cdr (assq 'deleted b))) (cdr (assq 'fields b))))
-                 (field (lambda (k) (let ((p (and fs (assq k fs)))) (and p (cdr p)))))
-                 (key (and fs (member (list (field 'kind) (field 'mode)) '((library datum) (file text)))
-                           (string? (field 'path))
-                           (list (field 'kind) (field 'mode) (field 'path)))))
-            (loop (cdr ids) (if (and key (not (member key seen))) (cons key seen) seen)))
-          (list-sort (lambda (a b) (string<? (cadr a) (cadr b)))
-            (filter values
-              (map (lambda (key)
-                     (let ((holders (state-path-claimants r (car key) (cadr key) (caddr key))))
-                       (and (> (length holders) 1) (list 'duplicate-path (caddr key) (list 'ids holders)))))
-                   seen))))))
+    (let-values (((ks vs) (hashtable-entries (structure-holders (reduction-structure r)))))
+      (map cdr
+           (list-sort (lambda (a b)
+                        (or (string<? (car (car a)) (car (car b)))
+                            (and (string=? (car (car a)) (car (car b)))
+                                 (string<? (symbol->string (cdr (car a))) (symbol->string (cdr (car b)))))))
+             (filter values
+               (map (lambda (k set)
+                      (and (member (list (car k) (cadr k)) '((library datum) (file text)))
+                           (string? (caddr k))
+                           (> (hashtable-size set) 1)
+                           (cons (cons (caddr k) (car k))
+                                 (list 'duplicate-path (caddr k)
+                                       (list 'ids (list-sort string<? (vector->list (hashtable-keys set))))))))
+                    (vector->list ks) (vector->list vs)))))))
 
   ;; THE TOKEN IS PER BLOCK. Section 9.2 pins the datum for ONE block,
   ;; and case R10 requires that a change to a different block leave the
@@ -2950,15 +3007,18 @@
   ;; are state-structure's and stream-frames' structural-sets'; under the
   ;; degeneracy switch (degeneracy.sc) the old computation runs after every
   ;; applied record and any difference is raised at that record.
+  ;; HOLDERS: (kind mode path) -> the ids of the live blocks that hold that
+  ;; path, as a table of ids, for state-path-claimants (D6-1).
   (define-record-type structure
-    (fields info children conflicts orphans unplaced nested oncycle marked))
+    (fields info children conflicts orphans unplaced nested oncycle marked holders))
   (define-record-type cvec (fields (mutable vec) (mutable count)))
 
   (define (make-empty-structure)
     (make-structure (make-hashtable string-hash string=?) (make-hashtable equal-hash equal?)
                     (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
                     (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
-                    (make-hashtable string-hash string=?) (make-cvec (make-vector 4 #f) 0)))
+                    (make-hashtable string-hash string=?) (make-cvec (make-vector 4 #f) 0)
+                    (make-hashtable equal-hash equal?)))
 
   ;; A REHEARSAL'S COPY gets containers of its own: a rehearsal mutates its
   ;; clone, and the clone's structure must not be the original's.
@@ -2971,7 +3031,13 @@
       (make-structure (hashtable-copy (structure-info s) #t) children
                       (hashtable-copy (structure-conflicts s) #t) (hashtable-copy (structure-orphans s) #t)
                       (hashtable-copy (structure-unplaced s) #t) (hashtable-copy (structure-nested s) #t)
-                      (hashtable-copy (structure-oncycle s) #t) (cvec-copy (structure-marked s)))))
+                      (hashtable-copy (structure-oncycle s) #t) (cvec-copy (structure-marked s))
+                      ;; each holder set copied, never shared: a rehearsal's
+                      ;; note would otherwise move a block in the original's
+                      (let ((holders (make-hashtable equal-hash equal?)))
+                        (let-values (((ks vs) (hashtable-entries (structure-holders s))))
+                          (vector-for-each (lambda (k set) (hashtable-set! holders k (hashtable-copy set #t))) ks vs))
+                        holders))))
   (define (cvec-copy cv)
     (let* ((n (cvec-count cv)) (v (cvec-vec cv)) (w (make-vector (vector-length v) #f)))
       (let copy ((i 0)) (when (< i n) (vector-set! w i (vector-ref v i)) (copy (+ i 1))))
@@ -2983,14 +3049,28 @@
            (placed? (and (pair? cs) (null? (cdr cs))))
            (v (and placed? (car (car cs)))))
       (vector (not (blk-tomb b)) (and placed? (car v)) (and placed? (cdr v)) placed?
-              (eq? 'doc (blk-kind b)))))
+              (eq? 'doc (blk-kind b)) (holder-key b))))
+  ;; THE PATH A BLOCK HOLDS, (kind mode path), or #f: each of the three fields
+  ;; has exactly one candidate and that candidate is not absent. That is what
+  ;; state-read's fields say when each of the three reads as a plain value (a
+  ;; field with several candidates reads as a conflict, an absent one not at
+  ;; all), so the table answers what a walk over state-read answered.
+  (define (holder-key b)
+    (let ((value (lambda (name)
+                   (let ((f (assq name (blk-fields b))))
+                     (and f (= 1 (length (cdr f)))
+                          (let ((v (car (car (cdr f))))) (and (not (absent? v)) (list v))))))))
+      (let ((kind (value 'kind)) (mode (value 'mode)) (path (value 'path)))
+        (and kind mode path (list (car kind) (car mode) (car path))))))
   (define (fact-live? f) (vector-ref f 0))
   (define (fact-parent f) (vector-ref f 1))
   (define (fact-ord f) (vector-ref f 2))
   (define (fact-placed? f) (vector-ref f 3))
   (define (fact-doc? f) (vector-ref f 4))
-  ;; a block that exists and is nothing else yet: the first pass of a rebuild
-  (define absent-facts (vector #f #f #f #f #f))
+  (define (fact-holder f) (vector-ref f 5))
+  ;; a block that exists and is nothing else yet: the first pass of a rebuild;
+  ;; its holder key is #f, which equals no real one (a key is a list)
+  (define absent-facts (vector #f #f #f #f #f #f))
 
   ;; ---- the child vectors: sorted by ord, then id
   (define (child<? a b)
@@ -3103,6 +3183,7 @@
         (structure-note-change! s id old new))))
   (define (structure-note-change! s id old new)
     (hashtable-set! (structure-info s) id new)
+    (structure-holders-move! s id old new)
     (when (and old (fact-live? old) (fact-placed? old))
       (let ((cv (hashtable-ref (structure-children s) (fact-parent old) #f)))
         (when cv (cvec-remove! cv (cons (fact-ord old) id)))))
@@ -3120,6 +3201,28 @@
       (structure-break! s id old)
       (structure-close! s id))
     (structure-conflict! s id))
+
+  ;; A BLOCK'S PATH, IN THE HOLDER TABLE: out of the set of the key it held
+  ;; while alive, into the set of the key it holds now if it is alive. A
+  ;; tombstone is not alive, so a deleted block leaves every set and a later
+  ;; write to it does not put it back. An emptied set is removed, so the table
+  ;; holds exactly the keys some live block holds.
+  (define (structure-holders-move! s id old new)
+    (let ((was (and old (fact-live? old) (fact-holder old)))
+          (now (and (fact-live? new) (fact-holder new)))
+          (holders (structure-holders s)))
+      (unless (equal? was now)
+        (when was
+          (let ((set (hashtable-ref holders was #f)))
+            (when set
+              (hashtable-delete! set id)
+              (when (= 0 (hashtable-size set)) (hashtable-delete! holders was)))))
+        (when now
+          (let ((set (or (hashtable-ref holders now #f)
+                         (let ((set (make-hashtable string-hash string=?)))
+                           (hashtable-set! holders now set)
+                           set))))
+            (hashtable-set! set id #t))))))
 
   ;; THE GRAPH FROM THE TABLE, for a state restored whole (rows->state): every
   ;; block first exists, then each is noted, so a parent noted after its child
@@ -3323,10 +3426,49 @@
                              (else (loop (cdr xs))))))))
           (unless (equal? expected answer)
             (assertion-violation 'degeneracy "the siblings differ from the outline's" parent after answer expected))))
+      ;; WHO HOLDS A PATH, BY THE WALK THE TABLE REPLACED: every block read,
+      ;; a holder alive with kind, mode and path equal to the ones asked.
+      (define (path-holders-walk r kind mode rel)
+        (list-sort string<?
+          (filter (lambda (id)
+                    (let ((b (state-read r id)))
+                      (and b (not (cdr (assq 'deleted b)))
+                           (let ((fs (cdr (assq 'fields b))))
+                             (define (field k) (let ((p (assq k fs))) (and p (cdr p))))
+                             (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
+                                  (equal? (field 'path) rel))))))
+                  (map car (reduction-blocks r)))))
+      (define (path-holders-compare r kind mode rel answer)
+        (let ((expected (path-holders-walk r kind mode rel)))
+          (unless (equal? expected answer)
+            (assertion-violation 'degeneracy "the path's holders differ from the walk's" (list kind mode rel) answer expected))))
+      ;; THE WHOLE TABLE BY THE WALK: every key some alive block's fields name,
+      ;; each field a plain value (several candidates read as (conflict ...),
+      ;; an absent one not at all), with the walk's holders of that key.
+      (define (path-holders-recomputed r)
+        (let ((keys '()))
+          (for-each (lambda (e)
+                      (let ((b (state-read r (car e))))
+                        (when (and b (not (cdr (assq 'deleted b))))
+                          (let* ((fs (cdr (assq 'fields b)))
+                                 (plain (lambda (k)
+                                          (let ((p (assq k fs)))
+                                            (and p (not (and (pair? (cdr p)) (eq? 'conflict (car (cdr p)))))
+                                                 (list (cdr p))))))
+                                 (kind (plain 'kind)) (mode (plain 'mode)) (path (plain 'path)))
+                            (when (and kind mode path)
+                              (let ((key (list (car kind) (car mode) (car path))))
+                                (unless (member key keys) (set! keys (cons key keys)))))))))
+                    (reduction-blocks r))
+          (list-sort (lambda (a b) (string<? (datum-text (car a)) (datum-text (car b))))
+                     (map (lambda (key) (cons key (path-holders-walk r (car key) (cadr key) (caddr key)))) keys))))
       (define (structure-compare! r at)
         (let ((kept (state-structure r)) (recomputed (structure-recomputed r)))
           (unless (equal? kept recomputed)
             (assertion-violation 'degeneracy "the structure differs at a record" at kept recomputed)))
+        (let ((kept (state-path-holders r)) (recomputed (path-holders-recomputed r)))
+          (unless (equal? kept recomputed)
+            (assertion-violation 'degeneracy "the path holders differ at a record" at kept recomputed)))
         (let ((kept (state-outline r)) (recomputed (outline-recomputed r)))
           (unless (equal? kept recomputed)
             (assertion-violation 'degeneracy "the outline differs at a record" at kept recomputed)))))
@@ -3519,8 +3661,8 @@
   ;; can survive, and each says when that writer stated the edge.
   (define (state-link-events r from rel to)
     (map cadddr
-         (filter (lambda (l) (and (equal? (car l) from) (eq? (cadr l) rel) (equal? (caddr l) to)))
-                 (reduction-links r))))
+         (filter (lambda (l) (and (eq? (cadr l) rel) (equal? (caddr l) to)))
+                 (links-from r from))))
 
   ;; THE IDS OF THE BLOCKS THIS STATE HOLDS ALIVE, a deleted block left out,
   ;; in the order the reduction made them. Nothing else of the block.
@@ -3751,7 +3893,7 @@
                (blk-tomb-set! b (cdr (assq 'tomb body)))
                (blk-fields-set! b (cdr (assq 'fields body)))
                (blk-position-set! b (cdr (assq 'position body)))))
-            ((link) (reduction-links-set! r (append (reduction-links r) (list (cadr row)))))
+            ((link) (link-add! r (cadr row)))
             ((tag)
              (reduction-tags-set!
                r (cons (cons (cadr row) (caddr row)) (reduction-tags r))))
