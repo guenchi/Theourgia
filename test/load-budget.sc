@@ -113,29 +113,33 @@
 
 ;; ---- the record (recorded, never computed) --------------------------------------
 (define load-budget-record
-  '((base . "78803a7")
-    (taken . "2026-11-12 12:08-12:13Z: three runs on the base's product files, 10000 records, 5 rounds, alone")
+  '((base . "ecd5596")
+    (taken . "2026-11-13 14:54-14:58Z: three runs on the base's product files, 10000 records, 5 rounds, alone of the session's lines")
     ;; Each threshold is the largest of the three readings times 1.15, the
     ;; readings beside it. A later step that lowers an arm records a new
-    ;; threshold from its own reading.
+    ;; threshold from its own reading; an arm that did not move keeps its own.
     ;;
-    ;; THE LOAD REMEMBERS WHAT IT DECODED (78803a7): every judged arm fell by
-    ;; about one decode pass (1.64 to 1.74 against LB-D's 1.62), and LB-D did
-    ;; not move, so it keeps its threshold. LB-4 fell by a whole pass, not a
-    ;; half: a daemon's read at a cut is one restricted load that still
-    ;; decodes the whole log. The window was taken at a 1-minute load of 4 to
-    ;; 6; LB-D read 1.605 to 1.633 against the first reading's 1.609 to 1.628,
-    ;; so the yardstick and the decoder stand where they stood. Each arm's
-    ;; range over its smallest reading: lb-1 0.98%, lb-2 1.32%, lb-3 2.05%
-    ;; (the largest), lb-4 0.61%, lb-d 1.74%.
-    (lb-1 . #e4.85) (lb-2 . #e2.39) (lb-3 . #e2.51) (lb-4 . #e2.26) (lb-d . #e1.87)
-    (readings (lb-1 4.217 4.190 4.176) (lb-2 2.052 2.076 2.049) (lb-3 2.150 2.186 2.142)
-              (lb-4 1.955 1.957 1.967) (lb-d 1.620 1.605 1.633))
-    ;; THE FIRST READING, its thresholds replaced above: base 9af33ae,
-    ;; 2026-11-11 18:42-18:48Z.
-    (before (lb-1 . #e6.73) (lb-2 . #e4.32) (lb-3 . #e4.52) (lb-4 . #e4.31) (lb-d . #e1.87)
-            (readings (lb-1 5.834 5.854 5.776) (lb-2 3.726 3.754 3.722) (lb-3 3.876 3.932 3.894)
-                      (lb-4 3.714 3.744 3.639) (lb-d 1.628 1.623 1.609)))
+    ;; THE STORE PROCESS KEEPS ITS MEMORY (ecd5596): a write through a daemon
+    ;; (LB-3) and a read at a cut through one (LB-4) decode only what no
+    ;; earlier load of the store process saw, and fell from 2.15 and 1.96 to
+    ;; 0.36 and 0.18; LB-1, LB-2 and LB-D did not move (4.15 to 4.20, 2.06,
+    ;; 1.63) and keep their thresholds. These two thresholds catch the memory
+    ;; lost (back to about 2) by a factor of five and more, and the doubled
+    ;; work of the controls (0.77, 0.34) reads over them. THE WINDOW WAS NOT
+    ;; QUIET: a 1-minute load of 7.6 falling to 4.5, mediaanalysisd at 50 to
+    ;; 179% and an editor's renderer at 20 to 155% of a CPU beside it; each
+    ;; arm's range over its smallest reading: lb-1 1.35%, lb-2 0.58%, lb-3
+    ;; 2.51%, lb-4 6.11%, lb-d 0.86% -- lb-1's, lb-3's and lb-4's wider than
+    ;; the window before. A quiet window may tighten lb-3 and lb-4 later.
+    (lb-1 . #e4.85) (lb-2 . #e2.39) (lb-3 . #e0.422) (lb-4 . #e0.220) (lb-d . #e1.87)
+    (readings (lb-1 4.201 4.145 4.182) (lb-2 2.067 2.059 2.055) (lb-3 0.367 0.360 0.358)
+              (lb-4 0.183 0.191 0.180) (lb-d 1.629 1.639 1.625))
+    ;; THE READING BEFORE, its lb-3 and lb-4 replaced above: base 78803a7,
+    ;; 2026-11-12 12:08-12:13Z (the load remembers what it decoded; every
+    ;; judged arm fell by about one decode pass from 9af33ae's first reading).
+    (before (lb-1 . #e4.85) (lb-2 . #e2.39) (lb-3 . #e2.51) (lb-4 . #e2.26) (lb-d . #e1.87)
+            (readings (lb-1 4.217 4.190 4.176) (lb-2 2.052 2.076 2.049) (lb-3 2.150 2.186 2.142)
+                      (lb-4 1.955 1.957 1.967) (lb-d 1.620 1.605 1.633)))
     (reference-sha256 . "a77e68214614c2389ceee422bdb2aa49c9f17323ce579fb3c61d5fcbe8be3d73")
     (reference-lines . 164)))
 (define (record-ref key) (cdr (assq key load-budget-record)))
