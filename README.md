@@ -5216,7 +5216,12 @@ first), and one that does not fit is scanned at every load, as without a memory.
 multiple of its remembered bytes (the transcripts' frames beside the bytes). A value
 that is not a count is refused like `--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
-counting the segment asks its memory answered each way.
+counting the segment asks its memory answered each way. WHAT A LOAD DELIVERS IS SHARED:
+a record's actor, dependencies and encoded payload, and the strings inside them, are the
+memory's own objects, handed again by every later load of the store process for as long as
+it runs. A consumer of a delivery (a reducer, a collector, anything reading a published
+state) must not change them; under `THEOURGIA_DEGENERACY` a consumer that does is named
+(`degeneracy: a consumer changed a value it was delivered`).
 
 **The query session.** `query` and `context` are answered by the daemon's store
 process from the publication, made current first when the disk has moved past
