@@ -4979,7 +4979,10 @@
   ;; a writer its load did not discover (a miss) is answered #f and traced too.
   ;; Its discoveries are taken at the session's open, before the delivery; a
   ;; fresh one at the verdict is the same answer while nothing changes the
-  ;; store's files without the lock, which every writer of them takes.
+  ;; store's files without the store's lock. One thing does: working.sc's
+  ;; ensure-area! makes writers/<w>/ under the draft lock alone, so a writer
+  ;; directory can appear after the load's discovery; the provider then misses
+  ;; it (verdict-discoveries VD-8) and the verdict discovers it afresh.
   (define (session-discovery-provider s)
     (let ((epoch (session-epoch s)) (load (session-load s)))
       (lambda (writer)
@@ -4990,8 +4993,9 @@
             (begin (trace-event! 'verdict-provider 'stale writer) #f)))))
   ;; -> WRITER's discovery: PROVIDER's when it answers one; else, and with no
   ;; provider, a fresh one in CONTEXT, as before. A writer the provider does
-  ;; not know (the store lists it and the load did not discover it, which the
-  ;; lock does not allow) falls back to a fresh one too.
+  ;; not know (the store lists it and the load did not discover it: a writer
+  ;; directory made after the load's discovery, which ensure-area! does under
+  ;; the draft lock alone) falls back to a fresh one too.
   (define (provided-discovery provider store writer context)
     (let ((p (and provider (provider writer))))
       (if p
