@@ -59,6 +59,10 @@
             ((and (pair? d) (eq? (car d) 'error)) d)
             (else (loop port d))))))
 (define (serve-spawn! dir store socket env)
+  (serve-spawn-with! dir store socket env '()))
+;; serve-spawn! with EXTRA, strings appended to serve's command line (an
+;; option such as --memory-limit and its value)
+(define (serve-spawn-with! dir store socket env extra)
   (set! serve-for-count (+ serve-for-count 1))
   (let* ((n (number->string serve-for-count))
          (program (string-append dir "/serve-for-" n ".sc"))
@@ -79,7 +83,8 @@
             "                     (program-launch (string-append tree \"/theourgiad.sc\")) (list \"serve\")\n"
             "                     (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\\-))\n"
             "                         (list \"--store\" store) (list store))\n"
-            "                     (list \"--socket\" socket \"--detach\" \"--log\" (serve-log-path store))))\n"
+            "                     (list \"--socket\" socket \"--detach\" \"--log\" (serve-log-path store))\n"
+            "                     (quote " (q extra) ")))\n"
             "(write (list socket (serve-log-path store) (socket-path store) argv)) (newline)\n"))))
     ;; THE PLAN IS THE LAST LIST HEADED BY A STRING: a process announces its
     ;; machine home ahead of anything else when THEOURGIA_HOME is set.

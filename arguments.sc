@@ -94,7 +94,8 @@
         ;; echoed in every startup report; a value, like the log.
         ;; `--session-size` bounds the query session the daemon keeps.
         ;; `--idle-exit` and `--idle-grace-ms` time the daemon's exit when idle.
-        ((serve) '("--log" "--attempt" "--session-size" "--idle-exit" "--idle-grace-ms"))
+        ;; `--memory-limit` bounds the store process's memory of its loads.
+        ((serve) '("--log" "--attempt" "--session-size" "--idle-exit" "--idle-grace-ms" "--memory-limit"))
         ;; A store can start from a template: a built-in by name, or a file.
         ((init) '("--template" "--template-file"))
         ;; NEVER: DECLARING AN OPTION IN THE USAGE FORM IS NOT DECLARING IT

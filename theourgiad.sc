@@ -63,7 +63,8 @@
           ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
           ["--attempt" <token> (started-by-a-client-not-by-hand)]
           ["--session-size" <entries>]
-          ["--idle-exit" <seconds>] ["--idle-grace-ms" <milliseconds>]))
+          ["--idle-exit" <seconds>] ["--idle-grace-ms" <milliseconds>]
+          ["--memory-limit" <bytes>]))
 
 ;; ---- serve -----------------------------------------------------------------
 ;;
@@ -86,9 +87,10 @@
 ;; else spelled as an option is named back with the usage. A positional
 ;; after `--` is a literal, as for every verb, and is not an option.
 (define serve-options '("--store" "--socket" "--detach" "--log" "--attempt" "--session-size"
-                        "--idle-exit" "--idle-grace-ms"))
+                        "--idle-exit" "--idle-grace-ms" "--memory-limit"))
 
-;; a count option's value (--session-size, --idle-exit, --idle-grace-ms): its
+;; a count option's value (--session-size, --idle-exit, --idle-grace-ms,
+;; --memory-limit): its
 ;; digits as a count, else #f
 (define (session-size-value text)
   (and (string? text) (> (string-length text) 0)
@@ -129,6 +131,9 @@
     ;; refused before anything is opened when it is not one.
     ;; `--idle-exit <seconds>` (0 or absent: never) and `--idle-grace-ms
     ;; <milliseconds>`: counts as well, refused the same way and as early.
+    ;; `--memory-limit <bytes>`: how many segment bytes the store process's
+    ;; memory of its loads may remember (daemon.sc, store-loop; 256 MiB when
+    ;; absent); a count too.
     (for-each
       (lambda (option)
         (let ((value (argument-option nodes option)))
@@ -136,7 +141,7 @@
             (say (list 'error 'bad-request '(reason not-a-count)
                        (list 'option option) (list 'value value) (list 'usage serve-usage)))
             (exit 1))))
-      '("--session-size" "--idle-exit" "--idle-grace-ms"))
+      '("--session-size" "--idle-exit" "--idle-grace-ms" "--memory-limit"))
     ;; THE GRACE IS BOUNDED WHERE IT IS READ: a request that arrives while the
     ;; daemon is leaving waits for the rest of the grace before it is admitted,
     ;; and nothing reaches its client meanwhile, so grace + rebind + start-up
@@ -257,7 +262,8 @@
               ((later '(theourgia daemon) 'serve) store socket attempt
                (let ((size (argument-option nodes "--session-size"))) (and size (session-size-value size)))
                (let ((idle (argument-option nodes "--idle-exit"))) (and idle (session-size-value idle)))
-               (let ((grace (argument-option nodes "--idle-grace-ms"))) (and grace (session-size-value grace))))
+               (let ((grace (argument-option nodes "--idle-grace-ms"))) (and grace (session-size-value grace)))
+               (let ((limit (argument-option nodes "--memory-limit"))) (and limit (session-size-value limit))))
               (exit 0))))))))
 
 ;; ---- leaving the caller behind ------------------------------------------

@@ -70,7 +70,7 @@
           store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
-          log-open log-open-in-session log-open-with-memory make-load-memory
+          log-open log-open-in-session log-open-with-memory log-begin-with-memory make-load-memory
           memory-remembered-bytes load-remembered-bytes load-prefix load-writers load-integrity load-fingerprint
           load-unreadable load-listener-add! load-listener-remove! load-listener-of
           remember-load-unreadable! unreadable-behind incomplete-clause merge-unreadable
@@ -961,11 +961,16 @@
   ;; transcript, so their work and their allocation are today's.
   ;;
   ;;   scan    (phase writer segment bytes expected-seq recoverable-tail?
-  ;;           deliver) -> what scan-segment answers, calling deliver as it
-  ;;           would; phase is validation or delivery
+  ;;           deliver note) -> what scan-segment answers, calling deliver as
+  ;;           it would; phase is validation or delivery; note is called once
+  ;;           with how the segment was answered: scanned (from its first
+  ;;           byte), extended (from remembered bytes) or replayed
   ;;   digest  (writer segment bytes) -> segment-sha of the bytes
   ;;   edges   (writer segment bytes) -> segment-edge-seqs of the bytes
   ;;   held    () -> the bytes it remembers, in all
+  ;;   tally   () -> (<replayed or extended> . <scanned>), the segments this
+  ;;           memory answered each way, for a load's view of a memory
+  ;;           (tallying-memory); #f for a memory that does not count
   ;;
   ;; A MEMORY HAS A BOUND, in remembered bytes (make-load-memory's
   ;; argument, 256 MiB by default). Segments are remembered in the order
@@ -975,15 +980,17 @@
   ;; remembered bytes, not what their transcripts' frames hold, which is a
   ;; multiple of them.
   (define-record-type segment-memory
-    (fields scan digest edges held))
+    (fields scan digest edges held tally))
 
   (define remembers-nothing
     (make-segment-memory
-      (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
+      (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
+        (note 'scanned)
         (scan-segment bytes writer seg expected-seq recoverable-tail? deliver))
       (lambda (writer seg bytes) (segment-sha bytes))
       (lambda (writer seg bytes) (segment-edge-seqs bytes))
-      (lambda () 0)))
+      (lambda () 0)
+      (lambda () #f)))
 
   (define (memory-remembered-bytes m) ((segment-memory-held m)))
 
@@ -991,7 +998,41 @@
   (define (load-remembered-bytes ls) (memory-remembered-bytes (load-session-memory ls)))
 
   (define (memory-scan m phase writer seg bytes expected-seq recoverable-tail? deliver)
-    ((segment-memory-scan m) phase writer seg bytes expected-seq recoverable-tail? deliver))
+    ((segment-memory-scan m) phase writer seg bytes expected-seq recoverable-tail? deliver
+     (lambda (how) (if #f #f))))
+
+  ;; A LOAD'S VIEW OF ITS MEMORY, counting what the memory did for this load:
+  ;; segments replayed or extended, and segments scanned from their first
+  ;; byte. open-load makes one per load over the memory it is handed, so the
+  ;; counts are the load's own while the memory itself is shared with every
+  ;; other load handed it; load-let-go! prints them.
+  (define (tallying-memory m)
+    (let ((reused 0) (scanned 0))
+      (make-segment-memory
+        (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
+          ((segment-memory-scan m) phase writer seg bytes expected-seq recoverable-tail? deliver
+           (lambda (how)
+             (if (eq? how 'scanned) (set! scanned (fx+ scanned 1)) (set! reused (fx+ reused 1)))
+             (note how))))
+        (segment-memory-digest m)
+        (segment-memory-edges m)
+        (segment-memory-held m)
+        (lambda () (cons reused scanned)))))
+
+  ;; A LOAD LETS GO OF ITS MEMORY ONCE, saying what the memory did for it:
+  ;; one trace line per load, (load-memory (replayed-or-extended <n> scanned
+  ;; <n>)), beside the per-segment `memory` events. The places a load can end
+  ;; (its delivery leaving, a commit, an abort, a session's end) each call
+  ;; this; the first lets go and prints, a later one finds remembers-nothing
+  ;; and does neither. The memory itself is not cleared: a memory handed in
+  ;; outlives the load, which only drops its reference.
+  (define (load-let-go! ls)
+    (let ((m (load-session-memory ls)))
+      (unless (eq? m remembers-nothing)
+        (let ((tally ((segment-memory-tally m))))
+          (when tally
+            (trace-event! 'load-memory (list 'replayed-or-extended (car tally) 'scanned (cdr tally)) #f)))
+        (load-session-memory-set! ls remembers-nothing))))
 
   (define (memory-digest m writer seg bytes)
     ((segment-memory-digest m) writer seg bytes))
@@ -1043,7 +1084,7 @@
                   (set! held (+ held (bytevector-length bytes))))
                 fresh))))
       (make-segment-memory
-        (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver)
+        (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
           (let* ((e (entry-for writer seg bytes))
                  (found (memory-entry-found e))
                  (frames 0)
@@ -1054,6 +1095,7 @@
                             (replay-checked e writer seg bytes expected-seq recoverable-tail? counted)
                             (remembered-scan e writer seg expected-seq recoverable-tail? counted))))
             (memory-entry-found-set! e 'remembered)
+            (note (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
             ;; WHAT THE MEMORY DID FOR THIS SEGMENT, one event per segment
             ;; a load scans: the phase, the segment, how it was answered
             ;; (scanned from its first byte, extended from the remembered
@@ -1075,7 +1117,8 @@
               (memory-entry-edges-set! e (segment-edge-seqs bytes))
               (memory-entry-has-edges-set! e #t))
             (memory-entry-edges e)))
-        (lambda () held))))
+        (lambda () held)
+        (lambda () #f))))
 
   ;; The replay of the entry's transcript; what it decoded past the
   ;; transcript is kept in the entry.
@@ -2392,8 +2435,11 @@
                         #f)))
           (vector-set! owned 0 lock)
           (let* ((writers (store-writers store))
+                 ;; this load's view of the memory it was handed, counting for
+                 ;; its trace line (tallying-memory)
+                 (counted (tallying-memory memory))
                  (prefixes (map (lambda (w)
-                                  (cons w (discover-prefix store w lock-context memory)))
+                                  (cons w (discover-prefix store w lock-context counted)))
                                 writers)))
             ;; THE WINDOW RIGHT AFTER DISCOVERY, before snapshot selection, the
             ;; declaration check and the delivery barrier, for the rows that
@@ -2401,7 +2447,7 @@
             ;; side by side (D-interleave).
             (hold-point! 'after-discovery)
             (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f
-                                         (ownership-table store) memory)))
+                                         (ownership-table store) counted)))
               ;; Only the notes that refuse this consumer refuse it -- a cut
               ;; refuses the strict declaration alone (incomplete.sc,
               ;; refusing-notes) -- and the refusal names EVERY note of the
@@ -2565,7 +2611,11 @@
             ;; (writer-superseded (writer w) (by o) (remedy reopen)), or #f.
             ;; Set by a reload and never cleared: the session stays bound to
             ;; the writer it began with, so only a new session can write.
-            (mutable superseded)))
+            (mutable superseded)
+            ;; THE MEMORY THIS SESSION'S LOADS ARE HANDED: its first load's and
+            ;; every reload!'s, so a reload inside the session replays what the
+            ;; first load kept (log-begin-with-memory).
+            memory))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -2793,7 +2843,17 @@
   ;; the flock held -- the worst of both, since the next log-begin then
   ;; passes the guard and blocks forever on a lock no one will release.
   (define (log-begin store on-deliver . declaration-opt)
+    (apply log-begin-with-memory store (make-load-memory) on-deliver declaration-opt))
+
+  ;; log-begin with a memory the caller keeps, as log-open-with-memory is
+  ;; log-open's: the session's load and every reload! inside it are handed
+  ;; MEMORY, so what they compute from a segment's bytes stays there for a
+  ;; later session handed the same one. log-begin hands each session a memory
+  ;; of its own.
+  (define (log-begin-with-memory store memory on-deliver . declaration-opt)
     (define declaration (and (pair? declaration-opt) (car declaration-opt)))
+    (unless (segment-memory? memory)
+      (assertion-violation 'log-begin-with-memory "not a memory of a load" memory))
     (unless (procedure? on-deliver)
       (assertion-violation 'log-begin "on-deliver must be a procedure" on-deliver))
     (claim-store! store 'log-begin)
@@ -2814,7 +2874,7 @@
               ;; promise, doing the same flushes twice and making a case
               ;; that counts them read differently for no reason the
               ;; store cares about.
-              (let ((ls (open-load store 'held-exclusive declaration (make-load-memory))))
+              (let ((ls (open-load store 'held-exclusive declaration memory)))
                 (let* ((selected (session-writer-of store ls))
                        (excluded (and (pair? selected) (cadr selected)))
                        (found (and (string? selected) selected))
@@ -2842,7 +2902,7 @@
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
                                         (and end (+ end 1)) #f
-                                        refusal declaration #f seed #f)))
+                                        refusal declaration #f seed #f memory)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -3161,7 +3221,7 @@
           ;; delivery whose process was killed leaves the load delivering,
           ;; with no after-thunk run to let go, and the session's end is the
           ;; one place left that sees it.
-          (load-session-memory-set! ls remembers-nothing)
+          (load-let-go! ls)
           (when (eq? (load-outcome ls) 'open) (load-commit! ls))))
       (lambda ()
         (dynamic-wind
@@ -3391,7 +3451,7 @@
   ;; against it.
   (define (reload! s)
     (let* ((store (session-store s))
-           (fresh (open-load store 'held-exclusive (session-declaration s) (make-load-memory))))
+           (fresh (open-load store 'held-exclusive (session-declaration s) (session-memory s))))
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
@@ -6607,7 +6667,8 @@
                   (session-declaration s)
                   #t
                   (session-own-prefix s)
-                  (session-superseded s)))
+                  (session-superseded s)
+                  (session-memory s)))
 
   ;; THE LOGICAL SUCCESS OF AN APPEND AT SEQ: the next sequence, the record
   ;; waiting for its application, the revision, and that this session has
@@ -7708,7 +7769,7 @@
     (check-terminal! 'load-commit! ls)
     (load-session-outcome-set! ls 'committed)
     ;; A load committed without a delivery lets go of its memory here too.
-    (load-session-memory-set! ls remembers-nothing)
+    (load-let-go! ls)
     (release-load! ls)
     (load-session-state ls))
 
@@ -7728,7 +7789,7 @@
     (load-session-state-set! ls '())
     (load-session-outcome-set! ls (list 'aborted reason))
     ;; An aborted load lets go of its memory, delivered or not.
-    (load-session-memory-set! ls remembers-nothing)
+    (load-let-go! ls)
     (release-load! ls)
     (load-session-outcome ls))
 
@@ -7850,7 +7911,7 @@
           ;; running no winder either way (actor.sc, @yield); a killed
           ;; process's winders are discarded unrun. finish-abort! above
           ;; stands on the same fact.
-          (load-session-memory-set! ls remembers-nothing)))))
+          (load-let-go! ls)))))
 
   (define (deliver-all ls cut on-deliver)
     (let loop ((ws (load-session-prefixes ls)))

@@ -70,8 +70,8 @@
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
-                store-withhold-hook!)
-          (only (theourgia log) store-state-snapshot snapshot-unreadable-notes
+                store-withhold-hook! store-memory-provider!)
+          (only (theourgia log) store-state-snapshot snapshot-unreadable-notes make-load-memory
                 snapshot-current-segments segment-shrank? segment-version-now log-append-guard!
                 segment-version-readable?
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
@@ -299,7 +299,8 @@
   ;; echoed as the last clause of every startup report; #f when the
   ;; daemon was started by hand without one. The third is the query
   ;; session's size, the fourth the idle window in seconds (0 or #f:
-  ;; never), the fifth the idle grace in milliseconds (#f: the default).
+  ;; never), the fifth the idle grace in milliseconds (#f: the default), the
+  ;; sixth the store process's memory limit in bytes (#f: the default).
   ;; A STORE THAT IS NOT THERE IS REFUSED BY THE PROGRAMS, NOT HERE: the
   ;; client and theourgiad ask store-here? before anything under the run root
   ;; is made, and this procedure, reached only through theourgiad, makes the
@@ -320,10 +321,13 @@
           (size (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (caddr opts)) (caddr opts) session-size-default))
           (idle (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts)) (cadddr opts)))
           (grace (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts))
-                      (pair? (cddddr opts)) (car (cddddr opts)))))
+                      (pair? (cddddr opts)) (car (cddddr opts))))
+          (limit (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)) (pair? (cdddr opts))
+                      (pair? (cddddr opts)) (pair? (cdr (cddddr opts))) (cadr (cddddr opts)))))
       (set! session-size size)
       (set! idle-exit-seconds (or idle 0))
       (set! idle-grace-ms (or grace idle-grace-default-ms))
+      (set! memory-limit (or limit memory-limit-default))
       (set! idle-options
             (append (if idle (list (list 'idle-exit idle)) '())
                     (if grace (list (list 'idle-grace-ms grace)) '())))
@@ -347,6 +351,12 @@
   ;; datum or a list; (trace session served (<verb> <expanded> <new> <size>))
   ;; after each query or context answer.
   (define session-size-default 1000000)
+  ;; THE STORE PROCESS'S MEMORY OF ITS LOADS: how many segment bytes it may
+  ;; remember (serve's sixth option, theourgiad's --memory-limit). The bound
+  ;; counts remembered bytes; what the transcripts' frames hold beside them in
+  ;; the heap is a multiple of that (S3's record states the factor).
+  (define memory-limit-default (* 256 1024 1024))
+  (define memory-limit memory-limit-default)
   (define derived-generation 0)
   (define session-provider #f)
   (define session-size session-size-default)
@@ -2533,11 +2543,20 @@
 
   ;; ---- the store process -------------------------------------------------
   ;;
-  ;; NEVER: THE ONLY PROCESS THAT OPENS THE STORE. `open-and-reduce` takes the
-  ;; store's flock, and a lock taken inside an actor blocks the whole
-  ;; scheduler thread -- so if two processes could take it, one of them
-  ;; parked behind the other would freeze everything, including the
-  ;; connection that was going to release it.
+  ;; THE PROCESS THAT LOADS FOR THE STORE'S READS AND COMMITS. It is not the
+  ;; only one that opens the log: a writer process's verbs (working.sc's
+  ;; `write --expect`, `--based-on`, `--working-cut`, `--working-parent`,
+  ;; `restore`, `drafts` with a diagnostics table) load in their own process.
+  ;; No process takes a flock itself: every lock goes through main's lock
+  ;; service (below), which answers by message, so a process waiting for the
+  ;; store's lock is parked and the scheduler thread runs on.
+  ;; IT KEEPS THE MEMORY ITS LOADS ARE HANDED: made at its start and handed to
+  ;; every load it runs (store-memory-provider!), so a load decodes only the
+  ;; bytes no earlier load of this process remembered. The provider answers
+  ;; that memory to this process and #f to every other, which then loads with
+  ;; a memory of its own: the memory's table is changed by its loads, and two
+  ;; processes interleave at arbitrary points. Start-up's load is the first to
+  ;; be handed it, and finds it empty.
   ;; NEVER: THE FIRST PUBLICATION HAPPENS BEFORE ANYBODY CAN ASK FOR
   ;; ANYTHING. Main does not open the socket until this has reported
   ;; `ready`, so there is no such thing as a read arriving with nothing
@@ -2570,6 +2589,9 @@
     ;; store-here?, so a signal can arrive while main is STARTING (the
     ;; startup-exit design R6).
     (hold-point! 'store-start)
+    ;; this process's memory of its loads, answered to it alone (above)
+    (let ((store-process self) (memory (make-load-memory memory-limit)))
+      (store-memory-provider! (lambda () (and (eqv? self store-process) memory))))
     ;; every write this process makes asks it first (see segment-replaced)
     (log-append-guard! segment-replaced note-own-repair!)
     ;; A RAISE BEFORE ANY REPORT (D15), armed by
@@ -2782,13 +2804,18 @@
            ((current-lock-acquire) (string-append store "/lock") 'exclusive)
            (raise (condition (make-message-condition "injected writer raise")
                              (make-irritants-condition (list name seq)))))
-         ;; NEVER: THE PUBLISHED VALUE, NOT A FRESH FOLD. A note verb reads
-         ;; the library to decide what a draft is based on, and doing
-         ;; that by opening the log would take the store's lock on a
-         ;; path that is supposed to be able to run beside a commit.
-         ;; Being one commit behind is the documented behaviour here,
-         ;; and the consequences of acting on a stale premise are caught
-         ;; where they have to be caught -- by the commit, under the lock.
+         ;; A NOTE VERB READS THE PUBLISHED VALUE, NOT A FRESH FOLD: it reads
+         ;; the library to decide what a draft is based on, and doing that
+         ;; by opening the log would take the store's lock on a path that
+         ;; is supposed to be able to run beside a commit. Being one commit
+         ;; behind is the documented behaviour here, and the consequences of
+         ;; acting on a stale premise are caught where they have to be
+         ;; caught -- by the commit, under the lock. NOT EVERY VERB OF THIS
+         ;; PROCESS DOES: `write --expect`, `--based-on`, `--working-cut`,
+         ;; `--working-parent`, `restore` and `drafts` with a diagnostics
+         ;; table fold afresh here (working.sc's open-and-reduce calls), each a
+         ;; load with a memory of its own, under a shared lock taken through
+         ;; main's lock service.
          (with-ticket ticket
           (lambda ()
            (if (executing? main-pid ticket)

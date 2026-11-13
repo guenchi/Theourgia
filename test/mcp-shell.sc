@@ -1992,7 +1992,8 @@
                     ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
                     ["--attempt" <token> (started-by-a-client-not-by-hand)]
                     ["--session-size" <entries>]
-                    ["--idle-exit" <seconds>] ["--idle-grace-ms" <milliseconds>])))
+                    ["--idle-exit" <seconds>] ["--idle-grace-ms" <milliseconds>]
+                    ["--memory-limit" <bytes>])))
 
 ;; ---- X: eval, carried out as the shell's own child ----------------------------
 ;;

@@ -19,7 +19,7 @@
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write premises-preflight premises-also intent-ref-positions
           judgement-refusal? structural-consumes-mismatch
-          premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook!
+          premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook! store-memory-provider!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
           state-incomplete-notes describe-log-error commit-failure
           ;; The interface pinned at dispatch (the cells look these up
@@ -48,7 +48,7 @@
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (rnrs records syntactic) define-record-type fields mutable)
           (only (theourgia log)
-                log-open load-deliver! load-commit! load-fingerprint remember-load-unreadable!
+                log-open log-open-with-memory log-begin-with-memory load-deliver! load-commit! load-fingerprint remember-load-unreadable!
                 load-unreadable session-load
                 unreadable-behind merge-unreadable
                 tell-load-notes! tell-load-refused! load-declaration-of
@@ -179,7 +179,8 @@
   ;; AN UNREADABLE WRITER HAS NO FRONTIER TO BE COMPLETE AT. Its end is not
   ;; known, so the reduction is not kept; asking for its end raises, and
   ;; that would fail a read the other writers answer -- only where the
-  ;; resident cache is on, which is the daemon.
+  ;; resident cache is on, which is no product process: only the fixtures
+  ;; that turn it on (store-resident-cache!).
   ;;
   ;; AND A LOAD THAT COULD NOT READ SOMETHING IS NOT COMPLETE ANYWHERE: a
   ;; writer stopped by a segment it cannot read keeps its origin and its
@@ -193,7 +194,7 @@
                            (= (if p (cdr p) 0) (discovery-end-seq prefix)))))
                   (load-writers ls))))
   (define (replay store cut . declaration)
-    (let* ((ls (log-open store (and (pair? declaration) (car declaration))))
+    (let* ((ls (provided-open store (and (pair? declaration) (car declaration))))
            (key (and resident-enabled? (not cut) (load-fingerprint ls)))
            (previous (and key (hashtable-ref residents store #f)))
            (cached (and previous (equal? (car previous) key) (cdr previous)))
@@ -2823,7 +2824,7 @@
   (define (store-log store id)
     (let* ((r (reduce-empty))
            (collected (vector (quote ())))
-           (ls (log-open store)))
+           (ls (provided-open store #f)))
       (load-deliver! ls (quote ()) (collect-into r collected))
       (load-commit! ls)
       (let ((applied (reduce-trace r)))
@@ -3783,6 +3784,27 @@
     (unless (procedure? procedure)
       (assertion-violation 'store-publish-hook! "not a procedure" procedure))
     (set! publish-hook procedure))
+  ;; THE MEMORY A LOAD IN THIS PROCESS IS HANDED, set once like the publish
+  ;; hook: a procedure of no arguments answering a memory of a load
+  ;; (make-load-memory) or #f. #f is S2's case, a memory of its own per load,
+  ;; and the default answers it: a CLI run, a test and every process that
+  ;; installs nothing keep S2's. A daemon's store process installs one that
+  ;; answers its own memory to itself and #f to any other process (daemon.sc,
+  ;; store-loop), so a table the loads change is never reached from two
+  ;; processes. replay, store-log, store-check, store-position, a write's
+  ;; session and a snapshot's session ask it; the loads in writer processes
+  ;; (working.sc) do not, and keep S2's memory.
+  (define memory-provider (lambda () #f))
+  (define (store-memory-provider! procedure)
+    (unless (procedure? procedure)
+      (assertion-violation 'store-memory-provider! "not a procedure" procedure))
+    (set! memory-provider procedure))
+  (define (provided-open store declaration)
+    (let ((m (memory-provider)))
+      (if m (log-open-with-memory store m declaration) (log-open store declaration))))
+  (define (provided-begin store on-deliver)
+    (let ((m (memory-provider)))
+      (if m (log-begin-with-memory store m on-deliver) (log-begin store on-deliver))))
   ;; WHAT A WITHHELD PUBLICATION ASKS FOR, set once like the publish hook.
   ;; The daemon's store process asks itself to reload; a CLI run holds no
   ;; publication and does nothing.
@@ -3939,7 +3961,7 @@
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty))
           (t-start (timing-call request-begin!)))
-      (let* ((s (timed 'load-replay (log-begin store (deliver-into state #f))))
+      (let* ((s (timed 'load-replay (provided-begin store (deliver-into state #f))))
              ;; THE VERDICT'S DISCOVERIES, answered from this session's load
              ;; while it stands (log.sc, session-discovery-provider)
              (discoveries (session-discovery-provider s))
@@ -5454,7 +5476,7 @@
   (define (store-snapshot! store . opts)
     (let ((actor (if (pair? opts) (car opts) "unknown"))
           (state (reduce-empty)))
-      (let ((s (log-begin store (deliver-into state #f))))
+      (let ((s (provided-begin store (deliver-into state #f))))
         (session-applied! s (session-epoch s) (reduce-applied-cut state))
         (let ((answer
                 (guard (e (#t (log-end! s) (raise e)))
@@ -5718,7 +5740,7 @@
             (map cadr (state-datum state))))
 
   (define (store-check store)
-    (let ((ls (log-open store)))
+    (let ((ls (provided-open store #f)))
       (dynamic-wind
         (lambda () (if #f #f))
         (lambda () (store-check-with store ls))
@@ -5739,7 +5761,7 @@
   ;; writer is the log writer that appends the request's records, whatever
   ;; draft writer a commit names. Nothing defaults a cursor from it.
   (define (store-position store)
-    (let ((ls (log-open store)))
+    (let ((ls (provided-open store #f)))
       (dynamic-wind
         (lambda () (if #f #f))
         (lambda ()

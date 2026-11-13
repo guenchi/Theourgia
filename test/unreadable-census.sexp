@@ -942,12 +942,12 @@
    unrelated a
    "store key"
    (e (#t store)))
-  ("log.sc" (log-begin) 1 guard
+  ("log.sc" (log-begin-with-memory) 1 guard
    (#t)
    propagate b
    "re-raises"
    (e (#t (raise e))))
-  ("log.sc" (log-begin) 2 guard
+  ("log.sc" (log-begin-with-memory) 2 guard
    (#t)
    unrelated a
    "cleanup"

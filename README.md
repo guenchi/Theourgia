@@ -5174,14 +5174,14 @@ exported, and the claimed `eval-<token>/` is removed.
 
 ### `serve`
 
-    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>) ("--session-size" <entries>) ("--idle-exit" <seconds>) ("--idle-grace-ms" <milliseconds>))
+    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>) ("--session-size" <entries>) ("--idle-exit" <seconds>) ("--idle-grace-ms" <milliseconds>) ("--memory-limit" <bytes>))
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 The program is `theourgiad.sc`; it takes this verb and no other, and
 answers any other with `(error bad-request (reason not-a-daemon-verb)
 (usage ...))`, this usage inside the error, exit 1. It reads `--store`,
-`--socket`, `--detach`, `--log`, `--attempt`, `--session-size`, `--idle-exit` and `--idle-grace-ms`,
+`--socket`, `--detach`, `--log`, `--attempt`, `--session-size`, `--idle-exit`, `--idle-grace-ms` and `--memory-limit`,
 and refuses any other option,
 `--wire` and the other verbs' shared options included, with `(error
 bad-request (reason unknown-option) (option "<the option>") (usage ...))`,
@@ -5199,6 +5199,24 @@ for this one start, and the daemon echoes it as the last clause of every
 startup report it writes, so the client can tell its own start's report
 from another's in the shared log. A start made by hand has none, and its
 reports end with `(attempt #f)`.
+
+**The store process's memory.** The daemon's store process runs the loads of every
+request it serves (a write's session, `check`, `log`, a read the publication cannot
+answer), and it hands them one memory, made when it starts: what a load computed from a
+segment's bytes -- its scan, its digest, its edges -- is kept, so a later load decodes
+only the bytes no earlier load remembered (a segment that grew, from where it was; a new
+one, whole). An entry is used only for bytes equal to the ones it holds or beginning with
+them; any other bytes replace it. The start-up load finds the memory empty. A process
+of the daemon other than the store process (a writer process's `write --expect`,
+`--based-on`, `--working-cut`, `--working-parent`, `restore`, `drafts`) is not handed it
+and loads with a memory of its own, as a command line does. `--memory-limit <bytes>`
+bounds it, in remembered segment bytes (default 268435456, 256 MiB): segments are kept
+in the order they are asked for until the next would pass the bound, and one that does
+not fit is scanned at every load, as without a memory. The heap a memory holds is a
+multiple of its remembered bytes (the transcripts' frames beside the bytes). A value
+that is not a count is refused like `--session-size`'s. With `THEOURGIA_TRACE=1` each
+load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
+counting the segment asks its memory answered each way.
 
 **The query session.** `query` and `context` are answered by the daemon's store
 process from the publication, made current first when the disk has moved past
