@@ -3444,8 +3444,8 @@
   ;; A stale cache is different and is not an obstacle: the union has
   ;; already repaired it, and every interval the records still imply is
   ;; in the list.
-  (define (blocking-uncertainty store) (blocking-uncertainty-of (store-intervals store)))
-  ;; THE SAME, OF INTERVALS ALREADY COMPUTED, so a verdict computes them once
+  ;; ASKED OF INTERVALS ALREADY COMPUTED (LOADED), so a verdict computes them
+  ;; once: -> the first unreadable one, or #f
   (define (blocking-uncertainty-of loaded)
     (let loop ((rs (cadr loaded)))
       (cond
@@ -3461,7 +3461,6 @@
   ;; word for an outcome the store cannot establish, and it stays for a cache
   ;; that reads and does not parse, which names no entry.
   ;; -> (refused <answer>) or #f
-  (define (blocking-entry-refusal store) (blocking-entry-refusal/provided #f store))
   (define (blocking-entry-refusal/provided provider store)
     (let loop ((ws (store-writers store)))
       (and (pair? ws)
