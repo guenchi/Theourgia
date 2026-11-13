@@ -33,6 +33,8 @@
 ;;   VD-5  the witness fires: a provider answering from another store, under
 ;;         verdict-discoveries; its fixed line reaches the error port through
 ;;         both of the verdict's guards
+;;   VD-6  a child that outlives its wait is killed by its pid and its row fails
+;;         by name (outlived-its-wait); none is left running
 ;;
 ;; The quarantined fork, the retired writer with its successor and the
 ;; unreadable writer are judged by the verdict-discoveries check (degeneracy.sc)
@@ -260,22 +262,35 @@
 ;; environment it runs under, BACKGROUND? leaves it running and answers the
 ;; paths it writes instead
 (define (child-paths tag)
-  (map (lambda (x) (string-append root "/" tag x)) '(".ss" ".out" ".err" ".done")))
+  (map (lambda (x) (string-append root "/" tag x)) '(".ss" ".out" ".err" ".done" ".pid")))
+;; THE CHILD'S PID IS WRITTEN BY THE SHELL THAT STARTS IT ($!), so a child that
+;; outlives the wait below can be stopped by pid, not left behind
 (define (start-child! tag setting program args)
   (let ((ps (child-paths tag)))
     (call-with-output-file (car ps) (lambda (p) (for-each (lambda (f) (write f p) (newline p)) program)) 'replace)
     (system (string-append "sh -c \"" setting " scheme --script '" (car ps) "' "
                            (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
-                           "> '" (cadr ps) "' 2> '" (caddr ps) "' < /dev/null; touch '" (cadddr ps) "'\" &"))
+                           "> '" (cadr ps) "' 2> '" (caddr ps) "' < /dev/null & echo \\$! > '" (list-ref ps 4)
+                           "'; wait \\$!; touch '" (cadddr ps) "'\" &"))
     ps))
-(define (await-file path)
-  (let loop ((k 0))
-    (cond ((file-exists? path) #t)
-          ((> k 1500) #f)
-          (else (sleep (make-time 'time-duration 20000000 0)) (loop (+ k 1))))))
-(define (child-result ps)
-  (await-file (cadddr ps))
-  (cons (read-or-false (file-text (cadr ps))) (file-text (caddr ps))))
+;; LIMIT is a count of 20 ms ticks, about 30 s by default
+(define (await-file path . limit)
+  (let ((ticks (if (pair? limit) (car limit) 1500)))
+    (let loop ((k 0))
+      (cond ((file-exists? path) #t)
+            ((> k ticks) #f)
+            (else (sleep (make-time 'time-duration 20000000 0)) (loop (+ k 1)))))))
+;; A CHILD THAT OUTLIVES ITS WAIT is killed by its pid and answers
+;; outlived-its-wait in place of its datum, so its row fails by name and
+;; nothing of it runs past the fixture
+(define (child-result ps . limit)
+  (if (apply await-file (cadddr ps) limit)
+      (cons (read-or-false (file-text (cadr ps))) (file-text (caddr ps)))
+      (let ((pid (read-or-false (file-text (list-ref ps 4)))))
+        (when (and (integer? pid) (> pid 0))
+          (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
+        (printf "the child ~a outlived its wait (pid ~s): killed\n" (car ps) pid)
+        (cons 'outlived-its-wait (file-text (caddr ps))))))
 ;; the cut, the gates and the writer's end of ST, for a child that cannot load
 ;; ST before its session (every load meets the hold)
 (define (given-file! st w tag)
@@ -360,6 +375,19 @@
 (want "VD-5 a provider answering from another store: the derivation answers the conservative interval, the verdict unknown, and the witness's line is on the error port once for each"
       (list (car vd5) (count-lines (cdr vd5) "degeneracy: a provided discovery differs from a fresh one"))
       (list (list (list (list (cdr f1) 0 #f)) 'unknown) 2))
+
+;; VD-6, THE WAIT IS A BOUND: a child that sleeps past a wait of about a second
+;; is killed by its pid and answers outlived-its-wait, and is gone after
+(define vd6-ps (start-child! "vd6" "" '((import (chezscheme)) (sleep (make-time 'time-duration 0 60))) '()))
+(define vd6 (child-result vd6-ps 50))
+(define vd6-pid (read-or-false (file-text (list-ref vd6-ps 4))))
+(sleep (make-time 'time-duration 200000000 0))
+(define (vd6-gone?)
+  (and (integer? vd6-pid)
+       (not (zero? (system (string-append "kill -0 " (number->string vd6-pid) " 2>/dev/null"))))))
+(want "VD-6 a child that outlives its wait is killed by its pid, answers outlived-its-wait, and is gone"
+      (list (car vd6) (integer? vd6-pid) (vd6-gone?))
+      '(outlived-its-wait #t #t))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nverdict-discoveries complete\n" bad rows-run)
