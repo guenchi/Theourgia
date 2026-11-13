@@ -33,8 +33,12 @@
   ;; whether a block EXISTS, which no derivation changes.
   (define (alive? state id)
     (let ((b (state-read state id))) (and b (not (cdr (assq 'deleted b))))))
+  ;; A FILE'S CHILDREN from the structure's sibling list, costing that file's
+  ;; children: filtering the whole sorted outline once per file made an export
+  ;; files times rows. Under the switch children-list compares the answer with
+  ;; that filter.
   (define (code-children state id)
-    (map caddr (filter (lambda (r) (equal? (car r) id)) (state-outline state))))
+    (map cdr (state-children state id)))
   (define (code-files state)
     (filter (lambda (id) (and (alive? state id) (eq? 'file (code-field state id 'kind))))
             (map cadr (state-datum state))))

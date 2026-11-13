@@ -53,7 +53,7 @@
           resolve-ref-target ast-with-targets
           state-path-claimants state-duplicated-paths
           reserved-relation-names state-reserved-relation-records
-          state-structure state-siblings state-sibling-last-ord state-sibling-bracket reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
+          state-structure state-siblings state-children state-sibling-last-ord state-sibling-bracket reduction-facts state-refs state-tags state-event-cut state-event-past cut-usable? cut-id
           cut-covers? state-put-events block-creation event-actor state-field-events state-field-contested? state-block-ids state-link-events
           state->rows rows->state declaration-lookup-counter
           state-consumed? state-consumption state-consumed-completions
@@ -64,7 +64,7 @@
           reduction? reduction-state reduction-overlay? reduction-overlay-set!
           view-facts-set! view-hidden-holder deleted-in-working-refusal)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
-          (only (chezscheme) make-parameter)
+          (only (chezscheme) make-parameter fprintf console-error-port flush-output-port)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
           (rnrs unicode) (rnrs io simple)
           (only (rnrs io ports) call-with-string-output-port)
@@ -2396,8 +2396,7 @@
   ;; outline order; `outline-subtree` below, which collects children in row
   ;; order and from which `md-tree` and `subtree-with-root` read document
   ;; order; project.sc's `doc-sections-of`, which walks the rows with its own
-  ;; `children-of`; code-project.sc's `code-children`, whose order
-  ;; `export-code` writes the source in; and store.sc's `siblings`, whose
+  ;; `children-of`; and store.sc's `siblings`, whose
   ;; sort by ord alone is stable and so keeps this list's id order among
   ;; equal ords. A caller that filters to one parent gets that parent's rows
   ;; already in order.
@@ -3258,14 +3257,32 @@
   ;; the later of two sibling entries (either may be #f)
   (define (child-max a b) (cond ((not a) b) ((not b) a) ((child<? a b) b) (else a)))
   (define (child-min a b) (cond ((not a) b) ((not b) a) ((child<? b a) b) (else a)))
-  (define (state-siblings r parent)
+  ;; THE ONE DEFINITION OF A PARENT'S SIBLING LIST from the maintained
+  ;; structure: the live, placed children not on a cycle, in child<? order
+  ;; (ord, then id), and under root the marked rows too. state-siblings and
+  ;; state-children answer it, each under its own check.
+  (define (structure-sibling-list r parent)
     (let* ((s (reduction-structure r))
            (cv (hashtable-ref (structure-children s) parent #f))
-           (own (if cv (cvec->list cv (lambda (e) (not (hashtable-contains? (structure-conflicts s) (cdr e))))) '()))
-           (answer (if (equal? parent 'root)
-                       (list-sort child<? (append own (cvec->list (structure-marked s) (lambda (e) #t))))
-                       own)))
+           (own (if cv (cvec->list cv (lambda (e) (not (hashtable-contains? (structure-conflicts s) (cdr e))))) '())))
+      (if (equal? parent 'root)
+          (list-sort child<? (append own (cvec->list (structure-marked s) (lambda (e) #t))))
+          own)))
+  (define (state-siblings r parent)
+    (let ((answer (structure-sibling-list r parent)))
       (degeneracy-check siblings-list (siblings-list-compare r parent answer))
+      answer))
+  ;; A PARENT'S CHILDREN, (ord . id) in sibling order, for a caller that walks
+  ;; many parents (code-project.sc's `code-children`, whose order `export-code`
+  ;; writes the source in, asks it once per file): the structure's list,
+  ;; costing that parent's children (under root, every root row, sorted). The
+  ;; rows of state-outline under the same parent are the same ids in the same
+  ;; order, child<? being outline-row<? on one parent; children-list compares
+  ;; the two on every call.
+  (define (state-children r parent)
+    (let ((answer (structure-sibling-list r parent)))
+      (work! 'children (length answer))
+      (degeneracy-check children-list (children-list-compare r parent answer))
       answer))
   ;; the last sibling's ord, or #f: what an insert or move with no `after` places
   ;; after
@@ -3418,6 +3435,18 @@
         (let ((expected (siblings-recomputed r parent)))
           (unless (equal? expected answer)
             (assertion-violation 'degeneracy "the sibling list differs from the outline's" parent answer expected))))
+      ;; the children as code-children read them before: state-outline's rows
+      ;; under PARENT, in row order. A difference is printed on the error port
+      ;; before it raises, so a caller's guard cannot make it a refusal only.
+      (define (children-list-compare r parent answer)
+        (let ((expected (map caddr (filter (lambda (row) (equal? (car row) parent)) (state-outline r))))
+              (ids (map cdr answer)))
+          (unless (equal? expected ids)
+            (let ((port (console-error-port)))
+              (fprintf port "~a: parent ~s\n" children-differs-line parent)
+              (flush-output-port port))
+            (assertion-violation 'degeneracy children-differs-line parent ids expected))))
+      (define children-differs-line "degeneracy: a children list differs from the outline's")
       (define (sibling-compare r parent after answer)
         (let* ((sibs (siblings-recomputed r parent))
                (expected

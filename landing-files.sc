@@ -49,7 +49,7 @@
   ;; are found by the path field, not by a list of kinds, and the fields are
   ;; read as stored (state-read), with no name derived. The blocks under a
   ;; holder come from one parent-to-children index per state, built from
-  ;; state-outline (the rows code-children filters), so the outline is read
+  ;; state-outline's rows, so the outline is read
   ;; once and not once per file. A block's version covers its fields, its
   ;; position (parent and place) and its edges, so a reorder, a move into or
   ;; out of a file and a deletion each show. A record on any other block (a review letter, a
