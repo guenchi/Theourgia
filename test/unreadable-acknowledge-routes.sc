@@ -196,7 +196,14 @@
 ;;   request   the load takes the request's declaration (A2): declared for a
 ;;             verb that carries the clause, undeclared for export/import/
 ;;             def/snapshot, undeclared outside any request
-;;   builder   the load primitive's own definition site in log.sc / store.sc
+;;   builder   the load primitive's own definition site in log.sc / store.sc,
+;;             and a primitive's delegation to another (log-begin to
+;;             log-begin-with-memory, open-and-reduce to obtain-state,
+;;             store.sc's provided-open and provided-begin to the log's)
+;; THE MEMORY'S CHOOSERS ARE PRIMITIVES IN THEIR OWN RIGHT: provided-open and
+;; provided-begin (store.sc) and the log's log-open-with-memory and
+;; log-begin-with-memory, so each verb's load is still its own row, keyed by
+;; the verb's definition, as log-open's were. A call through `apply` is a call.
 ;;   unsealer  obtain-state: a supplied state is judged where it is consumed
 ;;   daemon    the daemon's own fold, explicitly declared: it holds the state
 ;;   published the one reader of the daemon's publication (answer-published)
@@ -223,29 +230,35 @@
     ("datum-project.sc" "field-changes!" "open-and-reduce" 1 request)
     ("eval-runner.sc" "project-and-run" "open-and-reduce" 1 request)
     ("eval-worker.sc" "answer" "open-and-reduce" 2 request)
-    ("log.sc" "log-begin" "open-load" 1 builder)
+    ("log.sc" "log-begin" "log-begin-with-memory" 1 builder)
+    ("log.sc" "log-begin-with-memory" "open-load" 1 builder)
     ("log.sc" "log-open" "open-load" 1 builder)
     ("log.sc" "log-open-in-session" "open-load" 1 builder)
     ("log.sc" "log-open-with-memory" "open-load" 1 builder)
     ("log.sc" "reload!" "open-load" 1 builder)
     ("project.sc" "export-md" "open-and-reduce" 1 request)
     ("rpc.sc" "reduction-for" "obtain-state" 1 unsealer)
-    ("store.sc" "replay" "log-open" 1 builder)
+    ("store.sc" "open-and-reduce" "obtain-state" 1 builder)
+    ("store.sc" "provided-begin" "log-begin" 1 builder)
+    ("store.sc" "provided-begin" "log-begin-with-memory" 1 builder)
+    ("store.sc" "provided-open" "log-open" 1 builder)
+    ("store.sc" "provided-open" "log-open-with-memory" 1 builder)
+    ("store.sc" "replay" "provided-open" 1 builder)
     ("store.sc" "replay" "rows->state" 1 notes)
-    ("store.sc" "store-check" "log-open" 1 request)
+    ("store.sc" "store-check" "provided-open" 1 request)
     ("store.sc" "store-check-with" "open-and-reduce" 1 request)
     ("store.sc" "store-conflicts" "open-and-reduce" 1 request)
     ("store.sc" "store-diff" "open-and-reduce" 1 request)
     ("store.sc" "store-evidence" "open-and-reduce" 1 request)
     ("store.sc" "store-grep" "open-and-reduce" 1 request)
-    ("store.sc" "store-log" "log-open" 1 request)
-    ("store.sc" "store-position" "log-open" 1 request)
+    ("store.sc" "store-log" "provided-open" 1 request)
+    ("store.sc" "store-position" "provided-open" 1 request)
     ("store.sc" "store-refs" "open-and-reduce" 1 request)
     ("store.sc" "store-search" "open-and-reduce" 1 request)
-    ("store.sc" "store-snapshot!" "log-begin" 1 request)
+    ("store.sc" "store-snapshot!" "provided-begin" 1 request)
     ("store.sc" "store-state-at-cut" "obtain-state" 1 unsealer)
     ("store.sc" "store-tags" "open-and-reduce" 1 request)
-    ("store.sc" "with-store-write" "log-begin" 1 request)
+    ("store.sc" "with-store-write" "provided-begin" 1 request)
     ("template.sc" "template-apply!" "open-and-reduce" 1 request)
     ("working.sc" "committed-parent" "open-and-reduce" 1 request)
     ("working.sc" "draft-changed-refusal" "obtain-state" 1 unsealer)
@@ -267,7 +280,8 @@
     ("working.sc" "working-write!" "obtain-state" 1 unsealer)
     ("working.sc" "working-write!" "open-and-reduce" 1 request)))
 (define primitives '("open-load" "log-open" "log-open-in-session" "log-begin"
-                     "rows->state" "open-and-reduce" "obtain-state" "published-state"))
+                     "rows->state" "open-and-reduce" "obtain-state" "published-state"
+                     "log-open-with-memory" "log-begin-with-memory" "provided-open" "provided-begin"))
 ;; A line's code: the text before its first `;` outside a string.
 (define (code-of line)
   (let loop ((i 0) (in-string #f))
@@ -277,15 +291,17 @@
           ((and (char=? (string-ref line i) #\;) (not in-string)) (substring line 0 i))
           (else (loop (+ i 1) in-string)))))
 (define (delimiter? s i) (or (= i (string-length s)) (memv (string-ref s i) '(#\space #\tab #\) #\newline))))
-;; The calls of `name` in one code line: "(name" followed by a delimiter.
+;; The calls of `name` in one code line: "(name" or "(apply name" followed by
+;; a delimiter.
 (define (calls-in code name)
-  (let ((open (string-append "(" name)))
+  (define (count-of open)
     (let loop ((i 0) (k 0))
       (cond ((> (+ i (string-length open)) (string-length code)) k)
             ((and (string=? (substring code i (+ i (string-length open))) open)
                   (delimiter? code (+ i (string-length open))))
              (loop (+ i 1) (+ k 1)))
-            (else (loop (+ i 1) k))))))
+            (else (loop (+ i 1) k)))))
+  (+ (count-of (string-append "(" name)) (count-of (string-append "(apply " name))))
 (define (definer code)
   (let* ((s (let skip ((i 0)) (if (and (< i (string-length code)) (char=? (string-ref code i) #\space)) (skip (+ i 1)) i)))
          (t (substring code s (string-length code))))
@@ -321,15 +337,27 @@
                (filter (lambda (f) (let ((l (string-length f))) (and (> l 3) (string=? ".sc" (substring f (- l 3) l)))))
                        (directory-list "../mcp")))))
 (define scanned (apply append (map scan-file source-files)))
-(want "A CONTROL the scan sees the replay's log-open in store.sc, and it read more than twenty files"
-      (list (assoc '("store.sc" "replay" "log-open") scanned) (> (length source-files) 20))
-      (list (cons '("store.sc" "replay" "log-open") 1) #t))
+;; -> (<calls scanned that the census does not list> <census rows the scan
+;; did not find>)
+(define (census-differences scan)
+  (list (filter (lambda (s) (not (member (list (car (car s)) (cadr (car s)) (caddr (car s)) (cdr s))
+                                         (map (lambda (c) (list-head c 4)) census))))
+                scan)
+        (map (lambda (c) (list-head c 3))
+             (filter (lambda (c) (not (member (cons (list-head c 3) (cadddr c)) scan))) census))))
+(want "A CONTROL the scan sees replay's provided-open in store.sc, log-begin's delegation through apply, and it read more than twenty files"
+      (list (assoc '("store.sc" "replay" "provided-open") scanned)
+            (assoc '("log.sc" "log-begin" "log-begin-with-memory") scanned)
+            (> (length source-files) 20))
+      (list (cons '("store.sc" "replay" "provided-open") 1) (cons '("log.sc" "log-begin" "log-begin-with-memory") 1) #t))
 (want "A every call of a load primitive in the tree is listed with its count and a disposition, and nothing listed is gone"
-      (list (filter (lambda (s) (not (member (list (car (car s)) (cadr (car s)) (caddr (car s)) (cdr s))
-                                             (map (lambda (c) (list-head c 4)) census))))
-                    scanned)
-            (filter (lambda (c) (not (member (cons (list-head c 3) (cadddr c)) scanned))) census))
+      (census-differences scanned)
       '(() ()))
+;; ONE VERB'S LOAD REMOVED from the scan, as if its call had stopped going
+;; through the memory's chooser: the difference names that verb
+(want "A CONTROL with store-check's provided-open taken out of the scan, the census names store-check's row as gone, and nothing else"
+      (census-differences (remp (lambda (s) (equal? (car s) '("store.sc" "store-check" "provided-open"))) scanned))
+      '(() (("store.sc" "store-check" "provided-open"))))
 
 ;; =============================================================================
 (printf "== B: the library, in process ==\n")
