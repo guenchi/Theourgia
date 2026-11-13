@@ -36,14 +36,30 @@
 ;;   VD-6  a child that outlives its wait is killed by its pid and its row fails
 ;;         by name (outlived-its-wait); none is left running
 ;;
-;; The quarantined fork, the retired writer with its successor and the
-;; unreadable writer are judged by the verdict-discoveries check (degeneracy.sc)
-;; wherever a fixture that builds them commits a request under the switch.
+;;   VD-7  the stores VD-1 leaves to the switch's witness, each asked through a
+;;         provider on a COLD index (index-forget-memory! before each verdict, so
+;;         the provided and the plain one each build their own): (a) a
+;;         quarantined fork with a tracked record above it answers unknown,
+;;         quarantined; (b) a retired writer with its successor (an adopted
+;;         copy) and an unreadable writer under incomplete-accepted answer as
+;;         the plain verdict; (c) a request asked again with its own cursor
+;;         answers replay through the provider
+;;   VD-8  THE MISS IS REACHABLE: working.sc's ensure-area! makes
+;;         writers/<w>/ under the draft lock only, so a writer directory made
+;;         while a session holds at after-discovery is listed and was not
+;;         discovered; the provider misses it, traces verdict-provider miss,
+;;         and the verdict answers as the plain one (in a child, THEOURGIA_HOLD)
+;;
+;; VD-5 counts the witness's line per call: the derivation's guard alone once,
+;; then the verdict's at least once (which of uncertain-load's two let-bound
+;; readings raises first is the implementation's order, and decides whether
+;; the derivation's guard also prints inside the verdict).
 (import (chezscheme) (theourgia rpc) (theourgia log) (theourgia trace)
-        (only (theourgia store) open-and-reduce make-write-request request-verdict request-verdict/provided)
+        (only (theourgia store) open-and-reduce obtain-state make-write-request request-verdict request-verdict/provided)
         (only (theourgia reduce) reduce-applied-cut reduce-gates)
         (only (theourgia degeneracy) degeneracy-active)
-        (only (theourgia evidence-index) index-forget-memory!))
+        (only (theourgia evidence-index) index-forget-memory!)
+        (only (theourgia incomplete) incomplete-accepted))
 
 (define bad 0)
 (define rows-run 0)
@@ -361,6 +377,7 @@
     (define req (make-write-request "test" 'insert (list "root" "x") "WRONG" (cons w (caddr given))))
     (define s (log-begin st (lambda a 'applied)))
     (define derived (uncertain-derived/provided (lambda (writer) wrong) st w))
+    (let ((p (console-error-port))) (display "VD-5 between the two calls\n" p) (flush-output-port p))
     (define v (request-verdict/provided (lambda (writer) wrong) st req (car given) #f (cadr given)))
     (log-end! s)
     (write (list derived (car v)))))
@@ -372,9 +389,133 @@
                               (list (car f1) (cdr f1) (given-file! (car f1) (cdr f1) "vd5") (car f2) (cdr f2)))))
 (printf "VD-5 the verdict ~s, the fixed line ~a times on the error port\n"
         (car vd5) (count-lines (cdr vd5) "degeneracy: a provided discovery differs from a fresh one"))
-(want "VD-5 a provider answering from another store: the derivation answers the conservative interval, the verdict unknown, and the witness's line is on the error port once for each"
-      (list (car vd5) (count-lines (cdr vd5) "degeneracy: a provided discovery differs from a fresh one"))
-      (list (list (list (list (cdr f1) 0 #f)) 'unknown) 2))
+;; -> (<lines before the marker> <lines after it>) of the witness's fixed line
+(define (lines-around text marker line)
+  (let loop ((i 0))
+    (cond ((> (+ i (string-length marker)) (string-length text)) (list (count-lines text line) 'no-marker))
+          ((string=? (substring text i (+ i (string-length marker))) marker)
+           (list (count-lines (substring text 0 i) line)
+                 (count-lines (substring text i (string-length text)) line)))
+          (else (loop (+ i 1))))))
+(define vd5-lines (lines-around (cdr vd5) "VD-5 between the two calls" "degeneracy: a provided discovery differs from a fresh one"))
+(want "VD-5 a provider answering from another store: the derivation answers the conservative interval and its guard prints the witness's line once; the verdict answers unknown and its call prints the line at least once"
+      (list (car vd5) (car vd5-lines) (and (integer? (cadr vd5-lines)) (>= (cadr vd5-lines) 1)))
+      (list (list (list (list (cdr f1) 0 #f)) 'unknown) 1 #t))
+
+(printf "== VD-7: the stores VD-1 left to the witness, on a cold index ==\n")
+;; -> (<plain verdict> <provided verdict>), each on a COLD index: the index's
+;; memory forgotten and its checkpoint removed before each, so each builds its
+;; own by a scan; the load and the session declared DECLARATION (#f or
+;; incomplete-accepted); ARGS the request's arguments as the dispatcher makes
+;; them (the options but --req, --cursor and --premises)
+(define (cold-index! st)
+  (index-forget-memory!)
+  (let ((cp (string-append st "/request-index.sexp"))) (when (file-exists? cp) (delete-file cp))))
+(define (cold-verdicts st req-id after declaration . args)
+  (let* ((state (obtain-state st #f declaration))
+         (cut (reduce-applied-cut state))
+         (gates (reduce-gates state))
+         (req (make-write-request "test" 'insert (if (pair? args) (car args) (list "root" "x")) req-id after))
+         (s (if declaration (log-begin st (lambda args 'applied) declaration) (log-begin st (lambda args 'applied))))
+         (provider (session-discovery-provider s))
+         (provided (begin (cold-index! st) (request-verdict/provided provider st req cut #f gates)))
+         (plain (begin (cold-index! st) (request-verdict st req cut #f gates))))
+    (log-end! s)
+    (list plain provided)))
+(define (quarantine! st w fork)
+  (call-with-output-file (string-append st "/writers/" w "/quarantine.sexp")
+    (lambda (p) (display (format "((format 1) (fork ~a))\n" fork) p)) 'replace))
+(define (mentions? x sym) (cond ((eq? x sym) #t) ((pair? x) (or (mentions? (car x) sym) (mentions? (cdr x) sym))) (else #f)))
+
+;; (a) a tracked record at the fork: quarantined, the verdict cannot say it ran
+(define g (fresh-store "g"))
+(define g-before (end-seq (car g) (cdr g)))
+(rpc-dispatch (car g) (list 'insert "--title" "tracked" "--req" "QA" "--cursor" (cursor (car g) (cdr g))) "test")
+(quarantine! (car g) (cdr g) (+ 1 g-before))
+(define vd7a (cold-verdicts (car g) "QA" (cons (cdr g) g-before) #f))
+(printf "VD-7a plain ~s provided ~s\n" (car vd7a) (cadr vd7a))
+(want "VD-7a a quarantined fork with a tracked record at it, through a provider on a cold index: unknown, naming the quarantine, as the plain verdict"
+      (list (car (cadr vd7a)) (mentions? (cadr vd7a) 'quarantined) (same? vd7a))
+      '(unknown #t #t))
+
+;; (b) a retired writer with its successor: a copy, adopted, retires the copy's
+;; writer and makes a successor
+(define h (fresh-store "h"))
+(rpc-dispatch (car h) (list 'insert "--title" "ran" "--req" "RH" "--cursor" (cursor (car h) (cdr h))) "test")
+(define h-copy (string-append root "/h-copy"))
+(system (string-append "cp -R '" (car h) "' '" h-copy "'"))
+(define h-adopted (rpc-dispatch h-copy '(adopt) "test"))
+(define h-successor (let* ((ls (log-open h-copy)) (w (local-writer-of h-copy ls))) (load-commit! ls) w))
+(define vd7b-retired (cold-verdicts h-copy "RH" (cons (cdr h) (end-seq h-copy (cdr h))) #f))
+(define vd7b-fresh (cold-verdicts h-copy "NEW" (cons h-successor (end-seq h-copy h-successor)) #f))
+(printf "VD-7b adopt ~s successor ~s; retired ~s; fresh ~s\n" (car h-adopted) h-successor vd7b-retired vd7b-fresh)
+(want "VD-7b a retired writer with its successor (an adopted copy): a request that ran on the retired writer and a new one on the successor, each provided as plain"
+      (list (car h-adopted) (and (string? h-successor) (not (equal? h-successor (cdr h)))) (same? vd7b-retired) (same? vd7b-fresh))
+      '(ok #t #t #t))
+
+;; (b) an unreadable writer under a permissive declaration: a second writer
+;; whose segment cannot be read, the session and the load declaring they
+;; accept an incomplete store
+(define k (fresh-store "k"))
+(define k-other "zzzz9999")
+(system (string-append "mkdir -p '" (car k) "/writers/" k-other "' && cp '" (car k) "/writers/" (cdr k) "/owner.sexp' '"
+                       (car k) "/writers/" k-other "/owner.sexp' && printf 'x' > '" (car k) "/writers/" k-other "/000001.sexp' && chmod 000 '"
+                       (car k) "/writers/" k-other "/000001.sexp'"))
+(define vd7b-unreadable (caught (cold-verdicts (car k) "UK" (cons (cdr k) (end-seq (car k) (cdr k))) incomplete-accepted)))
+(system (string-append "chmod 644 '" (car k) "/writers/" k-other "/000001.sexp'"))
+(printf "VD-7b unreadable writer: ~s\n" vd7b-unreadable)
+(want "VD-7b an unreadable writer under incomplete-accepted: the provided verdict as the plain one"
+      (and (pair? vd7b-unreadable) (not (eq? (car vd7b-unreadable) 'RAISED)) (same? vd7b-unreadable))
+      #t)
+
+;; (c) a request asked again with its own cursor: replay, through the provider
+(define m (fresh-store "m"))
+(define m-cursor (cons (cdr m) (end-seq (car m) (cdr m))))
+(rpc-dispatch (car m) (list 'insert "--title" "once" "--req" "RM" "--cursor" (format "~a:~a" (car m-cursor) (cdr m-cursor))) "test")
+(define vd7c (cold-verdicts (car m) "RM" m-cursor #f '("--title" "once")))
+(printf "VD-7c ~s\n" vd7c)
+(want "VD-7c a request asked again with the cursor it ran with: replay, through the provider as plain"
+      (list (car (cadr vd7c)) (same? vd7c))
+      '(replay #t))
+
+;; ---- VD-8, THE MISS, in a child holding at after-discovery -----------------------
+(define vd8-child
+  '((import (chezscheme) (theourgia log) (theourgia trace)
+            (only (theourgia store) make-write-request request-verdict request-verdict/provided)
+            (only (theourgia evidence-index) index-forget-memory!))
+    (define args (command-line-arguments))
+    (define st (car args))
+    (define w (cadr args))
+    (define given (call-with-input-file (caddr args) read))
+    (define req (make-write-request "test" 'insert (list "root" "x") "MISS" (cons w (caddr given))))
+    (define s (log-begin st (lambda a 'applied)))
+    (trace-enable! #t)
+    (define (cold!) (index-forget-memory!)
+      (let ((cp (string-append st "/request-index.sexp"))) (when (file-exists? cp) (delete-file cp))))
+    (define provided (begin (cold!) (request-verdict/provided (session-discovery-provider s) st req (car given) #f (cadr given))))
+    (trace-enable! #f)
+    (define plain (begin (cold!) (request-verdict st req (car given) #f (cadr given))))
+    (log-end! s)
+    (write (list (car provided) (car plain) (equal? provided plain)))))
+(define n8 (fresh-store "n8"))
+(define vd8-release (string-append root "/vd8-release"))
+(define vd8-writer "abcd1234")
+(define vd8
+  (let* ((given (given-file! (car n8) (cdr n8) "vd8"))
+         (ps (start-child! "vd8" (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=after-discovery:" vd8-release) vd8-child
+                           (list (car n8) (cdr n8) given))))
+    (if (await-file (string-append vd8-release ".held"))
+        (begin
+          ;; what ensure-area! does under the draft lock only: the writer's directory
+          (system (string-append "mkdir -p '" (car n8) "/writers/" vd8-writer "'"))
+          (call-with-output-file vd8-release (lambda (p) (display "go" p)) 'replace)
+          (child-result ps))
+        (cons (list 'never-held) (cdr (child-result ps))))))
+(printf "VD-8 ~s; misses ~a\n" (car vd8) (count-lines (cdr vd8) (string-append "(trace verdict-provider miss " vd8-writer ")")))
+(want "VD-8 a writer directory made while the session held after discovery: the provider misses it (traced), and the verdict answers as the plain one"
+      (list (and (pair? (car vd8)) (caddr (car vd8)))
+            (> (count-lines (cdr vd8) (string-append "(trace verdict-provider miss " vd8-writer ")")) 0))
+      '(#t #t))
 
 ;; VD-6, THE WAIT IS A BOUND: a child that sleeps past a wait of about a second
 ;; is killed by its pid and answers outlived-its-wait, and is gone after
