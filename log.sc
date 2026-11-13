@@ -1109,7 +1109,11 @@
   (degeneracy-definitions
     ;; A PROVIDED DISCOVERY AGAINST A FRESH ONE (verdict-discoveries): every
     ;; field of the record, through its type, so a field added later is
-    ;; compared too; a difference raises naming the writer and the field.
+    ;; compared too; a difference prints one fixed line naming the writer and
+    ;; the field, then raises. The line is written first because the verdict's
+    ;; routes guard what they call (uncertain-derived answers the conservative
+    ;; interval on any raise, request-verdict answers unknown): a raise alone
+    ;; would read as a refusal, the line reads as what it is.
     (define (discovery-compare! store writer provided context)
       (let* ((fresh (discover-prefix store writer context))
              (rtd (record-rtd provided))
@@ -1118,9 +1122,12 @@
           (when (< i (vector-length names))
             (let ((get (record-accessor rtd i)))
               (unless (equal? (opened (get provided)) (opened (get fresh)))
-                (assertion-violation 'degeneracy "a provided discovery differs from a fresh one"
-                                     writer (vector-ref names i)))
+                (let ((port (console-error-port)))
+                  (fprintf port "~a: writer ~s field ~s\n" provided-differs-line writer (vector-ref names i))
+                  (flush-output-port port))
+                (assertion-violation 'degeneracy provided-differs-line writer (vector-ref names i)))
               (loop (+ i 1)))))))
+    (define provided-differs-line "degeneracy: a provided discovery differs from a fresh one")
     (define replay-differs-line "degeneracy: a replay differs from scan-segment of the same bytes")
     (define consumer-changed-line "degeneracy: a consumer changed a value it was delivered")
     (define (opened x)
@@ -4896,7 +4903,8 @@
   ;; refused before reserve moves the epoch without a write), and it is
   ;; delivered (a delivery that aborted leaves the session going with the
   ;; discoveries of bytes that broke it). Otherwise it answers #f for every
-  ;; writer and says so in the trace, and every consumer discovers as before.
+  ;; writer and says so in the trace, and every consumer discovers as before;
+  ;; a writer its load did not discover (a miss) is answered #f and traced too.
   ;; Its discoveries are taken at the session's open, before the delivery; a
   ;; fresh one at the verdict is the same answer while nothing changes the
   ;; store's files without the lock, which every writer of them takes.
@@ -4905,7 +4913,8 @@
       (lambda (writer)
         (if (and (not (session-write-started? s)) (eqv? epoch (session-epoch s))
                  (eq? load (session-load s)) (session-delivered? s))
-            (load-prefix load writer)
+            (or (load-prefix load writer)
+                (begin (trace-event! 'verdict-provider 'miss writer) #f))
             (begin (trace-event! 'verdict-provider 'stale writer) #f)))))
   ;; -> WRITER's discovery: PROVIDER's when it answers one; else, and with no
   ;; provider, a fresh one in CONTEXT, as before. A writer the provider does

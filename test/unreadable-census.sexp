@@ -1092,7 +1092,7 @@
    unrelated a
    "cleanup"
    (e (#t (void))))
-  ("log.sc" (uncertain-derived) 1 guard
+  ("log.sc" (uncertain-derived/provided) 1 guard
    (#t)
    fact a
    "uncertain-derived: (w 0 #f) for unreadable (R2b)"
@@ -1357,7 +1357,7 @@
    unrelated c
    "state-section: an in-memory report over a state already obtained"
    (e (#t (list (quote state) (quote unavailable) (list (quote reason) (failure-text e))))))
-  ("store.sc" (request-verdict) 1 guard
+  ("store.sc" (request-verdict/provided) 1 guard
    (#t)
    fact c
    "request-verdict unknown (R2f)"

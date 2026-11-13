@@ -27,6 +27,12 @@
 ;;   VD-4  the provider answers only while the session stands: after an append
 ;;         it answers #f for every writer, and after the session ends too, and
 ;;         the trace says so
+;;   VD-2  the premise's limit: a torn tail written WITHOUT the lock while the
+;;         session holds at after-discovery is unseen by the session's
+;;         discoveries and seen by a fresh one (in a child, THEOURGIA_HOLD)
+;;   VD-5  the witness fires: a provider answering from another store, under
+;;         verdict-discoveries; its fixed line reaches the error port through
+;;         both of the verdict's guards
 ;;
 ;; The quarantined fork, the retired writer with its successor and the
 ;; unreadable writer are judged by the verdict-discoveries check (degeneracy.sc)
@@ -103,8 +109,10 @@
          (req (make-write-request "test" 'insert (list "root" "x") req-id (cons w (end-seq st w))))
          (s (log-begin st (lambda args 'applied)))
          (provider (session-discovery-provider s))
-         (plain (request-verdict st req cut #f gates))
-         (provided (request-verdict/provided provider st req cut #f gates)))
+         ;; the provided verdict first: it meets the index cold, so its scan asks
+         ;; the provider too
+         (provided (request-verdict/provided provider st req cut #f gates))
+         (plain (request-verdict st req cut #f gates)))
     (log-end! s)
     (list plain provided)))
 (define (same? pair) (equal? (car pair) (cadr pair)))
@@ -135,9 +143,11 @@
 (want "VD-1 an uncertain cache stale (it says nothing where the torn tail says something): both verdicts equal"
       (same? (both-verdicts (car b) (cdr b) "STALE"))
       #t)
-(call-with-output-file (uncertain-path (car b) (cdr b)) (lambda (p) (display "not a list" p)) 'replace)
-(want "VD-1 an uncertain cache unreadable: both verdicts equal, and neither says execute"
-      (let ((v (both-verdicts (car b) (cdr b) "UNREADABLE")))
+;; on a store of its own, so the refusal is the cache's and not the torn tail's
+(define b2 (fresh-store "b2"))
+(call-with-output-file (uncertain-path (car b2) (cdr b2)) (lambda (p) (display "not a list" p)) 'replace)
+(want "VD-1 an uncertain cache unreadable (and nothing else wrong): both verdicts equal, and neither says execute"
+      (let ((v (both-verdicts (car b2) (cdr b2) "UNREADABLE")))
         (list (same? v) (eq? 'execute (car (car v)))))
       '(#t #f))
 
@@ -163,22 +173,32 @@
          (ran (make-write-request "test" 'insert (list "root" "x") "RAN" at))
          (batch-req (make-write-request "test" 'insert (list "root" "x") "B" at))
          (s (log-begin st (lambda args 'applied)))
-         (provider (session-discovery-provider s))
+         (session-provider (session-discovery-provider s))
+         ;; THE PROVIDER'S ANSWERS COUNTED, per verdict: what the parse counts
+         ;; cannot tell under the switch (the witness parses as a fallback would)
+         (answered 0)
+         (provider (lambda (writer)
+                     (let ((d (session-provider writer))) (when d (set! answered (+ answered 1))) d)))
+         (taken (lambda () (let ((n answered)) (set! answered 0) n)))
          (warm (request-verdict st ran cut #f gates))
          (single (counts (lambda () (request-verdict/provided provider st ran cut #f gates))))
+         (single-answers (taken))
          (batch (counts (lambda () (request-verdict/provided provider st batch-req cut 2 gates))))
+         (batch-answers (taken))
          (plain (counts (lambda () (request-verdict st ran cut #f gates))))
          (plain-batch (counts (lambda () (request-verdict st batch-req cut 2 gates))))
          ;; COLD: the index forgotten, so the batch's evidence rebuilds it and its
          ;; scan asks each writer's discovery; the rebuild decodes every frame
          ;; twice (the scan, traced as identity-source-decode, and buckets-for),
          ;; and with the provider nothing else
-         (cold-batch (begin (index-forget-memory!)
+         (cold-batch (begin (index-forget-memory!) (taken)
                             (counts (lambda () (request-verdict/provided provider st batch-req cut 2 gates)))))
+         (cold-answers (taken))
          (cold-plain-batch (begin (index-forget-memory!)
                                   (counts (lambda () (request-verdict st batch-req cut 2 gates))))))
     (log-end! s)
-    (list single batch plain plain-batch cold-batch cold-plain-batch)))
+    (list single batch plain plain-batch cold-batch cold-plain-batch
+          (list single-answers batch-answers cold-answers))))
 (printf "VD-3 (parse identity-source-decode): single ~s, batch ~s, plain ~s, plain batch ~s\n"
         (car vd3) (cadr vd3) (caddr vd3) (cadddr vd3))
 ;; UNDER THE SWITCH the verdict-discoveries check discovers afresh each discovery
@@ -197,6 +217,11 @@
       (let ((x (list-ref vd3 4)))
         (list (> (cadr x) 0) (if witness-on? (equal? x (list-ref vd3 5)) (= (car x) (* 2 (cadr x))))))
       '(#t #t))
+(printf "VD-3 the provider's answers: single ~a, batch ~a, cold batch ~a\n"
+        (car (list-ref vd3 6)) (cadr (list-ref vd3 6)) (caddr (list-ref vd3 6)))
+(want "VD-3 the provider is asked and answers each of the verdict's discoveries: the cache's and the derivation's per verdict, and the index scan's when cold"
+      (list-ref vd3 6)
+      '(2 2 3))
 (want "VD-3 CONTROL: the verdict without the provider parses beyond what the index decodes"
       (let ((x (caddr vd3))) (> (car x) (cadr x)))
       #t)
@@ -226,6 +251,115 @@
 (want "VD-4 after an append the provider answers #f and the trace says so"
       after-append
       '(committed #f #t))
+
+(printf "== VD-2 and VD-5: in a child process ==\n")
+(define (file-text p) (if (file-exists? p) (call-with-input-file p get-string-all) ""))
+(define (read-or-false text)
+  (guard (e (#t #f)) (let ((x (read (open-string-input-port text)))) (if (eof-object? x) #f x))))
+;; -> (<the child's stdout datum or #f> . <its stderr>); SETTING is the
+;; environment it runs under, BACKGROUND? leaves it running and answers the
+;; paths it writes instead
+(define (child-paths tag)
+  (map (lambda (x) (string-append root "/" tag x)) '(".ss" ".out" ".err" ".done")))
+(define (start-child! tag setting program args)
+  (let ((ps (child-paths tag)))
+    (call-with-output-file (car ps) (lambda (p) (for-each (lambda (f) (write f p) (newline p)) program)) 'replace)
+    (system (string-append "sh -c \"" setting " scheme --script '" (car ps) "' "
+                           (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
+                           "> '" (cadr ps) "' 2> '" (caddr ps) "' < /dev/null; touch '" (cadddr ps) "'\" &"))
+    ps))
+(define (await-file path)
+  (let loop ((k 0))
+    (cond ((file-exists? path) #t)
+          ((> k 1500) #f)
+          (else (sleep (make-time 'time-duration 20000000 0)) (loop (+ k 1))))))
+(define (child-result ps)
+  (await-file (cadddr ps))
+  (cons (read-or-false (file-text (cadr ps))) (file-text (caddr ps))))
+;; the cut, the gates and the writer's end of ST, for a child that cannot load
+;; ST before its session (every load meets the hold)
+(define (given-file! st w tag)
+  (let ((state (open-and-reduce st)) (path (string-append root "/" tag ".given")))
+    (call-with-output-file path
+      (lambda (p) (write (list (reduce-applied-cut state) (reduce-gates state) (end-seq st w)) p)) 'replace)
+    path))
+
+;; VD-2, THE PREMISE'S LIMIT: the session's discoveries are taken at its open,
+;; before the delivery; a fresh one at the verdict sees what changed between.
+;; A process that writes into the store without the lock can make the two
+;; differ. Here it appends a torn tail to the writer's current segment while
+;; the child's session holds at after-discovery (THEOURGIA_HOLD); the child then
+;; asks the verdict both ways.
+(define vd2-child
+  '((import (chezscheme) (theourgia log)
+            (only (theourgia store) make-write-request request-verdict request-verdict/provided))
+    (define args (command-line-arguments))
+    (define st (car args))
+    (define w (cadr args))
+    (define given (call-with-input-file (caddr args) read))
+    (define req (make-write-request "test" 'insert (list "root" "x") "LOCKLESS" (cons w (caddr given))))
+    (define s (log-begin st (lambda a 'applied)))
+    (define provider (session-discovery-provider s))
+    (define provided (request-verdict/provided provider st req (car given) #f (cadr given)))
+    (define plain (request-verdict st req (car given) #f (cadr given)))
+    (log-end! s)
+    (write (list (car provided) (car plain)))))
+(define e (fresh-store "e"))
+(define vd2-release (string-append root "/vd2-release"))
+(define vd2
+  (let* ((given (given-file! (car e) (cdr e) "vd2"))
+         (ps (start-child! "vd2" (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=after-discovery:" vd2-release) vd2-child
+                           (list (car e) (cdr e) given))))
+    (if (await-file (string-append vd2-release ".held"))
+        (begin
+          (call-with-port (open-file-output-port (current-segment-path (car e) (cdr e))
+                                                 (file-options no-fail no-truncate append))
+            (lambda (p) (put-bytevector p (string->utf8 "00000000 (9 1 \"torn"))))
+          (call-with-output-file vd2-release (lambda (p) (display "go" p)) 'replace)
+          (child-result ps))
+        (cons (list 'never-held) (cdr (child-result ps))))))
+(printf "VD-2 the verdict with the session's discoveries and the plain one, after a lockless torn tail: ~s; the witness's line ~a times\n"
+        (car vd2) (count-lines (cdr vd2) "degeneracy: a provided discovery differs from a fresh one"))
+;; UNDER THE SWITCH the child (which inherits it) compares the session's
+;; discovery with a fresh one, sees the torn tail the session missed, prints its
+;; line and refuses: the witness pins the premise's limit where it is on.
+(want "VD-2 a torn tail written without the lock at after-discovery: the session's discoveries (taken before it) say execute and a fresh discovery does not; under the switch the witness sees the difference, says so on the error port, and the verdict is unknown"
+      (let ((v (car vd2)) (lines (count-lines (cdr vd2) "degeneracy: a provided discovery differs from a fresh one")))
+        (and (pair? v) (list (car v) (eq? 'execute (cadr v)) (> lines 0))))
+      (if witness-on? '(unknown #f #t) '(execute #f #f)))
+
+;; VD-5, THE WITNESS FIRES: a provider answering every writer with another
+;; store's writer's discovery, under verdict-discoveries alone. The fixed line
+;; reaches the error port through uncertain-derived's guard (which answers the
+;; conservative interval), asked here directly, and through request-verdict's
+;; (which answers unknown): within the verdict the first raise ends the
+;; intervals' reading, and which of the two readings comes first is the
+;; implementation's order of a let.
+(define vd5-child
+  '((import (chezscheme) (theourgia log)
+            (only (theourgia store) make-write-request request-verdict/provided))
+    (define args (command-line-arguments))
+    (define st (car args))
+    (define w (cadr args))
+    (define given (call-with-input-file (caddr args) read))
+    (define wrong (discover-prefix (cadddr args) (car (cddddr args)) 'shared))
+    (define req (make-write-request "test" 'insert (list "root" "x") "WRONG" (cons w (caddr given))))
+    (define s (log-begin st (lambda a 'applied)))
+    (define derived (uncertain-derived/provided (lambda (writer) wrong) st w))
+    (define v (request-verdict/provided (lambda (writer) wrong) st req (car given) #f (cadr given)))
+    (log-end! s)
+    (write (list derived (car v)))))
+(define f1 (fresh-store "f1"))
+(define f2 (fresh-store "f2"))
+(rpc-dispatch (car f2) (list 'insert "--title" "longer") "test")
+(define vd5
+  (child-result (start-child! "vd5" "THEOURGIA_DEGENERACY=only:verdict-discoveries" vd5-child
+                              (list (car f1) (cdr f1) (given-file! (car f1) (cdr f1) "vd5") (car f2) (cdr f2)))))
+(printf "VD-5 the verdict ~s, the fixed line ~a times on the error port\n"
+        (car vd5) (count-lines (cdr vd5) "degeneracy: a provided discovery differs from a fresh one"))
+(want "VD-5 a provider answering from another store: the derivation answers the conservative interval, the verdict unknown, and the witness's line is on the error port once for each"
+      (list (car vd5) (count-lines (cdr vd5) "degeneracy: a provided discovery differs from a fresh one"))
+      (list (list (list (list (cdr f1) 0 #f)) 'unknown) 2))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nverdict-discoveries complete\n" bad rows-run)
