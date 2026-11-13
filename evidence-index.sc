@@ -13,14 +13,14 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia evidence-index)
-  (export indexed-records index-checkpoint! index-forget-memory!)
+  (export indexed-records indexed-records/provided index-checkpoint! index-forget-memory!)
   (import (rnrs) (theourgia request) (theourgia wire)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) directory-entries file-is-directory? path-version trace-event!
                 entry-type entry-bytes read-entry-range)
           (only (theourgia log) store-writers writer-directory store-id-of
                 enumerate-segment-files segment-file-name read-manifest manifest-segments
-                discover-prefix discovery-quarantine atomic-write!))
+                discover-prefix discovery-quarantine atomic-write! provided-discovery))
 
   ;; The checkpoint is disposable, checksummed localization data. The frame
   ;; at each hit is reread and decoded; cached bytes can only yield unknown
@@ -69,12 +69,15 @@
                    (if rec (cons (list path writer start raw
                                       (if (and fork (>= (cdar rec) fork)) 'quarantined placement)) out) out))))
           (else (loop start (+ i 1) out))))))
-  (define (scan-store store)
+  (define (scan-store store) (scan-store/provided #f store))
+  ;; THE SAME, WITH EACH WRITER'S DISCOVERY FROM A PROVIDER (log.sc,
+  ;; provided-discovery): only its quarantine is read here
+  (define (scan-store/provided provider store)
     (apply append
       (map (lambda (w)
              (let* ((d (writer-directory store w)) (manifest (read-manifest store w))
                     (listed (manifest-segments manifest))
-                    (p (discover-prefix store w 'shared)) (q (discovery-quarantine p))
+                    (p (provided-discovery provider store w 'shared)) (q (discovery-quarantine p))
                     (fork (and (pair? q) (cadr q))))
                (append
                  (apply append (map (lambda (n)
@@ -126,13 +129,14 @@
       (append current
         (map (lambda (e) (list (car e) (cadr e) (caddr e) (cadddr e) 'index-evidence-missing))
              (filter (lambda (e) (not (hashtable-contains? present (frame-key e)))) old)))))
-  (define (ensure-index store)
+  (define (ensure-index store) (ensure-index/provided #f store))
+  (define (ensure-index/provided provider store)
     (let* ((cache-key (key (list store (store-id-of store))))
            (stamp (inventory store))
            (old (or (hashtable-ref caches cache-key #f) (load-checkpoint store))))
       (if (and old (equal? stamp (vector-ref old 0)))
           (begin (hashtable-set! caches cache-key old) old)
-          (let* ((current (scan-store store))
+          (let* ((current (scan-store/provided provider store))
                  (entries (if old (retain-missing (vector-ref old 1) current) current))
                  (fresh (vector stamp entries (buckets-for entries))))
             (hashtable-set! caches cache-key fresh) fresh))))
@@ -143,8 +147,9 @@
       (if (and (not (eq? (list-ref e 4) 'index-evidence-missing)) (equal? actual (cadddr e)))
           (frame-record (cadr e) actual (list-ref e 4))
           (frame-record (cadr e) (cadddr e) 'index-evidence-missing))))
-  (define (indexed-records store identity)
-    (let ((idx (ensure-index store)))
+  (define (indexed-records store identity) (indexed-records/provided #f store identity))
+  (define (indexed-records/provided provider store identity)
+    (let ((idx (ensure-index/provided provider store)))
       (map verified-record (reverse (hashtable-ref (vector-ref idx 2) (key identity) '())))))
   (define (index-checkpoint! store)
     (let* ((idx (ensure-index store)) (body (list (vector-ref idx 0) (vector-ref idx 1))))

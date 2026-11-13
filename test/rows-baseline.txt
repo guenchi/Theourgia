@@ -49,7 +49,7 @@ datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
 datum-import - 82 4dee5cd7bc67f8c48127c8c9a05574de
 datum-self 18 106 0f494adc88ab29b6652c4507523bc3ce
-degeneracy-switch 13 18 5f9bf4dd46d8aed4f76631768ff73d97
+degeneracy-switch 13 18 7426280712538aaf4b007fb34f71e64e
 delete-targets 6 11 653a019393e42e333291a45f9e018e40
 delivery-order 14 17 13c02eeb94258342fc083a1337f17d4f
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
@@ -219,6 +219,7 @@ unscoped-lock 2 11 5c96faabab689055f42c580b43b657a2
 validity 35 38 9eeea59e2540cc721dd6399273b683db
 verb-libraries-lazy 25 31 f2a2cf91cb121fbb7b94db916316954e
 verb-registry 23 28 b28e9daa1640a60231dc5edace59721d
+verdict-discoveries 11 21 062f56cde84946b75130b3dee162998b
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9
 view-fields 15 18 8011d458a22bda77e968c22ed16604a2

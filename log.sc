@@ -103,7 +103,8 @@
           segment-version-readable?
           log-append-guard!
           barrier-artefacts barrier-required run-barrier! publish-durable?
-          uncertain-path uncertain-derived uncertain-load uncertain-write! uncertain-cache-failure
+          uncertain-path uncertain-derived uncertain-derived/provided uncertain-load/provided uncertain-cache-failure/provided
+          session-discovery-provider provided-discovery uncertain-load uncertain-write! uncertain-cache-failure
           enumerate-segment-files
           read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment
@@ -1106,6 +1107,20 @@
   ;; identity, and a field named by hand would leave a field added later
   ;; uncompared.
   (degeneracy-definitions
+    ;; A PROVIDED DISCOVERY AGAINST A FRESH ONE (verdict-discoveries): every
+    ;; field of the record, through its type, so a field added later is
+    ;; compared too; a difference raises naming the writer and the field.
+    (define (discovery-compare! store writer provided context)
+      (let* ((fresh (discover-prefix store writer context))
+             (rtd (record-rtd provided))
+             (names (record-type-field-names rtd)))
+        (let loop ((i 0))
+          (when (< i (vector-length names))
+            (let ((get (record-accessor rtd i)))
+              (unless (equal? (opened (get provided)) (opened (get fresh)))
+                (assertion-violation 'degeneracy "a provided discovery differs from a fresh one"
+                                     writer (vector-ref names i)))
+              (loop (+ i 1)))))))
     (define replay-differs-line "degeneracy: a replay differs from scan-segment of the same bytes")
     (define consumer-changed-line "degeneracy: a consumer changed a value it was delivered")
     (define (opened x)
@@ -4871,12 +4886,47 @@
   ;; record naming a stretch is a fact about the writer either way, and
   ;; a derivation that returned early would make the two arms disagree
   ;; about what the store knows.
+  ;; THE VERDICT'S DISCOVERIES ARE THE SESSION'S (F437 D6-7). Inside a write
+  ;; session the verdict asks each writer's discovery about five times over
+  ;; bytes the session's load has just read under the exclusive lock it still
+  ;; holds. A PROVIDER answers them from that load instead: a procedure of a
+  ;; writer, answering its discovery or #f.
+  ;; THE SESSION'S PROVIDER answers only while the session has not started
+  ;; writing, its epoch and its load are the ones it was made with (a reload
+  ;; refused before reserve moves the epoch without a write), and it is
+  ;; delivered (a delivery that aborted leaves the session going with the
+  ;; discoveries of bytes that broke it). Otherwise it answers #f for every
+  ;; writer and says so in the trace, and every consumer discovers as before.
+  ;; Its discoveries are taken at the session's open, before the delivery; a
+  ;; fresh one at the verdict is the same answer while nothing changes the
+  ;; store's files without the lock, which every writer of them takes.
+  (define (session-discovery-provider s)
+    (let ((epoch (session-epoch s)) (load (session-load s)))
+      (lambda (writer)
+        (if (and (not (session-write-started? s)) (eqv? epoch (session-epoch s))
+                 (eq? load (session-load s)) (session-delivered? s))
+            (load-prefix load writer)
+            (begin (trace-event! 'verdict-provider 'stale writer) #f)))))
+  ;; -> WRITER's discovery: PROVIDER's when it answers one; else, and with no
+  ;; provider, a fresh one in CONTEXT, as before. A writer the provider does
+  ;; not know (the store lists it and the load did not discover it, which the
+  ;; lock does not allow) falls back to a fresh one too.
+  (define (provided-discovery provider store writer context)
+    (let ((p (and provider (provider writer))))
+      (if p
+          (begin
+            (degeneracy-check verdict-discoveries (discovery-compare! store writer p context))
+            p)
+          (discover-prefix store writer context))))
+
   ;; DISCOVERY FIRST. For a writer whose discovery is `unreadable` the
   ;; answer is the conservative (writer 0 #f) and nothing else is read: its
   ;; retirement record sits in the directory that could not be read, and
   ;; its coordinates are not there to ask.
-  (define (uncertain-derived store writer)
-    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+  (define (uncertain-derived store writer) (uncertain-derived/provided #f store writer))
+  ;; THE SAME, WITH THE WRITER'S DISCOVERY FROM A PROVIDER (provided-discovery)
+  (define (uncertain-derived/provided provider store writer)
+    (let ((p (guard (e (#t #f)) (provided-discovery provider store writer 'held-exclusive))))
       (if (and p (eq? (discovery-origin p) 'unreadable))
           (list (list writer 0 #f))
           (uncertain-derived-readable store writer p))))
@@ -4917,24 +4967,26 @@
   ;; says nothing about a writer whose directory could not be read. The
   ;; path and the reason are not lost behind the bare symbol: they go to
   ;; the trace, as (uncertain-cache-unreadable (<path> . <reason>)).
-  (define (uncertain-cached store writer)
-    (car (uncertain-cache-reading store writer)))
+  (define (uncertain-cached store writer) (uncertain-cached/provided #f store writer))
+  (define (uncertain-cached/provided provider store writer)
+    (car (uncertain-cache-reading provider store writer)))
   ;; -> the unreadable-entry condition behind an `unreadable` uncertain
   ;; cache, or #f: the cache file, or the writer's own entries, could not be
   ;; read. A cache that reads and does not parse names no entry, and has
   ;; none. A request's verdict answers the condition through the table
   ;; (store.sc, request-verdict); uncertain-cached's callers get the symbol.
-  (define (uncertain-cache-failure store writer)
-    (cdr (uncertain-cache-reading store writer)))
+  (define (uncertain-cache-failure store writer) (uncertain-cache-failure/provided #f store writer))
+  (define (uncertain-cache-failure/provided provider store writer)
+    (cdr (uncertain-cache-reading provider store writer)))
   ;; -> (<what uncertain-cached answers> . <condition or #f>), one reading
-  ;; for both
-  (define (uncertain-cache-reading store writer)
+  ;; for both; the writer's discovery from PROVIDER when it answers one
+  (define (uncertain-cache-reading provider store writer)
     (let ((path (uncertain-path store writer)))
       (guard (e ((unreadable-entry? e)
                  (trace-event! 'uncertain-cache-unreadable
                                (cons (unreadable-entry-path e) (unreadable-entry-reason e)) #f)
                  (cons 'unreadable e)))
-        (let ((p (discover-prefix store writer 'held-exclusive)))
+        (let ((p (provided-discovery provider store writer 'held-exclusive)))
           (if (eq? (discovery-origin p) 'unreadable)
               (let* ((detail (log-error-detail (unreadable-note p)))
                      (field (lambda (k) (let ((e (assq k detail))) (and e (cdr e))))))
@@ -4955,9 +5007,10 @@
   ;; A writer with nothing uncertain about it has no file and needs
   ;; none, and reporting that as an integrity kind would make the
   ;; ordinary state of every healthy writer look like damage.
-  (define (uncertain-load store writer)
-    (let ((derived (uncertain-derived store writer))
-          (cached (uncertain-cached store writer)))
+  (define (uncertain-load store writer) (uncertain-load/provided #f store writer))
+  (define (uncertain-load/provided provider store writer)
+    (let ((derived (uncertain-derived/provided provider store writer))
+          (cached (uncertain-cached/provided provider store writer)))
       (cond
         ((not cached)
          (if (null? derived)

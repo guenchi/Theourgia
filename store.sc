@@ -36,7 +36,7 @@
           library-locator located-library-name file-header
           derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
-          request-verdict failure-text gitignore-kind gitignore-refusal gitignore-merge)
+          request-verdict request-verdict/provided failure-text gitignore-kind gitignore-refusal gitignore-merge)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-ref-nodes)
@@ -67,6 +67,7 @@
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
                 uncertain-load uncertain-cache-failure run-barrier! retired-successor retired-of
+                uncertain-load/provided uncertain-cache-failure/provided session-discovery-provider
                 session-commit! session-pending-count-set! note-written-for!
                 session-dry-clone session-dry?
                 session-write-started? session-written-events
@@ -2387,6 +2388,8 @@
       (evidence-for store identity (reduce-applied-cut state) (reduce-gates state))))
 
   (define (evidence-for store identity delivered . marks)
+    (apply evidence-for/provided #f store identity delivered marks))
+  (define (evidence-for/provided provider store identity delivered . marks)
     (map (lambda (rec)
            (make-evidence (car rec) (cadr rec) (caddr rec) (cadddr rec)
                           (list-ref rec 4)
@@ -2395,7 +2398,7 @@
                                  (and have (<= (cdar rec) (cdr have)))))
                           (let ((m (and (pair? marks) (assoc (car rec) (car marks)))))
                             (if m (list (cdr m)) '()))))
-         (indexed-records store identity)))
+         (indexed-records/provided provider store identity)))
 
   ;; ---- conflicts ------------------------------------------------------------
 
@@ -3380,11 +3383,14 @@
   ;; EVERY WRITER'S UNCERTAIN STRETCHES, AND THE REPORT THAT GOES WITH
   ;; THEM. A stretch on any writer can stand between this request and an
   ;; answer, so the test is over all of them and not over the local one.
-  (define (store-intervals store)
+  (define (store-intervals store) (store-intervals/provided #f store))
+  ;; THE SAME, WITH EACH WRITER'S DISCOVERY FROM A PROVIDER (log.sc,
+  ;; provided-discovery)
+  (define (store-intervals/provided provider store)
     (let loop ((ws (store-writers store)) (out '()) (bad '()))
       (if (null? ws)
           (list (apply append (reverse out)) (reverse bad))
-          (let ((loaded (uncertain-load store (car ws))))
+          (let ((loaded (uncertain-load/provided provider store (car ws))))
             (loop (cdr ws) (cons (car loaded) out)
                   (if (cadr loaded) (cons (cadr loaded) bad) bad))))))
 
@@ -3437,8 +3443,10 @@
   ;; A stale cache is different and is not an obstacle: the union has
   ;; already repaired it, and every interval the records still imply is
   ;; in the list.
-  (define (blocking-uncertainty store)
-    (let loop ((rs (cadr (store-intervals store))))
+  (define (blocking-uncertainty store) (blocking-uncertainty-of (store-intervals store)))
+  ;; THE SAME, OF INTERVALS ALREADY COMPUTED, so a verdict computes them once
+  (define (blocking-uncertainty-of loaded)
+    (let loop ((rs (cadr loaded)))
       (cond
         ((null? rs) #f)
         ((eq? (cadr (car rs)) 'unreadable) (car rs))
@@ -3452,15 +3460,21 @@
   ;; word for an outcome the store cannot establish, and it stays for a cache
   ;; that reads and does not parse, which names no entry.
   ;; -> (refused <answer>) or #f
-  (define (blocking-entry-refusal store)
+  (define (blocking-entry-refusal store) (blocking-entry-refusal/provided #f store))
+  (define (blocking-entry-refusal/provided provider store)
     (let loop ((ws (store-writers store)))
       (and (pair? ws)
-           (let ((c (uncertain-cache-failure store (car ws))))
+           (let ((c (uncertain-cache-failure/provided provider store (car ws))))
              (if c
                  (list 'refused (classify-failure c (mutation-record)))
                  (loop (cdr ws)))))))
 
   (define (request-verdict store req delivered plan-size . marks)
+    (apply request-verdict/provided #f store req delivered plan-size marks))
+  ;; THE VERDICT WITH ITS DISCOVERIES FROM A PROVIDER (F437 D6-7): the write
+  ;; session's own, handed by with-store-write; #f discovers as before. The
+  ;; provider is the LEADING argument because the marks are a rest list.
+  (define (request-verdict/provided provider store req delivered plan-size . marks)
     (guard (e (#t (list 'unknown (list 'evidence-unavailable (failure-text e)))))
     (let* ((after (write-request-after req))
            (identity (request-identity after (write-request-req-id req)))
@@ -3468,13 +3482,14 @@
                                              (write-request-verb req)
                                              (write-request-args req)
                                              after))
-           (loaded (store-intervals store))
+           (loaded (store-intervals/provided provider store))
            (successors (store-successors store (car after))))
       (cond
         ;; the entry behind an unreadable cache is looked for only once a
-        ;; cache is unreadable: each look is a discovery per writer
-        ((blocking-uncertainty store)
-         => (lambda (why) (or (blocking-entry-refusal store) (list 'unknown why))))
+        ;; cache is unreadable: each look is a discovery per writer. The
+        ;; intervals are the ones just computed, not computed again.
+        ((blocking-uncertainty-of loaded)
+         => (lambda (why) (or (blocking-entry-refusal/provided provider store) (list 'unknown why))))
         ((cadr successors)
          => (lambda (why) (list 'unknown why)))
         ;; A REQUEST OF SEVERAL INTENTS IS A BATCH, AND A BATCH IS ASKED
@@ -3485,12 +3500,12 @@
         ((and plan-size (not (and (> (length marks) 1) (eq? (cadr marks) 'plan))))
          (batch-verdict
            (batch-state plan-size
-                        (batch-evidence store identity req plan-size delivered
+                        (batch-evidence/provided provider store identity req plan-size delivered
                                         (if (pair? marks) (car marks) '()))
                         fingerprint after (car loaded) #t (car successors))))
         (else
          (request-decision identity fingerprint (write-request-who req) after
-                           (evidence-for store identity delivered
+                           (evidence-for/provided provider store identity delivered
                                          (if (pair? marks) (car marks) '()))
                            (car loaded)
                            (and (> (length marks) 1) (eq? (cadr marks) 'plan) plan-size)
@@ -3657,13 +3672,15 @@
   ;; others, and a batch asked about only its own identity would see a
   ;; receipt and conclude that nothing had run.
   (define (batch-evidence store identity req n delivered marks)
+    (batch-evidence/provided #f store identity req n delivered marks))
+  (define (batch-evidence/provided provider store identity req n delivered marks)
     (append
-      (evidence-for store identity delivered marks)
+      (evidence-for/provided provider store identity delivered marks)
       (let loop ((k 0) (out '()))
         (if (= k n)
             (apply append (reverse out))
             (loop (+ k 1)
-                  (cons (evidence-for store
+                  (cons (evidence-for/provided provider store
                                       (cons (car (write-request-after req))
                                             (list 'batch (write-request-req-id req) k))
                                       delivered marks)
@@ -3923,6 +3940,9 @@
           (state (reduce-empty))
           (t-start (timing-call request-begin!)))
       (let* ((s (timed 'load-replay (log-begin store (deliver-into state #f))))
+             ;; THE VERDICT'S DISCOVERIES, answered from this session's load
+             ;; while it stands (log.sc, session-discovery-provider)
+             (discoveries (session-discovery-provider s))
              (replayed (begin
                          (timing-call request-line! 'delivered-records (timing-call delivered-count))
                          (timing-call request-line! 'applied-records
@@ -4017,7 +4037,7 @@
                      ;; one-intent commit made a retry ask the question a
                      ;; single-record request asks, and the answer to
                      ;; that question about a plan is `unknown`.
-                     (verdict (timed 'verdict (and req (request-verdict store req
+                     (verdict (timed 'verdict (and req (request-verdict/provided discoveries store req
                                                         (reduce-applied-cut state)
                                                         (if plan?
                                                             (length intents)

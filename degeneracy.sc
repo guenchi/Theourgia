@@ -52,6 +52,8 @@
 ;;;   kept-prefix               log.sc: after each committed append that keeps
 ;;;                             a prefix, the writer's log validated in full
 ;;;                             and compared field by field
+;;;   verdict-discoveries       log.sc: each discovery a write's verdict takes from
+;;;                             the session's load against a fresh one, every field
 ;;;   admission-judgements      admission.sc: the indexed judgement against the
 ;;;                             whole-bucket one, request.sc's identity-gates/full
 ;;;                             being that reference (one check, two places)
@@ -76,7 +78,7 @@
   (import (chezscheme))
 
   (meta define degeneracy-known
-    '(structure-per-record structure-restored siblings-list sibling-order path-holders replay-scan kept-prefix
+    '(structure-per-record structure-restored siblings-list sibling-order path-holders replay-scan kept-prefix verdict-discoveries
       admission-judgements changed-files-reference slot-classified-once))
 
   ;; -> the names in TEXT, separated by commas, each a symbol; an empty name
