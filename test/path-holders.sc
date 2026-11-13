@@ -29,6 +29,8 @@
 ;; The walk and the whole list are written here, not taken from the library,
 ;; so the rows judge the library against a second reading.
 (import (chezscheme) (theourgia reduce))
+;; state-field-contested? is the library's own answer to "several candidates":
+;; a single value shaped (conflict ...) is a value, not a contest
 
 (define bad 0)
 (define rows-run 0)
@@ -91,7 +93,7 @@
                 (let* ((b (state-read r id))
                        (fs (cdr (assq 'fields b)))
                        (plain (lambda (k) (let ((p (assq k fs)))
-                                            (and p (not (and (pair? (cdr p)) (eq? 'conflict (car (cdr p))))) (list (cdr p))))))
+                                            (and p (not (state-field-contested? r id k (cdr p))) (list (cdr p))))))
                        (kind (plain 'kind)) (mode (plain 'mode)) (path (plain 'path)))
                   (when (and kind mode path)
                     (let ((key (list (car kind) (car mode) (car path))))
@@ -151,6 +153,28 @@
       (list (equal? before (holders-by-both r)) (state-path-claimants clone 'file 'text "q.sc")
             (state-path-claimants r 'file 'text "q.sc") (table-agrees? clone))
       (list #t (list t1) '() #t))
+
+;; the stopgap read's cases: kind and mode changed, a key emptied and filled
+;; again, and a single value shaped like a contest. Written by writer k: the
+;; clone row above took writer a's next sequence number in the clone, so a
+;; record of a's here would wait in the original for the one it never saw
+(define k1 (file! r "k" "k.py"))
+(ap! r "k" (list 'set k1 'kind 'library))
+(define after-kind (list (state-path-claimants r 'file 'text "k.py") (state-path-claimants r 'library 'text "k.py")))
+(ap! r "k" (list 'set k1 'mode 'datum))
+(want "PH-1 kind and then mode changed: the block moves from key to key, as the walk says"
+      (list after-kind (state-path-claimants r 'library 'datum "k.py") (table-agrees? r))
+      (list (list '() (list k1)) (list k1) #t))
+(ap! r "k" (list 'set k1 'path "e.py"))
+(define emptied (state-path-claimants r 'library 'datum "k.py"))
+(ap! r "k" (list 'set k1 'path "k.py"))
+(want "PH-1 a key emptied and filled again: no holder while empty, the block again after"
+      (list emptied (state-path-claimants r 'library 'datum "k.py") (table-agrees? r))
+      (list '() (list k1) #t))
+(define c1 (file! r "k" '(conflict ("x"))))
+(want "PH-1 a single path value shaped like a contest is a value: the block holds it, as the walk says"
+      (list (state-path-claimants r 'file 'text '(conflict ("x"))) (table-agrees? r))
+      (list (list c1) #t))
 
 (printf "== PH-2: #f is refused ==\n")
 (want "PH-2 a #f kind, mode or path refuses by name"
@@ -215,9 +239,17 @@
 (want "LI-1 an unlink of a link, and of one that does not exist: by id as by the whole list"
       (list (links-agree? g) (cdr (assq 'edges (state-read g g1))) (state-refs g g3))
       (list #t (list (cons 'relates g2)) (list (cons g2 'relates))))
+;; an unlink by a writer that had not seen the link leaves it (its past does
+;; not cover the link's event)
+(ap! g "u" (list 'unlink g1 'relates g2))
+(want "LI-1 an unlink that did not see the link leaves it, by id as by the whole list"
+      (list (links-agree? g) (cdr (assq 'edges (state-read g g1))))
+      (list #t (list (cons 'relates g2))))
 (define g-restored (rows->state (state->rows g)))
 (define g-clone (reduce-clone g))
-(ap! g-clone "k" (list 'link g3 'relates g1))
+;; a writer of its own: the sequence numbers are counted per writer across
+;; every reduction here, and a writer seen elsewhere would leave a gap
+(ap! g-clone "z" (list 'link g3 'relates g1))
 (want "LI-1 a snapshot's rows restored, and a clone given a link the original has not: each by id as by its whole list"
       (list (links-agree? g-restored) (equal? (links-by-both g-restored) (links-by-both g))
             (links-agree? g-clone) (state-refs g g1) (state-refs g-clone g1))

@@ -2607,6 +2607,9 @@
     (unless rel (assertion-violation 'state-path-claimants "path is #f" kind mode rel))
     (let* ((set (hashtable-ref (structure-holders (reduction-structure r)) (list kind mode rel) #f))
            (answer (if set (list-sort string<? (vector->list (hashtable-keys set))) '())))
+      ;; THE WORK OF A PATH QUESTION, counted where a counter is installed (the
+      ;; growth fixture): the question and the holders it examined
+      (work! 'path (+ 1 (length answer)))
       (degeneracy-check path-holders (path-holders-compare r kind mode rel answer))
       answer))
 
@@ -3178,7 +3181,8 @@
     (let* ((s (reduction-structure r))
            (old (hashtable-ref (structure-info s) id #f))
            (new (structure-facts (find-block r id))))
-      ;; a change that moves none of the facts (a field other than kind) changes nothing
+      ;; a change that moves none of the facts (a field other than kind, mode and
+      ;; path, whose holder key is a fact) changes nothing
       (unless (equal? old new)
         (structure-note-change! s id old new))))
   (define (structure-note-change! s id old new)
@@ -3443,8 +3447,10 @@
           (unless (equal? expected answer)
             (assertion-violation 'degeneracy "the path's holders differ from the walk's" (list kind mode rel) answer expected))))
       ;; THE WHOLE TABLE BY THE WALK: every key some alive block's fields name,
-      ;; each field a plain value (several candidates read as (conflict ...),
-      ;; an absent one not at all), with the walk's holders of that key.
+      ;; each field a single value (an absent one is not read at all; a value
+      ;; reading as (conflict ...) is set apart by state-field-contested?, which
+      ;; asks the candidates, so a single value of that shape still counts),
+      ;; with the walk's holders of that key.
       (define (path-holders-recomputed r)
         (let ((keys '()))
           (for-each (lambda (e)
@@ -3453,7 +3459,7 @@
                           (let* ((fs (cdr (assq 'fields b)))
                                  (plain (lambda (k)
                                           (let ((p (assq k fs)))
-                                            (and p (not (and (pair? (cdr p)) (eq? 'conflict (car (cdr p)))))
+                                            (and p (not (state-field-contested? r (car e) k (cdr p)))
                                                  (list (cdr p))))))
                                  (kind (plain 'kind)) (mode (plain 'mode)) (path (plain 'path)))
                             (when (and kind mode path)
