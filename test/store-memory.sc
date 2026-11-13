@@ -32,6 +32,9 @@
 ;;         every load, and the answers are the cold daemon's
 ;;   SM-7  a writer-process load (write --expect) leaves the store process's
 ;;         memory as it was, and answers as the cold daemon does
+;;   SM-8  a write session that reloads (a writer's metadata changed while it
+;;         was parked before its append) reloads with its memory: the reload's
+;;         load replays what the session's load scanned
 ;;   SM-T  every load says once what its memory did: one load-memory line per
 ;;         log-open, with its two counts
 ;;
@@ -55,7 +58,7 @@
 ;; The counts are read from the daemon's log, where it writes its trace
 ;; (THEOURGIA_TRACE=1): one `parse` per line decoded, one `load-memory` per
 ;; load.
-(import (chezscheme) (theourgia log) (theourgia wire) (theourgia reduce)
+(import (chezscheme) (theourgia log) (theourgia wire) (theourgia reduce) (theourgia trace)
         (only (theourgia store) open-and-reduce)
         (only (theourgia client) socket-path serve-log-path))
 
@@ -149,9 +152,22 @@
 (define warm-switch "THEOURGIA_DEGENERACY=only:replay-scan,verdict-discoveries")
 (include "serve-for.ss")
 (define log-path (serve-log-path store))
+;; A RAISE OUTSIDE A ROW STILL STOPS THE DAEMONS and removes the scratch: the
+;; base handler does that first, then reports as it would have
+(define cleaned? #f)
+(let ((default (base-exception-handler)))
+  (base-exception-handler
+    (lambda (c)
+      (unless cleaned?
+        (set! cleaned? #t)
+        (guard (e (#t #f)) (stop-daemon!))
+        (system (string-append "rm -rf '" root "' '" sock-root "'")))
+      (default c))))
 (define (log-length) (string-length (file-text log-path)))
+;; the bracket keeps pgrep's own shell, whose command line holds the pattern,
+;; from matching it
 (define (daemon-pids)
-  (let* ((p (process (string-append "pgrep -f 'theourgiad.sc serve " store "'")))
+  (let* ((p (process (string-append "pgrep -f '[t]heourgiad.sc serve " store "'")))
          (t (get-string-all (car p))))
     (close-port (car p)) (close-port (cadr p))
     (if (eof-object? t) '() (filter (lambda (x) x) (map string->number (lines-of t))))))
@@ -167,10 +183,17 @@
 (define (start-daemon! switch . extra)
   (stop-daemon!)
   (serve-await! (serve-spawn-with! root store #f (env switch) extra)))
+;; THE LOG SETTLES before it is read: a line the daemon writes just after it
+;; answers belongs to this request, not the next
+(define (settled-log-length)
+  (let loop ((n (log-length)) (k 0))
+    (system "sleep 0.1")
+    (let ((m (log-length)))
+      (if (or (= m n) (> k 50)) m (loop m (+ k 1))))))
 ;; ONE REQUEST THROUGH THE DAEMON, and what its log gained meanwhile:
 ;; -> (<answer datum> <parse lines> <load-memory counts, one per load> <log-open lines>)
 (define (through . args)
-  (let* ((before (log-length))
+  (let* ((before (settled-log-length))
          (out (string-append root "/client.out"))
          (_ (system (string-append (env "") "scheme --script ../theourgia.sc "
                                    (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
@@ -180,7 +203,8 @@
                      (cond ((eof-object? d) last)
                            ((and (pair? d) (memq (car d) '(ok error usage))) d)
                            (else (loop port last))))))
-         (text (let ((t (file-text log-path))) (substring t (min before (string-length t)) (string-length t))))
+         (text (let ((t (begin (settled-log-length) (file-text log-path))))
+                 (substring t (min before (string-length t)) (string-length t))))
          (ls (lines-of text)))
     (list answer
           (length (filter (lambda (l) (has-prefix? l "(trace parse")) ls))
@@ -255,9 +279,9 @@
 ;; SAW: the first write's load meets the three its start-up load read; the
 ;; second's meets those and the one the first write created. (A memory-less
 ;; load scans every segment, at both phases.)
-(want "SM-4 each write's load scanned only the segments created since the store process's previous load: none, then the one the first write made"
-      (map (lambda (w) (map (lambda (c) (and (list? c) (list-ref c 3))) (counts-of w))) (list w1 w2))
-      (list (list (- h0 3)) (list (- h1 h0))))
+(want "SM-4 each write's load scanned only the segments created since the store process's previous load: none, then the one the first write made (three segments before it, four after)"
+      (list h0 h1 (map (lambda (w) (map (lambda (c) (and (list? c) (list-ref c 3))) (counts-of w))) (list w1 w2)))
+      '(3 4 ((0) (1))))
 (define warm-readings (readings))
 (stop-daemon!)
 (define cold-started (start-daemon! ""))
@@ -284,6 +308,25 @@
 (want "SM-T every load the warm daemon ran for a write said once what its memory did"
       (map (lambda (w) (list (length (counts-of w)) (opens-of w))) (list w1 w2))
       (map (lambda (w) (list (opens-of w) (opens-of w))) (list w1 w2)))
+
+;; A LOAD REFUSED AFTER IT WAS MADE says so too: a segment that cannot be read
+;; stops its writer, and a load that did not declare it accepts an incomplete
+;; store is refused, in this process, with a memory handed in
+(stop-daemon!)
+(build-store!)
+(system (string-append "chmod 000 '" (segment-path 2) "'"))
+(define refused-trace
+  (let ((p (open-output-string)))
+    (parameterize ((current-error-port p))
+      (trace-enable! #t)
+      (guard (e (#t #f)) (log-open-with-memory store (make-load-memory)))
+      (trace-enable! #f))
+    (lines-of (get-output-string p))))
+(system (string-append "chmod 644 '" (segment-path 2) "'"))
+(want "SM-T a load refused after it was made (an unreadable segment, no declaration) still says once what its memory did"
+      (list (length (filter (lambda (l) (has-prefix? l "(trace log-open")) refused-trace))
+            (length (filter (lambda (l) (has-prefix? l "(trace load-memory")) refused-trace)))
+      '(1 1))
 
 ;; ---- SM-5: disturbances between two loads of the warm daemon ---------------------
 
@@ -329,6 +372,74 @@
       (equal? limited (loaded-readings))
       #t)
 
+;; ---- SM-8: a write session that reloads -----------------------------------------
+;;
+;; A WRITE PARKED BEFORE ITS APPEND (THEOURGIA_BARRIER=before-append, an
+;; injection build), the local writer's owner.sexp given a trailing newline
+;; meanwhile (the same datum, other bytes): its file version, a hash of its
+;; bytes, moves, so the session reloads before it
+;; appends (log.sc, versions-changed?, reload!), and the reload is a second
+;; load inside the same write. Handed the session's memory it replays every
+;; segment the first load scanned.
+
+(stop-daemon!)
+(build-store!)
+(define fifo (string-append root "/before-append.fifo"))
+(system (string-append "rm -f '" fifo "'; mkfifo '" fifo "'"))
+(start-daemon! (string-append warm-switch " THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" fifo))
+(through "check")
+(define t8 (car (ids-now)))
+(define c8 (cursor))
+(define p8 (format "((premise ~s ~s))" t8 (hash-of t8)))
+(define before8 (settled-log-length))
+;; THE PARKED CLIENT RUNS FROM A SCRIPT FILE, so its arguments (a premise
+;; datum holds double quotes) are written once, each quoted for sh
+(define out8 (string-append root "/client8.out"))
+(define (sh-quoted s)
+  (let loop ((cs (string->list s)) (acc '(#\')))
+    (cond ((null? cs) (list->string (reverse (cons #\' acc))))
+          ((char=? (car cs) #\') (loop (cdr cs) (append (reverse (string->list "'\\''")) acc)))
+          (else (loop (cdr cs) (cons (car cs) acc))))))
+(call-with-output-file (string-append root "/client8.sh")
+  (lambda (p)
+    (put-string p (string-append (env "") "scheme --script ../theourgia.sc set " (sh-quoted t8) " title parked --premises "
+                                 (sh-quoted p8) " --req Q8 --cursor " (sh-quoted c8) " --store " (sh-quoted store)
+                                 " --wire > " (sh-quoted out8) " 2>/dev/null < /dev/null; touch " (sh-quoted (string-append out8 ".done")) "\n")))
+  'replace)
+(system (string-append "sh '" root "/client8.sh' &"))
+(define parked
+  (let wait ((k 0))
+    (let ((t (file-text log-path)))
+      (cond ((let find ((i before8))
+               (and (< (+ i 30) (string-length t))
+                    (or (string=? (substring t i (+ i 30)) "(trace barrier before-append #")
+                        (find (+ i 1)))))
+             #t)
+            ((> k 300) #f)
+            (else (system "sleep 0.05") (wait (+ k 1)))))))
+;; RELEASED ONLY WHEN PARKED: a write to the fifo blocks until a reader opens
+;; it, and a write that never reached the barrier has no reader
+(when parked
+  (let ((owner (string-append store "/writers/" W "/owner.sexp")))
+    (append! owner (string->utf8 "\n")))
+  (call-with-output-file fifo (lambda (p) (display "x" p)) 'append))
+(let wait ((k 0)) (unless (or (file-exists? (string-append out8 ".done")) (> k 600)) (system "sleep 0.05") (wait (+ k 1))))
+(define after8 (begin (settled-log-length) (file-text log-path)))
+(define counts8
+  (map (lambda (l) (let ((d (read-or-false l))) (and d (caddr d))))
+       (filter (lambda (l) (has-prefix? l "(trace load-memory"))
+               (lines-of (substring after8 (min before8 (string-length after8)) (string-length after8))))))
+(define answer8 (read-or-false (file-text out8)))
+(printf "SM-8 parked ~a; the write ~s; its loads ~s\n" parked answer8 counts8)
+;; THE WRITE IS REFUSED (refused epoch): a session that reloads before its
+;; append does not append on the moved state; the request is the client's to
+;; send again. That answer is the product's whatever the memory (the base, with
+;; a memory per load, answers it too); what this row judges is the reload's load.
+(want "SM-8 the write parked before its append reloaded after the metadata moved: two loads, the reload's replaying every segment the session's load had (none scanned), and the write refused as an epoch moved"
+      (list parked (and (pair? answer8) (list (car answer8) (cadr answer8) (caddr answer8))) (length counts8)
+            (and (= 2 (length counts8)) (list? (cadr counts8)) (list-ref (cadr counts8) 3)))
+      '(#t (error refused epoch) 2 0))
+
 ;; ---- SM-7: a writer-process load ------------------------------------------------
 
 (stop-daemon!)
@@ -342,7 +453,12 @@
 ;; A MEMORY OF ITS OWN, STARTING EMPTY: validation scans each of the three
 ;; segments and delivery replays what validation scanned; the store process's
 ;; memory, which holds all three, would have replayed all six asks
-(want "SM-7 the writer process's load is handed a memory of its own (it scans every segment once, delivery replaying them), and the store process's next load replays every one, as before it"
+;; WHAT THIS JUDGES: that the writer process is NOT handed the store process's
+;; memory (that memory holds all three segments, and its load would scan
+;; none). That the store process's memory is unchanged follows from it; the
+;; next check's equal counts are not, on their own, a witness of it (equal
+;; bytes would leave a shared memory's entries as they were).
+(want "SM-7 the writer process's load is handed a memory of its own, not the store process's (it scans every segment once, delivery replaying them); the store process's next check counts as before it"
       (list (counts-of x1) (equal? (counts-of o2) (counts-of o1)))
       (list (list (list 'replayed-or-extended (highest-segment) 'scanned (highest-segment))) #t))
 (define warm-write (answer-of x1))
@@ -353,5 +469,6 @@
 
 (stop-daemon!)
 (system (string-append "rm -rf '" root "' '" sock-root "'"))
+(set! cleaned? #t)
 (printf "\n~a failures\nrows: ~a\nstore-memory complete\n" bad rows-run)
 (exit (if (= bad 0) 0 1))

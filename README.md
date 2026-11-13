@@ -5210,9 +5210,9 @@ them; any other bytes replace it. The start-up load finds the memory empty. A pr
 of the daemon other than the store process (a writer process's `write --expect`,
 `--based-on`, `--working-cut`, `--working-parent`, `restore`, `drafts`) is not handed it
 and loads with a memory of its own, as a command line does. `--memory-limit <bytes>`
-bounds it, in remembered segment bytes (default 268435456, 256 MiB): segments are kept
-in the order they are asked for until the next would pass the bound, and one that does
-not fit is scanned at every load, as without a memory. The heap a memory holds is a
+bounds it, in remembered segment bytes (default 268435456, 256 MiB): a segment is kept
+when it fits beside what is kept (an entry replaced by other bytes gives its bytes back
+first), and one that does not fit is scanned at every load, as without a memory. The heap a memory holds is a
 multiple of its remembered bytes (the transcripts' frames beside the bytes). A value
 that is not a count is refused like `--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,

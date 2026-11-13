@@ -930,6 +930,11 @@
   ("log.sc" (open-load-refused!) 1 guard
    (#t)
    unrelated a
+   "cleanup: a load refused after it was made lets go of its memory quietly (its trace line), so the let-go can replace neither the escaping condition nor the notification"
+   (x (#t (if #f #f))))
+  ("log.sc" (open-load-refused!) 2 guard
+   (#t)
+   unrelated a
    "cleanup: the owned lock's release is quiet, so it can replace neither the escaping condition nor the notification (found in design review)"
    (x (#t (if #f #f))))
   ("log.sc" (open-load-body) 1 guard

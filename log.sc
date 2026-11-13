@@ -1022,8 +1022,8 @@
   ;; A LOAD LETS GO OF ITS MEMORY ONCE, saying what the memory did for it:
   ;; one trace line per load, (load-memory (replayed-or-extended <n> scanned
   ;; <n>)), beside the per-segment `memory` events. The places a load can end
-  ;; (its delivery leaving, a commit, an abort, a session's end) each call
-  ;; this; the first lets go and prints, a later one finds remembers-nothing
+  ;; (its delivery leaving, a commit, an abort, a session's end, a refusal
+  ;; after the load was made: open-load-refused!) each call this; the first lets go and prints, a later one finds remembers-nothing
   ;; and does neither. The memory itself is not cleared: a memory handed in
   ;; outlives the load, which only drops its reference.
   (define (load-let-go! ls)
@@ -2397,7 +2397,9 @@
     (trace-event! 'log-open store #f)
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
-    (let ((owned (vector #f)))
+    ;; OWNED: the lock once taken, and the load session once made, so a refusal
+    ;; after either releases the one and lets the other go of its memory
+    (let ((owned (vector #f #f)))
       (guard (e (#t (open-load-refused! store e owned) (raise e)))
         (open-load-body store lock-context declaration owned memory))))
 
@@ -2408,6 +2410,13 @@
         (when (or (unreadable-entry? e) (incomplete-reduction? e))
           (tell-load-refused! store e)))
       (lambda ()
+        ;; A LOAD REFUSED AFTER ITS SESSION WAS MADE (a strict declaration
+        ;; meeting an incomplete store, a snapshot that cannot be read) says
+        ;; what its memory did, as every other end of a load does
+        (let ((ls (vector-ref owned 1)))
+          (when ls
+            (vector-set! owned 1 #f)
+            (guard (x (#t (if #f #f))) (load-let-go! ls))))
         (let ((lock (vector-ref owned 0)))
           (when lock
             (vector-set! owned 0 #f)
@@ -2448,6 +2457,7 @@
             (hold-point! 'after-discovery)
             (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f
                                          (ownership-table store) counted)))
+              (vector-set! owned 1 ls)
               ;; Only the notes that refuse this consumer refuse it -- a cut
               ;; refuses the strict declaration alone (incomplete.sc,
               ;; refusing-notes) -- and the refusal names EVERY note of the
