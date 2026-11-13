@@ -90,7 +90,8 @@
         (only (theourgia log) log-publish! segment-sha writer-directory segment-file-name
               read-manifest)
         (only (theourgia wire) decode-line)
-        (only (theourgia digest) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex)
+        (only (theourgia degeneracy) degeneracy-checks-on))
 
 (define bad 0)
 (define rows 0)
@@ -492,6 +493,33 @@
                (twin-start-ms (- (real-time) t-twin)))
           (printf "the second daemon (the twin's) started and answered its first request in ~a ms~%" twin-start-ms)
           (want "G-5 both daemons answer" (list (answer-ok? warm-served) (answer-ok? warm-twin)) '(#t #t))
+          ;; THE JUDGED ARMS KEEP THE SWITCH THE RUN GIVES THEM (only the
+          ;; generator's imports run without it): this process's checks are on
+          ;; exactly when the variable names some, and each daemon's own
+          ;; environment, read from the process table, carries the variable as
+          ;; this process has it. So a gate cannot judge these arms plain unseen.
+          (let* ((v (getenv "THEOURGIA_DEGENERACY"))
+                 (on? (and v (not (member v '("" "0"))) #t))
+                 (env-of (lambda (pid)
+                           (let* ((p (process (string-append "ps eww -o command= -p " (number->string pid))))
+                                  (t (get-string-all (car p))))
+                             (close-port (car p)) (close-port (cadr p))
+                             (if (eof-object? t) "" t))))
+                 (carries? (lambda (text)
+                             (let ((want (string-append "THEOURGIA_DEGENERACY=" (or v ""))))
+                               (let find ((i 0))
+                                 (cond ((> (+ i (string-length want)) (string-length text)) #f)
+                                       ((and (string=? (substring text i (+ i (string-length want))) want)
+                                             (or (= (+ i (string-length want)) (string-length text))
+                                                 (char-whitespace? (string-ref text (+ i (string-length want))))))
+                                        #t)
+                                       (else (find (+ i 1)))))))))
+            (printf "the switch: ~s; this process's checks ~s~%" v (degeneracy-checks-on))
+            (want "LB-S the judged arms keep the switch: this process's checks are on exactly when the variable names some, and both daemons' environments carry the variable as this process has it"
+                  (list (eq? on? (pair? (degeneracy-checks-on)))
+                        (map (lambda (d) (if v (carries? (env-of (cadddr d))) (not (carries? (env-of (cadddr d))))))
+                             (list d-served d-twin)))
+                  '(#t (#t #t))))
           ;; EVERY ANSWER IS KEPT with what it should be, and judged after the
           ;; rounds, outside every timed interval (LB-0): a read's block and
           ;; version are the ones read before the rounds, and a read at the old

@@ -94,10 +94,14 @@
 ;; One store made by `init`, then the files imported into it by one
 ;; import-code request in a child (THEOURGIA_LOCAL=1, as the command line
 ;; runs it). -> the store's writer.
+;; THE IMPORT IS SETUP, NOT A JUDGED ARM: it runs with THEOURGIA_DEGENERACY
+;; unset, so a whole-suite gate's checks (sibling-order's, which recomputes the
+;; structure per sibling question, costs an import of n files about n^3) do not
+;; spend the fixture's limit building its stores; the arms keep the switch.
 (define (lb-import! root files store tag)
   (let ((writer (lb-clause 'writer (lb-must (string-append "init of " tag)
                                             (rpc-dispatch store '(init) "tester")))))
-    (system (string-append "THEOURGIA_LOCAL=1 scheme --script " (lb-quote lb-core) " import-code " (lb-quote files)
+    (system (string-append "env -u THEOURGIA_DEGENERACY THEOURGIA_LOCAL=1 scheme --script " (lb-quote lb-core) " import-code " (lb-quote files)
                            " --store " (lb-quote store) " --wire > " (lb-quote (string-append root "/import-" tag ".out"))
                            " 2>&1 < /dev/null"))
     writer))
@@ -115,6 +119,7 @@
          (ms-import (lb-ms-since t1))
          (t3 (real-time))
          (served-writer (lb-import! root files served "served"))
+         (_ (printf "setup ran with THEOURGIA_DEGENERACY unset: the generator's two imports of ~a files (local, served)~%" (div records 2)))
          (ms-served (lb-ms-since t3))
          (t2 (real-time))
          (_ (lb-must "init of the twin" (rpc-dispatch twin '(init) "tester")))
