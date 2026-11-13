@@ -2622,9 +2622,10 @@
             ;; Set by a reload and never cleared: the session stays bound to
             ;; the writer it began with, so only a new session can write.
             (mutable superseded)
-            ;; THE MEMORY THIS SESSION'S LOADS ARE HANDED: its first load's and
-            ;; every reload!'s, so a reload inside the session replays what the
-            ;; first load kept (log-begin-with-memory).
+            ;; THE MEMORY THIS SESSION'S LOADS ARE HANDED when a caller handed one
+            ;; (log-begin-with-memory): its first load's and every reload!'s, so
+            ;; a reload inside the session replays what the first load kept. #f
+            ;; for log-begin's sessions, whose loads each make their own.
             memory))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
@@ -2853,16 +2854,17 @@
   ;; the flock held -- the worst of both, since the next log-begin then
   ;; passes the guard and blocks forever on a lock no one will release.
   (define (log-begin store on-deliver . declaration-opt)
-    (apply log-begin-with-memory store (make-load-memory) on-deliver declaration-opt))
+    (apply log-begin-with-memory store #f on-deliver declaration-opt))
 
   ;; log-begin with a memory the caller keeps, as log-open-with-memory is
   ;; log-open's: the session's load and every reload! inside it are handed
   ;; MEMORY, so what they compute from a segment's bytes stays there for a
-  ;; later session handed the same one. log-begin hands each session a memory
-  ;; of its own.
+  ;; later session handed the same one. MEMORY #f is log-begin's own: each of
+  ;; the session's loads makes a memory of its own and lets it go when its
+  ;; delivery ends, and the session keeps none, so a reload! scans afresh.
   (define (log-begin-with-memory store memory on-deliver . declaration-opt)
     (define declaration (and (pair? declaration-opt) (car declaration-opt)))
-    (unless (segment-memory? memory)
+    (unless (or (not memory) (segment-memory? memory))
       (assertion-violation 'log-begin-with-memory "not a memory of a load" memory))
     (unless (procedure? on-deliver)
       (assertion-violation 'log-begin "on-deliver must be a procedure" on-deliver))
@@ -2884,7 +2886,7 @@
               ;; promise, doing the same flushes twice and making a case
               ;; that counts them read differently for no reason the
               ;; store cares about.
-              (let ((ls (open-load store 'held-exclusive declaration memory)))
+              (let ((ls (open-load store 'held-exclusive declaration (or memory (make-load-memory)))))
                 (let* ((selected (session-writer-of store ls))
                        (excluded (and (pair? selected) (cadr selected)))
                        (found (and (string? selected) selected))
@@ -3461,7 +3463,7 @@
   ;; against it.
   (define (reload! s)
     (let* ((store (session-store s))
-           (fresh (open-load store 'held-exclusive (session-declaration s) (session-memory s))))
+           (fresh (open-load store 'held-exclusive (session-declaration s) (or (session-memory s) (make-load-memory)))))
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
@@ -7909,10 +7911,11 @@
           ;; THE LOAD LETS GO OF ITS MEMORY HERE, on every way out of a
           ;; delivery: a session that is kept (a write session keeps its
           ;; load) would otherwise hold every segment's bytes and decoded
-          ;; frames for its life. A memory the load made is then garbage;
-          ;; one a caller handed in stays with the caller, not emptied. A
-          ;; later delivery from the same session scans, as before there
-          ;; was a memory.
+          ;; frames for its life. A memory the load made is then garbage (a
+          ;; log-begin session keeps none, and its later reload! scans, as
+          ;; before there was a memory); one a caller handed in stays with the
+          ;; caller, not emptied, and with the session that caller began
+          ;; (log-begin-with-memory), whose reload! replays from it.
           ;;
           ;; THIS THUNK RUNS ONLY WHEN DELIVERY LEAVES, never when its
           ;; process is switched out. igropyr's scheduler saves a process's
