@@ -42,7 +42,8 @@
 ;; rotation leaves the current segment (master has it, and answers there with
 ;; no session-own-prefix to read). Each child appends a second time in the same
 ;; session and reports the path that append took.
-(import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi) (theourgia trace))
+(import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi) (theourgia trace)
+        (only (theourgia degeneracy) degeneracy-active))
 
 (define child? (equal? (getenv "APPEND_PREFIX_ROLE") "child"))
 
@@ -297,7 +298,8 @@
                                  (if (and (condition? e) (message-condition? e)) (condition-message e) e)
                                  (if (and (condition? e) (irritants-condition? e)) (condition-irritants e) '()))))
                (list 'append-prefix-child 'ok
-                     (map (lambda (sc) (cons (car sc) (car ((cdr sc))))) scenarios)))))
+                     (map (lambda (sc) (cons (car sc) (car ((cdr sc))))) scenarios)
+                     (degeneracy-active kept-prefix)))))
     (write out)
     (newline)
     (exit 0)))
@@ -558,12 +560,13 @@
                            "' < /dev/null > " out " 2> " err))
     (guard (e (#t (list 'unreadable (text-of out) (text-of err))))
       (read (open-string-input-port (text-of out))))))
-(want "AP-D under the degeneracy switch the scenarios finish (every kept prefix equal to a full validate) and answer as here"
+(want "AP-D under the degeneracy switch, its kept-prefix check on in the child, the scenarios finish (every kept prefix equal to a full validate) and answer as here"
       (if (and (pair? degeneracy-child) (eq? (car degeneracy-child) 'append-prefix-child)
                (eq? (cadr degeneracy-child) 'ok))
-          (list 'ok (equal? (caddr degeneracy-child) (map (lambda (sc) (cons (car sc) (answers-of (car sc)))) scenarios)))
+          (list 'ok (equal? (caddr degeneracy-child) (map (lambda (sc) (cons (car sc) (answers-of (car sc)))) scenarios))
+                (and (pair? (cdddr degeneracy-child)) (cadddr degeneracy-child)))
           degeneracy-child)
-      '(ok #t))
+      '(ok #t #t))
 
 (system (string-append "rm -rf " d " " d "-home " d "-answer " d "-answer.tmp " d "-child.sc " d "-fifo " d "-trace " d "-pid " d "-feeder "
                        d "-degeneracy.out " d "-degeneracy.err"))

@@ -1457,10 +1457,13 @@
         ((not (linked-to? e (ev-event (car eligible)))) 'plan-order)
         (else #f))))
 
-  ;; Built only under the degeneracy switch: without it the binding is #f and
-  ;; the procedure's code is not compiled into the product.
+  ;; Built only when the admission-judgements check is on (degeneracy.sc), whose
+  ;; reference it is (admission.sc's whole-bucket-judgement calls it): without
+  ;; it the binding is #f and the procedure's code is not compiled into the
+  ;; product. It is not a check of its own, so it cannot be off while the
+  ;; check that calls it is on.
   (define identity-gates/full
-    (degeneracy-value identity-gates
+    (degeneracy-value admission-judgements
       (lambda (es)
         (let ((statuses (make-hashtable equal-hash equal?)) (stamp 0) (bindings (make-binding-index)))
           (define (status e)

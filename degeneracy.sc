@@ -30,11 +30,13 @@
 ;;;   1                     every check;
 ;;;   only:<name>,<name>    those checks and no other;
 ;;;   all-but:<name>,<name> every check but those.
+;;; Unset, empty or 0, no check is on: those are how an environment says off.
 ;;; A whole-suite gate names what it leaves out (all-but), so a check added
 ;;; later is on in the gate unless someone writes its name there. A name this
-;;; library does not know, in the variable or at a use, and any other value of
-;;; the variable, refuse at expansion, naming it: a misspelt name must not turn
-;;; a check off in silence.
+;;; library does not know, in the variable or at a use, an empty one (a
+;;; trailing comma's too), and any value of the variable but those above,
+;;; refuse at expansion, naming it: a misspelt name must not turn
+;;; a check off in silence. A name given twice is that name once.
 ;;;
 ;;; THE CHECKS, in the order a reading lists them:
 ;;;   structure-per-record      reduce.sc: the structure recomputed and compared
@@ -49,17 +51,18 @@
 ;;;                             a prefix, the writer's log validated in full
 ;;;                             and compared field by field
 ;;;   admission-judgements      admission.sc: the indexed judgement against the
-;;;                             whole-bucket one
+;;;                             whole-bucket one, request.sc's identity-gates/full
+;;;                             being that reference (one check, two places)
 ;;;   changed-files-reference   landing-files.sc: changed-files against its
 ;;;                             materialised reference
-;;;   identity-gates            request.sc: the identity gates computed in full
 ;;;   slot-classified-once      request.sc: no slot classified twice in a run
 ;;; TWO ARE LEFT OUT OF A WHOLE-SUITE GATE FOR THEIR COST and judged in their
 ;;; own fixtures, whose children set the variable to 1 whatever the pass sets:
 ;;; structure-per-record costs records times blocks in a load (structure-graph
 ;;; SG-1 judges it), kept-prefix a pass over the writer's log per write
-;;; (append-prefix AP-D judges it). The degeneracy-switch fixture's census
-;;; pins that each of the two is switched on by such a child.
+;;; (append-prefix AP-D judges it). Each witness's child reports that check
+;;; on by name and its row reads it, and the degeneracy-switch fixture's
+;;; census pins that both are so.
 ;;;
 ;;; `(degeneracy-active)` is #t when any check is on, `(degeneracy-active
 ;;; <name>)` when that one is, and `(degeneracy-checks-on)` is the list of the
@@ -72,7 +75,7 @@
 
   (meta define degeneracy-known
     '(structure-per-record structure-restored siblings-list sibling-order replay-scan kept-prefix
-      admission-judgements changed-files-reference identity-gates slot-classified-once))
+      admission-judgements changed-files-reference slot-classified-once))
 
   ;; -> the names in TEXT, separated by commas, each a symbol; an empty name
   ;; or an unknown one refuses
@@ -102,7 +105,7 @@
   (meta define degeneracy-on
     (let ((v (getenv "THEOURGIA_DEGENERACY")))
       (cond
-        ((not v) '())
+        ((or (not v) (string=? v "") (string=? v "0")) '())
         ((string=? v "1") degeneracy-known)
         ((degeneracy-prefix? "only:" v)
          (let ((names (degeneracy-names (substring v 5 (string-length v)) v)))

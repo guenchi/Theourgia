@@ -96,7 +96,7 @@
 ;; (the gate sets it to its own fresh base); set to a directory that is not
 ;; a base library root, it is NOT A READING, and says so.
 
-(import (chezscheme) (theourgia sched) (theourgia net))
+(import (chezscheme) (theourgia sched) (theourgia net) (only (theourgia ffi) env-or))
 
 (define bad 0)
 (define rows 0)
@@ -822,9 +822,11 @@
           ;; is. Shifting both traces alike judges equal whatever counts are
           ;; picked, so the row also asserts the correspondence it relies on:
           ;; each of the three counts is its frame's payload in the base's log,
-          ;; the line's bytes after its crc, and that the two frames shifted for the
-          ;; pid are the ones that hold it: the plan record's line holds the
-          ;; session id "w-<digits>-" twice and the next record's once. Then the
+          ;; the line's bytes after its crc, and that the frames shifted hold what the
+          ;; shift stands for: frame 1 the actor's name the command line wrote
+          ;; it with (THEOURGIA_ACTOR, else USER, else cli: core.sc's order, by env-or), the
+          ;; plan record the session id "w-<digits>-" twice and the next record
+          ;; once. Then the
           ;; NEW trace alone with its first parse count changed (a daemon that
           ;; parsed another frame): that judgement is not equal.
           (let* ((frames (text-lines (file-text (string-append (car b) "/writers/" prepared-writer "/000001.sexp"))))
@@ -883,13 +885,16 @@
                            (list (cons (nth plan-at) 2) (cons (nth (+ plan-at 1)) 1)))))
             (printf "GUARD-3b frame 1's count ~s, the plan record (frame ~s) ~s, the next ~s~%"
                     (nth 1) plan-at (nth plan-at) (and plan-at (nth (+ plan-at 1))))
-            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log, and the plan record holds the session id twice and the next once; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
+            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log, frame 1 holds the actor's name, and the plan record holds the session id twice and the next once; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
                   (list (and plan-at (for-all (lambda (k) (equal? (nth k) (payload k))) (list 1 plan-at (+ plan-at 1))))
+                        (and (pair? frames)
+                             (contains? (car frames)
+                                        (string-append "\"" (env-or "THEOURGIA_ACTOR" (env-or "USER" "cli")) "\"")))
                         (and plan-at (list (session-ids plan-at) (session-ids (+ plan-at 1))))
                         (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
                         (and pid (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f)))
                         (and user (judged (cadr tb) (shifted (cadr tn) user #t))))
-                  '(#t (2 1) #t #t #f)))))
+                  '(#t #t (2 1) #t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by

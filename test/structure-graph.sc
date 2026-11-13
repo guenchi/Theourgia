@@ -154,7 +154,7 @@
                          (equal? (state-sibling-bracket r2 'root (block-id "z" 1)) '(0 . #f))
                          (equal? (state-sibling-bracket r2 "root" (block-id "m" 1)) '(0 . 0)))))
           (list 'ok n))))
-    (write (list 'structure-graph (degeneracy-active) (car result)
+    (write (list 'structure-graph (degeneracy-active structure-per-record) (car result)
                  (if (eq? (car result) 'ok) (cadr result) (cdr result))
                  (reverse checks)))))
 
@@ -197,7 +197,7 @@
 
 (define on (run-scenario "on" #t))
 (define off (run-scenario "off" #f))
-(want "SG-1 under the degeneracy switch the maintained structure equals the recomputed one after every record and every sibling question: no difference raised"
+(want "SG-1 under the degeneracy switch, its structure-per-record check on in the child, the maintained structure equals the recomputed one after every record and every sibling question: no difference raised"
       (and (pair? on) (list (cadr on) (caddr on)))
       '(#t ok))
 (want "SG-2 the switch unset: the same scenario answers the same readings, and the switch reads off"

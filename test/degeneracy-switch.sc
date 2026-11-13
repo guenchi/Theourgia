@@ -21,9 +21,10 @@
 ;;         witness: a fixture whose own child sets THEOURGIA_DEGENERACY=1 and
 ;;         whose named row judges it
 ;;   DS-3  the variable's three forms, each read in a child that expands the
-;;         library: unset none, 1 every check, only: those, all-but: the rest
+;;         library: unset, empty or 0 none, 1 every check, only: those,
+;;         all-but: the rest
 ;;   DS-4  an unknown name in the variable, an empty one, any other value of
-;;         the variable, and an unknown name at a use each refuse at
+;;         the variable (yes, on), and an unknown name at a use each refuse at
 ;;         expansion, naming what they refuse
 ;;   DS-5  one check on and another off: degeneracy-active and
 ;;         degeneracy-value answer by name
@@ -79,25 +80,25 @@
 (define (symbol-list<? a b) (string<? (symbol->string a) (symbol->string b)))
 
 ;; ---- DS-1, the census ----------------------------------------------------
-;; -> the names carried by every (degeneracy-check <name> and
-;; (degeneracy-value <name> in TEXT, in order, repeats kept
-(define (names-used text)
-  (let loop ((i 0) (out '()))
-    (let next ((heads '("(degeneracy-check " "(degeneracy-value ")))
-      (cond
-        ((>= i (string-length text)) (reverse out))
-        ((null? heads) (loop (+ i 1) out))
-        ((let ((h (car heads)))
-           (and (<= (+ i (string-length h)) (string-length text))
-                (string=? (substring text i (+ i (string-length h))) h)))
-         (let* ((s (+ i (string-length (car heads))))
-                (e (let end ((j s))
-                     (if (or (= j (string-length text))
-                             (memv (string-ref text j) '(#\space #\newline #\( #\))))
-                         j
-                         (end (+ j 1))))))
-           (loop e (cons (string->symbol (substring text s e)) out))))
-        (else (next (cdr heads)))))))
+;; -> the names carried by every (degeneracy-check <name> ...) and
+;; (degeneracy-value <name> ...) form in the file at PATH, in order, repeats
+;; kept: the file is read as data by the reader, so a comment or a string
+;; holding the same text is not a use, and the head may be followed by any
+;; spacing. A file the reader cannot read answers (UNREADABLE), which the
+;; census names.
+(define (names-used path)
+  (let ((forms (guard (e (#t #f))
+                 (call-with-input-file path
+                   (lambda (p) (let loop ((acc '())) (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
+    (if (not forms)
+        '(UNREADABLE)
+        (reverse
+          (let walk ((x forms) (out '()))
+            (cond
+              ((and (pair? x) (memq (car x) '(degeneracy-check degeneracy-value)) (pair? (cdr x)))
+               (walk (cddr x) (cons (cadr x) out)))
+              ((pair? x) (walk (cdr x) (walk (car x) out)))
+              (else out)))))))
 ;; the tree's library files: every .sc at its root but this switch's own
 (define product-files
   (filter (lambda (f) (and (> (string-length f) 3)
@@ -105,7 +106,7 @@
                            (not (string=? f "degeneracy.sc"))))
           (list-sort string<? (directory-list tree-dir))))
 (define uses
-  (apply append (map (lambda (f) (map (lambda (n) (cons f n)) (names-used (file-text (string-append tree-dir "/" f)))))
+  (apply append (map (lambda (f) (map (lambda (n) (cons f n)) (names-used (string-append tree-dir "/" f))))
                      product-files)))
 (printf "DS-1 the uses: ~s\n" uses)
 (want "DS-1 the names the switch knows are exactly the names its uses carry, read from the tree's source, and there are eleven uses"
@@ -120,15 +121,16 @@
 (define witnesses
   '((structure-per-record "structure-graph.sc" "SG-1")
     (kept-prefix "append-prefix.sc" "AP-D")))
-(want "DS-2 each check a whole-suite gate leaves out is a known name, and its witness fixture sets THEOURGIA_DEGENERACY=1 for its own child and holds the row that judges it"
+(want "DS-2 each check a whole-suite gate leaves out is a known name, and its witness fixture sets THEOURGIA_DEGENERACY=1 for its own child, has that child report the check on by name, and holds the row that judges it"
       (map (lambda (w)
              (let ((text (file-text (string-append script-dir "/" (cadr w)))))
                (list (car w)
                      (and (memq (car w) (degeneracy-known-checks)) #t)
                      (contains? text "THEOURGIA_DEGENERACY=1 ")
+                     (contains? text (string-append "(degeneracy-active " (symbol->string (car w)) ")"))
                      (contains? text (string-append "(want \"" (caddr w) " ")))))
            witnesses)
-      '((structure-per-record #t #t #t) (kept-prefix #t #t #t)))
+      '((structure-per-record #t #t #t #t) (kept-prefix #t #t #t #t)))
 
 ;; ---- the children ----------------------------------------------------------
 ;; -> (stdout-datum-or-#f . stderr text) of a child that expands PROGRAM with
@@ -153,6 +155,9 @@
 (want "DS-3 unset, no check is on"
       (checks-on "unset" #f)
       '())
+(want "DS-3 empty and 0, as before the names, no check is on"
+      (list (checks-on "empty-value" "") (checks-on "zero" "0"))
+      '(() ()))
 (want "DS-3 1, every check, in the known order"
       (checks-on "all" "1")
       (degeneracy-known-checks))
@@ -174,10 +179,12 @@
 (want "DS-4 an unknown name in all-but: refuses at expansion, naming it"
       (refused "unknown-but" "all-but:kept-prefx" checks-on-program "kept-prefx")
       '(#t #t))
-(want "DS-4 an empty name refuses, and so does any other value of the variable"
+(want "DS-4 an empty name refuses, a trailing comma's too, and so does any other value of the variable"
       (list (refused "empty" "only:" checks-on-program "empty check")
-            (refused "other" "yes" checks-on-program "only:<names>"))
-      '((#t #t) (#t #t)))
+            (refused "trailing" "only:replay-scan," checks-on-program "empty check")
+            (refused "other" "yes" checks-on-program "only:<names>")
+            (refused "other-on" "on" checks-on-program "only:<names>"))
+      '((#t #t) (#t #t) (#t #t) (#t #t)))
 (want "DS-4 a use carrying a name the library does not know refuses at expansion, naming it"
       (refused "use" "1" '((import (chezscheme) (theourgia degeneracy))
                            (write (list (degeneracy-check no-such-check (display "ran")))))
