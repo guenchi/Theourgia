@@ -5212,8 +5212,10 @@ of the daemon other than the store process (a writer process's `write --expect`,
 and loads with a memory of its own, as a command line does. `--memory-limit <bytes>`
 bounds it, in remembered segment bytes (default 268435456, 256 MiB): a segment is kept
 when it fits beside what is kept (an entry replaced by other bytes gives its bytes back
-first), and one that does not fit is scanned at every load, as without a memory. The heap a memory holds is a
-multiple of its remembered bytes (the transcripts' frames beside the bytes). A value
+first), and one that does not fit is scanned at every load, as without a memory. The heap a memory holds is its
+remembered bytes and the transcripts' frames beside them: measured on a store of 90
+segments and 58.5 MB, one full load's memory held 1.17 times its remembered bytes in
+heap (68.3 MB for 58.5 MB), so the 256 MiB default bounds about 300 MiB of heap. A value
 that is not a count is refused like `--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
 counting the segment asks its memory answered each way. WHAT A LOAD DELIVERS IS SHARED:
