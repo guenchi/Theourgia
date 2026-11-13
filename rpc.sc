@@ -540,7 +540,10 @@
   ;; `state-outline`, never a depth-limited listing: an unnamed code block
   ;; is numbered among all of its siblings, drawn or not, so its label
   ;; does not change with the depth it is listed at.
-  (define (label-of b rows id)
+  ;; CHILDREN-OF is the outline's parent -> rows lookup (outline-rows' index),
+  ;; so an unnamed code block's place among its siblings costs its siblings,
+  ;; not the whole outline.
+  (define (label-of b children-of id)
     (let ((fs (and b (cdr (assq 'fields b)))))
       (define (get k)
         (let ((e (and fs (assq k fs))))
@@ -550,7 +553,7 @@
         (if (not (and fs (equal? (assq 'kind fs) '(kind . code)))) ""
             (let* ((lang (assq 'lang fs))
                    (parent (cadr (assq 'position b)))
-                   (siblings (map caddr (filter (lambda (r) (equal? (car r) parent)) rows))))
+                   (siblings (map caddr (children-of parent))))
               (string-append
                 (if (and lang (symbol? (cdr lang))) (symbol->string (cdr lang)) "unknown") ":"
                 (number->string
@@ -593,8 +596,16 @@
            (structural (state-outline state))
            (orphans (cdr (assq 'orphans (state-structure state))))
            (out '()))
-      (define (children-of parent)
-        (filter (lambda (row) (equal? (car row) parent)) structural))
+      ;; THE CHILDREN INDEX, BUILT ONCE PER CALL: parent -> its rows, in the
+      ;; outline's row order (which is sibling order). Filtering the whole row
+      ;; list for each parent the walk expands made a listing quadratic in the
+      ;; store.
+      (define children
+        (let ((t (make-hashtable equal-hash equal?)))
+          (for-each (lambda (row) (hashtable-update! t (car row) (lambda (rows) (cons row rows)) '()))
+                    (reverse structural))
+          t))
+      (define (children-of parent) (hashtable-ref children parent '()))
       ;; WHAT THE TREE ALREADY DREW. A block can be both a structural
       ;; conflict and an orphan -- a parent chain that closes on itself
       ;; through a deleted block is one -- and `state-outline` relocates
@@ -602,7 +613,10 @@
       ;; Listing it again under `orphans:` listed it twice, and walking it
       ;; there listed its whole subtree twice. A listing says where each
       ;; block is, once.
-      (define drawn '())
+      (define drawn (make-hashtable string-hash string=?))
+      (define orphan? (let ((t (make-hashtable string-hash string=?)))
+                        (for-each (lambda (id) (hashtable-set! t id #t)) orphans)
+                        (lambda (id) (hashtable-contains? t id))))
       (define (row! id depth mark group)
         (let* ((b (view-of state id))
                (fs (if b (cdr (assq 'fields b)) '()))
@@ -610,12 +624,12 @@
                (contested? (lambda (v) (and (pair? v) (eq? (car v) 'conflict))))
                (keywords (field 'keywords))
                (signature (signature-of id)))
-          (set! drawn (cons id drawn))
+          (hashtable-set! drawn id #t)
           (set! out
             (cons (append
                     (list 'row id (field 'kind) (field 'mode) (field 'path)
-                          (label-of b structural id) depth mark
-                          (and (member id orphans) #t) group
+                          (label-of b children-of id) depth mark
+                          (orphan? id) group
                           (list 'conflicts (map car (filter (lambda (e) (contested? (cdr e))) fs))))
                     ;; NEVER: A BLOCK WITHOUT THE FIELD GETS NO KEYWORDS.
                     ;; Empty brackets would say the writer chose no
@@ -660,7 +674,7 @@
       ;; orphan listed here has no mark.
       (let ((left (if (and depth-limit (not (< 0 depth-limit)))
                       '()
-                      (filter (lambda (id) (not (member id drawn))) orphans))))
+                      (filter (lambda (id) (not (hashtable-contains? drawn id))) orphans))))
         (for-each (lambda (id)
                     (row! id 0 #f 'orphans)
                     (walk id 1 'orphans))

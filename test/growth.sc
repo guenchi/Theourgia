@@ -19,22 +19,29 @@
 ;; other (files and blocks), and on each the verbs a client meets.
 ;;
 ;;   GR-0  the stores: files and blocks, the second twice the first
-;;   GR-1  check's and conflicts' user CPU on the larger store, its cost on an
-;;         empty store taken off, is under 2.6 times the same on the smaller: a
-;;         linear verb reads about 2, one that asks a whole-store question per
-;;         file about 4. The arms are interleaved and each is read by its
-;;         smallest of three, so a load that moves meanwhile falls on both. Wall
-;;         time is not used. export-code, changed-files, outline and read are
-;;         READINGS, printed and not judged: on 2000 and 4000 blocks they grow
-;;         faster than the store after a load that is itself linear, a separate
-;;         item (2026-11-13: 3.62, 4.20, 3.42, 2.99).
+;;   GR-1  each verb's user CPU on the larger store, its cost on an empty store
+;;         taken off, is under 2.6 times the same on the smaller: a linear verb
+;;         reads about 2, one that asks a whole-store question per file about 4.
+;;         The arms are interleaved and each is read by its smallest of three,
+;;         so a load that moves meanwhile falls on both. Wall time is not used.
+;;         read's block id is found before the timing (it was once found inside
+;;         it, by an outline, and read measured outline). UNDER THE
+;;         DEGENERACY SWITCH export-code, changed-files and outline are printed
+;;         and not judged: their checks (path-holders, children-list,
+;;         changed-files-reference) cost what the code they replaced cost,
+;;         which is the point of them; GR-2 and GR-3 count the work instead.
 ;;   GR-2  where the work is counted: the path questions an export asks, each
 ;;         counted by the holders it examines (pending-work-counter's `path`),
 ;;         under 2.2 times on the larger store.
 ;;
+;;   GR-3  where the work is counted: the children an export and a
+;;         changed-files read (pending-work-counter's `children`, one per child
+;;         listed), under 2.2 times on the larger store.
+;;
 ;; The commit and its verdict are not here (their own brief); `read` stays
 ;; linear by design.
-(import (chezscheme) (theourgia rpc) (only (theourgia reduce) pending-work-counter))
+(import (chezscheme) (theourgia rpc) (only (theourgia reduce) pending-work-counter)
+        (only (theourgia degeneracy) degeneracy-active))
 
 (define bad 0)
 (define rows-run 0)
@@ -118,7 +125,9 @@
         (cons 'export-code (lambda (st) (rpc-dispatch st (list 'export-code (out-dir)) "test")))
         (cons 'changed-files (lambda (st) (rpc-dispatch st '(changed-files "t0" "t1") "test")))
         (cons 'outline (lambda (st) (rpc-dispatch st '(outline) "test")))
-        (cons 'read (lambda (st) (let ((id (some-code-id st))) (rpc-dispatch st (if id (list 'read id) '(outline)) "test"))))))
+        (cons 'read (let ((ids (map (lambda (st) (cons st (or (some-code-id st) "no-such-block")))
+                                    (list empty small large))))
+                      (lambda (st) (rpc-dispatch st (list 'read (cdr (assoc st ids))) "test"))))))
 (define (cpu-of thunk)
   (collect)
   (let ((t0 (cpu-time))) (thunk) (- (cpu-time) t0)))
@@ -131,19 +140,23 @@
                (ss (cpu-of (lambda () (run small))))
                (ll (cpu-of (lambda () (run large)))))
           (loop (+ k 1) (cons ee e) (cons ss s) (cons ll l))))))
-(define judged '(check conflicts))
+;; the verbs whose checks cost what the code they replaced cost: under the
+;; switch their row reads not-judged, so the fixture runs the same rows either
+;; way
+(define checked-verbs '(export-code changed-files outline))
+(define switched? (degeneracy-active))
 (for-each
   (lambda (v)
     (let* ((r (readings (cdr v)))
            (small-ms (max 1 (- (cadr r) (car r))))
            (large-ms (max 1 (- (caddr r) (car r))))
            (ratio (/ (inexact large-ms) small-ms)))
+      (define judged? (not (and switched? (memq (car v) checked-verbs))))
       (printf "~a ~a: cpu ms empty ~a small ~a large ~a, ratio ~,2f\n"
-              (if (memq (car v) judged) "GR-1" "GR-1 reading (not judged)") (car v) (car r) (cadr r) (caddr r) ratio)
-      (when (memq (car v) judged)
-        (want (format "GR-1 ~a on twice the store costs under 2.6 times, its empty-store cost taken off" (car v))
-              (< ratio 2.6)
-              #t))))
+              (if judged? "GR-1" "GR-1 reading (not judged)") (car v) (car r) (cadr r) (caddr r) ratio)
+      (want (format "GR-1 ~a on twice the store costs under 2.6 times, its empty-store cost taken off (under the switch, for export-code, changed-files and outline: not judged)" (car v))
+            (if judged? (< ratio 2.6) 'not-judged)
+            (if judged? #t 'not-judged))))
   verbs)
 
 ;; ---- the path questions, counted ---------------------------------------------
@@ -157,6 +170,21 @@
   (want "GR-2 an export's path questions are counted, and on twice the store their work is under 2.2 times"
         (list (> s 0) (and (> s 0) (< (/ (inexact l) s) 2.2)))
         '(#t #t)))
+
+;; ---- the children questions, counted ----------------------------------------
+(define (children-work st thunk)
+  (let ((n 0))
+    (parameterize ((pending-work-counter (lambda (kind k) (when (eq? kind 'children) (set! n (+ n k))))))
+      (thunk st))
+    n))
+(for-each
+  (lambda (v)
+    (let ((s (children-work small (cdr v))) (l (children-work large (cdr v))))
+      (printf "GR-3 children work of ~a: small ~a large ~a\n" (car v) s l)
+      (want (format "GR-3 ~a's children questions are counted, and on twice the store their work is under 2.2 times" (car v))
+            (list (> s 0) (and (> s 0) (< (/ (inexact l) s) 2.2)))
+            '(#t #t))))
+  (filter (lambda (v) (memq (car v) '(export-code changed-files))) verbs))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\ngrowth complete\n" bad rows-run)
