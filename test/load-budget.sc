@@ -145,6 +145,14 @@
     (reference-lines . 164)))
 (define (record-ref key) (cdr (assq key load-budget-record)))
 (define judged '(lb-1 lb-2 lb-3 lb-4 lb-d))
+;; UNDER THE DEGENERACY SWITCH LB-1 TO LB-4 ARE NOT JUDGED: their loads carry the
+;; checks' own work (a replay compared with a fresh scan, every structure
+;; question recomputed), so a ratio there measures the instrument. Their rows
+;; stay and read not-judged, so the fixture runs the same rows either way; LB-S
+;; is the row that proves the switch was on. LB-D, the decoder's yardstick,
+;; meets no check and stays judged.
+(define switched? (pair? (degeneracy-checks-on)))
+(define (not-judged? arm) (and switched? (memq arm '(lb-1 lb-2 lb-3 lb-4)) #t))
 (define control-rounds 2)
 
 ;; ---- places --------------------------------------------------------------------
@@ -613,14 +621,14 @@
                     csamples)
                   (for-each
                     (lambda (arm)
-                      (want (format "~a the ratio is within its recorded threshold"
+                      (want (format "~a the ratio is within its recorded threshold (under the degeneracy switch, LB-1 to LB-4: not judged)"
                                     (string-upcase (symbol->string arm)))
-                            (judge arm (/ (minimum (cdr (assq arm samples))) ref-min))
-                            'within)
-                      (want (format "~a CONTROL: with its work done twice, the row is not green"
+                            (if (not-judged? arm) 'not-judged (judge arm (/ (minimum (cdr (assq arm samples))) ref-min)))
+                            (if (not-judged? arm) 'not-judged 'within))
+                      (want (format "~a CONTROL: with its work done twice, the row is not green (under the degeneracy switch, LB-1 to LB-4: not judged)"
                                     (string-upcase (symbol->string arm)))
-                            (judge arm (/ (minimum (cdr (assq arm csamples))) cref-min))
-                            'over))
+                            (if (not-judged? arm) 'not-judged (judge arm (/ (minimum (cdr (assq arm csamples))) cref-min)))
+                            (if (not-judged? arm) 'not-judged 'over)))
                     judged)))))))
       (let ((clean (cleanup!)))
         (want "H-1 every owned pid was a scheme process, every daemon is gone, and so are the scratch and the socket directory"
