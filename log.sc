@@ -104,7 +104,7 @@
           log-append-guard!
           barrier-artefacts barrier-required run-barrier! publish-durable?
           uncertain-path uncertain-derived uncertain-derived/provided uncertain-load/provided uncertain-cache-failure/provided
-          session-discovery-provider provided-discovery uncertain-load uncertain-write! uncertain-cache-failure
+          session-discovery-provider uncertain-load uncertain-write! uncertain-cache-failure
           enumerate-segment-files
           read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment

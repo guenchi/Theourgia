@@ -16,13 +16,15 @@
 ;;          after its discovery, two tracked records at or above the fork (one
 ;;          at the delivered cut, one below it): the holding session answers
 ;;          quarantined, as a later session with its own cut does and a cold
-;;          one (the control); under only:index-fork the check fires for each
+;;          one (the control); under only:index-fork the check fires for each,
+;;          and for the first asked as a batch
 ;;   IF-1b  the file REMOVED at the same hold: the holding session answers
 ;;          undelivered, a later one replay, a cold one replay (the control)
 ;;   IF-3   the fork is each writer's own: two writers, each enumeration order
 ;;          met in one of two stores
 ;;   IF-4   asked of indexed-records directly, cold: an unreadable owner.sexp
-;;          beside a readable quarantine file, an unreadable quarantine file,
+;;          beside a readable quarantine file, an unreadable quarantine file
+;;          (the inventory raises first, both trees), one that is a directory,
 ;;          an incomplete publication with and without one, a retired writer
 ;;   IF-5   forks that are not integers, pinned as they are
 ;;   IF-6   an old derivation's checkpoint is rebuilt once and keeps its
@@ -31,7 +33,8 @@
 ;;          not checked, under only:index-fork
 ;;   IF-8   a real write on a store with an in-contract fork, under
 ;;          only:index-fork: silent, quarantined; and the batch arm
-;;   IF-9   a cold rebuild yields once per segment file it scans
+;;   IF-9   a cold rebuild reports progress, and yields, once per file it scans
+;;          (segment files, and the files of damaged/ and incoming/)
 ;;
 ;; THE CHILDREN PIN THE SWITCH THEMSELVES: unset for the legs as written, and
 ;; only:index-fork where a row says so, on a tree whose switch knows the name
@@ -47,7 +50,7 @@
         (only (theourgia wire) decode-line encode-record storable-encode storable-decode
               sexpr->string-extended string->sexpr-extended)
         (only (theourgia digest) sha256 bytevector->hex)
-        (only (theourgia ffi) io-yield-set! io-yield-tally))
+        (only (theourgia ffi) io-yield-set! io-yield-tally progress-sink-set!))
 
 (define bad 0)
 (define rows-run 0)
@@ -179,6 +182,7 @@
   '((import (chezscheme) (theourgia log)
             (only (theourgia store) open-and-reduce make-write-request request-verdict request-verdict/provided)
             (only (theourgia reduce) reduce-applied-cut reduce-gates)
+            (only (theourgia degeneracy) degeneracy-checks-on)
             (only (theourgia evidence-index) index-forget-memory!))
     (define args (command-line-arguments))
     (define st (car args))
@@ -194,15 +198,25 @@
       (let ((v (thunk))) (display (string-append "MARK " tag "\n") (current-error-port)) v))
     (define s (log-begin st (lambda a 'applied)))
     (define p (session-discovery-provider s))
+    ;; IN ORDER, one verdict after the other, so each marker follows its own
+    ;; verdict's lines on the error port
     (define holding
-      (map (lambda (x) (marked (lambda () (shape (request-verdict/provided p st (req-of x) (car given) #f (cadr given))))
-                               (car x)))
-           (caddr given)))
+      (let loop ((xs (caddr given)) (out '()))
+        (if (null? xs)
+            (reverse out)
+            (let ((v (marked (lambda () (shape (request-verdict/provided p st (req-of (car xs)) (car given) #f (cadr given))))
+                             (car (car xs)))))
+              (loop (cdr xs) (cons v out))))))
+    ;; THE BATCH ARM, in witness mode: the first request asked as a batch
+    (define batch
+      (and witness?
+           (marked (lambda () (shape (request-verdict/provided p st (req-of (car (caddr given))) (car given) 2 (cadr given))))
+                   "batch")))
     (log-end! s)
     (define (cold!) (index-forget-memory!)
       (let ((cp (string-append st "/request-index.sexp"))) (when (file-exists? cp) (delete-file cp))))
     (if witness?
-        (write (list holding))
+        (write (list holding batch (degeneracy-checks-on)))
         (let* ((state (open-and-reduce st)) (cut (reduce-applied-cut state)) (gates (reduce-gates state))
                (s2 (log-begin st (lambda a 'applied)))
                (p2 (session-discovery-provider s2))
@@ -261,10 +275,11 @@
       (held-run "if1aw" witness-switch (car a2) (cdr a2) (list a2-r1 a2-r2) "witness"
                 (lambda () (quarantine! (car a2) (cdr a2) (+ 1 (cadr a2-r1)))))
       (cons 'index-fork-unknown-on-this-tree "")))
-(printf "IF-1a witness ~s; lines per verdict ~s\n" (car if1a-w) (lines-per-mark (cdr if1a-w) '("QB1" "QB2")))
-(want "IF-1a under only:index-fork: the check fires for the record below the cut and for the one at it, one fixed line each, and each verdict answers evidence-unavailable"
-      (list (car if1a-w) (lines-per-mark (cdr if1a-w) '("QB1" "QB2")))
-      '((((unknown evidence-unavailable) (unknown evidence-unavailable))) (1 1)))
+(printf "IF-1a witness ~s; lines per verdict ~s\n" (car if1a-w) (lines-per-mark (cdr if1a-w) '("QB1" "QB2" "batch")))
+(want "IF-1a under only:index-fork: the check fires for the record below the cut, for the one at it, and on the batch arm, one fixed line each, and each verdict answers evidence-unavailable"
+      (list (car if1a-w) (lines-per-mark (cdr if1a-w) '("QB1" "QB2" "batch")))
+      '((((unknown evidence-unavailable) (unknown evidence-unavailable)) (unknown evidence-unavailable) (index-fork))
+        (1 1 1)))
 
 ;; ---- IF-1b: the fork REMOVED at the hold -----------------------------------------
 (printf "== IF-1b ==\n")
@@ -299,13 +314,16 @@
           recs
           (list (map (lambda (r) (list-ref r 4)) (filter (lambda (r) (equal? (car (car r)) w)) recs))
                 (map (lambda (r) (list-ref r 4)) (filter (lambda (r) (equal? (car (car r)) (caddr x))) recs)))))))
-(define c-first (two-writer-store "c1" "aaaa0000"))
-(define c-last (two-writer-store "c2" "zzzz9999"))
+;; "00000000" sorts before any writer id and "zzzzzzzz" after one, and each
+;; row reads which writer the store lists first
+(define c-first (two-writer-store "c1" "00000000"))
+(define c-last (two-writer-store "c2" "zzzzzzzz"))
+(define (other-first? x) (equal? (car (store-writers (car (car x)))) (caddr x)))
 (printf "IF-3 writers ~s ~s\n" (store-writers (car (car c-first))) (store-writers (car (car c-last))))
 (want "IF-3 the other writer listed before the forked one: the forked writer's record at its fork quarantined, the other's valid-history"
-      (per-writer c-first) '((quarantined) (valid-history)))
+      (list (other-first? c-first) (per-writer c-first)) '(#t ((quarantined) (valid-history))))
 (want "IF-3 the other writer listed after the forked one: the same"
-      (per-writer c-last) '((quarantined) (valid-history)))
+      (list (other-first? c-last) (per-writer c-last)) '(#f ((quarantined) (valid-history))))
 
 ;; ---- IF-4: asked of indexed-records directly, cold ----------------------------------
 (printf "== IF-4 ==\n")
@@ -327,8 +345,17 @@
 (chmod! "000" d-q)
 (define if4-q (placements (car d) d-id))
 (chmod! "644" d-q)
-(want "IF-4 quarantine.sexp unreadable: the rebuild raises"
+(want "IF-4 quarantine.sexp unreadable (mode 000): the inventory raises first (both trees)"
       (and (pair? if4-q) (eq? (car if4-q) 'RAISED)) #t)
+;; A QUARANTINE FILE THAT STATS AND WILL NOT READ: a directory in its place.
+;; The inventory's stat passes; quarantine-of's own read raises, so the
+;; rebuild does.
+(delete-file d-q)
+(mkdir d-q)
+(define if4-qdir (placements (car d) d-id))
+(delete-directory d-q)
+(want "IF-4 quarantine.sexp a directory: the inventory passes it and quarantine-of's read raises out of the rebuild"
+      (and (pair? if4-qdir) (eq? (car if4-qdir) 'RAISED)) #t)
 ;; AN INCOMPLETE PUBLICATION: a writer directory with no owner.sexp and no
 ;; published.sexp; its frames are a copy of a local writer's
 (define e (fresh-store "e"))
@@ -462,15 +489,18 @@
 ;; in a child. The plain verdict runs no check, so nothing is printed.
 (define plain-child
   '((import (chezscheme) (theourgia log)
-            (only (theourgia store) make-write-request request-verdict))
+            (only (theourgia store) make-write-request request-verdict)
+            (only (theourgia degeneracy) degeneracy-checks-on))
     (define args (command-line-arguments))
     (define st (car args))
     (define w (cadr args))
     (define given (call-with-input-file (caddr args) read))
     (define x (car (caddr given)))
+    (define checks-on (degeneracy-checks-on))
     (define v (request-verdict st (make-write-request "test" 'insert (list "--title" (caddr x)) (car x) (cons w (cadr x)))
                                (car given) #f (cadr given)))
-    (write (if (and (eq? (car v) 'unknown) (pair? (cadr v))) (list 'unknown (car (cadr v))) (list (car v))))))
+    (write (list (if (and (eq? (car v) 'unknown) (pair? (cadr v))) (list 'unknown (car (cadr v))) (list (car v)))
+                 checks-on))))
 (define if7
   (if witness-known?
       (let ((given (given-file! (car m) (list m-r) "if7")))
@@ -479,15 +509,16 @@
         (child-result (start-child! "if7" witness-switch plain-child (list (car m) (cdr m) given))))
       (cons 'index-fork-unknown-on-this-tree "")))
 (printf "IF-7 plain verdict with an earlier cut: ~s\n" (car if7))
-(want "IF-7 a plain verdict handed a cut taken before a fork was written, under only:index-fork: no check, no line, quarantined"
-      (list (car if7) (count-lines (cdr if7) index-fork-line)) '((unknown quarantined) 0))
+(want "IF-7 a plain verdict handed a cut taken before a fork was written, under only:index-fork (the child says the check is on): no check, no line, quarantined"
+      (list (car if7) (count-lines (cdr if7) index-fork-line)) '(((unknown quarantined) (index-fork)) 0))
 
 ;; ---- IF-8: a real write on a store with an in-contract fork ---------------------------------
 (printf "== IF-8 ==\n")
 (define write-child
   '((import (chezscheme) (theourgia rpc) (theourgia log)
             (only (theourgia store) open-and-reduce make-write-request request-verdict/provided)
-            (only (theourgia reduce) reduce-applied-cut reduce-gates))
+            (only (theourgia reduce) reduce-applied-cut reduce-gates)
+            (only (theourgia degeneracy) degeneracy-checks-on))
     (define args (command-line-arguments))
     (define st (car args))
     (define w (cadr args))
@@ -503,7 +534,9 @@
                                             (make-write-request "test" 'insert (list "--title" "tracked") req-id (cons w after))
                                             (reduce-applied-cut state) 2 (reduce-gates state)))
     (log-end! s)
-    (write (list (car single) (mentions? single 'quarantined) (car batch)))))
+    (write (list (car single) (mentions? single 'quarantined)
+                 (if (and (eq? (car batch) 'unknown) (pair? (cadr batch))) (list 'unknown (car (cadr batch))) (list (car batch)))
+                 (degeneracy-checks-on)))))
 (define n (fresh-store "n"))
 (define n-r (tracked! (car n) (cdr n) "QL" "tracked"))
 (quarantine! (car n) (cdr n) (+ 1 (cadr n-r)))
@@ -514,33 +547,76 @@
 (printf "IF-8 ~s\n" (car if8))
 (want "IF-8 a real write on a store whose fork is in contract, under only:index-fork: the check silent, the request refused naming the quarantine; the batch arm unknown and silent too"
       (list (car if8) (count-lines (cdr if8) index-fork-line))
-      '((error #t unknown) 0))
+      '((error #t (unknown quarantined) (index-fork)) 0))
 
-;; ---- IF-9: the rebuild yields once per segment file ------------------------------------
+;; ---- IF-9: the rebuild reports progress once per file it scans ---------------------------
 (printf "== IF-9 ==\n")
-;; THE YIELDS ARE COUNTED BY io-yield-tally, as test/io-yield.sc counts them: an
-;; attempt is a call that reached the clock, which needs a sleeper installed.
-;; A write session's verdict on a warm index and then on a cold one: the
-;; cold one's extra attempts are the rebuild's.
+;; PROGRESS IS COUNTED AT ITS SINK (progress-sink-set!, a counter in this
+;; process), and the yields by io-yield-tally, as test/io-yield.sc counts them
+;; (an attempt reaches the clock only with a sleeper installed). The store has
+;; two writers -- one with two segment files, a file in incoming/ and one in
+;; damaged/, built by hand as store-memory builds its store, then adopted, so
+;; its successor writes the second writer's segment. A write session's verdict
+;; on a warm index and then on a cold one: the cold one's extra progress calls
+;; and yield attempts are the rebuild's, one per file scanned.
 (io-yield-set! (lambda args #t))
-(define p9 (fresh-store "p"))
-(define p9-r (tracked! (car p9) (cdr p9) "QM" "tracked"))
-(define (segment-files st)
-  (apply + (map (lambda (w) (length (enumerate-segment-files st w))) (store-writers st))))
+(define sink-calls 0)
+(progress-sink-set! (lambda () (set! sink-calls (+ sink-calls 1))))
+(define (put-bytes! path bv) (call-with-port (open-file-output-port path (file-options no-fail)) (lambda (p) (put-bytevector p bv))))
+(define (cat-bytes . bs)
+  (let* ((n (apply + (map bytevector-length bs))) (o (make-bytevector n)))
+    (let loop ((bs bs) (i 0))
+      (if (null? bs) o
+          (begin (bytevector-copy! (car bs) 0 o i (bytevector-length (car bs)))
+                 (loop (cdr bs) (+ i (bytevector-length (car bs)))))))))
+(define (built-record seq title)
+  (encode-record seq (+ 1757300000000 seq) "agent:claude" '()
+                 (storable-encode (list 'put (list (cons 'kind 'section) (cons 'title title))))))
+(define p9-w "wwww1111")
+(define p9-base (string-append root "/p9-base"))
+(define p9 (string-append root "/p9"))
+(define p9-dir (string-append p9 "/writers/" p9-w))
+(system (string-append "mkdir -p '" p9-base "/writers/" p9-w "' '" p9-base "/snap'"))
+(put-bytes! (string-append p9-base "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
+(put-bytes! (string-append p9-base "/lock") (make-bytevector 0))
+(put-bytes! (string-append p9-base "/writers/" p9-w "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
+(let ((k (instance-install! p9-base))) (owner-install! p9-base p9-w k))
+(put-bytes! (string-append p9-base "/writers/" p9-w "/" (segment-file-name 1)) (cat-bytes (built-record 1 "a") (built-record 2 "b")))
+(put-bytes! (string-append p9-base "/writers/" p9-w "/" (segment-file-name 2)) (cat-bytes (built-record 3 "c") (built-record 4 "d")))
+(system (string-append "cp -R '" p9-base "' '" p9 "'"))
+(define p9-adopt (car (rpc-dispatch p9 '(adopt) "test")))
+(define p9-insert (car (rpc-dispatch p9 (list 'insert "--title" "e") "test")))
+(system (string-append "mkdir -p '" p9-dir "/incoming' '" p9-dir "/damaged'"))
+(put-bytes! (string-append p9-dir "/incoming/candidate") (built-record 5 "f"))
+(put-bytes! (string-append p9-dir "/damaged/broken") (built-record 6 "g"))
+(define (files-scanned st)
+  (apply + (map (lambda (w)
+                  (let ((d (string-append st "/writers/" w)))
+                    (+ (length (enumerate-segment-files st w))
+                       (if (file-directory? (string-append d "/incoming")) (length (directory-list (string-append d "/incoming"))) 0)
+                       (if (file-directory? (string-append d "/damaged")) (length (directory-list (string-append d "/damaged"))) 0))))
+                (store-writers st))))
 (define if9
-  (let* ((state (open-and-reduce (car p9))) (cut (reduce-applied-cut state)) (gates (reduce-gates state))
-         (req (make-write-request "test" 'insert (list "--title" "tracked") "QM" (cons (cdr p9) (cadr p9-r))))
-         (s (log-begin (car p9) (lambda a 'applied)))
+  (let* ((state (open-and-reduce p9)) (cut (reduce-applied-cut state)) (gates (reduce-gates state))
+         (successor (car (filter (lambda (w) (not (equal? w p9-w))) (store-writers p9))))
+         (req (make-write-request "test" 'insert (list "--title" "z") "QZ" (cons successor 1)))
+         (s (log-begin p9 (lambda a 'applied)))
          (pv (session-discovery-provider s))
-         (attempts (lambda (thunk) (let ((a (car (io-yield-tally)))) (thunk) (- (car (io-yield-tally)) a))))
-         (warm (begin (request-verdict/provided pv (car p9) req cut #f gates)
-                      (attempts (lambda () (request-verdict/provided pv (car p9) req cut #f gates)))))
-         (cold (attempts (lambda () (cold-index! (car p9)) (request-verdict/provided pv (car p9) req cut #f gates)))))
+         (counted (lambda (thunk)
+                    (let ((c sink-calls) (a (car (io-yield-tally))))
+                      (thunk)
+                      (list (- sink-calls c) (- (car (io-yield-tally)) a)))))
+         (warm (begin (request-verdict/provided pv p9 req cut #f gates)
+                      (counted (lambda () (request-verdict/provided pv p9 req cut #f gates)))))
+         (cold (counted (lambda () (cold-index! p9) (request-verdict/provided pv p9 req cut #f gates)))))
     (log-end! s)
-    (list (- cold warm) (segment-files (car p9)))))
-(printf "IF-9 the cold verdict's extra yield attempts, and the store's segment files: ~s\n" if9)
-(want "IF-9 a cold rebuild inside a write session's verdict yields once per segment file it scans"
-      (= (car if9) (cadr if9)) #t)
+    (list (map - cold warm) (files-scanned p9)
+          (map (lambda (w) (length (enumerate-segment-files p9 w))) (store-writers p9)))))
+(printf "IF-9 adopt ~s insert ~s; the cold verdict's extra (progress yields), the files scanned, segments per writer: ~s\n"
+        p9-adopt p9-insert if9)
+(want "IF-9 a cold rebuild inside a write session's verdict reports progress, and yields, once per file it scans: two writers, two segment files in one, a file in incoming/ and one in damaged/"
+      (list (car if9) (cadr if9) (list-sort < (caddr if9)))
+      '((5 5) 5 (1 2)))
 
 (printf "\n~a failures\nrows: ~a\nindex-fork complete\n" bad rows-run)
 (exit (if (= bad 0) 0 1))

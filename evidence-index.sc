@@ -17,7 +17,7 @@
   (import (rnrs) (theourgia request) (theourgia wire)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) directory-entries file-is-directory? path-version trace-event!
-                entry-type entry-bytes read-entry-range io-yield!)
+                entry-type entry-bytes read-entry-range progress!)
           (only (theourgia log) store-writers writer-directory store-id-of
                 enumerate-segment-files segment-file-name read-manifest manifest-segments
                 quarantine-of atomic-write!))
@@ -87,11 +87,14 @@
   ;; scan after it, so such a change leaves a stamp the next inventory
   ;; contradicts. An unreadable quarantine file raises out of the rebuild.
   ;;
-  ;; ONE YIELD PER SEGMENT FILE SCANNED (io-yield!, nothing else): the scan
-  ;; holds no discovery now, whose validation yielded per segment, and a
-  ;; store's whole scan in one stretch grows with the store toward a
-  ;; client's silence window. The cache below is set only at the rebuild's
-  ;; end, so what runs during a yield sees the old index or none.
+  ;; PROGRESS ONCE PER FILE SCANNED (progress!: the request's progress sink
+  ;; and a yield, no pause), for every segment file and every file of
+  ;; damaged/ and incoming/: the scan holds no discovery now, whose validation
+  ;; reported progress per segment, and a store's whole scan in one stretch
+  ;; grows with the store toward a client's silence window. A keepalive is
+  ;; written only when the progress count moved, which a bare yield does not
+  ;; do. The cache below is set only at the rebuild's end, so what runs
+  ;; during a yield sees the old index or none.
   (define (scan-store store)
     (apply append
       (map (lambda (w)
@@ -101,12 +104,12 @@
                     (fork (and (pair? q) (cadr q))))
                (append
                  (apply append (map (lambda (n)
-                                      (io-yield!)
+                                      (progress!)
                                       (scan (string-append d "/" (segment-file-name n)) w
                                             (if (or (not manifest) (memv n listed)) 'valid-history 'unlisted) fork))
                                     (enumerate-segment-files store w)))
-                 (apply append (map (lambda (p) (scan p w 'damaged #f)) (files (string-append d "/damaged"))))
-                 (apply append (map (lambda (p) (scan p w 'incoming #f)) (files (string-append d "/incoming")))))))
+                 (apply append (map (lambda (p) (progress!) (scan p w 'damaged #f)) (files (string-append d "/damaged"))))
+                 (apply append (map (lambda (p) (progress!) (scan p w 'incoming #f)) (files (string-append d "/incoming")))))))
            (store-writers store))))
   (define (add-bucket! buckets id entry)
     (let ((k (key id))) (hashtable-set! buckets k (cons entry (hashtable-ref buckets k '())))))
