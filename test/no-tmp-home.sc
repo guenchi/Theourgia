@@ -44,7 +44,7 @@
 ;; only when both are green; each of those cells also reads the existence
 ;; and modification time of /tmp/.theourgia before and after and wants
 ;; them equal.
-(import (chezscheme))
+(import (chezscheme) (only (theourgia client) request-frame))
 
 (define bad 0)
 (define rows-run 0)
@@ -339,9 +339,13 @@
        (list core-refusal core-refusal))
 (define framed-refusal
   (list 1 (format "~s\n" (list 'answer (list 'stdout machine-line) '(stderr "") '(exit 1) '(origin core))) ""))
-(gated "NH-2 core under --frame: the datum as the envelope's answer, status 1"
-       (child root "" "core.sc" (list "--frame")
-              (format "~s\n" (list 'frame '(version 1) (list 'store S) '(request outline))))
+;; A FRAME AS THE CLIENT BUILDS IT (request-frame), so the answer is the
+;; check's and not a refusal of the frame
+(define real-frame
+  (let* ((f (request-frame S 'outline '() '())) (t (if (bytevector? f) (utf8->string f) f)))
+    (if (and (> (string-length t) 0) (char=? (string-ref t (- (string-length t) 1)) #\newline)) t (string-append t "\n"))))
+(gated "NH-2 core under --frame, a frame as the client builds it: the datum as the envelope's answer, status 1"
+       (child root "" "core.sc" (list "--frame") real-frame)
        framed-refusal)
 ;; BEFORE THE FRAME IS READ: input that is no frame at all gets the same
 ;; answer, where a core that read it first would refuse the frame
