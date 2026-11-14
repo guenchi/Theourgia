@@ -39,7 +39,7 @@
 ;; where the base refused with exit 2 (found in review).
 (import (chezscheme) (theourgia arguments)
         (only (theourgia render) answer-printing!)
-        (only (theourgia client) socket-path socket-dir-refusal store-absent?
+        (only (theourgia client) socket-path missing-home socket-dir-refusal store-absent?
               socket-path-fits-to-serve? serve-path-too-long)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
               fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno
@@ -121,6 +121,13 @@
     (when (help-requested? nodes)
       (say (list 'ok (list 'usage serve-usage)))
       (exit 0))
+    ;; NEVER: NO HOME, NO DAEMON. With no machine home or no run root serve
+    ;; says the datum and stops, status 2 as its other start refusals: before
+    ;; it detaches, and before a run directory, a lock or a socket is made.
+    (let ((missing (missing-home)))
+      (when missing
+        (say missing)
+        (exit 2)))
     (let ((unknown (serve-unknown-option nodes)))
       (when unknown
         (say (list 'error 'bad-request '(reason unknown-option)

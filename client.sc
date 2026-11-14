@@ -20,7 +20,7 @@
 ;;; talk to; `f0-ondemand.sc` measured that cost at 200ms from source.
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
-  (export socket-path run-root store-key resolved-name
+  (export socket-path run-root missing-home store-key resolved-name
           call! call-child! answer-limit no-daemon-errno? silence-window-ms unknown-outcome
           old-version-refusal-of? frame-at-version-1
           socket-path-fits? path-too-long socket-path-fits-to-serve? serve-path-too-long
@@ -42,7 +42,7 @@
                 parameterize char-whitespace? get-process-id
                 process close-port get-string-all)
           (only (theourgia ffi)
-                real-path env-or wall-clock-ms file-size sun-path-max
+                real-path env-or machine-home wall-clock-ms file-size sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
                 monotonic-ms socket-send-within! socket-read-within socket-expired? theourgia-silence-ms
@@ -76,9 +76,29 @@
   ;; lives -- it was three separate length tests in three files until an
   ;; empty `THEOURGIA_RUN` put this socket directory at the filesystem
   ;; root and the daemon panicked trying to make it.
+  ;; NEVER: NO HOME IS NO RUN ROOT, NOT ONE UNDER /tmp, for the reason
+  ;; `machine-home` gives: a socket directory another account can make
+  ;; first is a socket it can bind, and every request would go to it. With
+  ;; neither THEOURGIA_RUN nor HOME this raises its datum.
   (define (run-root)
     (or (env-or "THEOURGIA_RUN")
-        (string-append (or (env-or "HOME") "/tmp") "/.theourgia/run")))
+        (let ((home (env-or "HOME")))
+          (if home
+              (string-append home "/.theourgia/run")
+              (raise '(error no-home (needs "HOME" "THEOURGIA_RUN")))))))
+
+  ;; THE CHECK EACH PROGRAM MAKES AT ITS START: the no-home datum of the
+  ;; first of the two homes that is missing, the machine home's first, or
+  ;; #f when both are there. A program with either missing does not run,
+  ;; whatever its command, so no command finds out half way, after it has
+  ;; made a directory or a connection. Only the two datums are caught;
+  ;; anything else either definition raises goes on up.
+  (define (missing-home)
+    (define (asked home)
+      (guard (e ((and (pair? e) (eq? (car e) 'error) (pair? (cdr e)) (eq? (cadr e) 'no-home)) e))
+        (home)
+        #f))
+    (or (asked machine-home) (asked run-root)))
 
   ;; KEY: THE KEY IS THE PATH'S ONE REAL NAME. Several spellings reach one
   ;; directory -- a trailing slash, a `.`, a symlink, a relative path --

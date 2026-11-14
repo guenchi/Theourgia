@@ -36,7 +36,7 @@
         ;; note in daemon.sc. Forwarding runs one exchange and exits;
         ;; nothing here has a peer to be linked to.
         (only (theourgia render) answer-printing!)
-        (only (theourgia client) socket-path answer-field readable-shape? exit-code?
+        (only (theourgia client) socket-path missing-home answer-field readable-shape? exit-code?
               verb-spelling-error)
         (only (theourgia extensions) extension-verbs)
         (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record theourgia-fault)
@@ -838,7 +838,14 @@
   ;; -- local, forwarded, wire or human -- goes through `render-wire`,
   ;; and this is where its settings are decided.
   (answer-printing!)
+  ;; NEVER: NO HOME, NO RUN, on both routes, before anything is read, made
+  ;; or connected: under --frame the datum is the envelope's answer, and
+  ;; directly it is answered as any other, after a request for a verb's
+  ;; usage only, which resolves nothing. Status 1 on both.
   (when (equal? argv '("--frame"))
+    (let ((missing (missing-home)))
+      (when missing
+        (answer-frame-and-exit! missing 'wire 'core)))
     (frame-and-exit!))
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
@@ -864,6 +871,9 @@
     (when entry
       (print-answer (list 'ok (list 'usage (cadr entry))) (and (argument-option nodes "--wire") #t))
       (exit 0)))
+  (let ((missing (missing-home)))
+    (when missing
+      (finish missing wire-flag)))
   ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which
   ;; no longer exists; there is no second implementation to keep in step.
   ;; `serve` is not this program's any more: the daemon is

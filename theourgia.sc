@@ -43,7 +43,7 @@
 
 (import (chezscheme)
         (only (theourgia client)
-              socket-path request-frame
+              socket-path missing-home request-frame
               call! call-child! answer-field readable-shape? exit-code?
               verb-spelling-error plain-datum program-launch unknown-outcome)
         ;; NOTE: THE ARGUMENT TABLES, AND NOTHING ELSE. `(theourgia arguments)`
@@ -437,6 +437,15 @@
     ;; path: its socket checks, its writer, its streaming, its local hand-off.
     (when (help-requested? (parse-arguments verb (cdr (verb-first argv))))
       (run-server-here! (verb-first argv)))
+    ;; NEVER: NO HOME, NO RUN. With no machine home or no run root this
+    ;; program answers the datum, status 2 as its other refusals of use, and
+    ;; stops: before the local route, the socket, a frame or a daemon. Not
+    ;; `refuse`'s 75, which says the transport failed and invites a retry;
+    ;; the environment will not change between tries.
+    (let ((missing (missing-home)))
+      (when missing
+        (put-string (current-output-port) (string-append (format "~s" missing) "\n"))
+        (exit 2)))
     (when (or (local-by-name? verb) (env-value "THEOURGIA_LOCAL"))
       (run-server-here! argv))
     (let* ((socket (or given-socket (socket-path store)))

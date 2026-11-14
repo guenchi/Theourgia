@@ -883,11 +883,18 @@
         ((pair? fallback) (car fallback))
         (else #f))))
 
+  ;; NEVER: NO HOME IS NO MACHINE HOME, NOT ONE UNDER /tmp. /tmp is written by
+  ;; every account, so a home there is one another account can make first,
+  ;; and with it the registry and every run root beneath it. With neither
+  ;; THEOURGIA_HOME nor HOME this raises its datum, which each program asks
+  ;; for at its start (`missing-home`, in `(theourgia client)`) and answers
+  ;; before it makes, reads or connects anything.
   (define (machine-home)
-    (let ((v (env-or "THEOURGIA_HOME")))
-      (if v
-          v
-          (string-append (or (env-or "HOME") "/tmp") "/.theourgia"))))
+    (or (env-or "THEOURGIA_HOME")
+        (let ((home (env-or "HOME")))
+          (if home
+              (string-append home "/.theourgia")
+              (raise '(error no-home (needs "HOME" "THEOURGIA_HOME")))))))
 
   (define machine-home-announced
     (let ((v (getenv "THEOURGIA_HOME")))
