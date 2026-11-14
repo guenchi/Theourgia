@@ -35,6 +35,11 @@ shell starts, the one not chosen too: a name a writer cannot have (1 to
 `--writer` without a value, answers the usage line on stderr and exit 2
 before any frame is read. An empty `THEOURGIA_WRITER` counts as unset.
 
+With no machine home or no run root (no `HOME`, and no `THEOURGIA_HOME` or
+no `THEOURGIA_RUN`), the shell writes `(error no-home (needs "HOME"
+"THEOURGIA_HOME"))`, or the same naming `THEOURGIA_RUN`, on stderr and exits
+2 before its arguments are read: it never starts and then fails every call.
+
 NOTE: Two sessions alive at once differ by pid, among processes sharing
 one pid namespace (one machine, outside containers, in general). A
 derived name repeats only if a pid is reused in the same millisecond of a

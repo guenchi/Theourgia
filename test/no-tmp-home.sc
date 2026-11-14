@@ -23,15 +23,19 @@
 ;;   NH-2  with no home, each of the four programs, started directly,
 ;;         answers the machine home's datum on its stream with its status,
 ;;         for a read, a write, init, its own verbs, the local route, an
-;;         explicit --socket, serve and the MCP shell's start; init leaves
-;;         nothing and serve no socket
-;;   NH-3  with one home only, each program names the other; a thin client
-;;         with THEOURGIA_RUN alone pointing at a live daemon's run root
-;;         reaches it with nothing, where one with both homes is dispatched
+;;         explicit --socket, serve (also under --detach) and the MCP
+;;         shell's start; init leaves nothing, serve no socket, lock,
+;;         private namespace or log, and the core under --frame answers
+;;         before it reads the frame
+;;   NH-3  with one home only, each program names the other, and the home
+;;         that is there gains nothing; a thin client with THEOURGIA_RUN
+;;         alone pointing at a live daemon's run root reaches it with
+;;         nothing, where one with both homes is dispatched
 ;;   NH-4  HOME absent and both variables set: the store verbs, a relative
 ;;         run root, eval, eval --lang with a foreign runner, and the MCP
 ;;         shell with its daemon and its core child all work
-;;   NH-6  help and a verb's usage are answered with no home, status 0
+;;   NH-6  help and a verb's usage are answered with no home, status 0; a
+;;         --help for a verb with no usage meets the core's check (status 1)
 ;;
 ;; NEVER: NOTHING HERE RUNS WITH A FALLBACK IN PLACE. On the old tree, or
 ;; under a mutant that puts a fallback back, a program with no home makes
@@ -335,34 +339,64 @@
        (list core-refusal core-refusal))
 (define framed-refusal
   (list 1 (format "~s\n" (list 'answer (list 'stdout machine-line) '(stderr "") '(exit 1) '(origin core))) ""))
-(gated "NH-2 core under --frame: the datum as the envelope's answer, status 1, before the frame is read"
+(gated "NH-2 core under --frame: the datum as the envelope's answer, status 1"
        (child root "" "core.sc" (list "--frame")
               (format "~s\n" (list 'frame '(version 1) (list 'store S) '(request outline))))
        framed-refusal)
-(gated "NH-2 serve: the datum on stdout, status 2, no socket at the given path and no daemon"
+;; BEFORE THE FRAME IS READ: input that is no frame at all gets the same
+;; answer, where a core that read it first would refuse the frame
+(gated "NH-2 core under --frame, with input that is not a frame: the same datum, before the frame is read"
+       (child root "" "core.sc" (list "--frame") "not a frame\n")
+       framed-refusal)
+;; WHAT A SERVE LEAVES BEHIND, for an explicit socket <dir>/<name>: the
+;; socket, its lock <dir>/.<name>.lock and its private namespace <socket>.d
+(define (serve-leftovers sock)
+  (let* ((cut (let loop ((i (- (string-length sock) 1))) (if (char=? (string-ref sock i) #\/) i (loop (- i 1)))))
+         (lock (string-append (substring sock 0 cut) "/." (substring sock (+ cut 1) (string-length sock)) ".lock")))
+    (list (file-exists? sock #f) (file-exists? lock #f) (file-exists? (string-append sock ".d") #f))))
+(gated "NH-2 serve: the datum on stdout, status 2; no socket, no lock and no private namespace at the given path, and no daemon"
        (let* ((sock (string-append sock-root "/serve.sock"))
               (r (child root "" "theourgiad.sc" (list "serve" S "--socket" sock))))
-         (list r (file-exists? sock #f) (serve-pids S) (listing S)))
-       (list (list 2 machine-line "") #f '() (listing S)))
+         (list r (serve-leftovers sock) (serve-pids S) (listing S)))
+       (list (list 2 machine-line "") '(#f #f #f) '() (listing S)))
+;; UNDER --detach the check is still before the detach: the datum on the
+;; caller's stdout, and no log opened
+(gated "NH-2 serve --detach --log: the datum on stdout, status 2, before it detaches: no log, no socket, no lock"
+       (let* ((sock (string-append sock-root "/detach.sock"))
+              (log (string-append root "/detach.log"))
+              (r (child root "" "theourgiad.sc" (list "serve" S "--socket" sock "--detach" "--log" log))))
+         (list r (file-exists? log #f) (serve-leftovers sock) (serve-pids S)))
+       (list (list 2 machine-line "") #f '(#f #f #f) '()))
 (gated "NH-2 the MCP shell: the datum on stderr, nothing on stdout, status 2"
        (child root "" "mcp/server.sc" (list "--store" S)) (list 2 "" machine-line))
 
 ;; ---- NH-3: one home only ---------------------------------------------------
 (define run-only (assign "THEOURGIA_RUN" R))
 (define home-only (assign "THEOURGIA_HOME" H))
-(gated "NH-3 THEOURGIA_RUN alone: each program names the machine home"
-       (list (child root run-only "theourgia.sc" (list "outline" "--store" S))
-             (child root run-only "core.sc" (list "outline" "--store" S))
-             (child root run-only "theourgiad.sc" (list "serve" S))
-             (child root run-only "mcp/server.sc" (list "--store" S)))
-       (list (list 2 machine-line "") (list 1 machine-line "") (list 2 machine-line "") (list 2 "" machine-line)))
-(gated "NH-3 THEOURGIA_HOME alone: each program names the run root"
-       (list (child root home-only "theourgia.sc" (list "outline" "--store" S))
-             (child root home-only "core.sc" (list "outline" "--store" S))
-             (child root home-only "theourgiad.sc" (list "serve" S))
-             (child root home-only "mcp/server.sc" (list "--store" S)))
-       (list (list 2 run-line announce-line) (list 1 run-line announce-line) (list 2 run-line announce-line)
-             (list 2 "" (string-append announce-line run-line))))
+;; AND THE ONE HOME THERE GAINS NOTHING: the run root's listing, or the
+;; machine home's, the same before and after
+(define (tree-listing dir)
+  (let ((out (string-append root "/listing.txt")))
+    (sh "cd " (quoted dir) " 2>/dev/null && find . | sort > " (quoted out))
+    (file-text out)))
+(gated "NH-3 THEOURGIA_RUN alone: each program names the machine home, and the run root gains nothing"
+       (let* ((before (tree-listing R))
+              (rs (list (child root run-only "theourgia.sc" (list "outline" "--store" S))
+                        (child root run-only "core.sc" (list "outline" "--store" S))
+                        (child root run-only "theourgiad.sc" (list "serve" S))
+                        (child root run-only "mcp/server.sc" (list "--store" S)))))
+         (list rs (string=? before (tree-listing R))))
+       (list (list (list 2 machine-line "") (list 1 machine-line "") (list 2 machine-line "") (list 2 "" machine-line)) #t))
+(gated "NH-3 THEOURGIA_HOME alone: each program names the run root, and the machine home gains nothing"
+       (let* ((before (tree-listing H))
+              (rs (list (child root home-only "theourgia.sc" (list "outline" "--store" S))
+                        (child root home-only "core.sc" (list "outline" "--store" S))
+                        (child root home-only "theourgiad.sc" (list "serve" S))
+                        (child root home-only "mcp/server.sc" (list "--store" S)))))
+         (list rs (string=? before (tree-listing H))))
+       (list (list (list 2 run-line announce-line) (list 1 run-line announce-line) (list 2 run-line announce-line)
+                   (list 2 "" (string-append announce-line run-line)))
+             #t))
 ;; THE LIVE DAEMON: serve started with both homes and its trace on, so its
 ;; log names each dispatch; the thin client finds it by the run root.
 ;; (The thin client starts no daemon: with none it runs the core itself.)
@@ -442,8 +476,15 @@
                        (string-append hello "\n" ready "\n"
                                       (tool-call 2 "theourgia_outline" "") "\n"
                                       (tool-call 3 "theourgia_eval" "\"(+ 40 2)\"") "\n"))))
-         (list (car r) (contains? (cadr r) "NH-CANARY") (contains? (cadr r) "42") (contains? (cadr r) "\"isError\":true")))
-       (list 0 #t #t #f))
+         ;; each answer read from its own frame: the eval's line carries id 3
+         (let* ((lines (let loop ((p (open-input-string (cadr r))) (acc '()))
+                         (let ((l (get-line p))) (if (eof-object? l) (reverse acc) (loop p (cons l acc))))))
+                (frame (lambda (id) (let ((m (filter (lambda (l) (contains? l (string-append "\"id\":" id ","))) lines)))
+                                      (if (pair? m) (car m) ""))))
+                (outline (frame "2")) (evaluated (frame "3")))
+           (list (car r) (contains? outline "NH-CANARY") (contains? evaluated "42")
+                 (contains? outline "\"isError\":true") (contains? evaluated "\"isError\":true"))))
+       (list 0 #t #t #f #f))
 (when gate-open (stop-daemons! S))
 
 ;; ---- NH-6: help and usage with no home --------------------------------------
@@ -453,6 +494,11 @@
                   (child root "" "core.sc" (list "outline" "-h"))
                   (child root "" "theourgiad.sc" (list "serve" "--help"))))
        '((0 #t) (0 #t) (0 #t)))
+;; PINNED AS IT IS: the thin client hands any --help to the core before its
+;; own check, and for a verb with no usage the core goes on to its check
+(gated "NH-6 a --help for a verb with no usage (bogus --help) with no home: the core's check answers the datum, status 1"
+       (child root "" "theourgia.sc" (list "bogus" "--help"))
+       (list 1 machine-line ""))
 
 (when gate-open (stop-daemons! S) (stop-daemons! S4))
 (sh "rm -rf " (quoted sock-root))

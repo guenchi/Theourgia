@@ -186,7 +186,15 @@
     ("publish-landing.sc" "/tmp"
      "PL-33 tries /tmp as a directory that may be on another volume than the scratch root; it makes a repository there only when it is, and removes it")
     ("run-fixtures.sh" "mktemp -d /tmp/ths.XXXXXX"
-     "the runner makes the socket root")))
+     "the runner makes the socket root")
+    ("no-tmp-home.sc" "/tmp"
+     "NH-0's test for a /tmp datum compares each product string with \"/tmp\"; nothing is made or read there")
+    ("no-tmp-home.sc" "/tmp/"
+     "NH-0's test for a /tmp datum compares each product string's start with \"/tmp/\"; nothing is made or read there")
+    ("no-tmp-home.sc" "NH-0 no string datum in the product's sources is \"/tmp\" or begins \"/tmp/\""
+     "a row label naming what NH-0 looks for")
+    ("no-tmp-home.sc" "/tmp/.theourgia"
+     "the guard around each gated cell reads that path's existence and modification time, to see that nothing made or touched it; it makes nothing there")))
 
 ;; ---- reading one Scheme file -------------------------------------------
 
