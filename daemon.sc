@@ -70,7 +70,7 @@
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) store-publish-hook! obtain-state seal-state
-                store-withhold-hook! store-memory-provider!)
+                store-withhold-hook! store-memory-provider! store-memory-copy)
           (only (theourgia log) store-state-snapshot snapshot-unreadable-notes make-load-memory
                 snapshot-current-segments segment-shrank? segment-version-now log-append-guard!
                 segment-version-readable?
@@ -2169,6 +2169,16 @@
   ;; from the reduction it replaces and the one it installs, while at
   ;; least one subscriber is registered. No caller makes one. Without a
   ;; subscriber there is no frame work at all.
+  ;; AND THE CELL CARRIES A COPY OF THE STORE PROCESS'S MEMORY (fifth slot),
+  ;; made here, in the store process (every call of publish! is its: the
+  ;; publish hook, refold-and-publish!, the start-up publication), from the
+  ;; memory as it stands between loads: a new table and new entry records,
+  ;; the bytes and transcripts shared (log.sc memory-copy). A writer process
+  ;; takes it with the state from one read of the cell (answer-published), so
+  ;; its folds replay what the store process remembered at THIS publication
+  ;; and never touch the live table. It is never changed afterwards. It keeps
+  ;; the transcripts of entries the live table has since replaced for as long
+  ;; as a sealed state holding it lives (README, the memory's heap).
   (define (publish! store state snapshot)
     (let ((old (published-state))
           (seq (+ publish-seq 1)))
@@ -2176,7 +2186,7 @@
       (if (and old (pair? subscribers))
           (frame! old state seq)
           (set! published-sets #f))
-      (set! published (vector state seq snapshot (list seq daemon-token)))
+      (set! published (vector state seq snapshot (list seq daemon-token) (store-memory-copy)))
       (note-known-segments! snapshot)
       (trace-event! 'published seq #f)))
 
@@ -2539,7 +2549,7 @@
     (let* ((notes (probe-for-outside-change! store store-pid))
            (cell published)
            (state (published-state cell)))
-      (answer-for store parsed actor (and state (seal-state state notes (vector-ref cell 3))) writer piped cwd)))
+      (answer-for store parsed actor (and state (seal-state state notes (vector-ref cell 3) (vector-ref cell 4))) writer piped cwd)))
 
   ;; ---- the store process -------------------------------------------------
   ;;

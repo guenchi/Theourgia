@@ -5206,10 +5206,16 @@ answer), and it hands them one memory, made when it starts: what a load computed
 segment's bytes -- its scan, its digest, its edges -- is kept, so a later load decodes
 only the bytes no earlier load remembered (a segment that grew, from where it was; a new
 one, whole). An entry is used only for bytes equal to the ones it holds or beginning with
-them; any other bytes replace it. The start-up load finds the memory empty. A process
-of the daemon other than the store process (a writer process's `write --expect`,
-`--based-on`, `--working-cut`, `--working-parent`, `restore`, `drafts`) is not handed it
-and loads with a memory of its own, as a command line does. `--memory-limit <bytes>`
+them; any other bytes replace it. The start-up load finds the memory empty. A writer
+process of the daemon (`write --expect`, `--based-on`, `--working-cut`,
+`--working-parent`, `restore`, `drafts` with its table, `read --working`) is not handed
+the memory itself: every publication carries a COPY of it, made by the store process when
+it publishes (a new table, a new record per entry, the bytes and transcripts shared), and
+the writer process's loads READ that copy, the one that came with the state it was given:
+what the copy holds is replayed, a segment grown since is extended from it, anything
+else is decoded, and nothing is ever stored into the copy. Such a load writes `(trace
+load-on-copy (<revision> <token>) #f)`, naming the publication. A command line, and a
+tool's fold, load with a memory of their own. `--memory-limit <bytes>`
 bounds it, in remembered segment bytes (default 268435456, 256 MiB; a daemon an MCP
 shell or a client starts uses the default). The bound is first come, first kept, with
 no eviction: a segment is kept when it fits beside what is kept; one that does not fit
@@ -5221,7 +5227,13 @@ bytes and the transcripts' frames beside them, measured on a store of 90 segment
 MB); while the store process also holds the reduction replayed from those frames, the two
 share most of it, and the memory adds 1.17 times (68.3 MB). A daemon whose reduction was
 seeded from a snapshot shares nothing with the memory: 2.05 times again. So the 256 MiB
-default can hold about 525 MiB of heap. A value that is not a count is refused like
+default can hold about 525 MiB of heap. A PUBLICATION'S COPY adds a table and one small
+record per entry, sharing the bytes and transcripts; but it keeps the transcripts of
+entries the store process has since replaced (a segment that grew, bytes replaced) for as
+long as something holds it: the current publication, and every sealed state a request
+in flight was handed. So the bound on that extra heap is the publications still
+referenced, at most the current one and the ones requests in flight took, each no larger
+than the memory it was copied from. A value that is not a count is refused like
 `--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
 counting the segment asks its memory answered each way. WHAT A LOAD DELIVERS IS SHARED:

@@ -33,8 +33,9 @@
 ;;         requests after it (its exact load counts, its pid still alive)
 ;;   SM-6  with --memory-limit below the log, every segment is scanned at
 ;;         every load, and the answers are the cold daemon's
-;;   SM-7  a writer-process load (write --expect) leaves the store process's
-;;         memory as it was, and answers as the cold daemon does
+;;   SM-7  a writer-process load (write --expect) reads the publication's copy
+;;         (every ask replayed), leaves the store process's memory as it was,
+;;         and answers as the cold daemon does
 ;;   SM-9  a session no caller handed a memory (log-begin's, on the command
 ;;         line) keeps none: its reload scans every segment again
 ;;   SM-8  a write session that reloads (a writer's metadata changed while it
@@ -577,17 +578,19 @@
 (define x1 (through "write" t7 "(draft text)" "--writer" "d1" "--expect" (hash-of t7)))
 (define o2 (through "check"))
 (printf "SM-7 check ~s; write --expect ~s loads ~s; check ~s\n" (counts-of o1) (answer-of x1) (counts-of x1) (counts-of o2))
-;; A MEMORY OF ITS OWN, STARTING EMPTY: validation scans each of the three
-;; segments and delivery replays what validation scanned; the store process's
-;; memory, which holds all three, would have replayed all six asks
-;; WHAT THIS JUDGES: that the writer process is NOT handed the store process's
-;; memory (that memory holds all three segments, and its load would scan
-;; none). That the store process's memory is unchanged follows from it; the
-;; next check's equal counts are not, on their own, a witness of it (equal
-;; bytes would leave a shared memory's entries as they were).
-(want "SM-7 the writer process's load is handed a memory of its own, not the store process's (it scans every segment once, delivery replaying them); the store process's next check counts as before it"
+;; THE PUBLICATION'S COPY (F437 S3's second step): the writer process's load
+;; reads the copy the store process made when it published, which holds all
+;; three segments, so all six asks replay and none scans. Before that step it
+;; loaded with a memory of its own (three scanned, three replayed).
+;; WHAT THIS JUDGES: that the load reads the copy. The counts cannot tell the
+;; copy from the store process's memory itself (both would replay all six);
+;; that the writer process is not handed the live memory, and stores nothing
+;; into it, is test/store-copy.sc's SB-3. The next check's equal counts are not,
+;; on their own, a witness of it either (equal bytes would leave a shared
+;; memory's entries as they were).
+(want "SM-7 the writer process's load reads the publication's copy of the store process's memory, not the memory itself (since F437 S3's second step: all six asks replayed, none scanned); the store process's next check counts as before it"
       (list (counts-of x1) (equal? (counts-of o2) (counts-of o1)))
-      (list (list (list 'replayed-or-extended (highest-segment) 'scanned (highest-segment))) #t))
+      (list (list (list 'replayed-or-extended (* 2 (highest-segment)) 'scanned 0)) #t))
 (define warm-write (answer-of x1))
 (start-daemon! "")
 (define cold-pid (daemon-pid))

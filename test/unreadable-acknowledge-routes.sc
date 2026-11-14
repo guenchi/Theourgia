@@ -203,7 +203,10 @@
 ;; THE MEMORY'S CHOOSERS ARE PRIMITIVES IN THEIR OWN RIGHT: provided-open and
 ;; provided-begin (store.sc) and the log's log-open-with-memory and
 ;; log-begin-with-memory, so each verb's load is still its own row, keyed by
-;; the verb's definition, as log-open's were. A call through `apply` is a call.
+;; the verb's definition, as log-open's were. So are the COPY'S (F437 S3's
+;; second step): open-and-reduce-reading and obtain-state-reading, through
+;; which a writer process's folds read the publication's copy. A call through
+;; `apply` is a call.
 ;;   unsealer  obtain-state: a supplied state is judged where it is consumed
 ;;   daemon    the daemon's own fold, explicitly declared: it holds the state
 ;;   published the one reader of the daemon's publication (answer-published)
@@ -239,10 +242,13 @@
     ("project.sc" "export-md" "open-and-reduce" 1 request)
     ("rpc.sc" "reduction-for" "obtain-state" 1 unsealer)
     ("store.sc" "open-and-reduce" "obtain-state" 1 builder)
+    ("store.sc" "open-and-reduce-reading" "open-and-reduce" 1 builder)
+    ("store.sc" "open-and-reduce-reading" "obtain-state-reading" 1 builder)
+    ("store.sc" "obtain-state*" "obtain-state-reading" 1 builder)
     ("store.sc" "provided-begin" "log-begin" 1 builder)
     ("store.sc" "provided-begin" "log-begin-with-memory" 1 builder)
     ("store.sc" "provided-open" "log-open" 1 builder)
-    ("store.sc" "provided-open" "log-open-with-memory" 1 builder)
+    ("store.sc" "provided-open" "log-open-with-memory" 2 builder)
     ("store.sc" "replay" "provided-open" 1 builder)
     ("store.sc" "replay" "rows->state" 1 notes)
     ("store.sc" "store-check" "provided-open" 1 request)
@@ -260,8 +266,8 @@
     ("store.sc" "store-tags" "open-and-reduce" 1 request)
     ("store.sc" "with-store-write" "provided-begin" 1 request)
     ("template.sc" "template-apply!" "open-and-reduce" 1 request)
-    ("working.sc" "committed-parent" "open-and-reduce" 1 request)
-    ("working.sc" "draft-changed-refusal" "obtain-state" 1 unsealer)
+    ("working.sc" "committed-parent" "open-and-reduce-reading" 1 request)
+    ("working.sc" "draft-changed-refusal" "open-and-reduce-reading" 1 request)
     ("working.sc" "overlay-drafts-rows" "rows->state" 1 notes)
     ("working.sc" "state-at-cut-text" "open-and-reduce" 1 request)
     ("working.sc" "working-baseline" "obtain-state" 1 unsealer)
@@ -272,16 +278,17 @@
     ("working.sc" "working-new!" "obtain-state" 1 unsealer)
     ("working.sc" "working-read" "obtain-state" 1 unsealer)
     ("working.sc" "working-restore!" "obtain-state" 1 unsealer)
-    ("working.sc" "working-restore!" "open-and-reduce" 1 request)
+    ("working.sc" "working-restore!" "open-and-reduce-reading" 1 request)
     ("working.sc" "working-snapshot" "obtain-state" 1 unsealer)
     ("working.sc" "working-structural" "obtain-state" 1 unsealer)
     ("working.sc" "working-view-of" "obtain-state" 1 unsealer)
-    ("working.sc" "working-view-of" "open-and-reduce" 1 request)
+    ("working.sc" "working-view-of" "open-and-reduce-reading" 1 request)
     ("working.sc" "working-write!" "obtain-state" 1 unsealer)
-    ("working.sc" "working-write!" "open-and-reduce" 1 request)))
+    ("working.sc" "working-write!" "open-and-reduce-reading" 1 request)))
 (define primitives '("open-load" "log-open" "log-open-in-session" "log-begin"
                      "rows->state" "open-and-reduce" "obtain-state" "published-state"
-                     "log-open-with-memory" "log-begin-with-memory" "provided-open" "provided-begin"))
+                     "log-open-with-memory" "log-begin-with-memory" "provided-open" "provided-begin"
+                     "open-and-reduce-reading" "obtain-state-reading"))
 ;; A line's code: the text before its first `;` outside a string.
 (define (code-of line)
   (let loop ((i 0) (in-string #f))

@@ -399,7 +399,8 @@
         (fold-failure-answer at)
         '(error invalid-working-baseline (reason cut-unusable))))
 
-  (define (committed-parent store state writer id version hash original-cut)
+  ;; HANDED, the copy the verb's sealed state carried (supplied-memory), or #f.
+  (define (committed-parent store state writer id version hash original-cut handed)
     (and writer version (safe-id? writer)
       ;; THE CUT IS THE JOIN OF THE PLAN'S MEMBER CUTS, which for every
       ;; plan this core writes is the last member's -- and for a plan
@@ -408,7 +409,7 @@
       ;; A FOLD THAT FAILED THERE is handed back as its fold-failure.
       (let ((latest (latest-parent-cut (filter values (state-consumed-parent-cuts state writer version)))))
         (and latest
-          (let ((past (fold-at-cut (lambda () (open-and-reduce store latest)))))
+          (let ((past (fold-at-cut (lambda () (open-and-reduce-reading store handed latest)))))
             (and (or (reduction? past) (fold-failure? past)) past))))))
 
   ;; THE DRAFT A WRITE WAS TOLD TO REPLACE (`--expect <version>`), asked
@@ -418,8 +419,9 @@
   ;; judged a draft and then rewrites it -- landing-freeze's rebase -- passes
   ;; the version it judged, so an edit made in between is never overwritten
   ;; under an answer that says the judged draft was moved.
-  (define (draft-changed-refusal store writer id expected)
-    (let* ((state (obtain-state store #f #f))
+  ;; HANDED, as committed-parent's.
+  (define (draft-changed-refusal store writer id expected handed)
+    (let* ((state (open-and-reduce-reading store handed))
            (old (entry-at store writer id))
            (live (and old (not (consumed? store state old)) old)))
       (and (not (and live (equal? (list-ref live 4) expected)))
@@ -435,7 +437,11 @@
       (lambda ()
     (problem
       (lambda ()
-        (let* ((writer (requested-writer store supplied)) (state (obtain-state store state #f))
+        ;; THE COPY IS TAKEN FROM THE SEALED STATE BEFORE IT IS UNSEALED, and
+        ;; handed to every fold below: in a daemon's writer process they read
+        ;; the publication's copy of the store process's memory.
+        (let* ((handed (supplied-memory state))
+               (writer (requested-writer store supplied)) (state (obtain-state store state #f))
                (hash (and (pair? provenance) (car provenance)))
                (cut-text (and (pair? provenance) (pair? (cdr provenance)) (cadr provenance)))
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
@@ -443,9 +449,9 @@
                (expected (and (>= (length provenance) 5) (list-ref provenance 4)))
                (historical (and hash cut-text
                  (let ((parsed (parse-cut cut-text)))
-                   (and parsed (fold-at-cut (lambda () (open-and-reduce store parsed)))))))
+                   (and parsed (fold-at-cut (lambda () (open-and-reduce-reading store handed parsed)))))))
                (parent (and (reduction? historical)
-                            (committed-parent store state parent-writer id parent-version hash (reduce-applied-cut historical)))))
+                            (committed-parent store state parent-writer id parent-version hash (reduce-applied-cut historical) handed))))
           (cond
             ((not writer) (invalid-writer))
             ((not (safe-id? id)) '(error bad-request invalid-block-id))
@@ -540,7 +546,7 @@
                (or (with-draft-lock store writer
                      (lambda ()
                        (or (foreign-writer-refusal store writer)
-                           (and expected (draft-changed-refusal store writer id expected))
+                           (and expected (draft-changed-refusal store writer id expected handed))
                            (begin (atomic-write! (path-for store writer id) (encode entry) 'working) #f))))
                    (list 'ok (list 'saved id) (list 'writer writer)
                          (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5)))))))))))))))
@@ -566,7 +572,8 @@
     (needing-writer supplied (lambda ()
     (problem
       (lambda ()
-        (let* ((writer (requested-writer store supplied))
+        (let* ((handed (supplied-memory state))
+               (writer (requested-writer store supplied))
                (state (and writer (obtain-state store state #f)))
                (found (and state
                            (find (lambda (r) (equal? version (cadr (car r))))
@@ -583,7 +590,7 @@
                     ;; A FOLD THAT FAILED AT THE CUT stands in for the text,
                     ;; and is answered as that failure (fold-at-cut).
                     (text (or declared
-                              (let ((past (fold-at-cut (lambda () (open-and-reduce store cut)))))
+                              (let ((past (fold-at-cut (lambda () (open-and-reduce-reading store handed cut)))))
                                 (if (fold-failure? past)
                                     past
                                     (and (reduction? past) (field past id 'src))))))
@@ -1330,7 +1337,8 @@
   (define (working-view-of store state supplied files?)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
+      (let ((handed (supplied-memory state))
+            (writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else
@@ -1345,7 +1353,7 @@
                                  (let ((now (reduce-applied-cut state)))
                                    (and (cut-covers? cut now) (cut-covers? now cut))))
                              state
-                             (open-and-reduce store cut))))
+                             (open-and-reduce-reading store handed cut))))
               (if (not (reduction? base))
                   (list 'error 'working-unavailable (list 'reason 'unavailable-cut) (list 'cut cut))
                   (let ((fields (draft-fields base drafts)))

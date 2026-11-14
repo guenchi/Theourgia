@@ -21,6 +21,7 @@
           judgement-refusal? structural-consumes-mismatch
           premises-gate? premises-gate-check premises-gate-enter store-raise-answer-hook! store-publish-hook! store-memory-provider!
           obtain-state seal-state sealed-state? sealed-state-state sealed-state-notes sealed-state-unsealed? sealed-state-name store-withhold-hook!
+          store-memory-copy supplied-memory open-and-reduce-reading
           state-incomplete-notes describe-log-error commit-failure
           ;; The interface pinned at dispatch (the cells look these up
           ;; in this library): re-exported from (theourgia incomplete).
@@ -50,7 +51,7 @@
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (rnrs records syntactic) define-record-type fields mutable)
           (only (theourgia log)
-                log-open log-open-with-memory log-begin-with-memory load-deliver! load-commit! load-fingerprint remember-load-unreadable!
+                log-open log-open-with-memory log-begin-with-memory memory-copy copy-reading-memory load-deliver! load-commit! load-fingerprint remember-load-unreadable!
                 load-unreadable session-load
                 unreadable-behind merge-unreadable
                 tell-load-notes! tell-load-refused! load-declaration-of
@@ -195,8 +196,12 @@
                       (and (not (eq? (discovery-origin prefix) 'unreadable))
                            (= (if p (cdr p) 0) (discovery-end-seq prefix)))))
                   (load-writers ls))))
+  ;; REST is (declaration [handed]): HANDED, a publication's copy of the store
+  ;; process's memory with its name (supplied-memory), makes this load read
+  ;; that copy (provided-open).
   (define (replay store cut . declaration)
-    (let* ((ls (provided-open store (and (pair? declaration) (car declaration))))
+    (let* ((ls (provided-open store (and (pair? declaration) (car declaration))
+                              (and (pair? declaration) (pair? (cdr declaration)) (cadr declaration))))
            (key (and resident-enabled? (not cut) (load-fingerprint ls)))
            (previous (and key (hashtable-ref residents store #f)))
            (cached (and previous (equal? (car previous) key) (cdr previous)))
@@ -236,6 +241,15 @@
   ;; owns). A caller that has not been handed a declaration fails CLOSED.
   (define (open-and-reduce store . rest)
     (apply obtain-state store #f #f rest))
+  ;; THE SAME, ITS LOADS READING A PUBLICATION'S COPY of the store process's
+  ;; memory: HANDED as supplied-memory answers it, from the sealed state a
+  ;; verb was given. #f is open-and-reduce exactly. The writer process's
+  ;; folds (working.sc) ask this, so they replay what the store process
+  ;; remembered at that publication instead of scanning every segment.
+  (define (open-and-reduce-reading store handed . rest)
+    (if handed
+        (timed 'read-load-replay (apply obtain-state-reading store #f #f handed rest))
+        (apply open-and-reduce store rest)))
 
   ;; ---- obtaining state (R2e) -----------------------------------------------
   ;;
@@ -250,14 +264,25 @@
   ;; daemon sealed it from its cell; #f for any other seal. read --rev takes
   ;; it from here, so the rev it answers is the state its answer was built
   ;; from, whoever dispatched.
-  (define-record-type sealed-state (fields state notes (mutable unsealed?) name))
+  ;; MEMORY, when the daemon sealed the state from its cell, is that
+  ;; publication's copy of the store process's memory (daemon.sc publish!);
+  ;; #f for any other seal.
+  (define-record-type sealed-state (fields state notes (mutable unsealed?) name memory))
   ;; The interface name: a reduction's notes, '() when it is complete.
   ;; Defined here and not in (theourgia log): the cells import the log library
   ;; whole and look this name up for themselves.
   (define (state-incomplete-notes value) (unreadable-behind value))
-  (define (seal-state state extra-notes . name)
+  (define (seal-state state extra-notes . name+memory)
     (make-sealed-state state (merge-unreadable (unreadable-behind state) extra-notes) #f
-                       (and (pair? name) (car name))))
+                       (and (pair? name+memory) (car name+memory))
+                       (and (pair? name+memory) (pair? (cdr name+memory)) (cadr name+memory))))
+  ;; -> (<copy> . <publication name>) when SUPPLIED is a sealed state that
+  ;; holds a copy, else #f (a bare reduction, #f, a CLI's or a tool's state):
+  ;; what open-and-reduce-reading is handed.
+  (define (supplied-memory supplied)
+    (and (sealed-state? supplied)
+         (sealed-state-memory supplied)
+         (cons (sealed-state-memory supplied) (sealed-state-name supplied))))
 
   ;; THE ONE UNSEALER, AND THE ONE PLACE A CONSUMER OBTAINS STATE.
   ;; (obtain-state store supplied declaration . cut)
@@ -277,6 +302,9 @@
   (define (obtain-state store supplied declaration . rest)
     (timed 'read-load-replay (apply obtain-state* store supplied declaration rest)))
   (define (obtain-state* store supplied declaration . rest)
+    (apply obtain-state-reading store supplied declaration #f rest))
+  ;; obtain-state*, its loads handed HANDED (open-and-reduce-reading)
+  (define (obtain-state-reading store supplied declaration handed . rest)
     (let ((cut (if (null? rest) #f (car rest))))
       (if (and supplied (not cut))
           (let* ((is-sealed (sealed-state? supplied))
@@ -300,11 +328,11 @@
                    (tell-load-refused! store c)
                    (raise c))))))
           (if (not cut)
-              (replay store #f declaration)
-              (let* ((whole (replay store #f declaration))
+              (replay store #f declaration handed)
+              (let* ((whole (replay store #f declaration handed))
                      (verdict (cut-usable? whole cut)))
                 (if (eq? verdict 'usable)
-                    (replay store cut declaration)
+                    (replay store cut declaration handed)
                     verdict))))))
 
   ;; ---- the write side ------------------------------------------------------
@@ -3835,9 +3863,23 @@
     (unless (procedure? procedure)
       (assertion-violation 'store-memory-provider! "not a procedure" procedure))
     (set! memory-provider procedure))
-  (define (provided-open store declaration)
+  ;; HANDED, a publication's copy and its name: the load reads the copy
+  ;; (copy-reading-memory), whatever the provider answers, and one trace line
+  ;; says so, naming the publication.
+  (define (provided-open store declaration . handed)
+    (let ((h (and (pair? handed) (car handed))))
+      (if h
+          (begin
+            (trace-event! 'load-on-copy (cdr h) #f)
+            (log-open-with-memory store (copy-reading-memory (car h)) declaration))
+          (let ((m (memory-provider)))
+            (if m (log-open-with-memory store m declaration) (log-open store declaration))))))
+  ;; THE STORE PROCESS'S MEMORY, COPIED (log.sc memory-copy): asked by publish!,
+  ;; which runs in the store process; the provider answers the memory to that
+  ;; process alone, so anywhere else this is #f.
+  (define (store-memory-copy)
     (let ((m (memory-provider)))
-      (if m (log-open-with-memory store m declaration) (log-open store declaration))))
+      (and m (memory-copy m))))
   (define (provided-begin store on-deliver)
     (let ((m (memory-provider)))
       (if m (log-begin-with-memory store m on-deliver) (log-begin store on-deliver))))

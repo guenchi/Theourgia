@@ -52,7 +52,7 @@
 
 (library (theourgia log)
   (export directory-entry-durable! present-or-unreadable-skip?
-          discover-prefix
+          discover-prefix memory-copy copy-reading-memory memory-copy-entries
           discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired quarantine-of
@@ -971,6 +971,9 @@
   ;;   tally   () -> (<replayed or extended> . <scanned>), the segments this
   ;;           memory answered each way, for a load's view of a memory
   ;;           (tallying-memory); #f for a memory that does not count
+  ;;   copy    () -> a copy of what the memory remembers, for another process
+  ;;           to read (memory-copy, copy-reading-memory); #f for a memory
+  ;;           that keeps nothing, and for a reader of a copy
   ;;
   ;; A MEMORY HAS A BOUND, in remembered bytes (make-load-memory's
   ;; argument, 256 MiB by default). Segments are remembered in the order
@@ -980,7 +983,7 @@
   ;; remembered bytes, not what their transcripts' frames hold, which is a
   ;; multiple of them.
   (define-record-type segment-memory
-    (fields scan digest edges held tally))
+    (fields scan digest edges held tally copy))
 
   (define remembers-nothing
     (make-segment-memory
@@ -990,6 +993,7 @@
       (lambda (writer seg bytes) (segment-sha bytes))
       (lambda (writer seg bytes) (segment-edge-seqs bytes))
       (lambda () 0)
+      (lambda () #f)
       (lambda () #f)))
 
   (define (memory-remembered-bytes m) ((segment-memory-held m)))
@@ -1017,7 +1021,8 @@
         (segment-memory-digest m)
         (segment-memory-edges m)
         (segment-memory-held m)
-        (lambda () (cons reused scanned)))))
+        (lambda () (cons reused scanned))
+        (segment-memory-copy m))))
 
   ;; A LOAD LETS GO OF ITS MEMORY ONCE, saying what the memory did for it:
   ;; one trace line per load, (load-memory (replayed-or-extended <n> scanned
@@ -1086,24 +1091,8 @@
       (make-segment-memory
         (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
           (let* ((e (entry-for writer seg bytes))
-                 (found (memory-entry-found e))
-                 (frames 0)
-                 (counted (lambda (off seq ts actor deps payload)
-                            (set! frames (fx+ frames 1))
-                            (deliver off seq ts actor deps payload)))
-                 (outcome (degeneracy-value replay-scan
-                            (replay-checked e writer seg bytes expected-seq recoverable-tail? counted)
-                            (remembered-scan e writer seg expected-seq recoverable-tail? counted))))
+                 (outcome (entry-scan e phase writer seg bytes expected-seq recoverable-tail? deliver note)))
             (memory-entry-found-set! e 'remembered)
-            (note (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
-            ;; WHAT THE MEMORY DID FOR THIS SEGMENT, one event per segment
-            ;; a load scans: the phase, the segment, how it was answered
-            ;; (scanned from its first byte, extended from the remembered
-            ;; bytes, or replayed), and how many frames it handed on.
-            (trace-event! 'memory
-                          (list phase writer seg
-                                (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
-                          frames)
             outcome))
         (lambda (writer seg bytes)
           (let ((e (entry-for writer seg bytes)))
@@ -1118,6 +1107,129 @@
               (memory-entry-has-edges-set! e #t))
             (memory-entry-edges e)))
         (lambda () held)
+        (lambda () #f)
+        ;; THE COPY: a new table, a new entry record for every entry with all
+        ;; seven fields as they stand, the bytes and the transcripts shared
+        ;; (a transcript is never changed, above). Asked by the process that
+        ;; owns this memory, between its loads, so the picture is one state of
+        ;; it; the entries this process changes later are its own records.
+        (lambda ()
+          (let ((table (make-hashtable equal-hash equal?)))
+            (let-values (((keys held-entries) (hashtable-entries entries)))
+              (vector-for-each
+                (lambda (k e)
+                  (hashtable-set! table k
+                    (make-memory-entry (memory-entry-bytes e) (memory-entry-transcript e) (memory-entry-found e)
+                                       (memory-entry-has-digest e) (memory-entry-digest e)
+                                       (memory-entry-has-edges e) (memory-entry-edges e))))
+                keys held-entries))
+            (make-remembered-copy table held))))))
+
+  ;; ONE SEGMENT ANSWERED FROM ENTRY E, as a scan of these bytes would answer
+  ;; it: the transcript replayed, and what it lacks decoded (remembered-scan),
+  ;; or, under the degeneracy switch, the same checked against scan-segment
+  ;; (replay-checked). The entry's transcript is set to the one the replay
+  ;; answers; its found mark is the caller's to set.
+  (define (entry-scan e phase writer seg bytes expected-seq recoverable-tail? deliver note)
+    (let* ((found (memory-entry-found e))
+           (frames 0)
+           (counted (lambda (off seq ts actor deps payload)
+                      (set! frames (fx+ frames 1))
+                      (deliver off seq ts actor deps payload)))
+           (outcome (degeneracy-value replay-scan
+                      (replay-checked e writer seg bytes expected-seq recoverable-tail? counted)
+                      (remembered-scan e writer seg expected-seq recoverable-tail? counted))))
+      (note (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
+      ;; WHAT THE MEMORY DID FOR THIS SEGMENT, one event per segment
+      ;; a load scans: the phase, the segment, how it was answered
+      ;; (scanned from its first byte, extended from the remembered
+      ;; bytes, or replayed), and how many frames it handed on.
+      (trace-event! 'memory
+                    (list phase writer seg
+                          (case found ((new) 'scanned) ((extended) 'extended) (else 'replayed)))
+                    frames)
+      outcome))
+
+  ;; A COPY OF A MEMORY: its table and the bytes it held when made.
+  (define-record-type remembered-copy (fields table held))
+
+  ;; -> a copy of what memory M remembers, or #f when it keeps nothing
+  (define (memory-copy m) ((segment-memory-copy m)))
+
+  ;; WHAT A COPY HOLDS, entry by entry: an INSPECTOR, exported for the rows that
+  ;; pin that a copy is never changed (test/store-copy.sc SB-4); nothing in the
+  ;; product calls it. ((writer . segment) bytes
+  ;; transcript found has-digest digest has-edges edges) for each entry, in
+  ;; key order. The bytes and transcript are the copy's own objects, so a
+  ;; caller compares them with eq?.
+  (define (memory-copy-entries c)
+    (let-values (((keys held-entries) (hashtable-entries (remembered-copy-table c))))
+      (list-sort (lambda (a b) (let ((x (car a)) (y (car b)))
+                                 (or (string<? (car x) (car y))
+                                     (and (string=? (car x) (car y)) (< (cdr x) (cdr y))))))
+                 (map (lambda (k e)
+                        (list k (memory-entry-bytes e) (memory-entry-transcript e) (memory-entry-found e)
+                              (memory-entry-has-digest e) (memory-entry-digest e)
+                              (memory-entry-has-edges e) (memory-entry-edges e)))
+                      (vector->list keys) (vector->list held-entries)))))
+
+  ;; A READER OF A COPY, for a process that is not the memory's: it answers
+  ;; as the memory would have when the copy was made, and never changes the
+  ;; copy. It is made for ONE load (store.sc provided-open) and keeps an
+  ;; OVERLAY of its own, dropped with it: the entry each ask was answered on,
+  ;; made the first time a segment is asked -- the copy's entry with the same
+  ;; seven fields when the bytes are its bytes, its transcript extended when
+  ;; they begin with its bytes, a new one otherwise -- and asked first after
+  ;; that, so delivery replays what validation decoded and a segment the copy
+  ;; lacks is decoded once per load, as a load with a memory of its own does.
+  ;; Every ask goes through entry-scan, so a replay passes the same
+  ;; replay-scan check as the memory's own (replay-checked, under the
+  ;; switch). Nothing is inserted, replaced or set in the copy: what the
+  ;; overlay's entries decode, and the digests and edges they compute, are the
+  ;; overlay's. Its own copy is #f: a copy of a copy is never made.
+  (define (copy-reading-memory c)
+    (let ((table (remembered-copy-table c))
+          (overlay (make-hashtable equal-hash equal?)))
+      ;; the entry from SOURCE (an overlay or copy entry, or #f) for BYTES
+      (define (entry-from e bytes)
+        (let ((kept (and e (memory-entry-bytes e))))
+          (if (and kept (or (eq? kept bytes) (bytevector=? kept bytes)))
+              (make-memory-entry kept (memory-entry-transcript e) (memory-entry-found e)
+                                 (memory-entry-has-digest e) (memory-entry-digest e)
+                                 (memory-entry-has-edges e) (memory-entry-edges e))
+              (let ((extended (and kept
+                                   (fx> (bytevector-length bytes) (bytevector-length kept))
+                                   (transcript-extend (memory-entry-transcript e) bytes))))
+                (make-memory-entry bytes (or extended (transcript-of bytes))
+                                   (if extended 'extended 'new) #f #f #f #f)))))
+      (define (entry-for writer seg bytes)
+        (let* ((key (cons writer seg))
+               (o (hashtable-ref overlay key #f))
+               (mine (and o (or (eq? (memory-entry-bytes o) bytes) (bytevector=? (memory-entry-bytes o) bytes)) o)))
+          (or mine
+              (let ((fresh (entry-from (or o (hashtable-ref table key #f)) bytes)))
+                (hashtable-set! overlay key fresh)
+                fresh))))
+      (make-segment-memory
+        (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
+          (let* ((e (entry-for writer seg bytes))
+                 (outcome (entry-scan e phase writer seg bytes expected-seq recoverable-tail? deliver note)))
+            (memory-entry-found-set! e 'remembered)
+            outcome))
+        (lambda (writer seg bytes)
+          (let ((e (entry-for writer seg bytes)))
+            (unless (memory-entry-has-digest e)
+              (memory-entry-digest-set! e (segment-sha bytes))
+              (memory-entry-has-digest-set! e #t))
+            (memory-entry-digest e)))
+        (lambda (writer seg bytes)
+          (let ((e (entry-for writer seg bytes)))
+            (unless (memory-entry-has-edges e)
+              (memory-entry-edges-set! e (segment-edge-seqs bytes))
+              (memory-entry-has-edges-set! e #t))
+            (memory-entry-edges e)))
+        (lambda () (remembered-copy-held c))
+        (lambda () #f)
         (lambda () #f))))
 
   ;; The replay of the entry's transcript; what it decoded past the

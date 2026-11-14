@@ -201,8 +201,9 @@ spawn-environment 7 12 b3744f10418ee9d2090d7012ed28ddde
 split-symbols 40 44 d96fb6ac6e0ae4421bb28fb106a67b0e
 stage-gate - 5 0f911587319ae008949660d0f4a59639
 startup-ratio 59 68 a2abd73b9676a8ce22493b89cfe22adb
+store-copy 6 22 3962012f7496a74338e2aa43808b6a36
 store-in-git 62 67 e2292d3dbbb8fb236f033b6b439bc880
-store-memory 17 37 8b29ce00f43b465135fc180f1ce09000
+store-memory 17 37 fd22fe3627e6046c5185a188da4e2da4
 store-rules 38 43 b59c1679ec0ef5d91aa5b5272fda677b
 store1 59 74 035d17b17419e60bdd10f5a72cfef0c4
 structure-graph 4 8 21a6379a4628d4699223b2955b42f477
@@ -211,7 +212,7 @@ subtree 15 19 d2124efd9468aef241da1e20468aea5e
 supply 209 213 f9f9a5a03a2f964a95c34c43316d9020
 tmp-paths 49 128 ed0978f1b922774c16a784ae9bda613c
 tree-round-trip 0 5 aecdb9f13babca53abb3f9b0618bfd96
-unreadable-acknowledge-routes 70 79 ddea34dc48b33040be36df210952422e
+unreadable-acknowledge-routes 70 79 afb0b321ded3308fefa30b4affc002ea
 unreadable-adopt 34 47 6e1360b0c68e5776dea2e985fabc85c2
 unreadable-census 42 47 8903dba92289c92d904de8913366556b
 unreadable-drafts 17 25 ada49030b8b428b7ec3d7b0e45072d76
