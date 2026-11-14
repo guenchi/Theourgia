@@ -144,6 +144,11 @@
    fact a
    "detach-failed, a named outcome: the step, the log path and the errno, with the scope's record through with-written -- the log's creation when its open failed after it (NO4b), nothing when its directory could not be searched (NO4) -- written on STDERR (E2); exit 71"
    (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (guard (e2 (#t (trace-event! (quote detach-report-failed) #f #f))) (let ((err (current-error-port))) (write (with-written (append (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path)) (errno-clause code)) (mutation-record)) err) (newline err) (flush-output-port err)))) (exit 71))))
+  ("client.sc" (missing-home asked) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (eq? (cadr e) (quote no-home))))
+   fact a
+   "missing-home's ask of one home: only the no-home datum machine-home or run-root raises is caught and answered as the value, which each program's start check answers and stops on; any other condition, an unreadable entry among them, is not caught and goes on up; no file is read here"
+   (e ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (eq? (cadr e) (quote no-home))) e)))
   ("client.sc" (call-on-socket) 1 guard
    ((fs-error? e))
    unrelated a

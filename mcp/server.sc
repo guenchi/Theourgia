@@ -58,7 +58,7 @@
               mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
               fs-error? fs-error-errno fd-open write-all! fd-close wall-clock-ms)
-        (only (theourgia client) run-root store-key program-launch)
+        (only (theourgia client) run-root missing-home store-key program-launch)
         ;; A refusal is answered through ONE renderer, and a
         ;; filesystem condition raised inside a request is answered by the
         ;; table (point 7).
@@ -1425,6 +1425,16 @@
   ;; decided here, in the same place and the same way as in the CLI and
   ;; the daemon.
   (answer-printing!)
+  ;; NEVER: NO HOME, NO SHELL. With no machine home or no run root the shell
+  ;; writes the datum on stderr, as its other start mistakes (stdout carries
+  ;; frames only), and stops with status 2: before its arguments are read,
+  ;; before a frame is answered and before a daemon is looked for or started,
+  ;; so it is never a shell that starts and then fails every call.
+  (let ((missing (missing-home)))
+    (when missing
+      (write missing (current-error-port))
+      (newline (current-error-port))
+      (exit 2)))
   (let ((nodes (parse-shell-arguments argv)))
     (cond
       ;; `--writer` given without its value is a mistake in how the shell was
