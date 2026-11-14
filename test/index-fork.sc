@@ -404,8 +404,10 @@
 (define k-r (tracked! (car k) (cdr k) "QJ" "tracked"))
 (define k-id (cons (cdr k) "QJ"))
 (define k-cp (string-append (car k) "/request-index.sexp"))
+;; A CHECKPOINT THAT CANNOT BE WRITTEN raises here and is caught, as the
+;; snapshot swallows it: the rows below then read no checkpoint, which is red.
 (cold-index! (car k))
-(index-checkpoint! (car k))
+(caught (index-checkpoint! (car k)))
 (define (read-checkpoint) (storable-decode (string->sexpr-extended (utf8->string (call-with-port (open-file-input-port k-cp) get-bytevector-all)))))
 (define (write-checkpoint! x)
   (call-with-port (open-file-output-port k-cp (file-options no-fail))
@@ -417,6 +419,7 @@
 ;; for a frame the store does not hold (a forged copy of the record's frame at
 ;; another sequence), the digest recomputed
 (define forged
+  (and (file-exists? k-cp)
   (let* ((x (read-checkpoint)) (body (list-ref x 4)) (stamp (car body)) (entries (cadr body))
          (old-stamp (if (and (pair? stamp) (pair? (car stamp)) (eq? (car (car stamp)) 'derivation)) (cdr stamp) stamp))
          (hit (find (lambda (e)
@@ -429,7 +432,7 @@
          (new-entries (append (map (lambda (e) (if (eq? e hit) (list (car e) (cadr e) (caddr e) (cadddr e) 'damaged) e)) entries)
                               (if fake (list (list (car hit) (cadr hit) 999999 fake 'valid-history)) '())))
          (new-body (list old-stamp new-entries)))
-    (and hit (list 'request-index 1 (caddr x) (digest-of new-body) new-body))))
+    (and hit (list 'request-index 1 (caddr x) (digest-of new-body) new-body)))))
 (when forged (write-checkpoint! forged))
 (index-forget-memory!)
 (define if6-old (caught (list-sort sym<? (map (lambda (r) (list-ref r 4)) (indexed-records (car k) k-id)))))
@@ -438,7 +441,7 @@
 ;; the new code accepts its own: a checkpoint written now, the memory
 ;; forgotten, a traced query decodes its hits only
 (cold-index! (car k))
-(index-checkpoint! (car k))
+(caught (index-checkpoint! (car k)))
 (index-forget-memory!)
 (define if6-own
   (let* ((n 0)
