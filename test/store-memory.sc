@@ -319,14 +319,15 @@
 ;; ---- SM-4x: a segment the warm daemon holds, grown, is extended -------------------
 ;;
 ;; WITHOUT THE SWITCH, so the parse lines are the product's own (under it the
-;; witness scans each replayed segment again): three writes through the warm
-;; daemon on a fresh store. The first makes a new segment, the second grows it,
-;; and the third's load meets that segment grown since the store process last
-;; held it: extended, not scanned, and the lines it decodes are the ones the
-;; second write appended.
+;; witness scans each replayed segment again): the daemon is started with the
+;; variable empty, whatever this process runs under, since a whole-suite gate
+;; sets it. Three writes through the warm daemon on a fresh store. The first
+;; makes a new segment, the second grows it, and the third's load meets that
+;; segment grown since the store process last held it: extended, not scanned,
+;; and the lines it decodes are the ones the second write appended.
 (stop-daemon!)
 (build-store!)
-(start-daemon! "")
+(start-daemon! "THEOURGIA_DEGENERACY=")
 (define x-id (car (ids-now)))
 (define (x-write! title req)
   (let* ((c (cursor)) (p (format "((premise ~s ~s))" x-id (hash-of x-id))))
