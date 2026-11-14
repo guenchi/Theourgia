@@ -1,17 +1,1 @@
-((trace-lines "S3 step 1: the daemon's store process hands its loads one memory, so the commit's load replays the segment its start-up load scanned, and each load says once what its memory did"
-  "(trace memory (validation WRITER 1 replayed) 12)"
-  "(trace load-memory (replayed-or-extended 2 scanned 0) #f)")
- (trace-lines-removed "S3 step 1: the commit's load no longer decodes the segment the store process's start-up load already scanned"
-  "(trace memory (validation WRITER 1 scanned) 12)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"
-  "(trace parse #f #)"))
+()
