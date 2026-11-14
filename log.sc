@@ -55,7 +55,7 @@
           discover-prefix
           discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
-          discovery-torn discovery-integrity discovery-quarantine discovery-retired
+          discovery-torn discovery-integrity discovery-quarantine discovery-retired quarantine-of
           discovery-versions discovery-retired-tail discovery-clean?
           unreadable-entry? unreadable-entry-path unreadable-entry-reason
           unreadable-entry-errno
@@ -104,7 +104,7 @@
           log-append-guard!
           barrier-artefacts barrier-required run-barrier! publish-durable?
           uncertain-path uncertain-derived uncertain-derived/provided uncertain-load/provided uncertain-cache-failure/provided
-          session-discovery-provider provided-discovery uncertain-load uncertain-write! uncertain-cache-failure
+          session-discovery-provider uncertain-load uncertain-write! uncertain-cache-failure
           enumerate-segment-files
           read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment
@@ -1558,6 +1558,10 @@
     (guard (e ((unreadable-entry? e) #f))
       (not (eq? (entry-type path) 'absent))))
 
+  ;; A WRITER'S QUARANTINE AS ITS FILE SAYS NOW: #f with no file, else (version
+  ;; fork-or-#f). Asked by validation, and by the evidence index at its scan
+  ;; (evidence-index.sc), which is why it is exported: it takes no lock
+  ;; context and reads one file.
   (define (quarantine-of store writer)
     (let* ((p (writer-file store writer "quarantine.sexp"))
            (bytes (read-entry p)))
@@ -4983,6 +4987,8 @@
   ;; ensure-area! makes writers/<w>/ under the draft lock alone, so a writer
   ;; directory can appear after the load's discovery; the provider then misses
   ;; it (verdict-discoveries VD-8) and the verdict discovers it afresh.
+  ;; The evidence index asks the provider nothing: it reads each writer's
+  ;; fork itself at its scan (evidence-index.sc, F474).
   (define (session-discovery-provider s)
     (let ((epoch (session-epoch s)) (load (session-load s)))
       (lambda (writer)

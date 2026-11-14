@@ -44,6 +44,8 @@
           (only (rnrs eval) eval environment)
           (theourgia request)
           (theourgia evidence-index)
+          (only (theourgia degeneracy) degeneracy-definitions degeneracy-check)
+          (only (chezscheme) console-error-port)
           (only (theourgia wire) decode-line storable-decode)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (rnrs records syntactic) define-record-type fields mutable)
@@ -2389,8 +2391,6 @@
       (evidence-for store identity (reduce-applied-cut state) (reduce-gates state))))
 
   (define (evidence-for store identity delivered . marks)
-    (apply evidence-for/provided #f store identity delivered marks))
-  (define (evidence-for/provided provider store identity delivered . marks)
     (map (lambda (rec)
            (make-evidence (car rec) (cadr rec) (caddr rec) (cadddr rec)
                           (list-ref rec 4)
@@ -2399,7 +2399,7 @@
                                  (and have (<= (cdar rec) (cdr have)))))
                           (let ((m (and (pair? marks) (assoc (car rec) (car marks)))))
                             (if m (list (cdr m)) '()))))
-         (indexed-records/provided provider store identity)))
+         (indexed-records store identity)))
 
   ;; ---- conflicts ------------------------------------------------------------
 
@@ -3471,8 +3471,45 @@
 
   (define (request-verdict store req delivered plan-size . marks)
     (apply request-verdict/provided #f store req delivered plan-size marks))
+
+  ;; NO RECORD IS BOTH FILED QUARANTINED AND WITHIN THE DELIVERED CUT, when
+  ;; the verdict is a write session's (a provider was handed): its delivered
+  ;; cut and its index are read under one hold of the exclusive lock, and
+  ;; delivery stops below a writer's fork. The check index-fork tests that on
+  ;; the records the verdict's two arms get back, with a second mechanism:
+  ;; the cut came from the session's delivery, the placement from the
+  ;; index's own read of the fork. A record that is both prints one fixed
+  ;; line naming it on the console's error port, as the other checks' lines
+  ;; do (a rebound current error port cannot keep it from a gate's grep),
+  ;; and raises, which the verdict answers as evidence-unavailable. Not on
+  ;; the plain verdict, whose caller may hand it a cut taken under a lock
+  ;; since released.
+  (degeneracy-definitions
+    (define index-fork-line "degeneracy: a record filed quarantined is within the delivered cut")
+    (define (index-fork-witness! delivered evidence)
+      (for-each
+        (lambda (e)
+          (let ((have (assoc (car (ev-event e)) delivered)))
+            (when (and (eq? (ev-placement e) 'quarantined) have (<= (cdr (ev-event e)) (cdr have)))
+              (let ((port (console-error-port)))
+                (put-string port (string-append index-fork-line ": "
+                                                (call-with-string-output-port
+                                                  (lambda (o) (put-datum o (ev-event e))))
+                                                "\n"))
+                (flush-output-port port))
+              (assertion-violation 'degeneracy index-fork-line (ev-event e)))))
+        evidence)))
+  ;; -> evidence, after the check when it is on and a provider was handed
+  (define (fork-witnessed provider delivered evidence)
+    (begin
+      (degeneracy-check index-fork (when provider (index-fork-witness! delivered evidence)))
+      evidence))
+
   ;; THE VERDICT WITH ITS DISCOVERIES FROM A PROVIDER (F437 D6-7): the write
   ;; session's own, handed by with-store-write; #f discovers as before. The
+  ;; provider serves the intervals and the blocking refusal; the evidence
+  ;; index reads each writer's fork itself (evidence-index.sc), and the
+  ;; provider only says the verdict is the session's, for index-fork. The
   ;; provider is the LEADING argument because the marks are a rest list.
   (define (request-verdict/provided provider store req delivered plan-size . marks)
     (guard (e (#t (list 'unknown (list 'evidence-unavailable (failure-text e)))))
@@ -3500,13 +3537,15 @@
         ((and plan-size (not (and (> (length marks) 1) (eq? (cadr marks) 'plan))))
          (batch-verdict
            (batch-state plan-size
-                        (batch-evidence/provided provider store identity req plan-size delivered
-                                        (if (pair? marks) (car marks) '()))
+                        (fork-witnessed provider delivered
+                          (batch-evidence store identity req plan-size delivered
+                                          (if (pair? marks) (car marks) '())))
                         fingerprint after (car loaded) #t (car successors))))
         (else
          (request-decision identity fingerprint (write-request-who req) after
-                           (evidence-for/provided provider store identity delivered
-                                         (if (pair? marks) (car marks) '()))
+                           (fork-witnessed provider delivered
+                             (evidence-for store identity delivered
+                                           (if (pair? marks) (car marks) '())))
                            (car loaded)
                            (and (> (length marks) 1) (eq? (cadr marks) 'plan) plan-size)
                            (car successors)))))))
@@ -3672,15 +3711,13 @@
   ;; others, and a batch asked about only its own identity would see a
   ;; receipt and conclude that nothing had run.
   (define (batch-evidence store identity req n delivered marks)
-    (batch-evidence/provided #f store identity req n delivered marks))
-  (define (batch-evidence/provided provider store identity req n delivered marks)
     (append
-      (evidence-for/provided provider store identity delivered marks)
+      (evidence-for store identity delivered marks)
       (let loop ((k 0) (out '()))
         (if (= k n)
             (apply append (reverse out))
             (loop (+ k 1)
-                  (cons (evidence-for/provided provider store
+                  (cons (evidence-for store
                                       (cons (car (write-request-after req))
                                             (list 'batch (write-request-req-id req) k))
                                       delivered marks)

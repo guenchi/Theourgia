@@ -63,6 +63,9 @@
 ;;;   changed-files-reference   landing-files.sc: changed-files against its
 ;;;                             materialised reference
 ;;;   slot-classified-once      request.sc: no slot classified twice in a run
+;;;   index-fork                store.sc: in a write session's verdict, no record
+;;;                             the index files quarantined is within the
+;;;                             session's delivered cut
 ;;; TWO ARE LEFT OUT OF A WHOLE-SUITE GATE FOR THEIR COST and judged in their
 ;;; own fixtures, whose children set the variable to 1 whatever the pass sets:
 ;;; structure-per-record costs records times blocks in a load (structure-graph
@@ -82,7 +85,7 @@
 
   (meta define degeneracy-known
     '(structure-per-record structure-restored siblings-list sibling-order children-list path-holders replay-scan kept-prefix verdict-discoveries
-      admission-judgements changed-files-reference slot-classified-once))
+      admission-judgements changed-files-reference slot-classified-once index-fork))
 
   ;; -> the names in TEXT, separated by commas, each a symbol; an empty name
   ;; or an unknown one refuses

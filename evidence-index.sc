@@ -13,14 +13,14 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia evidence-index)
-  (export indexed-records indexed-records/provided index-checkpoint! index-forget-memory!)
+  (export indexed-records index-checkpoint! index-forget-memory!)
   (import (rnrs) (theourgia request) (theourgia wire)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) directory-entries file-is-directory? path-version trace-event!
-                entry-type entry-bytes read-entry-range)
+                entry-type entry-bytes read-entry-range progress!)
           (only (theourgia log) store-writers writer-directory store-id-of
                 enumerate-segment-files segment-file-name read-manifest manifest-segments
-                discover-prefix discovery-quarantine atomic-write! provided-discovery))
+                quarantine-of atomic-write!))
 
   ;; The checkpoint is disposable, checksummed localization data. The frame
   ;; at each hit is reread and decoded; cached bytes can only yield unknown
@@ -37,16 +37,25 @@
   (define (segment-paths store writer)
     (map (lambda (n) (string-append (writer-directory store writer) "/" (segment-file-name n)))
          (enumerate-segment-files store writer)))
+  ;; THE STAMP NAMES ITS DERIVATION FIRST: an index built while each writer's
+  ;; fork came from its discovery is another derivation, so a checkpoint
+  ;; written then never equals a stamp taken now and is rebuilt once (per
+  ;; process, until the next snapshot rewrites it), through retain-missing.
+  ;; A constant, storable list, so a stamp read back from a checkpoint
+  ;; round-trips equal?; the format number stays 1, which keeps the old
+  ;; checkpoint's entries for retain-missing.
+  (define derivation '(derivation fork-read-at-scan))
   (define (inventory store)
-    (map (lambda (p) (cons p (and (not (eq? (entry-type p) 'absent)) (path-version p))))
-      (append (list (string-append store "/meta.sexp") (string-append store "/instance.sexp"))
-        (apply append
-          (map (lambda (w)
-                 (let ((d (writer-directory store w)))
-                   (append (map (lambda (n) (string-append d "/" n))
-                                '("owner.sexp" "retired.sexp" "published.sexp" "quarantine.sexp"))
-                           (segment-paths store w) (files (string-append d "/damaged"))
-                           (files (string-append d "/incoming"))))) (store-writers store))))))
+    (cons derivation
+      (map (lambda (p) (cons p (and (not (eq? (entry-type p) 'absent)) (path-version p))))
+        (append (list (string-append store "/meta.sexp") (string-append store "/instance.sexp"))
+          (apply append
+            (map (lambda (w)
+                   (let ((d (writer-directory store w)))
+                     (append (map (lambda (n) (string-append d "/" n))
+                                  '("owner.sexp" "retired.sexp" "published.sexp" "quarantine.sexp"))
+                             (segment-paths store w) (files (string-append d "/damaged"))
+                             (files (string-append d "/incoming"))))) (store-writers store)))))))
   (define (subbytes b from to)
     (let ((out (make-bytevector (- to from))))
       (bytevector-copy! b from out 0 (- to from)) out))
@@ -69,23 +78,38 @@
                    (if rec (cons (list path writer start raw
                                       (if (and fork (>= (cdar rec) fork)) 'quarantined placement)) out) out))))
           (else (loop start (+ i 1) out))))))
-  (define (scan-store store) (scan-store/provided #f store))
-  ;; THE SAME, WITH EACH WRITER'S DISCOVERY FROM A PROVIDER (log.sc,
-  ;; provided-discovery): only its quarantine is read here
-  (define (scan-store/provided provider store)
+  ;; EACH WRITER'S FORK IS READ HERE, AT THE SCAN, from its quarantine file
+  ;; (log.sc, quarantine-of), and used as it always was: a frame at or above
+  ;; it is filed quarantined. Not from a discovery: a discovery handed in by
+  ;; a write session was made at its open, one delivery before this stamp,
+  ;; and a quarantine file changed between the two would be filed under a
+  ;; stamp that says otherwise. Read here, the stamp comes first and the
+  ;; scan after it, so such a change leaves a stamp the next inventory
+  ;; contradicts. An unreadable quarantine file raises out of the rebuild.
+  ;;
+  ;; PROGRESS ONCE PER FILE SCANNED (progress!: the request's progress sink
+  ;; and a yield, no pause), for every segment file and every file of
+  ;; damaged/ and incoming/: the scan holds no discovery now, whose validation
+  ;; reported progress per segment, and a store's whole scan in one stretch
+  ;; grows with the store toward a client's silence window. A keepalive is
+  ;; written only when the progress count moved, which a bare yield does not
+  ;; do. The cache below is set only at the rebuild's end, so what runs
+  ;; during a yield sees the old index or none.
+  (define (scan-store store)
     (apply append
       (map (lambda (w)
              (let* ((d (writer-directory store w)) (manifest (read-manifest store w))
                     (listed (manifest-segments manifest))
-                    (p (provided-discovery provider store w 'shared)) (q (discovery-quarantine p))
+                    (q (quarantine-of store w))
                     (fork (and (pair? q) (cadr q))))
                (append
                  (apply append (map (lambda (n)
+                                      (progress!)
                                       (scan (string-append d "/" (segment-file-name n)) w
                                             (if (or (not manifest) (memv n listed)) 'valid-history 'unlisted) fork))
                                     (enumerate-segment-files store w)))
-                 (apply append (map (lambda (p) (scan p w 'damaged #f)) (files (string-append d "/damaged"))))
-                 (apply append (map (lambda (p) (scan p w 'incoming #f)) (files (string-append d "/incoming")))))))
+                 (apply append (map (lambda (p) (progress!) (scan p w 'damaged #f)) (files (string-append d "/damaged"))))
+                 (apply append (map (lambda (p) (progress!) (scan p w 'incoming #f)) (files (string-append d "/incoming")))))))
            (store-writers store))))
   (define (add-bucket! buckets id entry)
     (let ((k (key id))) (hashtable-set! buckets k (cons entry (hashtable-ref buckets k '())))))
@@ -129,14 +153,13 @@
       (append current
         (map (lambda (e) (list (car e) (cadr e) (caddr e) (cadddr e) 'index-evidence-missing))
              (filter (lambda (e) (not (hashtable-contains? present (frame-key e)))) old)))))
-  (define (ensure-index store) (ensure-index/provided #f store))
-  (define (ensure-index/provided provider store)
+  (define (ensure-index store)
     (let* ((cache-key (key (list store (store-id-of store))))
            (stamp (inventory store))
            (old (or (hashtable-ref caches cache-key #f) (load-checkpoint store))))
       (if (and old (equal? stamp (vector-ref old 0)))
           (begin (hashtable-set! caches cache-key old) old)
-          (let* ((current (scan-store/provided provider store))
+          (let* ((current (scan-store store))
                  (entries (if old (retain-missing (vector-ref old 1) current) current))
                  (fresh (vector stamp entries (buckets-for entries))))
             (hashtable-set! caches cache-key fresh) fresh))))
@@ -147,9 +170,8 @@
       (if (and (not (eq? (list-ref e 4) 'index-evidence-missing)) (equal? actual (cadddr e)))
           (frame-record (cadr e) actual (list-ref e 4))
           (frame-record (cadr e) (cadddr e) 'index-evidence-missing))))
-  (define (indexed-records store identity) (indexed-records/provided #f store identity))
-  (define (indexed-records/provided provider store identity)
-    (let ((idx (ensure-index/provided provider store)))
+  (define (indexed-records store identity)
+    (let ((idx (ensure-index store)))
       (map verified-record (reverse (hashtable-ref (vector-ref idx 2) (key identity) '())))))
   (define (index-checkpoint! store)
     (let* ((idx (ensure-index store)) (body (list (vector-ref idx 0) (vector-ref idx 1))))
