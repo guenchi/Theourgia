@@ -812,30 +812,36 @@
                         (and (pair? (caddr tn)) (executor-pairs-hold? (caddr tn) (cadr tn)))))
                 (list #t #t 'equal '() (if (eq? base-set 'none) 'none 'paired) #t))
           ;; GUARD-3b THE SAME TWO TRACES AS ANOTHER MACHINE READS THEM, made up
-          ;; from this run's: the k-th parse line of the base's trace is the base
-          ;; log's k-th frame (validation reads them in order), so frame 1's count
-          ;; and the counts of the plan record and the record after it are read
-          ;; there, and every parse line of those counts is shifted in BOTH
-          ;; traces: +1 on frame 1 (a user's name one letter longer), +2 on the
-          ;; plan record and +1 on the next (pids one digit longer). Each is
-          ;; judged against this file's listed lines as this machine's reading
-          ;; is. Shifting both traces alike judges equal whatever counts are
-          ;; picked, so the row also asserts the correspondence it relies on:
-          ;; each of the three counts is its frame's payload in the base's log,
-          ;; the line's bytes after its crc, and that the frames shifted hold what the
-          ;; shift stands for: frame 1 the actor's name the command line wrote
-          ;; it with (THEOURGIA_ACTOR, else USER, else cli: core.sc's order, by env-or), the
-          ;; plan record the session id "w-<digits>-" twice and the next record
-          ;; once. Then the
-          ;; NEW trace alone with its first parse count changed (a daemon that
-          ;; parsed another frame): that judgement is not equal.
+          ;; from this run's. Three frames of the base's log carry what differs
+          ;; between machines: frame 1 the actor's name, the plan record the
+          ;; session id twice and the record after it once. A parse line's count
+          ;; is a frame's payload (the line's bytes after its crc), so each of
+          ;; the three frames is found in the traces BY ITS VALUE, not by its
+          ;; place: a trace need not decode every frame in order (since F437 S3
+          ;; step 1 a commit's load replays what the store process's start-up
+          ;; load scanned, and decodes none of it). A frame whose payload is a
+          ;; parse count in the base's trace is DECODED: every parse line of that
+          ;; count is shifted in BOTH traces, +1 on frame 1 (a user's name one
+          ;; letter longer), +2 on the plan record and +1 on the next (pids one
+          ;; digit longer), and each pair is judged against this file's listed
+          ;; lines as this machine's reading is. A frame whose payload is a
+          ;; count in NEITHER trace is not decoded in this window, and the
+          ;; traces cannot depend on its length; one counted in the new trace
+          ;; and not the base's is red. At least one of the three must be
+          ;; decoded, or the row judges nothing and is red. The row also asserts
+          ;; that the frames hold what the shift stands for: frame 1 the actor's
+          ;; name the command line wrote it with (THEOURGIA_ACTOR, else USER,
+          ;; else cli: core.sc's order, by env-or), the plan record the session
+          ;; id "w-<digits>-" twice and the next record once. Then the NEW trace
+          ;; alone with one decoded frame's count changed (a daemon that parsed
+          ;; another frame): that judgement is not equal.
           (let* ((frames (text-lines (file-text (string-append (car b) "/writers/" prepared-writer "/000001.sexp"))))
                  (plan-at (let find ((fs frames) (k 1))
                             (cond ((null? fs) #f) ((contains? (car fs) "(plan \"w-") k) (else (find (cdr fs) (+ k 1))))))
                  (count-of-line (lambda (l) (and (not (equal? (count-masked l) l))
                                                  (string->number (substring l (- (string-length (count-masked l)) 2) (- (string-length l) 1))))))
                  (counts (filter values (map count-of-line (text-lines (cadr tb)))))
-                 (nth (lambda (k) (and k (>= k 1) (<= k (length counts)) (list-ref counts (- k 1)))))
+                 (new-counts (filter values (map count-of-line (text-lines (cadr tn)))))
                  ;; -> the bytes of frame K's line after its first space, #f past the log
                  (payload (lambda (k)
                             (and k (>= k 1) (<= k (length frames))
@@ -880,20 +886,44 @@
                  (judged (lambda (base new)
                            (let ((j (trace-judgement base new listed-trace-lines listed-removed-lines)))
                              (and (eq? (car j) 'equal) (null? (cadr j)) (null? (caddr j))))))
-                 (user (and (nth 1) (list (cons (nth 1) 1))))
-                 (pid (and (nth plan-at) (nth (and plan-at (+ plan-at 1)))
-                           (list (cons (nth plan-at) 2) (cons (nth (+ plan-at 1)) 1)))))
-            (printf "GUARD-3b frame 1's count ~s, the plan record (frame ~s) ~s, the next ~s~%"
-                    (nth 1) plan-at (nth plan-at) (and plan-at (nth (+ plan-at 1))))
-            (want "GUARD-3b the base trace's counts of frame 1, the plan record and the next are those frames' payloads in the base's log, frame 1 holds the actor's name, and the plan record holds the session id twice and the next once; this run's two traces with those counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one parse count changed does not"
-                  (list (and plan-at (for-all (lambda (k) (equal? (nth k) (payload k))) (list 1 plan-at (+ plan-at 1))))
+                 ;; -> frame K's standing in the two traces: decoded (its payload a
+                 ;; count in the base's), not-decoded (in neither), new-only, or
+                 ;; absent (no such frame)
+                 (standing (lambda (k)
+                             (let ((p (payload k)))
+                               (cond ((not p) 'absent)
+                                     ((memv p counts) 'decoded)
+                                     ((memv p new-counts) 'new-only)
+                                     (else 'not-decoded)))))
+                 (shifts (list (cons 1 1) (cons plan-at 2) (cons (and plan-at (+ plan-at 1)) 1)))
+                 (standings (map (lambda (s) (standing (car s))) shifts))
+                 ;; the decoded frames' tables, (payload . delta); the user's arm
+                 ;; is frame 1's, the pid arm the plan record's and the next's
+                 (table-of (lambda (ss) (filter values (map (lambda (s) (and (eq? (standing (car s)) 'decoded)
+                                                                              (cons (payload (car s)) (cdr s))))
+                                                            ss))))
+                 (user (table-of (list (car shifts))))
+                 (pid (table-of (cdr shifts)))
+                 ;; the negative arm changes a count the NEW trace holds
+                 (first-decoded (let ((t (filter (lambda (e) (memv (car e) new-counts)) (table-of shifts))))
+                                  (and (pair? t) (list (car t))))))
+            (printf "GUARD-3b frame 1 ~s ~s, the plan record (frame ~s) ~s ~s, the next ~s ~s~%"
+                    (payload 1) (car standings) plan-at (and plan-at (payload plan-at)) (cadr standings)
+                    (and plan-at (payload (+ plan-at 1))) (caddr standings))
+            (for-each (lambda (s st) (when (eq? st 'not-decoded)
+                                       (printf "GUARD-3b frame ~s: not decoded in this window~%" (car s))))
+                      shifts standings)
+            (want "GUARD-3b frame 1, the plan record and the next are each found by its payload: decoded in the base's trace or in neither, and at least one decoded; frame 1 holds the actor's name, and the plan record holds the session id twice and the next once; this run's two traces with the decoded frames' counts shifted alike in both, as a machine whose user's name is one letter longer and one whose daemons' pids are one digit longer read them, judge equal against this file; the new trace alone with one decoded count changed does not"
+                  (list (and plan-at
+                             (for-all (lambda (st) (memq st '(decoded not-decoded))) standings)
+                             (memq 'decoded standings) #t)
                         (and (pair? frames)
                              (contains? (car frames)
                                         (string-append "\"" (env-or "THEOURGIA_ACTOR" (env-or "USER" "cli")) "\"")))
                         (and plan-at (list (session-ids plan-at) (session-ids (+ plan-at 1))))
-                        (and user (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f)))
-                        (and pid (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f)))
-                        (and user (judged (cadr tb) (shifted (cadr tn) user #t))))
+                        (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f))
+                        (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f))
+                        (and first-decoded (judged (cadr tb) (shifted (cadr tn) first-decoded #t))))
                   '(#t #t (2 1) #t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
