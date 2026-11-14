@@ -49,7 +49,7 @@ datum-completion 3 7 2c828a2b9150f6268188efaaf23eff87
 datum-draft 36 40 a8d95a92dfd97459c3b9cbea93a72bed
 datum-import - 82 4dee5cd7bc67f8c48127c8c9a05574de
 datum-self 18 106 0f494adc88ab29b6652c4507523bc3ce
-degeneracy-switch 13 18 6450726f769d7b4218c6d6c04c213648
+degeneracy-switch 13 18 f3b8730f3e8682a0f88e3b76c573cb53
 delete-targets 6 11 653a019393e42e333291a45f9e018e40
 delivery-order 14 17 13c02eeb94258342fc083a1337f17d4f
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
@@ -95,6 +95,7 @@ growth 10 25 f1ed0e0eb0c70aa5c723fbfc8a0bfaf6
 hash-view 16 19 d43f14ae90fb936eb29050970c180730
 import-git 57 74 5efa577e81acecc9735ca0347592b0e3
 import-symbols 80 85 09dcdc0ed300f368a3db96739b744dae
+index-fork 24 47 e1a9c9a710a254f062e0b3236d12011b
 inode-detect - 6 5f3885335fab923d2f53a53f5e7cf4d1
 insert-cost 6 71 cc51772c0c604d3c97ebe5f7a5ba4522
 io-yield 24 31 4d4567cb356bc518330bc49238ffa5f8
@@ -220,7 +221,7 @@ unscoped-lock 2 11 5c96faabab689055f42c580b43b657a2
 validity 35 38 9eeea59e2540cc721dd6399273b683db
 verb-libraries-lazy 25 31 f2a2cf91cb121fbb7b94db916316954e
 verb-registry 23 28 b28e9daa1640a60231dc5edace59721d
-verdict-discoveries 20 42 2cdfb4265b129a4adaa4ce1cb2759f3e
+verdict-discoveries 20 42 f17bf159a083b9e6a9978e5d4847425b
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9
 view-fields 15 18 8011d458a22bda77e968c22ed16604a2

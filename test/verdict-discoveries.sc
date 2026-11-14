@@ -127,8 +127,8 @@
          (req (make-write-request "test" 'insert (list "root" "x") req-id (cons w (end-seq st w))))
          (s (log-begin st (lambda args 'applied)))
          (provider (session-discovery-provider s))
-         ;; the provided verdict first: it meets the index cold, so its scan asks
-         ;; the provider too
+         ;; the provided verdict first: it meets the index cold, and the
+         ;; index's scan reads each writer's fork itself (F474)
          (provided (request-verdict/provided provider st req cut #f gates))
          (plain (request-verdict st req cut #f gates)))
     (log-end! s)
@@ -205,8 +205,9 @@
          (batch-answers (taken))
          (plain (counts (lambda () (request-verdict st ran cut #f gates))))
          (plain-batch (counts (lambda () (request-verdict st batch-req cut 2 gates))))
-         ;; COLD: the index forgotten, so the batch's evidence rebuilds it and its
-         ;; scan asks each writer's discovery; the rebuild decodes every frame
+         ;; COLD: the index forgotten, so the batch's evidence rebuilds it; its
+         ;; scan reads each writer's fork itself and asks the provider nothing
+         ;; (F474); the rebuild decodes every frame
          ;; twice (the scan, traced as identity-source-decode, and buckets-for),
          ;; and with the provider nothing else
          (cold-batch (begin (index-forget-memory!) (taken)
@@ -237,9 +238,9 @@
       '(#t #t))
 (printf "VD-3 the provider's answers: single ~a, batch ~a, cold batch ~a\n"
         (car (list-ref vd3 6)) (cadr (list-ref vd3 6)) (caddr (list-ref vd3 6)))
-(want "VD-3 the provider is asked and answers each of the verdict's discoveries: the cache's and the derivation's per verdict, and the index scan's when cold"
+(want "VD-3 the provider is asked and answers each of the verdict's discoveries: the cache's and the derivation's per verdict, and nothing more when the index is cold (its scan reads each fork itself)"
       (list-ref vd3 6)
-      '(2 2 3))
+      '(2 2 2))
 (want "VD-3 CONTROL: the verdict without the provider parses beyond what the index decodes"
       (let ((x (caddr vd3))) (> (car x) (cadr x)))
       #t)
