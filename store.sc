@@ -45,6 +45,7 @@
           (theourgia request)
           (theourgia evidence-index)
           (only (theourgia degeneracy) degeneracy-definitions degeneracy-check)
+          (only (chezscheme) console-error-port)
           (only (theourgia wire) decode-line storable-decode)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (rnrs records syntactic) define-record-type fields mutable)
@@ -3478,9 +3479,11 @@
   ;; the records the verdict's two arms get back, with a second mechanism:
   ;; the cut came from the session's delivery, the placement from the
   ;; index's own read of the fork. A record that is both prints one fixed
-  ;; line naming it and raises, which the verdict answers as
-  ;; evidence-unavailable. Not on the plain verdict, whose caller may hand
-  ;; it a cut taken under a lock since released.
+  ;; line naming it on the console's error port, as the other checks' lines
+  ;; do (a rebound current error port cannot keep it from a gate's grep),
+  ;; and raises, which the verdict answers as evidence-unavailable. Not on
+  ;; the plain verdict, whose caller may hand it a cut taken under a lock
+  ;; since released.
   (degeneracy-definitions
     (define index-fork-line "degeneracy: a record filed quarantined is within the delivered cut")
     (define (index-fork-witness! delivered evidence)
@@ -3488,7 +3491,7 @@
         (lambda (e)
           (let ((have (assoc (car (ev-event e)) delivered)))
             (when (and (eq? (ev-placement e) 'quarantined) have (<= (cdr (ev-event e)) (cdr have)))
-              (let ((port (current-error-port)))
+              (let ((port (console-error-port)))
                 (put-string port (string-append index-fork-line ": "
                                                 (call-with-string-output-port
                                                   (lambda (o) (put-datum o (ev-event e))))
