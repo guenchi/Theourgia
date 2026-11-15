@@ -2913,6 +2913,9 @@ says how far: `<n>` is that writer's records since the baseline -- its
 current `<seq>` minus the one the join of the committed drafts' cuts holds
 for it, or the whole of `<seq>` when the baseline holds none. `<seq>` in
 `behind` is a position, not a count; read `behind-records` for a count.
+The records this commit wrote are not among them: the log writer that
+appended them is read at its position before the commit, so a lone
+writer's commit names nothing behind it.
 
 A commit that landed then removes the drafts it committed. When that
 cleanup fails, the commit has still landed: the answer stays `ok` and ends

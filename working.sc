@@ -1745,12 +1745,21 @@
   ;; holds none), beside `behind` and over the same writers. `behind` is as
   ;; it was, so a client that reads only it is unaffected.
   ;;
+  ;; NEVER: AND NOT THE RECORDS THIS COMMIT WROTE. Its plan and its sets are
+  ;; appended by the store's log writer, whose name is not the draft
+  ;; writer's, so a lone writer's commit was named behind its own records.
+  ;; OWN, when given, is ((<log writer> . <seq before this commit>) ...)
+  ;; for the writers this commit appended to; each is read at that seq.
+  ;;
   ;; -> the clauses (behind ...) and (behind-records ...), or () when
   ;; nothing moved.
-  (define (behind-clauses cut writer entries)
+  (define (behind-clauses cut writer entries . own)
     (guard (e (#t '()))
       (let* ((baseline (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
                                   '() entries))
+             (cut (if (and (pair? own) (pair? (car own)))
+                      (map (lambda (p) (let ((b (assoc (car p) (car own)))) (if b (cons (car p) (cdr b)) p))) cut)
+                      cut))
              (moved (list-sort (lambda (a b) (string<? (car a) (car b)))
                                (filter (lambda (p)
                                          (and (not (string=? (car p) writer))
@@ -1765,6 +1774,20 @@
                                (let ((mine (assoc (car p) baseline)))
                                  (cons (car p) (- (cdr p) (if mine (cdr mine) 0)))))
                              moved)))))))
+
+  ;; -> ((<log writer> . <its seq in BEFORE>) ...) for each writer an answer's
+  ;; events name: the writers a commit appended to, at their seq before it
+  (define (own-writers-before answers before)
+    (let loop ((as answers) (out '()))
+      (if (null? as)
+          out
+          (let* ((ev (and (pair? (car as)) (list? (car as)) (assq 'events (filter pair? (cdr (car as))))))
+                 (ws (if (and ev (pair? (cdr ev)) (list? (cadr ev))) (map car (filter pair? (cadr ev))) '())))
+            (loop (cdr as)
+                  (fold-left (lambda (acc w)
+                               (if (assoc w acc) acc
+                                   (cons (cons w (let ((b (assoc w before))) (if b (cdr b) 0))) acc)))
+                             out ws))))))
 
   ;; GATE, when given, is asked inside the lock before anything is retired,
   ;; and a refusal it answers is the answer, nothing retired (the commit
@@ -2202,6 +2225,9 @@
                      ;; rebuild the draft.
                      (finish
                      (let* ((live #f)
+                            ;; the applied cut before this commit's records, for
+                            ;; behind-clauses: read in the thunk, inside the lock
+                            (before '())
                             ;; ((<provisional id> . <index of its holder's insert>) ...)
                             (holders '())
                             ;; ((<provisional id> <holder's index> <piece count>) ...)
@@ -2209,6 +2235,7 @@
                             (answers (with-store-write store
                                        (lambda (current view)
                                          (set! live current)
+                                         (set! before (map (lambda (p) (cons (car p) (cdr p))) (reduce-applied-cut current)))
                                          (let-values (((more at piece-spans) (structural-intents current (length intents) structural-entries)))
                                            (set! holders at)
                                            (set! spans piece-spans)
@@ -2271,7 +2298,8 @@
                                ;; commit it repeats already answered that question.
                                (let ((behind (if (and (not replay?) live)
                                                  (behind-clauses (reduce-applied-cut live)
-                                                                 writer entries)
+                                                                 writer entries
+                                                                 (own-writers-before answers before))
                                                  '())))
                                  (with-cleanup
                                    (append (list 'ok (cons 'items answers)) behind
