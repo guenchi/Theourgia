@@ -726,13 +726,25 @@
              (if (= run k) i (loop (+ i run)))))
           (else (loop (+ i 1)))))))
 
+  ;; THE TARGET ENDS AT THE PARENTHESIS THAT CLOSES IT, as CommonMark has
+  ;; it: a pair inside it is kept whole ([a](f(x).md) links to f(x).md), and
+  ;; a target whose parentheses never balance makes no link.
+  (define (balanced-close text from)
+    (let ((n (string-length text)))
+      (let loop ((i from) (depth 0))
+        (cond ((>= i n) #f)
+              ((char=? (string-ref text i) #\() (loop (+ i 1) (+ depth 1)))
+              ((char=? (string-ref text i) #\))
+               (if (= depth 0) i (loop (+ i 1) (- depth 1))))
+              (else (loop (+ i 1) depth))))))
+
   (define (link-at text i)
     (let* ((n (string-length text))
            (close (find-close text (+ i 1) "]")))
       (and close
            (< (+ close 1) n)
            (char=? (string-ref text (+ close 1)) #\()
-           (let ((rparen (find-close text (+ close 2) ")")))
+           (let ((rparen (balanced-close text (+ close 2))))
              (and rparen
                   (list (substring text (+ i 1) close)
                         (substring text (+ close 2) rparen)

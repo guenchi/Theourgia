@@ -176,6 +176,7 @@
     (cons "an inline span holding backticks" '((para (code "a ` b"))))
     (cons "a reference" '((para "see " (ref "[[foo.md]]" "foo"))))
     (cons "a link" '((para (link "http://x/y" "text"))))
+    (cons "a link whose target holds a balanced pair" '((para (link "f(x).md" "text"))))
     (cons "a bullet list" '((list #f 1 (item (para "one")) (item (para "two")))))
     (cons "an ordered list that does not start at one"
           '((list #t 3 (item (para "three")) (item (para "four")))))
@@ -190,6 +191,15 @@
       (map car (filter (lambda (p) (not (equal? (cdr p) (erase (md->blocks (blocks->md (cdr p)))))))
                        asts))
       '())
+;; A LINK TARGET ENDS AT THE PARENTHESIS THAT CLOSES IT (F453): a balanced
+;; pair inside it is the target's, and a target that never balances is no
+;; link, its text read as text.
+(want "a link target holding one balanced pair keeps it: [a](f(x).md) links to f(x).md"
+      (erase (md->blocks "[a](f(x).md)\n"))
+      '((para (link "f(x).md" "a"))))
+(want "a link target whose parentheses never balance makes no link: [a](b(c) is text"
+      (erase (md->blocks "[a](b(c)\n"))
+      '((para "[a](b(c)")))
 ;; RAW-MD IS VERBATIM, so its two cases are written out rather than erased:
 ;; printed, a raw-md text with no terminator gains the printer's LF, and read
 ;; back it is the slice of the printed bytes, that LF included, with its
