@@ -658,7 +658,10 @@ regular expression syntax here.
 
 Matching ignores case. The text searched is a block's `src` together with the
 `doc` and the printed body derived from it, in that order, and the line number
-counts through that sequence.
+counts through that sequence. A block whose body is a datum (one imported with
+`--datum`) is read as `export-code --datum` prints it: its body first, line by
+line as the printer breaks it, numbered from 1 in the printed body, then its
+`doc`.
 
 Two limits keep one block from crowding out the rest: at most 20 lines from any
 one block, and at most 200 lines in all. When either applies the answer carries

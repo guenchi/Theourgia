@@ -83,7 +83,7 @@
           (only (theourgia timing-wrappers) timed intent-timed timing-call timing-quiet)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!
-                hold-point! entry-name-type entry-bytes progress!)
+                hold-point! entry-name-type entry-bytes progress! source-datum-print)
           (only (theourgia digest) sha256 bytevector->hex)
           ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
           ;; `code-project.sc` says it outright: a code block's `name` is
@@ -2279,15 +2279,31 @@
   ;; line of this sequence, so the order is written down now rather than
   ;; discovered later by whoever first writes two of them.
   ;; -> (<texts> . <undecodable?>): the src's texts, the doc's and the
-  ;; body's, and whether the src's bytes did not decode
+  ;; body's, and whether the src's bytes did not decode.
+  ;; A DATUM BODY IS READ AS IT IS PRINTED, LINE BY LINE, AND FIRST: the
+  ;; datum projection's printer (source-datum-print, what export-code --datum
+  ;; writes), so a match is the printed line it is on, numbered from 1 in the
+  ;; printed body; the doc follows it. It was the body written on one line
+  ;; after the doc's, so a three-line form matched whole, on line 2.
   (define (grep-text-of state live id)
     (let ((src-read (let ((b (state-read state id)))
                       (if b (field-texts state id b (quote src)) (cons (quote ()) #f))))
-          (derived (lambda (name) (derived-strings state live id name))))
-      (cons (append (car src-read)
-                    (derived (quote doc))
-                    (derived (quote body)))
+          (derived (lambda (name) (derived-strings state live id name)))
+          (printed (printed-datum-body state live id)))
+      (cons (if printed
+                (append (list printed) (car src-read) (derived (quote doc)))
+                (append (car src-read)
+                        (derived (quote doc))
+                        (derived (quote body))))
             (cdr src-read))))
+  ;; -> a datum body as the datum projection prints it, or #f when the body
+  ;; is absent, text or bytes. A printer this Chez is not measured for
+  ;; refuses; the body is then its one-line spelling, as before.
+  (define (printed-datum-body state live id)
+    (let ((e (assq (quote body) (viewed-fields state live id))))
+      (and e (not (string? (cdr e))) (not (bytevector? (cdr e)))
+           (guard (x (#t (datum-spelling (cdr e))))
+             (source-datum-print (cdr e))))))
 
   ;; -> AN ALIST, NOT A TUPLE. The caller reads `items`, `omitted-lines`,
   ;; `unseen-blocks`, `scanned-blocks`, `fields` and `cut` by name. A tuple
