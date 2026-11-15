@@ -4825,11 +4825,14 @@
       ;; else arm below, which told a client holding the request less than
       ;; the store had established. The judgement carries the indices on
       ;; disk, a prefix, so the count applied is also the first item not
-      ;; applied; how many items the batch had is not in it.
+      ;; applied; how many items the batch had is not in it. PLANNED IS THE
+      ;; SAME CLAIM WITH NO ITEM ON DISK, and answers with the same fields,
+      ;; the head the state's name.
       ((partial)
        (let ((present (cadr verdict)))
          (list 'error 'partial (list 'applied (length present)) (list 'next (length present))
                (list 'present present))))
+      ((planned) (list 'error 'planned (list 'applied 0) (list 'next 0) (list 'present '())))
       (else (cons 'error (cons 'unknown (cdr verdict))))))
 
   ;; THE BARRIER GOES WHERE THE RECORD IS, not where the writer happens

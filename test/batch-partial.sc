@@ -20,6 +20,8 @@
 ;;   BP-1  three items, the second refused; sent again: (error partial (applied 1)
 ;;         (next 1) (present (0))), and nothing more written
 ;;   BP-2  CONTROL: three items that all ran; sent again: a replay
+;;   BP-3  three items, the first refused; sent again: (error planned (applied 0)
+;;         (next 0) (present ())), the same claim with no item on disk
 (import (chezscheme))
 
 (define bad 0)
@@ -96,6 +98,15 @@
         (list (map car (items first))
               (let ((i (items again))) (and (pair? i) (pair? (car i)) (assq 'replay (cdr (car i)))))))
       '((ok ok ok) (replay #t)))
+
+(want "BP-3 a tracked batch whose first item is refused, sent again under its request, answers planned: none applied, the next is item 0, and nothing more is written"
+      (let* ((s (store-with-a-block!)) (d (car s)) (a (cadr s)) (cursor (caddr s))
+             (intents (format "((set \"no-such.1\" title \"y\") (set ~s title \"x\") (set ~s note \"z\"))" a a))
+             (first (run d intents "batch" "--req" "r-n" "--cursor" cursor))
+             (end1 (end-of d))
+             (again (run d intents "batch" "--req" "r-n" "--cursor" cursor)))
+        (list (map car (items first)) (items again) (= end1 (end-of d))))
+      '((error) ((error planned (applied 0) (next 0) (present ()))) #t))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nbatch-partial complete\n" bad rows-run)
