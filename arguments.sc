@@ -253,7 +253,7 @@
       ((write) '("--rebase"))
       ((import-md) '("--allow-delete"))
       ((import-code) '("--allow-delete" "--datum"))
-      ((export-code) '("--raw" "--datum" "--working"))
+      ((export-code) '("--raw" "--datum" "--working" "--map"))
       ((export-md) '("--with-ids" "--working"))
       ((supply) '("--clear"))
       ((relation rule derive) '("--retire"))

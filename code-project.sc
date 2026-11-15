@@ -299,8 +299,9 @@
 ;; NOTE: THE VIEW IS A PARAMETER, as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's
   ;; working view.
-  (define (export-code store dir raw?)
-    (export-code-view store dir raw? (lambda () (open-and-reduce store))))
+  ;; MAP?, when given and true: the answer carries the block map (--map).
+  (define (export-code store dir raw? . map?)
+    (export-code-view store dir raw? (lambda () (open-and-reduce store)) #f (and (pair? map?) (car map?))))
 
   ;; A PATH SEVERAL BLOCKS HOLD IS REFUSED WITH EVERY SUCH PATH IN THE STORE,
   ;; and the way out. `path` and `ids` are the first one met, as before;
@@ -429,13 +430,16 @@
             (loop (cdr es) end (cons (list (car (car es)) at end) out))))))
 
   ;; OVERLAY, when given: a procedure from the outputs to the outputs written,
-  ;; the working tree's structural drafts laid over them (working.sc).
-  (define (export-code-view store dir raw? view . overlay)
+  ;; the working tree's structural drafts laid over them (working.sc). MAP?,
+  ;; after it: the answer carries the block map (--map).
+  (define (export-code-view store dir raw? view . opts)
     (answer
       (lambda ()
-        (let* ((state (view))
+        (let* ((overlay (and (pair? opts) (car opts)))
+               (map? (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
+               (state (view))
                (outputs (let ((o (projection-outputs store state raw?)))
-                          (if (and (pair? overlay) (car overlay)) ((car overlay) o) o))))
+                          (if overlay (overlay o) o))))
           ;; ONE FILE WRITTEN IS PROGRESS. INJECTION ONLY: export-slow makes
           ;; each take 100 ms more, and so does every keepalive fault and
           ;; conn-killed-pending, whose rows need a request that keeps
@@ -447,10 +451,14 @@
                                                    keepalive-stale keepalive-raise conn-killed-pending)
                                                  100)))
                     outputs)
-          ;; THE MAP answers each file's block ranges; an output the
-          ;; working view's structural overlay made carries none and is not
-          ;; in it. A reader of the human rendering is not shown it.
-          (list 'ok (list 'files (length outputs))
-                (list 'map (map (lambda (o) (list (car o) (caddr o)))
-                                (filter (lambda (o) (= (length o) 3)) outputs))))))))
+          ;; THE MAP, ON REQUEST (--map): each file's block ranges; an output
+          ;; the working view's structural overlay made carries none and is
+          ;; not in it. Without --map the answer is (ok (files n)) alone: the
+          ;; core cannot tell a reader who wants the map from one paying for
+          ;; every byte of the answer.
+          (if map?
+              (list 'ok (list 'files (length outputs))
+                    (list 'map (map (lambda (o) (list (car o) (caddr o)))
+                                    (filter (lambda (o) (= (length o) 3)) outputs))))
+              (list 'ok (list 'files (length outputs))))))))
 )

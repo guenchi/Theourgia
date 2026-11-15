@@ -1355,7 +1355,7 @@
       (list 'import-code import-code-usage
             "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its file, line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause. Text mode, without --datum, skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL. With --symbols, a file an editor's symbols file names is split on its first import at the cuts split-suggest gives those symbols, the comment lines above a definition going with it; what follows a symbol up to the next block is a block of its own only when it holds code, the symbol's end moved forward to where the scanner sees top-level code begin; a file that already carries markers follows them, and the answer lists it as symbols-ignored. A file with a symbol whose start the scanner does not see at the top level is not imported, and the answer lists it with its refusal, which names the symbol, as symbols-refused; an end is never refused. A file whose cuts could not be checked at all (symbols-unchecked: no language entry or suggest profile; symbols-unscanned: the scanner cannot follow it) is imported whole, as one block, and listed with its refusal as symbols-imported-whole. The skipped clause and the three symbols clauses are printed after the items without --wire too, one line each."
             #f 'daemon)
-      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])
+      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--map"] ["--working"] ["--writer" <name>] ["--cut" <cut>])
             "Write the store's source back out to a directory." #f 'daemon)
       (list 'def '(def <name> ["--under" <library>] <source> ["--premises" <datum>])
             "Define one named definition in a datum library, after its last child. A name one of the library's children already defines is refused (name-exists); def does not replace a definition." #f 'daemon)
@@ -1825,17 +1825,20 @@
                              (lambda (view)
                                (if (argument-option options "--datum")
                                    ((datum-project-entry 'export-datum-view) store (car args) view)
-                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view)))))
+                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view #f
+                                    (argument-option options "--map"))))))
                           ((argument-option options "--working")
                            (working-export store state writer
                              (lambda (view overlay)
                                (if (argument-option options "--datum")
                                    ((datum-project-entry 'export-datum-view) store (car args) view)
-                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view overlay)))
+                                   ((code-project-entry 'export-code-view) store (car args) (argument-option options "--raw") view overlay
+                                    (argument-option options "--map"))))
                              #t))
                           ((argument-option options "--datum") ((datum-project-entry 'export-datum) store (car args)))
-                          (else ((code-project-entry 'export-code) store (car args) (argument-option options "--raw"))))))
-                  (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>] ["--cut" <cut>])))))
+                          (else ((code-project-entry 'export-code) store (car args) (argument-option options "--raw")
+                                 (argument-option options "--map"))))))
+                  (usage '(export-code <dir> ["--raw"] ["--datum"] ["--map"] ["--working"] ["--writer" <name>] ["--cut" <cut>])))))
       ;; THE TABLE'S WRITER IS --for, AND THE VIEW IS THAT WRITER'S: the
       ;; committed state for "-" (no --for), the writer's working view
       ;; otherwise -- the view the plugin's export-code projected.

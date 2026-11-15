@@ -3247,22 +3247,21 @@ they changed, the import is refused `(error stale-baseline (path <path>)
 
 ### `export-code`
 
-    (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>) ("--cut" <cut>))
+    (export-code <dir> ("--raw") ("--datum") ("--map") ("--working") ("--writer" <name>) ("--cut" <cut>))
 
 Writes the store out as source. Without `--datum` it writes the text-mode
 files -- the blocks `import-code` made without `--datum`; a store with no
 text-mode files answers `(ok (files 0))`. `--raw` writes each file as its blocks' bytes run together, with no header or marker lines. Such a file cannot be imported back onto the same blocks: `import-code` treats it as a new file.
 
-Beside the count, a text-mode export answers where each block lies in each file:
-`(ok (files <n>) (map ((<path> ((<id> <start> <end>) ...)) ...)))`, the files in
-the order written, each block's range in half-open byte offsets, in file order,
-covering the file from 0 to its end. Marked, a block's `@block` line, and the pad
-before it, are in its range (the first block's also holds the `@file` line);
-`--raw`, each range is the block's own bytes. The map lists the files whose block
-ranges the export knows: a file a writer's structural draft adds (`--working`)
-is written and counted in `files` but is not in the map. The machine reading
-carries the map; a person, without `--wire`, is shown `(ok (files <n>))` as
-before.
+With `--map`, a text-mode export also answers where each block lies in each
+file: `(ok (files <n>) (map ((<path> ((<id> <start> <end>) ...)) ...)))`, the
+files in the order written, each block's range in half-open byte offsets, in file
+order, covering the file from 0 to its end. Marked, a block's `@block` line, and
+the pad before it, are in its range (the first block's also holds the `@file`
+line); with `--raw`, each range is the block's own bytes. The map lists the files
+whose block ranges the export knows: a file a writer's structural draft adds
+(`--working`) is written and counted in `files` but is not in the map. Without
+`--map` the answer is `(ok (files <n>))` alone; `--datum` answers no map.
 NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".

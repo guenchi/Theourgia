@@ -9,19 +9,21 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
-;; EXPORT-CODE --WIRE ANSWERS WHERE EACH BLOCK LIES IN EACH FILE (README,
+;; EXPORT-CODE --MAP ANSWERS WHERE EACH BLOCK LIES IN EACH FILE (README,
 ;; export-code): beside `(files <n>)`, `(map ((<path> ((<id> <start> <end>)
 ;; ...)) ...))`, half-open byte offsets in file order covering the file, from
 ;; the layout the encoder wrote; a block's marker line and pad go with the
 ;; block they precede. A file whose ranges the export does not know (one the
 ;; working view's structural overlay added) is not in the map; `files` still
-;; counts it. A person, without --wire, is shown the answer as before.
+;; counts it. Without --map the answer is (ok (files <n>)) alone, as on the
+;; base, for a machine reader and a person alike.
 ;;
 ;;   EM-1  two files, the second of two blocks: the map names both, in order, each
 ;;         covering its file, b.scm with two ranges
 ;;   EM-2  every range holds its block's @block marker line, and nothing else's
 ;;   EM-3  --raw: each range is that block's src, as stored, in order
-;;   EM-4  CONTROL: without --wire the answer prints as (ok (files 2))
+;;   EM-4  CONTROL: without --map the answer is (ok (files 2)), read as data
+;;         and printed for a person alike
 ;;   EM-5  --working with a file the overlay added: (files 3), the map without it
 (import (chezscheme) (only (theourgia working) working-new!))
 (define bad 0)
@@ -116,11 +118,11 @@
                        b-file b-child (string->utf8 "(define (m w) w)\n"))
              "batch"))
 (define out1 (string-append root "/out1"))
-(define marked (run d "" "export-code" out1))
-(printf "export-code --wire: ~s\n" marked)
+(define marked (run d "" "export-code" out1 "--map"))
+(printf "export-code --map: ~s\n" marked)
 (define the-map (let ((m (clause marked 'map))) (if m (cadr m) '())))
 
-(want "EM-1 export-code --wire of two files answers a map naming both, in the export's order, each file's ranges covering its bytes from 0 to its end"
+(want "EM-1 export-code --map of two files answers a map naming both, in the export's order, each file's ranges covering its bytes from 0 to its end"
       (list (cadr (clause marked 'files)) (map car the-map)
             (map (lambda (e) (covers? (cadr e) (bytevector-length (file-bytes (string-append out1 "/" (car e)))))) the-map)
             (map (lambda (e) (length (cadr e))) the-map))
@@ -139,8 +141,8 @@
       (map (lambda (e) (map (lambda (r) #t) (cadr e))) the-map))
 
 (define out3 (string-append root "/out3"))
-(define raw (run d "" "export-code" out3 "--raw"))
-(want "EM-3 export-code --raw --wire: each range is its block's src as stored, in order, covering the file"
+(define raw (run d "" "export-code" out3 "--raw" "--map"))
+(want "EM-3 export-code --raw --map: each range is its block's src as stored, in order, covering the file"
       (let ((m (let ((c (clause raw 'map))) (if c (cadr c) '()))))
         (list (map car m)
               (map (lambda (e)
@@ -154,17 +156,18 @@
                    m)))
       '(("a.scm" "b.scm") (#t #t)))
 
-(want "EM-4 CONTROL: without --wire the answer prints as it did, (ok (files 2)) alone"
-      (run-human d "export-code" (string-append root "/out4"))
-      "(ok (files 2))\n")
+(want "EM-4 CONTROL: without --map the answer is (ok (files 2)) alone, as data and as printed for a person"
+      (list (run d "" "export-code" (string-append root "/out4"))
+            (run-human d "export-code" (string-append root "/out4b")))
+      '((ok (files 2)) "(ok (files 2))\n"))
 
 (putenv "THEOURGIA_HOME" home)
 (define added (working-new! d #f "me" "c.scm" '((lang . scheme)) (string->utf8 "(define (k) 1)\n") #f))
 (printf "working-new!: ~s\n" added)
 (define out5 (string-append root "/out5"))
-(define working (run d "" "export-code" out5 "--working" "--writer" "me"))
-(printf "export-code --working --wire: ~s\n" working)
-(want "EM-5 export-code --working with a file the overlay added: files counts it, the map leaves it out and covers the others"
+(define working (run d "" "export-code" out5 "--working" "--writer" "me" "--map"))
+(printf "export-code --working --map: ~s\n" working)
+(want "EM-5 export-code --working --map with a file the overlay added: files counts it, the map leaves it out and covers the others"
       (let ((m (let ((c (clause working 'map))) (if c (cadr c) '()))))
         (list (car added) (cadr (clause working 'files)) (map car m)
               (map (lambda (e) (covers? (cadr e) (bytevector-length (file-bytes (string-append out5 "/" (car e)))))) m)
