@@ -77,6 +77,7 @@ exit-codes 3 9 b89f2f7bb940efb6471125b90208754a
 expansion-branches 2 7 73e0e08d3ca15268ee8f292ab4e37e5b
 expect-fields 4 11 660d83d63106fe74b973fcb0eb7f7e66
 expected-guard 5 8 f0184f685167721091dd60ae130aafc3
+export-map 5 14 9179558e005e9293be8b8e38880bd19c
 export-working 31 34 438e4070d7332822e62db36c1bf5bb39
 f0-ondemand 35 39 957f82a9b3eccfb7c2f7cac83a5eee8f
 f1-protocol 15 18 ae3634631db3fd372bbc303074eb319a

@@ -296,5 +296,13 @@
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'items))
          (string-append (apply string-append (map render-item (cdadr answer))) (items-tail (cdadr answer))))
+        ;; AN EXPORT'S BLOCK MAP IS FOR A MACHINE. Its ruling is that without
+        ;; --wire export-code's answer is unchanged, and (ok (files n)) has no
+        ;; text or items body, so in human mode it is printed whole through
+        ;; render-wire, the map with it: here the map is taken out first, and
+        ;; a person reads (ok (files n)) as before (export-map.sc EM-4).
+        ((and (pair? answer) (eq? (car answer) 'ok) (list? answer) (assq 'files (filter pair? (cdr answer)))
+              (assq 'map (filter pair? (cdr answer))))
+         (render-wire (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'map)))) answer)))
         (else (render-wire answer)))))
 )

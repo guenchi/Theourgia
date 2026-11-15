@@ -393,19 +393,40 @@
             (map (lambda (child) (list child (code-field state child 'src))) (code-children state id))
             (cadr k))))
 
-  ;; THE PROJECTION, ONE COMPUTATION FOR EVERY CONSUMER: -> ((<path> <bytes>)
-  ;; ...) in the exporter's order, raw (the children's srcs run together) or
-  ;; marked. export-code writes it; changed-files compares it (raw) without
-  ;; writing anything.
+  ;; THE PROJECTION, ONE COMPUTATION FOR EVERY CONSUMER: -> ((<path> <bytes>
+  ;; <ranges>) ...) in the exporter's order, raw (the children's srcs run
+  ;; together) or marked. export-code writes it and answers the ranges;
+  ;; changed-files compares it (raw) without writing anything.
+  ;; RANGES ARE THE LAYOUT WRITTEN: ((<id> <start> <end>) ...), half-open byte
+  ;; offsets in file order, covering the file. Marked, each from the pieces
+  ;; the encoder placed (projection-encode-map), a block's marker line and pad
+  ;; with the block they precede; raw, each child's src where it falls.
   (define (projection-outputs store state raw?)
     (let ((cut (reduce-applied-cut state)))
       (map (lambda (f)
              (let* ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f))
-                    (out (list rel (if raw? (apply bytes-append (map cadr entries))
-                                       (projection-encode entry (list (store-id-of store) id cut) entries)))))
+                    (out (if raw?
+                             (list rel (apply bytes-append (map cadr entries)) (raw-ranges entries))
+                             (let-values (((bytes pieces)
+                                           (projection-encode-map entry (list (store-id-of store) id cut) entries)))
+                               (list rel bytes (piece-ranges pieces))))))
                (progress!)
                out))
            (projected-files state))))
+  ;; -> ((<id> <start> <end>) ...): consecutive pieces of one block merged
+  (define (piece-ranges pieces)
+    (let loop ((ps pieces) (out '()))
+      (cond
+        ((null? ps) (reverse out))
+        ((and (pair? out) (equal? (car (car out)) (cadr (car ps))))
+         (loop (cdr ps) (cons (list (car (car out)) (cadr (car out)) (cadddr (car ps))) (cdr out))))
+        (else (loop (cdr ps) (cons (list (cadr (car ps)) (caddr (car ps)) (cadddr (car ps))) out))))))
+  (define (raw-ranges entries)
+    (let loop ((es entries) (at 0) (out '()))
+      (if (null? es)
+          (reverse out)
+          (let ((end (+ at (bytevector-length (cadr (car es))))))
+            (loop (cdr es) end (cons (list (car (car es)) at end) out))))))
 
   ;; OVERLAY, when given: a procedure from the outputs to the outputs written,
   ;; the working tree's structural drafts laid over them (working.sc).
@@ -426,5 +447,10 @@
                                                    keepalive-stale keepalive-raise conn-killed-pending)
                                                  100)))
                     outputs)
-          (list 'ok (list 'files (length outputs)))))))
+          ;; THE MAP answers each file's block ranges; an output the
+          ;; working view's structural overlay made carries none and is not
+          ;; in it. A reader of the human rendering is not shown it.
+          (list 'ok (list 'files (length outputs))
+                (list 'map (map (lambda (o) (list (car o) (caddr o)))
+                                (filter (lambda (o) (= (length o) 3)) outputs))))))))
 )
