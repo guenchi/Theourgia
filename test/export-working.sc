@@ -540,7 +540,7 @@
 (define readme (file-text "../README.md"))
 (want "WORKING-11 the README's usage forms for export-md and export-code carry --working, --writer and --cut"
       (list (contains? readme "(export-md <dir> (\"--with-ids\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))")
-            (contains? readme "(export-code <dir> (\"--raw\") (\"--datum\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))"))
+            (contains? readme "(export-code <dir> (\"--raw\") (\"--datum\") (\"--map\") (\"--working\") (\"--writer\" <name>) (\"--cut\" <cut>))"))
       '(#t #t))
 
 (system (string-append "rm -rf " here))
