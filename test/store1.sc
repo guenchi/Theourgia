@@ -466,9 +466,10 @@
 ;; (a) THE STALE TOKEN IS REFUSED, and refused before anything is
 ;; reserved -- the registry water mark is what says "before", because a
 ;; reservation moves it whether or not the bytes are ever written.
-(want "a write carrying the old token is refused and says what the token is now"
+(want "a write carrying the old token is refused and says what the token is now, and the block's fields now"
       (one-t (list 'expect token-before (list 'set X 'summary "stale")))
-      (list 'error 'changed (list 'current (block-hash (state-of dt) X))))
+      (list 'error 'changed (list 'current (block-hash (state-of dt) X))
+            (list 'fields (cdr (assq 'fields (state-read (state-of dt) X))))))
 (want "and nothing was reserved: no record, and the water mark stands"
       (list (= count-before (length (reduce-trace (state-of dt))))
             (equal? mark-before (watermark dt)))
