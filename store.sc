@@ -4814,6 +4814,16 @@
       ((unknown) (cons 'error (cons 'unknown (cdr verdict))))
       ((req-mismatch) (cons 'error (cons 'req-mismatch (cdr verdict))))
       ((resolved-executed) (cons 'error (cons 'resolved-executed (cdr verdict))))
+      ;; A PREFIX OF THE BATCH IS ON DISK AND THE REST PROVABLY DID NOT
+      ;; RUN (request.sc batch-progress). It answered `unknown` through the
+      ;; else arm below, which told a client holding the request less than
+      ;; the store had established. The judgement carries the indices on
+      ;; disk, a prefix, so the count applied is also the first item not
+      ;; applied; how many items the batch had is not in it.
+      ((partial)
+       (let ((present (cadr verdict)))
+         (list 'error 'partial (list 'applied (length present)) (list 'next (length present))
+               (list 'present present))))
       (else (cons 'error (cons 'unknown (cdr verdict))))))
 
   ;; THE BARRIER GOES WHERE THE RECORD IS, not where the writer happens
