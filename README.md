@@ -2333,7 +2333,7 @@ Replaces one field of one block. `--if-unchanged` makes the write
 conditional: the store refuses it if the block has moved on from that
 version, so a caller that read, thought, and came back cannot overwrite
 what happened in between.
-A refused `--if-unchanged` answers `(error changed (current <version>))`. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
+A refused `--if-unchanged` answers `(error changed (current <version>) (fields ((<field> . <value>) ...)))`: the block's version now and its field table now, in the shape `read` gives it. `--based-on <version>` also checks the version, but its refusal is `(error stale-baseline (block <id>) (based-on <version>) (now <version>) (since ...))`. Its `since` lists the most recent records that touched the block -- not only those after the named version, which `set` does not use to select them -- at most eight: the newest first, then the rest oldest first. When more were left out, the refusal also carries `(truncated #t)` and a `(retrieve (log <id>) (read <id>))` clause; when none is listed, it carries `(reason candidate-set-changed)` and `(conflicts <id>)`. Given with no `<value>`, `set <id> <field>` makes the field absent.
 
 Most fields take the text as given. `kind` does not: it is a symbol from a
 fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision`, `task`,
@@ -4453,7 +4453,7 @@ wrapped as `(expect <hash> <intent>)`, which refuses the work if that block's
 hash is no longer the one given. `insert` and `tag` have no subject and answer
 `(error no-subject)` if wrapped. The hash must be a string: a wrapper holding
 anything else is `malformed-intent`, not a wrapper that quietly does nothing.
-A hash that no longer matches is answered `(error changed (current <hash>))`, and a subject that does not exist or is deleted is answered `unknown-id` or `deleted`.
+A hash that no longer matches is answered `(error changed (current <hash>) (fields ((<field> . <value>) ...)))`, the block's current version and field table, as `read` gives them, and a subject that does not exist or is deleted is answered `unknown-id` or `deleted`.
 
 An item the store will not accept is answered `(error malformed-intent
 (<reason> <clause> ...))` for that item — never raised. The clauses say what the reason is about, such as `(spelling "<the datum>")`, `(argument <position>)`, or `(verb <v>) (given <n>) (needs <m>)`; the item is not sent back. The reason names the

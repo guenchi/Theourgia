@@ -3004,8 +3004,14 @@
         ((not id) (list 'error 'no-subject))
         ((not (known? state id)) (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
         ((deleted? state id) (list 'error 'deleted id))
+        ;; THE REFUSAL CARRIES THE BLOCK AS IT IS NOW: its version and its
+        ;; field table, in the shape a read gives it, so the client that
+        ;; expected an older version sees what it would have overwritten
+        ;; without a second request. Named `fields`, not `state`: a
+        ;; success's `state` is ((<id> . <hash>)).
         ((not (equal? want (block-hash state id)))
-         (list 'error 'changed (list 'current (block-hash state id))))
+         (list 'error 'changed (list 'current (block-hash state id))
+               (list 'fields (cdr (assq 'fields (state-read state id))))))
         (else #f))))
 
   ;; A DOCUMENT IS A FILE, AND A FILE IS NOT INSIDE ANOTHER FILE. Import
