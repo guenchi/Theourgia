@@ -467,7 +467,9 @@
                         " -nobrowse -quiet >/dev/null 2>&1")))))
 
 (if (not cs-made?)
-    (printf "ok CS-7 TWIN skipped: no case-sensitive volume could be made here (hdiutil create/attach failed; on a platform without hdiutil, mount one by hand and set the path)\n")
+    ;; A SKIP SAYS SKIP: the runner classes a fixture's skips by that word,
+    ;; and a line that begins "ok" reads as a row that passed.
+    (printf "SKIP CS-7 TWIN: no case-sensitive volume could be made here (missing: hdiutil create/attach of a case-sensitive HFS+ image, which failed; on a platform without hdiutil, mount a case-sensitive volume by hand and set the path)\n")
     (begin
       (want "CS-7 TWIN: the made volume really does distinguish case"
             (path-case-sensitive? cs-mount)
