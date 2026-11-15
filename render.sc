@@ -81,21 +81,35 @@
          (pair? (cadr x)) (eq? (caadr x) 'deleted) (boolean? (cdadr x))
          (let ((e (caddr x)))
            (and (pair? e) (eq? (car e) 'fields) (list? (cdr e)) (for-all pair? (cdr e)) e))))
+  ;; A FIELD TABLE, ((<field> . <value>) ...), with a text-mode code block's
+  ;; src and doc as text when they are; any other table as it is.
+  (define (text-mode-code? table)
+    (and (equal? (assq 'kind table) '(kind . code)) (equal? (assq 'mode table) '(mode . text))))
+  (define (table-form table)
+    (if (not (text-mode-code? table))
+        table
+        (map (lambda (f)
+               (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
+                   (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
+                   f))
+             table)))
   ;; A RECORD, with a text-mode code block's src and doc as text when they are.
   (define (record-form r)
     (let ((e (record-fields r)))
-      (if (not (and e (equal? (assq 'kind (cdr e)) '(kind . code)) (equal? (assq 'mode (cdr e)) '(mode . text))))
+      (if (not (and e (text-mode-code? (cdr e))))
           r
-          (map (lambda (y)
-                 (if (eq? y e)
-                     (cons 'fields
-                           (map (lambda (f)
-                                  (if (and (memq (car f) '(src doc)) (bytevector? (cdr f)))
-                                      (let ((t (exact-text (cdr f)))) (if t (cons (car f) t) f))
-                                      f))
-                                (cdr e)))
-                     y))
-               r))))
+          (map (lambda (y) (if (eq? y e) (cons 'fields (table-form (cdr e))) y)) r))))
+  ;; A CHANGED REFUSAL'S (fields <table>), the block's current field table
+  ;; (store.sc check-expectation): printed as a record's fields are. -> the
+  ;; refusal with that clause in its printed form; anything else as it is.
+  (define (changed-form x)
+    (if (and (list? x) (>= (length x) 2) (eq? (car x) 'error) (eq? (cadr x) 'changed))
+        (map (lambda (c)
+               (if (and (list? c) (= (length c) 2) (eq? (car c) 'fields) (list? (cadr c)) (for-all pair? (cadr c)))
+                   (list 'fields (table-form (cadr c)))
+                   c))
+             x)
+        x))
   ;; A context entry's (block <record>) clause, and nothing else in it. EXPORTED:
   ;; context's admission measures each entry as it will be printed, so a block
   ;; it admits is charged the bytes the reader is given (context.sc).
@@ -110,13 +124,18 @@
         e))
   ;; ONLY WHERE AN ANSWER'S SUBJECT IS A BLOCK RECORD: read's (ok <record> ...)
   ;; and (ok (items <record> ...) ...), a record printed alone (an item, by
-  ;; render-human), and context's entries' (block <record>). NOTHING ELSE IS
+  ;; render-human), context's entries' (block <record>), and a changed
+  ;; refusal's (fields <table>), alone or as an item of a batch answer
+  ;; (batch (<answer> ...) ...): the table is a record's. NOTHING ELSE IS
   ;; ENTERED -- a query's rows, review-results' field triples, a custom field
   ;; holding a value shaped like a record: stored values are printed as they
   ;; are stored, and an answer is never searched for something record-shaped.
   (define (reader-form x)
     (cond
       ((record-fields x) (record-form x))
+      ((and (pair? x) (eq? (car x) 'error)) (changed-form x))
+      ((and (list? x) (= (length x) 3) (eq? (car x) 'batch) (list? (cadr x)))
+       (list 'batch (map changed-form (cadr x)) (caddr x)))
       ((context-answer? x)
        (cons 'ok
              (map (lambda (c)

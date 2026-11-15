@@ -18,6 +18,8 @@
 ;;   EF-1  batch (expect <old> (set ...)): changed, current, the current fields
 ;;   EF-2  set --if-unchanged <old>: the same refusal
 ;;   EF-3  CONTROL: an expectation that holds: ok, state, no fields
+;;   EF-4  a text-mode code block's refusal prints its src as the text read --wire
+;;         prints for that block, not as bytes; alone and as a batch's item
 (import (chezscheme))
 
 (define bad 0)
@@ -107,6 +109,27 @@
       (let ((a (run d "" "set" b "note" "z" "--if-unchanged" (car now))))
         (list (car a) (and (clause a 'state) #t) (clause a 'fields)))
       '(ok #t #f))
+
+;; A TEXT-MODE CODE BLOCK keeps its src as bytes, and a read prints them as
+;; text; the refusal's table is printed the same way.
+(define dc (car (store-with-a-block!)))
+(define src-dir (string-append root "/src"))
+(system (string-append "mkdir -p '" src-dir "' && printf '(define (f x) x)\\n' > '" src-dir "/a.scm'"))
+(define code-id
+  (let ((ids (map (lambda (i) (car (car (cadr (assq 'state (cdr i))))))
+                  (cdr (assq 'items (cdr (run dc "" "import-code" src-dir)))))))
+    (find (lambda (id) (equal? (assq 'kind (cadr (read-of dc id))) '(kind . code))) ids)))
+(define code-before (read-of dc code-id))
+(run dc "" "set" code-id "note" "x")
+(define code-now (read-of dc code-id))
+(printf "the code block's src as read prints it: ~s\n" (assq 'src (cadr code-now)))
+(want "EF-4 a text-mode code block's changed refusal prints its src as the text read --wire prints, alone and as a batch's item"
+      (let ((alone (run dc "" "set" code-id "note" "y" "--if-unchanged" (car code-before)))
+            (item (car (items (run dc (format "((expect ~s (set ~s note \"y\")))" (car code-before) code-id) "batch")))))
+        (list (string? (cdr (assq 'src (cadr code-now))))
+              (let ((f (clause alone 'fields))) (and f (equal? (assq 'src (cadr f)) (assq 'src (cadr code-now)))))
+              (let ((f (clause item 'fields))) (and f (equal? (assq 'src (cadr f)) (assq 'src (cadr code-now)))))))
+      '(#t #t #t))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nexpect-fields complete\n" bad rows-run)
