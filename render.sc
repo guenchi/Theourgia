@@ -110,6 +110,36 @@
                    c))
              x)
         x))
+  ;; A LETTER'S RESULT BLOCK (channel.sc review-results, and a frozen letter's
+  ;; candidates): (block <id> ... (fields ((<field> <value> <actor>) ...)) ...),
+  ;; each field with the actor who set it. A text-mode code block's src and
+  ;; doc are printed as text as a record's are; the actor stays.
+  (define (result-block-form b)
+    (if (not (and (list? b) (pair? b) (eq? (car b) 'block)))
+        b
+        (map (lambda (c)
+               (if (and (list? c) (= (length c) 2) (eq? (car c) 'fields) (list? (cadr c))
+                        (for-all (lambda (f) (and (list? f) (= (length f) 3))) (cadr c)))
+                   (let* ((triples (cadr c))
+                          (table (map (lambda (f) (cons (car f) (cadr f))) triples)))
+                     (if (not (text-mode-code? table))
+                         c
+                         (list 'fields
+                               (map (lambda (f)
+                                      (if (and (memq (car f) '(src doc)) (bytevector? (cadr f)))
+                                          (let ((t (exact-text (cadr f)))) (if t (list (car f) t (caddr f)) f))
+                                          f))
+                                    triples))))
+                   c))
+             b)))
+  ;; -> a (results ...) clause with each of its blocks in that printed form
+  (define (results-form r)
+    (cons 'results
+          (map (lambda (part)
+                 (if (and (pair? part) (eq? (car part) 'blocks) (list? (cdr part)))
+                     (cons 'blocks (map result-block-form (cdr part)))
+                     part))
+               (cdr r))))
   ;; A context entry's (block <record>) clause, and nothing else in it. EXPORTED:
   ;; context's admission measures each entry as it will be printed, so a block
   ;; it admits is charged the bytes the reader is given (context.sc).
@@ -126,10 +156,12 @@
   ;; and (ok (items <record> ...) ...), a record printed alone (an item, by
   ;; render-human), context's entries' (block <record>), and a changed
   ;; refusal's (fields <table>), alone or as an item of a batch answer
-  ;; (batch (<answer> ...) ...): the table is a record's. NOTHING ELSE IS
-  ;; ENTERED -- a query's rows, review-results' field triples, a custom field
-  ;; holding a value shaped like a record: stored values are printed as they
-  ;; are stored, and an answer is never searched for something record-shaped.
+  ;; (batch (<answer> ...) ...): the table is a record's; and a letter's
+  ;; result blocks, (ok (results ... (blocks (block ... (fields <triples>)
+  ;; ...) ...)) ...), each triple's value as a record's would be. NOTHING
+  ;; ELSE IS ENTERED -- a query's rows, a custom field holding a value shaped
+  ;; like a record: stored values are printed as they are stored, and an
+  ;; answer is never searched for something record-shaped.
   (define (reader-form x)
     (cond
       ((record-fields x) (record-form x))
@@ -150,6 +182,7 @@
        (let ((s (cadr x)))
          (cons 'ok
                (cons (cond ((record-fields s) (record-form s))
+                           ((and (list? s) (pair? s) (eq? (car s) 'results)) (results-form s))
                            ((and (list? s) (pair? s) (eq? (car s) 'items))
                             (cons 'items (map (lambda (r) (if (record-fields r) (record-form r) r)) (cdr s))))
                            (else s))
