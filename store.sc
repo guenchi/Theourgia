@@ -955,11 +955,7 @@
                  (state-outline state))))
   ;; -> THE FIELDS AMONG NAMES of the block whose stored text does not
   ;; decode, a contested field named when one of its candidates does not.
-  ;; Decoded without counting. A search and a grep ask this of each block
-  ;; they scan, so their `unreadable-blocks` is a fact about their own
-  ;; answer: it was the difference of the process counter across the
-  ;; block's reads, which another search running meanwhile in the same
-  ;; process moved too (F448).
+  ;; Decoded without counting, for check's listing.
   (define (undecodable-fields state id block names)
     (let ((bad? (lambda (v) (and (bytevector? v) (not (decoded-text v #f)))))
           (fields (if block (cdr (assq (quote fields) block)) (quote ()))))
@@ -978,25 +974,32 @@
   ;; (state-field-contested?): a value written once can have the conflict's
   ;; shape, and its "candidates" are then no text of the block.
   (define (field-strings state id block name)
+    (car (field-texts state id block name)))
+  ;; -> (<texts> . <undecodable?>): field-strings' texts, and whether bytes
+  ;; among the field's values (a candidate's, for a contested field) did not
+  ;; decode. A search and a grep read a block's `unreadable` from it, so the
+  ;; one decode answers both (F448: asking undecodable-fields as well decoded
+  ;; every stored text twice).
+  (define (field-texts state id block name)
     (let* ((fields (cdr (assq (quote fields) block)))
            (e (assq name fields)))
       (cond
-        ((not e) (quote ()))
-        ((string? (cdr e)) (list (cdr e)))
+        ((not e) (cons (quote ()) #f))
+        ((string? (cdr e)) (cons (list (cdr e)) #f))
         ((bytevector? (cdr e))
          (let ((text (decoded-text (cdr e) (not (reduce-rehearsal? state)))))
-           (if text (list text) (quote ()))))
+           (if text (cons (list text) #f) (cons (quote ()) #t))))
         ((and (state-field-contested? state id name (cdr e)) (conflict-candidates (cdr e)))
          => (lambda (cs)
-              (let loop ((l cs) (out (quote ())))
+              (let loop ((l cs) (out (quote ())) (bad #f))
                 (cond
-                  ((null? l) (reverse out))
-                  ((string? (car (car l))) (loop (cdr l) (cons (car (car l)) out)))
+                  ((null? l) (cons (reverse out) bad))
+                  ((string? (car (car l))) (loop (cdr l) (cons (car (car l)) out) bad))
                   ((bytevector? (car (car l)))
                    (let ((text (decoded-text (car (car l)) (not (reduce-rehearsal? state)))))
-                     (loop (cdr l) (if text (cons text out) out))))
-                  (else (loop (cdr l) out))))))
-        (else (quote ())))))
+                     (if text (loop (cdr l) (cons text out) bad) (loop (cdr l) out #t))))
+                  (else (loop (cdr l) out bad))))))
+        (else (cons (quote ()) #f)))))
 
   (define (any-hit? strings token)
     (exists (lambda (text) (contains-ci? text token)) strings))
@@ -1995,14 +1998,17 @@
                         (let* ((id (cadr (car ds)))
                                (block (state-read state id))
                                (alive (hashtable-ref live id #f))
-                               (titles (field-strings state id block (quote title)))
-                               (srcs (field-strings state id block (quote src)))
+                               (title-read (field-texts state id block (quote title)))
+                               (titles (car title-read))
+                               (src-read (field-texts state id block (quote src)))
+                               (srcs (car src-read))
                                ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
                                ;; SOURCE'S 1. They are the one field a
                                ;; writer chose FOR being found by, so a
                                ;; block whose keywords match is a better
                                ;; answer than one whose prose happens to.
-                               (kws (field-strings state id block (quote keywords)))
+                               (kw-read (field-texts state id block (quote keywords)))
+                               (kws (car kw-read))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
                                ;; ONE MATRIX, TWO PROJECTIONS OF IT.
@@ -2086,12 +2092,13 @@
                                (names (map symbol->string (block-names state live id)))
                                (docs (derived-strings state live id (quote doc)))
                                (bodies (derived-strings state live id (quote body)))
-                               ;; THIS BLOCK'S OWN FIELDS, asked of the block
-                               ;; and not of the process counter: the fields
-                               ;; field-strings decoded above (derived-strings
-                               ;; skips bytes without counting them).
+                               ;; THIS BLOCK'S OWN FIELDS, as their reads above
+                               ;; answered, and not the process counter's
+                               ;; difference, which another search in the
+                               ;; process moves too (derived-strings skips
+                               ;; bytes without counting them).
                                (block-unreadable
-                                 (pair? (undecodable-fields state id block stored-text-fields)))
+                                 (or (cdr title-read) (cdr src-read) (cdr kw-read)))
                                (ignored-unreadable
                                  (when (and alive block-unreadable)
                                    (set! unreadable-here (+ unreadable-here 1))))
@@ -2271,14 +2278,16 @@
   ;; both `src` and `doc`, and none holds `body`. A line number is the nth
   ;; line of this sequence, so the order is written down now rather than
   ;; discovered later by whoever first writes two of them.
+  ;; -> (<texts> . <undecodable?>): the src's texts, the doc's and the
+  ;; body's, and whether the src's bytes did not decode
   (define (grep-text-of state live id)
-    (let ((stored (lambda (name)
-                    (let ((b (state-read state id)))
-                      (if b (field-strings state id b name) (quote ())))))
+    (let ((src-read (let ((b (state-read state id)))
+                      (if b (field-texts state id b (quote src)) (cons (quote ()) #f))))
           (derived (lambda (name) (derived-strings state live id name))))
-      (append (stored (quote src))
-              (derived (quote doc))
-              (derived (quote body)))))
+      (cons (append (car src-read)
+                    (derived (quote doc))
+                    (derived (quote body)))
+            (cdr src-read))))
 
   ;; -> AN ALIST, NOT A TUPLE. The caller reads `items`, `omitted-lines`,
   ;; `unseen-blocks`, `scanned-blocks`, `fields` and `cut` by name. A tuple
@@ -2339,12 +2348,12 @@
                (loop (cdr l) out shown omitted unseen scanned unreadable))
               (else
                 (let* ((id (car l))
+                       (text-read (grep-text-of state live id))
                        (lines (apply append
-                                     (map lines-of-text (grep-text-of state live id))))
-                       ;; asked of the block, as the search loop does: grep
-                       ;; decodes src alone through field-strings
-                       (block-unreadable
-                         (pair? (undecodable-fields state id (state-read state id) (quote (src)))))
+                                     (map lines-of-text (car text-read))))
+                       ;; as the read answered it, as the search loop does:
+                       ;; grep decodes src alone through field-texts
+                       (block-unreadable (cdr text-read))
                        (matching
                          (let scan ((ls lines) (n 1) (acc (quote ())))
                            (cond

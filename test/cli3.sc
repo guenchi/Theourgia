@@ -2781,6 +2781,18 @@
             (filter (lambda (r) (not (equal? (cdr r) '(0 20)))) interleavings))
       '(0 20 ()))
 
+;; A REHEARSAL'S COPY COUNTS ITS UNREADABLE BLOCKS TOO. The process counter
+;; is left alone for a rehearsal (a rule check of a write that may never
+;; happen is no reader of the store), and while the answer's count was the
+;; counter's difference a rehearsal's search said 0 for a block it could not
+;; read. The count is the answer's own now; the counter still does not move.
+(want "N10 a search over a rehearsal's copy (reduce-clone) counts the unreadable block, and the process counter does not move"
+      (let* ((copy (reduce-clone (open-and-reduce d11)))
+             (before (text-decode-skipped-count))
+             (n (cdr (assq 'unreadable-blocks (search-state-report copy "block" 10)))))
+        (list (reduce-rehearsal? copy) n (= (text-decode-skipped-count) before)))
+      '(#t 1 #t))
+
 (want "N10 TWIN: and two unreadable blocks are two"
       (let ((d (fresh-store!)))
         (init! d)
